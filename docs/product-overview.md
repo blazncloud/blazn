@@ -25,6 +25,7 @@
   - [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases)
   - [Credentials and integrations](#credentials-and-integrations)
   - [CLI control surface](#cli-control-surface)
+  - [Management API](#management-api)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -121,13 +122,21 @@ Core responsibilities include:
 - Publishing and retrieving artifacts.
 - Providing stable commands, machine-readable output, streaming, and idempotent operations for people, scripts, CI, and remote administration.
 
-The desktop app and CLI are two clients of the same product, not separate systems.
+The desktop app and CLI are first-party clients of the same product, not separate systems. The Management API makes the same control plane available to authorized external applications and services.
 
-The CLI is the initial public control and automation surface. Blazn will not ship a public management API or a Blazn management MCP server in the first product scope. The desktop app and internal services can use authenticated internal protocols, but those protocols are implementation details rather than a public compatibility commitment. The AI Proxy retains its model-compatible endpoint, and the Agent Harness may still consume external MCP tools.
+The CLI and Management API are the supported public control and automation surfaces. They use the same resource, authorization, operation, event, and error model. The AI Proxy remains a separate model-compatible endpoint, and the Agent Harness may still consume external MCP tools.
 
-The CLI can target a local Blazn service or an authenticated remote workspace. Its commands, exit codes, structured output, operation IDs, and streaming behavior form the supported automation contract. Scripts should invoke the CLI rather than depend on or reverse-engineer the private transport used between the CLI, desktop app, and control plane.
+The CLI can target a local Blazn service or an authenticated remote workspace. Its commands, exit codes, structured output, operation IDs, and streaming behavior form a supported automation contract. Applications and services can use the versioned Management API instead of shelling out to the CLI. Private internal transports remain implementation details.
 
-### 3. Workspaces and the company brain
+### 3. Blazn Management API
+
+The Management API gives authorized applications, services, integrations, and automation direct programmatic access to Blazn resources. It supports managing workspaces, agents, runs, nodes, sandbox templates, refreshes, sandboxes, warm pools, queues, triggers, endpoints, analytics, credentials and integrations, artifacts, projects, operations, and policies.
+
+The API is versioned, workspace-scoped, auditable, and designed around durable asynchronous operations. It supports idempotent mutations, optimistic concurrency, structured errors, pagination, event streaming, and generated client SDKs. Sensitive capabilities such as credential delivery, sandbox attachment, node enrollment, approvals, and destructive lifecycle actions use narrower purpose-built operations and stronger authorization than ordinary resource management.
+
+The Management API is distinct from the AI Proxy's model-compatible interface and from published agent invocation endpoints. Managing an Endpoint requires Management API authorization; invoking the workflow exposed through that Endpoint requires only the specific identity and input contract the Endpoint publishes.
+
+### 4. Workspaces and the company brain
 
 A workspace is the shared boundary for a person or organization. It contains:
 
@@ -140,7 +149,7 @@ A workspace is the shared boundary for a person or organization. It contains:
 
 The company brain is the connected, permission-aware memory formed by these elements. It is not simply a document store or transcript archive. It preserves relationships between objectives, decisions, work, evidence, outcomes, and the agents and people involved.
 
-### 4. Agent library and teams
+### 5. Agent library and teams
 
 Users can create and manage a reusable library of agents. Each agent can have:
 
@@ -158,7 +167,7 @@ Blazn has one Agent resource. An agent intended for a bounded assignment is an o
 
 Tags are metadata, not permissions. They support search, filters, collections, automation, routing hints, and reporting, while authorization continues to come from explicit workspace roles and policies.
 
-### 5. Blazn Agent Harness
+### 6. Blazn Agent Harness
 
 The Blazn Agent Harness is the product's canonical runtime for agents. It owns how an agent receives context, requests a model, uses tools, performs work, collaborates, emits events, pauses, resumes, and completes a run. Blazn does not depend on bring-your-own agent harnesses for its core execution model.
 
@@ -179,7 +188,7 @@ The desktop app, CLI, schedules, triggers, and future Blazn Button experiences a
 
 The harness should make an agent's context, environment, tools, actions, model routing, approvals, and state visible without forcing users to understand the underlying orchestration system.
 
-### 6. Nodes, workers, and environments
+### 7. Nodes, workers, and environments
 
 A user can choose to make a machine available as a Blazn node. Eligible work is then scheduled onto contributed macOS, Windows, or Linux capacity according to its capabilities and the workspace's policies.
 
@@ -194,7 +203,7 @@ Blazn can provision an isolated sandbox or virtual environment for a run, attach
 
 Kubernetes Agent Sandbox is a candidate foundation for selected persistent or interactive Linux environments. It is an implementation component, not a requirement for every workload or platform.
 
-### 7. Blazn AI Proxy
+### 8. Blazn AI Proxy
 
 The AI Proxy provides one compatible endpoint for the Blazn Agent Harness and external clients such as Codex, Claude Code, IDEs, and internal applications. Its Smart LLM Router evaluates every request against an effective LLM Router Policy before choosing where the request runs.
 
@@ -210,7 +219,7 @@ The AI Proxy is a model-access surface, not an alternative agent harness. Extern
 
 This capability builds on the approach established by Blaze Proxy and brings it into the shared Blazn workspace.
 
-### 8. Blazn cloud
+### 9. Blazn cloud
 
 Blazn cloud is optional managed infrastructure for teams that do not want to operate every component themselves. It can provide:
 
@@ -223,7 +232,7 @@ Blazn cloud is optional managed infrastructure for teams that do not want to ope
 
 Local and self-hosted use remain first-class. Cloud adoption should add capacity and convenience without making contributed machines or local models second-class citizens.
 
-### 9. Runs, events, analytics, and improvement
+### 10. Runs, events, analytics, and improvement
 
 Every meaningful execution is represented as a run. A run connects the initiating person or event, agent, objective, instructions, environment, model activity, tool calls, approvals, outputs, cost, timing, and outcome.
 
@@ -239,7 +248,7 @@ After a run, an agent can perform bounded introspection: identify what worked, w
 
 Coordinating agents can analyze patterns across multiple agents and runs to improve delegation, handoffs, shared tools, and team performance.
 
-### 10. Projects and execution
+### 11. Projects and execution
 
 Blazn includes project management so plans and agent work share the same context. Workspaces can organize:
 
@@ -250,7 +259,7 @@ Blazn includes project management so plans and agent work share the same context
 
 An agent run can begin from a task, update it with live progress, attach evidence and artifacts, surface blockers, and propose next work. People retain control of priorities and commitments while agents reduce the coordination overhead between planning and execution.
 
-### 11. Artifacts and shared library
+### 12. Artifacts and shared library
 
 Blazn provides a durable, searchable home for useful outputs. Users can pin, organize, version, and share:
 
@@ -263,7 +272,7 @@ Blazn provides a durable, searchable home for useful outputs. Users can pin, org
 
 Artifacts retain provenance: which objective and run created them, what inputs were used, who approved them, and what superseded them.
 
-### 12. Blazn Button
+### 13. Blazn Button
 
 The Blazn Button connects an application or website to a workspace and its agents. It is the product-facing bridge for real-time work.
 
@@ -301,6 +310,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
 | [CLI control surface](#cli-control-surface) | Provide the supported local and remote interface for people, scripts, CI, and administration | Initial design |
+| [Management API](#management-api) | Provide versioned, authenticated programmatic management of Blazn resources and operations | Initial design |
 | Smart LLM Router | Select, queue, load-balance, and fail over model requests across local and cloud capacity | Initial design |
 | LLM Router Policy | Define allowed routes, preferences, budgets, privacy rules, and fallback behavior | Initial design |
 
@@ -1106,7 +1116,7 @@ The first record should include:
 - Credential grant references and policy versions without secret values.
 - Retention, timeout, migration, release, replacement, and terminal information.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 The initial control surface should support:
 
@@ -1134,7 +1144,7 @@ The first sandbox implementation should prove:
 7. Suspend, resume, and reconnect without losing durable workspace state.
 8. Revoke credentials and destroy or sanitize the sandbox reliably.
 9. Recover from a harness restart and report a simulated node loss clearly.
-10. Expose authenticated desktop and CLI controls.
+10. Expose authenticated desktop, CLI, and Management API controls.
 
 Kubernetes Agent Sandbox is a candidate first Linux adapter, but the version-one Blazn commands and data model should not expose Kubernetes as the required product contract.
 
@@ -1454,7 +1464,7 @@ Each entry record extends the sandbox record with:
 - Sanitation generation, readiness results, reuse count, and replacement reason.
 - Idle resource cost and startup-latency measurements.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 The first control surface should support:
 
@@ -1488,7 +1498,7 @@ The first warm-pool implementation should prove:
 7. Conservative personal-node behavior with ready capacity disabled by default.
 8. Single-use destruction after session release; no recycling in the initial security boundary.
 9. Metrics comparing full cold, refreshed cold, suspended warm, and ready warm startup.
-10. Authenticated desktop and CLI inspection and administration.
+10. Authenticated desktop, CLI, and Management API inspection and administration.
 
 #### Decisions to make next
 
@@ -1966,7 +1976,7 @@ Data-quality rules can detect:
 - Agent analytics that exceed rate, schema, or cardinality policy.
 - Clock skew, sequence gaps, and delayed producer delivery.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 The desktop application and CLI should allow authorized users to:
 
@@ -1983,7 +1993,7 @@ The desktop application and CLI should allow authorized users to:
 - Inspect rejected or delayed producer events without revealing prohibited payload content.
 - Explain how a displayed value was derived and why some data is unavailable.
 
-The CLI uses versioned JSON or JSONL for queries and streams, durable operation identifiers for long-running exports and optimization runs, and resumable cursors for live events. It does not expose the private event transport as a public management API.
+The CLI and Management API use the same versioned query, operation, and resumable event contracts. The CLI renders JSON or JSONL for automation, while applications can consume the documented Management API directly.
 
 #### Core records
 
@@ -2444,7 +2454,7 @@ The first queue-item record should include:
 
 Queue definitions should record their scope, domain, policy, parent allocation, priority classes, fairness weight, quotas, budgets, admission pools, health, and aggregate status.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 The initial control surface should support:
 
@@ -2473,7 +2483,7 @@ The first queue implementation should prove:
 7. Low-priority, preemptible refresh and warm-pool replenishment.
 8. Durable idempotency, reservations, dispatch leases, cancellation, retry, and recovery after controller restart.
 9. Clear blocked and no-capacity explanations with queue events and metrics.
-10. Authenticated desktop and CLI controls.
+10. Authenticated desktop, CLI, and Management API controls.
 
 #### Decisions to make next
 
@@ -2905,7 +2915,7 @@ The AgentVersion record should include:
 
 Secret values, active tokens, raw conversation histories, and mutable sandbox state do not belong in either record.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 The initial control surface should support:
 
@@ -2936,7 +2946,7 @@ The first Agent implementation should prove:
 8. Agent-scoped credentials issued only at run time.
 9. Search and filtering by name, status, owner, project, and tags.
 10. Runs, artifacts, model routes, sandbox use, metrics, and audit history linked back to the agent and exact version.
-11. Authenticated desktop and CLI creation, inspection, lifecycle, and run controls.
+11. Authenticated desktop, CLI, and Management API creation, inspection, lifecycle, and run controls.
 
 #### Decisions to make next
 
@@ -2959,7 +2969,7 @@ Triggers and endpoints allow people, applications, services, and workspace event
 
 An **endpoint** is the managed channel through which Blazn receives or sends interaction. A **trigger definition** decides whether a normalized event should start work and how that work is configured. An **email alias** is a specialized endpoint that gives an agent, workflow, project, or team a governed email address and preserves conversation threading across inbound and outbound mail.
 
-These are purpose-built agent invocation and interaction surfaces. They do not introduce a general Blazn management API. An endpoint can perform only the workflow behavior explicitly published through its trigger, identity, input schema, policy, and version.
+These are purpose-built agent invocation and interaction surfaces, distinct from the Management API. An endpoint caller can perform only the workflow behavior explicitly published through its trigger, identity, input schema, policy, and version; managing that Endpoint requires separate Management API, CLI, or desktop authorization.
 
 #### Core boundaries
 
@@ -3306,7 +3316,7 @@ Workspace analytics should measure:
 
 Message content, email addresses, Slack identities, customer data, and attachments are not default metric dimensions. Drill-down requires permission and uses protected event or artifact references.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 Authorized users should be able to:
 
@@ -3356,7 +3366,7 @@ The first triggers and endpoints implementation should prove:
 9. Versioned matching and input mapping with test, shadow, canary, promotion, and rollback behavior.
 10. Vault-backed connection and signing credentials with rotation and endpoint health changes.
 11. Trusted events and analytics for source-to-acknowledgement, run, result, reply, cost, quality, rejection, retry, and abuse outcomes.
-12. Authenticated desktop and CLI administration, testing, delivery inspection, approvals, and pause controls.
+12. Authenticated desktop, CLI, and Management API administration, testing, delivery inspection, approvals, and pause controls.
 
 #### Decisions to make next
 
@@ -3799,7 +3809,7 @@ The IntegrationConnection record should include:
 
 The AccessGrant and CredentialLease records include principal, action, resource, context, policy decision, approval, audience, issue, expiry, revocation, and use result without storing the secret value.
 
-#### Desktop and CLI surface
+#### Desktop, CLI, and Management API surface
 
 The initial control surface should support:
 
@@ -3832,7 +3842,7 @@ The first credentials and integrations implementation should prove:
 8. Rotation, expiry warning, disablement, provider-side revocation where supported, and offboarding checks.
 9. Team members and agents using a shared credential without being able to reveal it.
 10. Redacted audit events, dependency views, health, and usage metrics.
-11. Authenticated desktop and CLI management and use surfaces without a generic agent secret-read tool.
+11. Authenticated desktop, CLI, and Management API management and use surfaces without a generic agent secret-read operation.
 
 #### Decisions to make next
 
@@ -3855,9 +3865,9 @@ The first credentials and integrations implementation should prove:
 
 The `blazn` CLI is the supported command surface for people, scripts, CI systems, and administrators to control Blazn from macOS, Linux, and Windows. It provides the same workspace model whether it connects to a Blazn service on the current machine or to an authenticated remote workspace.
 
-The CLI is a product contract. Its commands, flags, structured output, exit codes, operation identifiers, and event-stream behavior are designed for compatibility and automation. The private transport between the CLI and the Blazn control plane may evolve without becoming a public management API.
+The CLI is a product contract. Its commands, flags, structured output, exit codes, operation identifiers, and event-stream behavior are designed for compatibility and automation. It shares resource schemas, operations, errors, and event semantics with the public Management API while remaining a stable higher-level interface for people and shell automation.
 
-Blazn will not ship a general-purpose management API or a Blazn management MCP server in the initial scope. The AI Proxy remains a separate model-compatible endpoint, and the Agent Harness can continue to consume approved external MCP tools. Neither surface replaces the CLI's role in managing Blazn resources.
+Blazn will ship a versioned Management API alongside the CLI. The AI Proxy remains a separate model-compatible endpoint, and the Agent Harness can continue to consume approved external MCP tools. Each surface has a distinct contract: the Management API manages Blazn resources, the CLI provides human and shell workflows, the AI Proxy serves model requests, and external MCP tools extend agent capabilities.
 
 #### Design goals
 
@@ -3943,9 +3953,9 @@ The CLI should:
 
 Local operation is still authenticated. A process on the same machine does not automatically inherit permission to administer the local Blazn service or access another user's workspace.
 
-#### Private transport and compatibility boundary
+#### API and compatibility boundary
 
-The desktop application and CLI may communicate with the control plane through a private local or remote protocol. That protocol is an implementation detail and can change as the system evolves. Scripts should invoke `blazn` rather than call or reverse-engineer the private transport.
+The CLI may implement supported commands through the Management API, and the desktop application can use the same API where appropriate. Local IPC, high-frequency UI synchronization, sandbox terminal transport, and other optimized internal protocols can remain private implementation details. Applications should use the documented Management API, and shell automation should use either the CLI or Management API rather than reverse-engineering internal transports.
 
 At connection time, the CLI and control plane negotiate supported capabilities and contract versions. When a command is unsupported, the CLI returns a clear compatibility error and an actionable upgrade or fallback path. It must not approximate a mutation using older semantics when doing so could change its meaning or safety.
 
@@ -4141,13 +4151,13 @@ The first CLI implementation should prove:
 9. Versioned JSON results, stable error codes, and documented exit-code categories.
 10. Deterministic non-interactive operation with dedicated CI identities.
 11. Capability negotiation and actionable client/control-plane compatibility errors.
-12. No requirement for scripts to use a public management API or a Blazn management MCP server.
+12. Shared resource, operation, error, and event semantics with the versioned Management API, allowing automation to choose the CLI or direct API access.
 
 #### Decisions to make next
 
 - Which command names and aliases become stable in version one?
 - Which resources support declarative create or apply workflows, and how are plans represented?
-- What private transport best supports local IPC, remote commands, streaming, and capability negotiation?
+- Which commands should call the public Management API directly, and which local interactive operations need a private optimized transport?
 - Which authentication flows and protected credential stores are required on each operating system?
 - What is the supported CLI and control-plane compatibility window?
 - Which structured schemas are globally versioned and which evolve per command or resource?
@@ -4156,7 +4166,431 @@ The first CLI implementation should prove:
 - Which cached read-only views are useful enough to support while disconnected?
 - Which package managers and update channels should ship first?
 - Should an interactive terminal mode exist later, or should richer interaction remain in the desktop application?
-- What minimum commands are required before the private transport can change without disrupting automation?
+- Which CLI conveniences intentionally compose multiple Management API operations, and how are partial results represented?
+
+### Management API
+
+#### Definition and authority
+
+The Blazn Management API is the supported programmatic control surface for managing Blazn workspaces and resources. It allows authorized applications, services, integrations, infrastructure controllers, and automation to create, inspect, update, operate, and observe nodes, agents, AgentVersions, runs, templates, refreshes, sandboxes, warm pools, queues, triggers, endpoints, analytics, vault metadata, credentials, integrations, artifacts, projects, policies, and long-running operations.
+
+The API exposes the same resource and lifecycle model used by the desktop application and CLI. It is not a second orchestration system, and it does not bypass the Queue, Agent Harness, policy engine, vault, scheduler, execution fabric, or analytics pipeline.
+
+The Management API is distinct from:
+
+- The **AI Proxy**, which serves model-compatible inference requests.
+- **Agent invocation endpoints**, which expose one narrowly published workflow through Slack, web, email, webhooks, schedules, or integrations.
+- **External MCP tools**, which the Agent Harness can make available to agents.
+- Private high-frequency or platform-specific transports used for UI synchronization, local IPC, sandbox terminals, file transfer, or backend controllers.
+
+#### Design principles
+
+The Management API should be:
+
+- **Resource-consistent:** the same identifiers, schemas, states, policies, operations, and events appear across API, CLI, and desktop.
+- **Explicitly authorized:** every action is checked against the caller, workspace, resource, requested capability, and current policy.
+- **Asynchronous where needed:** long-running infrastructure and agent actions return durable Operations rather than tying correctness to one connection.
+- **Safe to retry:** mutating requests support idempotency and optimistic concurrency.
+- **Versioned:** documented schemas and behavior evolve through an explicit compatibility and deprecation policy.
+- **Observable:** requests, decisions, operations, and mutations carry correlation identifiers and produce authorized events and audit records.
+- **Local and remote:** a self-hosted or local deployment and Blazn cloud expose the same contract for supported capabilities.
+- **Least-privilege:** high-risk actions use narrow purpose-built operations and short-lived grants instead of broad CRUD permissions.
+- **Automation-ready:** errors, pagination, partial results, rate limits, and retry behavior are machine-readable.
+
+#### API shape
+
+The initial Management API should use a versioned HTTPS JSON interface with a published machine-readable schema. Resource paths are scoped beneath an explicit workspace unless the operation is deployment-, organization-, or identity-scoped.
+
+Representative paths include:
+
+```text
+/v1/workspaces/{workspace_id}/agents
+/v1/workspaces/{workspace_id}/runs
+/v1/workspaces/{workspace_id}/nodes
+/v1/workspaces/{workspace_id}/sandbox-templates
+/v1/workspaces/{workspace_id}/refreshes
+/v1/workspaces/{workspace_id}/sandboxes
+/v1/workspaces/{workspace_id}/warm-pools
+/v1/workspaces/{workspace_id}/queues
+/v1/workspaces/{workspace_id}/triggers
+/v1/workspaces/{workspace_id}/endpoints
+/v1/workspaces/{workspace_id}/operations
+/v1/workspaces/{workspace_id}/events
+```
+
+Exact paths and protocol choices can evolve during implementation, but the published contract must preserve stable resource identity and semantics. The initial specification should be expressed in OpenAPI or an equivalent complete schema that supports documentation, validation, compatibility checks, and generated SDKs.
+
+Requests and responses declare a supported media type and API version. Dates use an unambiguous UTC representation, durations and units are explicit, enums have documented unknown-value behavior, and large integer or monetary fields avoid lossy numeric representations.
+
+#### Resource coverage
+
+The Management API should cover:
+
+| Resource family | Supported management behavior |
+| --- | --- |
+| Organizations and workspaces | Membership, teams, roles, policy references, budgets, regions, settings, and lifecycle |
+| Agents and AgentVersions | Drafts, validation, evaluation, refinement, publication, schedules, relationships, tags, rollback, and lifecycle |
+| Sessions and runs | Creation, inspection, steering, approvals, checkpoints, suspension, resumption, cancellation, events, outputs, and history |
+| Nodes and capabilities | Enrollment, attestation, labels, capacity, local models, cordon, drain, updates, health, and removal |
+| Sandbox templates | Drafts, validation, versioning, repositories, variants, policy, publication, promotion, and deprecation |
+| Refreshes | Build requests, source identity, dependency cache, compatibility, validation, promotion, invalidation, and retention |
+| Sandboxes | Provisioning, attachment grants, state, preservation, restore, stop, expiry, and deletion |
+| Warm pools | Capacity targets, keys, refresh policy, placement, scaling, claims, drains, health, and lifecycle |
+| Queues and policies | Status, requests, quotas, priority, fairness, admission explanations, cancellation, and policy versions |
+| Triggers and endpoints | Drafts, bindings, matching, schedules, Slack, web, webhook, email alias, testing, publication, delivery, and pause |
+| Analytics and metrics | Event queries and streams, analytic definitions, dashboards, evaluations, alerts, exports, and optimization runs |
+| Vaults and credentials | Vault metadata, policies, credential metadata and versions, rotation, disablement, leases, approvals, and audit-safe use |
+| Integrations | Definitions, connections, ownership, scopes, health, subscriptions, brokered actions, and lifecycle |
+| Artifacts and indexing | Metadata, upload and download grants, versions, provenance, pinning, indexing state, retention, and deletion |
+| Projects and work | Objectives, roadmaps, milestones, tasks, dependencies, assignments, decisions, and linked runs |
+| Operations and events | Durable status, progress, cancellation, results, errors, event streams, cursors, and correlation |
+| Router and model policy | Provider and local-model metadata, LLM Router Policies, route simulation, budgets, health, and usage |
+
+Capability availability can vary by deployment, platform, license, backend, and policy. Clients discover supported capabilities rather than assuming that every server or node implements every operation.
+
+#### Resource representations
+
+Every resource representation should include a common set of fields where applicable:
+
+- Stable opaque identifier and resource type.
+- Workspace, project, owner, and scope references.
+- Human name, description, tags, and protected metadata.
+- Immutable creation identity and timestamps.
+- Mutable version, generation, observed generation, and update time.
+- Desired state, observed state, conditions, and lifecycle status.
+- Exact referenced resource and policy versions where reproducibility matters.
+- Permission-aware links to related resources, Operations, and events.
+- Data classification, region, retention, and deletion state where applicable.
+- Capability and compatibility information.
+
+References use stable IDs rather than mutable names. Names can be unique within a documented scope and are useful for people, but automation should preserve IDs after resolution. Responses do not expand unrestricted related resources by default; clients request bounded inclusions that still pass authorization.
+
+Resource representations never include active access tokens, raw vault secrets, unredacted protected inputs, sandbox host credentials, or private provider signing material.
+
+#### CRUD and lifecycle actions
+
+Ordinary resources support consistent collection and item behavior for list, create, get, and update. Deletion is not assumed to be immediate or universally available. Resources with dependencies, retention rules, active work, or recovery requirements expose an explicit deletion request and lifecycle state.
+
+Domain actions are named and typed rather than hidden in arbitrary state updates. Examples include:
+
+- Publish, deprecate, prohibit, promote, or roll back an AgentVersion or template version.
+- Cordon, drain, rotate enrollment, update, or remove a node.
+- Build, validate, promote, invalidate, or retire a refresh.
+- Stop, preserve, restore, extend, or delete a sandbox.
+- Pause, resume, resize, reconcile, or drain a warm pool.
+- Start, steer, approve, suspend, resume, or cancel a run.
+- Test, publish, pause, replay, or rotate an Endpoint binding.
+- Rotate, disable, revoke, or request use of a credential.
+- Connect, reauthorize, test, pause, or disconnect an integration.
+
+An action validates the current lifecycle state and returns a structured conflict when it is not allowed. A generic update cannot be used to skip approvals, dependency checks, or lifecycle transitions.
+
+#### Durable Operations
+
+Actions that may outlive a normal request return an Operation. The initial response uses an accepted status and includes the Operation ID, target references, state, correlation ID, and event-stream location.
+
+An Operation records:
+
+- Caller, workspace, requested action, idempotency key, and accepted request digest.
+- Target resources and expected versions.
+- State, progress, stages, timestamps, deadline, and cancellation policy.
+- Child operations and external provider references.
+- Result, partial results, warnings, structured failure, and retryability.
+- Related events, audit record, and resource versions created or changed.
+
+Clients can get, wait for, stream, or request cancellation of an Operation when its policy permits. Cancelling the client request or closing a connection does not cancel the Operation. Cancellation is itself durable and may complete only after safe cleanup.
+
+#### Authentication
+
+The API supports distinct identity types:
+
+- Interactive users authenticated through the workspace's approved identity provider.
+- Service accounts or workload identities for applications, CI, controllers, and automation.
+- Node identities established through enrollment and attestation.
+- Integration identities bound to a provider installation or connection.
+- Short-lived delegated identities for a specific run, tool call, approval, upload, download, or attachment session.
+
+Remote access uses encrypted transport and short-lived audience-bound access tokens. Self-hosted deployments can integrate with standard identity providers and workload federation. Mutual TLS may be required for nodes, backend controllers, or regulated deployments.
+
+Long-lived bearer tokens should not be the default. Where personal or service access tokens are supported for compatibility, they are scoped, expiring, hashed at rest, individually revocable, shown only at creation, and managed as credentials rather than embedded in source code.
+
+Authentication proves the caller's identity; it does not grant access by itself.
+
+#### Authorization and policy
+
+Every request is authorized against the effective combination of organization, workspace, team, project, resource, role, relationship, capability, data classification, region, environment, and action policy.
+
+Permissions distinguish actions such as:
+
+- View metadata, view content, list, create, update, publish, operate, delete, and audit.
+- Use a credential versus reveal, rotate, share, export, or administer it.
+- Request a sandbox versus attach, execute, preserve, extend, or inspect host details.
+- Enroll a node versus schedule work, change capabilities, drain, update, or remove it.
+- Start a run versus steer, approve, access artifacts, or cancel work owned by another identity.
+- View aggregate analytics versus restricted events, content, personal activity, or exports.
+
+The API evaluates authorization at request time and again when a delayed Operation reaches a sensitive stage if relevant policy or resource state may have changed. Responses do not reveal inaccessible resource existence through filters, counts, errors, timings, or relationship expansion.
+
+#### Workspace and tenant isolation
+
+Workspace scope is explicit in the request path or access token audience. The server never infers a different workspace from a mutable resource name or payload field. Cross-workspace operations use a dedicated authorized workflow with distinct source and destination decisions.
+
+Storage, caches, event streams, analytics, logs, traces, and rate limits retain tenant context. Internal resource identifiers are opaque and cannot be used as authorization. Organization administrators do not automatically gain access to every personal vault, private connection, restricted project, or content artifact.
+
+#### Idempotency and optimistic concurrency
+
+Every create and action request that can cause side effects accepts an idempotency key scoped to the caller, workspace, operation family, and retention window. Repeating an equivalent request returns the original result or Operation. Reusing the key with a different request digest returns a conflict.
+
+Updates and sensitive actions require an expected resource version, generation, or entity tag. A stale mutation returns the current permitted version and a structured conflict without overwriting another change. APIs do not provide a global force flag that bypasses concurrency, policy, or lifecycle rules.
+
+Server-generated retries preserve the original idempotency and causation identity across controllers and providers.
+
+#### Listing, filtering, and pagination
+
+Collection endpoints support stable pagination with opaque cursors, bounded page sizes, deterministic ordering, and permission-aware totals where safe. Filters use documented typed fields rather than arbitrary server-side code.
+
+Common filters can include:
+
+- IDs, owner, project, team, status, lifecycle, and time windows.
+- Names and search terms where the resource supports search.
+- Agent and resource tags as metadata, never authorization.
+- Exact AgentVersion, template, refresh, node class, model route, or policy version.
+- Run, Operation, trigger, Endpoint, session, correlation, or causation relationship.
+- Health, condition, failure, queue, or approval state.
+
+Pagination cursors bind to the authorized query and expire. A cursor cannot be modified to expand scope or reused by another identity. Responses explain when rapidly changing collections provide a best-effort view versus a stable snapshot.
+
+#### Bulk and transactional behavior
+
+Bulk endpoints are provided only where they have clear authorization, quota, idempotency, and partial-result semantics. Each target is authorized independently. A response records success, failure, conflict, or skipped status for every item.
+
+Blazn does not imply a transaction across external providers, running agents, nodes, and sandboxes. When an operation spans systems, the API exposes stages, compensation, rollback availability, and partial completion. Clients can request a dry run or plan for supported broad changes before submitting them.
+
+#### Events and streaming
+
+The Management API exposes permission-aware event streams for resources, Operations, runs, logs, analytics, queues, endpoints, and infrastructure. Streams use the shared WorkspaceEvent schema and provide event IDs, sequence, timestamps, schema versions, correlation, causation, and opaque resume cursors.
+
+The first remote streaming contract can use server-sent events for ordered one-way updates, with another documented transport used only when bidirectional interactive behavior is required. Clients reconnect with the last confirmed cursor and de-duplicate by event ID. If retention removed a cursor, the server returns an explicit gap with the earliest available position.
+
+High-volume raw terminal, file, audio, or binary streams use a purpose-built short-lived session negotiated through the Management API. They do not overload ordinary JSON event endpoints.
+
+#### Outbound webhooks and event subscriptions
+
+Authorized applications can subscribe to selected workspace event types through a managed outbound webhook subscription. This is separate from an inbound agent Endpoint.
+
+An outbound subscription defines event namespaces, resource scope, destination, signing method, retry, ordering expectations, rate limits, dead-letter behavior, and data classification. Deliveries include an event ID, subscription ID, timestamp, signature, and replay protection. Secret signing material is stored through a vault reference and can be rotated without recreating the subscription.
+
+Webhook consumers must be idempotent. The Management API exposes subscription health and delivery metadata, but payload replay is permission-controlled and creates a new delivery record linked to the original.
+
+#### Nodes and enrollment
+
+Node management APIs distinguish administrative intent from the node's authenticated reporting channel. An administrator can create an enrollment request with labels, resource limits, workspace, expiry, and expected platform. The response yields a one-time short-lived bootstrap mechanism rather than a permanent node credential.
+
+After attestation and approval, the node receives its own identity and reports capabilities, local models, health, pressure, versions, and observed state through a node-specific authenticated channel. The general Management API does not allow a caller to forge node-reported capacity or attestation.
+
+Node actions such as cordon, drain, update, rotate identity, or remove return Operations and preserve active-run safety. Host filesystem access and arbitrary remote shell are not implied by node-management permission.
+
+#### Templates, refreshes, and artifacts
+
+Template and AgentVersion drafts can be created from inline versioned documents or protected artifact references. Large files, repositories, images, refresh layers, and artifacts use negotiated upload and download grants with checksums, size limits, expiry, classification, and resumability.
+
+Publishing resolves dependencies and creates an immutable content digest. A client cannot update a published version in place. Build and validation actions return Operations with logs and evidence linked through authorized event and artifact records.
+
+Source-control credentials are selected through capability policy and vault leases; they are never embedded in template or refresh API payloads.
+
+#### Sandboxes and interactive attachment
+
+Creating a sandbox is an asynchronous policy and scheduling request. The caller specifies an eligible template or version, resource profile, session or run relationship, allowed persistence, expiry, and bounded overrides. The scheduler chooses an authorized node and backend.
+
+Interactive attachment, terminal access, port forwarding, file transfer, and debugging require distinct permissions. The Management API creates a short-lived single-purpose attachment grant bound to the caller, sandbox, protocol, audience, expiry, and allowed paths or ports. The client then connects through the designated secure transport.
+
+Attachment grants do not reveal node credentials, host paths, container runtime sockets, or reusable sandbox secrets. Every attachment produces events and can be revoked without stopping the sandbox.
+
+#### Agents, sessions, and runs
+
+Agent APIs preserve the distinction between stable Agent identity, immutable AgentVersion, Session, Run, and environment. Publishing a candidate changes the active version pointer according to policy; it does not rewrite historical runs or silently migrate active Sessions.
+
+Starting a run accepts an exact AgentVersion or an explicit version-selection policy, objective, session reference, inputs, idempotency key, budgets, and allowed overrides. The response returns a Run and Operation or admission state. Queueing, environment creation, model routing, credentials, tools, and execution still pass through the normal control plane and Agent Harness.
+
+Steering, approval, suspension, resumption, and cancellation use typed actions with actor, expected state, reason, and policy. A generic update cannot insert an untrusted message into another user's Session or approve an action on their behalf.
+
+#### Triggers, endpoints, and invocation
+
+The Management API manages Endpoint, EndpointBinding, TriggerDefinition, EmailAlias, ScheduleDefinition, ConversationBinding, and Delivery resources. It supports validation, test, shadow, publication, canary, pause, replay, rotation, and health inspection.
+
+Invoking the published workflow uses the Endpoint's channel-specific contract and identity policy, not general Management API authority. Conversely, knowing a public webhook or email alias does not grant permission to inspect or change its TriggerDefinition through the API.
+
+Recorded or synthetic TriggerEnvelopes can be tested through an authorized dry-run action. Replaying a real envelope requires separate permission and always creates a new Delivery with lineage to the original.
+
+#### Vaults, credentials, and integrations
+
+The Management API exposes vault, credential, and integration metadata only to authorized identities. It supports creating a protected input session, adding a credential version, rotating, disabling, revoking, changing policy, requesting a lease, approving use, and inspecting redacted health and audit history.
+
+There is no general endpoint that returns raw secret values to agents or routine automation. Where human reveal or export is allowed, it uses a separate strongly authenticated action, explicit purpose, policy, short-lived encrypted delivery, and audit trail. Most integrations and agents receive brokered actions or short-lived run-bound leases instead.
+
+OAuth callbacks, provider tokens, webhook signing keys, and node bootstrap material use purpose-built flows that keep credentials out of URLs, ordinary logs, event payloads, and resource representations.
+
+#### Analytics, metrics, and exports
+
+The API supports authorized event queries, streams, analytic definitions, dashboards, alerts, evaluations, refinement sessions, optimization runs, and bounded exports. Queries apply authorization before aggregation and enforce classification, cardinality, retention, and workspace policy.
+
+Large exports are asynchronous Operations that create an expiring classified artifact and ExportManifest. The manifest records the query, schema versions, requester, time range, redactions, checksums, and lineage. Export URLs are short-lived and audience-bound.
+
+Metric endpoints are optimized for bounded product queries and dashboards. Blazn can also support standards-based monitoring export for administrators without turning internal high-cardinality events or restricted content into unrestricted metrics.
+
+#### Error model
+
+Every error response contains:
+
+- Stable machine-readable code and category.
+- Human-safe message.
+- Correlation identifier.
+- Request field or resource context where authorized.
+- Retryability and optional retry delay.
+- Current resource version for permitted concurrency conflicts.
+- Operation reference when failure occurred asynchronously.
+- Documentation or recovery hint where useful.
+
+HTTP status communicates the broad protocol result, while the stable error code communicates the product-specific reason. Authorization errors avoid confirming whether an inaccessible resource exists. Validation can return multiple field errors without echoing secret input.
+
+#### Rate limits, quotas, and backpressure
+
+Rate limits apply by deployment, organization, workspace, identity, token, endpoint family, and expensive operation class. Responses include documented limit and retry metadata without exposing other tenants' activity.
+
+API rate limiting is separate from workload admission. Successfully creating a Run request does not bypass Queue capacity, model quotas, sandbox limits, provider limits, or workspace budgets. The returned Run or Operation explains whether work is admitted, queued, waiting for approval, or blocked.
+
+Repeated abusive, invalid, or expensive requests can be throttled before full processing. Critical node heartbeats and cancellation paths receive protected capacity so a busy management client cannot make the system unsafe.
+
+#### Security requirements
+
+The Management API requires:
+
+- Encrypted transport and modern cipher policy.
+- Validated audience, issuer, expiry, nonce, and token binding where supported.
+- Strict request size, depth, type, and content limits.
+- Safe parsing and canonicalization of identifiers, paths, filters, and uploaded definitions.
+- Cross-origin access disabled by default and explicitly configured for trusted browser applications.
+- Request forgery protection for cookie-authenticated browser clients.
+- Redaction of tokens, secrets, protected fields, and sensitive content from logs and errors.
+- Abuse detection, rate limiting, anomaly detection, and emergency revocation.
+- Separate production and non-production identities and endpoints where policy requires them.
+- Dependency, schema, SDK, and contract security testing.
+- Audit events for authentication, denied sensitive actions, mutations, approvals, exports, reveal, attachment, and break-glass use.
+
+The API never treats a client-supplied workspace ID, role, owner, cost, node state, event trust class, or approval identity as authoritative merely because it passed schema validation.
+
+#### Audit and correlation
+
+Every request receives a correlation ID. Clients can supply a safe external request ID for their own tracing, but cannot choose authoritative event or audit IDs.
+
+Consequential requests record the caller, authentication method, client identity, workspace, action, target, request digest, policy decision, expected version, idempotency key reference, Operation, outcome, and time. Sensitive payloads are represented by classifications, field names, and secure digests rather than raw values.
+
+Audit retention and access are independent from ordinary event retention. API administrators can inspect service health without automatically accessing workspace content.
+
+#### SDKs and developer experience
+
+The published schema should generate and validate official SDKs for the first supported languages. SDKs provide:
+
+- Typed resources, requests, errors, Operations, and event envelopes.
+- Authentication and token-refresh hooks without owning plaintext secrets.
+- Idempotency, expected-version, pagination, wait, and resume helpers.
+- Safe retries only for documented retryable requests.
+- Upload, download, checksum, and attachment-session helpers.
+- User-agent and client-version identification.
+- Test fixtures and a local or isolated development target.
+
+Generated SDKs must not hide asynchronous work or silently retry non-idempotent actions. Raw HTTP remains documented so SDKs are conveniences rather than required gateways.
+
+#### API specification and compatibility testing
+
+The source-controlled API specification is part of the release. Changes are checked for breaking schema, path, authentication, error, pagination, and event behavior. Server conformance tests verify implementations, and SDK tests run against the same contract fixtures.
+
+Blazn should provide:
+
+- Searchable reference documentation and examples.
+- A changelog and migration guides.
+- An authenticated explorer or request builder that redacts secrets.
+- Example automation for common node, agent, template, sandbox, and run workflows.
+- A non-production workspace or local target for integration testing.
+- Recorded contract fixtures for errors, pagination, Operations, and streams.
+
+#### Versioning and deprecation
+
+The major API version appears in the public contract and path or negotiated media type. Additive optional fields, new resource types, new actions, and new enum values follow documented forward-compatibility rules. Clients must ignore unknown response fields and handle documented unknown enum values safely.
+
+Breaking changes require a new major version or an explicitly negotiated contract version. Deprecation includes announcement, usage visibility, replacement guidance, SDK support, and a published minimum compatibility window. Security vulnerabilities can require faster disablement, but Blazn still provides actionable diagnostics and migration support.
+
+Resource schema versions, AgentVersions, template versions, event schema versions, and API contract versions are distinct. Changing one does not implicitly change the others.
+
+#### Local and self-hosted behavior
+
+A local Blazn service can expose the Management API on authenticated loopback or through a platform-protected local endpoint. It must not listen on all network interfaces by default. Enabling LAN or internet access requires explicit endpoint, TLS, identity, origin, firewall, and workspace policy configuration.
+
+Self-hosted deployments publish their supported API capabilities and version. Blazn cloud and self-hosted servers use the same core contract, while optional capabilities are discoverable. Clients do not silently redirect from a self-hosted deployment to Blazn cloud.
+
+Disconnected clients can read explicitly marked cached data through their client layer, but the server API does not pretend an offline mutation succeeded. Nodes use their durable node protocol and reconciliation behavior rather than exposing an unauthenticated local management port.
+
+#### Desktop and CLI relationship
+
+The desktop application and CLI should use the shared public resource schemas and Management API semantics. This makes documented behavior testable and ensures that third-party automation can perform the same authorized lifecycle operations.
+
+The CLI may compose several API calls into one human workflow, choose defaults, render tables, wait for Operations, and manage local credential-store integration. Those conveniences remain CLI behavior. The API exposes the underlying explicit operations and never depends on parsing CLI output.
+
+Private transports remain acceptable for high-frequency desktop synchronization, sandbox terminal I/O, local bootstrap, and internal controller reconciliation when the public API would be unsafe or inefficient. Every externally supported management capability still has a documented API path or an explicitly documented reason it is unavailable.
+
+#### Core records
+
+The Management API formalizes:
+
+- **APIContractVersion:** supported protocol, schema, capability, compatibility, and deprecation information.
+- **APIClient:** registered application or service identity, owner, redirect and origin policy, allowed grant types, status, and audit history.
+- **AccessGrant:** short-lived audience, subject, workspace, capabilities, conditions, expiry, and delegation lineage.
+- **Operation:** durable asynchronous mutation with targets, idempotency, progress, result, failure, cancellation, and events.
+- **IdempotencyRecord:** caller, workspace, operation family, key digest, request digest, result, and expiry.
+- **ResourceVersion:** concurrency token or generation associated with a mutable resource state.
+- **EventSubscription:** outbound event scope, destination, signing, delivery, retry, health, and lifecycle.
+- **AttachmentGrant:** short-lived sandbox, artifact, upload, download, terminal, port, or debugging access bound to a caller and purpose.
+- **APIRequestAudit:** request identity, target, action, policy, correlation, outcome, timing, and redacted request evidence.
+
+These records complement the product resources described elsewhere; they do not duplicate them.
+
+#### Version-one boundary
+
+The first Management API implementation should prove:
+
+1. A published versioned schema and reference documentation for authenticated workspace-scoped JSON requests.
+2. User and workload identity authentication with short-lived tokens and action-level authorization.
+3. List, get, create, update, and typed lifecycle actions across workspaces, members, Agents, AgentVersions, Sessions, Runs, Nodes, SandboxTemplates, Refreshes, Sandboxes, WarmPools, Queues, Triggers, Endpoints, vault metadata, credentials, integrations, artifacts, projects, analytics definitions, router policies, and Operations.
+4. Idempotency keys for creates and actions plus expected-version concurrency for updates.
+5. Durable Operations with get, wait, event stream, cancellation where safe, structured results, and partial failure.
+6. Opaque cursor pagination, typed filters, bounded inclusions, and permission-aware collection behavior.
+7. Resumable event streaming for Runs, Operations, nodes, queues, sandboxes, and Endpoint deliveries.
+8. One-time node enrollment with node identity separation and cordon or drain Operations.
+9. Short-lived sandbox attachment and artifact upload or download grants without exposing host or storage credentials.
+10. Vault and integration metadata, protected credential creation and rotation, and brokered-use requests without a generic secret-read endpoint.
+11. API management of one Slack or web Endpoint, one EmailAlias, and their TriggerDefinitions and Deliveries.
+12. Analytics query and one asynchronous authorized export with lineage and expiry.
+13. Consistent API, CLI, and desktop resource IDs, Operation states, errors, expected versions, and event schemas.
+14. OpenAPI compatibility checks and at least one official typed SDK.
+15. Rate limiting, audit, correlation, redaction, local safe defaults, and self-hosted capability discovery.
+
+#### Decisions to make next
+
+- Should the first contract be REST and JSON only, or also publish a typed RPC contract for selected controllers and SDKs?
+- Which language SDK should ship first based on the initial integration audience?
+- Which Management API capabilities must be available in the first local-only installation?
+- What authentication grants are supported for desktop, browser, CLI, CI, backend service, node, and integration clients?
+- What is the minimum API compatibility and deprecation window?
+- Which resource families need declarative apply and plan behavior in addition to CRUD and typed actions?
+- Which list operations require stable snapshots rather than best-effort cursor pagination?
+- Which events belong in the public stream, and which remain audit-only or internal?
+- When should outbound webhooks be available, and which event types are safe by default?
+- Which sandbox attachment protocols and grants are required for version one?
+- How are API rate limits related to commercial plans without weakening workspace Queue and budget policy?
+- Which fields and actions require step-up authentication or multi-party approval?
+- How should organizations register, review, rotate, and revoke third-party API clients?
+- Which private desktop or node transports are necessary, and how is their boundary documented?
+- How should generated SDKs expose unknown enum values, partial results, and long-running Operations safely?
 
 ### Blazn Agent Harness system
 
@@ -4431,7 +4865,9 @@ The first policy model should include:
 flowchart LR
     People[People and teams] --> Clients[Desktop app / CLI / Blazn Button]
     Products[Connected products] --> Clients
+    Automation[Services, integrations and SDKs] --> API[Management API]
     Clients --> Workspace[Blazn workspace and company brain]
+    API --> Workspace
     Workspace --> Orchestration[Agents, projects, runs, schedules and events]
     Orchestration --> Queues[Queues and admission]
     Queues --> Harness[Blazn Agent Harness]
@@ -4505,7 +4941,7 @@ The first version should prove the core loop:
 It does not need to deliver the full company-brain vision on day one. The early product can focus on:
 
 - A single-user workspace with a clear path to team collaboration.
-- Desktop and CLI access to the same local control plane.
+- Desktop, CLI, and Management API access to the same local control plane.
 - A small agent library running through the Blazn Agent Harness.
 - Smart LLM Router access to a local model and selected cloud providers.
 - A versioned LLM Router Policy defining allowed routes, budgets, queueing, and fallback.
@@ -4516,7 +4952,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - Personal and team vaults sharing credential use through policy, plus personal and team integration connections.
 - Runs with live events, logs, artifacts, and basic metrics.
 - A minimal project/task connection.
-- Secure local and remote control through the authenticated Blazn CLI.
+- Secure local and remote control through the authenticated Blazn CLI and versioned Management API.
 
 Native macOS and Windows execution, broad multi-agent coordination, advanced organizational memory, autonomous improvement, elastic cloud capacity, and the full Blazn Button platform can then be introduced in deliberate stages.
 
@@ -4554,8 +4990,9 @@ This overview establishes the product direction. Follow-on documents should defi
 5. Node enrollment, sandboxing, native execution, and scheduling model.
 6. AI Proxy compatibility, Smart LLM Router architecture, policy evaluation, and provider strategy.
 7. CLI command surface, machine-readable contracts, authentication, remote access, and automation behavior.
-8. Company-brain ingestion, permission-aware indexing, retrieval, provenance, freshness, retention, privacy, and deletion model.
-9. Agent evaluation, introspection, and governed improvement process.
-10. Blazn Button SDK and embedded interaction model.
-11. Desktop/CLI technology choices and release strategy.
-12. Commercial model for local, team, and cloud offerings.
+8. Management API resources, schemas, authentication, authorization, operations, events, versioning, SDKs, quotas, and compatibility.
+9. Company-brain ingestion, permission-aware indexing, retrieval, provenance, freshness, retention, privacy, and deletion model.
+10. Agent evaluation, introspection, and governed improvement process.
+11. Blazn Button SDK and embedded interaction model.
+12. Desktop, CLI, and generated SDK technology choices and release strategy.
+13. Commercial model for local, team, and cloud offerings.
