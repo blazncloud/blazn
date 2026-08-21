@@ -21,6 +21,7 @@
   - [Analytics and events](#analytics-and-events)
     - [Agent refinement](#agent-refinement)
   - [Metrics](#metrics)
+  - [Company-brain indexing and retrieval](#company-brain-indexing-and-retrieval)
   - [Queues](#queues)
   - [Agents](#agents)
   - [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases)
@@ -303,7 +304,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Warm pools](#warm-pools) | Keep policy-controlled environments ready to reduce startup latency | Initial design |
 | [Analytics and events](#analytics-and-events) | Record the structured history of work and system activity and support governed analysis and optimization | Initial design |
 | [Metrics](#metrics) | Measure health, capacity, cost, performance, quality, and outcomes using governed definitions | Initial design |
-| Company-brain indexing and retrieval | Ingest, permission-filter, index, relate, retrieve, refresh, and delete company knowledge with provenance | Planned |
+| [Company-brain indexing and retrieval](#company-brain-indexing-and-retrieval) | Ingest, permission-filter, index, relate, retrieve, refresh, and delete company knowledge with provenance | Initial design |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
 | [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases) | Safely invoke and interact with agent workflows from Slack, websites, email, integrations, schedules, and external events | Initial design |
@@ -2533,6 +2534,548 @@ The first Metrics implementation should prove:
 - Which standards-compatible ingestion and export formats should ship first?
 - How should metric definition migrations recompute or preserve historical results?
 - Which alert actions may run automatically, and which require approval?
+
+### Company-brain indexing and retrieval
+
+#### Definition
+
+Company-brain indexing and retrieval turns the workspace's authorized information into reusable organizational knowledge. It connects conversations, email, documents, code, projects, tasks, decisions, runs, artifacts, analytics, integrations, and agent observations so people and agents can find relevant context without manually reconstructing the company every time they begin work.
+
+The company brain is not one unrestricted vector database, one long prompt, or a transcript archive. It is a permission-aware knowledge system in which every indexed unit retains its source, version, ownership, classification, access policy, freshness, provenance, and deletion behavior.
+
+Its responsibilities are to:
+
+1. Discover and ingest approved content and structured records.
+2. Preserve source identity, versions, relationships, permissions, and provenance.
+3. Build searchable lexical, semantic, structured, and relationship indexes.
+4. Retrieve only information the requesting person or agent is authorized to use.
+5. Assemble evidence-backed context within model and run budgets.
+6. Refresh, supersede, invalidate, retain, and delete knowledge as sources change.
+7. Measure retrieval quality and allow governed improvement.
+
+#### Knowledge sources
+
+Potential workspace sources include:
+
+- Blazn projects, objectives, roadmaps, milestones, tasks, decisions, and comments.
+- Agent Sessions, Runs, events, evaluations, refinement results, and approved memory proposals.
+- Pinned documents, reports, dashboards, code changes, images, recordings, datasets, and other artifacts.
+- Source repositories, commits, branches, pull requests, issues, code ownership, and documentation.
+- Slack channels, threads, messages, canvases, files, and decisions permitted by the Slack integration policy.
+- Inbound and outbound email conversations received through approved aliases or connected mailboxes.
+- Documents, drives, wikis, knowledge bases, ticketing systems, support platforms, CRM records, and project tools.
+- Deployment, incident, monitoring, analytics, and operational systems.
+- Structured workspace resources such as Agents, tools, templates, integrations, policies, and metrics.
+- Personal sources explicitly connected for personal retrieval or deliberately shared into a team or workspace scope.
+
+Connecting a service does not automatically authorize indexing all of it. Each SourceDefinition limits accounts, spaces, repositories, folders, channels, labels, projects, record types, time ranges, content fields, attachment types, and allowed destinations.
+
+#### Knowledge scopes
+
+Blazn supports distinct knowledge scopes:
+
+| Scope | Intended use |
+| --- | --- |
+| Personal | Information available only to its owner and explicitly authorized personal agents or Sessions |
+| Team | Shared knowledge for a defined workspace team and its authorized agents |
+| Project | Knowledge attached to a project, objective, customer, product area, or restricted initiative |
+| Workspace | Organization-wide knowledge available under workspace policy |
+| Session or run | Temporary context and outputs available only within a bounded interaction unless promoted |
+| Public or published | Deliberately approved information suitable for a broader audience or external Endpoint |
+
+Scope is not a substitute for authorization. A workspace-scoped record can still carry field, source, group, project, legal, regional, or classification restrictions. Personal information does not become team knowledge merely because an agent used it during a team run.
+
+Promotion between scopes is an explicit, versioned action with provenance and policy. Copying or summarizing restricted content cannot be used to evade the source's permissions.
+
+#### Source definitions and connectors
+
+A SourceDefinition describes what can be indexed and how Blazn maintains it. It includes:
+
+- Stable source identity, type, owner, workspace, scope, and status.
+- Integration or native Blazn source reference.
+- Included and excluded containers, record types, fields, labels, paths, and time ranges.
+- Source identity mapping and permission synchronization strategy.
+- Polling, webhook, event-stream, filesystem-watch, or manual refresh method.
+- Initial backfill, incremental cursor, reconciliation, and deletion behavior.
+- Content extraction, attachment, language, OCR, transcription, and code parsing policy.
+- Classification, region, retention, legal hold, and model-use restrictions.
+- Chunking, enrichment, embedding, index, and relationship policies.
+- Cost, rate, concurrency, and freshness objectives.
+- Failure, quarantine, retry, pause, and credential-health behavior.
+
+A connector uses a personal or shared IntegrationConnection and vault-backed credentials. Connector access is limited to the source definition even if the underlying provider token has broader scopes.
+
+The connector records provider cursors, subscription leases, last successful discovery, last reconciliation, rate-limit state, and permission-sync health. Losing a credential or provider subscription pauses freshness and creates a visible condition; it does not silently continue presenting stale data as current.
+
+#### Ingestion pipeline
+
+The indexing pipeline is durable and staged:
+
+```mermaid
+flowchart LR
+    Sources[Blazn resources / Slack / Email / Docs / Code / Integrations]
+    Sources --> Discover[Discover and permission snapshot]
+    Discover --> Acquire[Acquire versioned source content]
+    Acquire --> Extract[Parse, OCR, transcribe and normalize]
+    Extract --> Classify[Classify, scan and enforce policy]
+    Classify --> Segment[Structure and chunk]
+    Segment --> Enrich[Entities, summaries, embeddings and relationships]
+    Enrich --> Publish[Atomically publish authorized indexes]
+    Publish --> Retrieve[Hybrid permission-aware retrieval]
+    Sources --> Changes[Updates, permissions and deletions]
+    Changes --> Discover
+    Publish --> Reconcile[Freshness and reconciliation]
+    Reconcile --> Publish
+```
+
+Each stage emits events, metrics, evidence, and a durable status. A failed enrichment step does not necessarily make lexical retrieval unavailable, but the KnowledgeUnit records which representations are complete, partial, stale, or absent.
+
+Publication is atomic at the source-version or bounded batch level. Search should not mix a new permission snapshot with old unrestricted chunks or advertise a document version before its required policy and indexes are ready.
+
+#### Discovery and acquisition
+
+Discovery enumerates authorized source records and captures provider-stable identity, version, modification time, owner, container, classification hints, and access controls. Acquisition retrieves only fields and content permitted by the SourceDefinition and integration grant.
+
+Blazn should support:
+
+- Initial bounded backfill.
+- Incremental changes from provider cursors or workspace events.
+- Periodic reconciliation to detect missed updates and deletions.
+- Explicit refresh of one record, container, or source.
+- Priority indexing for content attached to an active project or run.
+- Pause and resume without losing the last confirmed cursor.
+- Idempotent reprocessing of the same source version.
+
+Raw source snapshots are retained only when policy requires them for extraction, evidence, replay, or legal needs. A connector should prefer references and provider versions over unnecessary permanent copies.
+
+#### Extraction and normalization
+
+Extraction converts source-specific content into a normalized, typed representation while preserving structure. It can include:
+
+- Plain text and safe HTML extraction.
+- Document headings, paragraphs, tables, lists, footnotes, comments, and links.
+- Code symbols, definitions, references, imports, tests, configuration, ownership, and repository paths.
+- Email sender, recipients, thread, quoted history, body parts, and safe attachments.
+- Slack organization, channel, thread, author, message, file, reaction, and timestamp relationships.
+- Image OCR and layout regions.
+- Audio or video transcription with timestamps and speakers where policy permits.
+- Structured record fields and relationships from business systems.
+
+Extraction does not flatten away information needed for citations or access checks. Each normalized span can point back to a page, line, code symbol, message, email part, timestamp, table cell, or provider record.
+
+Executable attachments, macros, scripts, malformed archives, and unsupported content are quarantined or represented by safe metadata. Indexing never executes source content.
+
+#### Classification and content safety
+
+Before enrichment, Blazn applies source and workspace classification policy. Content can be labeled public, internal, confidential, restricted, regulated, personal, secret-bearing, or with workspace-defined classes.
+
+Classification may come from:
+
+- Authoritative provider labels and container policy.
+- Workspace, project, team, and artifact metadata.
+- Deterministic rules and secret detection.
+- A classification model approved for that data region and class.
+- Human review for ambiguous or high-impact cases.
+
+Detected secrets, credentials, private keys, tokens, and authentication material are not indexed as retrievable knowledge. They are removed, quarantined, or replaced by a protected reference according to policy. The credential system remains the only source for governed secret use.
+
+Classification models produce attributed findings, not irreversible truth. A stricter source classification always wins until an authorized person changes the source or policy.
+
+#### Chunking and KnowledgeUnits
+
+Blazn indexes KnowledgeUnits rather than anonymous fixed-size text fragments. A KnowledgeUnit is the smallest independently retrievable and permissioned representation of a source version.
+
+A KnowledgeUnit can represent:
+
+- A document section or table.
+- A code symbol, module, test, or configuration block.
+- A Slack message or coherent thread segment.
+- An email message, reply segment, or attachment section.
+- A project decision, task, comment, or status transition.
+- A run summary, evaluation, approved finding, or artifact section.
+- A structured business record or relationship.
+
+Chunking is aware of source structure, language, semantic boundaries, model context limits, and citation needs. Units may overlap for retrieval quality, but overlap is tracked so repeated content does not dominate ranking or context.
+
+Each unit includes source version, locator, parent and neighboring units, content digest, token or size estimate, classification, access policy, freshness, extraction version, and available index representations.
+
+#### Index representations
+
+The company brain uses multiple complementary representations:
+
+- **Lexical index:** exact terms, identifiers, names, error codes, paths, and phrases.
+- **Semantic index:** embeddings for conceptual similarity under an approved embedding policy.
+- **Structured index:** typed fields, status, dates, owners, tags, project relationships, and filters.
+- **Code index:** symbols, references, definitions, call relationships, packages, tests, and repository structure.
+- **Relationship graph:** source, project, objective, decision, person, agent, run, artifact, and evidence links.
+- **Temporal index:** versions, effective periods, supersession, freshness, and historical state.
+
+Not every unit requires every representation. A source policy may prohibit embeddings or external models while still allowing lexical and structured indexing. Representation status is visible and query planning uses only eligible indexes.
+
+#### Embedding and enrichment policy
+
+Embeddings, summaries, entity extraction, classification, relationship extraction, and reranking are model requests governed by an IndexingPolicy and the Smart LLM Router.
+
+The policy defines:
+
+- Allowed local and cloud models by data class, region, source, and purpose.
+- Required model capabilities, versions, context size, and output schema.
+- Whether source content may leave the node, device, region, or organization.
+- Batch size, concurrency, queue priority, budget, caching, and retry.
+- Embedding dimensionality and compatibility identity.
+- Enrichment prompts, schemas, evaluator versions, and validation.
+- Fallback and fail-closed behavior.
+
+A company node can contribute a local embedding, reranking, classification, transcription, or language model just as it can contribute a general LLM. This allows confidential workspace content to be indexed locally while the resulting authorized knowledge supports agents across the company.
+
+Changing an embedding model or dimension does not mutate the prior index in place. Blazn builds a new representation generation, evaluates it, and atomically promotes it when ready. During migration, queries can use the compatible active generation without combining incomparable vector spaces.
+
+#### Permission-aware indexing
+
+Authorization begins before ingestion and continues through retrieval. Each SourceRecord and KnowledgeUnit retains an AccessSnapshot describing the source principals, groups, workspace roles, project relationships, public state, and policy version known at indexing time.
+
+Blazn should combine:
+
+- Early filtering or physically separated indexes for strong scope boundaries.
+- Query-time authorization using current identity and policy.
+- Result-time verification for sensitive or potentially stale permissions.
+- Context-time authorization before content reaches the Agent Harness or model.
+
+An index filter alone is not the complete security boundary. Permissions can change after indexing, group membership can be stale, and a retrieved unit can reference a more restricted artifact. Sensitive results require current checks before disclosure.
+
+Permission changes are high-priority indexing events. Restriction or deletion should remove content from retrieval immediately through a denial or tombstone, even if physical index cleanup continues asynchronously. Expanding access can wait for verified reindexing; reducing access fails closed.
+
+#### Identity mapping
+
+External sources use their own people, group, service, channel, and organization identities. IdentityMapping records relate those subjects to Blazn users, teams, contacts, customers, and service identities.
+
+Mappings include issuer, immutable subject, verification method, workspace relationship, group sync state, confidence, status, and expiry. Email addresses and display names alone are insufficient when the provider supplies a stronger stable identity.
+
+Ambiguous or missing mappings do not default to workspace-wide access. Content can remain source-restricted, enter quarantine, or require an administrator to map the identity and reprocess permissions.
+
+#### Retrieval request and authorization
+
+A RetrievalRequest identifies:
+
+- Requesting person, agent, AgentVersion, run, Session, or service identity.
+- Workspace, project, objective, and purpose.
+- Query text or structured query.
+- Requested sources, time range, content types, languages, and filters.
+- Required freshness, classifications, regions, and evidence types.
+- Maximum results, context tokens, cost, time, and model-use policy.
+- Whether personal, team, project, workspace, or public scopes are eligible.
+- Explanation, citation, diversity, and reranking requirements.
+
+The effective retrieval scope is the intersection of the requester, run grants, target agent, project, SourceDefinitions, current access snapshots, data policy, and model policy. A coordinating agent does not inherit all knowledge available to the agents it manages.
+
+Retrieval requests and result disclosures produce governed events. Query text is classified content and is not automatically product telemetry or a broadly visible metric label.
+
+#### Hybrid retrieval
+
+Blazn combines retrieval methods based on the query and eligible representations:
+
+1. Parse and classify the request.
+2. Resolve authorized sources and filters.
+3. Generate lexical, semantic, structured, code, graph, and temporal candidates.
+4. Merge and de-duplicate candidates by source identity and content overlap.
+5. Apply current authorization and freshness checks.
+6. Rerank using query, objective, source quality, recency, authority, and diversity.
+7. Select a bounded evidence set under context, latency, and cost budgets.
+8. Return citations, scores, explanations, and omission or freshness state.
+
+Exact identifiers, names, code symbols, error messages, and quoted phrases often favor lexical retrieval. Conceptual questions may favor semantic retrieval. Ownership, status, date, project, and relationship questions use structured and graph indexes. The planner can combine them rather than forcing all queries through embeddings.
+
+#### Ranking and evidence quality
+
+Ranking can consider:
+
+- Query relevance and exact-match strength.
+- Source authority and type.
+- Current versus superseded status.
+- Freshness and known staleness.
+- Relationship to the objective, project, agent, or current artifact.
+- Evidence quality and verification state.
+- Diversity across sources and avoidance of duplicate copies.
+- User or workspace preferences that do not override authorization.
+- Cost and latency budgets.
+
+Popularity alone does not make a source authoritative. A recent Slack message can be useful but should not silently outrank an approved policy or current specification. Ranking policy can prefer canonical sources while still surfacing contradictions.
+
+Scores are meaningful only within the retrieval plan and index generation that produced them. They are not universal truth or authorization decisions.
+
+#### Provenance and citations
+
+Every result provides provenance sufficient to understand and verify it:
+
+- Source system, record, container, and owner.
+- Source version, content digest, observed modification time, and indexing time.
+- Exact page, section, line, message, email, code symbol, timestamp, or structured field locator.
+- Extraction, chunking, embedding, enrichment, and ranking versions.
+- Relationship to parent, neighboring, canonical, duplicate, superseded, and derived units.
+- Access and classification state appropriate for the viewer.
+- Any agent or model transformation used to create a summary, entity, or relationship.
+
+Agent answers and generated artifacts can cite KnowledgeUnits. Citations remain stable enough to identify the historical source version even after a newer version exists, subject to retention and deletion policy.
+
+#### Contradictions, supersession, and authority
+
+Company knowledge changes and sources disagree. Blazn records rather than erases those relationships.
+
+A KnowledgeUnit can be:
+
+- Current or historical.
+- Draft, reviewed, approved, published, deprecated, or prohibited.
+- Canonical for a declared scope.
+- Superseded by a later version.
+- Duplicated from another source.
+- Supporting, contradicting, or qualifying another claim.
+- An unverified observation, agent proposal, or verified fact.
+
+Retrieval prefers current authoritative sources according to policy but can include relevant disagreements and show their dates and owners. An agent is not allowed to resolve an organizational contradiction merely by writing a stronger summary.
+
+#### Agent memory and knowledge proposals
+
+Agents produce useful observations during runs, but run output does not automatically become company truth. The Agent Harness can create a KnowledgeProposal containing:
+
+- Proposed statement, summary, procedure, relationship, or reusable lesson.
+- Source runs, events, artifacts, citations, and evidence.
+- Intended personal, team, project, or workspace scope.
+- Classification, freshness, confidence, and review requirement.
+- Suggested canonical source or target document.
+- Proposed expiry, validation, and supersession behavior.
+
+Workspace policy can automatically accept low-risk structured facts backed by authoritative events, require review for shared guidance, or prohibit autonomous promotion for sensitive subjects. Accepted proposals create versioned knowledge records with the agent and approver preserved. Rejected proposals remain part of the run's improvement history but do not enter normal retrieval.
+
+Agent Refinement can use approved retrieval datasets and company knowledge, but candidate agents cannot rewrite sources, change evaluation answers, or promote their own knowledge proposals to improve their scores.
+
+#### Context assembly for agents
+
+Retrieval results are assembled into agent context by the Blazn Agent Harness. Context assembly:
+
+- Preserves source boundaries, citations, trust, classification, and freshness.
+- Fits the run's model context and cost budget.
+- Prioritizes evidence relevant to the current objective.
+- Avoids repeating overlapping chunks.
+- Includes contradictions and uncertainty when material.
+- Separates user instructions, agent instructions, tool results, and retrieved source content.
+- Records which units were offered, selected, truncated, or omitted.
+
+Retrieved content is untrusted data, not system instruction. Documents, Slack messages, email, code comments, and web content can contain prompt injection or malicious instructions. The harness does not allow retrieved text to grant tools, reveal credentials, change policy, select arbitrary models, or override the agent's governed instructions.
+
+#### Personalization and feedback
+
+Authorized users can provide feedback that a result was useful, irrelevant, outdated, duplicated, unsafe, incorrectly permissioned, or missing a canonical source. Agents can emit attributed retrieval observations during runs.
+
+Feedback is used to:
+
+- Improve source selection, ranking, and diversity.
+- Detect stale or missing content.
+- Identify canonical documents and duplicates.
+- Create indexing or permission repair tasks.
+- Build controlled evaluation datasets.
+- Start an optimization run for a retrieval policy or model.
+
+Feedback does not directly change source permissions or declare a fact true. Personal ranking preferences are isolated from workspace-wide ranking changes unless promoted through governed policy.
+
+#### Freshness and reconciliation
+
+Every source and representation has a freshness state:
+
+- Current within its objective.
+- Pending initial backfill.
+- Incrementally caught up but awaiting reconciliation.
+- Stale because a connector, credential, subscription, or model is unavailable.
+- Partially indexed because one representation failed.
+- Tombstoned or pending physical deletion.
+- Unknown because the source cannot report reliable versions.
+
+SourceDefinitions set freshness objectives by content class. Current policies and incident records may require minutes, while an archive can refresh daily. Dashboards and results expose source observation time and index publication time.
+
+Periodic reconciliation compares the source of truth with Blazn's SourceRecords, permission snapshots, and tombstones. It detects missed changes, deleted records, moved containers, altered permissions, and provider cursor loss.
+
+#### Update, supersession, and reindexing
+
+A source change creates a new SourceRecord version. Unchanged extracted units can be reused by content digest; changed units receive new identities or versions according to source structure. Published index generations update atomically for the affected boundary.
+
+Reindexing can be triggered by:
+
+- Source content, metadata, relationship, or permission changes.
+- Connector or extractor updates.
+- New chunking, embedding, reranking, or enrichment policy.
+- Classification or data-region policy changes.
+- A user correction, stale-result report, or canonical-source decision.
+- A model or index migration.
+- Retention, legal hold, deletion, or incident response.
+
+Large reindexes use Queues, budgets, checkpoints, and resumable Operations. Live queries continue using a compatible active generation until the replacement passes validation and is promoted.
+
+#### Deletion, retention, and legal holds
+
+Deletion must propagate through raw snapshots, normalized content, chunks, lexical indexes, vectors, graphs, caches, summaries, evaluation datasets, exports, and derived knowledge according to policy.
+
+The process is:
+
+1. Deny new retrieval immediately through current authorization or a tombstone.
+2. Record the deletion request and authoritative source change.
+3. Remove or cryptographically retire retrievable representations.
+4. Invalidate derived summaries, relationships, caches, and datasets.
+5. Recompute affected aggregates where necessary.
+6. Preserve only the minimal authorized tombstone or audit evidence.
+7. Verify completion and report exceptions such as legal hold.
+
+Retention differs by source, scope, classification, version, and legal policy. A legal hold can preserve restricted evidence without making it retrievable to ordinary agents. Disconnecting an integration does not automatically choose deletion or retention; the connection and SourceDefinition policies make that behavior explicit.
+
+#### Index and query isolation
+
+Index storage, caches, temporary files, queues, and model requests retain workspace and classification context. Blazn can use separate physical stores or encryption boundaries for high-risk scopes and shared infrastructure with strong logical isolation for ordinary scopes.
+
+The system must prevent leakage through:
+
+- Search suggestions and autocomplete.
+- Result counts, timing, score distributions, and spelling corrections.
+- Shared embedding or reranking caches.
+- Cross-workspace nearest-neighbor queries.
+- Error messages and connector diagnostics.
+- Query logs, traces, dashboards, and product telemetry.
+- Model-provider batching across incompatible data policies.
+
+An opaque KnowledgeUnit ID is not an access grant. Direct lookup performs the same current authorization as search.
+
+#### Local-first and distributed indexing
+
+A local-only workspace can index files, repositories, local artifacts, and approved integrations on the user's machine. Sensitive extraction, embeddings, reranking, and retrieval can use local models and local index storage.
+
+For a shared workspace, Blazn can distribute indexing jobs across eligible nodes while keeping a central logical catalog of sources, versions, permissions, and index generations. Placement considers data region, source accessibility, model capability, node trust, classification, cost, and policy.
+
+An employee machine may contribute local model or compute capacity without receiving general company knowledge. Each indexing task carries only the scoped content and short-lived capabilities it requires, runs in an isolated sandbox, and cleans up according to policy.
+
+Disconnected personal indexes can continue serving explicitly local authorized content. Shared-source freshness and mutations are marked unavailable or stale until synchronization resumes; Blazn does not fabricate a current company-wide view.
+
+#### Queueing, capacity, and cost
+
+Initial backfills, OCR, transcription, embeddings, code analysis, relationship extraction, and reindexing can consume substantial compute and model capacity. They use dedicated low-priority or policy-controlled Queue domains so indexing does not starve interactive agent work.
+
+Indexing policy sets:
+
+- Source and workspace concurrency.
+- Model, CPU, memory, accelerator, storage, and network budgets.
+- Interactive, freshness-critical, backfill, maintenance, and deletion priorities.
+- Batch size, caching, retries, checkpointing, and preemption.
+- Local-first and cloud fallback behavior.
+- Daily and total cost limits.
+
+Deletion and permission restriction receive protected priority. A large optional enrichment backfill can be paused; preventing access to newly restricted content cannot wait behind it.
+
+#### Retrieval quality evaluation
+
+Retrieval quality is evaluated against versioned datasets containing queries, eligible sources, expected evidence, prohibited evidence, freshness requirements, and relevance judgments.
+
+Measures can include:
+
+- Permission violations and restricted-result attempts.
+- Recall of required evidence.
+- Precision and graded relevance.
+- Ranking of canonical versus duplicate or outdated sources.
+- Citation accuracy and locator validity.
+- Contradiction and supersession handling.
+- Diversity and coverage.
+- Context efficiency and duplicated tokens.
+- Retrieval and reranking latency.
+- Indexing and query cost.
+- Downstream agent outcome with and without retrieval.
+
+Security and permission violations are hard failures, not quality tradeoffs. Retrieval optimization can compare lexical, semantic, graph, chunking, embedding, reranking, and context policies through controlled shadow, replay, and canary runs before promotion.
+
+#### Observability and metrics
+
+The company-brain system should measure:
+
+- Sources connected, healthy, stale, paused, failed, and awaiting authorization.
+- Records discovered, acquired, changed, deleted, quarantined, and reconciled.
+- Bytes, documents, code symbols, media duration, KnowledgeUnits, and index size.
+- Extraction, OCR, transcription, chunking, embedding, enrichment, publication, and deletion latency.
+- Queue wait, model usage, node use, cache hit, retry, failure, and cost by safe dimensions.
+- Permission-sync lag, tombstone latency, identity-mapping gaps, and denied stale-access attempts.
+- Query volume, latency, candidate counts, reranking, no-result, stale-result, and partial-result rates.
+- Retrieval quality, citation validity, feedback, and downstream outcome.
+- Index generation, migration, canary, rollback, and compatibility state.
+
+Source names, query text, document titles, email addresses, Slack identities, paths, and content are not default metric dimensions. Authorized drill-down uses source, Operation, event, and artifact references.
+
+#### Desktop, CLI, and Management API surface
+
+Authorized people and clients should be able to:
+
+- Create, validate, update, pause, resume, reconcile, and delete SourceDefinitions.
+- Select containers, record types, scopes, extraction, model, classification, retention, and freshness policy.
+- Inspect connector authorization, subscription, cursor, source, permission, and indexing health.
+- Start and follow backfill, refresh, reindex, migration, reconciliation, and deletion Operations.
+- Search with lexical, semantic, structured, code, graph, temporal, and hybrid modes.
+- Inspect result provenance, permissions, freshness, ranking factors, citations, and related sources.
+- Mark canonical, duplicate, superseded, stale, restricted, or incorrectly indexed content where authorized.
+- Create, review, accept, reject, expire, and supersede KnowledgeProposals.
+- Build retrieval evaluation datasets and run controlled comparisons.
+- Inspect storage, model, compute, freshness, quality, permission, and cost metrics.
+- Explain why a source or result is unavailable without disclosing restricted information.
+
+The Management API exposes versioned sources, Operations, retrieval requests and results, proposals, evaluations, and index status. The CLI provides administrative and automation workflows. The desktop application provides source setup, search, review, relationship exploration, citations, and knowledge governance.
+
+#### Core records
+
+The initial company-brain design introduces or formalizes:
+
+- **SourceDefinition:** versioned connector scope, inclusion, permissions, extraction, enrichment, freshness, retention, budget, and policy.
+- **SourceRecord:** stable external or Blazn identity, source version, metadata, content digest, access snapshot, classification, and lifecycle.
+- **AccessSnapshot:** source principals, groups, relationships, public state, identity mappings, policy version, observation time, and verification state.
+- **NormalizedContent:** typed extracted structure with source locators, safe content, attachments, language, and extraction evidence.
+- **KnowledgeUnit:** independently retrievable versioned unit with content, structure, policy, relationships, representations, and provenance.
+- **IndexRepresentation:** lexical, semantic, structured, code, graph, or temporal representation and its model or processor version.
+- **IndexGeneration:** immutable compatible collection of representations, policies, status, validation, publication, and rollback state.
+- **KnowledgeRelationship:** typed, attributed relationship between sources, units, people, projects, agents, runs, artifacts, claims, and decisions.
+- **RetrievalRequest:** requester, purpose, query, scope, filters, policy, budgets, freshness, and explanation requirements.
+- **RetrievalResult:** ranked authorized units, citations, scores, freshness, omissions, policy, index generation, and trace.
+- **KnowledgeProposal:** agent or human proposed reusable knowledge, evidence, intended scope, review, acceptance, expiry, and supersession.
+- **RetrievalEvaluationDataset:** versioned queries, eligible and prohibited sources, relevance judgments, permissions, cohorts, and retention.
+- **RetrievalEvaluationRun:** index and policy versions, dataset, results, security failures, quality, latency, cost, and promotion decision.
+- **IndexingOperation:** durable backfill, incremental update, reindex, migration, reconciliation, tombstone, or deletion activity.
+
+#### Version-one boundary
+
+The first company-brain indexing and retrieval implementation should prove:
+
+1. Versioned SourceDefinitions and connectors for native Blazn artifacts and projects, one source repository, and one collaboration source such as Slack, email, or a document system.
+2. Durable initial backfill, incremental update, periodic reconciliation, pause, resume, retry, and deletion Operations.
+3. Normalized extraction for documents, code, messages, and structured records with stable source locators.
+4. KnowledgeUnits with source versions, content digests, classifications, access snapshots, freshness, and provenance.
+5. Lexical, semantic, and structured indexes plus basic source and project relationships.
+6. Local embedding support from an eligible node and one policy-approved cloud embedding route with fail-closed data controls.
+7. Hybrid retrieval with current authorization, bounded reranking, diversity, context budgets, and stable citations.
+8. Personal, project, and workspace knowledge scopes with explicit promotion and no implicit scope widening.
+9. High-priority permission restriction, tombstone, and deletion behavior across indexes and caches.
+10. Agent Harness context assembly that treats retrieved content as untrusted data and records selected evidence.
+11. Agent KnowledgeProposals requiring evidence and governed acceptance before shared retrieval.
+12. One versioned retrieval evaluation dataset covering relevance, canonical ranking, freshness, citations, and prohibited results.
+13. Metrics for freshness, cost, latency, quality, permission sync, source health, index generation, and deletion.
+14. Authenticated desktop, CLI, and Management API source management, search, provenance inspection, reindexing, proposal review, and deletion controls.
+
+#### Decisions to make next
+
+- Which collaboration and document connector should join native Blazn artifacts and source control in version one?
+- Which lexical, vector, structured, and graph storage backends best support local, self-hosted, and cloud deployments?
+- Which sources require physical index separation rather than permission filters?
+- How are provider group membership and permission changes synchronized with acceptable delay?
+- What content classes may use cloud embedding, extraction, reranking, or evaluation models by default?
+- Which local embedding and reranking models and dimensions should Blazn support first?
+- How should SourceDefinitions express complex provider containers and field-level exclusions?
+- What chunking and code-index strategies should ship for the initial file and language types?
+- Which authority and supersession rules distinguish current policy, approved decisions, drafts, and conversations?
+- Which KnowledgeProposals can be accepted automatically from authoritative events?
+- How are personal sources used in team runs without promoting or leaking personal knowledge?
+- What freshness objectives and deletion deadlines apply to each source class?
+- Which retrieval quality measures and datasets gate index or model promotion?
+- How should Blazn expose relationship exploration without implying unverified model-generated facts?
+- Which offline and federated retrieval behaviors are safe for employee nodes?
+- What storage, model, and processing quotas apply to backfills and long-term indexes?
 
 ### Queues
 
@@ -5363,7 +5906,10 @@ flowchart LR
     Execution --> WarmPools[Warm pools]
     Execution --> Cloud[Blazn cloud capacity]
     Harness --> Memory[Artifacts, analytics and improvement]
-    Memory --> Workspace
+    Sources[Slack, email, documents, code and integrations] --> Indexing[Company-brain indexing and retrieval]
+    Memory --> Indexing
+    Indexing --> Workspace
+    Indexing --> Harness
 ```
 
 ## Product principles
@@ -5427,6 +5973,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - Durable queues coordinating run, environment, inference, refresh, and warm-pool capacity with visible fairness and limits.
 - Personal and team vaults sharing credential use through policy, plus personal and team integration connections.
 - Runs with live events, logs, artifacts, and basic metrics.
+- Permission-aware indexing and hybrid retrieval over native Blazn artifacts and projects plus one connected external source.
 - A minimal project/task connection.
 - Secure local and remote control through the authenticated Blazn CLI and versioned Management API.
 
