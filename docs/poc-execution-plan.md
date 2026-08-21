@@ -24,6 +24,7 @@ The POC will add:
 - Blazn SandboxTemplate and Sandbox resources mapped onto Kubernetes.
 - A minimal development workflow that validates, builds, tests, publishes, and runs an immutable agent and sandbox template.
 - A Blazn-owned Harness Adapter contract with interchangeable Hermes, Codex CLI, Claude Code, and approved generic CLI implementations.
+- A CLI-managed local model proxy that can be turned on and off safely without changing any application's configuration files.
 - Machine-readable commands that Codex, Claude Code, and other harnesses can invoke.
 - End-to-end evidence proving installation, authentication, workspace collaboration, node management, sandbox lifecycle, agent execution, cleanup, and cross-architecture behavior.
 
@@ -129,6 +130,7 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 | Agents | Runtime Jobs and agent-control records | Add stable Agent, immutable AgentVersion, exact template/model references, and runs |
 | Harness execution | Supervisor and Hermes/runtime foundations | Define a versioned Harness Adapter contract and implement Hermes, Codex CLI, Claude Code, and bounded generic CLI adapters |
 | Any-harness control | Existing private MCP and CLI patterns | Make CLI JSON contracts sufficient for Codex, Claude Code, and other local harnesses acting as Blazn clients |
+| CLI model proxy | Blaze Proxy has a separate Node daemon and macOS transparent-mode implementation | Implement proxy routing, lifecycle, recovery, and supported platform activation inside the standalone `blazn` binary without editing client configs |
 | Management API | Agent-specific API | Expand into workspace-scoped Blazn resource and Operation API |
 | Strong sandbox isolation | No hardened RuntimeClass observed | POC orchestration with non-sensitive workloads; separately qualify gVisor/Kata before untrusted production use |
 | Persistent sandbox storage | No general dynamic provisioner | Use disposable `emptyDir` plus exported artifacts in POC; treat restart-persistent workspaces as a follow-up gate |
@@ -159,6 +161,9 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 - Agent create, validate, publish, run, watch, logs, send, cancel, result, and history.
 - Interchangeable Sandbox execution through Hermes, Codex CLI, Claude Code, and one generic approved CLI harness definition.
 - Capability discovery and compatibility checks so an Agent cannot select a harness that lacks required messaging, resume, tool, or artifact behavior.
+- `blazn proxy on`, `off`, `status`, `doctor`, `routes`, `tail`, and scoped `run` commands.
+- Verified model routing for supported Codex, Claude Code, Hermes, and generic OpenAI-compatible clients without writing to their configuration files.
+- Fail-safe proxy removal and direct-provider recovery even when the local proxy daemon is stopped, unhealthy, or corrupted.
 - One local Qwen route through the current runtime plus one existing approved cloud fallback path.
 - CLI use from both Codex and Claude Code.
 - Management API coverage for every implemented POC resource.
@@ -206,6 +211,7 @@ flowchart LR
     ClaudeRuntime[Claude Code]
     GenericRuntime[Approved CLI harness]
     Proxy[AI Proxy / local Qwen / cloud fallback]
+    LocalProxy[CLI-managed local model proxy]
     Registry[Private OCI registry]
     BuildKit[Trusted BuildKit]
     Linux[ben1 / ben2 / ben3]
@@ -216,6 +222,7 @@ flowchart LR
     Claude --> CLI
     CLI --> Auth
     CLI --> API
+    CLI --> LocalProxy
     API --> Broker
     API --> DB
     API --> Events
@@ -231,6 +238,7 @@ flowchart LR
     Harness --> ClaudeRuntime
     Harness --> GenericRuntime
     Harness --> Proxy
+    LocalProxy --> Proxy
     BuildKit --> Registry
     Registry --> Sandbox
     NodeSvc --> Linux
@@ -316,6 +324,7 @@ blazn/
   internal/node/                     # node daemon, enrollment, capabilities, service install
   internal/bootstrap/                # Linux/Mac dependency installation, join, repair, rollback
   internal/client/                   # generated Management API Go client
+  internal/proxy/                    # local model proxy, activation, recovery, CA, and routing
   services/control-api/              # TypeScript Management API
   services/node-bootstrap-broker/    # bounded cluster join and activation broker
   packages/contracts/                # OpenAPI, JSON schemas, generated TypeScript types
@@ -382,6 +391,13 @@ blazn/
 - `HarnessVersion`: immutable adapter implementation, package or image digest, protocol version, capability set, configuration schema, provenance, and compatibility.
 - `HarnessProfile`: workspace-approved HarnessVersion plus bounded model, credential, tool, environment, argument, and policy configuration.
 - `Run`: exact AgentVersion, HarnessProfile, HarnessVersion, Sandbox, Operation, queue state, events, result, cost, and terminal state.
+
+### Local model proxy
+
+- `ProxyPolicy`: workspace-approved model routes, destination capabilities, allowed provider hostnames, fallback, and capture policy.
+- `ProxyRoute`: model match, source protocol, destination, authentication capability, status, and exact policy version.
+- `ProxyActivationReceipt`: local previous state, listener and process identity, platform mechanism, environment keys, CA fingerprint, route version, activation time, and recovery state.
+- `ProxyEvent`: ROUTED, DIRECT, BYPASS, failure, activation, deactivation, and recovery metadata without prompt or credential content.
 
 ## CLI contract
 
@@ -529,6 +545,24 @@ blazn harness instructions claude
 The `instructions` helpers support external harnesses acting as control clients. They print or write, only after explicit confirmation, small instruction files describing the stable CLI commands and JSON contracts. They do not install a management MCP server or give the external harness Kubernetes credentials.
 
 The `profile`, `capabilities`, and `test` commands manage harnesses that execute inside Sandboxes. Harness executable paths and arguments come from approved immutable HarnessVersions and typed profiles, not arbitrary shell strings supplied when a Run starts.
+
+### Proxy commands
+
+```text
+blazn proxy on
+blazn proxy off
+blazn proxy off --remove-ca
+blazn proxy status
+blazn proxy doctor
+blazn proxy routes
+blazn proxy tail
+blazn proxy run -- COMMAND...
+blazn proxy reset
+```
+
+`proxy on` enables supported user-session routing for applications launched after activation. `proxy run` starts one command with a scoped proxy environment and is the deterministic cross-platform path for CLI harnesses. `proxy off` removes routing without requiring a healthy daemon. `proxy reset` repairs or removes only Blazn-owned proxy state after enumerating it.
+
+No proxy command may write to Codex, Claude Code, Hermes, IDE, shell-profile, or other application configuration files.
 
 ## Authentication and workspace flow
 
@@ -949,16 +983,144 @@ Repeat the same control sequence with Claude Code using the same CLI and JSON co
 - Selecting another execution harness cannot broaden model, tool, credential, repository, network, or Sandbox access.
 - The test captures prompts and outputs only after redaction and user approval.
 
-## AI Proxy relationship
+## CLI-managed model proxy
 
-The POC does not need to merge Blaze Proxy into the CLI to prove fleet management. It should preserve a clean integration point:
+The POC includes the model proxy as a first-class CLI milestone. The proxy reuses proven Blaze Proxy routing and safety patterns but is implemented or packaged as part of the standalone `blazn` installation. The user does not install or manage a separate Node.js daemon.
 
-- Harness adapters request models through their HarnessProfile and effective routing policy; Hermes uses the existing local Qwen and approved fallback path in the first proof.
-- External Codex can continue using a custom OpenAI-compatible provider configuration where model routing is desired.
-- Claude Code management uses the Blazn CLI; Anthropic protocol translation is not required for the POC.
-- A later `blazn proxy` service can reuse Blaze Proxy's model routing, SSE, API-key, capability-reporting, and client-configuration patterns.
+### Non-mutation contract
 
-The POC should document that Codex nested invocations read persistent configuration; one-off `-c` flags may not reach nested processes. It must not silently claim that a routed model was used when a WebSocket bypasses interception.
+The proxy must not create, update, patch, replace, or delete application configuration files. This includes:
+
+- Codex configuration and profile files.
+- Claude Code configuration and credential files.
+- Hermes configuration.
+- IDE settings.
+- Shell startup files.
+- Application containers or preference stores.
+
+Blazn stores only its own proxy configuration and state under Blazn-owned paths. Qualification records the existence, metadata, and cryptographic digests of approved non-secret application configuration files before and after activation, routing, deactivation, crash recovery, and reset. Credential files and OS credential stores are checked through safe metadata, write monitoring, or controlled fixtures rather than reading secret contents. Any Blazn-caused application-config change fails the milestone.
+
+The proxy may use documented process or user-session environment variables, a loopback listener, and a Blazn-owned local CA. It cannot install a CA into a machine-wide trust store silently.
+
+### Activation sequence
+
+`blazn proxy on` is transactional:
+
+1. Discover platform capabilities and supported clients.
+2. Validate the local routing policy, target models, destination endpoints, credentials, and allowed interception hostnames.
+3. Detect configuration that would bypass transparent routing and report it without changing it.
+4. Create or verify a Blazn-owned local CA when TLS interception is required; keep its private key local, mode-restricted, and outside synchronization.
+5. Start the proxy listener on loopback using the same signed `blazn` binary.
+6. Verify health, target connectivity, certificate use, HTTP streaming, failure events, and direct pass-through.
+7. Publish the proxy and CA environment only to the supported user-session mechanism.
+8. Record an ActivationReceipt containing previous Blazn-owned environment state, listener identity, process identity, CA fingerprint, routes, activation time, and recovery instructions.
+9. Detect already running supported applications that predate activation and tell the user which must be restarted.
+
+Environment state is not published until the listener passes health checks. A failed activation leaves applications on their previous direct path.
+
+### Deactivation sequence
+
+`blazn proxy off` is a panic-safe operation implemented directly by the CLI:
+
+1. Load and validate the Blazn ActivationReceipt without calling the proxy daemon.
+2. Remove only the environment and session state installed by that activation.
+3. Verify that newly launched processes no longer receive Blazn proxy or CA variables.
+4. Stop the exact recorded proxy process if it is still running.
+5. Verify the listener is closed and direct provider connectivity is restored.
+6. Retain the local CA by default for a later activation or remove it only with `--remove-ca`.
+7. Record a DeactivationReceipt and report any stale supported applications that must be restarted.
+
+The command must succeed when the daemon is unresponsive, its control API is unavailable, configuration is malformed, or the prior process was killed. It must not depend on model-provider or Blazn-cloud availability to restore direct application networking.
+
+### Crash and stale-state recovery
+
+- Normal exit and handled signals trigger deactivation.
+- A small supervised lease or watchdog clears published session state if the proxy exits unexpectedly.
+- Startup detects an ActivationReceipt whose process or listener no longer exists and repairs the stale environment before accepting another activation.
+- `blazn proxy reset` enumerates and removes only Blazn-owned listener, environment, receipt, process, and optional CA state.
+- Repeated `on` and `off` commands are idempotent.
+- Two concurrent CLI invocations use a local lock and cannot create competing listeners or overwrite one another's receipt.
+
+### Platform behavior
+
+#### macOS
+
+Use a user-session mechanism equivalent to the proven Blaze Proxy `launchctl` environment approach. Trust remains scoped to supported processes through an explicit CA environment variable rather than installing the CA into the system keychain. Applications already running before activation or deactivation may need restart.
+
+#### Linux
+
+Qualify a user-session activation mechanism for the supported Ubuntu profile. Because a child process cannot change its parent shell environment, `blazn proxy run -- <command>` is the guaranteed path for a CLI launched from an existing shell. User-session `proxy on` applies only to newly launched processes that inherit the supported session environment.
+
+If the active Linux desktop, shell, service manager, or application does not support safe environment delivery and scoped CA trust, `proxy doctor` reports that transparent activation is unsupported and directs the user to `proxy run`. Blazn must not fall back to editing application or shell configuration.
+
+### Routing behavior
+
+The POC should adapt the following Blaze Proxy behavior:
+
+- OpenAI-compatible Responses and Chat Completions routing.
+- Model-based routes and route-all policy.
+- Direct pass-through for non-routed models.
+- Streaming and SSE keep-alives.
+- Explicit terminal failure events rather than dead sockets.
+- Model catalog representation where the client supports it.
+- Listener and destination authentication without forwarding management credentials.
+- Live redacted request metadata with content capture disabled by default.
+- Clear BYPASS state when a protocol, WebSocket, or client path cannot be intercepted.
+
+Only allowlisted model-provider hostnames can be decrypted or intercepted. Other HTTPS destinations are either direct or blindly tunneled according to the reviewed platform design. The proxy is not a general employee traffic monitor.
+
+### Harness behavior
+
+Harness adapters declare whether they support:
+
+- Session-transparent proxy environment.
+- Scoped `proxy run` execution.
+- OpenAI Responses.
+- OpenAI Chat Completions.
+- Anthropic Messages.
+- HTTP streaming.
+- WebSockets and whether they are interceptable.
+- Custom CA environment variables.
+
+Blazn does not claim a model was routed unless the proxy records an authenticated request and destination decision. A tunnel, unsupported protocol, direct application socket, or WebSocket bypass is shown as BYPASS or DIRECT.
+
+The first proof requires:
+
+- Hermes through the scoped proxy path.
+- Codex through a supported HTTP path, including verification that nested invocations remain routed without editing Codex configuration.
+- Claude Code through a supported protocol path or an explicit documented DIRECT/unsupported result; management through the Blazn CLI must continue regardless.
+- One generic OpenAI-compatible client.
+
+Anthropic protocol translation is a separate capability. If it is not implemented in the POC, Claude Code model interception is not claimed merely because Claude can invoke the Blazn management CLI.
+
+### Proxy security
+
+- Listen on loopback by default.
+- Require a separate authenticated policy for LAN exposure; LAN is out of scope for the first proof.
+- Store destination credentials in the OS credential store or workspace vault, never application config.
+- Strip listener credentials before forwarding.
+- Keep CA private keys local and mode-restricted.
+- Disable request-body capture by default.
+- Redact authorization, cookies, prompts, messages, and tool payloads from operational logs.
+- Bind control operations to the local authenticated user and ActivationReceipt.
+- Never proxy Blazn Management API authentication through the model listener.
+
+### Proxy qualification
+
+Run at least twenty complete cycles on each supported platform:
+
+1. Snapshot application config metadata and digests.
+2. Confirm direct model behavior while off.
+3. Turn the proxy on.
+4. Restart only the applications reported by `doctor`.
+5. Verify routed and direct model requests.
+6. Verify streaming, cancellation, endpoint failure, and recovery.
+7. Kill the daemon normally and abruptly in separate cases.
+8. Run `proxy off` from a separate CLI process.
+9. Verify direct connectivity and no stale listener or environment.
+10. Verify application config snapshots are unchanged.
+
+Also test concurrent activation, repeated `on`, repeated `off`, corrupt receipt, stale PID reuse protection, missing CA, expired destination credential, network loss, API outage, and host reboot.
 
 ## Installation and release
 
@@ -1044,6 +1206,7 @@ Implement versioned endpoints for:
 - Sandboxes, access grants, watch, stop, and deletion.
 - DevelopmentProjects, Builds, tests, evidence, and publication.
 - Agents, AgentVersions, Runs, messages, cancellation, events, logs, and results.
+- ProxyPolicies, model routes, eligible destinations, and redacted route events. Local activation and panic-safe deactivation remain device-local CLI operations.
 - Operations and resumable event streams.
 
 Every mutation supports an idempotency key. Updates use an expected version. Long work returns an Operation. Errors carry a stable code and request ID. Workspace scope is explicit in the path or token audience.
@@ -1231,6 +1394,28 @@ Gate 6:
 - Repeating the build from unchanged inputs either yields the same material digest or records explained nondeterminism.
 - Publication refuses a mutable tag, failed test, missing architecture, or secret finding.
 
+### Phase 6A — CLI-managed model proxy
+
+Deliver:
+
+- Proxy routing inside the standalone `blazn` binary.
+- `on`, `off`, `status`, `doctor`, `routes`, `tail`, `run`, and `reset` commands.
+- Transactional activation and daemon-independent deactivation.
+- Blazn-owned local CA and secure destination credential handling.
+- macOS user-session activation and scoped command execution.
+- Supported Ubuntu user-session activation where qualified and cross-platform `proxy run`.
+- Model-route, DIRECT, and BYPASS visibility.
+- Config non-mutation and crash-recovery tests.
+
+Gate 6A:
+
+- Twenty on/off cycles pass on macOS and the supported Ubuntu profile.
+- Application configuration files remain byte-for-byte unchanged.
+- `proxy off` restores direct connectivity after normal stop, abrupt kill, corrupt local proxy configuration, and Blazn API outage.
+- Hermes, Codex HTTP, and a generic OpenAI-compatible client produce verified route decisions.
+- Unsupported Claude Code model interception is reported accurately if Anthropic translation is not implemented.
+- No prompt, message, tool payload, bearer token, cookie, or CA private key appears in logs or evidence.
+
 ### Phase 7 — Agents and interchangeable harness execution
 
 Deliver:
@@ -1351,6 +1536,7 @@ The second half is then repeated by Codex and Claude Code invoking the CLI.
 | Agent | Version and HarnessProfile capture, local model, events, logs, follow-up, cancellation, result, artifact, bounded fallback |
 | Harness execution | Hermes, Codex CLI, Claude Code, and generic adapter conformance; capability mismatch; normalized events; credential isolation; cancellation and cleanup |
 | Harness clients | Codex and Claude Code external CLI invocation with identical JSON contracts |
+| CLI model proxy | No-config-mutation snapshots, on/off idempotency, daemon-independent off, abrupt-kill recovery, stale receipt, reboot, routing, DIRECT/BYPASS, streaming, credential redaction, macOS session mode, Linux scoped mode |
 | Security | No kubeconfig in clients, no token in args/logs/evidence, RBAC denials, network denial, expired grants, cross-workspace denial |
 | Resilience | API restart, controller restart, node disconnect, duplicate request, stream reconnect, partial build failure |
 | Cleanup | No POC Pods, claims, Jobs, ConfigMaps, temporary Secrets, access grants, finalizers, or workspace data after deletion |
@@ -1365,6 +1551,7 @@ The POC is not a production capacity certification, but it should prove:
 - 20 Agent Runs complete across both architectures with no duplicate run or fallback attempt.
 - At least three equivalent evaluated Runs—one each through Hermes, Codex CLI, and Claude Code—retain the same AgentVersion and record distinct exact HarnessVersions.
 - At least five Sandbox lifecycles and five Agent Runs are placed on the freshly bootstrapped Linux node after activation.
+- Twenty proxy activation/deactivation cycles pass per supported platform without application-config changes or stale networking state.
 - A request beyond the reviewed Kueue envelope remains queued.
 - POC controller or API restart does not duplicate resources.
 - Event-stream reconnect produces no missing terminal event and only documented deduplicable overlap.
@@ -1427,6 +1614,9 @@ Never delete a namespace, CRD, Kubernetes Node, Lima instance, host directory, o
 | External harness issues unsafe commands | Same API authorization, explicit confirmations, JSON contract, no Kubernetes credentials |
 | Harness adapters drift into separate products | One versioned adapter contract, shared conformance suite, normalized core events, exact capability declarations, and no adapter-specific resource model |
 | Codex or Claude auth is copied unsafely | Supported provider authentication only, separate vault capabilities, run-scoped leases, no developer credential-directory copying |
+| Proxy leaves applications offline | Publish environment only after health, daemon-independent `off`, watchdog lease, activation receipts, stale-state repair, direct-connectivity verification |
+| Proxy mutates client configuration | Prohibit application config writes, snapshot and hash before/after every qualification path, fail the milestone on any change |
+| Unsupported protocol silently bypasses routing | Explicit capability discovery and DIRECT/BYPASS events; require authenticated route evidence before claiming interception |
 | Duplicate work after retry | Idempotency records, durable Operations, create-or-get reconciliation, event IDs |
 | Cleanup debt | Expiry, owner references, explicit finalizers, exact orphan scan, fail qualification on residue |
 
@@ -1443,10 +1633,11 @@ Keep changes reviewable and independently reversible:
 7. `poc/sandbox-template-api`
 8. `poc/sandbox-lifecycle-and-access`
 9. `poc/development-build-and-refresh`
-10. `poc/harness-adapter-contract-and-agents`
-11. `poc/hermes-codex-claude-adapters`
-12. `poc/codex-and-claude-cli-proof`
-13. `poc/qualification-and-rollback`
+10. `poc/cli-managed-model-proxy`
+11. `poc/harness-adapter-contract-and-agents`
+12. `poc/hermes-codex-claude-adapters`
+13. `poc/codex-and-claude-cli-proof`
+14. `poc/qualification-and-rollback`
 
 Do not combine cluster-wide CRD installation, authentication, node drains, and runtime rollout in one PR or maintenance window.
 
@@ -1461,10 +1652,11 @@ The critical path is:
 5. Agent Sandbox compatibility and installation.
 6. Template and Sandbox lifecycle.
 7. Build and publication.
-8. Harness Adapter contract, portable Agent, and Run lifecycle.
-9. Hermes, Codex CLI, Claude Code, and generic adapter conformance.
-10. External harness control proof.
-11. Qualification and rollback.
+8. CLI-managed model proxy and recovery.
+9. Harness Adapter contract, portable Agent, and Run lifecycle.
+10. Hermes, Codex CLI, Claude Code, and generic adapter conformance.
+11. External harness control proof.
+12. Qualification and rollback.
 
 CLI release automation, example project authoring, disposable-cluster Agent Sandbox tests, node-service platform adapters, and test fixture work can run in parallel after contracts are frozen.
 
@@ -1481,6 +1673,7 @@ Assuming two to three experienced engineers with access to the current fleet:
 | Fresh Linux bootstrap, join broker, repair, and uninstall | 5–8 days |
 | Agent Sandbox, templates, and lifecycle | 8–12 days |
 | Development build and publication | 6–10 days |
+| CLI-managed model proxy and platform recovery | 6–10 days |
 | Harness Adapter contract, agents, and Hermes implementation | 8–12 days |
 | Codex CLI, Claude Code, and generic CLI adapters | 6–10 days |
 | External harness proof and qualification | 5–8 days |
@@ -1504,6 +1697,8 @@ The likely elapsed POC is six to eight weeks with parallel work. Re-estimate aft
 13. Which fresh Linux distribution, version, architecture, and network location will be the clean-room node-install acceptance host?
 14. Is the POC authorized to install and own the exact operating-system packages, MicroK8s worker runtime, networking settings, registry trust, and systemd service described by the signed NodeInstallPlan on that host?
 15. Which supported installation, licensing, and provider-authentication methods are approved for Hermes, Codex CLI, and Claude Code inside Blazn Sandboxes?
+16. Is macOS user-session activation plus Linux user-session/scoped-command activation an acceptable POC boundary, given that already running processes must restart to inherit environment changes?
+17. Is Anthropic Messages translation required for the POC, or should Claude Code model routing be reported as unsupported while Claude remains a fully supported Blazn CLI client and Sandbox harness?
 
 ## Final POC acceptance criteria
 
@@ -1522,6 +1717,8 @@ The POC is accepted only when:
 - The same versioned portable Agent runs through Hermes, Codex CLI, and Claude Code HarnessProfiles with normalized lifecycle, message, event, cancellation, result, artifact, credential, and cleanup behavior.
 - A generic CLI adapter passes conformance without adding harness-specific Agent, Run, Conversation, Message, or Sandbox resources.
 - Codex and Claude Code both complete the workflow as external clients by invoking the same CLI contract.
+- The CLI proxy turns model routing on and off without modifying application configuration, and `proxy off` restores direct connectivity even when the daemon is unavailable.
+- Proxy qualification records authenticated ROUTED, DIRECT, and BYPASS outcomes accurately for Hermes, Codex, Claude Code, and a generic client according to their supported protocols.
 - No client receives Kubernetes credentials, node credentials, or raw workspace secrets.
 - Retry, restart, disconnect, cancellation, queue overflow, permission denial, and cleanup tests pass.
 - The evidence bundle is complete, redacted, and checksummed.
