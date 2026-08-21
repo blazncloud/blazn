@@ -20,6 +20,7 @@
   - [Warm pools](#warm-pools)
   - [Analytics and events](#analytics-and-events)
     - [Agent refinement](#agent-refinement)
+  - [Metrics](#metrics)
   - [Queues](#queues)
   - [Agents](#agents)
   - [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases)
@@ -301,7 +302,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Sandboxes](#sandboxes) | Provide isolated, stateful or disposable execution environments | Initial design |
 | [Warm pools](#warm-pools) | Keep policy-controlled environments ready to reduce startup latency | Initial design |
 | [Analytics and events](#analytics-and-events) | Record the structured history of work and system activity and support governed analysis and optimization | Initial design |
-| Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
+| [Metrics](#metrics) | Measure health, capacity, cost, performance, quality, and outcomes using governed definitions | Initial design |
 | Company-brain indexing and retrieval | Ingest, permission-filter, index, relate, retrieve, refresh, and delete company knowledge with provenance | Planned |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
@@ -2057,6 +2058,481 @@ The first analytics and events implementation should prove:
 - How long should raw, compacted, derived, audit, billing, and optimization data be retained?
 - How are late, deleted, or corrected events propagated into dashboards and optimization results?
 - What analytics can run entirely on a user's machine, and what requires a shared workspace service?
+
+### Metrics
+
+#### Definition
+
+Metrics are governed numerical measurements that summarize the health, capacity, cost, time, quality, reliability, and outcomes of Blazn work. They turn the shared workspace event stream into comparable signals that people, agents, schedulers, routers, alerts, optimization runs, and refinement sessions can use safely.
+
+A metric is not an arbitrary number attached to a dashboard. Every metric has a versioned definition describing its source events, trust requirements, unit, population, dimensions, aggregation, time semantics, retention, permissions, and interpretation. A displayed value can be traced back to its definition and authorized source evidence.
+
+Metrics should answer questions such as:
+
+- Are agents completing useful objectives reliably?
+- Where do runs spend time waiting or doing work?
+- What does an accepted outcome cost?
+- Which model, tool, template, or AgentVersion performs best for a comparable task class?
+- Is a node, local model, queue, warm pool, or integration becoming saturated?
+- Did a candidate refinement improve quality without unacceptable cost or latency?
+- Is the platform meeting its availability and responsiveness objectives?
+
+#### Relationship to events and analytics
+
+Events are the durable facts and observations from which most metrics are derived. Metrics are compact time-oriented measurements optimized for monitoring, aggregation, comparison, alerts, and capacity decisions. Analytics can combine metrics with events, artifacts, evaluations, and business data for deeper investigation.
+
+The relationship is:
+
+```mermaid
+flowchart LR
+    Events[Trusted and attributed workspace events]
+    Events --> Validate[Metric definition and source validation]
+    Validate --> Measure[Counters, gauges, histograms and derived measures]
+    Measure --> Store[Permission-aware metric storage]
+    Store --> Monitor[Dashboards, SLOs and alerts]
+    Store --> Compare[Cost, time, quality and cohort comparisons]
+    Store --> Optimize[Optimization and agent refinement]
+    Monitor --> Evidence[Drill-down to authorized source events]
+    Compare --> Evidence
+    Optimize --> Evidence
+```
+
+Metrics do not replace events. High-cardinality resource IDs, causal detail, decisions, messages, and evidence remain in the event and artifact systems and are reached through authorized drill-down.
+
+#### Metric instruments
+
+Blazn uses a small set of well-defined instruments:
+
+| Instrument | Meaning | Examples |
+| --- | --- | --- |
+| **Counter** | Monotonic count or amount that only increases before reset or expiry | Runs started, model tokens, failures, bytes transferred, credential leases issued |
+| **Up-down counter** | Amount that can increase and decrease through discrete changes | Active runs, queued requests, attached sandboxes, connected nodes |
+| **Gauge** | Current observed value at a point in time | CPU pressure, free memory, queue depth, model availability, integration health |
+| **Histogram or distribution** | Observed values grouped for quantiles and shape | Run duration, queue wait, model latency, sandbox startup, artifact size |
+| **State measure** | Current resource state represented through a bounded state set | Node ready, sandbox provisioning, Endpoint paused, Operation failed |
+| **Derived metric** | Calculation over one or more governed source metrics or events | Success rate, cost per accepted outcome, utilization, error-budget burn |
+
+A MetricDefinition specifies whether a value is cumulative, delta, instantaneous, windowed, or derived. Units are part of the schema. A client cannot combine seconds and milliseconds, estimated and reconciled currency, or raw and normalized quality scores without an explicit conversion or definition.
+
+#### Metric trust and producers
+
+Authoritative system metrics originate from trusted platform producers:
+
+- The control plane measures resource lifecycle, policy, approval, and Operation state.
+- The Queue system measures admission, wait, fairness, rejection, and backpressure.
+- Nodes and execution backends measure observed capacity, pressure, sandbox use, and environment timing.
+- The AI Proxy measures routes, requests, tokens or provider units, latency, fallback, and provider errors.
+- The Agent Harness measures run stages, tool calls, delegations, checkpoints, and harness-observed time.
+- Integration and Endpoint adapters measure provider requests, deliveries, replies, failures, and health.
+- Evaluators and reviewers produce attributed quality observations.
+- Cost reconciliation processors produce linked corrections and allocation measures.
+
+Agents can trigger analytics during work and may submit observations to a workspace-approved custom MetricDefinition. The harness binds the agent, AgentVersion, run, trust class, time, and permitted dimensions. Agent observations cannot directly modify authoritative cost, billing, security, policy, availability, resource utilization, or verified outcome metrics.
+
+For example, an agent may report `research_sources_relevant = 7` under a registered evaluation definition. It cannot report that the model provider charged less, that a restricted test passed, or that its own run met the workspace availability objective unless an authoritative producer confirms that fact.
+
+#### Metric definitions and naming
+
+A MetricDefinition includes:
+
+- Stable ID, namespaced name, version, owner, description, and status.
+- Instrument type and value type.
+- Unit and conversion policy.
+- Source event types, producer trust classes, and required fields.
+- Population and exclusion rules.
+- Allowed dimensions and cardinality limits.
+- Aggregation, temporality, windows, and late-event behavior.
+- Estimated, observed, reconciled, or derived status.
+- Classification, permissions, region, retention, and export policy.
+- Validation, test fixtures, lineage, and compatibility rules.
+- Deprecation and replacement information.
+
+Blazn reserves namespaces for platform metrics. Workspaces can define custom namespaces, and integrations can register names beneath their installation identity. Names should describe the measured concept and leave unit and aggregation in explicit metadata rather than encoding ambiguous conventions into a string.
+
+Changing the meaning, unit, source population, trust requirement, or aggregation creates a new MetricDefinition version. Dashboards and alerts pin or declare a compatible version so a silent semantic change cannot rewrite historical interpretation.
+
+#### Dimensions and cardinality
+
+Dimensions support filtering and grouping. Safe bounded dimensions can include:
+
+- Workspace, project, team, environment, region, and resource class.
+- Agent, AgentVersion, task class, workflow, trigger, and Endpoint type.
+- Model, provider, route class, local or cloud source, and fallback reason.
+- Node platform and class, sandbox backend, template version, refresh version, and warm-pool key.
+- Queue domain, priority class, admission outcome, and failure category.
+- Tool or integration definition, operation type, and status.
+- Evaluation rubric, evaluator version, trial mode, and outcome class.
+
+Dimensions are explicitly registered. Free-form user text, prompts, email addresses, Slack identities, URLs, secret names, artifact content, exception messages, and raw resource IDs are not default metric labels.
+
+High-cardinality identifiers such as Run, Session, Operation, sandbox, message, or event IDs belong in exemplars or drill-down references rather than time-series labels. Agent and resource tags may be copied into metrics only through an allowlisted bounded mapping. Tags remain metadata and never grant authorization.
+
+When a producer exceeds cardinality policy, Blazn can reject the observation, drop the prohibited dimension, aggregate it into an `other` category, or route it to events rather than metrics. The decision is visible through pipeline-health events.
+
+#### Time and aggregation semantics
+
+Every metric defines which time it uses:
+
+- Event occurrence time.
+- Authoritative ingestion time.
+- Interval start and end.
+- Current observation time.
+- Reconciliation or correction time.
+
+Aggregations use explicit windows and alignment. Rates define numerator, denominator, time range, and handling of incomplete or late data. Quantiles come from mergeable distributions or documented approximations rather than averaging previously calculated percentiles.
+
+Blazn distinguishes:
+
+- **Current values** for live operations and capacity.
+- **Rolling windows** for monitoring and alerts.
+- **Calendar windows** for budgets, billing, and reports.
+- **Cohort windows** for comparing versions, tasks, or experiments.
+- **Lifetime aggregates** for resource summaries where retention permits them.
+
+Late, corrected, or deleted events can update affected windows. Dashboards show freshness and reconciliation state so a provisional number is not mistaken for a final value.
+
+#### Run and agent metrics
+
+Core run and agent metrics should include:
+
+- Runs requested, accepted, queued, started, suspended, completed, failed, cancelled, expired, and partially completed.
+- Objective completion, acceptance, escalation, reopen, rollback, and verified outcome counts.
+- End-to-end duration and time spent queued, provisioning, reasoning, calling models, using tools, waiting for approvals, suspended, and reworking.
+- Tool calls, failures, retries, approvals, denials, and side-effect attempts.
+- Delegations, handoffs, fan-out, duplicate work, and coordinator overhead.
+- Model requests, fallbacks, context size, token or unit use, and response latency.
+- Artifacts created, accepted, reused, superseded, rejected, and deleted.
+- Cost estimated, accrued, reconciled, and allocated.
+- Quality scores by rubric dimension, evaluator, task class, and evidence state.
+- Active Sessions, run concurrency, schedule executions, trigger deliveries, and lifecycle state.
+
+Metrics link to the exact AgentVersion, policy versions, template, refresh, models, tools, and evaluator versions used by the run. Agent-level summaries do not merge incomparable versions without exposing the version mix.
+
+#### Queue metrics
+
+Queue metrics should support operations, fairness, and capacity planning:
+
+- Submitted, admitted, blocked, rejected, cancelled, expired, preempted, and dispatched requests.
+- Current depth and reserved resources by queue domain and priority class.
+- Wait-time distributions by resource requirement, task class, and placement constraint.
+- Admission rate, throughput, and time in each blocked reason.
+- Fair-share allocation, quota use, burst use, borrowing, and throttling.
+- Deadline misses, aging promotion, starvation indicators, and head-of-line blocking.
+- Dispatch lease failures, retries, duplicate prevention, and recovery.
+- Estimated versus actual resource and cost consumption.
+
+Workspace views must not expose other tenants' demand. Shared-capacity saturation can be represented as a provider or capacity-class condition without revealing another workspace's queue depth or identity.
+
+#### Node and execution metrics
+
+Node metrics report available and consumed capability without becoming a general host-monitoring or employee-surveillance system.
+
+They can include:
+
+- Enrolled, ready, busy, cordoned, draining, disconnected, updating, and unhealthy node counts.
+- Advertised, allocatable, reserved, and used CPU, memory, disk, accelerator, network, and sandbox slots.
+- Host pressure, thermal pressure, battery policy, storage pressure, swap, and load represented in bounded operational categories where appropriate.
+- Agent workload utilization inside the contributed resource envelope.
+- Sandbox provisioning, startup, suspension, resume, checkpoint, cleanup, and failure duration.
+- Node-agent heartbeat, version, attestation, capability freshness, and reconciliation delay.
+- Work accepted, declined, preempted for machine owner activity, migrated, and recovered.
+- Local-model availability, load, memory residency, request concurrency, utilization, and eviction.
+
+Personal-node metrics default to operational capacity required for scheduling and safety. They do not collect unrelated application use, file activity, keystrokes, personal network destinations, or productivity scoring.
+
+#### Sandbox template, refresh, and warm-pool metrics
+
+Environment metrics should include:
+
+- Template validation, build, publication, deprecation, and compatibility outcomes.
+- Refresh build duration, cache hit, dependency install, artifact size, freshness, promotion, invalidation, and failure.
+- Cold start, refreshed cold start, suspended warm start, ready warm claim, and final readiness distributions.
+- Sandbox provisioning, attach, active, idle, preserve, restore, expiration, sanitation, and deletion outcomes.
+- Warm-pool desired, ready, suspended, claimed, replenishing, stale, draining, and failed entries.
+- Pool hit, miss, claim contention, failed claim, replenishment, churn, and scale-to-zero behavior.
+- Idle warm cost, avoided startup time, refresh reuse, and wasted prewarm capacity.
+- Template and refresh regressions by backend, node class, repository class, and platform variant.
+
+These metrics enable an optimization run to decide whether a refresh or warm pool saves enough time to justify its build, storage, and idle cost.
+
+#### Model and AI Proxy metrics
+
+Model metrics cover local and cloud capacity through the same conceptual definitions:
+
+- Requests, accepted, queued, completed, failed, cancelled, timed out, and rate-limited.
+- Input, output, cached, reasoning, image, audio, and provider-specific units.
+- Time to first output, total latency, queue wait, streaming rate, and cancellation latency.
+- Route selected, policy reason, local or cloud source, fallback, retry, and circuit-breaker outcomes.
+- Active requests, configured concurrency, available capacity, loaded model state, and saturation.
+- Provider and local-model health, error category, throttle state, and usage reconciliation lag.
+- Estimated and reconciled cost by model, provider, route, agent, run, project, and task class.
+- Quality and verified outcome by comparable cohort, model, route, and policy version.
+
+A locally hosted model supplied by a company node can therefore be measured as shared workspace capacity: requests served, cost avoided or allocated, latency, queueing, quality, uptime, energy or utilization estimates when available, and impact on the contributing node.
+
+Provider-reported billing data and proxy-measured usage remain distinct until reconciled. Model quality comparisons require controlled task populations and evaluator versions.
+
+#### Tool, credential, and integration metrics
+
+Safe operational metrics can include:
+
+- Tool calls, latency, success, failure, retry, timeout, denial, and approval.
+- Integration connection health, authorization expiry, provider throttling, subscription lag, and brokered-action outcomes.
+- Credential lease issuance, use, expiry, rotation due, revocation, denial, and broker availability.
+- External side-effect attempts, approvals, completions, compensations, and failures.
+- Cost or quota units consumed through an integration.
+
+Metric labels never contain secret values, credential names when restricted, access tokens, external record content, or unbounded provider errors. A team can see that an eligible connection is unhealthy without learning another user's private account identity.
+
+#### Trigger, Endpoint, and email metrics
+
+Channel metrics should include:
+
+- Source occurrences, accepted triggers, rejected, quarantined, deduplicated, suppressed, and circuit-broken deliveries.
+- Time to acknowledgement, queue admission, first response, completion, and outbound delivery.
+- Active conversation bindings, thread continuation, participant authorization failures, and expired aliases.
+- Slack delivery errors, web-session abandonment, webhook retries, and provider subscription health.
+- Email inbound, accepted, quarantined, bounced, complained, suppressed, replied, and loop-prevented counts.
+- Runs, messages, model usage, human approvals, cost, quality, and outcomes by Endpoint and TriggerDefinition version.
+- Trigger fan-out, chain depth, loop detection, debounce, and aggregation behavior.
+
+Sender addresses, identities, subjects, message bodies, URLs, and attachments remain protected drill-down data rather than metric dimensions.
+
+#### Control-plane and Management API metrics
+
+Platform metrics should measure:
+
+- API requests, latency, status, stable error category, authentication failure, authorization denial, and rate limiting.
+- Operations accepted, completed, partially completed, failed, cancelled, stalled, and recovered.
+- Controller reconcile latency, backlog, retries, conflicts, leader changes, and observed-generation lag.
+- Event ingestion, validation, sequencing, delivery, query, and stream-resume performance.
+- Database, cache, queue, object, and analytical store availability and saturation through deployment-safe dimensions.
+- CLI and desktop compatibility failures without collecting commands, prompts, secrets, or workspace content as product telemetry.
+
+Management API route metrics use normalized route templates and action names, never raw paths containing resource identifiers. Audit events remain the source for sensitive request-level investigation.
+
+#### Cost metrics
+
+Cost metrics preserve unit, price basis, currency, estimate or reconciliation state, allocation method, and time. They can include:
+
+- Model and provider usage cost.
+- Local-model capacity and energy or amortization estimates.
+- Node, sandbox, accelerator, storage, network, refresh, warm-pool, and artifact cost.
+- Analytics ingestion, retention, query, export, and evaluation cost.
+- Integration, email, messaging, and third-party service cost.
+- Human review and approval time when explicitly recorded and allowed.
+
+Useful derived measures include:
+
+- Cost per run, completed objective, accepted artifact, resolved case, or verified business outcome.
+- Cost avoided by local models, refresh reuse, warm capacity, caching, or improved routing, using a documented counterfactual.
+- Budget consumption and forecast by workspace, project, agent, workflow, Endpoint, and provider.
+- Marginal cost of an additional refinement iteration or optimization experiment.
+
+Blazn must not present speculative savings as reconciled money. Counterfactual assumptions, shared-capacity allocation, exchange rates, and missing provider data are visible in the MetricDefinition and result.
+
+#### Quality and outcome metrics
+
+Quality metrics remain multidimensional and evidence-backed. They can include:
+
+- Acceptance-criteria pass rate and deterministic verification results.
+- Correctness, completeness, safety, relevance, clarity, and maintainability rubric distributions.
+- Human accept, edit, reject, escalation, correction, and satisfaction rates.
+- Reopen, rollback, defect, incident, regression, and unsupported-claim rates.
+- Artifact reuse, supersession, and downstream success.
+- Customer, project, support, deployment, revenue, or operational outcomes connected through authorized integrations.
+- Evaluator agreement, confidence, invalid evaluation, and score drift.
+
+A quality score identifies the rubric, evaluator version, population, task difficulty controls, evidence requirements, and sample size. Agent self-evaluation is reported separately. One aggregate quality number cannot silently replace the underlying dimensions.
+
+#### Refinement and optimization metrics
+
+Agent Refinement and optimization use metrics to compare baselines and candidates:
+
+- Score and pass-rate change by scenario, cohort, and rubric dimension.
+- Cost, latency, retries, tool use, and resource change.
+- Development, validation, holdout, shadow, and live performance.
+- Improvement per iteration, diminishing returns, and total refinement cost.
+- New regressions, resolved failures, evaluator disagreement, and uncertainty.
+- Proposed, approved, rejected, promoted, canaried, rolled back, and production-verified changes.
+- Predicted versus observed production improvement.
+
+Comparison requires compatible definitions and populations. If an evaluator, dataset, environment, routing policy, or task mix changed, Blazn marks the comparison and avoids attributing the difference solely to the candidate agent.
+
+#### Service indicators, objectives, and error budgets
+
+A ServiceLevelIndicator defines a measured reliability or performance signal over an eligible population. A ServiceLevelObjective defines the target, window, exclusions, and owner. An ErrorBudget records how much failure or poor performance is tolerable before policy changes.
+
+Potential objectives include:
+
+- Management API availability and latency.
+- Run admission and event delivery reliability.
+- Interactive time to acknowledgement or first progress.
+- Sandbox readiness time by startup class.
+- Model request availability and time to first output.
+- Required event durability and reconciliation freshness.
+- Endpoint reply delivery and trigger-processing reliability.
+- Agent workflow outcome or quality targets for a controlled task class.
+
+Infrastructure SLOs and agent outcome objectives are distinct. An agent may complete low-quality work on a highly available platform, or perform excellent work too slowly for the workflow. Dashboards show both.
+
+Error-budget burn can trigger alerts, pause risky releases, reduce canary traffic, open a circuit breaker, start diagnostics, or request an optimization run. It does not silently grant additional budget or weaken quality and safety gates.
+
+#### Baselines and comparisons
+
+Every comparison identifies:
+
+- Baseline and candidate definition.
+- Time range and population.
+- Task class, difficulty, project, and environment controls.
+- AgentVersion, model, policy, template, refresh, tool, and evaluator versions.
+- Inclusion, exclusion, missing-data, and invalid-run rules.
+- Sample size, variance, confidence or uncertainty where appropriate.
+- Estimated versus reconciled values.
+
+Blazn should support absolute values, relative change, distribution comparison, and Pareto views across cost, time, quality, and reliability. It should not declare a universal winner when candidates trade one dimension for another.
+
+#### Dashboards and scorecards
+
+Default workspace dashboards should provide:
+
+- Executive outcome, cost, quality, throughput, and trend overview.
+- Active runs, failures, queue pressure, approvals, and incidents.
+- Agent and AgentVersion scorecards with controlled comparisons.
+- Model routing, local-model contribution, spend, fallback, and quality.
+- Node, sandbox, refresh, and warm-pool capacity and health.
+- Trigger, Endpoint, Slack, web, webhook, and email operations.
+- Refinement and optimization progress and verified impact.
+- Platform SLO and error-budget state.
+
+Dashboards are versioned compositions of MetricDefinitions and analytic queries. A dashboard displays data freshness, time zone, filters, definition versions, reconciliation state, and permission-driven omissions.
+
+#### Alerts and anomaly detection
+
+Metric alerts define an owner, scope, condition, window, evaluation interval, missing-data behavior, severity, cooldown, deduplication, destinations, and allowed actions.
+
+Alerts can detect:
+
+- Budget burn or anomalous cost.
+- Queue delay, capacity saturation, or node pressure.
+- Model latency, failure, throttling, or fallback increase.
+- Sandbox startup, refresh, or warm-pool regression.
+- Agent quality or success regression.
+- Endpoint rejection, email bounce, complaint, or trigger-storm increase.
+- Event or metric pipeline delay and missing telemetry.
+- SLO error-budget burn.
+
+Anomaly detection records its model or rule version, training window, expected range, seasonality assumptions, confidence, and feedback. It creates a finding; it does not rewrite the underlying metric or automatically take high-impact action without policy.
+
+#### Missing data, sampling, and approximation
+
+Missing telemetry is not interpreted as zero. A metric result can be complete, partial, estimated, sampled, stale, delayed, invalid, or unreconciled. Dashboards and automation receive that state explicitly.
+
+Sampling may be used for high-volume diagnostic observations, but required usage, billing, audit, policy, lifecycle, and SLO events are not sampled in a way that makes authoritative totals unknowable. Sampled values include their rate and method.
+
+Approximate distinct counts, quantiles, forecasts, and anomaly ranges identify the algorithm class, precision, and window. Optimization and promotion gates can require exact or reconciled data when approximation is not acceptable.
+
+#### Permission-aware metrics
+
+Authorization applies before aggregation unless a protected aggregate is explicitly approved. Metric queries cannot be used to infer another team's activity, a private user's integration, a restricted project, or secret-dependent behavior through totals and differences.
+
+Metric policy can require:
+
+- Minimum group size.
+- Suppressed or coarsened dimensions.
+- Delayed publication.
+- Restricted drill-down.
+- Separate personal, project, team, and workspace views.
+- Limits on export and cross-workspace comparison.
+
+A person who can view node capacity does not automatically gain access to employee activity. A person who can view aggregate credential health does not gain access to credential identity or value.
+
+#### Storage, retention, and downsampling
+
+Metric storage is optimized by resolution and purpose:
+
+- High-resolution recent data for live monitoring.
+- Downsampled medium-term data for operations and comparison.
+- Reconciled long-term aggregates for trends, budgets, outcomes, and capacity planning.
+- Event and artifact references for authorized evidence and reprocessing.
+
+Retention varies by workspace policy, classification, metric family, region, and commercial plan without shortening mandatory audit or billing retention. Downsampling preserves documented sums, counts, minima, maxima, and distributions rather than averaging ratios incorrectly.
+
+Deleting or reclassifying source data invalidates or recomputes affected derived metrics when required. Retained aggregates must not preserve prohibited dimensions or make deleted personal data reconstructable.
+
+#### Standards and export
+
+Blazn should support standards-compatible telemetry ingestion and export where doing so preserves the product's workspace, identity, classification, and cardinality rules. Administrators may export selected infrastructure metrics to an existing monitoring system, while workspace analytics and protected content remain governed by Blazn permissions.
+
+Export definitions specify metric families, dimensions, resolution, destination, authentication, rate, retention assumptions, and failure behavior. Export credentials live in a shared vault. Exporting metrics does not implicitly export source events, prompts, messages, artifacts, or audit records.
+
+#### Desktop, CLI, and Management API surface
+
+Authorized users and clients should be able to:
+
+- List and inspect MetricDefinitions, versions, units, sources, dimensions, trust, and lineage.
+- Query current and historical metrics over bounded windows and permitted dimensions.
+- Compare agents, versions, models, templates, routes, tools, and controlled cohorts.
+- Create and share dashboards, scorecards, saved views, SLOs, and alert rules.
+- Follow live operational metrics and drill down to authorized source events.
+- Register, validate, test, publish, deprecate, and replace workspace custom metrics.
+- Inspect cardinality, missing data, freshness, reconciliation, sampling, and pipeline health.
+- Start an optimization or refinement run from a metric finding.
+- Create a bounded asynchronous export with a versioned manifest.
+- Explain how a value was calculated and why data or dimensions are unavailable.
+
+The Management API provides versioned definitions, queries, Operations, and event relationships. The CLI provides JSON output and human tables. The desktop application provides dashboards, comparisons, investigation, and configuration without creating a separate metric model.
+
+#### Core records
+
+The initial Metrics design introduces or formalizes:
+
+- **MetricDefinition:** name, version, instrument, value type, unit, sources, trust, dimensions, aggregation, temporality, permissions, and retention.
+- **MetricObservation:** definition version, time or interval, value or distribution, dimensions, producer, trust, sampling, and source references.
+- **MetricSeries:** authorized identity of one definition and bounded dimension set over time.
+- **MetricResult:** query, population, window, value, freshness, completeness, reconciliation, uncertainty, and lineage.
+- **DerivedMetric:** versioned expression over compatible metrics, events, populations, units, and windows.
+- **ServiceLevelIndicator:** versioned good, valid, failed, or latency population and measurement rule.
+- **ServiceLevelObjective:** indicator, target, window, exclusions, owner, error budget, and policy actions.
+- **MetricAlertRule:** condition, scope, window, missing-data behavior, severity, destinations, and actions.
+- **MetricExport:** allowed definitions, dimensions, resolution, destination, credential references, status, and retention assumptions.
+- **MetricExemplar:** authorized link from an aggregate or distribution observation to a representative event, run, trace, or Operation.
+
+#### Version-one boundary
+
+The first Metrics implementation should prove:
+
+1. Versioned MetricDefinitions for counters, gauges, histograms, state measures, and derived metrics.
+2. Trusted derivation from the workspace event pipeline with source-event and producer lineage.
+3. Bounded workspace, project, agent, version, model, node class, template, queue, and outcome dimensions.
+4. Run counts and end-to-end, queue, sandbox-startup, model, tool, approval, and rework duration distributions.
+5. Model usage and estimated or reconciled cost metrics across one local model and selected cloud providers.
+6. Node, sandbox, refresh, warm-pool, queue, AI Proxy, integration, Endpoint, and Management API health metrics.
+7. Quality and outcome scorecards combining one deterministic evaluator, one model-based evaluator, and human feedback with distinct trust.
+8. Agent Refinement baseline and candidate comparisons across cost, time, quality, reliability, development, and holdout cohorts.
+9. One workspace operational dashboard and one agent or project scorecard with authorized drill-down.
+10. One SLI and SLO with error-budget burn and a versioned alert rule.
+11. Missing, stale, partial, sampled, estimated, and unreconciled data represented explicitly.
+12. Cardinality enforcement, permission-aware aggregation, configurable retention, downsampling, and one bounded export.
+13. Authenticated desktop, CLI, and Management API query, configuration, comparison, and explanation surfaces.
+
+#### Decisions to make next
+
+- Which metric storage and query backend should support the first local, self-hosted, and cloud deployments?
+- Which MetricDefinitions are mandatory platform contracts in version one?
+- Which dimensions are safe and useful enough to enable by default?
+- What cardinality budgets apply per workspace, definition, producer, and commercial plan?
+- Which authoritative events must be lossless to support billing, SLOs, and optimization?
+- How are local-model and contributed-node cost, energy, and amortization estimated?
+- Which quality metrics are meaningful across task classes, and which must remain workflow-specific?
+- Which controlled cohort and task-difficulty methods are required for AgentVersion comparisons?
+- Which SLOs are product commitments versus user-configurable workspace objectives?
+- What freshness and reconciliation guarantees should dashboards and alerts expose?
+- Which high-volume metrics may be sampled, and which must remain exact?
+- What minimum group sizes and suppression rules protect personal and restricted activity?
+- Which standards-compatible ingestion and export formats should ship first?
+- How should metric definition migrations recompute or preserve historical results?
+- Which alert actions may run automatically, and which require approval?
 
 ### Queues
 
