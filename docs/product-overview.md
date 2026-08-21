@@ -19,6 +19,7 @@
   - [Sandboxes](#sandboxes)
   - [Warm pools](#warm-pools)
   - [Analytics and events](#analytics-and-events)
+    - [Agent refinement](#agent-refinement)
   - [Queues](#queues)
   - [Agents](#agents)
   - [Credentials and integrations](#credentials-and-integrations)
@@ -1732,6 +1733,161 @@ An optimization run produces a versioned proposal containing:
 
 Optimization runs do not silently modify an AgentVersion, LLM Router Policy, sandbox template, queue policy, warm pool, credential policy, or production integration. Application requires the normal versioning, authorization, review, rollout, and rollback process for that resource. Workspace policy may permit narrowly scoped automated experiments, but the experiment and promotion rules are explicit and auditable.
 
+#### Agent refinement
+
+Agent Refinement is a built-in Blazn tool for improving an agent through repeated, reviewable evaluation cycles. It turns refinement into a controlled experiment rather than an informal sequence of prompt edits.
+
+A refinement session starts from an immutable baseline AgentVersion and a defined evaluation plan. Blazn runs the agent multiple times against selected scenarios, records the complete evidence for each run, asks evaluators and reviewers to score the result, and then allows a refinement agent to propose bounded changes to the agent's instructions, tools, skills, or permitted configuration. Each proposal creates a new candidate AgentVersion. Blazn runs the candidate through the evaluation plan again and compares it with the baseline and earlier candidates.
+
+The loop is:
+
+```mermaid
+flowchart LR
+    Baseline[Select baseline AgentVersion]
+    Baseline --> Plan[Choose datasets, scenarios, rubrics and budgets]
+    Plan --> Trials[Run live, replayed, simulated or synthetic trials]
+    Trials --> Review[Review every run and its evidence]
+    Review --> Score[Human and automated scoring]
+    Score --> Decide{Meets promotion gates?}
+    Refine[Agent proposes bounded instruction or tool changes]
+    Refine --> Candidate[Create immutable candidate AgentVersion]
+    Candidate --> Trials
+    Decide -->|No| Refine
+    Decide -->|Stop| Discard[Keep baseline or retain candidate as draft]
+    Decide -->|Yes| Approve[Human or policy-controlled approval]
+    Approve --> Promote[Canary, promote and monitor]
+```
+
+The person running the refinement can inspect every trial rather than seeing only an aggregate score. The review experience includes the objective, inputs, environment, model route, instructions, tools, decisions, events, outputs, artifacts, evaluator results, cost, elapsed time, failures, and any side effects the viewer is permitted to access.
+
+##### Evaluation modes
+
+A refinement plan can combine several run modes:
+
+- **Live trials:** perform real work against approved systems and measure actual outcomes. These require the strongest side-effect, credential, budget, approval, and rollback controls.
+- **Shadow trials:** observe live inputs and produce an output without allowing the candidate to affect the real workflow.
+- **Replay trials:** rerun historical or captured cases from a known snapshot with external actions replaced by recorded responses or controlled adapters.
+- **Simulated trials:** use a modeled environment, users, tools, or downstream systems to exercise decisions without real-world side effects.
+- **Synthetic trials:** use generated inputs and expected properties to test edge cases, scale, safety, and robustness.
+
+The product may describe replayed, simulated, and synthetic trials conversationally as fake runs, but their records and dashboards always use the precise mode. Scores from non-live trials are not presented as proof of live business performance.
+
+Every trial records its mode, dataset version, scenario version, seed where applicable, environment and refresh identity, tool behavior, model route, evaluator versions, and whether any external side effect was permitted. A trial that unexpectedly escapes its declared isolation is invalidated and treated as a safety incident.
+
+##### Evaluation datasets and scenarios
+
+Evaluation inputs can come from:
+
+- Curated workspace test cases and expected outcomes.
+- Redacted or permission-approved historical runs.
+- Project artifacts, issue histories, support cases, or integration records.
+- Generated edge cases and adversarial scenarios.
+- A controlled live sample or shadow traffic.
+- Failures, regressions, and low-confidence cases discovered by analytics.
+
+Each dataset is versioned and records provenance, permissions, classification, retention, allowed models and evaluators, and whether it can leave the workspace or device. Sensitive source records are referenced or transformed into protected evaluation artifacts rather than copied into unrestricted analytics.
+
+A scenario defines the objective, initial context, environment, allowed tools and side effects, time and cost limits, expected properties, rubric, termination rules, and setup and cleanup behavior. Scenarios may intentionally omit a single expected answer when quality requires judgment, but they still define what evidence is needed to score the run.
+
+Refinement plans should separate development cases from validation and holdout cases. The refinement agent can inspect development feedback, but policy can hide holdout inputs, answers, evaluator reasoning, or exact weighting until the candidate is frozen. This reduces overfitting and evaluator gaming.
+
+##### Review and scoring
+
+Every trial can be reviewed individually and as part of a comparison. Reviewers can replay the event timeline, inspect artifacts and tool calls, compare outputs side by side, annotate decisions, and assign rubric scores with evidence.
+
+Scores can combine:
+
+- Deterministic verification such as tests, schemas, calculations, constraints, and policy checks.
+- Model-based evaluation using a pinned evaluator, model, rubric, and prompt version.
+- Human review, ranking, correction, approval, or rejection.
+- Measured live outcomes such as resolution, acceptance, deployment, reopen, rollback, or customer feedback.
+- Cost, elapsed time, tool use, retries, approvals, and resource consumption.
+- Safety, policy compliance, unsupported claims, and attempted prohibited actions.
+
+The scorecard preserves each dimension rather than hiding tradeoffs in one number. A candidate may improve quality while increasing cost or latency; Blazn presents the comparison and promotion policy decides whether that tradeoff is acceptable. Weighted aggregate scores are allowed only when the weights and normalization are versioned and visible.
+
+The agent's self-score is retained as a distinct signal. It cannot replace independent verification, and the refinement agent cannot edit evaluator definitions, hidden expectations, source results, or its own authoritative cost and timing data.
+
+##### Bounded self-adjustment
+
+Before the loop begins, the user or workspace policy defines the candidate mutation boundary. It can allow changes to:
+
+- Agent instructions and structured prompt sections.
+- Selection or ordering of approved skills.
+- Addition, removal, or configuration of tools already approved for the workspace and scenario.
+- Delegation and handoff instructions.
+- Model preferences within the allowed LLM Router Policy.
+- Context selection, retrieval, stopping, retry, or reflection strategies.
+
+The refinement agent cannot grant itself new permissions, reveal credentials, expand vault or integration access, weaken sandbox isolation, raise budgets, change evaluation results, modify holdout data, or make an unapproved provider or model eligible. Adding a new tool capability follows the normal review and authorization flow even when the refinement agent recommends it.
+
+Each proposed change includes a rationale tied to observed failures or opportunities, the expected effect, the trials that motivated it, and the risks it may introduce. Changes produce an immutable candidate AgentVersion with a clear diff from its parent. Multiple candidates can branch from the same baseline without overwriting one another.
+
+##### Iteration and stopping policy
+
+A refinement session has explicit limits for iterations, trials, concurrency, wall-clock time, model usage, compute, integrations, and total cost. It stops when:
+
+- A candidate passes all required promotion gates.
+- The iteration, time, or budget limit is reached.
+- Improvement remains below a configured threshold for a configured number of iterations.
+- Quality, safety, or cost regresses beyond a stop condition.
+- Required evaluation data or infrastructure becomes invalid or unavailable.
+- A reviewer pauses or cancels the session.
+
+The refinement agent does not choose to continue indefinitely. Failed and unpromoted candidates remain available for comparison and learning according to retention policy, but they do not replace the active AgentVersion.
+
+##### Comparison and promotion
+
+Blazn compares the baseline and candidates on the same eligible cases, evaluator versions, environment class, and scoring rules. Randomized trials use enough repetitions and preserved seeds to make variance visible. Results identify missing data, evaluator disagreement, sample size, uncertainty, and any cases excluded from the comparison.
+
+The refinement view should show:
+
+- Per-case baseline and candidate results.
+- Instruction, skill, tool, model preference, and configuration diffs.
+- Score changes by rubric dimension and cohort.
+- Cost, time, retries, tool activity, and resource changes.
+- Improvements, regressions, newly introduced failures, and unresolved cases.
+- Pareto-efficient candidates when no candidate is best on every dimension.
+- Evaluator disagreement and human-review status.
+- Evidence supporting or contradicting the refinement agent's hypothesis.
+
+Promotion creates an explicit decision record. Depending on policy, an approved candidate can become the active version immediately, enter a canary or shadow stage, or remain a draft for later deployment. Production monitoring compares the promoted candidate with its refinement claims and can trigger rollback or a new refinement session when regressions appear.
+
+##### Refinement safety and data integrity
+
+Refinement is particularly vulnerable to overfitting, data leakage, reward hacking, and costly uncontrolled loops. Blazn therefore requires:
+
+- Immutable source runs, datasets, scenarios, scorecards, and evaluator versions.
+- Separation between development feedback and protected holdout evaluation.
+- Independent authoritative measurements for cost, time, policy, and tool effects.
+- Explicit labeling of live, shadow, replayed, simulated, and synthetic evidence.
+- Side effects disabled by default outside approved live trials.
+- Sandboxed candidate runs with scenario-scoped credentials and tools.
+- Limits on candidate access to evaluator internals and previous hidden results.
+- Detection of attempts to influence, bypass, or communicate with evaluators outside the allowed output.
+- Human review or explicit workspace promotion policy before a candidate affects production work.
+- Full lineage from a promoted AgentVersion back to its session, trials, scores, changes, and approvals.
+
+Historical data used for refinement retains its original permissions. Starting a refinement session does not grant the refinement agent or evaluator broader access than the initiating user, target agent, dataset, and workspace policies allow.
+
+##### Refinement events and analytics
+
+The refinement tool emits structured events for session creation, plan validation, dataset selection, trial start and completion, review, scoring, candidate proposal, candidate creation, regression, stopping, approval, promotion, canary observation, and rollback.
+
+Refinement analytics include:
+
+- Success and regression rate by scenario and cohort.
+- Improvement per iteration and diminishing returns.
+- Evaluation cost and total refinement cost.
+- Time to an acceptable candidate.
+- Candidate quality, latency, and cost relative to baseline.
+- Human and automated evaluator agreement.
+- Holdout versus development performance.
+- Refinement proposals accepted, rejected, promoted, or rolled back.
+- Production outcomes compared with predicted improvement.
+
+These events become part of the workspace analytics pipeline and can themselves trigger alerts or future optimization runs. They do not alter the original trial evidence.
+
 #### Real-time monitoring, dashboards, and alerts
 
 Workspace members can create permission-aware dashboards and saved analytic views for runs, agents, projects, models, nodes, queues, environments, costs, quality, and optimization activity. A viewer sees only aggregates that can be safely derived from events they are permitted to access.
@@ -1819,6 +1975,8 @@ The desktop application and CLI should allow authorized users to:
 - Compare cost, time, quality, reliability, and throughput across controlled cohorts.
 - Submit human feedback, labels, corrections, and business outcomes.
 - Start, follow, approve, reject, and inspect optimization runs and proposals.
+- Create, pause, resume, review, score, compare, and stop agent refinement sessions.
+- Inspect each refinement trial and candidate diff, then approve a canary, promotion, rejection, or rollback.
 - Export an authorized, bounded, versioned dataset with a manifest and query provenance.
 - Inspect rejected or delayed producer events without revealing prohibited payload content.
 - Explain how a displayed value was derived and why some data is unavailable.
@@ -1839,6 +1997,11 @@ The initial analytics design introduces or formalizes:
 - **CostRecord:** estimated or reconciled usage, unit price basis, allocation, currency, and causal resource references.
 - **OptimizationRun:** governed run definition, source population, hypothesis, findings, comparisons, and lifecycle.
 - **OptimizationProposal:** versioned proposed change, evidence, expected impact, risk, experiment, approval, rollout, and rollback state.
+- **EvaluationDataset:** versioned cases, provenance, splits, permissions, classification, retention, and allowed evaluation use.
+- **EvaluationScenario:** versioned objective, setup, environment, tools, side-effect policy, limits, expected properties, rubric, and cleanup.
+- **RefinementSession:** target agent and baseline version, mutation boundary, evaluation plan, budgets, stopping policy, candidates, and promotion state.
+- **RefinementIteration:** candidate version, rationale, parent, trial set, scorecard, regressions, cost, and decision.
+- **RefinementTrial:** immutable live, shadow, replayed, simulated, or synthetic run with its inputs, evidence, evaluator results, and validity state.
 - **ExportManifest:** requester, authorized query, schema versions, interval, classifications, redactions, checksum, and expiry.
 
 #### Version-one boundary
@@ -1856,7 +2019,9 @@ The first analytics and events implementation should prove:
 9. One workspace dashboard covering cost, time, quality, run outcomes, and capacity health.
 10. Versioned alert rules for budget, failure, queue delay, and quality regression conditions.
 11. One optimization run that compares a controlled baseline and candidate, produces an evidence-backed proposal, and requires approval before application.
-12. Permission-aware query, export, retention, deletion, redaction, and pipeline-health behavior.
+12. One built-in Agent Refinement session that runs a baseline and at least one candidate over versioned replay or synthetic scenarios, supports per-run review and scoring, and creates an immutable candidate AgentVersion.
+13. A bounded refinement loop with instruction and approved-tool changes, development and holdout cases, cost and iteration limits, regression gates, and explicit promotion approval.
+14. Permission-aware query, export, retention, deletion, redaction, and pipeline-health behavior.
 
 #### Decisions to make next
 
@@ -1868,6 +2033,11 @@ The first analytics and events implementation should prove:
 - How should local-node and local-model costs be estimated and allocated?
 - Which quality evaluators and human-feedback workflows should ship first?
 - How are task difficulty and changing evaluator versions controlled in comparisons?
+- Which agent fields and approved tool changes may the first refinement tool mutate?
+- Which replay, simulation, and synthetic-data capabilities are required for the initial scenario runner?
+- How are development, validation, and holdout datasets created and protected?
+- Which promotion gates always require a person, and which may be policy-controlled after sufficient evidence?
+- What statistical or practical improvement threshold is required before a candidate is considered better?
 - What protected aggregation rules are required for personal and restricted project data?
 - Which alert destinations and actions belong in version one?
 - What evidence threshold permits an optimization experiment to start automatically?
