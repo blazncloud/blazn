@@ -15,6 +15,9 @@
   - [System component index](#system-component-index)
   - [Nodes](#nodes)
     - [Local model capacity](#local-model-capacity)
+  - [Blazn Agent Harness](#blazn-agent-harness-system)
+  - [Smart LLM Router](#smart-llm-router)
+  - [LLM Router Policy](#llm-router-policy)
 - [How the pieces fit](#how-the-pieces-fit)
 - [Product principles](#product-principles)
 - [Brand direction](#brand-direction)
@@ -60,7 +63,7 @@ Blazn gives every person and team one place to:
 5. Observe outcomes and help agents improve over time.
 6. Connect agent work directly to projects, products, and customers.
 7. Pool authorized capacity across company and employee machines, automatically provisioning isolated environments while protecting the owner's work.
-8. Let agents use local models, cloud models, Blazn cloud, and compatible agent harnesses through one governed system.
+8. Run agents through the Blazn Agent Harness while using local models, provider models, and Blazn cloud through one governed routing system.
 9. Bring agents into existing applications through the Blazn Button so they can act on what a user is experiencing in the moment.
 
 The experience should feel local-first, collaborative, inspectable, and progressively adoptable: valuable to one person on one machine, then capable of growing into a company-wide agent platform.
@@ -92,7 +95,7 @@ The desktop application is the primary visual workspace on macOS, Windows, and L
 - Manage local machines, remote workers, sandboxes, and virtual environments.
 - Browse agents, projects, runs, schedules, triggers, tools, resources, instructions, objectives, and metrics.
 - Pin and share artifacts such as documents, plans, dashboards, reports, code changes, and research.
-- Use an integrated agent harness for conversations and work performed in an isolated environment or directly on the local machine.
+- Use the Blazn Agent Harness for conversations and work performed in an isolated environment or through an approved local-machine backend.
 
 ### 2. Blazn CLI
 
@@ -128,7 +131,7 @@ The company brain is the connected, permission-aware memory formed by these elem
 Users can create and manage a reusable library of agents. Each agent can have:
 
 - A name, role, purpose, and measurable objectives.
-- Instructions, skills, tools, resources, and model preferences.
+- Instructions, skills, tools, resources, and LLM Router Policy preferences.
 - Environment and machine requirements.
 - Permissions, budgets, and escalation rules.
 - Schedules, triggers, and event subscriptions.
@@ -136,18 +139,26 @@ Users can create and manage a reusable library of agents. Each agent can have:
 
 Agents may work independently, be assigned to projects, or collaborate as a team. Larger coordinating agents can delegate work, combine results, detect gaps, and help specialized agents improve how they work together.
 
-### 5. Agent harness
+### 5. Blazn Agent Harness
 
-The built-in harness is where people and agents work together. It supports:
+The Blazn Agent Harness is the product's canonical runtime for agents. It owns how an agent receives context, requests a model, uses tools, performs work, collaborates, emits events, pauses, resumes, and completes a run. Blazn does not depend on bring-your-own agent harnesses for its core execution model.
 
-- Persistent conversations and task-oriented sessions.
+The harness supports:
+
+- Persistent conversations and objective-driven sessions.
 - Live progress, events, intermediate results, and structured approvals.
 - Follow-up instructions and steering during a run.
-- Work in isolated sandboxes or approved local-machine contexts.
-- Multiple harnesses and agent runtimes behind a consistent Blazn experience.
-- Resumable work and durable outputs rather than disposable chat history.
+- Context assembly from workspace memory, projects, resources, and artifacts.
+- Tool and MCP access governed by agent and workspace permissions.
+- Work in isolated sandboxes or approved local-machine backends.
+- Checkpoints, pause, resume, cancellation, retry, and recovery.
+- Temporary agents, delegation, handoffs, and coordinated agent teams.
+- Durable outputs, evaluations, and introspection linked to run history.
+- Model requests sent exclusively through the Smart LLM Router.
 
-The harness should make an agent's environment, tools, actions, and state visible without forcing users to understand the underlying orchestration system.
+The desktop app, CLI, API, MCP server, schedules, triggers, and Blazn Button all initiate work through this same harness. External applications and developer tools may call Blazn APIs or use its AI Proxy, but they do not redefine Blazn's agent lifecycle or execution semantics.
+
+The harness should make an agent's context, environment, tools, actions, model routing, approvals, and state visible without forcing users to understand the underlying orchestration system.
 
 ### 6. Nodes, workers, and environments
 
@@ -166,13 +177,17 @@ Kubernetes Agent Sandbox is a candidate foundation for selected persistent or in
 
 ### 7. Blazn AI Proxy
 
-The AI Proxy provides one compatible endpoint for tools such as Codex, Claude Code, IDEs, agents, and internal applications. It can route requests to:
+The AI Proxy provides one compatible endpoint for the Blazn Agent Harness and external clients such as Codex, Claude Code, IDEs, and internal applications. Its Smart LLM Router evaluates every request against an effective LLM Router Policy before choosing where the request runs.
+
+It can route requests to:
 
 - Models running locally on a user's machine or team hardware.
 - Third-party model providers configured by the workspace.
 - Models and capacity offered by Blazn cloud.
 
-Routing can account for model capability, privacy, availability, latency, cost, policy, and fallback preferences. Users should be able to understand where a request went and why, while existing tools continue to work with minimal configuration.
+Routing accounts for model capability, privacy, availability, health, queue depth, latency, cost, policy, and fallback behavior. A caller can request a logical model alias or a capability tier instead of binding an agent to one provider or machine. Users should be able to understand where a request went, why it went there, and whether a retry or fallback occurred, while existing external tools continue to work with minimal configuration.
+
+The AI Proxy is a model-access surface, not an alternative agent harness. External tools may use its compatible APIs for model requests, while agents created and operated by Blazn always run through the Blazn Agent Harness.
 
 This capability builds on the approach established by Blaze Proxy and brings it into the shared Blazn workspace.
 
@@ -263,11 +278,12 @@ This section turns the product vision into a shared system model. It will be dev
 | Temporary agents | Create bounded, task-specific agent identities and lifetimes | Planned |
 | Agents | Define durable agent identity, objectives, configuration, and history | Planned |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
-| Agent harness | Run and steer conversations and work across compatible harnesses | Planned |
+| Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | Credentials and integrations | Connect external systems and safely grant scoped access | Planned |
 | MCP | Expose Blazn resources and controls to agents and compatible clients | Planned |
 | API | Provide the authoritative programmatic control surface | Planned |
-| AI request proxy | Route, govern, observe, and optimize model requests | Planned |
+| Smart LLM Router | Select, queue, load-balance, and fail over model requests across local and cloud capacity | Initial design |
+| LLM Router Policy | Define allowed routes, preferences, budgets, privacy rules, and fallback behavior | Initial design |
 
 ### Nodes
 
@@ -338,7 +354,7 @@ Local model capacity is a first-class node backend, parallel to sandbox and nati
 
 Agents request a model or capability through the AI Proxy rather than connecting to a machine by address. The proxy authenticates the caller, applies workspace policy and budgets, selects an eligible model instance, queues or load-balances the request, and records operational metrics. Requests reach the node through its authenticated Blazn connection, so contributing a local model does not require exposing its raw inference port to the company network or internet.
 
-The workspace can publish a friendly model alias that maps to several eligible backends. An alias such as `company-fast` could prefer a local Qwen3.8 instance, fail over to another company node when it is saturated, and use an approved Blazn cloud model only when local capacity is unavailable and policy permits. Agents and harnesses keep using the same model name while routing changes behind it.
+The workspace can publish a friendly model alias that maps to several eligible backends. An alias such as `company-fast` could prefer a local Qwen3.8 instance, fail over to another company node when it is saturated, and use an approved Blazn cloud model only when local capacity is unavailable and policy permits. The Blazn Agent Harness and authorized external clients keep using the same model name while routing changes behind it.
 
 Model serving shares the physical node with the owner's applications and possibly with agent sandboxes. The node resource manager therefore reserves memory and accelerator capacity for loaded models, limits concurrent inference, coordinates model loading and eviction, and prevents sandbox admission from exhausting resources promised to inference. The machine owner or administrator can independently pause model serving, sandbox work, or the entire node.
 
@@ -387,7 +403,7 @@ When the scheduler admits work, the selected node receives a signed workload gra
 1. Resolves an approved sandbox template and exact version.
 2. Reuses a compatible warm environment or creates a fresh one.
 3. Applies resource, network, filesystem, tool, and credential policy.
-4. Starts the requested harness and agent inside the chosen execution backend.
+4. Starts the Blazn Agent Harness worker and requested agent inside the chosen execution backend.
 5. Streams lifecycle events, logs, metrics, and selected artifacts.
 6. Suspends, refreshes, or destroys the environment according to its retention policy.
 
@@ -485,7 +501,7 @@ The first node implementation should prove a narrow loop:
 3. Advertise verified resources and accept capability-matched work.
 4. Advertise one local model endpoint and make it available to authorized agents through the AI Proxy.
 5. Create an isolated environment from one approved template.
-6. Run one harness, stream events and resource metrics, and return artifacts.
+6. Run the Blazn Agent Harness, stream events and resource metrics, and return artifacts.
 7. Enforce shared resource reserves, model and agent concurrency, drain, offline, and cleanup behavior.
 8. Make the same operations available through the authenticated Blazn API and MCP server.
 
@@ -504,6 +520,271 @@ Native platform execution, additional model runtimes, organization-wide device m
 - Which workload types are portable, resumable, interruptible, or bound to one node?
 - What compatibility contract allows Kubernetes Agent Sandbox and non-Kubernetes backends to behave consistently?
 
+### Blazn Agent Harness system
+
+#### Definition and authority
+
+The Blazn Agent Harness is the authoritative runtime for every Blazn-managed agent. It converts an objective, conversation, schedule, trigger, API call, or delegated assignment into a durable run and coordinates that run until it reaches a terminal or explicitly suspended state.
+
+Blazn owns the harness contract. This provides one consistent model for identity, context, tools, approvals, environments, events, artifacts, metrics, recovery, and improvement across desktop, CLI, cloud, and embedded experiences. Supporting an external tool or model API does not mean delegating control of the agent lifecycle to an external harness.
+
+#### Harness responsibilities
+
+For each run, the harness is responsible for:
+
+- Resolving the agent version, objective, instructions, skills, permissions, and effective LLM Router Policy.
+- Building a bounded context from the current conversation, workspace memory, project state, pinned resources, prior run evidence, and explicit user input.
+- Acquiring a sandbox or approved native execution backend with the required capabilities.
+- Making tools, MCP servers, integrations, and credentials available according to least-privilege grants.
+- Sending all inference requests through the Smart LLM Router.
+- Executing the agent loop and recording model responses, reasoning summaries where supported, tool requests, approvals, results, and errors as structured events.
+- Accepting live user messages, steering, cancellation, and approval decisions without losing run identity.
+- Creating temporary agents or delegating bounded objectives when the parent agent is permitted to do so.
+- Producing artifacts, a final result, outcome metrics, and post-run introspection.
+- Releasing or retaining environments and credentials according to policy.
+
+#### Run and session model
+
+A session is the durable interaction boundary between people and one or more agents. A run is one execution attempt within that session. Follow-up instructions may continue the current run when it is still active or create a new run linked to the same session and prior evidence.
+
+The initial run lifecycle should include:
+
+- **Created:** Intent is recorded but has not entered admission.
+- **Queued:** The run is waiting for agent, model, environment, budget, or approval capacity.
+- **Preparing:** Context, credentials, tools, and an execution environment are being resolved.
+- **Running:** The harness is actively executing the agent loop.
+- **Waiting:** The run is waiting for a person, dependency, scheduled time, or external event.
+- **Suspended:** State is checkpointed and resources may be released.
+- **Completing:** Outputs, artifacts, evaluations, and cleanup are being finalized.
+- **Succeeded, failed, or canceled:** The terminal outcome and reason are recorded.
+
+Run state is durable in the control plane. A desktop application closing, a client disconnecting, or an execution worker restarting must not erase the run or make its outcome unknowable.
+
+#### Context and memory
+
+The harness assembles context intentionally rather than placing the entire company brain into every prompt. Context sources are permission-filtered, ranked for the objective, budgeted against the selected model's context window, and recorded by reference for provenance.
+
+The harness distinguishes:
+
+- User-authored instructions and current conversation.
+- Agent identity, role, skills, and versioned operating instructions.
+- Project objectives, tasks, decisions, and current status.
+- Retrieved workspace knowledge and pinned resources.
+- Environment observations and tool results from the current run.
+- Summaries and evaluated evidence from prior runs.
+
+Important outputs return to the workspace as versioned artifacts or proposed memories. Raw model output does not silently become trusted company knowledge.
+
+#### Tools, actions, and approvals
+
+The harness exposes tools through a normalized contract regardless of whether they are native Blazn tools, MCP tools, workspace integrations, or environment operations. Each call carries the run and agent identity, a scoped authorization grant, a deadline, and an idempotency or replay policy.
+
+Read-only and reversible actions may run automatically under policy. External writes, financial actions, production changes, secrets access, destructive operations, and actions affecting other people can require explicit approval. If execution fails after an action may have occurred, the harness must reconcile the result rather than blindly repeating it.
+
+#### Temporary agents and delegation
+
+A durable agent may create a temporary agent for a bounded sub-objective. The temporary agent inherits only explicitly delegated context, tools, credentials, budget, routing policy, environment requirements, and deadline. It has its own run identity and event stream while remaining linked to its parent.
+
+The parent agent or coordinating agent is responsible for evaluating and integrating delegated results. Temporary agents expire after their assignment and do not silently become permanent members of the workspace or retain credentials.
+
+#### Checkpointing and recovery
+
+Checkpoints capture the durable information required to resume safely: conversation state, completed tool actions, pending approvals, selected artifacts, environment references, routing history, budgets, and the next intended step. Checkpoints do not assume that a model's hidden internal state can be transferred between providers.
+
+After a harness, node, or model failure, the reconciler determines whether to resume, retry a pure operation, select another model, move portable work, wait for the original environment, or request human intervention. Recovery follows recorded policy and idempotency rules.
+
+#### External clients
+
+Codex, Claude Code, IDEs, and other applications can use the Blazn AI Proxy, API, MCP server, tools, and artifacts. They remain external clients with their own execution behavior. When a user creates an agent in Blazn, however, that agent runs through the Blazn Agent Harness so the workspace receives consistent controls, events, metrics, and recovery semantics.
+
+#### Version-one boundary
+
+The first harness should prove one durable end-to-end loop:
+
+1. Start a session from desktop, CLI, API, or MCP.
+2. Resolve one versioned agent and its effective policy.
+3. Acquire one sandbox, assemble bounded context, and attach approved tools.
+4. Route all model requests through the Smart LLM Router.
+5. Stream events and accept a follow-up message, cancellation, or approval.
+6. Survive a harness process restart without losing the run.
+7. Produce a final result, artifacts, metrics, and cleanup outcome.
+
+Multi-agent delegation, advanced introspection, long-lived suspension, and broader tool compatibility can build on this contract after the single-agent loop is reliable.
+
+### Smart LLM Router
+
+#### Definition
+
+The Smart LLM Router is the decision and traffic layer inside the Blazn AI Proxy. It receives model requests from the Blazn Agent Harness or an authorized external client, evaluates the effective LLM Router Policy, selects an eligible model instance, manages queueing and fallback, and returns a normalized response.
+
+The router separates an agent's need from a provider-specific model name. A request may ask for a logical alias such as `company-fast`, `coding-best`, or `private-reasoning`, or describe required capabilities such as tool use, vision, structured output, minimum context, latency class, and quality tier.
+
+#### Request contract
+
+A routed request should include:
+
+- Workspace, principal, agent, run, and session identity where applicable.
+- Logical model alias or required capabilities.
+- Input messages and estimated context size.
+- Required modalities, tool-calling behavior, structured-output schema, and streaming mode.
+- Data classification, residency, retention, and provider restrictions.
+- Latency target, priority, deadline, token limit, and remaining budget.
+- Retry and fallback safety markers.
+- Optional preference for local, company-managed, provider, or Blazn cloud capacity.
+
+External compatibility endpoints derive this metadata from the caller's credential, selected alias, headers, and workspace defaults. Missing metadata never bypasses policy.
+
+#### Selection pipeline
+
+For each request, the router:
+
+1. Authenticates the caller and resolves the effective policy.
+2. Rejects destinations that violate security, privacy, residency, capability, or budget constraints.
+3. Discovers healthy model instances across local nodes, company infrastructure, approved providers, and Blazn cloud.
+4. Scores eligible destinations using capability fit, measured quality, availability, queue time, latency, cost, cache locality, and policy preference.
+5. Reserves inference capacity or places the request in the appropriate model queue.
+6. Sends the request through a provider adapter and normalizes streaming events, usage, tool calls, structured output, and errors.
+7. Evaluates retry or fallback rules when the selected route cannot complete.
+8. Records the routing decision and outcome without retaining prompt content unless policy allows it.
+
+Hard policy constraints always outrank optimization. The router does not send restricted data to a cheaper or faster destination that is not permitted.
+
+#### Aliases and route pools
+
+A model alias points to a policy-controlled pool, not a single endpoint. For example, `company-fast` might contain local Qwen3.8 instances on several nodes, followed by a compatible Blazn cloud model. `private-reasoning` might allow only models running on company-managed nodes and prohibit external fallback entirely.
+
+Aliases allow agents and external clients to remain stable while administrators add hardware, update a model, change providers, or alter preferences. Exact model pinning remains available for evaluation, reproducibility, and specialized workloads but is subject to the same hard policy constraints.
+
+#### Fallback behavior
+
+Fallback is a policy decision with an explicit reason, not an unconditional retry list. It may be triggered by unavailability, saturation, timeout, rate limiting, context overflow, unsupported capabilities, provider error, quality-gate failure, or exhausted local capacity.
+
+Before falling back, the router considers:
+
+- Whether the request may be safely replayed.
+- Whether a partial streamed response has already been exposed.
+- Whether the next destination supports the same modalities, tools, schema, and context.
+- Whether moving the request changes its privacy, residency, retention, or cost boundary.
+- Whether the policy prefers waiting locally over paying for cloud capacity.
+- Whether the run's deadline and remaining budget allow another attempt.
+
+The router attaches every attempt to one logical request so the harness and analytics system can distinguish retries from new model turns. It never retries tool side effects; the harness owns tool execution and reconciliation.
+
+#### Queueing and capacity
+
+Inference has its own queues and admission controls because model capacity may be scarce even when agent execution capacity is available. The router accounts for per-model concurrency, tokens in flight, accelerator memory, warm-up time, provider rate limits, team quotas, priority, and fairness.
+
+A policy can choose among waiting, using another local node, switching to a compatible smaller model, using a paid provider, or failing fast. The user and harness should receive queue position or expected delay when it is meaningful.
+
+#### Routing intelligence
+
+The first router should be deterministic and policy-led. Over time, measured results can improve scoring using task class, model quality, successful tool use, latency, failure rate, and cost. Learned routing may rank options only within the destinations already permitted by policy, and its reasoning must remain inspectable and reversible.
+
+#### Observability
+
+For every logical request, Blazn records:
+
+- Effective policy and alias version.
+- Eligible and rejected route classes with reason codes.
+- Selected model, runtime, node or provider, and selection reason.
+- Queue time, attempts, retries, fallbacks, latency, tokens, and cost.
+- Whether data remained local, stayed on company infrastructure, or used an external provider.
+- Errors, cancellation, saturation, and normalized completion status.
+- Quality or outcome measurements linked later by the harness.
+
+Prompt and response content are governed separately from operational routing telemetry.
+
+#### Version-one boundary
+
+The first Smart LLM Router should support:
+
+- One OpenAI-compatible entrypoint used by the Blazn Agent Harness and authorized external clients.
+- Logical aliases mapped to a local model, one approved provider, and one Blazn cloud route.
+- Capability and policy filtering before selection.
+- Health-aware routing, queueing, timeout, and ordered fallback.
+- Streaming and non-streaming responses with normalized errors and usage.
+- An auditable explanation for every route and fallback.
+
+### LLM Router Policy
+
+#### Definition
+
+An LLM Router Policy is a versioned workspace resource that determines which models may receive a request, which routes are preferred, how long Blazn should wait, and what fallback behavior is allowed. It separates routing governance from agent instructions and application code.
+
+Policies can be attached at several scopes:
+
+```text
+Organization constraints
+  -> Workspace defaults
+    -> Team or project policy
+      -> Agent policy
+        -> Run request
+```
+
+More specific scopes can choose among allowed behavior but cannot weaken a higher-level security, privacy, residency, provider, retention, or budget restriction. The effective policy and all source versions are captured on the run and each routed request.
+
+#### Policy contents
+
+An LLM Router Policy should be able to define:
+
+- Allowed and prohibited models, aliases, providers, node trust classes, and regions.
+- Required capabilities, minimum context, modalities, tool use, and structured-output support.
+- Local-first, company-only, cloud-first, cloud-disabled, or balanced routing preferences.
+- Data classifications and the destinations permitted to process each class.
+- Prompt, response, and provider-retention rules.
+- Maximum tokens, request cost, run budget, daily budget, and concurrency.
+- Queue wait limits, latency targets, deadlines, provider rate limits, and fairness class.
+- Primary route pools, fallback chains, retry limits, timeouts, and fail-closed behavior.
+- Whether a boundary-changing fallback requires user approval.
+- Quality tiers, evaluation thresholds, and exact-model requirements.
+- Whether routing intelligence may use historical performance to rank eligible destinations.
+
+#### Example policy
+
+```yaml
+name: company-fast
+version: 1
+requirements:
+  tools: true
+  data_classification: internal
+routing:
+  preference: local-first
+  primary:
+    alias: local-qwen
+  wait_for_local: 20s
+  fallback:
+    - alias: company-qwen-pool
+    - alias: blazn-cloud-fast
+limits:
+  max_cost_usd_per_request: 0.10
+  max_attempts: 3
+privacy:
+  external_providers: denied
+  content_logging: denied
+on_no_compliant_route: fail
+```
+
+This example prefers a local model, waits briefly when it is saturated, tries another company-controlled instance, and then uses a permitted Blazn cloud route. If no route satisfies the privacy and cost rules, the request fails clearly rather than escaping policy.
+
+#### Evaluation and changes
+
+Policies are validated before activation. Blazn should detect aliases with no eligible destinations, impossible capability combinations, fallback cycles, routes that exceed their budget, and privacy rules contradicted by a provider's retention behavior.
+
+Policy changes are versioned, auditable, previewable against recent traffic, and reversible. Administrators should be able to simulate how a proposed policy would route representative requests before applying it. Active runs retain their captured version unless an emergency organization policy revokes a destination.
+
+#### Version-one boundary
+
+The first policy model should include:
+
+- Workspace defaults with optional agent-level specialization.
+- Allowed destinations and logical aliases.
+- Local-first or cloud-first preference.
+- Data-boundary and content-retention restrictions.
+- Queue timeout, maximum attempts, and ordered fallback.
+- Per-request and per-run cost limits.
+- Fail-closed behavior and optional approval before cloud fallback.
+- Versioning, validation, audit history, and route simulation.
+
 ## How the pieces fit
 
 ```mermaid
@@ -512,13 +793,15 @@ flowchart LR
     Products[Connected products] --> Clients
     Clients --> Workspace[Blazn workspace and company brain]
     Workspace --> Orchestration[Agents, projects, runs, schedules and events]
-    Orchestration --> Proxy[AI Proxy]
-    Orchestration --> Execution[Execution fabric]
-    Proxy --> Models[Local, provider and Blazn cloud models]
+    Orchestration --> Harness[Blazn Agent Harness]
+    Harness --> Router[Smart LLM Router / AI Proxy]
+    Harness --> Execution[Execution fabric]
+    Policy[LLM Router Policy] --> Router
+    Router --> Models[Local, provider and Blazn cloud models]
     Execution --> Nodes[User and team nodes]
     Execution --> Sandboxes[Sandboxes and virtual environments]
     Execution --> Cloud[Blazn cloud capacity]
-    Orchestration --> Memory[Artifacts, analytics and improvement]
+    Harness --> Memory[Artifacts, analytics and improvement]
     Memory --> Workspace
 ```
 
@@ -532,9 +815,9 @@ One person and one machine should be enough to get value. Cloud services add col
 
 Users can see what agents are doing, interrupt work, approve sensitive actions, set boundaries, and understand outcomes.
 
-### One system, many models and harnesses
+### One harness, many models and tools
 
-Blazn should provide a stable experience across different model providers, coding agents, general agents, and execution runtimes rather than locking the workspace to one vendor.
+Blazn should provide one consistent agent runtime across different model providers, tools, MCP servers, local and cloud environments, and product surfaces. External developer tools can use Blazn services, but Blazn-managed agents retain one observable and recoverable lifecycle.
 
 ### Work creates memory
 
@@ -574,8 +857,9 @@ It does not need to deliver the full company-brain vision on day one. The early 
 
 - A single-user workspace with a clear path to team collaboration.
 - Desktop and CLI access to the same local control plane.
-- A small agent library and one integrated harness.
-- Blazn AI Proxy routing across a local model and selected cloud providers.
+- A small agent library running through the Blazn Agent Harness.
+- Smart LLM Router access to a local model and selected cloud providers.
+- A versioned LLM Router Policy defining allowed routes, budgets, queueing, and fallback.
 - One contributed machine acting as a worker.
 - Isolated Linux execution for an initial class of workloads.
 - Runs with live events, logs, artifacts, and basic metrics.
@@ -616,7 +900,7 @@ This overview establishes the product direction. Follow-on documents should defi
 3. Product architecture and trust boundaries.
 4. Workspace, agent, run, artifact, project, and event data models.
 5. Node enrollment, sandboxing, native execution, and scheduling model.
-6. AI Proxy compatibility, routing, policy, and provider strategy.
+6. AI Proxy compatibility, Smart LLM Router architecture, policy evaluation, and provider strategy.
 7. MCP and public API surface, authentication, and authorization.
 8. Company-brain memory, retrieval, provenance, retention, and privacy model.
 9. Agent evaluation, introspection, and governed improvement process.
