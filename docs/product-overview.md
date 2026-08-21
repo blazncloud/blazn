@@ -15,6 +15,7 @@
   - [System component index](#system-component-index)
   - [Nodes](#nodes)
     - [Local model capacity](#local-model-capacity)
+  - [Sandbox templates and refreshes](#sandbox-templates-and-refreshes)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -269,7 +270,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Component | Purpose | Design status |
 | --- | --- | --- |
 | [Nodes](#nodes) | Contribute, describe, protect, and operate compute capacity | Initial design |
-| Sandbox templates and refreshes | Define reproducible environments and how their base state is updated | Planned |
+| [Sandbox templates and refreshes](#sandbox-templates-and-refreshes) | Define, version, update, and efficiently materialize reproducible environments | Initial design |
 | Sandboxes | Provide isolated, stateful or disposable execution environments | Planned |
 | Warm pools | Keep policy-controlled environments ready to reduce startup latency | Planned |
 | Analytics and events | Record the structured history of work and system activity | Planned |
@@ -519,6 +520,301 @@ Native platform execution, additional model runtimes, organization-wide device m
 - How should inference and agent environments share accelerators and memory without destabilizing the node?
 - Which workload types are portable, resumable, interruptible, or bound to one node?
 - What compatibility contract allows Kubernetes Agent Sandbox and non-Kubernetes backends to behave consistently?
+
+### Sandbox templates and refreshes
+
+#### Definition
+
+A sandbox template is an immutable, versioned specification for an approved agent environment. It describes what a sandbox must contain, which nodes can run it, how it is initialized, what it may access, and how Blazn determines that it is ready.
+
+A refresh is a controlled materialization process that prepares reusable repository state, dependencies, tool caches, and other safe-to-reuse environment data for a specific template version. The resulting refresh artifact can hydrate a cold sandbox or seed a sandbox maintained in a warm pool.
+
+These are separate concepts:
+
+- **Template:** The desired and governed environment specification.
+- **Template version:** An immutable revision of that specification with a unique content digest.
+- **Refresh:** The process of resolving current inputs and producing reusable cached state.
+- **Refresh artifact:** A content-addressed, validated output produced by a refresh.
+- **Sandbox:** A running or suspended instance of one template version, optionally hydrated from a compatible refresh artifact.
+- **Warm-pool entry:** A pre-created sandbox based on a template version and, normally, its latest eligible refresh artifact.
+
+Refreshing an environment never silently changes the identity of its template. Changing the operating system, tools, initialization behavior, network policy, repositories, or other declared template content creates a new template version.
+
+#### Template contents
+
+A sandbox template should be able to define:
+
+- Template name, description, owner, version, lifecycle channel, and compatibility contract.
+- Base operating-system image, CPU architecture, platform variants, and required isolation backend.
+- Minimum and maximum CPU, memory, storage, accelerator, process, and runtime limits.
+- The Blazn Agent Harness worker version and required runtime interfaces.
+- Language runtimes, package managers, compilers, browsers, CLIs, system packages, and development tools.
+- Repositories, source references, checkout strategy, workspace layout, and repository-specific setup.
+- Dependency installation, build, initialization, validation, and health-check steps.
+- Declared dependency, compiler, package, source, and build caches.
+- Tools, MCP servers, integrations, and capabilities that may be attached at runtime.
+- Network egress and ingress policy, DNS behavior, allowed services, and proxy configuration.
+- Filesystem layout, writable paths, ephemeral and persistent volumes, mounts, and artifact directories.
+- Credential requirements by capability and scope, but never secret values.
+- Environment variables divided into public configuration and runtime-injected secrets.
+- Sandbox persistence, suspension, timeout, cleanup, and artifact-retention behavior.
+- Refresh behavior, warm-pool eligibility, cache limits, and invalidation rules.
+- Labels for operating system, architecture, trust, data classification, region, and scheduling.
+- Provenance, signatures, approvals, security scan requirements, and policy references.
+
+The template is declarative wherever possible. Initialization scripts remain available for work that cannot be represented declaratively, but they are versioned inputs, execute with constrained privileges, and are included in the template digest.
+
+#### Repositories and source state
+
+A template may include one or more repositories. Each repository declaration can specify:
+
+- Repository identity and approved host.
+- Default branch, tag, commit, or workspace-supplied source reference.
+- Destination path and whether the checkout is read-only or writable.
+- Sparse checkout, submodule, Git LFS, and monorepo configuration.
+- Required package-manager lockfiles or dependency manifests.
+- Bootstrap, dependency, generation, build, and validation commands.
+- Cache inputs and outputs relevant to that repository.
+- Whether uncommitted changes, generated files, and build artifacts survive suspension or are exported separately.
+
+Credentials are referenced by integration and permission, not embedded in the template or refresh artifact. At sandbox creation time, the harness requests a short-lived repository grant scoped to the exact operation. A reusable checkout or dependency cache must be sanitized before it can become a refresh artifact or warm-pool base.
+
+The template describes the default or allowed source shape, while a run selects the exact revision it needs. This allows one template version to support many feature branches when their environment and dependency fingerprints remain compatible.
+
+#### Versioning and identity
+
+Published template versions are immutable. Any declared change produces a new version and digest, including changes to scripts, repository definitions, base images, tools, policies, or platform variants.
+
+Templates have:
+
+- A human-readable version for release and compatibility communication.
+- A content digest covering the fully resolved template and referenced immutable inputs.
+- Mutable channels such as `development`, `candidate`, and `stable` that point to immutable versions.
+- A compatibility declaration describing whether existing refresh artifacts, suspended sandboxes, and warm-pool entries may be reused.
+
+A run records the exact template version and digest it used. Selecting `stable` resolves that channel to an immutable version at admission time so later promotion does not alter an active or historical run.
+
+Rollback moves a channel back to a prior approved version; it never edits or deletes history. Emergency policy can prevent new use of a vulnerable version while preserving its provenance for prior runs.
+
+#### Composition and platform variants
+
+Templates may extend approved base templates to avoid copying common configuration. For example, an organization can publish a secured development base, a language team can add Node.js and repository tooling, and a project can add its repositories and setup.
+
+Composition is resolved before publication. The published version contains a complete effective specification and digest so execution does not depend on mutable parent templates.
+
+A logical template may have platform variants for Linux `amd64`, Linux `arm64`, macOS-native, Windows-native, or different sandbox backends. Variants must satisfy the same declared agent-facing contract but may use different images, commands, paths, and caches. Blazn chooses a compatible variant after node placement and records the selected variant on the sandbox.
+
+#### Agent update policy
+
+Agents may discover that a template is missing a tool, uses stale dependencies, or contains a broken setup step. They must not silently modify a published template or promote a new version merely because they can edit files inside a sandbox.
+
+A versioned Sandbox Template Policy determines what an agent may do:
+
+| Mode | Agent capability |
+| --- | --- |
+| **Locked** | Use approved versions and report problems; no template changes |
+| **Propose** | Create a structured change proposal or source-control change for review |
+| **Build candidate** | Propose and build a new candidate version, run validation, and attach evidence |
+| **Publish development** | Publish a validated version only to an authorized development channel |
+| **Managed promotion** | Promote a candidate through specified channels only when automated gates and required approvals pass |
+
+The default for ordinary agents should be **Propose**. A workspace can grant stronger capabilities to a dedicated environment-maintainer agent while limiting it to specific templates, repositories, channels, dependency classes, and cost budgets.
+
+The policy should define:
+
+- Which agents, people, or teams may propose, build, approve, publish, promote, deprecate, or revoke versions.
+- Which template fields an agent may change.
+- Allowed base images, repositories, package sources, scripts, tools, and network destinations.
+- Required tests, scans, signatures, evidence, and human approvals.
+- Channels an agent may update and whether production or stable promotion is ever automatic.
+- Dependency-update limits, such as patch-only changes or approved package registries.
+- Maximum build resources, refresh frequency, storage usage, and spending.
+- Whether an agent may trigger refreshes without changing a template.
+
+An agent's update attempt is an auditable run. Its proposal contains the reason, diff, affected variants, test evidence, security results, compatibility assessment, refresh impact, and rollback target.
+
+#### Template update lifecycle
+
+An authorized update follows a controlled lifecycle:
+
+1. Fork the current immutable specification into a draft.
+2. Apply the proposed change and resolve inherited configuration.
+3. Validate schema, policy, repository access, and platform compatibility.
+4. Build every required platform variant in an isolated builder.
+5. Run initialization, health, reproducibility, security, and smoke tests.
+6. Generate provenance, software inventory, content digest, and signatures.
+7. Publish an immutable candidate version.
+8. Create compatible refresh artifacts and optional warm-pool canaries.
+9. Evaluate required evidence and obtain approvals.
+10. Move an authorized channel to the new version and roll it out gradually.
+
+Failed builds or validations do not alter the active version. Promotion and rollback generate events that link the actor, policy, evidence, affected pools, and versions.
+
+#### Refresh definition
+
+A refresh prepares expensive but reusable state ahead of agent execution. Typical refresh outputs include:
+
+- Repository object stores or sanitized checkouts at an approved source revision.
+- Installed dependencies selected by exact lockfiles.
+- Package-manager download caches.
+- Compiled dependencies and generated sources when they are deterministic and portable.
+- Language, compiler, linker, build-system, browser, and model-support caches.
+- Pre-pulled tool or sidecar images.
+- Verified indexes or metadata needed during initialization.
+
+A refresh does not contain active credentials, access tokens, user-specific configuration, unreviewed workspace changes, conversation context, or secrets. It also does not replace run-time synchronization: the sandbox still verifies and checks out the requested source revision before the harness begins work.
+
+#### Refresh identity and cache keys
+
+Each refresh artifact is content-addressed and tied to the inputs that make it safe to reuse. Its key should include at least:
+
+- Template version and resolved platform variant.
+- Operating system, architecture, isolation backend, and relevant runtime versions.
+- Repository identity and selected source or object-store state.
+- Dependency manifests and lockfile digests.
+- Initialization and build-step digests.
+- Package source, compiler, and important environment configuration.
+- Cache schema version and any portability boundary, such as node-local versus shared.
+
+Blazn may produce several artifacts for one template: a broadly reusable base dependency cache, a repository-specific cache, an architecture-specific build cache, and a full sanitized environment snapshot. Smaller layers improve reuse; fuller snapshots improve startup time. Policy determines which forms are allowed.
+
+If a required fingerprint does not match, Blazn treats the artifact as a partial optimization or a cache miss. It never presents stale dependencies as the environment requested by the run.
+
+#### Refresh triggers
+
+A refresh may be initiated by:
+
+- Publishing or promoting a template version.
+- A repository branch or approved source revision changing.
+- A lockfile, dependency manifest, or initialization script changing.
+- A base image, toolchain, package index, certificate, or security advisory changing.
+- A refresh time-to-live expiring.
+- Warm-pool demand or cache-miss metrics crossing a policy threshold.
+- A person, maintainer agent, schedule, API client, or MCP client requesting it.
+
+Triggers are coalesced by refresh key so many runs do not rebuild the same cache concurrently. Refresh work has its own queue, priority, concurrency, storage, and cost limits and should yield to higher-priority interactive agent work when appropriate.
+
+#### Cold-start flow
+
+For a cold sandbox, Blazn:
+
+1. Selects the exact template version and compatible platform variant.
+2. Chooses a node and ensures the immutable base layers are present.
+3. Locates the newest policy-eligible refresh artifacts whose fingerprints match.
+4. Creates the isolated sandbox and hydrates reusable caches or a sanitized snapshot.
+5. Injects short-lived repository access and synchronizes the exact requested revision.
+6. Verifies lockfiles and applies only the dependency or build delta that remains.
+7. Removes setup credentials, attaches run-scoped credentials and tools, and executes health checks.
+8. Hands the ready sandbox to the Blazn Agent Harness.
+
+When no compatible refresh exists, the same flow performs a full initialization from the template. If policy permits, successful reusable outputs can be sanitized and published as a new refresh artifact for later runs.
+
+#### Warm-pool flow
+
+A warm pool maintains a target number of sandboxes for a template version and platform variant. Those sandboxes are normally hydrated from the same refresh artifacts used by cold starts, then initialized through the readiness boundary before a run arrives.
+
+When claimed, a warm sandbox still receives a fresh run identity, exact source synchronization, scoped credentials, policy overlays, and final health check. Warm does not mean trusted without verification.
+
+When a new refresh artifact becomes eligible, the warm-pool controller gradually replaces stale entries rather than mutating running sandboxes in place. Active sandboxes continue with their captured template and refresh identities unless an emergency policy requires suspension or termination.
+
+Warm pools reduce sandbox creation and initialization latency. Refresh artifacts reduce repository, dependency, and build preparation latency for both warm and cold sandboxes. The two mechanisms complement one another but remain independently configurable.
+
+#### Storage and distribution
+
+Refresh artifacts may be stored:
+
+- In a node-local cache for maximum speed and data locality.
+- In a workspace-controlled artifact registry for reuse across nodes.
+- In Blazn cloud storage for managed environments.
+- As layered snapshots or images supported by a sandbox backend.
+
+Every artifact carries its digest, size, provenance, compatibility metadata, security status, creation policy, last-used time, and retention class. Distribution verifies signatures and digests before mounting or extraction.
+
+Scheduling can prefer a node that already holds a compatible artifact, but cache locality is a preference rather than permission to violate trust, resource, data-residency, or queue policy.
+
+#### Security and supply chain
+
+Template builds and refreshes execute repository and dependency installation code, so they are treated as untrusted workloads.
+
+- Builds run in isolated, minimally privileged environments rather than on the node host.
+- Package and image sources are restricted by policy.
+- Network access during build and refresh is declared and auditable.
+- Secret mounts are non-exportable and excluded from layers, logs, and artifacts.
+- Refresh publication includes secret scanning and sanitation checks.
+- Templates and refresh artifacts carry provenance and signatures.
+- Software inventory and vulnerability results are attached to the version.
+- Promotion can be blocked by severity, license, provenance, or policy violations.
+- Consumers re-verify digests and eligibility before use.
+
+A compromised or vulnerable artifact can be revoked. Nodes stop using it for new sandboxes, warm pools replace affected entries, and active runs are evaluated according to an emergency response policy.
+
+#### Lifecycle and garbage collection
+
+Template versions move through draft, building, candidate, stable, deprecated, revoked, and archived states. Refresh artifacts move through building, validating, ready, stale, revoked, and deleted states.
+
+Retention considers channel references, active and suspended sandboxes, warm pools, recent use, reproducibility requirements, storage budgets, and security status. Blazn never deletes a layer still required by an active sandbox. Historical run records retain metadata and digests even when policy permits the underlying large artifact to be removed.
+
+Node-local garbage collection honors a reserved free-space threshold, evicts least-valuable unpinned artifacts first, and reports what it removed. A node must not traverse host paths or delete data outside Blazn-managed storage.
+
+#### Observability
+
+For templates and refreshes, Blazn records:
+
+- Build, validation, publication, promotion, rollback, deprecation, and revocation events.
+- Build and refresh duration, queue time, resource usage, and cost.
+- Artifact size, distribution time, hit rate, miss reason, and last use.
+- Cold-start and warm-start latency broken down by image, repository, dependency, initialization, and health-check stages.
+- Dependency delta work performed after hydration.
+- Validation, compatibility, security, and sanitation failures.
+- Template versions, refresh artifacts, and warm-pool entries used by each sandbox and run.
+- Time and compute saved compared with a full uncached initialization.
+
+These measurements determine whether a refresh artifact or warm pool is worth retaining instead of assuming that every cache improves the system.
+
+#### Initial records
+
+The initial template record should include:
+
+- Stable template ID, workspace, name, owner, description, and lifecycle channel.
+- Immutable version, digest, resolved specification, parent references, and platform variants.
+- Repository declarations, setup steps, resource profiles, policies, and required capabilities.
+- Update permissions, approval rules, signatures, provenance, and security status.
+- Refresh policy, warm-pool policy, retention policy, and current eligible artifacts.
+- Creation, publication, promotion, deprecation, and revocation history.
+
+The initial refresh record should include:
+
+- Stable refresh ID, template version, variant, cache key, and content digest.
+- Input fingerprints, repository and lockfile state, and refresh type.
+- Artifact location, size, portability, and storage class.
+- Builder identity, policy version, provenance, signatures, and security results.
+- Status, compatibility, creation and expiration times, last use, and use count.
+- Build metrics, failure details, and superseding refresh reference.
+
+#### Version-one boundary
+
+The first implementation should prove:
+
+1. One versioned Linux template with one repository, runtime, dependency lockfile, resource profile, network policy, and health check.
+2. Immutable publication with a content digest, development and stable channels, validation, and rollback.
+3. A default proposal-only agent update policy and a maintainer-approved promotion path.
+4. One refresh job that creates a sanitized repository and dependency artifact keyed by template, architecture, source, and lockfile.
+5. Cold sandbox hydration from that artifact with source and dependency verification.
+6. Warm-pool creation from the same template and refresh artifact.
+7. Invalidation after a template, source, or lockfile change.
+8. Metrics comparing full cold start, refreshed cold start, and warm-pool claim.
+9. Signed artifact distribution to at least one eligible node and safe garbage collection.
+
+#### Decisions to make next
+
+- What is the canonical template authoring format and where is its source of truth?
+- Which fields are portable across sandbox backends and which belong to platform variants?
+- Which cache and snapshot formats can be shared safely across nodes and operating systems?
+- How granular should refresh layers be before coordination and storage cost outweigh reuse?
+- Which repository revisions trigger proactive refreshes and which refresh on demand?
+- When may a maintainer agent publish or promote without a person approving the change?
+- How are template changes evaluated against active sandboxes, scheduled runs, and warm-pool capacity?
+- Which artifacts must be retained to reproduce a historical run?
 
 ### Blazn Agent Harness system
 
@@ -798,8 +1094,11 @@ flowchart LR
     Harness --> Execution[Execution fabric]
     Policy[LLM Router Policy] --> Router
     Router --> Models[Local, provider and Blazn cloud models]
+    Templates[Versioned sandbox templates] --> Execution
+    Refreshes[Refresh artifacts] --> Execution
     Execution --> Nodes[User and team nodes]
     Execution --> Sandboxes[Sandboxes and virtual environments]
+    Execution --> WarmPools[Warm pools]
     Execution --> Cloud[Blazn cloud capacity]
     Harness --> Memory[Artifacts, analytics and improvement]
     Memory --> Workspace
@@ -861,6 +1160,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - Smart LLM Router access to a local model and selected cloud providers.
 - A versioned LLM Router Policy defining allowed routes, budgets, queueing, and fallback.
 - One contributed machine acting as a worker.
+- One immutable, versioned sandbox template with repository and dependency refresh artifacts used by cold starts and warm pools.
 - Isolated Linux execution for an initial class of workloads.
 - Runs with live events, logs, artifacts, and basic metrics.
 - A minimal project/task connection.
