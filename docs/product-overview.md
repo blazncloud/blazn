@@ -16,6 +16,7 @@
   - [Nodes](#nodes)
     - [Local model capacity](#local-model-capacity)
   - [Sandbox templates and refreshes](#sandbox-templates-and-refreshes)
+  - [Sandboxes](#sandboxes)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -271,7 +272,7 @@ This section turns the product vision into a shared system model. It will be dev
 | --- | --- | --- |
 | [Nodes](#nodes) | Contribute, describe, protect, and operate compute capacity | Initial design |
 | [Sandbox templates and refreshes](#sandbox-templates-and-refreshes) | Define, version, update, and efficiently materialize reproducible environments | Initial design |
-| Sandboxes | Provide isolated, stateful or disposable execution environments | Planned |
+| [Sandboxes](#sandboxes) | Provide isolated, stateful or disposable execution environments | Initial design |
 | Warm pools | Keep policy-controlled environments ready to reduce startup latency | Planned |
 | Analytics and events | Record the structured history of work and system activity | Planned |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
@@ -815,6 +816,322 @@ The first implementation should prove:
 - When may a maintainer agent publish or promote without a person approving the change?
 - How are template changes evaluated against active sandboxes, scheduled runs, and warm-pool capacity?
 - Which artifacts must be retained to reproduce a historical run?
+
+### Sandboxes
+
+#### Definition
+
+A sandbox is an isolated execution environment created from one immutable sandbox template version and, optionally, hydrated from compatible refresh artifacts. It provides the filesystem, processes, network boundary, resource envelope, tools, and runtime connection in which the Blazn Agent Harness performs work.
+
+The Blazn sandbox is a product-level resource rather than a Kubernetes-specific object. A backend may implement it with Kubernetes Agent Sandbox, a container, a microVM, a platform virtual machine, or managed Blazn cloud infrastructure. Every backend must report which parts of the Blazn sandbox contract it can enforce.
+
+Native macOS or Windows host execution is a related execution backend but is not described as having the same isolation as a sandbox. Runs requiring host-native tools use an explicitly lower-isolation class, narrower permissions, and stronger approval policy.
+
+#### Ownership model
+
+A sandbox has one owning session and may support multiple linked runs in that session. Ownership creates a durable relationship between the conversation, working tree, environment state, artifacts, and agent work without forcing every follow-up request to start from an empty machine.
+
+One active writer lease is allowed by default. The Blazn Agent Harness holds that lease for the active run and coordinates interactive human access within the same session. Multiple viewers may inspect logs, files, terminals, previews, and metrics, but another agent or session cannot modify the sandbox unless an explicit collaboration policy grants a shared writer mode.
+
+Temporary agents receive separate sandboxes by default. They exchange instructions, artifacts, patches, and results through the harness rather than concurrently modifying the parent's working directory. This reduces accidental conflicts and provides clean provenance. A deliberate shared-sandbox policy may be used for tightly coordinated work, but it must define writer fencing, path ownership, and conflict handling.
+
+Before claim, a warm-pool sandbox is owned by its pool. Claiming it atomically transfers ownership to one session and assigns a fresh run identity and writer lease. A claimed sandbox cannot be handed to another session without release, sanitation, and policy-controlled recycling.
+
+#### Sandbox types
+
+| Type | Intended use | Default retention |
+| --- | --- | --- |
+| **Run sandbox** | One bounded, disposable unit of work | Destroy after result and artifact export |
+| **Session sandbox** | Conversation and follow-up work that benefits from persistent files and processes | Suspend between runs, expire after policy limit |
+| **Development sandbox** | Interactive human-and-agent development with terminal, editor, preview, and debugging access | Persist while the project or user retains it |
+| **Warm-pool sandbox** | Unclaimed, pre-created capacity for fast assignment | Recycle or replace according to pool policy |
+| **Shared sandbox** | Explicit collaboration among approved agents or people | Persist only while the shared lease policy is satisfied |
+
+These are lifecycle and policy profiles over one sandbox resource. A sandbox records its type, and policy controls whether it can change type after creation.
+
+#### Identity and relationships
+
+Every sandbox has a stable ID independent of its backend object name. The record links:
+
+- Workspace, owning session, active run, agent, and requesting principal.
+- Exact template version, content digest, and selected platform variant.
+- Refresh artifacts and cache layers used during hydration.
+- Node, execution backend, isolation class, region, and trust class.
+- Repository revisions, writable workspace, volumes, exposed services, and artifacts.
+- Resource profile, queue admission, priority, and cost attribution.
+- Harness attachment, writer lease, viewers, credentials, and policy versions.
+- Desired state, observed state, health, timestamps, and terminal reason.
+
+A backend object may be recreated while the Blazn sandbox identity remains stable, provided the recovery policy and persisted state support it. Backend identifiers are recorded as implementation references rather than used as the user-facing identity.
+
+#### Desired and observed state
+
+The control plane stores the desired sandbox state. The node or backend reports observed state and conditions. A reconciler continuously compares them and performs bounded, idempotent transitions.
+
+Examples of desired state include ready, running, suspended, stopped, and destroyed. Conditions explain whether the template resolved, a node was assigned, refresh hydration succeeded, credentials attached, the harness connected, health checks passed, storage persisted, or cleanup completed.
+
+Commands such as pause or delete become desired-state changes with an operation ID. Clients do not issue unaudited raw infrastructure commands directly to a node.
+
+#### Lifecycle
+
+The initial sandbox lifecycle is:
+
+- **Requested:** Identity and requirements are recorded.
+- **Queued:** The request awaits quota, priority admission, eligible node capacity, or a warm-pool claim.
+- **Provisioning:** The backend object, isolation boundary, filesystem, and resource controls are being created.
+- **Hydrating:** Refresh artifacts, repositories, dependencies, caches, and runtime configuration are being materialized.
+- **Ready:** Health checks passed and the sandbox can accept a harness attachment.
+- **Claimed:** A session owns the sandbox and has received the writer lease.
+- **Running:** The harness or an approved interactive attachment is actively using it.
+- **Waiting:** The sandbox remains allocated while its run waits for a person or external dependency.
+- **Suspending:** Writable state and required metadata are being checkpointed.
+- **Suspended:** Compute is released or reduced while resumable state is retained.
+- **Resuming:** The same or a compatible backend is restoring persisted state and revalidating readiness.
+- **Releasing:** Artifacts are exported, credentials revoked, leases ended, and cleanup or recycling begins.
+- **Destroyed:** Runtime resources and policy-selected state are removed.
+- **Failed:** A transition cannot complete and requires retry, recovery, or intervention.
+- **Quarantined:** Security or integrity policy prevents access, reuse, or normal cleanup until inspected.
+
+`Failed` is accompanied by a failed phase and reason rather than hiding where the error occurred. Terminal runs and sandboxes are related but separate: a run can fail while its session sandbox remains available for diagnosis, or a sandbox can fail and the harness can recover a portable run elsewhere.
+
+#### Provisioning and readiness
+
+After queue admission, sandbox provisioning follows a consistent sequence:
+
+1. Resolve the exact template version, platform variant, policies, and workload requirements.
+2. Claim a compatible warm sandbox or select an eligible node and backend.
+3. Create the isolation boundary, resource controls, network policy, and storage layout.
+4. Mount immutable template layers and policy-eligible refresh artifacts.
+5. Create a fresh writable workspace and synchronize exact repository revisions.
+6. Verify dependency fingerprints and apply remaining initialization work.
+7. Attach run-scoped integrations, credentials, tools, and environment configuration.
+8. Start the Blazn Agent Harness worker and sandbox control endpoint.
+9. Run template and platform health checks.
+10. Mark the sandbox ready and issue a time-limited ownership and writer lease.
+
+Readiness is based on declared checks, not merely on the backend process existing. A sandbox is not assigned to a run until its filesystem, network, harness endpoint, and required tools are usable.
+
+#### Filesystem and repository state
+
+The sandbox filesystem is divided into explicit classes:
+
+- **Immutable base:** Template image, runtime, and verified system tooling.
+- **Reusable cache:** Refresh artifacts and package or build caches mounted read-only where possible or through controlled copy-on-write layers.
+- **Writable workspace:** Repositories, generated files, patches, and run-created working state.
+- **Scratch:** Temporary data that can be discarded without affecting recovery.
+- **Persistent volumes:** Policy-approved session or project data that survives suspension or backend recreation.
+- **Artifact staging:** Outputs selected for durable export to the workspace artifact system.
+
+Host directories are not mounted by default. A user may explicitly attach an approved local folder to a development sandbox, but the mount records its path class, permissions, owning user, and risk. Company-wide scheduled agents should use managed repository checkouts and volumes rather than personal host paths.
+
+Repository state records the starting revision, current revision, branch or detached state, dirty files, generated outputs, and patch or commit artifacts. Before release or destruction, policy determines whether Blazn commits, exports a patch, uploads selected files, checkpoints the volume, or discards the changes. Agents cannot assume that uncommitted files will persist unless the sandbox retention policy says so.
+
+#### Persistence, suspension, and checkpoints
+
+Suspension preserves the durable state required for the session while releasing as much compute as the backend supports. At minimum, Blazn records filesystem or volume snapshots, repository status, harness checkpoint references, active service declarations, template and refresh identities, pending approvals, and credentials that must be reissued.
+
+Secrets are never persisted in a portable checkpoint. On resume, the sandbox reacquires authorized credentials and revalidates network, repository, dependency, template, and policy conditions before the writer lease returns.
+
+Process-memory checkpointing may be used when a trusted backend supports it, but it is an optimization rather than the portable contract. The portable recovery path assumes processes can restart from filesystem state and the durable harness checkpoint.
+
+A suspended sandbox remains pinned to its captured template version. Upgrading it creates a controlled migration or replacement sandbox; it does not silently apply a new template or refresh artifact to existing writable state.
+
+#### Resume and migration
+
+Resume prefers the original node when it owns node-local state or caches, then considers another compatible node if all required durable state is portable. Migration is allowed only when the destination satisfies the original template, architecture, isolation, trust, region, resource, and data-boundary requirements.
+
+Migration creates a new backend instance under the same sandbox identity, restores durable state, runs readiness and integrity checks, and then moves the writer lease. Source and destination may not both hold an active writer lease. If fencing cannot be proven, Blazn stops and requests intervention rather than risking divergent workspaces.
+
+Not every sandbox is migratable. Native host execution, attached personal folders, specialized hardware, active GUI state, and node-local secrets can bind work to one node. The UI and scheduler should make this constraint visible before the run begins.
+
+#### Resource controls and resizing
+
+Every sandbox has requested, admitted, minimum, and maximum resources. The backend enforces CPU, memory, storage, accelerator, process, file-descriptor, and execution-time limits where supported.
+
+Resource pressure is reported before the host becomes unstable. A policy may throttle the sandbox, preempt interruptible work, suspend it, request a larger profile, migrate it, or fail it with a clear resource reason. Personal-node reserves always outrank sandbox requests.
+
+Live resizing is used only when the backend supports it safely. Otherwise, changing the resource profile creates a restart or migration operation with a checkpoint and explicit event. Agents may request more resources, but queue, budget, node, and approval policies decide whether the request is granted.
+
+#### Networking and services
+
+Each sandbox receives an isolated network identity and a default-deny or template-defined egress policy. Network access is evaluated using workspace, template, integration, and data-classification rules.
+
+Services started inside a sandbox are private by default. Terminal, editor, browser preview, API, and debugging access use an authenticated Blazn tunnel or service gateway tied to the sandbox, user, session, and expiration time. Raw ports are not exposed publicly merely because a process starts listening.
+
+The service gateway provides stable logical endpoints even when the backend object or node changes. It can enforce authentication, authorization, TLS, origin checks, request limits, audit events, and optional human approval before exposure.
+
+Network policy changes are recorded and reconciled. An agent cannot expand its own egress or publish a service unless its permissions and the sandbox policy allow it.
+
+#### Credentials and integrations
+
+The template declares credential capabilities; the sandbox receives actual credentials only after ownership, run, tool, and policy checks pass. Credentials are short-lived, audience-bound where supported, and injected through a backend mechanism that avoids writing them into reusable layers.
+
+The sandbox control endpoint tracks which grants are attached, their scopes, expiry, and revocation status without exposing secret values. Grants are revoked on run completion, suspension, ownership transfer, quarantine, or policy change. Resuming a sandbox requires fresh authorization.
+
+Repository access, MCP servers, cloud providers, databases, customer systems, and other integrations remain distinct grants. Access to one does not imply general workspace credentials or host access.
+
+#### Harness and user attachment
+
+The Blazn Agent Harness communicates with the sandbox through a versioned control protocol for commands, files, processes, terminals, services, events, health, and artifacts. The protocol should support reconnecting after either side restarts without losing operation identity or repeating completed actions.
+
+Authorized users can attach through the desktop app or CLI to:
+
+- View and search files.
+- Open a terminal or approved editor session.
+- Observe processes, logs, resource usage, and active network services.
+- Preview web applications or other declared services.
+- Upload, download, pin, or publish artifacts.
+- Pause, resume, drain, checkpoint, or request destruction.
+
+Interactive access is attributed to the user and appears in the same event stream as agent actions. The UI distinguishes human and agent changes rather than presenting all filesystem activity as agent work.
+
+#### Collaboration and shared access
+
+The safe default is one session, one active writer lease, and multiple observers. Collaboration policy may additionally allow:
+
+- Several people to share the session under one coordinated writer lease.
+- Read-only mounts of another sandbox's published artifact or snapshot.
+- A temporary agent to receive a copy-on-write branch of the parent's workspace.
+- Multiple agents to work in separate worktrees or declared path partitions.
+- A coordinating agent to merge patches or artifacts after delegated runs complete.
+
+Unfenced concurrent writes to the same checkout are not a supported coordination mechanism. When shared write access is enabled, Blazn records lease transitions, path ownership when applicable, conflicts, and merge outcomes.
+
+#### Isolation and backend capability
+
+Every sandbox advertises an isolation class so users and policy can distinguish enforcement strength:
+
+- **Container isolation:** Namespaces and resource controls sharing a host kernel.
+- **Sandboxed-container isolation:** Additional syscall or user-space kernel boundary.
+- **MicroVM or VM isolation:** A dedicated guest kernel and stronger machine boundary.
+- **Managed cloud isolation:** Blazn-operated environment with a declared tenancy and security profile.
+
+Native host execution is listed separately rather than assigned a misleading sandbox isolation class.
+
+Backend capabilities include suspend and resume, portable snapshots, live resize, accelerator access, nested virtualization, GUI support, network-policy strength, filesystem semantics, maximum lifetime, and warm-pool support. Templates and policies require capabilities; they do not infer equivalent security from different backend names.
+
+Kubernetes Agent Sandbox can serve as a Linux backend adapter. Blazn maps its sandbox identity and lifecycle onto the Kubernetes resource while retaining Blazn ownership, run, queue, policy, credential, event, and artifact semantics. Non-Kubernetes and native-platform backends implement the same Blazn control contract to the degree declared by their capability profile.
+
+#### Security and sanitation
+
+Sandbox contents and processes are treated as untrusted even when the template is approved.
+
+- Workloads run without host administrator privileges by default.
+- Host files, sockets, devices, metadata services, and control-plane credentials are unavailable unless explicitly granted.
+- Template, refresh, and runtime layers are verified before use.
+- Network access, process privileges, mounts, devices, and service exposure are policy-controlled.
+- Control endpoints authenticate both the harness and node and authorize every operation.
+- Logs and artifacts pass through secret-detection and policy filters where appropriate.
+- Sandbox escape, integrity, malware, or credential-leak indicators trigger quarantine.
+- Release and warm-pool recycling include credential revocation, process termination, writable-state sanitation, and verification.
+
+A sandbox that cannot prove sanitation is destroyed rather than returned to a warm pool.
+
+#### Timeouts, release, and cleanup
+
+Sandbox policy defines queue timeout, provisioning timeout, idle timeout, maximum running time, maximum suspended time, and absolute lifetime. Activity from the harness, an attached user, approved services, or pending work updates the appropriate lease; background noise does not keep a sandbox alive indefinitely.
+
+Release follows an ordered process:
+
+1. Stop admission of new operations and expire the writer lease.
+2. Let bounded in-flight operations finish or cancel them according to policy.
+3. Export required results, patches, artifacts, logs, and diagnostics.
+4. Create an approved checkpoint or snapshot when retention requires it.
+5. Revoke credentials, tunnels, integration grants, and service endpoints.
+6. Terminate processes and detach mounts and volumes.
+7. Sanitize for warm-pool recycling or destroy the backend object.
+8. Verify cleanup and record any residual resources.
+
+Orphan detection compares backend resources with authoritative sandbox records. Unknown, expired, or ownerless resources are quarantined and then cleaned through the same validated process rather than deleted through broad selectors.
+
+#### Failure and node loss
+
+Failure policy distinguishes provisioning failure, refresh or dependency failure, harness failure, resource exhaustion, policy denial, backend failure, node disconnection, and security quarantine.
+
+For node loss, Blazn determines whether:
+
+- The node may reconnect and resume the same sandbox.
+- Durable state can restore the sandbox on another eligible node.
+- The run can restart from a harness checkpoint in a replacement sandbox.
+- An external action may have occurred and requires reconciliation.
+- Irreplaceable local state makes human intervention necessary.
+
+Retries preserve the logical sandbox and operation history when recovering the same environment. Creating a clean replacement produces a new sandbox ID linked by a replacement relationship so provenance is not blurred.
+
+#### Events, logs, and metrics
+
+Sandbox events cover every desired-state request, backend transition, condition, lease, attachment, credential grant, policy decision, service exposure, checkpoint, artifact export, failure, and cleanup result.
+
+Core metrics include:
+
+- Queue, provisioning, hydration, readiness, claim, resume, and cleanup latency.
+- CPU, memory, storage, accelerator, process, network, and open-service usage.
+- Resource throttling, pressure, out-of-memory termination, and preemption.
+- Refresh cache hit, dependency delta, and warm-pool claim effectiveness.
+- Active, idle, waiting, suspended, failed, quarantined, and orphaned counts.
+- Session reuse, lifetime, migration, recovery, and replacement rates.
+- Cost, contributed-node usage, and cloud-cost avoidance.
+
+Logs are separated into system lifecycle, harness, agent process, tool, service, and audit streams. Content retention follows workspace policy and avoids collecting unrelated host activity.
+
+#### Initial sandbox record
+
+The first record should include:
+
+- Stable sandbox ID, workspace, type, owner session, active run, agent, and requester.
+- Template version, digest, variant, refresh artifacts, and requested source revisions.
+- Node, backend object reference, isolation and trust class, region, and capabilities.
+- Desired and observed state, conditions, health, operation IDs, and transition times.
+- Resource request, admission, actual use, limits, priority, and queue reference.
+- Filesystem, volumes, repository state, checkpoint, and artifact references.
+- Harness endpoint and version, ownership lease, writer lease, and viewer attachments.
+- Network policy, private services, tunnels, and expiration.
+- Credential grant references and policy versions without secret values.
+- Retention, timeout, migration, release, replacement, and terminal information.
+
+#### API and MCP surface
+
+The initial control surface should support:
+
+- List and inspect authorized sandboxes and their conditions.
+- Request a sandbox from a template, source revision, resource profile, and policy context.
+- Claim an eligible warm sandbox for a session.
+- Attach the harness or an authorized interactive client.
+- Stream lifecycle events, logs, metrics, files, processes, and services.
+- Request checkpoint, suspend, resume, resize, release, or destruction.
+- Publish an artifact, patch, snapshot, or service endpoint.
+- Diagnose readiness, policy, resource, network, and backend failures.
+
+All mutations are asynchronous operations with an operation ID, idempotency key, authorization decision, and eventual result. Force operations require a distinct permission and produce elevated audit events.
+
+#### Version-one boundary
+
+The first sandbox implementation should prove:
+
+1. Create one Linux sandbox from an immutable template on an eligible node.
+2. Hydrate a repository and dependencies from a compatible refresh artifact.
+3. Enforce CPU, memory, storage, process, filesystem, and network limits.
+4. Attach the Blazn Agent Harness using a session-scoped writer lease.
+5. Stream lifecycle events, logs, resource metrics, files, and artifacts.
+6. Support follow-up runs in the same session sandbox.
+7. Suspend, resume, and reconnect without losing durable workspace state.
+8. Revoke credentials and destroy or sanitize the sandbox reliably.
+9. Recover from a harness restart and report a simulated node loss clearly.
+10. Expose authenticated desktop, CLI, API, and MCP controls.
+
+Kubernetes Agent Sandbox is a candidate first Linux adapter, but the version-one Blazn API and data model should not expose Kubernetes as the required product contract.
+
+#### Decisions to make next
+
+- Which Linux isolation backend should be the first supported implementation?
+- What exact state belongs to a session sandbox versus a project volume or artifact?
+- Which suspension and snapshot format is portable across nodes and backend versions?
+- When should a failed run retain its sandbox for diagnosis, and for how long?
+- Which interactive access features are required in the first desktop release?
+- Can any multi-agent shared-writer mode be made safe enough for version one?
+- How should personal-node storage and network policies differ from dedicated workers?
+- Which sandbox states consume queue quota, node capacity, or customer billing?
+- What guarantees must a backend satisfy before Blazn labels it production-safe?
 
 ### Blazn Agent Harness system
 
