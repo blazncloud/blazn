@@ -18,6 +18,7 @@
   - [Sandbox templates and refreshes](#sandbox-templates-and-refreshes)
   - [Sandboxes](#sandboxes)
   - [Warm pools](#warm-pools)
+  - [Queues](#queues)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -277,7 +278,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Warm pools](#warm-pools) | Keep policy-controlled environments ready to reduce startup latency | Initial design |
 | Analytics and events | Record the structured history of work and system activity | Planned |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
-| Queues | Admit and prioritize work across limited models and compute | Planned |
+| [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
 | Temporary agents | Create bounded, task-specific agent identities and lifetimes | Planned |
 | Agents | Define durable agent identity, objectives, configuration, and history | Planned |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
@@ -1486,6 +1487,446 @@ The first warm-pool implementation should prove:
 - How should pool capacity follow template-channel promotion without causing a readiness gap?
 - Which metrics determine that a pool should be resized, suspended, or removed?
 
+### Queues
+
+#### Definition
+
+Queues are Blazn's durable admission, ordering, fairness, and backpressure system for work competing over limited capacity. They decide when work may consume resources; schedulers and routers decide where admitted work executes.
+
+Blazn does not use one global FIFO queue. Agent runs, sandbox provisioning, model inference, template builds, refreshes, warm-pool maintenance, and rate-limited integration work have different resource units and latency requirements. They use separate queue domains connected by shared identity, priority, quota, budget, and policy context.
+
+Queue state is authoritative and durable. Closing a client, restarting a controller, or temporarily losing a node does not erase a request or silently duplicate it.
+
+#### Goals
+
+The queue system should:
+
+- Give interactive users responsive service without starving scheduled or background work indefinitely.
+- Isolate workspaces, teams, agents, and principals with explicit concurrency and resource limits.
+- Allocate heterogeneous CPU, memory, accelerator, model, provider, storage, and network capacity fairly.
+- Make contributed personal nodes useful without assuming they are continuously available.
+- Preserve policy, trust, region, architecture, template, model, and data-boundary requirements.
+- Apply budgets and provider limits before expensive work begins.
+- Support deadlines, reservations, preemption, retry, cancellation, and recovery safely.
+- Explain why an item is waiting, when it may run, and what would make it eligible.
+- Prevent warm pools, refreshes, and maintenance from hiding or monopolizing capacity.
+
+#### Queue domains
+
+| Domain | Work item | Capacity governed |
+| --- | --- | --- |
+| **Run admission** | A Blazn Agent Harness run or delegated temporary-agent run | Workspace and agent concurrency, run budget, environment entitlement |
+| **Environment** | Sandbox create, claim, resume, resize, migrate, or replacement | Node CPU, memory, storage, accelerator, backend, warm entries |
+| **Inference** | One logical LLM request and its policy-controlled attempts | Model concurrency, tokens in flight, accelerator memory, provider limits and spend |
+| **Template build** | Build, validate, scan, sign, or promote a template version | Builder capacity, platform variants, artifact storage and budget |
+| **Refresh** | Create or update reusable repository and dependency artifacts | Build capacity, repositories, package sources, storage and refresh budget |
+| **Warm-pool maintenance** | Prewarm, resume, suspend, replace, sanitize, or destroy entries | Prewarm quota, node resources, storage and idle-cost budget |
+| **Integration** | Rate-limited or asynchronous work against an external system | Provider quotas, connection limits, action budgets and safety rules |
+
+Schedules, triggers, API calls, MCP tools, user actions, and agent delegation create items in these domains; they are not separate capacity systems. A scheduled agent run enters normal run admission with its schedule-derived priority and deadline.
+
+#### Queue topology and scope
+
+Queue policy is hierarchical:
+
+```text
+Organization capacity and hard limits
+  -> Workspace allocation and budget
+    -> Team or project allocation
+      -> Agent and principal concurrency
+        -> Queue domain and priority class
+```
+
+A workspace can have logical queues such as `interactive`, `scheduled`, `delivery`, or `research`, but these map into shared physical capacity and organization policy. Creating another queue name does not create more entitlement.
+
+Capacity providers expose admission pools by capability and boundary—for example Linux CPU workers, Linux GPU workers, native macOS, a local Qwen pool, an external model provider, or Blazn cloud in a specific region. Queue items request capabilities rather than internal pool names unless administrators intentionally pin them.
+
+#### Work-item envelope
+
+Every queued item carries a normalized envelope:
+
+- Stable item ID, queue domain, workspace, principal, agent, session, run, and parent item.
+- Idempotency and deduplication keys.
+- Submission source, objective class, project, and cost attribution.
+- Priority class, numeric position within the class, creation time, deadline, and maximum queue time.
+- Hard capability, platform, trust, region, data, model, template, and backend requirements.
+- Requested and maximum resources or rate units.
+- Estimated duration, tokens, cost, storage, and external quota where available.
+- Preemptible, resumable, migratable, retry-safe, and side-effect classifications.
+- Dependency, approval, schedule, and not-before conditions.
+- Queue Policy, LLM Router Policy, sandbox, security, and budget versions.
+- Retry policy, attempt count, lease, reservation, and terminal result references.
+
+Estimates help scheduling but are not trusted as exact. Blazn records actual usage and can adjust later admission when an agent, project, or workload class consistently underestimates demand.
+
+#### Item lifecycle
+
+The initial queue-item lifecycle is:
+
+- **Submitted:** The request has a durable identity.
+- **Validating:** Schema, identity, policy, capability, and budget checks are running.
+- **Blocked:** A dependency, approval, schedule, credential setup, or policy decision prevents eligibility.
+- **Queued:** The item is valid and waiting for its queue class to be considered.
+- **Eligible:** All non-capacity conditions are satisfied.
+- **Reserving:** Blazn is attempting a bounded resource reservation.
+- **Admitted:** Required admission tokens or resource leases are held.
+- **Dispatching:** The item is being handed to a scheduler, router, controller, node, or provider.
+- **Running:** The consumer acknowledged the dispatch and holds a renewable execution lease.
+- **Yielded:** Preemptible work checkpointed and returned to its queue without becoming a new logical item.
+- **Completing:** Usage, result, resource release, and accounting are being finalized.
+- **Succeeded, failed, canceled, or expired:** The terminal result and reason are recorded.
+
+Blocked time, eligible queue time, reservation time, dispatch time, and running time are measured separately. This distinguishes lack of capacity from waiting for approval or a broken dispatcher.
+
+#### Queue Policy
+
+A versioned Queue Policy determines admission behavior for a scope and domain. It can define:
+
+- Allowed work types and submission sources.
+- Priority classes and who may assign or override them.
+- Workspace, team, project, agent, and principal concurrency limits.
+- CPU, memory, accelerator, storage, sandbox, token, request, and provider quotas.
+- Reserved, shared, burst, and maximum capacity.
+- Maximum queue time, deadlines, aging, cooldowns, and retry limits.
+- Preemption eligibility, victim order, checkpoint requirements, and grace periods.
+- Cost, token, provider, and time budgets.
+- Region, trust, node class, model, template, and data-boundary restrictions.
+- Admission behavior when estimates are missing or actual usage exceeds them.
+- Fairness weights and protections against one principal or agent flooding a queue.
+
+Lower scopes can choose within an allocation but cannot exceed or weaken higher-level hard limits. The effective policy and its source versions are captured on each item.
+
+#### Priority classes
+
+The initial system should use a small, understandable set of priority classes:
+
+| Class | Examples | Typical behavior |
+| --- | --- | --- |
+| **Urgent approved** | Human-approved incident response or production recovery | Highest bounded priority; tightly permissioned and audited |
+| **Interactive** | A person actively waiting in desktop, CLI, or Blazn Button | Low latency and protected capacity |
+| **User initiated** | A person starts work but is not waiting synchronously | Normal foreground priority |
+| **Scheduled** | Monitors, reports, maintenance windows, recurring agents | Deadline-aware and predictable |
+| **Background** | Research, evaluations, indexing, large batch work | Uses available capacity and is preemptible when safe |
+| **Maintenance** | Refreshes, template builds, cleanup, warm-pool replenishment | Lowest by default unless needed to unblock admitted work |
+
+Users cannot label ordinary work urgent merely by supplying a number. Priority escalation is a separately authorized operation with a reason and expiration.
+
+Within a class, fairness and age matter. A continuous stream of new interactive work cannot starve already admitted deadline-bound work, and a large background request cannot block every smaller request solely because it arrived first.
+
+#### Fairness
+
+Blazn should begin with deterministic weighted fairness across workspaces and use dominant-resource awareness for heterogeneous capacity. The scheduler considers each scope's share of its most constrained resource rather than comparing CPU-only quantities.
+
+Fairness includes:
+
+- Organization allocations and workspace weights.
+- Per-team, project, agent, and principal concurrency caps.
+- Bounded aging so long-waiting eligible work gains consideration without overtaking hard priority boundaries.
+- Small-request progress so one large item cannot create head-of-line blocking when smaller items fit.
+- Burst credits that decay and never replace a hard maximum.
+- Reserved capacity that returns to shared use when its owner has no eligible demand.
+- Separate fairness accounting for scarce accelerators, native-platform nodes, and model/provider capacity.
+
+The system should expose the fairness reason for a decision, including the resource or allocation currently constraining an item.
+
+#### Quotas and budgets
+
+Quotas govern entitlement to capacity; budgets govern permitted consumption or spend. Both are hierarchical and multidimensional.
+
+Capacity quotas may include:
+
+- Active runs and temporary agents.
+- Provisioning, ready, running, waiting, and suspended sandboxes.
+- CPU, memory, storage, accelerator, and native-platform slots.
+- Warm-pool ready and suspended reservations.
+- Template builders, refresh jobs, and artifact storage.
+- Model requests, concurrency, tokens in flight, and context size.
+- Integration calls, concurrent connections, and provider rate units.
+
+Budgets may include tokens, provider cost, Blazn cloud spend, node-hours, accelerator-hours, storage, network egress, or action-specific limits. Admission checks the expected worst permitted consumption where possible and reconciles against actual usage afterward.
+
+Hard limits reject or block work. Reserved allocations protect capacity. Shared allocations support fairness. Burst allocations permit temporary excess when capacity and budget exist. Borrowed capacity remains reclaimable and does not become a permanent entitlement.
+
+#### Capability and placement eligibility
+
+Before an item competes on priority or fairness, Blazn determines whether any capacity can satisfy its hard requirements. Requirements may include:
+
+- Operating system, architecture, sandbox backend, isolation class, or native toolchain.
+- Template and platform variant.
+- Minimum resources, accelerator type, local model, or attached device.
+- Region, data residency, workspace trust, or company-managed node.
+- Network class, approved integration, repository reachability, or required service.
+- Persistence, suspension, migration, GUI, browser, or warm-pool capability.
+
+An item with no possible route is marked blocked or rejected with an explanation rather than waiting forever. Temporary lack of matching capacity remains queued; a structurally impossible request requires a policy, template, or requirement change.
+
+Placement occurs after or as part of a bounded reservation. Queue admission does not authorize a scheduler to ignore the original capability or policy envelope.
+
+#### Run-admission plan
+
+An agent run can depend on several scarce resources, but Blazn should avoid holding one resource indefinitely while waiting for another. The run queue creates an admission plan:
+
+1. Validate the agent, objective, policy, budget, and required environment.
+2. Reserve a workspace run slot and compatible environment entitlement with a short expiration.
+3. Atomically claim a warm sandbox or dispatch a cold sandbox request.
+4. Release or renew provisional reservations while the sandbox becomes ready.
+5. Start the harness and convert reservations into running usage.
+6. Request model capacity through the inference queue for each LLM call rather than reserving one model for the full run.
+
+When a workload truly requires simultaneous scarce resources—such as a GPU sandbox and a dedicated local model instance—the plan reserves them as one bounded group or releases all partial reservations on failure. It does not wait indefinitely while holding only half of the required capacity.
+
+#### Environment admission
+
+Environment items request or modify sandbox capacity. The queue can satisfy creation with:
+
+- An atomic claim from an eligible warm pool.
+- Resume of the owning session's suspended sandbox.
+- Cold creation on a contributed or dedicated node.
+- Blazn cloud capacity when workspace policy and budget permit it.
+
+Warm claims and cold starts compete under the same workspace run and environment entitlement. A pool hit changes startup time, not priority or quota.
+
+Resume may receive preference over new background work because it preserves a user's session, but it still respects hard node, resource, trust, and budget constraints.
+
+#### Inference queues
+
+The Smart LLM Router owns inference-domain dispatch while the queue system provides durable identity, priority, quotas, and backpressure. Each logical LLM request enters with the run's workspace, agent, priority, deadline, data class, and effective LLM Router Policy.
+
+Inference admission considers:
+
+- Model and capability eligibility.
+- Instance health, loaded state, context support, and tokens in flight.
+- Local-node inference limits and shared accelerator reservations.
+- Provider requests-per-minute, tokens-per-minute, concurrency, and spend.
+- Interactive latency targets and background batch efficiency.
+- Queue wait versus policy-permitted fallback.
+
+Fallback creates another attempt under the same logical item and budget. It does not jump ahead of already eligible work unless the original item retains its lawful priority. Partial streaming, cancellation, and retry safety remain visible to the router and harness.
+
+#### Template, refresh, and warm-pool queues
+
+Template builds and refreshes can be expensive and may execute untrusted repository code. They use isolated builder capacity, explicit concurrency, deduplication by content key, and storage budgets.
+
+If many runs request the same missing refresh, one refresh item is created and the others reference it as an optional dependency. Runs may wait, use an older compatible artifact, or take the full cold path according to policy rather than launching duplicate builds.
+
+Warm-pool maintenance uses prewarm quota and is low priority by default. Replenishment needed for an already admitted request can be elevated within a bounded class, but speculative forecast capacity cannot displace active user work.
+
+Security refreshes and cleanup may receive a distinct administrator-controlled priority because delaying revocation or orphan cleanup carries risk. That priority remains narrow to the affected operation.
+
+#### Integration queues
+
+External integrations have limits and side effects that differ from compute. A queue may govern calls to source control, messaging, ticketing, databases, customer-support systems, deployment systems, or other services.
+
+Integration admission considers provider rate limits, per-credential limits, concurrency, approval, action budget, and idempotency. Read operations may batch or retry under policy. Writes require an operation key and clear replay classification.
+
+Queueing an external write does not mean it can be safely replayed. After a timeout or lost acknowledgment, the integration worker reconciles the remote state before another attempt.
+
+#### Dependencies and blocking
+
+An item can depend on:
+
+- A parent run or delegated objective.
+- Human approval or a policy exception.
+- Template publication, refresh completion, or sandbox readiness.
+- Credential or integration authorization.
+- A scheduled time, external event, or project milestone.
+- An artifact, repository revision, test result, or prior action.
+
+Dependencies form a bounded directed graph. Blazn rejects cycles and excessive fan-out. A blocked item does not consume running capacity, but policy may count large blocked populations against submission limits to prevent unbounded accumulation.
+
+When a dependency fails, the item follows its declared behavior: fail, cancel, use an alternative, request approval, or remain blocked for intervention. It does not silently ignore the dependency.
+
+#### Scheduling, deadlines, and triggers
+
+Scheduled work is materialized into a queue item with a stable schedule occurrence key. Reconciliation can recreate a missing item without producing duplicates.
+
+Policies define behavior when an occurrence is late:
+
+- Run immediately within a grace window.
+- Skip and record a missed occurrence.
+- Coalesce several missed occurrences into one run.
+- Catch up each occurrence up to a maximum.
+- Escalate only when a deadline or service objective requires it.
+
+Deadlines influence eligibility and placement but do not permit policy violations. If Blazn predicts that no eligible capacity can meet a deadline, it reports that early and may offer policy-approved cloud capacity or a reduced workload instead of waiting until failure is unavoidable.
+
+#### Backpressure and admission control
+
+Every submission endpoint has bounded request rate, outstanding-item count, payload size, and fan-out. The system can return:
+
+- Accepted with item identity and estimated conditions.
+- Blocked with a resolvable dependency or policy reason.
+- Rate limited with a retry time.
+- Rejected because the request is structurally invalid or prohibited.
+- Deferred because a queue or provider circuit breaker is open.
+
+Agents receive the same backpressure signals as people and automation. They cannot create unbounded temporary agents, inference requests, refreshes, or integration calls merely because previous work is waiting.
+
+#### Preemption and yielding
+
+Preemption reclaims capacity from lower-value interruptible work. The default victim order is:
+
+1. Speculative warm-pool creation and unused ready entries.
+2. Background refresh, indexing, evaluation, or batch work.
+3. Scheduled work that can safely checkpoint and still meet its deadline.
+4. User-initiated work explicitly marked interruptible.
+
+Interactive work is not automatically non-preemptible, and urgent work is not automatically safe to interrupt others. Queue Policy defines allowed victim and request classes.
+
+Before preemption, Blazn requests a checkpoint and allows a bounded grace period. Work yields only at a safe point. External writes, non-repeatable operations, and native tasks without a recovery contract are not forcibly replayed. If emergency host protection terminates them, the result is marked uncertain and requires reconciliation.
+
+A yielded item retains its age and identity so preemption cannot reset it to the back of the queue indefinitely.
+
+#### Reservations and leases
+
+Reservations are short-lived promises of specific or interchangeable capacity. Leases prove that an admitted worker still owns that capacity.
+
+- Reservations have a scope, resource vector, expiration, and owner item.
+- Dispatch converts a reservation into a renewable execution lease.
+- Workers acknowledge dispatch with the item and attempt identity.
+- Missed heartbeats expire the lease and trigger reconciliation.
+- Expiration does not automatically mean the underlying work stopped; the controller fences the old attempt before replacement.
+- Capacity is released only after accounting and cleanup reach a known outcome.
+
+The queue never assumes process state from a missing heartbeat alone. Node, sandbox, harness, router, and integration observations participate in reconciliation.
+
+#### Retry, idempotency, and deduplication
+
+Submission idempotency prevents repeated client requests from creating duplicate logical items. Attempt identity distinguishes safe retries from new work.
+
+Retry policy depends on operation type:
+
+- Pure validation, lookup, and deterministic build steps may retry automatically.
+- Sandbox creation retries through backend reconciliation and cleanup.
+- Inference retries follow streaming and LLM Router Policy rules.
+- Agent runs resume from a harness checkpoint when possible.
+- External writes reconcile remote state before retry.
+- Security or policy denial does not retry until an input or policy changes.
+
+Exponential delay, attempt limits, deadlines, and circuit breakers prevent retry storms. A new manual attempt links to the failed item rather than erasing its history.
+
+#### Dynamic node capacity
+
+Contributed node capacity changes as employees connect, disconnect, use their machines, or adjust limits. Nodes publish allocatable capacity with a lease and confidence class.
+
+The queue considers only healthy, current offers. Personal-node capacity is opportunistic unless explicitly guaranteed. An item can choose to wait for contributed capacity, accept eligible Blazn cloud fallback, or fail at a deadline according to policy and budget.
+
+Pool and scheduler forecasts must not count the same capacity twice. Model serving, sandboxes, native execution, and warm entries on one physical node share its enforced resource ledger.
+
+When capacity disappears, admitted work follows its run, sandbox, or inference recovery policy. The queue does not blindly dispatch a second attempt until the first is fenced or declared safe to duplicate.
+
+#### Multi-region and control-plane behavior
+
+Queue intent and item identity are globally durable for the workspace, while admission pools can be regional or backend-specific. A request's residency and latency policy determines which pools may consider it.
+
+Only one controller holds the admission lease for an item at a time. Regional controllers use fenced leases and monotonic item versions so a network partition cannot admit the same item twice.
+
+If the central control plane is temporarily unavailable, already leased work may continue within its grant. New admission, priority changes, budget expansion, or cross-region fallback require an authoritative policy decision unless a narrowly defined offline policy permits them.
+
+#### Cost-aware admission
+
+When several eligible capacity sources exist, Blazn considers expected queue delay, startup time, run duration, reliability, and cost. Policy can express preferences such as:
+
+- Wait for contributed capacity for up to ten minutes, then offer cloud.
+- Use cloud immediately for interactive work under a per-run limit.
+- Never use paid capacity for background evaluation.
+- Prefer a local model, then another company node, then an approved provider.
+- Require approval before crossing a specified cost or data boundary.
+
+Cost optimization happens only among policy-compliant options. Estimated savings and delays are shown to users, and actual usage improves future estimates.
+
+#### Explainability and user experience
+
+Every queued item should answer:
+
+- What is waiting?
+- Which queue and priority class is it in?
+- Is it blocked, eligible, reserving, admitted, or dispatched?
+- Which policy, quota, budget, dependency, or capability currently constrains it?
+- How much eligible work is ahead under fairness rules?
+- What is the estimated wait range and confidence?
+- Would another approved node, model, template, resource profile, or cloud route start sooner?
+- Can the user cancel, lower cost, change requirements, approve fallback, or request an authorized priority change?
+
+Blazn should avoid false precision. When contributed capacity or provider limits make an estimate uncertain, the UI shows a range and the factors that could change it.
+
+#### Events and metrics
+
+Queue events include submission, validation, block and unblock, eligibility, priority change, reservation, admission, dispatch, acknowledgment, lease renewal, yield, preemption, retry, cancellation, expiration, completion, and resource release.
+
+Core metrics include:
+
+- Submitted, blocked, eligible, admitted, running, yielded, and terminal items by domain.
+- Queue depth, wait time, age, deadline risk, and throughput by priority and scope.
+- Validation, policy, quota, budget, capability, dependency, and no-capacity block reasons.
+- Reservation success, dispatch latency, lease loss, retry, duplicate suppression, and circuit-breaker rates.
+- Allocation, dominant-resource share, burst use, borrowed capacity, and fairness deviation.
+- Preemption victims, checkpoint duration, resumed work, lost work, and starvation indicators.
+- Estimate error for duration, resources, tokens, and cost.
+- Contributed, dedicated, provider, and Blazn cloud usage.
+- Warm-hit, cold-start, model fallback, refresh deduplication, and integration rate-limit effects.
+
+Metrics link queue decisions to run outcomes so Blazn can learn whether a faster or cheaper admission choice actually produced useful work.
+
+#### Initial queue record
+
+The first queue-item record should include:
+
+- Stable item ID, domain, scope, principal, agent, session, run, parent, and submission source.
+- Idempotency key, deduplication key, logical operation, and attempt lineage.
+- Priority, fairness class, timestamps, deadline, maximum wait, and schedule occurrence.
+- Requirements, estimated resource vector, actual usage, and capability constraints.
+- Effective Queue Policy, budget, security, template, sandbox, and LLM Router Policy references.
+- State, block reasons, queue position factors, reservations, lease, dispatcher, and worker.
+- Retry, preemption, checkpoint, cancellation, and terminal result information.
+- Cost attribution, accounting status, and linked events and metrics.
+
+Queue definitions should record their scope, domain, policy, parent allocation, priority classes, fairness weight, quotas, budgets, admission pools, health, and aggregate status.
+
+#### API and MCP surface
+
+The initial control surface should support:
+
+- Submit work with an idempotency key and receive a durable item identity.
+- List and inspect authorized queues and items.
+- Explain state, block reasons, fairness, quota, budget, capability, and estimated wait.
+- Cancel an item or request an authorized priority, deadline, or requirement change.
+- Approve a blocked fallback, budget, credential, or external action.
+- Stream queue events and aggregate metrics.
+- Inspect allocations, usage, reservations, leases, and capacity by scope and domain.
+- Pause, drain, resume, or rate-limit a queue with administrative permission.
+- Retry or reconcile a failed item without losing attempt history.
+
+Agents can submit and inspect work within their delegated scope. Raising priority, expanding budget, changing data boundaries, draining shared queues, or force-releasing leases require distinct administrative permissions.
+
+#### Version-one boundary
+
+The first queue implementation should prove:
+
+1. Durable run, environment, inference, refresh, and warm-maintenance domains.
+2. Workspace and agent concurrency limits with interactive, scheduled, background, and maintenance priorities.
+3. CPU, memory, sandbox, local-model concurrency, and provider-request quotas.
+4. Deterministic weighted fairness with bounded aging and no FIFO head-of-line blocking.
+5. Normal run admission followed by an atomic warm claim or cold sandbox dispatch.
+6. Per-request inference admission with local-to-approved-cloud fallback governed by LLM Router Policy.
+7. Low-priority, preemptible refresh and warm-pool replenishment.
+8. Durable idempotency, reservations, dispatch leases, cancellation, retry, and recovery after controller restart.
+9. Clear blocked and no-capacity explanations with queue events and metrics.
+10. Authenticated desktop, CLI, API, and MCP controls.
+
+#### Decisions to make next
+
+- Which fairness algorithm and resource dimensions should version one implement?
+- Which quotas are hard reservations versus shared or burst allocations?
+- How long may run admission reserve an environment slot while a sandbox becomes ready?
+- Which workloads can safely yield and resume in the first release?
+- How should queue age interact with interactive priority and deadlines?
+- Which capacity and cost estimates are required before admission?
+- How are provider rate limits and model queues shared across workspaces without leaking usage information?
+- What limited offline admission, if any, is safe on disconnected nodes?
+- When should Blazn automatically offer cloud fallback versus ask for approval?
+- How should queue policy be simulated against historical demand before activation?
+
 ### Blazn Agent Harness system
 
 #### Definition and authority
@@ -1759,9 +2200,12 @@ flowchart LR
     Products[Connected products] --> Clients
     Clients --> Workspace[Blazn workspace and company brain]
     Workspace --> Orchestration[Agents, projects, runs, schedules and events]
-    Orchestration --> Harness[Blazn Agent Harness]
-    Harness --> Router[Smart LLM Router / AI Proxy]
-    Harness --> Execution[Execution fabric]
+    Orchestration --> Queues[Queues and admission]
+    Queues --> Harness[Blazn Agent Harness]
+    Queues --> Execution[Execution fabric]
+    Queues --> Router[Smart LLM Router / AI Proxy]
+    Harness --> Router
+    Harness --> Execution
     Policy[LLM Router Policy] --> Router
     Router --> Models[Local, provider and Blazn cloud models]
     Templates[Versioned sandbox templates] --> Execution
@@ -1832,6 +2276,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - One contributed machine acting as a worker.
 - One immutable, versioned sandbox template with repository and dependency refresh artifacts used by cold starts and warm pools.
 - Isolated Linux execution for an initial class of workloads.
+- Durable queues coordinating run, environment, inference, refresh, and warm-pool capacity with visible fairness and limits.
 - Runs with live events, logs, artifacts, and basic metrics.
 - A minimal project/task connection.
 - Secure remote control through an MCP-compatible interface.
