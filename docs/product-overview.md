@@ -22,6 +22,7 @@
     - [Agent refinement](#agent-refinement)
   - [Queues](#queues)
   - [Agents](#agents)
+  - [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases)
   - [Credentials and integrations](#credentials-and-integrations)
   - [CLI control surface](#cli-control-surface)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
@@ -295,6 +296,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Company-brain indexing and retrieval | Ingest, permission-filter, index, relate, retrieve, refresh, and delete company knowledge with provenance | Planned |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
+| [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases) | Safely invoke and interact with agent workflows from Slack, websites, email, integrations, schedules, and external events | Initial design |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
@@ -2896,7 +2898,7 @@ The AgentVersion record should include:
 - Agent ID, version, digest, parent version, author, reason, and publication state.
 - Resolved purpose, objectives, instructions, skills, tools, resources, and schemas.
 - Sandbox, environment, model, queue, credential, delegation, retention, and evaluation configuration.
-- Schedule and trigger definitions included in that version.
+- Schedule and trigger references or embedded definitions included in that version, each resolved to an exact version for a run.
 - Policy references and effective compatibility requirements.
 - Validation, test, evaluation, approval, provenance, and security evidence.
 - Publication, rollback, deprecation, and prohibition information.
@@ -2948,6 +2950,431 @@ The first Agent implementation should prove:
 - Which memory proposals can be accepted automatically, if any?
 - How should agent cloning and export handle private resources and cross-workspace policy?
 - When should an inactive agent be archived automatically?
+
+### Triggers, endpoints, and email aliases
+
+#### Definition
+
+Triggers and endpoints allow people, applications, services, and workspace events to start or continue agent work from outside the Blazn desktop application. A person can mention an agent in Slack, press the Blazn Button on a website, submit a web form, send a webhook, reply to an email alias, change a project task, or wait for a schedule. Blazn converts the activity into an authenticated, policy-controlled request for an agent or coordinated workflow.
+
+An **endpoint** is the managed channel through which Blazn receives or sends interaction. A **trigger definition** decides whether a normalized event should start work and how that work is configured. An **email alias** is a specialized endpoint that gives an agent, workflow, project, or team a governed email address and preserves conversation threading across inbound and outbound mail.
+
+These are purpose-built agent invocation and interaction surfaces. They do not introduce a general Blazn management API. An endpoint can perform only the workflow behavior explicitly published through its trigger, identity, input schema, policy, and version.
+
+#### Core boundaries
+
+| Concept | Responsibility |
+| --- | --- |
+| **Endpoint** | Owns a channel address or binding, transport configuration, authentication, rate limits, input schema, and reply behavior |
+| **Endpoint binding** | Connects an Endpoint to a Slack installation, website, domain, mailbox, webhook address, integration, or other concrete destination |
+| **Trigger source** | Produces an occurrence such as a message, form submission, schedule, webhook, task change, or workspace event |
+| **Trigger envelope** | Normalized immutable occurrence with source identity, payload references, time, deduplication, classification, and verification state |
+| **Trigger definition** | Matches an envelope and selects the target, context mapping, version, policy, session behavior, and action |
+| **Workflow target** | The agent, agent team, or versioned coordinated-run definition that receives the objective |
+| **Delivery** | One durable attempt to evaluate and execute a trigger, including retries, acknowledgements, and terminal outcome |
+| **Conversation binding** | Maps an external Slack thread, email thread, website session, or support record to a Blazn Session |
+| **Email alias** | Governed inbound and outbound email identity attached to an Endpoint and trigger policy |
+
+Keeping endpoints separate from triggers allows one Slack installation, domain, or email service to support multiple agent workflows without duplicating credentials. It also allows a trigger to be tested against recorded envelopes before it is activated.
+
+#### Supported trigger sources
+
+The trigger model should support:
+
+- Manual initiation from the desktop application or CLI.
+- One-time and recurring schedules with time zone and misfire policy.
+- Slack mentions, direct messages, channel messages, reactions, shortcuts, commands, and thread replies.
+- Blazn Button activity from a website or application with live page or record context.
+- Website forms, embedded chat, customer support, and authenticated product actions.
+- Signed inbound webhooks from approved applications and services.
+- Inbound email to a Blazn-managed alias and replies in an existing email thread.
+- Integration events from source control, project management, support, monitoring, deployment, document, and business systems.
+- Workspace events such as a run failure, budget threshold, artifact publication, task status change, or analytics alert.
+- Agent delegation and explicitly allowed agent-emitted workflow events.
+
+Every source adapter converts provider-specific input into a TriggerEnvelope while preserving the original provider event ID and a protected reference to the source record. Trigger definitions operate on the normalized envelope and declared adapter fields rather than raw transport details.
+
+#### Endpoint types
+
+Blazn can expose several endpoint types behind one lifecycle and policy model:
+
+| Endpoint type | Typical interaction |
+| --- | --- |
+| Slack | Mention or message an agent, invoke a shortcut, continue in a thread, receive progress and results |
+| Blazn Button | Send live product context, begin work, stream status, request approval, and return results in the host application |
+| Web | Submit an authenticated form or conversation, upload approved attachments, and receive asynchronous updates |
+| Webhook | Deliver a signed machine event and receive an acknowledgement and durable run reference |
+| Email alias | Start or continue an agent session through inbound email and receive governed replies |
+| Integration event | React to an event received through an installed personal or shared integration |
+| Workspace event | React to an internal durable event without exposing an external address |
+| Schedule | Create work at a defined time using a pinned trigger and workflow version |
+
+An endpoint can be private to one user, shared with a team or project, available to the workspace, restricted to an organization or domain, or intentionally public with stricter input, abuse, approval, and data controls.
+
+#### Trigger definitions
+
+A TriggerDefinition is versioned and contains:
+
+- Stable trigger identity, owner, workspace, scope, status, and tags.
+- Accepted Endpoint and source event types.
+- Match conditions and input schema.
+- Source identity and audience requirements.
+- Target agent, agent team, or workflow plus version-selection policy.
+- Objective template and normalized input mapping.
+- Session creation, lookup, continuation, and conversation-binding behavior.
+- Context and attachment rules.
+- Queue class, priority ceiling, concurrency, time, cost, and usage budgets.
+- Sandbox, model, credential, integration, tool, and approval policy references.
+- Acknowledgement, progress, result, error, and reply behavior.
+- Deduplication, debounce, aggregation, retry, expiry, and misfire policy.
+- Schedule configuration where the source is time-based.
+- Analytics, retention, classification, and audit requirements.
+- Activation, canary, rollback, and compatibility state.
+
+A run captures the exact TriggerDefinition version, Endpoint version, normalized envelope, resolved AgentVersion or workflow version, and effective policies. Updating a trigger affects only future deliveries unless an administrator explicitly replays an earlier envelope under a new version.
+
+#### Matching and routing
+
+Trigger evaluation occurs in a deterministic order:
+
+1. Authenticate or classify the source and validate transport integrity.
+2. Resolve the Endpoint binding and active version.
+3. Normalize the provider occurrence into a TriggerEnvelope.
+4. Deduplicate the provider event and enforce endpoint rate and abuse policy.
+5. Find authorized active TriggerDefinitions for the endpoint and event type.
+6. Evaluate bounded match conditions against permitted envelope fields.
+7. Resolve the workflow target, exact eligible version, session, and effective policies.
+8. Create a durable delivery and submit work through normal Queue admission.
+9. Send a channel-appropriate acknowledgement and later progress or result updates.
+
+Triggers must not execute arbitrary user-supplied expressions or code in the control plane. Conditions use a bounded typed expression model with schema validation, complexity limits, and explainable results. Advanced transformation work happens in an isolated preprocessor agent or sandbox with its own policy and budget.
+
+If multiple triggers match, endpoint policy chooses whether they are mutually exclusive, ordered, aggregated, or allowed to fan out. Blazn records which triggers matched, which were suppressed, and why. A catch-all trigger cannot bypass a more restrictive identity or data policy.
+
+#### Identity and authorization
+
+An external sender is not automatically a Blazn workspace member. Each Endpoint defines how source identities map to permissions:
+
+- A verified Slack user may map to a workspace member through the installed Slack organization.
+- A signed-in product user may map through the host application's trusted identity assertion.
+- An authenticated webhook maps to a service or integration identity with limited capabilities.
+- An email sender may map to a verified workspace member, an approved contact, a customer record, or an untrusted external sender.
+- A public website visitor remains an endpoint-scoped external identity unless an approved authentication flow elevates it.
+
+The mapping record includes the issuer, source subject, workspace principal if any, verification method, audience, and expiry. Display names, email `From` headers, Slack profile text, and request payload fields are not trusted identity evidence by themselves.
+
+The resulting run receives the intersection of:
+
+- The Endpoint's published capabilities.
+- The TriggerDefinition's configured scope.
+- The source identity's permissions and relationship.
+- The target agent's permissions.
+- Workspace, project, data, model, integration, and tool policies.
+
+A trigger cannot elevate its caller, agent, or source. Unknown senders can be rejected, quarantined, routed to a low-privilege intake workflow, or required to complete verification or human approval.
+
+#### Sessions and conversation continuity
+
+Conversational endpoints bind an external conversation to a Blazn Session. A Slack thread, email thread, website conversation, support ticket, or product record can continue an existing session so the agent retains authorized context and the external participants see a coherent interaction.
+
+Conversation binding uses provider-stable identifiers rather than message subjects or display labels alone. It records:
+
+- Endpoint and external conversation identifiers.
+- Blazn Session and target agent or workflow.
+- Authorized participants and their mapped identities.
+- Thread state, last accepted message, and deduplication cursor.
+- Context, classification, retention, and reply policy.
+- Expiry, closure, reassignment, and reopen behavior.
+
+A new sender joining an existing external thread does not automatically gain the session's history or artifacts. Blazn re-evaluates participant access before exposing prior context or sending a reply.
+
+#### Acknowledgements, progress, and results
+
+External channels have different time limits and interaction models. Blazn acknowledges a valid trigger quickly, creates a durable Delivery and Run, and performs the work asynchronously through normal queue and environment controls.
+
+The channel adapter can provide:
+
+- Immediate accepted, rejected, duplicate, or approval-required acknowledgement.
+- Run or session reference appropriate to the audience.
+- Queued, started, waiting, approval, partial-result, completed, failed, and cancelled updates.
+- Buttons or reply actions for permitted steering and approvals.
+- Final summarized result with links or attachments the recipient can access.
+- A safe fallback when the original channel no longer accepts replies.
+
+Endpoint replies are rendered from structured run events through channel-specific templates. An agent may propose reply content, but the adapter enforces recipient, classification, attachment, size, formatting, mention, and disclosure policy before sending it.
+
+#### Web and Blazn Button endpoints
+
+A web endpoint can be embedded in a product, attached to the Blazn Button, used for a support or request form, or invoked by an authorized backend. It defines allowed origins, host applications, identity issuers, content security requirements, input schema, attachment rules, and response behavior.
+
+The Blazn Button can include live application context such as the current route, record, selected content, application version, user action, screenshot, console data, or issue details when the host application and user explicitly permit it. Context fields are classified and previewable, and the Endpoint determines which target agent can receive them.
+
+Public web endpoints require bounded anonymous capability, abuse detection, quotas, bot protection where appropriate, attachment scanning, and isolation from private workspace search. They should normally create an intake session rather than directly granting an external user access to internal agents or data.
+
+Machine webhooks use a dedicated signing secret or asymmetric verification, timestamp window, event ID, audience, and replay protection. The secret is stored in a workspace vault and rotated through the Endpoint binding. A webhook URL alone is not sufficient authentication for a privileged workflow.
+
+#### Slack endpoints
+
+A Slack Endpoint is backed by a personal or shared Slack integration and can be limited by workspace, organization, channel, user group, user, interaction type, and thread policy.
+
+Supported experiences can include:
+
+- Mentioning an agent in a permitted channel.
+- Messaging an agent or team through an app home or direct conversation.
+- Starting a workflow with a shortcut, command, message action, or form.
+- Continuing a run in a Slack thread.
+- Receiving progress, approvals, artifacts, and completion summaries.
+- Turning a Slack decision or request into a Blazn project task and agent run.
+
+The adapter validates Slack signatures and maps Slack organization, channel, thread, and user identifiers into the TriggerEnvelope. It does not treat copied message text, forwarded content, or a claimed username as identity.
+
+Channel history is not automatically ingested. The TriggerDefinition states whether the triggering message, thread history, referenced messages, files, or channel context may be fetched, how much is allowed, and which participants and workspace policies permit that access.
+
+#### Email aliases
+
+An EmailAlias gives an agent-facing workflow a memorable governed address, such as `support@agents.example.com`, `research@agents.example.com`, or a unique generated address for a project or session. The alias can start a new session, route into a team intake workflow, or continue an existing conversation.
+
+An alias record defines:
+
+- Address, verified domain, display name, owner, workspace, and status.
+- Endpoint and active TriggerDefinition versions.
+- Target agent, team, project, or workflow.
+- Allowed senders, domains, groups, contacts, or public-intake policy.
+- New-thread, reply-thread, forwarding, CC, BCC, and participant behavior.
+- Accepted MIME types, message and attachment limits, scanning, and quarantine policy.
+- Inbound classification, retention, legal hold, and indexing policy.
+- Outbound `From`, `Reply-To`, signature, branding, disclosure, and approval rules.
+- Daily and per-sender rate, cost, run, and outbound-message budgets.
+- Bounce, complaint, unsubscribe, blocklist, and suppression behavior.
+
+##### Inbound email processing
+
+Inbound mail passes through:
+
+1. Domain and recipient resolution.
+2. Provider delivery verification and message deduplication.
+3. SPF, DKIM, and DMARC result capture without treating them as the sole sender authorization decision.
+4. Malware, phishing, attachment, link, size, and content-policy checks.
+5. Sender mapping, allowlist, blocklist, and public-intake policy.
+6. Thread resolution using provider IDs and standards-based message identifiers.
+7. MIME normalization into safe text, HTML, headers, and protected attachment artifacts.
+8. Trigger matching, approval where needed, and normal queue admission.
+
+Original raw mail is stored only when policy requires it and under a restricted retention class. Agents receive normalized permitted content and artifact references, not unrestricted transport headers, tracking content, or executable attachments.
+
+Quoted history and signatures can be identified to reduce duplicated context, but Blazn preserves the original protected message for authorized review. The parser records confidence and does not silently discard ambiguous content needed for the task.
+
+##### Email threading and aliases for sessions
+
+Blazn relates `Message-ID`, `In-Reply-To`, `References`, provider message IDs, alias tokens, and conversation bindings. The subject line alone never determines authorization or session identity.
+
+Aliases can be:
+
+- **Stable workflow aliases** for an agent, team, or project intake.
+- **Scoped aliases** for a specific customer, project, task, or integration record.
+- **Session aliases** generated for one conversation or run and expired after its retention window.
+- **Reply aliases** carrying an opaque routing token so replies return to the correct session without exposing internal identifiers.
+
+Forwarding an email to a new participant or copying a session alias does not grant that participant access. Before including history, artifacts, or internal recipients in a response, Blazn evaluates the current participant set and the data policy for each recipient.
+
+##### Outbound agent email
+
+An agent can draft or send email only through the alias's outbound policy. Policies can require human approval for a new recipient, external domain, attachment, high-risk topic, bulk audience, or irreversible action.
+
+Outbound messages include:
+
+- The approved sender identity and domain.
+- A stable thread relationship and safe reply address.
+- Clear disclosure that the message is agent-generated or agent-assisted when policy requires it.
+- Approved signatures, branding, legal text, and contact or escalation path.
+- Only attachments and links whose recipient access has been checked.
+- Delivery, bounce, complaint, reply, and suppression tracking as governed events.
+
+Blazn prevents automatic-reply loops using provider headers, submitted-message identifiers, loop-detection headers, sender classification, repeated-content detection, and per-thread limits. Agents cannot send to arbitrary recipients discovered inside untrusted message content without policy and authorization.
+
+Domains used for outbound aliases must be verified and configured for appropriate SPF, DKIM, DMARC, bounce, and complaint handling. Workspace administrators can pause all outbound agent mail without disabling unrelated inbound archives or integrations.
+
+#### Schedules as triggers
+
+A schedule is a time-based TriggerDefinition, not a separate execution system. It specifies time zone, calendar expression or one-time timestamp, start and end time, overlap policy, missed-run behavior, jitter, maximum delay, and the exact workflow version-selection policy.
+
+Schedule delivery is durable and idempotent. A controller restart does not silently skip or duplicate a due occurrence. When a machine or workspace is offline, the misfire policy determines whether Blazn skips, coalesces, or enqueues missed occurrences after reconnect. It never launches an unbounded backlog by accident.
+
+An agent lifecycle schedule can make the target inactive independently of a run schedule. A due trigger for an inactive, paused, disabled, or policy-ineligible agent produces an explained non-run Delivery rather than reactivating the agent.
+
+#### Integration and workspace-event triggers
+
+Integrations can subscribe to provider events using webhooks, polling, change streams, or provider-specific subscriptions. Each subscription belongs to an Endpoint binding and uses credentials from the authorized personal or shared vault. Provider event cursors, lease renewal, webhook verification, retry, and health are managed independently of the target agent.
+
+Workspace-event triggers consume authorized events from the shared analytics and event pipeline. They can react to run failures, alerts, project changes, budget thresholds, refinement results, or resource health. Trigger policy restricts which namespaces and fields can be matched and prevents a custom agent analytic from impersonating a trusted control-plane event.
+
+#### Loop prevention and trigger storms
+
+Agent actions can create events that match other triggers, and external systems can echo Blazn's own messages. Each TriggerEnvelope therefore carries causation, correlation, depth, and origin identifiers.
+
+Workspace policy controls:
+
+- Maximum trigger-chain depth and fan-out.
+- Per-endpoint, sender, trigger, agent, project, and workspace rates.
+- Debounce, coalescing, and aggregation windows.
+- Repeated equivalent event suppression.
+- Whether self-originated events are ignored.
+- Cross-trigger cycle detection.
+- Cost, run, message, and integration budgets.
+- Automatic circuit breaking and administrator pause.
+
+When a circuit breaker opens, Blazn preserves enough information to explain and replay eligible events after review. It does not continue creating runs simply because queue capacity is available.
+
+#### Delivery, retries, and idempotency
+
+Every accepted source occurrence creates or resolves a durable Delivery before starting a run. The Delivery records receipt, validation, deduplication, trigger evaluation, queue submission, acknowledgement, reply attempts, and terminal outcome.
+
+Providers frequently retry events, so deduplication uses the provider event identity, Endpoint binding, and trigger version. Repeated delivery of the same occurrence returns the original acknowledgement or status where the channel supports it. If a provider lacks a stable event ID, Blazn uses a bounded adapter-specific fingerprint and exposes the weaker guarantee.
+
+Retry policy distinguishes:
+
+- Retrying receipt or acknowledgement.
+- Retrying trigger evaluation after transient internal failure.
+- Retrying queue submission idempotently.
+- Retrying a failed agent run according to workflow policy.
+- Retrying an outbound progress or result notification.
+
+These are separate operations. A failed Slack update or email reply does not automatically rerun completed agent work.
+
+#### Input, context, and attachment policy
+
+Endpoint inputs are untrusted even when the sender is authenticated. The endpoint schema limits fields, sizes, content types, links, attachments, and instructions. Inputs are classified before they enter an agent context.
+
+The TriggerDefinition states whether the agent may receive:
+
+- The triggering message or form fields.
+- Prior conversation messages.
+- Host-application or integration record context.
+- Attachments and extracted content.
+- Sender and participant metadata.
+- Workspace search or company-brain retrieval results.
+- Customer, project, task, or support-record relationships.
+
+External text is data, not trusted system instruction. The Agent Harness preserves source boundaries and applies prompt-injection, tool, credential, retrieval, and approval policy. An endpoint cannot use a payload field to select arbitrary tools, models, credentials, sandboxes, recipients, or AgentVersions unless the schema explicitly defines a bounded choice.
+
+#### Credentials and integrations
+
+Endpoint bindings obtain Slack tokens, email-provider keys, webhook secrets, signing keys, host-application credentials, and other connection material through the shared vault and integration system. Secret values do not live in TriggerDefinitions, Endpoint records, agent versions, URLs, or email routing tokens.
+
+Personal endpoints use the owner's eligible personal connections. Team, project, and workspace endpoints use shared connections governed by the corresponding vault and integration policies. Offboarding, credential rotation, consent revocation, or connection failure changes endpoint health and can pause delivery without deleting the trigger history.
+
+#### Security and abuse controls
+
+Endpoints increase the workspace's externally reachable surface and require:
+
+- Verified domains, origins, installations, applications, and callback destinations.
+- Encrypted transport and provider signature validation.
+- Short-lived or rotatable tokens and secrets stored in vaults.
+- Replay protection, deduplication, timestamp windows, and nonce handling.
+- Rate limits, quotas, content and attachment limits, and denial-of-service protection.
+- Malware, phishing, unsafe-link, and prohibited-content handling where applicable.
+- Sender reputation, allowlists, blocklists, quarantine, and abuse review.
+- Least-privilege target agents, sandboxes, tools, integrations, and credentials.
+- Separate administrative, publishing, testing, replay, send, and view permissions.
+- Redacted logs and events that do not expose secrets or restricted message content.
+- Immediate pause, token rotation, binding removal, and incident investigation controls.
+
+Public endpoints should default to intake-only agents with no private workspace retrieval or external side effects. Higher capabilities require verified identity, policy, and often an explicit approval step.
+
+#### Testing, canaries, and publication
+
+Endpoint and TriggerDefinition drafts can be validated against schemas and tested with recorded or synthetic TriggerEnvelopes. Test mode shows matching, identity mapping, context construction, target version, policy, budget, and expected replies without performing external side effects.
+
+Publication creates immutable versions. A new version can run in shadow mode, receive a percentage or explicit cohort, or be tested on selected senders and channels before promotion. Rollback restores the previous active version for future deliveries; it does not erase runs already created.
+
+Recorded real events used for tests retain their original permissions and are redacted or transformed into protected test fixtures. Replaying an event requires separate permission and always creates a new Delivery related to the source.
+
+#### Analytics and monitoring
+
+Endpoints and triggers emit trusted events for receipt, validation, authentication, matching, suppression, deduplication, delivery, queueing, run creation, acknowledgement, reply, bounce, complaint, failure, retry, circuit breaking, and completion.
+
+Workspace analytics should measure:
+
+- Trigger volume and unique senders by channel and workflow.
+- Acceptance, rejection, quarantine, deduplication, and suppression rates.
+- Time from source occurrence to acknowledgement, admission, first response, and completion.
+- Run, model, sandbox, integration, messaging, and human-review cost by Endpoint and TriggerDefinition version.
+- Outcome and quality by source, agent, workflow, and cohort.
+- Reply delivery, email bounce and complaint, Slack error, and web-session abandonment.
+- Trigger storms, cycles, retries, queue pressure, abuse decisions, and paused endpoints.
+- Version comparisons, canary results, and regressions.
+
+Message content, email addresses, Slack identities, customer data, and attachments are not default metric dimensions. Drill-down requires permission and uses protected event or artifact references.
+
+#### Desktop and CLI surface
+
+Authorized users should be able to:
+
+- Create, validate, version, publish, pause, resume, roll back, and delete Endpoint and TriggerDefinition resources.
+- Connect Slack, verify a web origin or domain, configure a webhook, and create or disable an email alias.
+- Choose the target agent or workflow, exact version policy, session behavior, queue, budgets, and reply policy.
+- Test matching and context construction with synthetic or recorded envelopes.
+- Inspect endpoint health, provider subscriptions, domain verification, delivery status, and circuit breakers.
+- Follow a Delivery from source receipt through trigger evaluation, queueing, run, and reply.
+- Search and replay authorized failed or quarantined deliveries with a new idempotent Delivery record.
+- Manage allowed senders, domains, channels, origins, audiences, attachment types, and outbound approval rules.
+- Review and approve pending outbound email, external actions, or sensitive context use.
+- Stream endpoint, trigger, delivery, email, and reply events and metrics.
+- Explain why an occurrence did not start a run or why a reply was not sent.
+
+The CLI uses protected input for signing material and integration setup, expected versions for mutations, structured output for delivery inspection, and asynchronous operations for domain verification, bulk pause, replay, and provider subscription changes.
+
+#### Core records
+
+The initial design introduces or formalizes:
+
+- **Endpoint:** stable identity, type, owner, scope, input and output policy, rate limits, status, and active version.
+- **EndpointVersion:** immutable channel behavior, schema, identity, classification, reply, security, budget, retention, and compatibility configuration.
+- **EndpointBinding:** provider installation, domain, origin, mailbox, webhook, integration, subscription, health, and vault references.
+- **TriggerDefinition:** stable identity and active version for matching occurrences to workflow targets.
+- **TriggerVersion:** immutable source types, conditions, mapping, target version policy, session behavior, policies, budgets, and delivery rules.
+- **TriggerEnvelope:** immutable normalized source occurrence, verification, identity, payload references, causation, classification, and deduplication data.
+- **Delivery:** durable evaluation and execution lifecycle for one trigger occurrence and target.
+- **ConversationBinding:** external conversation, participants, Blazn Session, target, context, and reply state.
+- **EmailAlias:** address, verified domain, owner, Endpoint, trigger, sender, thread, inbound, outbound, budget, and status policy.
+- **OutboundMessage:** proposed and final recipients, content artifact, approvals, provider identity, delivery, bounce, complaint, and reply state.
+- **ScheduleDefinition:** time zone, recurrence or timestamp, window, overlap, jitter, misfire, lifecycle, and target policy.
+- **IdentityMapping:** external issuer and subject mapped to a workspace, contact, customer, service, or anonymous endpoint principal.
+
+#### Version-one boundary
+
+The first triggers and endpoints implementation should prove:
+
+1. Versioned Endpoint, EndpointBinding, TriggerDefinition, TriggerEnvelope, Delivery, and ConversationBinding records.
+2. One manual or scheduled trigger and one workspace-event trigger using durable idempotent delivery.
+3. A Slack Endpoint that starts and continues an agent Session in a thread and returns progress and a final result.
+4. A web or Blazn Button Endpoint with an authenticated user, bounded live context, and asynchronous run updates.
+5. A signed webhook Endpoint with replay protection, deduplication, schema validation, and a durable acknowledgement.
+6. One verified email domain and agent or team alias supporting inbound mail, safe attachments, thread continuation, and governed outbound replies.
+7. External identity mapping with separate trusted member, approved contact, service, and untrusted sender behavior.
+8. Queue, concurrency, cost, rate, fan-out, chain-depth, and circuit-breaker controls.
+9. Versioned matching and input mapping with test, shadow, canary, promotion, and rollback behavior.
+10. Vault-backed connection and signing credentials with rotation and endpoint health changes.
+11. Trusted events and analytics for source-to-acknowledgement, run, result, reply, cost, quality, rejection, retry, and abuse outcomes.
+12. Authenticated desktop and CLI administration, testing, delivery inspection, approvals, and pause controls.
+
+#### Decisions to make next
+
+- Which Slack interactions should ship first: mentions, direct messages, shortcuts, commands, or message actions?
+- Should Blazn host email delivery directly, integrate with an existing provider, or support both?
+- How are custom email domains verified and configured across local, self-hosted, and Blazn cloud deployments?
+- Which outbound email actions always require human approval in the default policy?
+- What context can the Blazn Button collect by default, and what must be explicitly selected each time?
+- Which identity assertion standard should host applications use for signed-in web endpoints?
+- What bounded expression language should TriggerDefinition matching use?
+- Which trigger sources can fan out to multiple workflows, and what is the default maximum?
+- How should trigger versions select pinned versus current AgentVersions?
+- Which provider events need polling when webhooks are unavailable, and how is polling cost governed?
+- How long should external conversation bindings and reply aliases remain active?
+- Which anonymous intake workflows are safe enough to expose publicly?
+- How are quarantined messages and attachments reviewed without exposing reviewers to unsafe content?
+- What delivery guarantees can each provider support, and where must the product expose weaker deduplication?
+- Which trigger and endpoint capabilities must remain available in fully local or self-hosted deployments?
 
 ### Credentials and integrations
 
