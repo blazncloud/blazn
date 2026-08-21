@@ -23,7 +23,7 @@ The POC will add:
 - Kubernetes Agent Sandbox as an isolated POC adapter for Sandbox, SandboxTemplate, SandboxClaim, and optional warm-pool behavior.
 - Blazn SandboxTemplate and Sandbox resources mapped onto Kubernetes.
 - A minimal development workflow that validates, builds, tests, publishes, and runs an immutable agent and sandbox template.
-- A minimal Blazn Agent Harness built from the proven runtime and supervisor patterns.
+- A Blazn-owned Harness Adapter contract with interchangeable Hermes, Codex CLI, Claude Code, and approved generic CLI implementations.
 - Machine-readable commands that Codex, Claude Code, and other harnesses can invoke.
 - End-to-end evidence proving installation, authentication, workspace collaboration, node management, sandbox lifecycle, agent execution, cleanup, and cross-architecture behavior.
 
@@ -33,7 +33,7 @@ The POC must run in dedicated Blazn namespaces and use the existing Kueue capaci
 
 The proof is complete when two users can install `blazn`, authenticate, join the same workspace, turn a fresh supported Linux machine into a usable Blazn node without manually installing any other software, register and manage the existing Linux and Mac nodes, publish a versioned sandbox template, create sandboxes on AMD64 and ARM64 workers, publish and run a versioned agent, and observe and control that work through the CLI and Management API.
 
-The same authenticated CLI must be usable from an ordinary terminal and when invoked by Codex or Claude Code. External harnesses are control clients: they invoke `blazn` to manage Blazn agents and environments. Blazn-managed agents still execute through the Blazn Agent Harness so run state, credentials, events, policy, and cleanup remain consistent.
+The same authenticated CLI must be usable from an ordinary terminal and when invoked by Codex or Claude Code. Codex and Claude can act as external control clients by invoking `blazn`, and they can also be selected as the execution harness inside a Blazn Sandbox. These modes are separate. Blazn owns the normalized Harness Adapter contract so run state, messages, credentials, events, policy, artifacts, cancellation, and cleanup remain consistent without hard-coding one harness implementation.
 
 ## Reviewed sources
 
@@ -127,8 +127,8 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 | Refreshes | Immutable runtime images and BuildKit caches | Prove one image-based dependency refresh artifact |
 | Development | GitHub workflows and repository scripts | Add `blazn dev` validate, build, test, publish, and run workflow |
 | Agents | Runtime Jobs and agent-control records | Add stable Agent, immutable AgentVersion, exact template/model references, and runs |
-| Agent Harness | Supervisor and runtime foundations | Normalize lifecycle, events, tool boundary, results, steering, and cancellation as Blazn Harness v0 |
-| Any-harness control | Existing private MCP and CLI patterns | Make CLI JSON contract sufficient for Codex and Claude Code; add opt-in harness helper files |
+| Harness execution | Supervisor and Hermes/runtime foundations | Define a versioned Harness Adapter contract and implement Hermes, Codex CLI, Claude Code, and bounded generic CLI adapters |
+| Any-harness control | Existing private MCP and CLI patterns | Make CLI JSON contracts sufficient for Codex, Claude Code, and other local harnesses acting as Blazn clients |
 | Management API | Agent-specific API | Expand into workspace-scoped Blazn resource and Operation API |
 | Strong sandbox isolation | No hardened RuntimeClass observed | POC orchestration with non-sensitive workloads; separately qualify gVisor/Kata before untrusted production use |
 | Persistent sandbox storage | No general dynamic provisioner | Use disposable `emptyDir` plus exported artifacts in POC; treat restart-persistent workspaces as a follow-up gate |
@@ -157,6 +157,8 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 - One AMD64 and one ARM64 sandbox template variant under the same logical template version.
 - One repository and dependency refresh artifact built through the existing trusted BuildKit path and referenced by immutable image digest.
 - Agent create, validate, publish, run, watch, logs, send, cancel, result, and history.
+- Interchangeable Sandbox execution through Hermes, Codex CLI, Claude Code, and one generic approved CLI harness definition.
+- Capability discovery and compatibility checks so an Agent cannot select a harness that lacks required messaging, resume, tool, or artifact behavior.
 - One local Qwen route through the current runtime plus one existing approved cloud fallback path.
 - CLI use from both Codex and Claude Code.
 - Management API coverage for every implemented POC resource.
@@ -198,7 +200,11 @@ flowchart LR
     Kueue[Kueue m1-light admission]
     AS[Agent Sandbox controller]
     Sandbox[Sandbox Pods]
-    Harness[Blazn Agent Harness v0]
+    Harness[Blazn Harness Adapter Layer]
+    Hermes[Hermes]
+    CodexRuntime[Codex CLI]
+    ClaudeRuntime[Claude Code]
+    GenericRuntime[Approved CLI harness]
     Proxy[AI Proxy / local Qwen / cloud fallback]
     Registry[Private OCI registry]
     BuildKit[Trusted BuildKit]
@@ -220,6 +226,10 @@ flowchart LR
     AS --> Sandbox
     Kueue --> Sandbox
     Sandbox --> Harness
+    Harness --> Hermes
+    Harness --> CodexRuntime
+    Harness --> ClaudeRuntime
+    Harness --> GenericRuntime
     Harness --> Proxy
     BuildKit --> Registry
     Registry --> Sandbox
@@ -309,7 +319,8 @@ blazn/
   services/control-api/              # TypeScript Management API
   services/node-bootstrap-broker/    # bounded cluster join and activation broker
   packages/contracts/                # OpenAPI, JSON schemas, generated TypeScript types
-  packages/harness/                  # minimal Blazn Agent Harness runtime contract
+  packages/harness-contract/         # normalized versioned harness lifecycle and event contract
+  packages/harness-adapters/         # Hermes, Codex, Claude Code, and generic CLI adapters
   deploy/k8s/agent-sandbox/          # pinned upstream install and checksums
   deploy/k8s/control-plane/          # namespace, API, RBAC, network policy, volume
   deploy/k8s/runtime/                # sandbox namespace, LocalQueue, policy, runner
@@ -366,8 +377,11 @@ blazn/
 ### Agent
 
 - `Agent`: stable identity, workspace, owner, name, tags, status, and current version.
-- `AgentVersion`: immutable instructions, model policy, tools, SandboxTemplateVersion, repository, resource profile, and digest.
-- `Run`: exact AgentVersion, Sandbox, Operation, queue state, events, result, cost, and terminal state.
+- `AgentVersion`: immutable instructions, model policy, tools, SandboxTemplateVersion, repository, resource profile, allowed HarnessProfiles, default HarnessProfile, and digest.
+- `HarnessDefinition`: stable adapter kind, publisher, executable contract, supported platforms, security policy, and status.
+- `HarnessVersion`: immutable adapter implementation, package or image digest, protocol version, capability set, configuration schema, provenance, and compatibility.
+- `HarnessProfile`: workspace-approved HarnessVersion plus bounded model, credential, tool, environment, argument, and policy configuration.
+- `Run`: exact AgentVersion, HarnessProfile, HarnessVersion, Sandbox, Operation, queue state, events, result, cost, and terminal state.
 
 ## CLI contract
 
@@ -499,13 +513,22 @@ Task text is accepted through a protected file or standard input for automation 
 ### Harness helper commands
 
 ```text
+blazn harness list
+blazn harness get HARNESS[@VERSION]
+blazn harness capabilities HARNESS[@VERSION]
+blazn harness test HARNESS[@VERSION]
+blazn harness profile create -f harness-profile.yaml
+blazn harness profile list
 blazn harness doctor codex
 blazn harness doctor claude
+blazn harness doctor hermes
 blazn harness instructions codex
 blazn harness instructions claude
 ```
 
-The POC helpers print or write, only after explicit confirmation, small instruction files describing the stable CLI commands and JSON contracts. They do not install a management MCP server or give the external harness Kubernetes credentials.
+The `instructions` helpers support external harnesses acting as control clients. They print or write, only after explicit confirmation, small instruction files describing the stable CLI commands and JSON contracts. They do not install a management MCP server or give the external harness Kubernetes credentials.
+
+The `profile`, `capabilities`, and `test` commands manage harnesses that execute inside Sandboxes. Harness executable paths and arguments come from approved immutable HarnessVersions and typed profiles, not arbitrary shell strings supplied when a Run starts.
 
 ## Authentication and workspace flow
 
@@ -796,24 +819,110 @@ Use one example under `examples/coding-agent` containing:
 - Agent one-shot run, follow-up, cancellation, and result.
 - AMD64 and ARM64 behavioral parity.
 
-## Agent Harness v0
+## Interchangeable Harness Adapter system
 
-Adapt the existing runtime and supervisor into a minimal Blazn Agent Harness with:
+Blazn owns the agent lifecycle and Harness Adapter contract, not one mandatory underlying CLI harness. Hermes, Codex CLI, Claude Code, and future harnesses implement the same versioned adapter boundary.
 
-- Exact AgentVersion and SandboxTemplateVersion capture.
-- Durable Run identity and state transitions.
-- Objective and follow-up message input.
-- Local Qwen model request path.
-- Existing bounded cloud failover rules for eligible infrastructure failures.
-- Structured lifecycle events and resumable watch.
-- Logs and final result artifact.
-- Cancellation with acknowledgement and cleanup.
-- Tool boundary limited to repository inspection/editing and approved commands.
-- No user credential mounted directly into the main agent container.
+The adapter contract must normalize:
 
-The first Agent is a coding agent that checks out one approved repository at an exact commit, performs a bounded task, and returns a patch plus summary. It does not push, merge, deploy, or write to production services.
+- Capability and version discovery.
+- Sandbox and environment preparation.
+- Exact AgentVersion, SandboxTemplateVersion, and HarnessVersion capture.
+- Objective, system instructions, user messages, and follow-up input.
+- Model and credential capability requests.
+- Tool and repository configuration.
+- Process launch using a typed executable and argument vector.
+- Structured lifecycle, message, progress, tool, usage, and terminal events.
+- Resumable event and message cursors where supported.
+- Steering, cancellation, timeout, and process-tree termination.
+- Final result, patch, artifacts, and exit classification.
+- Cleanup of credentials, temporary configuration, child processes, and Sandbox state.
+
+The Blazn Run state machine remains authoritative. A harness cannot declare its own Run succeeded after Blazn has cancelled it, change its workspace, grant itself tools, or author authoritative cost and security events.
+
+### Harness capabilities
+
+Every HarnessVersion publishes a bounded capability document including:
+
+- One-shot task execution.
+- Interactive follow-up messages.
+- Conversation resume.
+- Structured event output.
+- Streaming output.
+- Native tool calls.
+- External MCP support.
+- Patch or artifact output.
+- Checkpoint and recovery.
+- Model selection and provider configuration.
+- Approval or permission prompts.
+- Graceful cancellation.
+- Supported operating systems and architectures.
+
+Agent publication validates required capabilities against every allowed HarnessProfile. A Run fails before Sandbox creation when its requested conversation, tool, model, resume, or output behavior is incompatible with the selected harness. Blazn never silently drops a requirement to make a harness appear interchangeable.
+
+### POC adapters
+
+#### Hermes adapter
+
+Hermes is the first reference adapter and powers the initial conversation milestone. It should exercise the complete Blazn message and lifecycle contract, including follow-up input, event streaming, local-model routing, cancellation, and final artifacts.
+
+#### Codex CLI adapter
+
+The Codex adapter runs an approved, digest-pinned Codex CLI package inside the Sandbox. It creates harness-specific configuration from the HarnessProfile, uses only supported authentication and provider configuration, and converts Codex output into normalized Blazn events and artifacts.
+
+Persistent provider configuration required by nested Codex invocations belongs inside the run-scoped Sandbox configuration. One-off parent CLI flags are not treated as proof that nested processes inherit the same model route.
+
+#### Claude Code adapter
+
+The Claude Code adapter runs an approved, digest-pinned Claude Code package inside the Sandbox. It uses a workspace-approved credential or provider connection and maps Claude-specific session, message, tool, output, and cancellation behavior into the Blazn contract.
+
+The adapter must use a supported provider authentication method. The POC does not scrape private subscription endpoints, copy a developer's local credential directory into the Sandbox, or assume that Codex and Claude credentials are interchangeable.
+
+#### Generic CLI adapter
+
+The generic adapter proves extensibility for another approved command-line harness. A HarnessVersion declares:
+
+- Immutable package or image digest.
+- Executable and fixed argument template as an array, never an interpolated shell command.
+- Supported input modes such as standard input, file, or structured JSON.
+- Output and event parser version.
+- Signal, timeout, cancellation, and process-tree behavior.
+- Result and artifact locations.
+- Required model, credential, tool, filesystem, and network capabilities.
+
+Generic does not mean arbitrary. Only reviewed and published HarnessVersions can run, and workspace policy determines who may create or approve them.
+
+### Normalized events and fidelity
+
+Adapters emit the same core event envelope while preserving harness-specific detail under a namespaced extension. Core events include:
+
+- Harness preparing, ready, started, waiting, resumed, stopping, and exited.
+- User, assistant, and tool messages.
+- Tool requested, approved, started, completed, denied, and failed.
+- Model request and usage references.
+- Artifact and patch created.
+- Progress, warning, error, cancellation, timeout, and terminal result.
+
+The raw harness stream can be retained as a protected artifact when policy permits. Normalization never invents a tool call, token count, cost, approval, or successful result that the source and authoritative platform evidence cannot support.
+
+### Credential isolation
+
+Each adapter declares credential capabilities rather than accepting raw tokens in Agent or HarnessProfile definitions. The vault issues only the run-scoped material required by that adapter and model route.
+
+Hermes, Codex, and Claude use separate credential capabilities and leases. A credential mounted for one adapter is not made available to another adapter in the same workspace. Credentials are never built into the multi-architecture Sandbox image or returned through logs and results.
+
+### First portable Agent
+
+The first Agent is a coding agent with harness-neutral purpose, instructions, repository policy, tools, resource profile, evaluation, and output requirements. It checks out one approved repository at an exact commit, performs a bounded task, and returns a patch plus summary. It does not push, merge, deploy, or write to production services.
+
+The AgentVersion allows three HarnessProfiles: Hermes, Codex CLI, and Claude Code. Harness-specific overrides are limited to adapter configuration and formatting needed to preserve equivalent behavior. The same evaluation suite runs against all three.
 
 ## External harness integration
+
+There are two distinct proofs:
+
+1. **External control:** Codex or Claude Code invokes the local authenticated `blazn` CLI to manage work.
+2. **Sandbox execution:** Blazn launches Hermes, Codex CLI, or Claude Code inside the Sandbox through a HarnessProfile.
 
 ### Codex proof
 
@@ -825,10 +934,11 @@ From an authenticated developer machine:
 4. Ask it to create a Sandbox from the published template.
 5. Ask it to launch the sample Blazn Agent and watch the Run.
 6. Confirm Codex reads the structured result and reports the Run and artifact IDs.
+7. Start the same Agent with the Codex execution HarnessProfile and verify normalized Blazn events and results.
 
 ### Claude Code proof
 
-Repeat the same sequence with Claude Code using the same CLI and JSON contracts. No Claude-specific control API or MCP server should be required.
+Repeat the same control sequence with Claude Code using the same CLI and JSON contracts. Then run the same Agent with the Claude Code execution HarnessProfile. No Claude-specific Management API or management MCP server should be required.
 
 ### Safety requirements
 
@@ -836,13 +946,14 @@ Repeat the same sequence with Claude Code using the same CLI and JSON contracts.
 - The CLI never exposes refresh tokens or Kubernetes credentials in output.
 - Non-interactive mutations require explicit IDs, scope, idempotency, and confirmation behavior.
 - Harness instructions cannot make an unauthorized action eligible.
+- Selecting another execution harness cannot broaden model, tool, credential, repository, network, or Sandbox access.
 - The test captures prompts and outputs only after redaction and user approval.
 
 ## AI Proxy relationship
 
 The POC does not need to merge Blaze Proxy into the CLI to prove fleet management. It should preserve a clean integration point:
 
-- Blazn Agent Harness model calls use the existing local Qwen and approved fallback path through an adapter.
+- Harness adapters request models through their HarnessProfile and effective routing policy; Hermes uses the existing local Qwen and approved fallback path in the first proof.
 - External Codex can continue using a custom OpenAI-compatible provider configuration where model routing is desired.
 - Claude Code management uses the Blazn CLI; Anthropic protocol translation is not required for the POC.
 - A later `blazn proxy` service can reuse Blaze Proxy's model routing, SSE, API-key, capability-reporting, and client-configuration patterns.
@@ -1120,36 +1231,43 @@ Gate 6:
 - Repeating the build from unchanged inputs either yields the same material digest or records explained nondeterminism.
 - Publication refuses a mutable tag, failed test, missing architecture, or secret finding.
 
-### Phase 7 — Agents and Harness v0
+### Phase 7 — Agents and interchangeable harness execution
 
 Deliver:
 
 - Agent and immutable AgentVersion resources.
-- Minimal Agent Harness lifecycle.
+- Versioned HarnessDefinition, HarnessVersion, HarnessProfile, capability, and normalized event contracts.
+- Hermes, Codex CLI, Claude Code, and one generic CLI adapter.
 - Local Qwen route and bounded existing fallback adapter.
 - Run events, watch, logs, follow-up, cancellation, result, and artifact.
 - Coding task producing a patch without pushing it.
+- Harness-neutral Agent definition with adapter-specific profiles and bounded overrides.
 
 Gate 7:
 
 - Five successful local runs on AMD64 and five on ARM64.
+- The same evaluation suite passes through Hermes, Codex CLI, and Claude Code HarnessProfiles on at least one eligible architecture each.
+- Selecting a harness with missing required capabilities fails before Sandbox creation with an actionable compatibility result.
 - One follow-up message uses the same Session or Run relationship.
 - One cancellation acknowledges, terminates, and cleans up.
 - One eligible simulated local-provider failure creates no more than one approved fallback attempt.
 - Model, node, template, AgentVersion, cost/time, and result provenance are recorded.
 
-### Phase 8 — External harness proof
+### Phase 8 — External control-harness and adapter parity proof
 
 Deliver:
 
 - Codex and Claude Code instruction helpers.
 - Harness doctor commands.
+- Harness capability and adapter conformance tests.
 - Recorded, redacted end-to-end sessions.
 
 Gate 8:
 
 - Codex independently uses `blazn` to list nodes, create a Sandbox, start an Agent, watch it, and retrieve the result.
 - Claude Code repeats the same workflow without a management MCP server.
+- Hermes, Codex CLI, and Claude Code each execute the portable coding Agent through the normalized Harness Adapter contract.
+- The generic CLI conformance fixture proves a fourth harness can be added without changing Agent, Run, Conversation, Message, Sandbox, or event schemas.
 - Both receive the same JSON schemas and stable IDs.
 - Neither receives Kubernetes credentials, node credentials, or refresh tokens.
 
@@ -1230,8 +1348,9 @@ The second half is then repeated by Codex and Claude Code invoking the CLI.
 | Template | Schema, immutable digest, resources, architecture, network, security context, expiry, deprecation |
 | Build | Exact source commit, multi-architecture output, refresh layer, provenance, secret scan, immutable registry digest |
 | Sandbox | Create, readiness, exec grant, files, expiry, stop, delete, orphan scan, AMD64/ARM64 parity |
-| Agent | Version capture, local model, events, logs, follow-up, cancellation, result, artifact, bounded fallback |
-| Harness clients | Codex and Claude Code CLI invocation with identical JSON contracts |
+| Agent | Version and HarnessProfile capture, local model, events, logs, follow-up, cancellation, result, artifact, bounded fallback |
+| Harness execution | Hermes, Codex CLI, Claude Code, and generic adapter conformance; capability mismatch; normalized events; credential isolation; cancellation and cleanup |
+| Harness clients | Codex and Claude Code external CLI invocation with identical JSON contracts |
 | Security | No kubeconfig in clients, no token in args/logs/evidence, RBAC denials, network denial, expired grants, cross-workspace denial |
 | Resilience | API restart, controller restart, node disconnect, duplicate request, stream reconnect, partial build failure |
 | Cleanup | No POC Pods, claims, Jobs, ConfigMaps, temporary Secrets, access grants, finalizers, or workspace data after deletion |
@@ -1244,6 +1363,7 @@ The POC is not a production capacity certification, but it should prove:
 - 100 synthetic no-op submissions still satisfy the existing exactly-once and cleanup contract after POC installation.
 - 25 Sandbox lifecycle runs across AMD64 and ARM64 are each accounted for exactly once.
 - 20 Agent Runs complete across both architectures with no duplicate run or fallback attempt.
+- At least three equivalent evaluated Runs—one each through Hermes, Codex CLI, and Claude Code—retain the same AgentVersion and record distinct exact HarnessVersions.
 - At least five Sandbox lifecycles and five Agent Runs are placed on the freshly bootstrapped Linux node after activation.
 - A request beyond the reviewed Kueue envelope remains queued.
 - POC controller or API restart does not duplicate resources.
@@ -1305,6 +1425,8 @@ Never delete a namespace, CRD, Kubernetes Node, Lima instance, host directory, o
 | BuildKit privilege boundary | Reuse guarded existing workflow; do not expose raw BuildKit credentials to users or sandboxes |
 | Secret leakage through harness or evidence | Capability delivery, no user tokens in nodes, redaction, secret scanning, protected inputs |
 | External harness issues unsafe commands | Same API authorization, explicit confirmations, JSON contract, no Kubernetes credentials |
+| Harness adapters drift into separate products | One versioned adapter contract, shared conformance suite, normalized core events, exact capability declarations, and no adapter-specific resource model |
+| Codex or Claude auth is copied unsafely | Supported provider authentication only, separate vault capabilities, run-scoped leases, no developer credential-directory copying |
 | Duplicate work after retry | Idempotency records, durable Operations, create-or-get reconciliation, event IDs |
 | Cleanup debt | Expiry, owner references, explicit finalizers, exact orphan scan, fail qualification on residue |
 
@@ -1321,9 +1443,10 @@ Keep changes reviewable and independently reversible:
 7. `poc/sandbox-template-api`
 8. `poc/sandbox-lifecycle-and-access`
 9. `poc/development-build-and-refresh`
-10. `poc/agent-and-harness-v0`
-11. `poc/codex-and-claude-cli-proof`
-12. `poc/qualification-and-rollback`
+10. `poc/harness-adapter-contract-and-agents`
+11. `poc/hermes-codex-claude-adapters`
+12. `poc/codex-and-claude-cli-proof`
+13. `poc/qualification-and-rollback`
 
 Do not combine cluster-wide CRD installation, authentication, node drains, and runtime rollout in one PR or maintenance window.
 
@@ -1338,9 +1461,10 @@ The critical path is:
 5. Agent Sandbox compatibility and installation.
 6. Template and Sandbox lifecycle.
 7. Build and publication.
-8. Agent Harness and Run lifecycle.
-9. External harness proof.
-10. Qualification and rollback.
+8. Harness Adapter contract, portable Agent, and Run lifecycle.
+9. Hermes, Codex CLI, Claude Code, and generic adapter conformance.
+10. External harness control proof.
+11. Qualification and rollback.
 
 CLI release automation, example project authoring, disposable-cluster Agent Sandbox tests, node-service platform adapters, and test fixture work can run in parallel after contracts are frozen.
 
@@ -1357,7 +1481,8 @@ Assuming two to three experienced engineers with access to the current fleet:
 | Fresh Linux bootstrap, join broker, repair, and uninstall | 5–8 days |
 | Agent Sandbox, templates, and lifecycle | 8–12 days |
 | Development build and publication | 6–10 days |
-| Agent Harness v0 and agents | 8–12 days |
+| Harness Adapter contract, agents, and Hermes implementation | 8–12 days |
+| Codex CLI, Claude Code, and generic CLI adapters | 6–10 days |
 | External harness proof and qualification | 5–8 days |
 
 The likely elapsed POC is six to eight weeks with parallel work. Re-estimate after Phase 0 because identity registration, public distribution, clean Linux bootstrap, Agent Sandbox/Kueue compatibility, and hardened-runtime expectations can materially change the schedule.
@@ -1378,6 +1503,7 @@ The likely elapsed POC is six to eight weeks with parallel work. Re-estimate aft
 12. Which maintenance windows allow Mac/Linux node lifecycle and queue-overflow tests?
 13. Which fresh Linux distribution, version, architecture, and network location will be the clean-room node-install acceptance host?
 14. Is the POC authorized to install and own the exact operating-system packages, MicroK8s worker runtime, networking settings, registry trust, and systemd service described by the signed NodeInstallPlan on that host?
+15. Which supported installation, licensing, and provider-authentication methods are approved for Hermes, Codex CLI, and Claude Code inside Blazn Sandboxes?
 
 ## Final POC acceptance criteria
 
@@ -1392,8 +1518,10 @@ The POC is accepted only when:
 - Agent Sandbox is pinned, isolated to POC use, Kueue-admitted, observable, and removable.
 - One immutable logical SandboxTemplate runs on AMD64 Linux and ARM64 Mac workers.
 - A committed repository and dependency refresh build into a verified multi-architecture digest.
-- A versioned Agent runs through Blazn Harness v0, uses the approved model route, returns a patch/result, and cleans up.
-- Codex and Claude Code both complete the workflow by invoking the same CLI contract.
+- A versioned portable Agent runs through the Blazn Harness Adapter layer, uses an approved model route, returns a patch/result, and cleans up.
+- The same versioned portable Agent runs through Hermes, Codex CLI, and Claude Code HarnessProfiles with normalized lifecycle, message, event, cancellation, result, artifact, credential, and cleanup behavior.
+- A generic CLI adapter passes conformance without adding harness-specific Agent, Run, Conversation, Message, or Sandbox resources.
+- Codex and Claude Code both complete the workflow as external clients by invoking the same CLI contract.
 - No client receives Kubernetes credentials, node credentials, or raw workspace secrets.
 - Retry, restart, disconnect, cancellation, queue overflow, permission denial, and cleanup tests pass.
 - The evidence bundle is complete, redacted, and checksummed.
