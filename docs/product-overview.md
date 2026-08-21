@@ -4,6 +4,24 @@
 **Audience:** Founders, product, design, engineering, and early collaborators  
 **Scope:** High-level product definition; detailed requirements and architecture will follow
 
+## Index
+
+- [The idea](#the-idea)
+- [The problem](#the-problem)
+- [Product promise](#product-promise)
+- [Who it is for](#who-it-is-for)
+- [The product](#the-product)
+- [System design](#system-design)
+  - [System component index](#system-component-index)
+  - [Nodes](#nodes)
+- [How the pieces fit](#how-the-pieces-fit)
+- [Product principles](#product-principles)
+- [Brand direction](#brand-direction)
+- [Initial product boundary](#initial-product-boundary)
+- [What Blazn is not](#what-blazn-is-not)
+- [Measures of success](#measures-of-success)
+- [Documents to develop next](#documents-to-develop-next)
+
 ## The idea
 
 Blazn is the operating workspace for an AI-enabled company.
@@ -16,9 +34,12 @@ Blazn is available as a desktop application for macOS, Windows, and Linux, a CLI
 
 AI work today is fragmented:
 
-- Conversations and decisions are scattered across assistants, IDEs, terminals, and chat tools.
+- Conversations and decisions are scattered across Slack channels, source code, email, documents, project tools, assistants, IDEs, and terminals.
 - Agents operate independently, with limited knowledge of company goals, prior work, or one another.
-- Local and cloud models require separate configuration, credentials, and routing.
+- Local and cloud models require separate configuration, credentials, routing, and harness-specific integrations.
+- Individuals and teams quickly exhaust AI subscription allowances when operating multiple agents, while direct API usage can become unpredictable and significantly more expensive at scale.
+- Agents running directly on a local machine can consume its CPU, memory, storage, and thermal capacity, disrupting normal work or causing instability and restarts.
+- A single local machine limits agent concurrency and throughput; scaling beyond it usually requires manually assembling more hardware or paying a cloud provider.
 - Agent environments are difficult to provision consistently, secure, observe, and clean up.
 - Runs produce logs and artifacts, but rarely create reusable organizational memory.
 - Teams cannot easily understand what agents are doing, why they made a decision, what they cost, or whether their performance is improving.
@@ -37,6 +58,9 @@ Blazn gives every person and team one place to:
 4. Preserve work, knowledge, artifacts, and decisions as organizational memory.
 5. Observe outcomes and help agents improve over time.
 6. Connect agent work directly to projects, products, and customers.
+7. Pool authorized capacity across company and employee machines, automatically provisioning isolated environments while protecting the owner's work.
+8. Let agents use local models, cloud models, Blazn cloud, and compatible agent harnesses through one governed system.
+9. Bring agents into existing applications through the Blazn Button so they can act on what a user is experiencing in the moment.
 
 The experience should feel local-first, collaborative, inspectable, and progressively adoptable: valuable to one person on one machine, then capable of growing into a company-wide agent platform.
 
@@ -218,6 +242,236 @@ Potential experiences include:
 
 The Button inherits the interaction patterns and visual language of the existing Blaze Button while using Blazn's identity, policy, orchestration, and run history underneath.
 
+The goal is to bring Blazn into the applications people already use. With the user's permission, the Button supplies relevant live context so an agent can understand what the person is seeing, join the experience in the moment, perform work in a connected environment, and return real-time progress and results without forcing the person to reconstruct that context elsewhere.
+
+## System design
+
+This section turns the product vision into a shared system model. It will be developed component by component, beginning with the execution fabric and then defining the resources scheduled onto it.
+
+### System component index
+
+| Component | Purpose | Design status |
+| --- | --- | --- |
+| [Nodes](#nodes) | Contribute, describe, protect, and operate compute capacity | Initial design |
+| Sandbox templates and refreshes | Define reproducible environments and how their base state is updated | Planned |
+| Sandboxes | Provide isolated, stateful or disposable execution environments | Planned |
+| Warm pools | Keep policy-controlled environments ready to reduce startup latency | Planned |
+| Analytics and events | Record the structured history of work and system activity | Planned |
+| Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
+| Queues | Admit and prioritize work across limited models and compute | Planned |
+| Temporary agents | Create bounded, task-specific agent identities and lifetimes | Planned |
+| Agents | Define durable agent identity, objectives, configuration, and history | Planned |
+| Development | Build, test, version, evaluate, and release agents and system components | Planned |
+| Agent harness | Run and steer conversations and work across compatible harnesses | Planned |
+| Credentials and integrations | Connect external systems and safely grant scoped access | Planned |
+| MCP | Expose Blazn resources and controls to agents and compatible clients | Planned |
+| API | Provide the authoritative programmatic control surface | Planned |
+| AI request proxy | Route, govern, observe, and optimize model requests | Planned |
+
+### Nodes
+
+#### Definition
+
+A node is an enrolled machine that makes one or more capabilities available to a Blazn workspace. It may be a person's laptop or desktop, a company workstation, a dedicated server, or capacity managed by Blazn cloud.
+
+Once a machine owner or administrator opts it in, Blazn can automatically create approved virtual environments or sandboxes on that machine and schedule compatible agent work into them. Enrollment does not grant agents unrestricted access to the host. The node contributes only the capabilities, resource envelope, time windows, and data access allowed by its policy.
+
+The node is the unit of capacity and trust. A sandbox is a workload environment created on that capacity. Keeping these concepts separate allows Blazn to use different isolation technologies on macOS, Windows, Linux, and cloud infrastructure without changing how users describe or schedule agent work.
+
+#### Why nodes matter
+
+Nodes turn otherwise isolated machines into a governed compute fabric. A company can use available capacity across employee and company-owned hardware, increase concurrency without immediately purchasing cloud instances, and reserve managed cloud capacity for workloads that require elasticity, availability, or a different trust boundary.
+
+This fabric also protects the local experience. Instead of launching an arbitrary number of agents directly on a workstation, Blazn admits work against declared limits, isolates it where possible, and moves or queues it when the machine cannot safely support more work.
+
+#### Node types
+
+- **Personal node:** A person's macOS, Windows, or Linux machine. It is interactive, may be intermittently available, and always prioritizes the owner's foreground work.
+- **Shared team node:** A company-owned machine made available to one or more workspaces under centrally managed policy.
+- **Dedicated worker:** A server or workstation intended primarily for agents, with higher concurrency and fewer interactive-use restrictions.
+- **Blazn cloud node:** Managed capacity supplied on demand with a defined region, hardware profile, price, and security boundary.
+- **Model node:** A machine that exposes local model inference capacity. It may also execute agent environments, but the two capacities are advertised and scheduled independently.
+
+A physical machine may provide multiple execution backends. For example, a Mac could provide a Linux virtual-machine backend for isolated general workloads, a native macOS backend for Xcode work, and a local model endpoint. Each backend has separate limits and trust characteristics even though the UI groups them under one node.
+
+#### Enrollment and identity
+
+Enrollment begins in the desktop application or CLI and should require an explicit user or administrator action. The basic flow is:
+
+1. Authenticate the person and select a workspace.
+2. Name the node and show the capabilities Blazn detected.
+3. Choose what the machine may contribute, when it is available, and how much capacity must remain reserved for its owner.
+4. Apply a workspace-managed node policy and display any settings it controls.
+5. Create a unique device identity and register its public identity with the workspace.
+6. Establish an outbound authenticated connection to the Blazn control plane.
+7. Run compatibility and isolation checks before marking any execution backend ready.
+
+Node identity is distinct from user identity. Removing a user, rotating credentials, reinstalling the node service, or transferring machine ownership must not accidentally preserve access. Device credentials should be revocable, rotated automatically, stored in the platform credential store, and limited to the registered node and workspace.
+
+#### Advertised capabilities
+
+The node service continuously reports a normalized capability inventory that the scheduler can match against workload requirements:
+
+- Operating system, version, CPU architecture, and execution backends.
+- CPU, memory, storage, GPU or accelerator capacity, including the amount currently allocatable.
+- Installed or managed runtimes, virtualization support, and sandbox providers.
+- Native toolchains such as Xcode, Android SDKs, browsers, or Windows build tools.
+- Local models and model-server compatibility, context limits, and current inference capacity.
+- Network class, allowed destinations, region, data-residency attributes, and trust level.
+- Maximum concurrency, availability schedule, battery and thermal restrictions, and owner-defined labels.
+- Supported sandbox templates and cached environment versions.
+
+Capabilities are claims, not guarantees. Blazn validates important capabilities during enrollment and refreshes health signals while the node is connected.
+
+#### Lifecycle and state
+
+A node has a small, explicit lifecycle:
+
+- **Enrolling:** Identity exists, but compatibility and policy checks are incomplete.
+- **Ready:** At least one backend can accept work.
+- **Busy:** The node is healthy but has reached an admission or resource limit.
+- **Draining:** Existing work may finish or migrate, but no new work is admitted.
+- **Offline:** The node has missed its lease or intentionally disconnected.
+- **Quarantined:** Blazn or an administrator has prevented execution because identity, integrity, policy, or health checks failed.
+- **Removed:** Trust is revoked and the machine is no longer part of the workspace.
+
+Each execution backend and sandbox also reports its own state. A node can therefore remain ready for local-model requests while its sandbox backend is draining, or remain available for Linux work while native macOS execution is disabled.
+
+#### Placement and admission
+
+Agents request capabilities rather than choosing a machine by hostname. A request may specify an operating system, architecture, sandbox template, native toolchain, model, minimum resources, trust level, region, data boundary, expected duration, and whether interruption is allowed.
+
+The scheduler filters nodes that cannot satisfy hard requirements, then selects among eligible capacity using:
+
+- Workspace and node policy.
+- Queue priority, quotas, and fairness.
+- Current load and the owner's reserved resources.
+- Environment or model cache locality.
+- Data location and network restrictions.
+- Startup latency, expected reliability, and interruption risk.
+- User preference and estimated cost.
+
+Users can pin work to a node for development or specialized hardware, but ordinary runs should remain portable. If no node is eligible, the request waits in a queue, asks the user to relax a constraint, or—when policy permits—offers Blazn cloud capacity with the expected cost visible before admission.
+
+#### Automatic environment provisioning
+
+When the scheduler admits work, the selected node receives a signed workload grant rather than a general command channel. The node then:
+
+1. Resolves an approved sandbox template and exact version.
+2. Reuses a compatible warm environment or creates a fresh one.
+3. Applies resource, network, filesystem, tool, and credential policy.
+4. Starts the requested harness and agent inside the chosen execution backend.
+5. Streams lifecycle events, logs, metrics, and selected artifacts.
+6. Suspends, refreshes, or destroys the environment according to its retention policy.
+
+Template refresh, warm-pool behavior, sandbox identity, persistence, and cleanup will be defined in their dedicated sections. The node is responsible for faithfully enforcing those decisions, not inventing them locally.
+
+#### Protecting the machine owner
+
+Personal nodes must remain safe and usable while they contribute capacity. The node service enforces:
+
+- Hard CPU, memory, storage, process, and concurrency limits.
+- A configurable reserve that agent workloads cannot consume.
+- Low-disk, memory-pressure, thermal, battery, and foreground-activity thresholds.
+- Availability windows and idle-only operation when requested.
+- Immediate pause, drain, and stop controls in the desktop app and CLI.
+- Preemption of interruptible agent work when the owner needs resources.
+- Bounded log, cache, image, and sandbox storage with visible cleanup controls.
+- Crash recovery that detects and cleans up orphaned environments without restarting the host.
+
+The default personal-node policy should be conservative. Increasing capacity is an informed user choice; joining a workspace should never silently turn a machine into an unrestricted worker.
+
+#### Security model
+
+Nodes operate on the assumption that agent code, repositories, tools, and model output may be untrusted.
+
+- The node initiates outbound connections; enrollment should not require exposing a general-purpose inbound management port.
+- Every workload receives a short-lived, audience-bound grant scoped to one run and execution backend.
+- Sandbox images and templates are signed, versioned, and policy-approved.
+- Host files, sockets, devices, clipboard data, and credentials are unavailable unless explicitly attached.
+- Secrets are delivered just in time, scoped to the run and integration, redacted from telemetry, and revoked when possible at completion.
+- Network access is denied or constrained by template and workspace policy.
+- Native-host execution is identified as a higher-trust backend and requires stronger approval and narrower workloads than a sandboxed backend.
+- Node actions and administrative changes produce immutable audit events.
+
+Workspace policy must be able to prohibit personal nodes, require company-managed devices, restrict data to a region or trust class, or allow only specific repositories and integrations.
+
+#### Reliability and disconnection
+
+The node maintains a renewable lease with the control plane. When the lease expires, no new work is assigned. The control plane distinguishes a disconnected node from a failed run and applies the workload's recovery policy:
+
+- Wait for the same node when it owns irreplaceable local state.
+- Resume a persistent sandbox after reconnection.
+- Retry portable work on another eligible node.
+- Fail and request human intervention when replay could duplicate an external action.
+
+The node journals enough local state to report what happened after reconnecting. The control plane remains authoritative for run intent, while the node remains authoritative for the observed state of its local environments until reconciliation completes.
+
+#### Observability and privacy
+
+The workspace needs enough information to schedule work and diagnose failures without turning node enrollment into employee surveillance. Node telemetry should include:
+
+- Availability, heartbeat, software version, and backend health.
+- Allocatable and consumed CPU, memory, storage, accelerator, and concurrency capacity.
+- Sandbox startup time, queue-to-start time, failures, preemptions, and cleanup results.
+- Model capacity, request load, latency, and error rates when the node serves models.
+- Workload identifiers and policy decisions required for audit and support.
+
+Blazn should not collect unrelated applications, personal files, keystrokes, screen contents, or browsing activity. Application context is shared only through an explicit integration such as the Blazn Button and is governed separately from infrastructure telemetry.
+
+#### Node controls and experience
+
+The desktop app should make node behavior understandable at a glance:
+
+- Whether the node is accepting work and which backends are ready.
+- What is running, for whom, and what resources it is using.
+- The capacity reserved for the owner and the capacity contributed to Blazn.
+- Recent runs, errors, policy changes, and cleanup activity.
+- Pause, resume, drain, update, diagnose, and remove actions.
+- Estimated local capacity contributed and cloud cost avoided.
+
+Administrators need fleet views for health, versions, capacity, utilization, trust, queues, policy compliance, and current workloads. Machine owners should always retain the local ability to stop Blazn work, even when workspace policy is centrally managed.
+
+#### Initial node record
+
+The first system model should include at least:
+
+- Stable node ID, workspace ID, display name, owner, and enrollment timestamps.
+- Device identity, trust class, policy version, and software version.
+- Platform and normalized capabilities.
+- Execution backends with individual status and allocatable capacity.
+- Labels, placement constraints, availability, and resource-reserve policy.
+- Current lease, health, drain state, and last-seen time.
+- Active environment and workload references.
+- Aggregate utilization and reliability metrics.
+
+Secrets, raw device keys, and unrelated host inventory must not be stored in the node record.
+
+#### Version-one boundary
+
+The first node implementation should prove a narrow loop:
+
+1. Enroll one macOS, Windows, or Linux machine from the app or CLI.
+2. Contribute a bounded Linux virtualized or containerized backend where the platform supports it.
+3. Advertise verified resources and accept capability-matched work.
+4. Create an isolated environment from one approved template.
+5. Run one harness, stream events and resource metrics, and return artifacts.
+6. Enforce resource reserves, concurrency, drain, offline, and cleanup behavior.
+7. Make the same operations available through the authenticated Blazn API and MCP server.
+
+Native platform execution, local model serving, organization-wide device management, workload migration, and cloud bursting belong in the model from the beginning but can follow after this loop is reliable.
+
+#### Decisions to make next
+
+- Which isolation backend is the default on each operating system?
+- Does the first release use a local scheduler, a hosted control plane, or both?
+- Which node and sandbox operations continue while the control plane is unavailable?
+- How are software, template, and policy updates staged and rolled back?
+- What data and workload classes are permitted on personal versus managed nodes?
+- How is contributed capacity measured, credited, budgeted, or billed?
+- Which workload types are portable, resumable, interruptible, or bound to one node?
+- What compatibility contract allows Kubernetes Agent Sandbox and non-Kubernetes backends to behave consistently?
+
 ## How the pieces fit
 
 ```mermaid
@@ -337,4 +591,3 @@ This overview establishes the product direction. Follow-on documents should defi
 10. Blazn Button SDK and embedded interaction model.
 11. Desktop/CLI technology choices and release strategy.
 12. Commercial model for local, team, and cloud offerings.
-
