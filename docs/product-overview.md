@@ -115,9 +115,13 @@ Core responsibilities include:
 - Managing nodes, environments, schedules, triggers, tools, and resources.
 - Routing model requests through the Blazn AI Proxy.
 - Publishing and retrieving artifacts.
-- Exposing Blazn capabilities through automation-friendly and MCP-compatible interfaces.
+- Providing stable commands, machine-readable output, streaming, and idempotent operations for people, scripts, CI, and remote administration.
 
 The desktop app and CLI are two clients of the same product, not separate systems.
+
+The CLI is the initial public control and automation surface. Blazn will not ship a public management API or a Blazn management MCP server in the first product scope. The desktop app and internal services can use authenticated internal protocols, but those protocols are implementation details rather than a public compatibility commitment. The AI Proxy retains its model-compatible endpoint, and the Agent Harness may still consume external MCP tools.
+
+The CLI can target a local Blazn service or an authenticated remote workspace. Its commands, exit codes, structured output, operation IDs, and streaming behavior form the supported automation contract. Scripts should invoke the CLI rather than depend on or reverse-engineer the private transport used between the CLI, desktop app, and control plane.
 
 ### 3. Workspaces and the company brain
 
@@ -160,14 +164,14 @@ The harness supports:
 - Live progress, events, intermediate results, and structured approvals.
 - Follow-up instructions and steering during a run.
 - Context assembly from workspace memory, projects, resources, and artifacts.
-- Tool and MCP access governed by agent and workspace permissions.
+- Tool and external MCP access governed by agent and workspace permissions.
 - Work in isolated sandboxes or approved local-machine backends.
 - Checkpoints, pause, resume, cancellation, retry, and recovery.
 - Agent creation, bounded schedules, delegation, handoffs, and coordinated agent teams.
 - Durable outputs, evaluations, and introspection linked to run history.
 - Model requests sent exclusively through the Smart LLM Router.
 
-The desktop app, CLI, API, MCP server, schedules, triggers, and Blazn Button all initiate work through this same harness. External applications and developer tools may call Blazn APIs or use its AI Proxy, but they do not redefine Blazn's agent lifecycle or execution semantics.
+The desktop app, CLI, schedules, triggers, and future Blazn Button experiences all initiate work through this same harness. External developer tools may use the AI Proxy, but they do not redefine Blazn's agent lifecycle or execution semantics.
 
 The harness should make an agent's context, environment, tools, actions, model routing, approvals, and state visible without forcing users to understand the underlying orchestration system.
 
@@ -291,8 +295,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
-| MCP | Expose Blazn resources and controls to agents and compatible clients | Planned |
-| API | Provide the authoritative programmatic control surface | Planned |
+| CLI control surface | Provide the supported local and remote interface for people, scripts, CI, and administration | Planned |
 | Smart LLM Router | Select, queue, load-balance, and fail over model requests across local and cloud capacity | Initial design |
 | LLM Router Policy | Define allowed routes, preferences, budgets, privacy rules, and fallback behavior | Initial design |
 
@@ -514,7 +517,7 @@ The first node implementation should prove a narrow loop:
 5. Create an isolated environment from one approved template.
 6. Run the Blazn Agent Harness, stream events and resource metrics, and return artifacts.
 7. Enforce shared resource reserves, model and agent concurrency, drain, offline, and cleanup behavior.
-8. Make the same operations available through the authenticated Blazn API and MCP server.
+8. Make the same operations available through the authenticated desktop app and CLI.
 
 Native platform execution, additional model runtimes, organization-wide device management, workload migration, and cloud bursting belong in the model from the beginning but can follow after this loop is reliable.
 
@@ -562,7 +565,7 @@ A sandbox template should be able to define:
 - Repositories, source references, checkout strategy, workspace layout, and repository-specific setup.
 - Dependency installation, build, initialization, validation, and health-check steps.
 - Declared dependency, compiler, package, source, and build caches.
-- Tools, MCP servers, integrations, and capabilities that may be attached at runtime.
+- Tools, external MCP servers, integrations, and capabilities that may be attached at runtime.
 - Network egress and ingress policy, DNS behavior, allowed services, and proxy configuration.
 - Filesystem layout, writable paths, ephemeral and persistent volumes, mounts, and artifact directories.
 - Credential requirements by capability and scope, but never secret values.
@@ -700,7 +703,7 @@ A refresh may be initiated by:
 - A base image, toolchain, package index, certificate, or security advisory changing.
 - A refresh time-to-live expiring.
 - Warm-pool demand or cache-miss metrics crossing a policy threshold.
-- A person, maintainer agent, schedule, API client, or MCP client requesting it.
+- A person, maintainer agent, schedule, desktop action, or CLI command requesting it.
 
 Triggers are coalesced by refresh key so many runs do not rebuild the same cache concurrently. Refresh work has its own queue, priority, concurrency, storage, and cost limits and should yield to higher-priority interactive agent work when appropriate.
 
@@ -965,7 +968,7 @@ Live resizing is used only when the backend supports it safely. Otherwise, chang
 
 Each sandbox receives an isolated network identity and a default-deny or template-defined egress policy. Network access is evaluated using workspace, template, integration, and data-classification rules.
 
-Services started inside a sandbox are private by default. Terminal, editor, browser preview, API, and debugging access use an authenticated Blazn tunnel or service gateway tied to the sandbox, user, session, and expiration time. Raw ports are not exposed publicly merely because a process starts listening.
+Services started inside a sandbox are private by default. Terminal, editor, browser preview, application-service, and debugging access use an authenticated Blazn tunnel or service gateway tied to the sandbox, user, session, and expiration time. Raw ports are not exposed publicly merely because a process starts listening.
 
 The service gateway provides stable logical endpoints even when the backend object or node changes. It can enforce authentication, authorization, TLS, origin checks, request limits, audit events, and optional human approval before exposure.
 
@@ -977,7 +980,7 @@ The template declares credential capabilities; the sandbox receives actual crede
 
 The sandbox control endpoint tracks which grants are attached, their scopes, expiry, and revocation status without exposing secret values. Grants are revoked on run completion, suspension, ownership transfer, quarantine, or policy change. Resuming a sandbox requires fresh authorization.
 
-Repository access, MCP servers, cloud providers, databases, customer systems, and other integrations remain distinct grants. Access to one does not imply general workspace credentials or host access.
+Repository access, external MCP servers, cloud providers, databases, customer systems, and other integrations remain distinct grants. Access to one does not imply general workspace credentials or host access.
 
 #### Harness and user attachment
 
@@ -1098,7 +1101,7 @@ The first record should include:
 - Credential grant references and policy versions without secret values.
 - Retention, timeout, migration, release, replacement, and terminal information.
 
-#### API and MCP surface
+#### Desktop and CLI surface
 
 The initial control surface should support:
 
@@ -1126,9 +1129,9 @@ The first sandbox implementation should prove:
 7. Suspend, resume, and reconnect without losing durable workspace state.
 8. Revoke credentials and destroy or sanitize the sandbox reliably.
 9. Recover from a harness restart and report a simulated node loss clearly.
-10. Expose authenticated desktop, CLI, API, and MCP controls.
+10. Expose authenticated desktop and CLI controls.
 
-Kubernetes Agent Sandbox is a candidate first Linux adapter, but the version-one Blazn API and data model should not expose Kubernetes as the required product contract.
+Kubernetes Agent Sandbox is a candidate first Linux adapter, but the version-one Blazn commands and data model should not expose Kubernetes as the required product contract.
 
 #### Decisions to make next
 
@@ -1446,7 +1449,7 @@ Each entry record extends the sandbox record with:
 - Sanitation generation, readiness results, reuse count, and replacement reason.
 - Idle resource cost and startup-latency measurements.
 
-#### API and MCP surface
+#### Desktop and CLI surface
 
 The first control surface should support:
 
@@ -1480,7 +1483,7 @@ The first warm-pool implementation should prove:
 7. Conservative personal-node behavior with ready capacity disabled by default.
 8. Single-use destruction after session release; no recycling in the initial security boundary.
 9. Metrics comparing full cold, refreshed cold, suspended warm, and ready warm startup.
-10. Authenticated desktop, CLI, API, and MCP inspection and administration.
+10. Authenticated desktop and CLI inspection and administration.
 
 #### Decisions to make next
 
@@ -1530,7 +1533,7 @@ The queue system should:
 | **Warm-pool maintenance** | Prewarm, resume, suspend, replace, sanitize, or destroy entries | Prewarm quota, node resources, storage and idle-cost budget |
 | **Integration** | Rate-limited or asynchronous work against an external system | Provider quotas, connection limits, action budgets and safety rules |
 
-Schedules, triggers, API calls, MCP tools, user actions, and agent delegation create items in these domains; they are not separate capacity systems. A scheduled agent run enters normal run admission with its schedule-derived priority and deadline.
+Schedules, triggers, CLI commands, desktop actions, internal control operations, and agent delegation create items in these domains; they are not separate capacity systems. A scheduled agent run enters normal run admission with its schedule-derived priority and deadline.
 
 #### Queue topology and scope
 
@@ -1890,7 +1893,7 @@ The first queue-item record should include:
 
 Queue definitions should record their scope, domain, policy, parent allocation, priority classes, fairness weight, quotas, budgets, admission pools, health, and aggregate status.
 
-#### API and MCP surface
+#### Desktop and CLI surface
 
 The initial control surface should support:
 
@@ -1919,7 +1922,7 @@ The first queue implementation should prove:
 7. Low-priority, preemptible refresh and warm-pool replenishment.
 8. Durable idempotency, reservations, dispatch leases, cancellation, retry, and recovery after controller restart.
 9. Clear blocked and no-capacity explanations with queue events and metrics.
-10. Authenticated desktop, CLI, API, and MCP controls.
+10. Authenticated desktop and CLI controls.
 
 #### Decisions to make next
 
@@ -1981,7 +1984,7 @@ An agent version should be able to define:
 - Role, purpose, responsibilities, and boundaries.
 - Objectives, success measures, stop conditions, and escalation behavior.
 - Versioned operating instructions and communication style.
-- Skills, tools, MCP servers, resources, and integration requirements.
+- Skills, tools, external MCP servers, resources, and integration requirements.
 - Workspace knowledge sources and retrieval policy.
 - Sandbox template, environment requirements, resource profile, and native-platform needs.
 - LLM Router Policy, capability requirements, context budget, and model aliases.
@@ -2079,10 +2082,10 @@ Reactivation or extension is explicit and auditable. It creates a lifecycle revi
 
 An active agent may have zero or more run schedules and triggers:
 
-- Manual invocation from desktop, CLI, API, MCP, or Blazn Button.
+- Manual invocation from desktop or CLI, with Blazn Button support deferred to a later product phase.
 - One-time or recurring calendar schedules.
 - Repository, project, monitoring, customer, or integration events.
-- Webhooks and authenticated external API calls.
+- Webhooks and authenticated integration events.
 - Parent-agent delegation.
 - Artifact, task, milestone, or dependency changes.
 
@@ -2121,13 +2124,13 @@ Higher-level security and policy instructions cannot be weakened by a lower-leve
 
 Large procedures can live as versioned skills or resources rather than being copied into every prompt. The harness loads only relevant material within the context budget.
 
-#### Skills, tools, MCP, and resources
+#### Skills, tools, external MCP, and resources
 
 An agent version declares the capabilities it may request:
 
 - Blazn-native tools and environment operations.
 - Skills containing procedures and supporting resources.
-- MCP servers and allowed tools, prompts, and resources.
+- External MCP servers and their allowed tools, prompts, and resources.
 - Workspace integrations such as source control, messaging, support, project management, data, and deployment systems.
 - Documents, dashboards, datasets, knowledge collections, and artifact libraries.
 
@@ -2198,7 +2201,7 @@ Agent-specific collections can improve continuity, but workspace permissions and
 Agents can be organized through explicit relationships:
 
 - Owner person or team.
-- Creator person, API client, or creating agent.
+- Creator person, authenticated CLI principal, internal service, or creating agent.
 - Parent and created-agent lineage.
 - Coordinating agent and team membership.
 - Project, objective, milestone, task, product, service, or customer assignment.
@@ -2210,7 +2213,7 @@ A coordinating agent delegates bounded objectives, observes linked run states, r
 
 #### Agent creation and delegation
 
-People, authorized API or MCP clients, and agents with explicit permission can create an agent. Agent-created agents use the same schema, validation, versioning, tags, library, and lifecycle as every other agent.
+People using the desktop app or CLI, internal services, and agents with explicit permission can create an agent. Agent-created agents use the same schema, validation, versioning, tags, library, and lifecycle as every other agent.
 
 For a bounded delegated assignment, the creating agent supplies:
 
@@ -2302,7 +2305,7 @@ Agent health summarizes whether the agent can perform new work:
 - Published configuration validity.
 - Lifecycle and schedule eligibility.
 - Required sandbox template and node capacity.
-- Tool, MCP, credential, and integration readiness.
+- Tool, external MCP, credential, and integration readiness.
 - LLM Router Policy and eligible model capacity.
 - Queue, quota, budget, and concurrency status.
 - Recent run success, failure, cancellation, latency, cost, and quality trends.
@@ -2351,7 +2354,7 @@ The AgentVersion record should include:
 
 Secret values, active tokens, raw conversation histories, and mutable sandbox state do not belong in either record.
 
-#### API and MCP surface
+#### Desktop and CLI surface
 
 The initial control surface should support:
 
@@ -2382,7 +2385,7 @@ The first Agent implementation should prove:
 8. Agent-scoped credentials issued only at run time.
 9. Search and filtering by name, status, owner, project, and tags.
 10. Runs, artifacts, model routes, sandbox use, metrics, and audit history linked back to the agent and exact version.
-11. Authenticated desktop, CLI, API, and MCP creation, inspection, lifecycle, and run controls.
+11. Authenticated desktop and CLI creation, inspection, lifecycle, and run controls.
 
 #### Decisions to make next
 
@@ -2421,7 +2424,7 @@ The guiding principle is:
 | **Integration definition** | Provider adapter, supported authentication methods, tools, events, scopes, and schemas |
 | **Integration connection** | A personal or shared external account connected to a workspace through one definition |
 
-Credential metadata may be searchable under permission. Secret values are not part of workspace search, the company brain, agent context, logs, metrics, or ordinary API responses.
+Credential metadata may be searchable under permission. Secret values are not part of workspace search, the company brain, agent context, logs, metrics, or ordinary desktop or CLI output.
 
 #### Vault types
 
@@ -2534,7 +2537,7 @@ Directly sharing a personal credential remains possible when allowed, but the re
 
 Agents and tools request a capability, not a plaintext value. A typical flow is:
 
-1. The AgentVersion, sandbox template, MCP tool, or integration declares a credential capability such as `source-control:repo-read`.
+1. The AgentVersion, sandbox template, external MCP tool, or integration declares a credential capability such as `source-control:repo-read`.
 2. At run time, the harness submits the agent, initiating user, objective, tool, requested action, sandbox, and audience context.
 3. Blazn resolves eligible personal and shared credentials without exposing candidates the caller cannot discover.
 4. Vault Policy, Agent Policy, tool policy, environment trust, data policy, and approvals are evaluated.
@@ -2573,7 +2576,7 @@ Some users need to view or export a value for manual configuration. Reveal and e
 - Watermarking or client-side protections where practical.
 - Immediate audit and optional owner notification.
 
-Vault policy may prohibit reveal entirely for team or production credentials. Agents and ordinary MCP clients do not receive a reveal tool.
+Vault policy may prohibit reveal entirely for team or production credentials. Agents and ordinary CLI automation do not receive a reveal command.
 
 #### Encryption and key hierarchy
 
@@ -2643,7 +2646,7 @@ When a provider supports short-lived delegated or workload tokens, Blazn mints t
 
 #### Integration tools and actions
 
-An integration exposes normalized, versioned tools to the Blazn Agent Harness and, when permitted, through the Blazn MCP server and API. Each tool declares whether it is:
+An integration exposes normalized, versioned tools to the Blazn Agent Harness and, when permitted, as authenticated CLI operations. Each tool declares whether it is:
 
 - Read-only.
 - Reversible.
@@ -2684,7 +2687,7 @@ Connecting an account does not automatically ingest all available data into the 
 
 #### Credential requirements in agents and templates
 
-Agent versions, sandbox templates, tools, and MCP servers declare credential capabilities, not vault IDs or secret values. For example:
+Agent versions, sandbox templates, tools, and external MCP servers declare credential capabilities, not vault IDs or secret values. For example:
 
 - `source-control:repository-read`
 - `source-control:pull-request-write`
@@ -2820,7 +2823,7 @@ The IntegrationConnection record should include:
 
 The AccessGrant and CredentialLease records include principal, action, resource, context, policy decision, approval, audience, issue, expiry, revocation, and use result without storing the secret value.
 
-#### API and MCP surface
+#### Desktop and CLI surface
 
 The initial control surface should support:
 
@@ -2835,7 +2838,7 @@ The initial control surface should support:
 - Stream redacted credential, lease, integration, webhook, health, and audit events.
 - Explain why a credential or connection is not eligible without revealing inaccessible candidates.
 
-The agent-facing MCP and API surfaces do not expose a generic `get_secret` operation. Agents request capabilities and invoke authorized tools. Human reveal and export use separate strongly authenticated surfaces and permissions.
+The Agent Harness tool surface and CLI automation do not expose a generic `get_secret` operation. Agents request capabilities and invoke authorized tools. Human reveal and export use separate strongly authenticated desktop or interactive CLI flows and permissions.
 
 All mutations use expected versions and idempotency keys. Secret values are accepted only through dedicated protected inputs and never returned in mutation responses.
 
@@ -2853,7 +2856,7 @@ The first credentials and integrations implementation should prove:
 8. Rotation, expiry warning, disablement, provider-side revocation where supported, and offboarding checks.
 9. Team members and agents using a shared credential without being able to reveal it.
 10. Redacted audit events, dependency views, health, and usage metrics.
-11. Authenticated desktop, CLI, API, and MCP management and use surfaces without a generic agent secret-read tool.
+11. Authenticated desktop and CLI management and use surfaces without a generic agent secret-read tool.
 
 #### Decisions to make next
 
@@ -2874,7 +2877,7 @@ The first credentials and integrations implementation should prove:
 
 #### Definition and authority
 
-The Blazn Agent Harness is the authoritative runtime for every Blazn-managed agent. It converts an objective, conversation, schedule, trigger, API call, or delegated assignment into a durable run and coordinates that run until it reaches a terminal or explicitly suspended state.
+The Blazn Agent Harness is the authoritative runtime for every Blazn-managed agent. It converts an objective, conversation, schedule, trigger, desktop or CLI request, internal event, or delegated assignment into a durable run and coordinates that run until it reaches a terminal or explicitly suspended state.
 
 Blazn owns the harness contract. This provides one consistent model for identity, context, tools, approvals, environments, events, artifacts, metrics, recovery, and improvement across desktop, CLI, cloud, and embedded experiences. Supporting an external tool or model API does not mean delegating control of the agent lifecycle to an external harness.
 
@@ -2885,7 +2888,7 @@ For each run, the harness is responsible for:
 - Resolving the agent version, objective, instructions, skills, permissions, and effective LLM Router Policy.
 - Building a bounded context from the current conversation, workspace memory, project state, pinned resources, prior run evidence, and explicit user input.
 - Acquiring a sandbox or approved native execution backend with the required capabilities.
-- Making tools, MCP servers, integrations, and credentials available according to least-privilege grants.
+- Making tools, external MCP servers, integrations, and credentials available according to least-privilege grants.
 - Sending all inference requests through the Smart LLM Router.
 - Executing the agent loop and recording model responses, reasoning summaries where supported, tool requests, approvals, results, and errors as structured events.
 - Accepting live user messages, steering, cancellation, and approval decisions without losing run identity.
@@ -2927,7 +2930,7 @@ Important outputs return to the workspace as versioned artifacts or proposed mem
 
 #### Tools, actions, and approvals
 
-The harness exposes tools through a normalized contract regardless of whether they are native Blazn tools, MCP tools, workspace integrations, or environment operations. Each call carries the run and agent identity, a scoped authorization grant, a deadline, and an idempotency or replay policy.
+The harness exposes tools through a normalized contract regardless of whether they are native Blazn tools, external MCP tools, workspace integrations, or environment operations. Each call carries the run and agent identity, a scoped authorization grant, a deadline, and an idempotency or replay policy.
 
 Read-only and reversible actions may run automatically under policy. External writes, financial actions, production changes, secrets access, destructive operations, and actions affecting other people can require explicit approval. If execution fails after an action may have occurred, the harness must reconcile the result rather than blindly repeating it.
 
@@ -2947,13 +2950,13 @@ After a harness, node, or model failure, the reconciler determines whether to re
 
 #### External clients
 
-Codex, Claude Code, IDEs, and other applications can use the Blazn AI Proxy, API, MCP server, tools, and artifacts. They remain external clients with their own execution behavior. When a user creates an agent in Blazn, however, that agent runs through the Blazn Agent Harness so the workspace receives consistent controls, events, metrics, and recovery semantics.
+Codex, Claude Code, IDEs, and other applications can use the Blazn AI Proxy for model requests. People and automation control Blazn through the CLI, while the desktop app provides the visual experience. These external tools retain their own execution behavior; an agent created in Blazn runs through the Blazn Agent Harness so the workspace receives consistent controls, events, metrics, and recovery semantics.
 
 #### Version-one boundary
 
 The first harness should prove one durable end-to-end loop:
 
-1. Start a session from desktop, CLI, API, or MCP.
+1. Start a session from the desktop app or CLI.
 2. Resolve one versioned agent and its effective policy.
 3. Acquire one sandbox, assemble bounded context, and attach approved tools.
 4. Route all model requests through the Smart LLM Router.
@@ -3178,7 +3181,7 @@ Users can see what agents are doing, interrupt work, approve sensitive actions, 
 
 ### One harness, many models and tools
 
-Blazn should provide one consistent agent runtime across different model providers, tools, MCP servers, local and cloud environments, and product surfaces. External developer tools can use Blazn services, but Blazn-managed agents retain one observable and recoverable lifecycle.
+Blazn should provide one consistent agent runtime across different model providers, native tools, external MCP tools, local and cloud environments, and product surfaces. External developer tools can use the AI Proxy, but Blazn-managed agents retain one observable and recoverable lifecycle.
 
 ### Work creates memory
 
@@ -3228,7 +3231,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - Personal and team vaults sharing credential use through policy, plus personal and team integration connections.
 - Runs with live events, logs, artifacts, and basic metrics.
 - A minimal project/task connection.
-- Secure remote control through an MCP-compatible interface.
+- Secure local and remote control through the authenticated Blazn CLI.
 
 Native macOS and Windows execution, broad multi-agent coordination, advanced organizational memory, autonomous improvement, elastic cloud capacity, and the full Blazn Button platform can then be introduced in deliberate stages.
 
@@ -3265,7 +3268,7 @@ This overview establishes the product direction. Follow-on documents should defi
 4. Workspace, agent, run, artifact, project, and event data models.
 5. Node enrollment, sandboxing, native execution, and scheduling model.
 6. AI Proxy compatibility, Smart LLM Router architecture, policy evaluation, and provider strategy.
-7. MCP and public API surface, authentication, and authorization.
+7. CLI command surface, machine-readable contracts, authentication, remote access, and automation behavior.
 8. Company-brain ingestion, permission-aware indexing, retrieval, provenance, freshness, retention, privacy, and deletion model.
 9. Agent evaluation, introspection, and governed improvement process.
 10. Blazn Button SDK and embedded interaction model.
