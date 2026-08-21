@@ -17,6 +17,7 @@
     - [Local model capacity](#local-model-capacity)
   - [Sandbox templates and refreshes](#sandbox-templates-and-refreshes)
   - [Sandboxes](#sandboxes)
+  - [Warm pools](#warm-pools)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -273,7 +274,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Nodes](#nodes) | Contribute, describe, protect, and operate compute capacity | Initial design |
 | [Sandbox templates and refreshes](#sandbox-templates-and-refreshes) | Define, version, update, and efficiently materialize reproducible environments | Initial design |
 | [Sandboxes](#sandboxes) | Provide isolated, stateful or disposable execution environments | Initial design |
-| Warm pools | Keep policy-controlled environments ready to reduce startup latency | Planned |
+| [Warm pools](#warm-pools) | Keep policy-controlled environments ready to reduce startup latency | Initial design |
 | Analytics and events | Record the structured history of work and system activity | Planned |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
 | Queues | Admit and prioritize work across limited models and compute | Planned |
@@ -1132,6 +1133,358 @@ Kubernetes Agent Sandbox is a candidate first Linux adapter, but the version-one
 - How should personal-node storage and network policies differ from dedicated workers?
 - Which sandbox states consume queue quota, node capacity, or customer billing?
 - What guarantees must a backend satisfy before Blazn labels it production-safe?
+
+### Warm pools
+
+#### Definition
+
+A warm pool is a policy-controlled supply of unclaimed sandboxes prepared ahead of demand for a specific class of work. Its purpose is to reduce the time between queue admission and a ready Blazn Agent Harness environment.
+
+A pool does not contain generic machines that can run anything. Each pool is bound to an immutable template version, platform variant, resource profile, isolation and trust class, region or placement boundary, and refresh compatibility policy. A request may claim an entry only when all hard requirements match.
+
+Warm pools are an optimization, not an authorization boundary and not a separate execution system. Every request still passes through identity, policy, quota, budget, queue admission, source synchronization, credential issuance, and final readiness checks.
+
+#### Relationship to templates, refreshes, and sandboxes
+
+Templates, refreshes, sandboxes, and warm pools reduce different parts of startup time:
+
+- A **template** defines the reproducible environment.
+- A **refresh artifact** caches safe, reusable repository, dependency, package, and build state for warm or cold creation.
+- A **sandbox** is the isolated running or suspended environment assigned to a session.
+- A **warm pool** keeps compatible, unclaimed sandboxes near or at the ready boundary.
+
+A refreshed cold start still creates a new sandbox but avoids repeating most repository and dependency work. A warm claim avoids much of the backend creation and initialization work as well. Warm pools should normally be created from the same refresh artifacts available to cold starts so behavior does not diverge.
+
+The system always retains a cold-start path. A run must not fail merely because its pool is empty when eligible nodes, policy, time, and budget allow a fresh sandbox to be created.
+
+#### Pool key and compatibility
+
+Every pool has a normalized key containing the fields that must match before claim:
+
+- Workspace and optional team or project scope.
+- Template ID, immutable version, digest, and platform variant.
+- Operating system, architecture, sandbox backend, and isolation class.
+- Resource profile, accelerator class, storage class, and required node capabilities.
+- Region, data-residency boundary, network class, and node trust class.
+- Harness worker compatibility and control-protocol version.
+- Refresh compatibility class and required security status.
+- Service, GUI, browser, or other special environment capabilities.
+
+Fields such as the exact feature branch, agent identity, session, run, user credentials, and temporary integrations are deliberately absent from the reusable pool key. They are applied after claim. If a workload requires those properties before readiness, it receives a more narrowly scoped pool or uses a cold start.
+
+#### Pool profiles
+
+Warm pools can use different readiness and cost profiles:
+
+| Profile | Prepared state | Tradeoff |
+| --- | --- | --- |
+| **Cached cold** | No sandbox exists; nodes hold template and refresh artifacts | Lowest idle cost, slower than a warm claim |
+| **Suspended warm** | Sandbox storage and initialized state exist, but most compute is released | Moderate resume latency and storage cost |
+| **Ready warm** | Sandbox and control endpoint are running and health-checked | Fastest claim, highest idle resource cost |
+| **Scheduled warm** | Target capacity changes around known working hours or scheduled demand | Efficient for predictable usage |
+
+One logical pool may manage a combination of ready and suspended entries. Policy defines the target for each state and the maximum total footprint.
+
+#### Pool specification
+
+A warm-pool specification should define:
+
+- Pool identity, owner, workspace scope, and pool key.
+- Minimum, target, burst, and maximum entry counts.
+- Desired ready and suspended counts.
+- Scale-up, scale-down, cooldown, and replacement limits.
+- Demand window, schedule, forecast settings, and idle expiration.
+- Node selectors, preferred placement, spread, and anti-affinity.
+- Personal-node eligibility and resource-reserve requirements.
+- Queue priority, quota class, resource budget, storage budget, and maximum idle cost.
+- Template channel tracking or exact-version pinning.
+- Eligible refresh-artifact policy and maximum refresh age.
+- Claim timeout, readiness checks, sanitation behavior, and reuse policy.
+- Failure thresholds, circuit breakers, rollout, rollback, and drain policy.
+
+Pool policy can be managed by an administrator or an authorized capacity agent, but automatic changes remain bounded by declared minimums, maximums, budgets, and placement restrictions.
+
+#### Pool lifecycle
+
+The pool itself has an explicit lifecycle:
+
+- **Draft:** The specification is not creating capacity.
+- **Active:** The controller is reconciling desired warm capacity.
+- **Scaling:** Entries are being added, resumed, suspended, or removed.
+- **Healthy:** Ready and suspended capacity satisfy policy.
+- **Degraded:** Some entries or placement targets are unhealthy, but claims may continue.
+- **Exhausted:** No claimable entries remain.
+- **Draining:** No new claims are accepted and entries are being released.
+- **Paused:** The specification and history remain, but capacity is not reconciled.
+- **Failed:** Repeated build, capacity, policy, or backend errors prevent useful operation.
+- **Deleted:** Entries and retained resources have completed verified cleanup.
+
+An exhausted pool is not necessarily unhealthy; it can reflect legitimate demand. Conditions distinguish demand exhaustion from provisioning failure or policy denial.
+
+#### Entry lifecycle
+
+Each entry is a real sandbox with pool ownership before claim:
+
+- **Planned:** Desired capacity exists but no backend object has been created.
+- **Provisioning:** The sandbox isolation boundary and resources are being created.
+- **Hydrating:** Template and refresh state are being materialized.
+- **Validating:** Readiness, integrity, security, and sanitation checks are running.
+- **Ready:** The entry is eligible for atomic claim.
+- **Suspending or suspended:** Compute is being reduced or remains released while state is retained.
+- **Resuming:** A suspended entry is returning to the ready boundary.
+- **Claiming:** One admitted request holds an exclusive conditional claim.
+- **Claimed:** Ownership has transferred to a session and the entry is no longer pool capacity.
+- **Recycling:** Policy-approved cleanup is attempting to return a released sandbox to a trusted base.
+- **Replacing:** The entry is stale, unhealthy, or part of a rollout and a successor is being prepared.
+- **Failed or quarantined:** The entry cannot be claimed or reused.
+- **Destroyed:** The backend resources have been verified as removed.
+
+Ready entries have no user, agent, session, or run credentials and no active writer lease. Their control endpoints accept only pool-controller health and lifecycle operations until a claim succeeds.
+
+#### Creating warm capacity
+
+To create an entry, the controller:
+
+1. Resolves the exact template version and platform variant from the pool specification.
+2. Selects an eligible refresh artifact and verifies its digest, provenance, security status, and compatibility.
+3. Requests low-priority capacity through the normal quota and node-admission path.
+4. Places the entry on an eligible node using policy, cache locality, spread, reliability, and resource availability.
+5. Creates the sandbox and hydrates its sanitized reusable state.
+6. Starts only the system components required for readiness; no run-scoped credentials or context are attached.
+7. Executes template, backend, control-endpoint, network, filesystem, and sanitation checks.
+8. Marks the entry ready or suspends it according to the pool profile.
+
+Warm creation should be preemptible when interactive or higher-priority work needs capacity. An interrupted pool build can resume only if its partial state remains verified; otherwise it is discarded.
+
+#### Queue admission and fairness
+
+Warm capacity never bypasses the workload queue. A request must first satisfy workspace concurrency, priority, quota, budget, and fairness rules. Only an admitted request may claim an entry.
+
+The resources occupied by ready entries are visible to capacity accounting. A pool uses a prewarm quota or resource budget rather than hiding idle reservations from the scheduler. When capacity is constrained, policy may suspend or destroy warm entries so admitted work can run.
+
+A warm claim improves provisioning latency but does not increase a team's entitlement to concurrent work. The queue can reserve an entry briefly for an admitted high-priority request, but reservations expire and return the entry if claim customization does not begin.
+
+Pool replenishment runs at lower priority than user work by default. Organizations may reserve dedicated pool capacity when predictable latency is more important than maximum utilization.
+
+#### Atomic claim and ownership transfer
+
+Claiming must prevent two requests from receiving the same sandbox. The control plane uses the entry version, pool ownership, request ID, and an idempotency key in one conditional operation.
+
+The claim flow is:
+
+1. Match an admitted request against ready entries using the complete pool key and current conditions.
+2. Atomically move one entry from ready to claiming for that request.
+3. Assign the owning workspace session, run reference, agent, requester, and expiration.
+4. Issue a new ownership lease and session-scoped writer lease.
+5. Synchronize the exact requested repository revisions and verify dependency fingerprints.
+6. Apply agent, project, and run configuration that does not change the template contract.
+7. Attach short-lived credentials, integrations, tools, and network grants.
+8. Start or attach the Blazn Agent Harness worker and run final health checks.
+9. Mark the sandbox claimed and running, then emit its endpoint and identity to the harness.
+
+If customization or readiness fails after the atomic claim, the entry is not returned directly to ready. It is sanitized and fully revalidated or destroyed. The request may claim another entry or take the cold-start path according to queue and retry policy.
+
+Repeated claim requests with the same idempotency key return the same result instead of consuming additional entries.
+
+#### Source and dependency freshness
+
+Warm entries can contain a sanitized repository object store, a default checkout, and installed dependencies from a refresh artifact. They do not assume that cached source is the exact state required by the run.
+
+At claim time, Blazn:
+
+- Fetches or resolves the requested source revision using a run-scoped repository grant.
+- Creates a clean writable checkout or worktree for that revision.
+- Recomputes source, manifest, lockfile, runtime, and cache fingerprints.
+- Reuses compatible dependencies and build outputs.
+- Applies only the remaining delta.
+- Runs the declared post-sync and readiness checks.
+
+A mismatch may make claim slower, but it must not make the environment incorrect. If the delta violates the pool's compatibility boundary, Blazn abandons that entry for the request and chooses another pool or a cold start.
+
+#### Freshness and rolling replacement
+
+Entries are pinned to an immutable template version. A pool that follows a channel resolves a new version and performs a rolling replacement rather than mutating entries in place.
+
+The controller can:
+
+1. Create canary entries for the new template and refresh combination.
+2. Validate readiness, claim, sanitation, and representative startup behavior.
+3. Increase new-version capacity while draining old ready entries.
+4. Let already claimed sandboxes continue with their captured versions.
+5. Roll back the pool channel when health or latency gates fail.
+
+A new refresh artifact that remains compatible can replace entries gradually. Stale entries stop receiving claims once their maximum refresh age or security eligibility expires. Emergency revocation immediately prevents new claims and evaluates whether claimed sandboxes must be quarantined or terminated.
+
+#### Placement and distribution
+
+Pools may be node-local, fleet-wide, regional, or cloud-managed. The logical pool can span several nodes while each entry remains bound to one node until claimed or migrated.
+
+Placement considers:
+
+- Exact platform, backend, isolation, trust, resource, region, and data requirements.
+- Template and refresh cache locality.
+- Node availability schedule, health, reliability, and owner reserves.
+- Failure-domain spread so one node loss does not empty the pool.
+- Network distance to repositories, integrations, model nodes, and users.
+- Storage pressure and the cost of keeping an entry ready or suspended.
+- Queue demand by architecture and capability.
+
+Separate pools are normally used for different architectures, resource profiles, trust classes, or platform variants. A single pool label may provide a user-friendly alias over these concrete pools, but the controller does not treat incompatible entries as interchangeable.
+
+#### Personal and employee nodes
+
+Ready warm sandboxes consume resources even when no agent is running, so personal nodes require conservative defaults:
+
+- Minimum ready capacity is zero unless the machine owner explicitly opts in.
+- Suspended warm entries or node-local refresh caches are preferred over always-running entries.
+- Foreground use, battery, thermal, memory, disk, and idle policies can immediately reduce pool targets.
+- Warm entries are preemptible before admitted session work or the owner's applications.
+- Pool storage has a visible limit and can be cleared independently of active session state.
+- The owner can pause warm-pool participation without disabling model serving or active approved work.
+
+Team servers and dedicated workers can maintain guaranteed ready capacity under an administrator-managed budget. Blazn cloud pools can offer explicit latency and availability tiers.
+
+#### Scaling policy
+
+The controller scales using policy-bounded signals:
+
+- Current ready, suspended, claiming, and provisioning counts.
+- Queue depth and age for exactly compatible requests.
+- Request arrival rate, burst history, and time-of-day patterns.
+- Warm-hit rate, cold-start latency, resume latency, and claim customization time.
+- Entry failure, staleness, sanitation, and preemption rates.
+- Node capacity forecasts, personal-node availability, and scheduled drains.
+- Idle resource cost, storage cost, cloud cost, and avoided startup time.
+
+An initial deterministic policy should use schedules, minimum and maximum counts, queue thresholds, and cooldowns. Predictive scaling can be added after sufficient measurements exist. Forecasting may recommend or adjust capacity only inside hard resource, cost, trust, and privacy bounds.
+
+Scale-down removes the least valuable entries first based on health, age, template and refresh freshness, cache locality, expected near-term demand, and reclamation cost. It never removes a claimed sandbox as a pool scale-down operation.
+
+#### Reuse and sanitation
+
+The safest default is single-claim warm capacity: after the owning session releases the sandbox, Blazn exports required state and destroys it. The pool replenishes with a clean entry derived from trusted template and refresh inputs.
+
+Backends that can prove reset to a trusted snapshot may enable recycling. Recycling must:
+
+1. Expire ownership and writer leases.
+2. Revoke credentials, tunnels, integrations, and service endpoints.
+3. Terminate all user and agent processes.
+4. Remove writable workspace, logs, temporary data, and session-specific volumes.
+5. Restore the exact trusted base snapshot or recreate writable layers.
+6. Verify mounts, network policy, process state, secret sanitation, template digest, and refresh eligibility.
+7. Run the complete pool readiness suite.
+
+Failure at any step destroys or quarantines the entry. Pools never recycle across workspaces or trust boundaries, and policy may forbid recycling for regulated or sensitive workloads.
+
+#### Failure handling
+
+The pool controller distinguishes insufficient capacity, quota denial, template failure, refresh failure, backend failure, node loss, readiness failure, claim failure, sanitation failure, and policy revocation.
+
+Repeated failures for the same template, refresh, node class, or backend trip a circuit breaker. The pool stops creating identical failing entries, marks itself degraded, retains diagnostic evidence, and uses cold starts or another compatible pool when permitted. It does not create an unbounded failure loop that consumes fleet capacity.
+
+Node loss removes affected ready capacity immediately from matching. The controller replaces entries elsewhere when the pool's placement and budget allow it. Claimed sandboxes follow sandbox recovery policy rather than pool replenishment policy.
+
+#### Cost, quota, and capacity accounting
+
+Warm pools exchange idle resource cost for lower startup latency. Blazn tracks that tradeoff explicitly.
+
+Accounting includes:
+
+- CPU, memory, accelerator, and storage reserved while ready or suspended.
+- Template build, refresh, provisioning, resume, sanitation, and distribution work.
+- Node-local contributed capacity and managed cloud cost.
+- Entry idle time, claims, useful running time, and destruction without claim.
+- Queue time and startup time saved compared with the available cold path.
+
+Policy can cap hourly idle cost, total pool cost, per-workspace pool resources, storage, and unused-entry age. When the observed value falls below a threshold, Blazn recommends shrinking or suspending the pool.
+
+#### Observability
+
+Warm-pool events include specification changes, target changes, entry creation, readiness, suspension, resume, reservation, claim, ownership transfer, failed customization, replacement, sanitation, quarantine, drain, and destruction.
+
+Core metrics include:
+
+- Desired, provisioning, ready, suspended, claiming, failed, and draining entries.
+- Warm-hit, suspended-hit, cache-only, and full-cold-start rates.
+- Queue-to-claim, claim customization, resume, and full readiness latency.
+- Demand that could not use a pool and the mismatch reason.
+- Entry age, idle duration, claims per entry, and unused-destruction rate.
+- Template and refresh version distribution and stale-entry count.
+- Scale reaction time, forecast error, preemption, and replenishment time.
+- Resource reservation, utilization after claim, storage, and idle cost.
+- Startup time saved and cost per second of latency reduction.
+- Readiness, claim, sanitation, backend, and node-loss failure rates.
+
+Metrics are segmented by workspace, pool, template, variant, backend, node class, and region without exposing repository contents or user prompts.
+
+#### Initial pool and entry records
+
+The pool record should include:
+
+- Stable pool ID, workspace, owner, display name, scope, and policy versions.
+- Complete normalized pool key and template channel or exact version.
+- Minimum, target, burst, maximum, ready, and suspended settings.
+- Placement, spread, personal-node, quota, priority, budget, and schedule configuration.
+- Refresh eligibility, freshness, claim, sanitation, reuse, retention, and failure policy.
+- Desired and observed counts, lifecycle status, conditions, and last reconciliation.
+- Rolling-update, circuit-breaker, cost, and aggregate metric state.
+
+Each entry record extends the sandbox record with:
+
+- Owning pool, entry generation, and creation reason.
+- Template and refresh identity used for prewarming.
+- Ready, suspended, reservation, and claim timestamps.
+- Conditional claim version, request ID, and idempotency key.
+- Sanitation generation, readiness results, reuse count, and replacement reason.
+- Idle resource cost and startup-latency measurements.
+
+#### API and MCP surface
+
+The first control surface should support:
+
+- Create, inspect, update, pause, resume, drain, and delete a warm pool.
+- List pool entries, states, placement, freshness, cost, and health conditions.
+- Set bounded capacity targets, schedules, and budgets.
+- Trigger a reconcile, canary rollout, refresh replacement, or diagnostic run.
+- Atomically claim a matching entry for an admitted session.
+- Release a failed claim for sanitation or destruction.
+- Stream pool and entry events and metrics.
+- Explain why a request missed a pool or why an entry is not claimable.
+
+Agent access is scoped separately from administrative access. An ordinary agent may request compatible warm capacity; it cannot enlarge a pool, change placement, raise a budget, or weaken sanitation policy unless explicitly granted that operation.
+
+#### Kubernetes and backend adapters
+
+A Kubernetes warm-pool implementation may use Kubernetes Agent Sandbox warm-pool resources or a Blazn controller over sandbox resources. Blazn still owns the product-level pool key, queue admission, budgets, atomic session claim, credentials, events, metrics, and sanitation requirements.
+
+Other backends may maintain suspended VM snapshots, pre-created microVMs, container sandboxes, or managed cloud environments. Backend-specific efficiencies are welcome, but every adapter must preserve claim fencing and declare whether it supports ready, suspended, recycling, migration, and personal-node preemption.
+
+#### Version-one boundary
+
+The first warm-pool implementation should prove:
+
+1. One Linux pool pinned to an immutable template version, platform variant, resource profile, and refresh artifact.
+2. Configurable target and maximum ready counts with a fixed resource budget.
+3. Normal queue admission followed by one atomic, idempotent session claim.
+4. Exact source synchronization, run-scoped credential injection, and final readiness after claim.
+5. Replenishment after claim and rolling replacement after a new compatible refresh.
+6. Scale-to-zero, pause, drain, and cleanup behavior.
+7. Conservative personal-node behavior with ready capacity disabled by default.
+8. Single-use destruction after session release; no recycling in the initial security boundary.
+9. Metrics comparing full cold, refreshed cold, suspended warm, and ready warm startup.
+10. Authenticated desktop, CLI, API, and MCP inspection and administration.
+
+#### Decisions to make next
+
+- Should version one support suspended entries, ready entries, or both?
+- Which scheduler owns prewarm quota and how does it reclaim pool reservations for admitted work?
+- Which demand signals are reliable enough for the initial deterministic scaler?
+- How much post-claim repository and dependency work is acceptable before an entry is no longer considered warm?
+- Which backends can prove sanitation strongly enough to enable recycling later?
+- Should pools be workspace-owned only, or can organizations safely share a base pool across workspaces?
+- How are cloud latency tiers and contributed-node capacity priced or credited?
+- How should pool capacity follow template-channel promotion without causing a readiness gap?
+- Which metrics determine that a pool should be resized, suspended, or removed?
 
 ### Blazn Agent Harness system
 
