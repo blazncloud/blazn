@@ -21,6 +21,7 @@
   - [Queues](#queues)
   - [Agents](#agents)
   - [Credentials and integrations](#credentials-and-integrations)
+  - [CLI control surface](#cli-control-surface)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -295,7 +296,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
-| CLI control surface | Provide the supported local and remote interface for people, scripts, CI, and administration | Planned |
+| [CLI control surface](#cli-control-surface) | Provide the supported local and remote interface for people, scripts, CI, and administration | Initial design |
 | Smart LLM Router | Select, queue, load-balance, and fail over model requests across local and cloud capacity | Initial design |
 | LLM Router Policy | Define allowed routes, preferences, budgets, privacy rules, and fallback behavior | Initial design |
 
@@ -2872,6 +2873,315 @@ The first credentials and integrations implementation should prove:
 - What emergency actions justify break-glass access, and who may approve them?
 - Which audit details can team administrators see for personal connections used in workspace runs?
 - How should Blazn recover encrypted vault data while preserving tenant and key separation?
+
+### CLI control surface
+
+#### Definition and authority
+
+The `blazn` CLI is the supported command surface for people, scripts, CI systems, and administrators to control Blazn from macOS, Linux, and Windows. It provides the same workspace model whether it connects to a Blazn service on the current machine or to an authenticated remote workspace.
+
+The CLI is a product contract. Its commands, flags, structured output, exit codes, operation identifiers, and event-stream behavior are designed for compatibility and automation. The private transport between the CLI and the Blazn control plane may evolve without becoming a public management API.
+
+Blazn will not ship a general-purpose management API or a Blazn management MCP server in the initial scope. The AI Proxy remains a separate model-compatible endpoint, and the Agent Harness can continue to consume approved external MCP tools. Neither surface replaces the CLI's role in managing Blazn resources.
+
+#### Design goals
+
+The CLI should be:
+
+- **Predictable:** related resources use consistent verbs, flags, output, errors, and lifecycle behavior.
+- **Safe:** the active identity, workspace, context, and target are explicit before consequential operations.
+- **Local and remote:** the same workflow operates against a local installation, a team deployment, or Blazn cloud.
+- **Automation-ready:** every supported workflow can run without an interactive terminal and return stable structured results.
+- **Resumable:** long-running operations and event streams survive terminal closure, reconnects, and temporary network failure.
+- **Secret-safe:** credential material does not appear in command history, process arguments, logs, events, or normal output.
+- **Cross-platform:** commands and contracts behave consistently across macOS, Linux, Windows, shells, and CI runners.
+- **Discoverable:** help, examples, completions, status, and recovery guidance are available from the CLI itself.
+
+#### Command model
+
+The CLI uses a noun-oriented hierarchy with consistent resource operations. The initial command families are expected to include:
+
+| Command family | Responsibility |
+| --- | --- |
+| `blazn auth` | Sign in, inspect identity, refresh a session, sign out, and revoke local authorization |
+| `blazn context` | Create, select, inspect, and validate local or remote contexts |
+| `blazn workspace` | Inspect and select workspaces, members, teams, roles, and policies |
+| `blazn agent` | Create, configure, version, tag, schedule, inspect, and manage agents |
+| `blazn run` | Start, follow, steer, approve, suspend, resume, cancel, and inspect runs |
+| `blazn node` | Enroll, describe, label, cordon, drain, inspect, and remove nodes and capabilities |
+| `blazn template` | Create, validate, version, publish, deprecate, and inspect sandbox templates |
+| `blazn refresh` | Build, inspect, promote, invalidate, and retire refresh artifacts |
+| `blazn sandbox` | Create, attach, inspect, stop, preserve, restore, and delete sandboxes |
+| `blazn pool` | Configure, resize, drain, inspect, and evaluate warm pools |
+| `blazn queue` | Inspect demand, explain placement, and administer queue policy where authorized |
+| `blazn vault` | Create and manage personal, team, project, and workspace vault boundaries and policies |
+| `blazn credential` | Add, rotate, disable, inspect, and audit credential metadata and versions |
+| `blazn integration` | Connect, authorize, test, share, inspect, and disconnect external services |
+| `blazn artifact` | Publish, download, verify, search, pin, and inspect artifacts and provenance |
+| `blazn project` | Inspect and manage objectives, roadmaps, milestones, tasks, and assignments |
+| `blazn operation` | Inspect, wait for, follow, retry where allowed, and cancel asynchronous operations |
+| `blazn events` | Stream and query authorized operational and run events |
+| `blazn proxy` | Configure, inspect, test, and explain AI Proxy routing from the user's context |
+| `blazn config` | Manage non-secret client configuration and defaults |
+| `blazn doctor` | Diagnose authentication, connectivity, compatibility, node, and local-service problems |
+
+Exact commands may be refined through implementation, but commands that become documented automation contracts must follow the compatibility and deprecation policy.
+
+Common resource verbs should mean the same thing throughout the CLI:
+
+- `list` returns a collection visible to the current identity.
+- `get` returns one resource by an unambiguous identifier.
+- `create` creates a new resource without silently replacing an existing one.
+- `update` changes mutable fields using an expected version when concurrent edits matter.
+- `delete` requests a policy-controlled lifecycle transition rather than assuming immediate destruction.
+- `describe` combines resource state, relationships, conditions, and recent relevant events for people.
+- `explain` reports why Blazn selected, rejected, queued, blocked, or routed something.
+- `watch` or `logs` follows an ordered resumable stream without changing the resource.
+
+#### Contexts and target selection
+
+A CLI context identifies the control-plane endpoint, authentication authority, identity reference, default workspace, and optional project or environment defaults. Contexts make switching between a local workspace, a company's self-hosted deployment, and Blazn cloud deliberate and visible.
+
+Each invocation resolves its target in this order:
+
+1. Explicit command flags.
+2. Blazn-specific environment variables intended for automation.
+3. The selected context and its non-secret defaults.
+4. Safe product defaults that do not broaden access or change environments.
+
+The CLI must not silently fall back from an unreachable remote context to a local service, from one workspace to another, or from one identity to another. Human-readable output for consequential operations names the context and workspace. Machine-readable output includes their stable identifiers.
+
+Contexts contain references, endpoints, and non-secret preferences, not reusable plaintext credentials. A user can inspect the current context, temporarily override it for one command, and require an exact context in scripts.
+
+#### Authentication and identities
+
+Interactive users can authenticate through a browser or device authorization flow appropriate to the deployment. Automation uses a dedicated workload or service identity rather than a person's long-lived session.
+
+The CLI should:
+
+- Store refresh material in the operating system's protected credential store when available.
+- Prefer short-lived, audience-bound access tokens for remote requests.
+- Bind authorization to an identity, deployment, workspace, and client where policy requires it.
+- Support explicit sign-out and administrative revocation without deleting unrelated contexts.
+- Report session expiry and required reauthentication clearly without leaking token details.
+- Never write tokens, provider secrets, or vault contents into ordinary CLI configuration.
+
+Local operation is still authenticated. A process on the same machine does not automatically inherit permission to administer the local Blazn service or access another user's workspace.
+
+#### Private transport and compatibility boundary
+
+The desktop application and CLI may communicate with the control plane through a private local or remote protocol. That protocol is an implementation detail and can change as the system evolves. Scripts should invoke `blazn` rather than call or reverse-engineer the private transport.
+
+At connection time, the CLI and control plane negotiate supported capabilities and contract versions. When a command is unsupported, the CLI returns a clear compatibility error and an actionable upgrade or fallback path. It must not approximate a mutation using older semantics when doing so could change its meaning or safety.
+
+The compatibility contract includes:
+
+- Published commands, flags, and documented defaults.
+- Stable identifiers and operation states.
+- Versioned machine-readable schemas.
+- Exit-code categories and structured error codes.
+- Event ordering, cursors, and resume semantics.
+- Deprecation periods for previously supported automation behavior.
+
+#### Human and machine-readable output
+
+Default output is concise and designed for a person: summaries, tables, progress, warnings, and next actions. Automation selects a structured format explicitly.
+
+The initial output modes should include:
+
+- `table` or human output for interactive use.
+- `json` for a complete result or resource representation.
+- `jsonl` for streams and large collections.
+- A quiet mode that emits only the requested identifier or scalar when the command documents that contract.
+
+In structured modes:
+
+- Standard output contains only result data.
+- Progress, warnings, and diagnostics go to standard error.
+- ANSI styling and interactive prompts are disabled.
+- Timestamps, identifiers, enums, nullability, and pagination are unambiguous.
+- Every schema carries a contract version when independent evolution is needed.
+- Redaction is represented explicitly rather than making a protected field appear absent or empty.
+
+Human formatting may improve without a compatibility guarantee. Structured output must not be parsed from human tables.
+
+#### Asynchronous operations
+
+Many Blazn actions take longer than one terminal session: building a refresh, creating a sandbox, draining a node, resizing a warm pool, rotating a credential, or running an agent. These commands create a durable operation rather than holding the originating process open as the source of truth.
+
+A mutating command returns:
+
+- The operation identifier.
+- The target resource identifier, when known.
+- Its accepted or current state.
+- A correlation identifier for diagnostics.
+- A resume cursor or follow command when events are available.
+
+Interactive users may add `--wait` to follow an operation to a terminal state. Automation can use `blazn operation get`, `wait`, `watch`, or `cancel` according to the operation's policy. A client timeout stops waiting; it does not imply that the server-side operation was cancelled.
+
+Mutations support idempotency keys so a retry after an ambiguous network failure does not create duplicate runs, sandboxes, credentials, or other resources. The same key and equivalent request return the original operation. Reusing a key for a materially different request returns a conflict.
+
+#### Events, logs, and resumable streams
+
+Run output, operation progress, node state, queue decisions, and audit-safe events can be followed as ordered streams. Each event includes the workspace, resource, operation or run, sequence, timestamp, type, schema version, and a resumable cursor where supported.
+
+The CLI records the last confirmed cursor while connected and can resume after a disconnect without replaying the entire history. Consumers must tolerate an explicitly documented small overlap and de-duplicate by event identifier. If retention has removed the requested cursor, the CLI reports the gap and provides the earliest available cursor rather than silently continuing with incomplete history.
+
+`jsonl` is the stable automation format for streams. Human streaming output may combine progress and logs for readability, but it preserves timestamps and identifies the source when multiple agents, tools, or sandboxes contribute events.
+
+#### Errors and exit codes
+
+Errors contain a stable code, human message, resource or field context where authorized, correlation identifier, retryability, and suggested recovery. Sensitive policy failures explain the category of denial without exposing inaccessible resources or secret metadata.
+
+The initial exit-code categories should remain small and stable:
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | The requested synchronous action succeeded, or the asynchronous action was accepted as documented |
+| `1` | Unclassified command or server failure |
+| `2` | Invalid command, flag, input, or configuration |
+| `3` | Authentication is missing, expired, or invalid |
+| `4` | The identity is authenticated but not authorized |
+| `5` | The requested resource or context was not found |
+| `6` | Conflict, stale expected version, duplicate incompatible idempotency key, or invalid lifecycle transition |
+| `7` | Connectivity, compatibility, or service-unavailable failure |
+| `8` | The client stopped waiting because its timeout expired; server-side state must be inspected |
+| `9` | The operation completed only partially and the structured result identifies each outcome |
+
+Resource-specific details belong in structured error codes, not an ever-growing set of process exit codes.
+
+#### Input, configuration, and precedence
+
+Non-secret configuration can come from command flags, Blazn-specific environment variables, a selected context, and platform-appropriate configuration files. Flags override environment values, which override context values, which override safe defaults.
+
+Commands that accept larger definitions support files and standard input in addition to individual flags. Declarative inputs include a schema version and can be validated without mutation. Paths are resolved using the host platform's rules, while resource identifiers and structured output remain platform-neutral.
+
+The CLI should support:
+
+- `--dry-run` or an equivalent plan operation for consequential supported changes.
+- `--expected-version` for concurrency-sensitive mutations.
+- Explicit deadlines and wait timeouts.
+- Pagination and bounded collection limits.
+- Shell completion generated from the installed command contract.
+- A way to print the effective non-secret configuration and its source.
+
+#### Protected credential input
+
+Secret values must not be supplied directly as command-line arguments because arguments can be retained in shell history and exposed in process listings. Credential commands accept protected input through a hidden interactive prompt, standard input, or a documented file-descriptor mechanism.
+
+The CLI must:
+
+- Avoid echoing, logging, tracing, or returning the submitted value.
+- Refuse unsafe interactive fallbacks when no protected input is available.
+- Redact secret-bearing fields in errors and diagnostic bundles.
+- Allow CI to pipe a value from its approved secret manager without writing a temporary plaintext file.
+- Separate metadata inspection from strongly authenticated human reveal or export flows.
+- Never expose a generic credential-read command for agents or automation.
+
+#### Safety and concurrency
+
+Destructive, high-impact, or broad operations require the caller to name the target scope and acknowledge the effect. Interactive confirmation is useful for people, but it cannot be the only protection because automation is non-interactive.
+
+The CLI combines:
+
+- Authorization and policy enforcement at the control plane.
+- Expected resource versions to prevent lost updates.
+- Idempotency keys to make retries safe.
+- Plan or dry-run output where feasible.
+- Explicit confirmation flags for non-interactive consequential actions.
+- Typed lifecycle commands such as `cordon`, `drain`, `disable`, `deprecate`, and `revoke` instead of a universal `force` flag.
+
+Confirmation flags never bypass policy, approvals, retention requirements, active leases, or dependency checks. If an operation affects multiple targets, the result records success or failure for each target and uses the partial-success exit category when appropriate.
+
+#### Local, remote, and disconnected behavior
+
+A local context connects to the authenticated Blazn service on the current machine. A remote context connects to a self-hosted workspace or Blazn cloud over an authenticated encrypted channel. The resource and operation model remains the same, although capabilities can differ by deployment version and policy.
+
+Read-only cached state may be shown while disconnected only when it is clearly marked with its source and observation time. The CLI must not present cached state as current, silently queue a mutation, or accept a credential change while offline unless a future feature explicitly defines and secures that workflow.
+
+Artifact transfer supports integrity checks, resumable upload or download where practical, and explicit overwrite behavior. Binary artifact content is written to standard output only when the user explicitly requests it so structured command output is not corrupted.
+
+#### CI and non-interactive automation
+
+CI jobs and scheduled automation use dedicated identities with the minimum workspace roles and vault capabilities required for the task. Non-interactive mode never opens a browser, waits for a prompt, or chooses among ambiguous contexts.
+
+A reliable automation invocation pins or asserts:
+
+- The expected context and workspace.
+- Structured output mode and schema expectations.
+- An explicit timeout or asynchronous operation strategy.
+- An idempotency key for retried mutations.
+- The required CLI compatibility range.
+- The exact target identifiers and expected versions for consequential changes.
+
+CI installations can pin a signed CLI version. Update notices go to standard error and never change the exit status of an otherwise successful command.
+
+#### Cross-platform distribution and updates
+
+Blazn publishes signed CLI builds for macOS, Linux, and Windows, including the architectures supported by the desktop application and worker nodes. Distribution can include the desktop application, direct signed downloads, and selected package managers.
+
+Updates verify publisher signatures and release metadata before installation. Interactive users may opt into managed updates, while CI and regulated environments can pin versions. The CLI reports its client version, build identity, supported contract versions, and the negotiated control-plane version through `blazn version`.
+
+Shell-specific conveniences must not change command meaning. Documentation and testing should cover common POSIX shells and PowerShell, especially quoting, standard input, paths, environment variables, signals, and cancellation behavior.
+
+#### Authorization, auditing, and diagnostics
+
+Every control-plane request carries the authenticated principal, selected workspace, client identity and version, correlation identifier, and requested action. Successful and denied consequential operations produce audit events according to workspace policy.
+
+CLI diagnostics should help a user resolve problems without collecting workspace content or secrets. `blazn doctor` can inspect client configuration, credential-store availability, DNS and encrypted connectivity, time skew, capability negotiation, local service health, and node prerequisites. Diagnostic exports are redacted, reviewable before sharing, and include correlation identifiers instead of access tokens or payload contents.
+
+Product telemetry is separate from workspace audit and operational events. It follows deployment and user policy, avoids prompts, commands containing sensitive values, workspace content, and secrets, and can be disabled where required.
+
+#### Core records
+
+The initial CLI design introduces or formalizes these records:
+
+- **CLIContext:** endpoint, authority, identity reference, workspace defaults, client preferences, and last validated capability set.
+- **Operation:** durable representation of an accepted mutation, its actor, target, idempotency key, state, progress, result, error, timestamps, and cancellation policy.
+- **CommandResult:** versioned machine-readable envelope for data, warnings, pagination, operation references, and correlation metadata.
+- **CommandError:** stable error code, category, retryability, authorized details, correlation identifier, and recovery guidance.
+- **EventCursor:** opaque resumable position within an authorized ordered stream.
+- **ClientCapability:** negotiated command or feature support used to prevent unsafe compatibility assumptions.
+
+The CLI does not create a second resource model. It presents the same agents, runs, nodes, templates, refreshes, sandboxes, pools, queues, vaults, integrations, artifacts, and projects used by the desktop application and control plane.
+
+#### Versioning and deprecation
+
+CLI releases follow a documented versioning policy. Structured schemas and command contracts evolve additively within a supported contract version where possible. A breaking change requires a new contract version, migration guidance, and a published compatibility window.
+
+Deprecated commands or fields emit machine-identifiable warnings to standard error before removal. Warnings include the replacement and earliest removal version. The control plane can reject a client that is too old to operate safely, but read-only diagnostics and version commands should remain available to explain the mismatch.
+
+#### Version-one boundary
+
+The first CLI implementation should prove:
+
+1. Signed macOS, Linux, and Windows clients with consistent help and shell behavior.
+2. Authenticated local and remote contexts with explicit workspace selection.
+3. Agent and run creation, inspection, event following, steering, approval, cancellation, and history.
+4. Node enrollment and lifecycle controls plus inspection of templates, refreshes, sandboxes, warm pools, and queues.
+5. Safe credential and integration management using protected input and redacted output.
+6. Artifact upload, download, integrity verification, and provenance inspection.
+7. Durable asynchronous operations with wait, status, cancellation where allowed, and idempotent retries.
+8. Resumable human and JSONL event streams.
+9. Versioned JSON results, stable error codes, and documented exit-code categories.
+10. Deterministic non-interactive operation with dedicated CI identities.
+11. Capability negotiation and actionable client/control-plane compatibility errors.
+12. No requirement for scripts to use a public management API or a Blazn management MCP server.
+
+#### Decisions to make next
+
+- Which command names and aliases become stable in version one?
+- Which resources support declarative create or apply workflows, and how are plans represented?
+- What private transport best supports local IPC, remote commands, streaming, and capability negotiation?
+- Which authentication flows and protected credential stores are required on each operating system?
+- What is the supported CLI and control-plane compatibility window?
+- Which structured schemas are globally versioned and which evolve per command or resource?
+- How are resumable stream cursors retained and protected?
+- Which operations support cancellation, retries, rollback, or compensation?
+- Which cached read-only views are useful enough to support while disconnected?
+- Which package managers and update channels should ship first?
+- Should an interactive terminal mode exist later, or should richer interaction remain in the desktop application?
+- What minimum commands are required before the private transport can change without disrupting automation?
 
 ### Blazn Agent Harness system
 
