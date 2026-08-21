@@ -14,6 +14,7 @@
 - [System design](#system-design)
   - [System component index](#system-component-index)
   - [Nodes](#nodes)
+    - [Local model capacity](#local-model-capacity)
 - [How the pieces fit](#how-the-pieces-fit)
 - [Product principles](#product-principles)
 - [Brand direction](#brand-direction)
@@ -323,6 +324,32 @@ The node service continuously reports a normalized capability inventory that the
 
 Capabilities are claims, not guarantees. Blazn validates important capabilities during enrollment and refreshes health signals while the node is connected.
 
+#### Local model capacity
+
+A node can contribute one or more locally hosted models as shared inference capacity for authorized agents across the company. For example, a workstation or dedicated GPU server could host DeepSeek V4 Flash or Qwen3.8 and make that model available through the Blazn AI Proxy without requiring every employee or agent to install, configure, or address the model server directly.
+
+Local model capacity is a first-class node backend, parallel to sandbox and native-execution backends. A node may offer models only, execution environments only, or both. The node advertises each model instance with:
+
+- A stable workspace-facing model name and the underlying model, version, quantization, and runtime.
+- Supported interfaces and capabilities, such as chat, tool use, structured output, embeddings, vision, streaming, and maximum context.
+- Accelerator and memory requirements, loaded or unloaded state, warm-up time, concurrency, token throughput, and current queue depth.
+- Data-handling attributes, network exposure, trust class, allowed workspaces or teams, and whether prompts may leave the node.
+- Cost or capacity-accounting policy, availability schedule, fallback options, and owner-defined limits.
+
+Agents request a model or capability through the AI Proxy rather than connecting to a machine by address. The proxy authenticates the caller, applies workspace policy and budgets, selects an eligible model instance, queues or load-balances the request, and records operational metrics. Requests reach the node through its authenticated Blazn connection, so contributing a local model does not require exposing its raw inference port to the company network or internet.
+
+The workspace can publish a friendly model alias that maps to several eligible backends. An alias such as `company-fast` could prefer a local Qwen3.8 instance, fail over to another company node when it is saturated, and use an approved Blazn cloud model only when local capacity is unavailable and policy permits. Agents and harnesses keep using the same model name while routing changes behind it.
+
+Model serving shares the physical node with the owner's applications and possibly with agent sandboxes. The node resource manager therefore reserves memory and accelerator capacity for loaded models, limits concurrent inference, coordinates model loading and eviction, and prevents sandbox admission from exhausting resources promised to inference. The machine owner or administrator can independently pause model serving, sandbox work, or the entire node.
+
+Prompts, responses, and retrieved context remain workspace data. They are not included in infrastructure telemetry by default. Blazn records routing decisions, token counts, latency, errors, saturation, and cost or avoided-cost estimates, while content logging, retention, and evaluation require an explicit workspace policy.
+
+Company-wide model sharing should provide three benefits:
+
+- Turn existing local hardware and approved open models into reusable organizational capacity.
+- Reduce dependence on per-user subscription limits and expensive API traffic for suitable workloads.
+- Keep sensitive requests inside an approved company-controlled boundary when policy requires it.
+
 #### Lifecycle and state
 
 A node has a small, explicit lifecycle:
@@ -426,6 +453,7 @@ The desktop app should make node behavior understandable at a glance:
 - Whether the node is accepting work and which backends are ready.
 - What is running, for whom, and what resources it is using.
 - The capacity reserved for the owner and the capacity contributed to Blazn.
+- Which local models are available, loading, serving, saturated, or offline.
 - Recent runs, errors, policy changes, and cleanup activity.
 - Pause, resume, drain, update, diagnose, and remove actions.
 - Estimated local capacity contributed and cloud cost avoided.
@@ -440,6 +468,7 @@ The first system model should include at least:
 - Device identity, trust class, policy version, and software version.
 - Platform and normalized capabilities.
 - Execution backends with individual status and allocatable capacity.
+- Advertised model instances, aliases, runtime details, access policy, and inference capacity.
 - Labels, placement constraints, availability, and resource-reserve policy.
 - Current lease, health, drain state, and last-seen time.
 - Active environment and workload references.
@@ -454,12 +483,13 @@ The first node implementation should prove a narrow loop:
 1. Enroll one macOS, Windows, or Linux machine from the app or CLI.
 2. Contribute a bounded Linux virtualized or containerized backend where the platform supports it.
 3. Advertise verified resources and accept capability-matched work.
-4. Create an isolated environment from one approved template.
-5. Run one harness, stream events and resource metrics, and return artifacts.
-6. Enforce resource reserves, concurrency, drain, offline, and cleanup behavior.
-7. Make the same operations available through the authenticated Blazn API and MCP server.
+4. Advertise one local model endpoint and make it available to authorized agents through the AI Proxy.
+5. Create an isolated environment from one approved template.
+6. Run one harness, stream events and resource metrics, and return artifacts.
+7. Enforce shared resource reserves, model and agent concurrency, drain, offline, and cleanup behavior.
+8. Make the same operations available through the authenticated Blazn API and MCP server.
 
-Native platform execution, local model serving, organization-wide device management, workload migration, and cloud bursting belong in the model from the beginning but can follow after this loop is reliable.
+Native platform execution, additional model runtimes, organization-wide device management, workload migration, and cloud bursting belong in the model from the beginning but can follow after this loop is reliable.
 
 #### Decisions to make next
 
@@ -469,6 +499,8 @@ Native platform execution, local model serving, organization-wide device managem
 - How are software, template, and policy updates staged and rolled back?
 - What data and workload classes are permitted on personal versus managed nodes?
 - How is contributed capacity measured, credited, budgeted, or billed?
+- How are local model aliases, compatibility claims, model versions, and fallback chains governed?
+- How should inference and agent environments share accelerators and memory without destabilizing the node?
 - Which workload types are portable, resumable, interruptible, or bound to one node?
 - What compatibility contract allows Kubernetes Agent Sandbox and non-Kubernetes backends to behave consistently?
 
