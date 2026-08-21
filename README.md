@@ -4,7 +4,7 @@ Blazn is a cross-platform workspace for people and teams to run, coordinate, and
 
 It brings agent conversations, execution environments, models, knowledge, tools, schedules, project work, artifacts, and operational insight into one product—creating a unified company brain that can work across local machines and the Blazn cloud.
 
-This repository is at the product-definition stage. Start with the [product overview](docs/product-overview.md).
+Start with the [product overview](docs/product-overview.md), then use the [POC execution plan](docs/poc-execution-plan.md) for the first implementation and qualification milestone.
 
 ## Product surfaces
 
@@ -15,5 +15,4 @@ This repository is at the product-definition stage. Start with the [product over
 
 ## Status
 
-Vision and product scope. Architecture, roadmap, and implementation plans will be developed in later documents.
-
+The product vision and initial system designs are documented. The next milestone is an executable POC on the existing Linux Kubernetes and Mac mini fleet.
