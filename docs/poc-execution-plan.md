@@ -15,6 +15,7 @@ The POC should reuse the existing Frontro agent fleet as its execution substrate
 The POC will add:
 
 - A distributable `blazn` CLI for macOS and Linux.
+- A single-installation-surface guarantee: a supported fresh Linux machine needs only the `blazn` binary, and `blazn node install` provisions every software dependency required to become a usable node.
 - Browser/device authentication and secure local session storage.
 - Users, workspaces, invitations, membership, and roles.
 - Blazn node enrollment and complete safe node lifecycle management.
@@ -30,7 +31,7 @@ The POC must run in dedicated Blazn namespaces and use the existing Kueue capaci
 
 ## POC outcome
 
-The proof is complete when two users can install `blazn`, authenticate, join the same workspace, register and manage the existing Linux and Mac nodes, publish a versioned sandbox template, create sandboxes on AMD64 and ARM64 workers, publish and run a versioned agent, and observe and control that work through the CLI and Management API.
+The proof is complete when two users can install `blazn`, authenticate, join the same workspace, turn a fresh supported Linux machine into a usable Blazn node without manually installing any other software, register and manage the existing Linux and Mac nodes, publish a versioned sandbox template, create sandboxes on AMD64 and ARM64 workers, publish and run a versioned agent, and observe and control that work through the CLI and Management API.
 
 The same authenticated CLI must be usable from an ordinary terminal and when invoked by Codex or Claude Code. External harnesses are control clients: they invoke `blazn` to manage Blazn agents and environments. Blazn-managed agents still execute through the Blazn Agent Harness so run state, credentials, events, policy, and cleanup remain consistent.
 
@@ -119,7 +120,7 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 | Installable Blazn CLI | No Blazn CLI | Build static Go binary, Brew formula, and curl installer |
 | User login | Existing system-admin and bearer-token patterns | Add device/browser login, user sessions, logout, revocation, and secure token storage |
 | Workspaces | Not present in Agent Control | Add workspace, membership, invitation, roles, and active-context model |
-| Node enrollment | Kubernetes nodes already exist; current bootstrap is operator-oriented | Add Blazn enrollment tokens, node identity, host daemon, capability reporting, and binding to Kubernetes Node UID |
+| Node enrollment | Kubernetes nodes already exist; current bootstrap is operator-oriented and depends on separately installed host components | Make `blazn node install` install, pin, join, configure, verify, and manage the entire node runtime on a fresh supported Linux host |
 | Node management | Read and limited operational scripts | Add list, get, label, cordon, uncordon, drain, pause, update, rotate, and remove Operations |
 | Sandboxes | Disposable Jobs and persistent workers | Install Agent Sandbox and implement Blazn Sandbox adapter |
 | Sandbox templates | Runtime JSON/YAML templates only | Add immutable Blazn template versions, validation, repository and image inputs, and publication |
@@ -140,6 +141,8 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 - macOS ARM64 and Linux AMD64/ARM64 `blazn` CLI binaries.
 - Homebrew installation on macOS.
 - Curl installation on macOS and Linux.
+- A fresh supported Linux host becoming Ready and sandbox-eligible after installing only `blazn` and running `blazn node install`.
+- Automatic installation and management of the pinned Kubernetes worker/runtime, operating-system packages, registry trust, node service, images, labels, taints, and cluster join required by that host.
 - Authentication, logout, status, and device revocation.
 - Workspace create, invite, join, list, use, members, and leave.
 - Owner, administrator, operator, member, and viewer roles, with a smaller implemented subset allowed if the API preserves the model.
@@ -175,6 +178,8 @@ Blazn should use signed, versioned static release binaries, checksums, automated
 - Secret reveal, cross-workspace sharing, or production credential migration.
 - Publishing the repository or changing DNS, CDN, GitHub organization, or cluster infrastructure without separate authorization.
 
+The fresh-node requirement does not mean Blazn runs without infrastructure. It means the user never has to discover, install, configure, or maintain that infrastructure separately. The `blazn` installer is the only supported node setup surface.
+
 ## POC architecture
 
 ```mermaid
@@ -185,6 +190,7 @@ flowchart LR
     CLI[blazn CLI]
     Auth[Device login and web callback]
     API[Blazn Management API]
+    Broker[Node bootstrap broker]
     DB[(POC SQLite state)]
     Events[Operation and event stream]
     NodeSvc[blazn node service]
@@ -204,6 +210,7 @@ flowchart LR
     Claude --> CLI
     CLI --> Auth
     CLI --> API
+    API --> Broker
     API --> DB
     API --> Events
     API --> Adapter
@@ -230,10 +237,13 @@ Use one Go module and one statically linked `blazn` binary for the POC. The same
 
 - Interactive and non-interactive CLI commands.
 - `blazn node daemon` for the system service.
+- The privileged Linux node bootstrap and repair engine invoked by `blazn node install`.
 - Local configuration and secure credential-store adapters.
 - Version, capability, update, and diagnostics commands.
 
 Go is selected because it produces small cross-compiled binaries, does not require Node on target machines, and supports reliable macOS/Linux service and networking code. Windows remains a future build target.
+
+The CLI may download and install reviewed dependencies during node setup, but those dependencies are implementation details owned by Blazn. Users must not be instructed to install MicroK8s, containerd, Kubernetes tools, Snap packages, registry certificates, system services, or helper scripts themselves.
 
 #### Control API
 
@@ -253,7 +263,7 @@ PostgreSQL migration is a post-POC architecture decision and should be tested be
 
 Use a dedicated service account and namespace-scoped adapter. It can:
 
-- Read the nine allowlisted Kubernetes Nodes and required Kueue state.
+- Read only Kubernetes Nodes that are explicitly enrolled and bound to the workspace, including the original nine and the fresh Linux POC node.
 - Create and manage only Blazn-labeled Sandbox, SandboxClaim, Pod, Job, ConfigMap, ServiceAccount, NetworkPolicy, and bounded PVC resources in POC namespaces.
 - Apply the `blazn-poc` LocalQueue label that targets the existing `m1-light` ClusterQueue.
 - Cordon and drain only Nodes already bound to a Blazn Node and only through confirmation, expected UID/resourceVersion, idempotency, and audit.
@@ -294,8 +304,10 @@ blazn/
   internal/cli/                      # command handlers and output contracts
   internal/auth/                     # device login and credential-store adapters
   internal/node/                     # node daemon, enrollment, capabilities, service install
+  internal/bootstrap/                # Linux/Mac dependency installation, join, repair, rollback
   internal/client/                   # generated Management API Go client
   services/control-api/              # TypeScript Management API
+  services/node-bootstrap-broker/    # bounded cluster join and activation broker
   packages/contracts/                # OpenAPI, JSON schemas, generated TypeScript types
   packages/harness/                  # minimal Blazn Agent Harness runtime contract
   deploy/k8s/agent-sandbox/          # pinned upstream install and checksums
@@ -405,7 +417,9 @@ The invite plaintext is shown once, stored only as a hash, expires, and is bound
 
 ```text
 blazn node enrollment create --name NAME --platform linux|macos
-blazn node install --enrollment-stdin
+blazn node install --dry-run
+blazn node install
+blazn node install --enrollment-stdin      # automation and pre-authorized enrollment
 blazn node list
 blazn node get NODE
 blazn node watch NODE
@@ -419,9 +433,13 @@ blazn node rotate-identity NODE
 blazn node update NODE
 blazn node remove NODE
 blazn node doctor
+blazn node repair
+blazn node uninstall
 ```
 
-For the POC, existing Kubernetes workers are bound to Blazn Nodes by exact Kubernetes Node UID after enrollment. Node removal removes the Blazn binding and workload eligibility; it does not delete a Mac VM, wipe a host, or remove a Kubernetes control-plane member.
+For an authenticated operator, `blazn node install` creates its own enrollment automatically. It may prompt for `sudo`, but it must not ask the user to install another package or run a separate setup script. `--enrollment-stdin` remains available for non-interactive provisioning where an administrator created the enrollment elsewhere.
+
+For existing Kubernetes workers, the command adopts and binds the exact Kubernetes Node UID instead of reinstalling the runtime. Node removal removes the Blazn binding and workload eligibility; it does not delete a Mac VM, wipe a host, or remove a Kubernetes control-plane member.
 
 ### Template and sandbox commands
 
@@ -521,11 +539,118 @@ Do not place a long-lived bearer token in `~/.config/blazn/config.yaml`.
 
 ## Node implementation
 
+### Standalone node-install contract
+
+On a fresh supported Linux machine, the complete user journey is:
+
+```bash
+curl -fsSL https://<distribution>/install.sh | sh
+blazn auth login
+blazn workspace use <workspace>
+blazn node install
+```
+
+No other manually installed dependency or copied configuration is permitted in the acceptance path.
+
+The only host prerequisites are:
+
+- A Linux distribution, architecture, and kernel explicitly supported by the POC release.
+- Sufficient CPU, memory, disk, and virtualization or container capabilities for the selected node profile.
+- Working DNS and network reachability to the Blazn API, existing cluster join endpoint, and private registry.
+- Accurate enough system time to establish TLS and cluster identity.
+- A user who can authenticate to Blazn and approve the required administrator privilege escalation.
+
+Everything else is a Blazn-owned dependency. The installer must either provision it automatically or fail before mutation with one clear incompatibility report.
+
+For the first proof, qualify at least one clean Ubuntu LTS AMD64 host profile. Add Linux ARM64 when the available test hardware supports it. Other distributions fail closed until their install, service, package, networking, and rollback behavior is explicitly qualified.
+
+### Installation stages
+
+`blazn node install` performs a durable, resumable installation with these stages:
+
+1. **Authenticate and authorize:** verify the user, workspace, operator permission, API origin, and intended node profile.
+2. **Discover:** collect OS, kernel, architecture, hostname, machine identity, CPU, memory, disk, network, time, existing runtimes, package manager, and service manager.
+3. **Plan:** obtain a signed NodeInstallPlan from the control plane containing exact component versions, checksums, cluster identity, registry trust, resource bounds, labels, taints, and rollback instructions.
+4. **Explain:** show the packages, services, files, firewall or forwarding settings, disk use, and cluster action that will occur.
+5. **Elevate:** invoke the same `blazn` binary through `sudo` for only the privileged stages. The authenticated user process passes the one-time plan and enrollment through an anonymous pipe, not environment variables, command arguments, shell history, or a persistent file.
+6. **Prepare the host:** install or configure only the reviewed base packages required by the supported profile, including time, certificate, networking, and package-manager prerequisites.
+7. **Install the runtime:** download and verify the exact approved MicroK8s worker/runtime package and its signed publisher assertion or checksum. Install the container runtime and Kubernetes tooling through that managed package.
+8. **Install trust:** configure the exact private registry CA, authenticated pull configuration, and cluster endpoint trust without enabling a broad insecure registry.
+9. **Pre-register safely:** create or reconcile the expected Kubernetes Node identity with a bootstrap taint that prevents general workload placement.
+10. **Join:** request one short-lived worker join credential from the Node Bootstrap Broker and join the existing cluster as a worker, never a control-plane or datastore member.
+11. **Install the node service:** create a root-owned systemd unit using the same `blazn` binary, a node identity, and no user refresh token.
+12. **Reconcile:** bind the Blazn Node, host machine identity, and exact Kubernetes Node UID; apply reviewed labels and taints.
+13. **Pre-pull:** pull and verify required native runtime images by digest.
+14. **Qualify:** run readiness, capacity, registry, Kueue, network-policy, Sandbox, cleanup, and credential-scan probes.
+15. **Activate:** remove only the bootstrap taint and mark the node usable after every required check passes.
+16. **Receipt:** return a signed installation receipt with versions, identities, checks, changes, and rollback state.
+
+If the process is interrupted, rerunning `blazn node install` resumes or safely reconciles the same plan. It must not create a second node, duplicate a cluster join, or repeat a destructive package operation.
+
+### NodeInstallPlan
+
+The NodeInstallPlan is versioned, signed by the Blazn control plane, and bound to:
+
+- Workspace, NodeEnrollment, user approval, machine identity, hostname, platform, and architecture.
+- Target cluster identity, Kubernetes version, worker-only role, and join endpoint.
+- Exact Blazn binary, node service, runtime, Kubernetes package, and image versions.
+- Package sources, checksums, publisher assertions, and allowed download origins.
+- Registry CA digest and authenticated registry endpoint.
+- Required system paths, modes, owners, services, kernel or networking settings, labels, taints, and resource reservations.
+- Node profile, capabilities, Sandbox backends, and validation tests.
+- Expiry, idempotency key, current stage, and rollback manifest.
+
+The privileged bootstrap refuses a plan with a bad signature, expired enrollment, different machine identity, unexpected cluster, mutable image tag, unapproved package origin, or broader requested privilege than its supported profile permits.
+
+### Node Bootstrap Broker
+
+The existing MicroK8s cluster needs a bounded server-side broker because creating a new worker join credential is not an ordinary Kubernetes API operation. Install this once as part of the Blazn control plane, not on each new node manually.
+
+The broker can only:
+
+- Verify an approved, unexpired Blazn NodeEnrollment.
+- Confirm the exact existing cluster identity and health.
+- Pre-register or verify the expected tainted worker identity.
+- Generate a single-use, short-lived MicroK8s worker join credential.
+- Seal that credential to the enrolling node identity.
+- Record issuance, use, expiry, and revocation without logging the credential.
+- Verify the joined node and report the exact Kubernetes Node UID.
+
+It cannot execute arbitrary host commands, return administrator kubeconfig, add control-plane members, alter Kueue quota, or join an unapproved machine. Loss of the broker prevents new joins but does not affect existing workers.
+
+### Package and runtime ownership
+
+For a supported Linux profile, Blazn owns:
+
+- Package repository and publisher verification.
+- Installation of Snap support if the selected MicroK8s package requires it.
+- The exact MicroK8s channel and reviewed revision.
+- Container runtime configuration.
+- Required kernel, forwarding, and service settings within the approved profile.
+- Registry CA and hosts configuration.
+- Node service installation and updates.
+- Runtime-image pre-pull.
+- Health checks, upgrades, repair, and rollback.
+
+The POC must pin the exact MicroK8s revision used in qualification instead of relying only on a mutable channel name at install time.
+
+`blazn node doctor` reports drift. `blazn node repair` applies only the reviewed current plan after showing its changes. `blazn node update` moves to another signed plan through cordon, drain, update, verify, and resume. The user does not maintain these components through separate commands.
+
+### Failure and rollback behavior
+
+- A failure before cluster join removes only temporary downloads and the uncommitted enrollment.
+- A failure after runtime installation but before join keeps the runtime disabled or marked incomplete and reports an exact repair or uninstall action.
+- A failure after join leaves the Node tainted and unschedulable until verification succeeds or rollback removes the exact worker membership.
+- The installer never removes a preexisting runtime, package, firewall rule, or service it did not create without explicit confirmation.
+- `blazn node uninstall` defaults to removing Blazn service, identity, and workload eligibility. `--remove-managed-runtime` is a separate confirmed action and is available only when the receipt proves Blazn installed that runtime.
+- Host directory removal uses an enumerated receipt, mount and symlink checks, and no recursive broad target.
+- Failed installation evidence is redacted and includes enough information to resume safely.
+
 ### Node service
 
 Install the node service through the same binary:
 
-- Linux: root-owned systemd unit.
+- Linux: root-owned systemd unit created automatically by `blazn node install`.
 - macOS: root-owned or explicitly managed launch daemon, separate from the user's CLI session.
 - Configuration: root-readable file containing Node ID, API origin, and identity reference, but no user refresh token.
 - Connection: outbound encrypted connection to the control plane; no inbound management port required.
@@ -533,15 +658,17 @@ Install the node service through the same binary:
 
 The service reports a signed capability document and heartbeats. The control plane does not trust caller-supplied capacity without matching node observation and Kubernetes state.
 
-### Linux node binding
+### Existing Linux node adoption
 
-For `ben1` through `ben3`:
+For `ben1` through `ben3`, which already have the runtime:
 
 1. Create a Blazn enrollment for the exact hostname and Linux AMD64 platform.
 2. Install and start the node service without changing MicroK8s membership.
 3. Bind to the matching Kubernetes Node UID after administrator approval.
 4. Compare host and Kubernetes architecture, capacity, labels, readiness, and runtime version.
 5. Advertise Kubernetes worker, BuildKit or registry proximity, and approved local-model capability separately.
+
+The adopter uses the same `blazn node install` command. Existing compatible components are verified and adopted; users are not sent to a separate manual path.
 
 ### Mac mini binding
 
@@ -561,7 +688,7 @@ The six Mac minis already expose Kubernetes capacity through Ubuntu ARM64 Lima w
 - Mac drain respects the `frontro.io/mac-mini=true:NoSchedule` taint and exact Blazn workload labels.
 - Existing non-Blazn workloads block destructive action unless separately authorized.
 - Remove first pauses new Blazn admission, drains Blazn workloads, revokes node identity, and removes only Blazn eligibility.
-- Uninstalling the node service is separate from deleting the Kubernetes worker VM or cluster membership.
+- Uninstalling the node service never deletes a preexisting Kubernetes worker, Lima VM, or cluster membership. A fresh Linux runtime installed and owned by Blazn can be removed only through the separately confirmed `--remove-managed-runtime` path and its installation receipt.
 - Every operation is idempotent and produces a receipt.
 
 ## Sandbox implementation
@@ -782,7 +909,7 @@ Formula drift is a release failure.
 
 ### Node service installation
 
-`blazn node install` creates but does not silently start a privileged service until it has:
+`blazn node install` is the only supported node setup entrypoint. It creates and starts the privileged service only after it has:
 
 - Verified the binary signature and platform.
 - Read an enrollment through standard input.
@@ -790,8 +917,9 @@ Formula drift is a release failure.
 - Received the required privilege confirmation.
 - Written root-owned configuration without user tokens.
 - Registered and received administrator approval.
+- Installed and verified every required runtime dependency through the signed NodeInstallPlan.
 
-Uninstall stops the service and removes only enumerated Blazn files. Removing a Lima VM or Kubernetes worker is a separate operator action.
+Uninstall stops the service and removes only enumerated Blazn files by default. Removing a Blazn-managed Linux worker runtime requires the separate `--remove-managed-runtime` confirmation. Removing a preexisting Lima VM or Kubernetes worker remains a separate operator action unless a future receipt proves Blazn created and owns it.
 
 ## Management API POC surface
 
@@ -873,6 +1001,7 @@ Deliver:
 - Version command, capability negotiation, JSON output, and structured errors.
 - Signed/checksummed cross-platform release assets.
 - Curl installer and Homebrew formula automation against a test release.
+- NodeInstallPlan schema, signature verification, host discovery, plan rendering, and privileged pipe boundary.
 
 Gate 1:
 
@@ -908,21 +1037,28 @@ Deliver:
 - mTLS or signed node identity and rotation.
 - Capability and heartbeat reporting.
 - Kubernetes Node UID binding.
+- Node Bootstrap Broker for one-time MicroK8s worker joins.
+- Fully automated clean Linux installation, dependency provisioning, cluster join, registry trust, image pre-pull, qualification, activation, repair, and uninstall.
 - Node list, get, watch, doctor, label, pause, resume, cordon, uncordon, drain, rotate, update, and remove Operations.
 - Linux and Mac adapter verification.
 
 Rollout order:
 
-1. Register `ben3` as the first Linux canary without changing its Kubernetes membership.
-2. Register `mac-mini-3` as the first Mac canary and bind its existing worker.
-3. Prove read-only state and identity rotation.
-4. Prove cordon/uncordon on the Mac canary while it has no active Blazn Sandbox.
-5. Prove a bounded Blazn-only drain after a Sandbox exists in Phase 5.
-6. Register remaining nodes serially.
+1. Run host discovery and dry-run plans on the fresh Linux test machine and `ben3`.
+2. Turn the fresh Linux test machine into a worker using only the installed `blazn` binary and `blazn node install`.
+3. Register `ben3` as the first existing-Linux adoption canary without changing its Kubernetes membership.
+4. Register `mac-mini-3` as the first Mac canary and bind its existing worker.
+5. Prove read-only state and identity rotation.
+6. Prove cordon/uncordon on the fresh Linux and Mac canaries while they have no active Blazn Sandbox.
+7. Prove a bounded Blazn-only drain after a Sandbox exists in Phase 5.
+8. Register remaining nodes serially.
 
 Gate 3:
 
-- Nine Node records reconcile with exact host and Kubernetes identities.
+- The fresh supported Linux machine reaches Ready and Blazn-eligible state without any manually installed dependency beyond `blazn`.
+- The install receipt accounts for every package, file, service, certificate, image, label, taint, and cluster identity introduced by Blazn.
+- Rerunning install is idempotent; doctor is clean; repair is a no-op; uninstall and reinstall succeed.
+- The original nine Node records plus the new Linux Node reconcile with exact host and Kubernetes identities.
 - Removing or revoking one Blazn node identity does not remove the Kubernetes Node.
 - A non-operator cannot mutate node lifecycle.
 - Existing Frontro workloads and queue state remain healthy.
@@ -1044,10 +1180,12 @@ blazn auth login
 blazn workspace create poc-company
 invite=$(blazn workspace invite --role member --output json)
 
-# Machine B, using the one-time value through protected input
+# Fresh supported Linux Machine B, using the one-time value through protected input
 curl -fsSL https://<distribution>/install.sh | sh
 blazn auth login
 blazn workspace join --stdin
+blazn node install
+blazn node doctor
 
 # Operator
 blazn node list
@@ -1084,7 +1222,8 @@ The second half is then repeated by Codex and Claude Code invoking the CLI.
 | Workspace | Create, invite, join, switch, role denial, membership removal, cross-workspace isolation |
 | API | OpenAPI conformance, idempotency, expected version, errors, pagination, SSE resume, rate limits |
 | Node | Enrollment replay rejection, heartbeat, capability drift, identity rotation, offline, cordon, drain, resume, removal |
-| Linux | Exact binding to ben nodes, AMD64 placement, no control-plane membership mutation |
+| Fresh Linux bootstrap | Clean supported OS with no container/Kubernetes/Blazn dependencies; install only CLI; automatic packages, runtime, worker join, trust, service, images, qualification, activation, idempotent rerun, repair, uninstall, and reinstall |
+| Existing Linux | Exact adoption of ben nodes, AMD64 placement, no control-plane membership mutation or runtime reinstall |
 | Mac | macOS service, Lima binding, ARM64 placement, taint/toleration, VM and host capacity separation |
 | Agent Sandbox | Install, CRD ownership, direct Sandbox, template, claim, optional warm pool, controller restart, uninstall preconditions |
 | Kueue | LocalQueue mapping, pending, admission, overflow, no preemption, no unmanaged bypass |
@@ -1105,6 +1244,7 @@ The POC is not a production capacity certification, but it should prove:
 - 100 synthetic no-op submissions still satisfy the existing exactly-once and cleanup contract after POC installation.
 - 25 Sandbox lifecycle runs across AMD64 and ARM64 are each accounted for exactly once.
 - 20 Agent Runs complete across both architectures with no duplicate run or fallback attempt.
+- At least five Sandbox lifecycles and five Agent Runs are placed on the freshly bootstrapped Linux node after activation.
 - A request beyond the reviewed Kueue envelope remains queued.
 - POC controller or API restart does not duplicate resources.
 - Event-stream reconnect produces no missing terminal event and only documented deduplicable overlap.
@@ -1159,6 +1299,8 @@ Never delete a namespace, CRD, Kubernetes Node, Lima instance, host directory, o
 | Auth flow expands scope | Provider-neutral device flow, test accounts, short-lived access, device revocation, workspace RBAC |
 | CLI/API schema drift | OpenAPI source of truth, generated client, CI contract tests |
 | Node management harms existing work | Exact Node UID/version, Blazn-only workload checks, safety confirmation, one-node-at-a-time drains |
+| Linux dependency installation changes the host unexpectedly | Signed plan, dry-run, supported profiles, exact packages and files, ownership receipt, bootstrap taint, staged activation, repair, and explicit managed-runtime removal |
+| MicroK8s join credential requires host-level cluster access | Narrow Node Bootstrap Broker, single-use sealed credential, worker-only join, exact cluster and machine binding, full audit |
 | SQLite loss or corruption | Explicit retained volume, backup before migrations, single writer, no HA claim, restore test |
 | BuildKit privilege boundary | Reuse guarded existing workflow; do not expose raw BuildKit credentials to users or sandboxes |
 | Secret leakage through harness or evidence | Capability delivery, no user tokens in nodes, redaction, secret scanning, protected inputs |
@@ -1212,12 +1354,13 @@ Assuming two to three experienced engineers with access to the current fleet:
 | CLI, contracts, and distribution | 5–8 days |
 | Authentication and workspaces | 5–8 days |
 | Node service and fleet registration | 6–10 days |
+| Fresh Linux bootstrap, join broker, repair, and uninstall | 5–8 days |
 | Agent Sandbox, templates, and lifecycle | 8–12 days |
 | Development build and publication | 6–10 days |
 | Agent Harness v0 and agents | 8–12 days |
 | External harness proof and qualification | 5–8 days |
 
-The likely elapsed POC is five to seven weeks with parallel work. Re-estimate after Phase 0 because identity registration, public distribution, Agent Sandbox/Kueue compatibility, and hardened-runtime expectations can materially change the schedule.
+The likely elapsed POC is six to eight weeks with parallel work. Re-estimate after Phase 0 because identity registration, public distribution, clean Linux bootstrap, Agent Sandbox/Kueue compatibility, and hardened-runtime expectations can materially change the schedule.
 
 ## Decisions required before implementation
 
@@ -1233,6 +1376,8 @@ The likely elapsed POC is five to seven weeks with parallel work. Re-estimate af
 10. Which two test identities and workspace roles will verify collaboration?
 11. Which existing local Qwen endpoint and cloud fallback identity are approved for the POC?
 12. Which maintenance windows allow Mac/Linux node lifecycle and queue-overflow tests?
+13. Which fresh Linux distribution, version, architecture, and network location will be the clean-room node-install acceptance host?
+14. Is the POC authorized to install and own the exact operating-system packages, MicroK8s worker runtime, networking settings, registry trust, and systemd service described by the signed NodeInstallPlan on that host?
 
 ## Final POC acceptance criteria
 
@@ -1240,7 +1385,9 @@ The POC is accepted only when:
 
 - Brew and curl installation work from the approved public distribution channel.
 - Two users authenticate and collaborate in one workspace.
-- All nine existing worker Nodes appear with correct platform, architecture, health, capacity, and Kubernetes identity.
+- A fresh supported Linux host requires only the `blazn` installation and `blazn node install`; Blazn provisions all required dependencies and the node becomes Ready and Sandbox-eligible.
+- Install, interrupted resume, idempotent rerun, doctor, repair, managed uninstall, and reinstall all pass on that host.
+- All nine existing worker Nodes plus the new Linux Node appear with correct platform, architecture, health, capacity, and Kubernetes identity.
 - Node lifecycle commands are authorized, idempotent, audited, and safe around existing workloads.
 - Agent Sandbox is pinned, isolated to POC use, Kueue-admitted, observable, and removable.
 - One immutable logical SandboxTemplate runs on AMD64 Linux and ARM64 Mac workers.
