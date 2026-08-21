@@ -135,13 +135,18 @@ The company brain is the connected, permission-aware memory formed by these elem
 Users can create and manage a reusable library of agents. Each agent can have:
 
 - A name, role, purpose, and measurable objectives.
+- Searchable tags and structured metadata for ownership, capability, project, team, lifecycle, and discovery.
 - Instructions, skills, tools, resources, and LLM Router Policy preferences.
 - Environment and machine requirements.
 - Permissions, budgets, and escalation rules.
-- Schedules, triggers, and event subscriptions.
+- Schedules, triggers, event subscriptions, and optional activation and end times.
 - Run history, metrics, evaluations, and improvement history.
 
 Agents may work independently, be assigned to projects, or collaborate as a team. Larger coordinating agents can delegate work, combine results, detect gaps, and help specialized agents improve how they work together.
+
+Blazn has one Agent resource. An agent intended for a bounded assignment is an ordinary agent with an end time or a schedule that stops producing work. When its schedule ends, the agent becomes inactive and cannot start new runs, but its identity, configuration versions, tags, relationships, runs, metrics, and artifacts remain available for search and audit. Authorized users can extend or reactivate it through a versioned lifecycle change.
+
+Tags are metadata, not permissions. They support search, filters, collections, automation, routing hints, and reporting, while authorization continues to come from explicit workspace roles and policies.
 
 ### 5. Blazn Agent Harness
 
@@ -156,7 +161,7 @@ The harness supports:
 - Tool and MCP access governed by agent and workspace permissions.
 - Work in isolated sandboxes or approved local-machine backends.
 - Checkpoints, pause, resume, cancellation, retry, and recovery.
-- Temporary agents, delegation, handoffs, and coordinated agent teams.
+- Agent creation, bounded schedules, delegation, handoffs, and coordinated agent teams.
 - Durable outputs, evaluations, and introspection linked to run history.
 - Model requests sent exclusively through the Smart LLM Router.
 
@@ -279,8 +284,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Analytics and events | Record the structured history of work and system activity | Planned |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
-| Temporary agents | Create bounded, task-specific agent identities and lifetimes | Planned |
-| Agents | Define durable agent identity, objectives, configuration, and history | Planned |
+| Agents | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Planned |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | Credentials and integrations | Connect external systems and safely grant scoped access | Planned |
@@ -835,7 +839,7 @@ A sandbox has one owning session and may support multiple linked runs in that se
 
 One active writer lease is allowed by default. The Blazn Agent Harness holds that lease for the active run and coordinates interactive human access within the same session. Multiple viewers may inspect logs, files, terminals, previews, and metrics, but another agent or session cannot modify the sandbox unless an explicit collaboration policy grants a shared writer mode.
 
-Temporary agents receive separate sandboxes by default. They exchange instructions, artifacts, patches, and results through the harness rather than concurrently modifying the parent's working directory. This reduces accidental conflicts and provides clean provenance. A deliberate shared-sandbox policy may be used for tightly coordinated work, but it must define writer fencing, path ownership, and conflict handling.
+Delegated agents receive separate sandboxes by default. They exchange instructions, artifacts, patches, and results through the harness rather than concurrently modifying the parent's working directory. This reduces accidental conflicts and provides clean provenance. A deliberate shared-sandbox policy may be used for tightly coordinated work, but it must define writer fencing, path ownership, and conflict handling.
 
 Before claim, a warm-pool sandbox is owned by its pool. Claiming it atomically transfers ownership to one session and assigns a fresh run identity and writer lease. A claimed sandbox cannot be handed to another session without release, sanitation, and policy-controlled recycling.
 
@@ -993,7 +997,7 @@ The safe default is one session, one active writer lease, and multiple observers
 
 - Several people to share the session under one coordinated writer lease.
 - Read-only mounts of another sandbox's published artifact or snapshot.
-- A temporary agent to receive a copy-on-write branch of the parent's workspace.
+- A delegated agent to receive a copy-on-write branch of the parent's workspace.
 - Multiple agents to work in separate worktrees or declared path partitions.
 - A coordinating agent to merge patches or artifacts after delegated runs complete.
 
@@ -1515,7 +1519,7 @@ The queue system should:
 
 | Domain | Work item | Capacity governed |
 | --- | --- | --- |
-| **Run admission** | A Blazn Agent Harness run or delegated temporary-agent run | Workspace and agent concurrency, run budget, environment entitlement |
+| **Run admission** | A Blazn Agent Harness run or delegated-agent run | Workspace and agent concurrency, run budget, environment entitlement |
 | **Environment** | Sandbox create, claim, resume, resize, migrate, or replacement | Node CPU, memory, storage, accelerator, backend, warm entries |
 | **Inference** | One logical LLM request and its policy-controlled attempts | Model concurrency, tokens in flight, accelerator memory, provider limits and spend |
 | **Template build** | Build, validate, scan, sign, or promote a template version | Builder capacity, platform variants, artifact storage and budget |
@@ -1635,7 +1639,7 @@ Quotas govern entitlement to capacity; budgets govern permitted consumption or s
 
 Capacity quotas may include:
 
-- Active runs and temporary agents.
+- Concurrently active agents and runs.
 - Provisioning, ready, running, waiting, and suspended sandboxes.
 - CPU, memory, storage, accelerator, and native-platform slots.
 - Warm-pool ready and suspended reservations.
@@ -1760,7 +1764,7 @@ Every submission endpoint has bounded request rate, outstanding-item count, payl
 - Rejected because the request is structurally invalid or prohibited.
 - Deferred because a queue or provider circuit breaker is open.
 
-Agents receive the same backpressure signals as people and automation. They cannot create unbounded temporary agents, inference requests, refreshes, or integration calls merely because previous work is waiting.
+Agents receive the same backpressure signals as people and automation. They cannot create unbounded agents, delegated runs, inference requests, refreshes, or integration calls merely because previous work is waiting.
 
 #### Preemption and yielding
 
@@ -1946,7 +1950,7 @@ For each run, the harness is responsible for:
 - Sending all inference requests through the Smart LLM Router.
 - Executing the agent loop and recording model responses, reasoning summaries where supported, tool requests, approvals, results, and errors as structured events.
 - Accepting live user messages, steering, cancellation, and approval decisions without losing run identity.
-- Creating temporary agents or delegating bounded objectives when the parent agent is permitted to do so.
+- Creating agents with bounded schedules or delegating objectives when the parent agent is permitted to do so.
 - Producing artifacts, a final result, outcome metrics, and post-run introspection.
 - Releasing or retaining environments and credentials according to policy.
 
@@ -1988,11 +1992,13 @@ The harness exposes tools through a normalized contract regardless of whether th
 
 Read-only and reversible actions may run automatically under policy. External writes, financial actions, production changes, secrets access, destructive operations, and actions affecting other people can require explicit approval. If execution fails after an action may have occurred, the harness must reconcile the result rather than blindly repeating it.
 
-#### Temporary agents and delegation
+#### Agent creation and delegation
 
-A durable agent may create a temporary agent for a bounded sub-objective. The temporary agent inherits only explicitly delegated context, tools, credentials, budget, routing policy, environment requirements, and deadline. It has its own run identity and event stream while remaining linked to its parent.
+An agent may create another agent for a bounded sub-objective when policy permits it. The created agent is the same Agent resource used everywhere else in Blazn, with its own identity, tags, configuration version, runs, and event history. Its parent relationship records who created it and why, while its schedule or explicit end time bounds when it may initiate work.
 
-The parent agent or coordinating agent is responsible for evaluating and integrating delegated results. Temporary agents expire after their assignment and do not silently become permanent members of the workspace or retain credentials.
+The delegated agent inherits only explicitly granted context, tools, credentials, budget, routing policy, environment requirements, and deadline. The parent or coordinating agent is responsible for evaluating and integrating its results.
+
+When the bounded schedule ends, the agent becomes inactive rather than being deleted or converted to another type. It cannot start new runs or retain active credentials, but its configuration, relationships, results, metrics, and artifacts remain searchable and auditable. Extending or reactivating it is an explicit, versioned lifecycle change.
 
 #### Checkpointing and recovery
 
