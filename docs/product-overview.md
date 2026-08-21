@@ -19,6 +19,7 @@
   - [Sandboxes](#sandboxes)
   - [Warm pools](#warm-pools)
   - [Queues](#queues)
+  - [Agents](#agents)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -284,7 +285,7 @@ This section turns the product vision into a shared system model. It will be dev
 | Analytics and events | Record the structured history of work and system activity | Planned |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
-| Agents | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Planned |
+| [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | Credentials and integrations | Connect external systems and safely grant scoped access | Planned |
@@ -1930,6 +1931,469 @@ The first queue implementation should prove:
 - What limited offline admission, if any, is safe on disconnected nodes?
 - When should Blazn automatically offer cloud fallback versus ask for approval?
 - How should queue policy be simulated against historical demand before activation?
+
+### Agents
+
+#### Definition
+
+An agent is a versioned identity that performs work through the Blazn Agent Harness. It combines a purpose, objectives, instructions, capabilities, policies, schedules, relationships, and history into a reusable member of a workspace.
+
+Blazn has one Agent resource. An agent can be long-lived, manually invoked, event-driven, recurring, or bounded by a schedule with an end time. These are configurations of the same resource rather than separate agent types.
+
+An agent is not a model, prompt, chat, process, sandbox, or run. Models may change through routing policy, instructions evolve through versions, sessions preserve conversations, runs record executions, and sandboxes provide environments while the agent's identity remains stable.
+
+#### Core boundaries
+
+| Concept | Responsibility |
+| --- | --- |
+| **Agent** | Stable workspace identity, ownership, tags, lifecycle, relationships, and history |
+| **Agent version** | Immutable runnable configuration captured by a run |
+| **Lifecycle schedule** | Determines when the agent may initiate new work and when it becomes inactive |
+| **Run schedule or trigger** | Determines when a particular objective should create a run |
+| **Session** | Durable interaction and context boundary for related work |
+| **Run** | One execution attempt through the Blazn Agent Harness |
+| **Sandbox** | Isolated environment used by a session or run |
+| **LLM Router Policy** | Determines which models may serve the agent's inference requests |
+
+Keeping these boundaries explicit allows an agent to change models, resume a session, run on another node, or publish a new configuration without losing provenance.
+
+#### Identity and naming
+
+Every agent receives a stable, opaque ID. Its display name and workspace slug are human-friendly and may change under policy, but historical references use the stable ID.
+
+An agent identity records:
+
+- Workspace, owning person or team, creator, and creation source.
+- Display name, unique workspace slug, description, avatar or icon, and status.
+- Current published version and optional draft version.
+- Tags, structured metadata, project associations, and team memberships.
+- Lifecycle schedule, creation lineage, parent agent, and coordinating agent relationships.
+- Sessions, runs, artifacts, metrics, evaluations, and improvement proposals.
+
+Names help people understand an agent; they do not grant permissions or determine execution placement.
+
+#### Agent configuration
+
+An agent version should be able to define:
+
+- Role, purpose, responsibilities, and boundaries.
+- Objectives, success measures, stop conditions, and escalation behavior.
+- Versioned operating instructions and communication style.
+- Skills, tools, MCP servers, resources, and integration requirements.
+- Workspace knowledge sources and retrieval policy.
+- Sandbox template, environment requirements, resource profile, and native-platform needs.
+- LLM Router Policy, capability requirements, context budget, and model aliases.
+- Queue Policy, default priority, concurrency, token, time, and cost budgets.
+- Credential capabilities and approval requirements without secret values.
+- Run schedules, event triggers, subscriptions, and lifecycle schedule.
+- Delegation permissions, child-agent limits, and team relationships.
+- Artifact, memory, logging, retention, evaluation, and introspection policy.
+- Input schema, expected outputs, and optional structured result schema.
+
+The effective configuration is resolved and validated before publication so a run does not depend on mutable inherited defaults that cannot be reconstructed later.
+
+#### Tags and metadata
+
+Tags make the agent library searchable and manageable at scale. Examples include:
+
+- `team:payments`
+- `project:checkout`
+- `capability:ios`
+- `capability:research`
+- `environment:gpu`
+- `lifecycle:bounded`
+- `customer-support`
+
+Blazn supports simple labels and namespaced `key:value` tags. Tags are normalized for search, deduplicated, length-limited, and versioned with their source and actor. Protected system metadata such as workspace ID, creator, lifecycle status, trust, or verified capability cannot be overwritten with a user tag.
+
+Tags support full-text search, facets, saved collections, dashboards, automation selectors, reporting, and non-binding routing hints. Tags do not grant access. A security or credential policy must not trust an ordinary editable tag; policy selectors that require metadata use protected, administrator-controlled fields.
+
+Structured metadata can hold approved typed values such as owner team, cost center, business unit, service, project, region preference, or external catalog reference. Workspace policy controls allowed keys, value types, indexing, visibility, and who may edit them.
+
+#### Versioning
+
+The Agent resource is stable; its published AgentVersion records are immutable. Editing begins in a draft derived from a known version. Publishing validates the complete configuration and creates a new version and content digest.
+
+Each version records:
+
+- Parent version and change summary.
+- Resolved configuration and digest.
+- Author, creation source, policy, and timestamps.
+- Validation, evaluation, approval, and security evidence.
+- Compatibility notes for sessions, sandboxes, schedules, tools, and memory.
+- Publication status and rollback target.
+
+Every run captures the exact agent version and all relevant policy versions at admission. Publishing a newer version does not rewrite active or historical runs.
+
+The agent has a current-version pointer for new work. Rollback moves that pointer to an earlier valid version while preserving later versions and their history. An emergency policy can disable a version for new runs without erasing prior evidence.
+
+#### Draft, publication, and change control
+
+Drafts are editable and cannot run with production credentials or schedules unless a development policy explicitly permits a test run. Publishing follows a controlled flow:
+
+1. Resolve inherited workspace and team defaults.
+2. Validate schemas, references, schedules, budgets, policies, tools, and environment compatibility.
+3. Verify that required credentials and integrations can be requested without exposing their values.
+4. Run configured evaluations, policy checks, and sandbox smoke tests.
+5. Show the effective diff from the current version.
+6. Collect required approvals.
+7. Publish an immutable version and move the authorized current-version pointer.
+
+Change policy can require stronger approval for permissions, production tools, external writes, budgets, data access, model destinations, delegation, or lifecycle extension than for wording or descriptive metadata.
+
+#### Lifecycle status
+
+The Agent resource has a small explicit lifecycle:
+
+- **Draft:** Identity exists, but no published version may initiate ordinary work.
+- **Active:** The current version may create runs within its lifecycle schedule and policies.
+- **Paused:** New runs are temporarily blocked; identity, schedules, sessions, and history remain.
+- **Inactive:** The lifecycle schedule ended or the agent completed its bounded assignment.
+- **Disabled:** Security, policy, ownership, or administrative action prevents execution.
+- **Archived:** The agent is retained for search and audit but removed from ordinary active views.
+
+Status changes are versioned or audited operations with an actor and reason. Pausing does not alter the schedule. Inactive is the normal outcome for a bounded agent, while disabled indicates an exceptional or administrative restriction.
+
+Deletion is not the ordinary lifecycle. If workspace retention permits deletion, Blazn first revokes credentials and schedules, preserves required audit references, and uses a recoverable archive or tombstone before permanent removal.
+
+#### Lifecycle schedule
+
+An agent's lifecycle schedule defines its active window independently from when individual runs occur. It can contain:
+
+- Optional activation time.
+- Optional end time.
+- Time zone and calendar policy.
+- Behavior for queued, waiting, or active work when the end time is reached.
+- Maximum extension, who may extend it, and required approval.
+- Optional inactivity or objective-completion condition that ends the schedule early.
+
+An agent with no end time can remain active until paused, disabled, or archived. An agent created for a bounded assignment has an explicit end time. When that time arrives, Blazn prevents new runs and changes the agent to inactive.
+
+Policy determines whether already admitted runs may finish, receive a grace period, checkpoint and suspend, or cancel at the end time. The default should allow a bounded in-progress run to complete within a short maximum grace period while refusing new work.
+
+Reactivation or extension is explicit and auditable. It creates a lifecycle revision, revalidates policy and budgets, and never silently restores expired credentials.
+
+#### Run schedules and triggers
+
+An active agent may have zero or more run schedules and triggers:
+
+- Manual invocation from desktop, CLI, API, MCP, or Blazn Button.
+- One-time or recurring calendar schedules.
+- Repository, project, monitoring, customer, or integration events.
+- Webhooks and authenticated external API calls.
+- Parent-agent delegation.
+- Artifact, task, milestone, or dependency changes.
+
+Each schedule or trigger defines an objective or input mapping, priority, queue, policy overrides, concurrency behavior, deduplication key, missed-occurrence behavior, and optional per-trigger budget.
+
+No trigger may create work outside the agent's lifecycle schedule. Trigger occurrences receive stable identities so controller restarts and duplicate external delivery do not create duplicate runs.
+
+An agent may exist without an automatic schedule. It remains available for manual, event-driven, conversational, or delegated work while active.
+
+#### Objectives and success measures
+
+Objectives describe what the agent is responsible for accomplishing, not merely what tone it should use. An objective can define:
+
+- Desired outcome and scope.
+- Inputs, assumptions, constraints, and exclusions.
+- Success measures and evidence requirements.
+- Deadline, cadence, service objective, or completion condition.
+- Allowed autonomy and approval checkpoints.
+- Failure, escalation, and stop conditions.
+- Project, milestone, task, product, customer, or parent-agent relationship.
+
+Agents can have a primary purpose and several versioned objectives. A run binds to one objective and captures its exact version. Metrics and introspection evaluate the run against that objective rather than a generic notion of agent quality.
+
+#### Instructions
+
+Instructions are structured and layered instead of one unbounded prompt. The effective instruction set can include:
+
+- Organization and workspace operating requirements.
+- Team and project conventions.
+- Agent role, purpose, procedures, and boundaries.
+- Objective-specific instructions.
+- Tool, integration, environment, and safety instructions.
+- Current user or delegating-agent input.
+
+Higher-level security and policy instructions cannot be weakened by a lower-level agent or run instruction. The resolved instruction set, references, precedence, and digest are captured for each run.
+
+Large procedures can live as versioned skills or resources rather than being copied into every prompt. The harness loads only relevant material within the context budget.
+
+#### Skills, tools, MCP, and resources
+
+An agent version declares the capabilities it may request:
+
+- Blazn-native tools and environment operations.
+- Skills containing procedures and supporting resources.
+- MCP servers and allowed tools, prompts, and resources.
+- Workspace integrations such as source control, messaging, support, project management, data, and deployment systems.
+- Documents, dashboards, datasets, knowledge collections, and artifact libraries.
+
+Declaration makes a capability eligible; it does not grant credentials automatically. At run time, the harness evaluates the agent, user, objective, environment, tool, and action against current policy and requests a scoped grant.
+
+Tool schemas and compatibility requirements are versioned. Removing or changing a tool can mark an agent version incompatible for new runs without corrupting its historical record.
+
+#### Environment requirements
+
+The agent describes what it needs rather than naming a worker machine:
+
+- Sandbox template or compatible template selector.
+- Operating system, architecture, isolation, trust, region, and data boundary.
+- CPU, memory, storage, accelerator, GUI, browser, device, and native-toolchain requirements.
+- Persistence, suspension, migration, warm-pool, network, and service needs.
+- Repository and source inputs supplied by the objective or project.
+
+Queue admission and sandbox placement resolve these requirements against eligible nodes and Blazn cloud. Users may pin a development run to a node, but the agent definition remains portable unless its capability genuinely requires a specific environment.
+
+#### Model requirements and routing
+
+An agent does not ordinarily bind itself to one physical model endpoint. Its version references an LLM Router Policy and can declare capability requirements or logical aliases for different work classes.
+
+For example, an agent may request:
+
+- `company-fast` for routine classification and summaries.
+- `coding-best` for implementation planning or review.
+- `private-reasoning` for restricted workspace data.
+- Vision, tool use, structured output, or a minimum context window for a specific objective.
+
+The Smart LLM Router chooses among allowed local nodes, company infrastructure, providers, and Blazn cloud. The run records every effective policy, route, attempt, and fallback without changing the agent's identity.
+
+Exact model pinning is available for evaluations and reproducible work, subject to organization policy and availability.
+
+#### Permissions and credentials
+
+Each agent is a workspace principal with its own identity. It does not impersonate its creator or inherit all permissions of the person who invoked it.
+
+Agent policy can govern:
+
+- Who may view, edit, publish, run, pause, reactivate, archive, or delete the agent.
+- Which projects, knowledge, artifacts, tools, integrations, and data classes it may access.
+- Which credential capabilities it may request.
+- Which actions run automatically and which require approval.
+- Where it may execute and which model destinations it may use.
+- Whether it may create agents, delegate objectives, or coordinate a team.
+- Maximum concurrency, tokens, time, external actions, and spend.
+
+Credentials are issued to a specific agent, run, tool, audience, and duration where supported. No reusable secret value belongs in the Agent or AgentVersion record. Ending, pausing, disabling, or archiving an agent revokes or prevents renewal of its active grants according to policy.
+
+#### Memory and company-brain context
+
+The Agent resource does not contain a hidden, ever-growing prompt transcript. Its usable memory is composed from permission-aware workspace records:
+
+- Versioned instructions and skills.
+- Pinned knowledge and resources.
+- Session summaries and selected run evidence.
+- Agent-created artifacts and evaluated outcomes.
+- Explicit memories proposed, reviewed, and accepted under policy.
+- Project, task, decision, customer, product, and team context relevant to the objective.
+
+The harness retrieves and budgets context for each run. Provenance records why a memory was selected and which version was used. Raw output or post-run introspection does not silently rewrite trusted memory or instructions.
+
+Agent-specific collections can improve continuity, but workspace permissions and retention still apply. Deactivating an agent does not make its prior work inaccessible to authorized company-brain search.
+
+#### Relationships and teams
+
+Agents can be organized through explicit relationships:
+
+- Owner person or team.
+- Creator person, API client, or creating agent.
+- Parent and created-agent lineage.
+- Coordinating agent and team membership.
+- Project, objective, milestone, task, product, service, or customer assignment.
+- Dependency, reviewer, specialist, or escalation relationship.
+
+Relationships are typed, versioned, and searchable. Blazn rejects cycles where a hierarchy requires an acyclic structure, such as parent creation lineage. Team membership does not automatically copy credentials or all context; coordination policy defines what can be delegated and shared.
+
+A coordinating agent delegates bounded objectives, observes linked run states, receives structured results, evaluates gaps, and integrates outputs. It does not gain unrestricted control of every team member merely because they share a tag or collection.
+
+#### Agent creation and delegation
+
+People, authorized API or MCP clients, and agents with explicit permission can create an agent. Agent-created agents use the same schema, validation, versioning, tags, library, and lifecycle as every other agent.
+
+For a bounded delegated assignment, the creating agent supplies:
+
+- Purpose, objective, success measures, and deadline.
+- Parent relationship and return-result contract.
+- Lifecycle schedule with an explicit end time.
+- Tags and metadata describing the team, project, capability, and origin.
+- Narrow instructions, tools, knowledge, environment, model, and queue policy.
+- Maximum run count, concurrency, token, time, and cost budget.
+- Allowed further delegation depth and fan-out.
+
+The created agent receives only explicitly delegated access. Its end time cannot exceed the parent's authority, objective deadline, credential lifetime, or policy maximum.
+
+When the schedule ends, the created agent becomes inactive, stops initiating new runs, and loses active grants. Its identity and results remain searchable. The parent can integrate its output without converting it into another resource type.
+
+#### Concurrency and execution
+
+Agent concurrency policy controls how many runs and sessions an agent may have active and what should happen when another trigger arrives:
+
+- Queue each occurrence.
+- Coalesce equivalent work.
+- Skip while a prior run is active.
+- Cancel or supersede older interruptible work.
+- Allow bounded parallel runs with separate sandboxes.
+
+Runs from the same agent are distinct and bind to exact inputs and versions. Sharing a session or sandbox is an explicit choice; concurrency does not imply concurrent writes to one workspace.
+
+Queue Policy applies workspace and agent limits before the harness starts. An agent cannot bypass its own concurrency cap by creating more agents unless delegation policy allocates separate bounded capacity.
+
+#### Agent Policy and governance
+
+A versioned Agent Policy governs creation and lifecycle operations. It can define:
+
+- Who may create agents and in which workspaces or teams.
+- Required owners, tags, objectives, schedules, budgets, and templates.
+- Allowed instructions, tools, integrations, model policies, and data classes.
+- Publication, evaluation, approval, and review requirements.
+- Maximum active agents, delegated depth, fan-out, lifetime, and extensions.
+- Self-edit, proposal, publish, pause, reactivation, and archive permissions.
+- Naming, metadata, retention, export, and deletion rules.
+
+The policy is evaluated at draft validation, publication, scheduling, run admission, delegation, and reactivation. A previously published version can be blocked from new work when current hard policy no longer permits it.
+
+#### Improvement and self-change
+
+Run introspection may produce proposed changes to instructions, skills, tools, objectives, schedules, routing policy, or environment requirements. These proposals are evidence-linked diffs, not direct mutations of the active agent.
+
+Agent Policy determines whether an agent may:
+
+- Report an improvement opportunity only.
+- Create a draft version.
+- Run evaluations against the draft.
+- Publish to a development channel or test collection.
+- Request human or coordinating-agent approval for promotion.
+- Publish a new current version after automated and approval gates pass.
+
+The safe default is proposal or draft creation. Agents do not silently increase their permissions, budget, lifetime, delegation ability, credential access, or external-action authority.
+
+Improvement metrics compare agent versions against stable objectives and representative evaluations. Blazn preserves regressions and failed experiments as evidence rather than rewriting history.
+
+#### Sessions and runs
+
+An agent may participate in many sessions and runs. Each session records its participants, objective context, sandbox relationship, messages, summaries, and linked work. Each run records one agent version as the executing identity, even when a coordinating session contains several agents.
+
+Follow-up work may reuse a session sandbox while binding to the current or an explicitly selected agent version. If the version changes, the session records the transition. Historical messages and results retain the version that produced them.
+
+An inactive or paused agent can remain visible in an existing session, but it cannot start another run without reactivation or an authorized override. Existing runs follow the lifecycle end policy captured at admission.
+
+#### Discovery and library experience
+
+The agent library should support:
+
+- Full-text search across name, description, purpose, objectives, and permitted indexed metadata.
+- Tag, owner, team, project, capability, lifecycle, environment, model-policy, and status filters.
+- Saved collections and dashboards.
+- Recently used, frequently used, newly published, inactive, failing, and improvement-pending views.
+- Version, run, schedule, cost, quality, and reliability comparisons.
+- Relationship and team views showing parents, created agents, coordinators, and projects.
+- Clone, export, archive, reactivate, and propose-change actions.
+
+Search results respect workspace permissions. Restricted agent existence, tags, instructions, objectives, and metrics are not leaked through counts, suggestions, or autocomplete.
+
+Cloning creates a new Agent identity with source lineage and a draft configuration. It does not copy active credentials, sessions, private memory, ownership, schedules, or permissions without explicit policy.
+
+#### Health and operational status
+
+Agent health summarizes whether the agent can perform new work:
+
+- Published configuration validity.
+- Lifecycle and schedule eligibility.
+- Required sandbox template and node capacity.
+- Tool, MCP, credential, and integration readiness.
+- LLM Router Policy and eligible model capacity.
+- Queue, quota, budget, and concurrency status.
+- Recent run success, failure, cancellation, latency, cost, and quality trends.
+- Pending security, policy, evaluation, or improvement actions.
+
+Health is derived and explainable rather than a manually edited tag. A healthy agent may still wait for capacity, and an inactive agent is not unhealthy merely because its intended schedule ended.
+
+#### Events, metrics, and audit
+
+Agent events include creation, draft change, validation, publication, rollback, schedule activation or end, pause, reactivation, disablement, archive, relationship change, tag change, delegation, run start and completion, evaluation, and improvement proposal.
+
+Core metrics include:
+
+- Active, paused, inactive, disabled, and archived agent counts.
+- Runs, concurrency, queue time, completion, failure, cancellation, and deadline performance.
+- Objective success, evaluation, human correction, approval, and escalation rates.
+- Tokens, model routes, fallbacks, sandbox use, node use, cost, and latency.
+- Tool and integration use, failures, denied actions, and uncertain external outcomes.
+- Delegation depth, fan-out, child-agent completion, handoff, and integration quality.
+- Version adoption, regression, rollback, and improvement effectiveness.
+- Schedule occurrences, misses, coalescing, inactivity, and lifecycle extensions.
+
+Metrics can be aggregated by tags and structured metadata for reporting, but authorization is enforced before aggregation or display.
+
+#### Initial Agent and AgentVersion records
+
+The Agent record should include:
+
+- Stable agent ID, workspace, slug, display name, description, icon, and status.
+- Owner, creator, creation source, parent, coordinator, team, and project relationships.
+- Tags and protected structured metadata.
+- Current published version, draft reference, and lifecycle schedule.
+- Active schedules, triggers, sessions, runs, and current grants by reference.
+- Creation, activation, pause, inactive, disablement, archive, and retention timestamps.
+- Aggregate health, usage, outcome, cost, and improvement indicators.
+
+The AgentVersion record should include:
+
+- Agent ID, version, digest, parent version, author, reason, and publication state.
+- Resolved purpose, objectives, instructions, skills, tools, resources, and schemas.
+- Sandbox, environment, model, queue, credential, delegation, retention, and evaluation configuration.
+- Schedule and trigger definitions included in that version.
+- Policy references and effective compatibility requirements.
+- Validation, test, evaluation, approval, provenance, and security evidence.
+- Publication, rollback, deprecation, and prohibition information.
+
+Secret values, active tokens, raw conversation histories, and mutable sandbox state do not belong in either record.
+
+#### API and MCP surface
+
+The initial control surface should support:
+
+- Create an Agent identity and draft configuration.
+- List, search, filter, and inspect authorized agents, versions, tags, relationships, health, and history.
+- Update a draft, validate it, evaluate it, publish a version, and roll back the current pointer.
+- Add or remove permitted tags and structured metadata.
+- Configure lifecycle schedules, run schedules, triggers, budgets, policies, and relationships.
+- Activate, pause, reactivate, disable, archive, or request deletion.
+- Start a session or run with an idempotency key and authorized version selection.
+- Create another bounded agent through delegation policy.
+- Stream agent, schedule, run, evaluation, and improvement events and metrics.
+- Explain why an agent cannot run or which configuration and policy a run would use.
+
+Mutations require expected versions to prevent lost updates. Administrative, publication, permission, budget, lifecycle-extension, and force operations have distinct permissions and audit events.
+
+#### Version-one boundary
+
+The first Agent implementation should prove:
+
+1. One Agent resource with stable identity, owner, name, description, searchable tags, and structured metadata.
+2. Immutable AgentVersion publication with instructions, one objective, sandbox template, tools, budgets, Queue Policy, and LLM Router Policy.
+3. Draft validation, current-version selection, rollback, and exact run-version capture.
+4. Manual invocation plus one recurring or one-time run schedule.
+5. A lifecycle schedule with an end time that automatically changes a bounded agent to inactive.
+6. Explicit pause, reactivation, disablement, and archive behavior.
+7. One delegated agent created under a parent with narrower access, budget, fan-out, and an end time.
+8. Agent-scoped credentials issued only at run time.
+9. Search and filtering by name, status, owner, project, and tags.
+10. Runs, artifacts, model routes, sandbox use, metrics, and audit history linked back to the agent and exact version.
+11. Authenticated desktop, CLI, API, and MCP creation, inspection, lifecycle, and run controls.
+
+#### Decisions to make next
+
+- Which configuration fields belong directly to AgentVersion versus referenced policy resources?
+- Should run schedules publish with the AgentVersion or remain independently versioned attached resources?
+- What schedule-end grace behavior should be the default for an active run?
+- Which tag namespaces and structured metadata fields should Blazn reserve?
+- Which agent changes require human approval in the default workspace policy?
+- How should coordinating-agent relationships differ from parent creation lineage and team membership?
+- What minimum evaluations are required before an agent can use production credentials or external writes?
+- Which memory proposals can be accepted automatically, if any?
+- How should agent cloning and export handle private resources and cross-workspace policy?
+- When should an inactive agent be archived automatically?
 
 ### Blazn Agent Harness system
 
