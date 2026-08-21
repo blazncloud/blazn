@@ -18,6 +18,7 @@
   - [Sandbox templates and refreshes](#sandbox-templates-and-refreshes)
   - [Sandboxes](#sandboxes)
   - [Warm pools](#warm-pools)
+  - [Analytics and events](#analytics-and-events)
   - [Queues](#queues)
   - [Agents](#agents)
   - [Credentials and integrations](#credentials-and-integrations)
@@ -288,7 +289,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Sandbox templates and refreshes](#sandbox-templates-and-refreshes) | Define, version, update, and efficiently materialize reproducible environments | Initial design |
 | [Sandboxes](#sandboxes) | Provide isolated, stateful or disposable execution environments | Initial design |
 | [Warm pools](#warm-pools) | Keep policy-controlled environments ready to reduce startup latency | Initial design |
-| Analytics and events | Record the structured history of work and system activity | Planned |
+| [Analytics and events](#analytics-and-events) | Record the structured history of work and system activity and support governed analysis and optimization | Initial design |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
 | Company-brain indexing and retrieval | Ingest, permission-filter, index, relate, retrieve, refresh, and delete company knowledge with provenance | Planned |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
@@ -1497,6 +1498,383 @@ The first warm-pool implementation should prove:
 - How are cloud latency tiers and contributed-node capacity priced or credited?
 - How should pool capacity follow template-channel promotion without causing a readiness gap?
 - Which metrics determine that a pool should be resized, suspended, or removed?
+
+### Analytics and events
+
+#### Definition
+
+Analytics and events are the shared workspace pipeline for understanding what people, agents, models, tools, integrations, and infrastructure are doing. Every meaningful unit of work can produce structured events while it executes, and those events form a durable, permission-aware record that can be monitored in real time and analyzed later.
+
+Agents are first-class analytics producers. An agent can emit an approved analytics event as it discovers a fact, completes a stage, evaluates an output, observes a business outcome, identifies waste, or encounters a problem. Agent-emitted analytics flow through the same workspace pipeline as system events, with the producer and trust level preserved so consumers can distinguish an agent observation from an authoritative platform measurement.
+
+The pipeline supports four related needs:
+
+1. **Operations:** understand whether runs, queues, nodes, sandboxes, models, tools, and integrations are healthy.
+2. **Economics:** attribute model, compute, storage, integration, and human-review cost to the work that caused it.
+3. **Outcomes:** measure elapsed time, quality, success, rework, customer or project impact, and progress against objectives.
+4. **Optimization:** run governed analysis across historical evidence and propose changes that improve cost, speed, quality, reliability, or capacity.
+
+Analytics are scoped to a workspace by default. Workspace members can share dashboards, saved views, alerts, reports, and optimization results according to policy without exposing data from personal activity, other workspaces, restricted projects, or protected vaults.
+
+#### Events, analytics, metrics, and audit
+
+These concepts are related but not interchangeable:
+
+- An **event** is a structured fact or observation that occurred at a point in time.
+- An **analytic** is an event or derived result intended to help understand behavior, performance, cost, quality, or outcomes.
+- A **metric** is a numeric measurement aggregated or observed over time. The detailed Metrics section will define metric instruments, dimensions, storage, and service objectives.
+- An **audit event** is an authoritative security or governance record with stricter producer, immutability, access, retention, and export requirements.
+- A **log** is diagnostic text or structured detail intended primarily for troubleshooting. Logs may be linked to events but are not automatically safe or efficient analytics inputs.
+- A **trace** relates causal work across services, agents, models, tools, and environments through spans and correlation identifiers.
+
+One occurrence can produce more than one representation. For example, completing a model request can create an authoritative usage event, update cost and latency metrics, close a trace span, and add an audit event only if the request involved a governed action. The representations remain linked by identifiers rather than being collapsed into one unrestricted record.
+
+#### Producer trust classes
+
+Every event identifies who or what produced it and how much authority consumers may assign to it.
+
+| Producer class | Examples | Allowed authority |
+| --- | --- | --- |
+| Control plane | Run controller, scheduler, policy engine, vault broker | Authoritative lifecycle, identity, policy, approval, and state-transition events |
+| AI Proxy | Router, provider adapter, local-model gateway | Authoritative request routing, token or unit usage, measured latency, provider response, fallback, and estimated or billed cost data |
+| Execution fabric | Node agent, sandbox backend, warm-pool controller | Authoritative observed resource, placement, readiness, utilization, and environment lifecycle data |
+| Agent Harness | Harness runtime and normalized tool layer | Authoritative agent-step, tool-call, context, delegation, checkpoint, and harness-observed timing data |
+| Integration adapter | Source control, issue tracker, support, deployment, or business system connector | Authoritative connector-observed request and response metadata within its granted scope |
+| Agent | An agent executing a run | Declared observations, classifications, scores, milestones, hypotheses, and domain outcomes |
+| Human | Workspace member or reviewer | Feedback, labels, evaluations, corrections, approvals, and declared business outcomes |
+| Derived processor | Aggregator, evaluator, anomaly detector, or optimization run | Derived measures and findings with lineage back to source events |
+
+An agent cannot emit an event that impersonates the control plane, changes authoritative billing, records its own permission grant, certifies its own security compliance, or overwrites a trusted quality evaluation. It can emit a claim such as “tests appear to pass” or “customer sentiment improved,” but the event remains attributed to that agent and may be confirmed or contradicted by trusted evidence.
+
+#### Shared workspace analytics pipeline
+
+The pipeline is a logical service with several stages:
+
+```mermaid
+flowchart LR
+    Producers[Agents / Harness / Proxy / Nodes / Control plane / Integrations / People]
+    Producers --> Ingest[Authenticated ingestion and validation]
+    Ingest --> Govern[Policy, classification, redaction and trust]
+    Govern --> Stream[Durable ordered workspace event stream]
+    Stream --> Realtime[Live runs, dashboards and alerts]
+    Stream --> Process[Aggregation, evaluation and enrichment]
+    Process --> Metrics[Metrics and cost attribution]
+    Process --> Analytics[Saved analytics and reports]
+    Process --> Optimize[Optimization runs]
+    Stream --> Retention[Retention, archive and deletion]
+    Optimize --> Proposals[Versioned improvement proposals]
+```
+
+The pipeline must preserve workspace isolation, event identity, ordering within a defined stream, producer trust, schema version, policy decisions, and lineage through every processing stage. It may use different streaming, analytical, metric, and archival backends, but those implementation choices do not change the Blazn event contract.
+
+Ingestion is asynchronous for ordinary analytics so a slow dashboard or analytical backend does not block agent work. Critical lifecycle, usage, policy, and audit records use durable delivery appropriate to their authority before the originating operation is considered fully recorded.
+
+#### Agent-triggered analytics
+
+The Agent Harness provides a governed analytics capability that an agent can call during a run. The agent chooses an allowed event type, supplies schema-valid fields, and optionally relates the observation to an objective, task, artifact, tool call, span, or earlier event.
+
+Typical agent-triggered analytics include:
+
+- A research agent recording that a source confirmed or contradicted a hypothesis.
+- A coding agent marking dependency installation, implementation, test, review, and remediation stages.
+- A support agent classifying an issue, recording a proposed resolution, and later relating it to customer feedback.
+- A project agent recording milestone risk, blocker type, estimate change, or dependency discovery.
+- A quality agent emitting rubric scores and evidence references for another agent's output.
+- A coordinating agent recording delegation quality, handoff failures, duplicated effort, or missing capabilities.
+- An optimization agent identifying a high-cost routing pattern or a sandbox refresh opportunity.
+
+The capability enforces:
+
+- A workspace-approved schema and event namespace.
+- The current agent, AgentVersion, run, step, and harness identity.
+- Field classification and maximum payload size.
+- Per-agent and per-run rate and volume limits.
+- Required evidence or artifact references for selected claims.
+- Policy-controlled custom dimensions with bounded cardinality.
+- Redaction and rejection of secret-like or prohibited content.
+- Idempotency for retries after uncertain delivery.
+
+Agents do not choose the workspace, producer identity, event timestamp authority, trust class, billing fields, or retention class. The harness and pipeline attach those fields. Agent-supplied event time can be retained separately as an observation time when the distinction matters.
+
+#### Event namespaces and schemas
+
+Events use namespaced, versioned types so producers cannot create ambiguous global names. Blazn reserves namespaces for authoritative system producers. Workspaces can define governed custom namespaces, and integrations can register types under their installation identity.
+
+Example event families include:
+
+- `run.*`: requested, admitted, started, checkpointed, suspended, resumed, completed, failed, cancelled.
+- `agent.*`: step started, delegation requested, observation recorded, evaluation proposed, improvement proposed.
+- `model.*`: request started, route selected, queued, fallback attempted, response completed, usage reconciled.
+- `tool.*`: call requested, approved, started, completed, denied, failed.
+- `sandbox.*`: requested, provisioning, ready, attached, preserved, expired, deleted.
+- `queue.*`: submitted, blocked, admitted, preempted, expired, cancelled.
+- `node.*`: enrolled, capability changed, pressure detected, cordoned, drained, disconnected.
+- `credential.*` and `integration.*`: lease issued, broker action completed, connection unhealthy, rotation required, without secret values.
+- `artifact.*`: created, revised, published, pinned, superseded, deleted.
+- `quality.*`: evaluation requested, score recorded, human feedback added, regression detected.
+- `cost.*`: estimate updated, usage reconciled, budget threshold reached, anomaly detected.
+- `optimization.*`: run started, finding recorded, proposal created, proposal evaluated, proposal applied or rejected.
+- Workspace-defined types for product, customer, operational, or domain outcomes.
+
+Every schema declares required fields, optional fields, types, units, classification, allowed dimensions, retention class, and compatible evolution rules. Schemas are validated at ingestion. Incompatible changes require a new version; older events remain queryable under their original schema.
+
+#### Event envelope
+
+All events share a common envelope containing at least:
+
+- Globally unique event identifier and schema version.
+- Event type, namespace, and event version.
+- Workspace and permitted project or team scope.
+- Producer identity, producer class, trust class, and software version.
+- Run, agent, AgentVersion, operation, task, objective, and resource references where applicable.
+- Trace, span, parent event, causation, and correlation identifiers.
+- Authoritative ingestion time and optional producer observation time.
+- Monotonic sequence or resumable cursor within the defined stream.
+- Data classification, retention class, region, and policy-decision references.
+- Idempotency or deduplication key where supported.
+- Typed payload and explicit units.
+- Evidence, artifact, evaluation, or external-record references rather than embedded large content.
+- Redaction, sampling, derivation, and reconciliation state.
+
+Identifiers and relationships make it possible to move from a dashboard value to the runs, events, model calls, tool activity, and evidence that contributed to it, subject to the viewer's permissions.
+
+#### Ingestion, validation, and delivery
+
+Producers submit events through authenticated internal capabilities. The Agent Harness exposes agent analytics as a narrow tool; node agents, the proxy, integrations, and control-plane services use producer-specific internal channels. The desktop application and CLI can submit permitted human feedback or administrative annotations.
+
+Ingestion performs:
+
+1. Authentication and producer binding.
+2. Workspace and resource authorization.
+3. Schema and unit validation.
+4. Payload size, rate, and cardinality enforcement.
+5. Classification, secret detection, and policy checks.
+6. Trusted-field attachment and untrusted-field separation.
+7. Idempotent acceptance and durable sequencing.
+8. Routing to authorized real-time and analytical consumers.
+
+Ordinary producer retries use an idempotency key. The pipeline can deliver downstream events at least once, so consumers de-duplicate by event identifier and must not assume that delivery count equals occurrence count.
+
+When the pipeline is temporarily unavailable, bounded producer buffers can preserve critical events without exhausting a node or sandbox. Backpressure policy decides whether optional analytics are sampled or dropped, while authoritative lifecycle, usage, and audit events are durably spooled or cause the related operation to enter a visible degraded state. Silent loss of required events is not acceptable.
+
+#### Cost analytics
+
+Cost analytics attribute consumption to the work that caused it. Authoritative usage comes from the AI Proxy, execution fabric, storage services, integrations, and managed infrastructure rather than from agent estimates alone.
+
+Blazn should track:
+
+- Model input, output, cached, reasoning, image, audio, and provider-specific usage units.
+- Local-model inference time, reserved capacity, energy or utilization estimates where available, and amortized node cost policy.
+- Sandbox CPU, memory, accelerator, disk, network, active time, suspended time, and warm idle time.
+- Refresh builds, artifact storage and transfer, analytics retention, and integration consumption.
+- Human approval or review time when explicitly recorded and permitted.
+- Estimated cost at decision time and reconciled cost when provider or infrastructure records arrive.
+- Cost by workspace, project, objective, task, run, agent, AgentVersion, model route, tool, node class, and environment.
+
+Estimated and reconciled cost remain distinct. Corrections append reconciliation events instead of rewriting the original usage record. Shared or idle capacity uses a documented allocation policy so dashboards do not imply false precision.
+
+#### Time and flow analytics
+
+Time analytics separate work from waiting. A run's elapsed time can include queue delay, environment startup, model latency, tool execution, approvals, retries, suspension, and agent reasoning or coordination.
+
+This enables analysis of:
+
+- End-to-end time to outcome.
+- Active execution versus blocked or waiting time.
+- Queue and capacity bottlenecks.
+- Cold, refreshed, suspended-warm, and ready-warm startup differences.
+- Model routing and fallback latency.
+- Tool, integration, approval, and human-handoff delay.
+- Rework, retry, recovery, and duplicated-agent effort.
+- Throughput and concurrency by workspace, project, agent team, and resource class.
+
+Intervals derive from paired authoritative lifecycle events where possible. Agent-emitted stage markers add domain meaning but do not replace measured timestamps.
+
+#### Quality and outcome analytics
+
+Quality is tied to an objective and evidence, not reduced to a single universal score. A run can be evaluated using automated checks, model-based evaluators, human feedback, business outcomes, or a combination of methods.
+
+Quality analytics can include:
+
+- Objective completion and acceptance criteria.
+- Test, lint, build, deployment, or operational verification results.
+- Rubric dimensions such as correctness, completeness, safety, clarity, maintainability, and relevance.
+- Human approval, correction, edit distance, escalation, and satisfaction.
+- Regression, incident, rollback, defect, and reopen rates.
+- Artifact reuse and whether later work superseded or contradicted an output.
+- Customer, project, revenue, support, or operational outcomes connected through integrations.
+- Evaluator identity, version, model, prompt or rubric version, confidence, and evidence.
+
+Agent self-evaluation is useful but is labeled as self-evaluation. It cannot be the sole trusted quality signal for optimization. Comparisons must control for task class, difficulty, environment, evaluator version, and sample size to avoid rewarding agents for choosing easier work or manipulating their own analytics.
+
+#### Optimization runs
+
+An optimization run is a governed Blazn run whose objective is to analyze historical events, metrics, evaluations, costs, and outcomes and propose an improvement. It can be started manually, scheduled, or triggered by a threshold, anomaly, regression, or sufficient new evidence.
+
+Optimization runs may examine:
+
+- Model and provider selection, routing, fallback, caching, and budget policy.
+- Agent instructions, skills, tool selection, delegation, and handoff patterns.
+- Sandbox templates, refresh cadence, dependency caching, and warm-pool sizing.
+- Queue priorities, quotas, concurrency, schedules, and capacity placement.
+- Repeated failures, retries, approval friction, and integration bottlenecks.
+- Quality regressions or cost increases between AgentVersions and policy versions.
+
+An optimization run produces a versioned proposal containing:
+
+- The target and proposed change.
+- The hypothesis and expected cost, time, quality, or reliability effect.
+- The population, time range, event query, exclusions, and evidence used.
+- Baseline and candidate measurements with uncertainty and limitations.
+- Risk, blast radius, rollback conditions, and required approvals.
+- A canary, shadow, replay, or evaluation plan where applicable.
+- Links to the events, metrics, evaluations, and artifacts supporting the proposal.
+
+Optimization runs do not silently modify an AgentVersion, LLM Router Policy, sandbox template, queue policy, warm pool, credential policy, or production integration. Application requires the normal versioning, authorization, review, rollout, and rollback process for that resource. Workspace policy may permit narrowly scoped automated experiments, but the experiment and promotion rules are explicit and auditable.
+
+#### Real-time monitoring, dashboards, and alerts
+
+Workspace members can create permission-aware dashboards and saved analytic views for runs, agents, projects, models, nodes, queues, environments, costs, quality, and optimization activity. A viewer sees only aggregates that can be safely derived from events they are permitted to access.
+
+Real-time monitoring should support:
+
+- Active and blocked runs.
+- Queue depth, wait time, admission, and capacity pressure.
+- Node, sandbox, warm-pool, integration, and local-model health.
+- Model route, fallback, latency, error, throttling, and spend.
+- Budget burn, forecast, and unusual cost changes.
+- Quality regression, repeated failure, or evaluator disagreement.
+- Missing required telemetry or delayed usage reconciliation.
+
+Alerts use versioned rules with owners, severity, scope, evaluation window, cooldown, deduplication, and destinations. An alert can notify a person, create a project task, trigger a diagnostic or optimization run, or request an approval. Alert actions still pass through normal authorization and queue policy.
+
+#### Queries, dimensions, and cardinality
+
+Analytics queries filter and group by governed dimensions such as workspace, project, objective, run, agent, AgentVersion, model, route, node class, sandbox template version, tool, integration, event type, time, status, and quality rubric.
+
+Arbitrary unbounded labels can make the pipeline expensive or unsafe. Schema policy limits high-cardinality dimensions, reserves identifiers for drill-down rather than metric labels, and can reject or demote an agent-emitted field. Tags on agents and other resources can participate in search and analysis, but tags remain metadata and never grant access.
+
+Saved queries record their author, query version, permissions, data interval, and schema dependencies. Shared dashboards refer to saved queries rather than embedding unrestricted access to underlying event stores.
+
+#### Permission-aware aggregation
+
+An aggregate can reveal protected information even when individual events are hidden. Blazn therefore applies authorization before aggregation or uses a proven protected aggregate that enforces minimum group size, suppressed dimensions, and workspace policy.
+
+The pipeline must prevent:
+
+- Inferring another project or person's activity through totals or differences.
+- Revealing secret names, credential identities, prompts, source content, or customer data in dimensions.
+- Joining personal analytics into team views without the required basis and policy.
+- Exporting events with broader fields than the requester can query interactively.
+- Allowing an agent to retrieve analytics outside its objective and granted scope.
+
+Workspace administrators manage analytics policy but do not automatically gain access to every personal credential, restricted artifact, prompt, or customer record.
+
+#### Privacy, classification, and redaction
+
+Structured events should carry references and bounded metadata rather than raw prompts, model responses, source files, secrets, or complete tool payloads. When content is necessary for evaluation, it is stored as a separately classified artifact or evaluation input with its own permission and retention policy.
+
+The pipeline applies field classification, tenant isolation, encryption, regional placement, redaction, and retention policy. Secret detection runs before durable analytical storage, but detection is a safeguard rather than permission to emit secrets. Producers remain responsible for using approved fields.
+
+Users can inspect what analytics are collected, which are shared, how long they are retained, and which optimization or model-based evaluation processes may consume them. Product telemetry sent to Blazn is separate, explicit, and never implied by enabling workspace analytics.
+
+#### Retention, deletion, and legal holds
+
+Different events have different retention needs. High-volume progress analytics may be compacted after aggregates are produced; billing, audit, approval, and security records may require longer retention; personal or regulated data may require shorter retention or deletion.
+
+Retention policy defines:
+
+- Hot query, compacted, archive, and deletion periods.
+- Whether payloads, dimensions, aggregates, or only lineage are retained.
+- Workspace, project, producer, schema, classification, and region rules.
+- Legal hold and incident-preservation behavior.
+- Deletion propagation into derived analytics, dashboards, exports, and optimization datasets.
+
+Deletion creates a durable tombstone and derivation invalidation where policy permits the deletion itself to be recorded. Derived measures are recomputed or marked incomplete when their source population changes materially.
+
+#### Reliability, reconciliation, and data quality
+
+The pipeline exposes its own health. Workspace operators can see ingestion delay, rejected events, duplicate rate, dropped optional analytics, schema failures, missing producers, reconciliation lag, query freshness, and retention activity.
+
+Authoritative sources can reconcile earlier estimates or incomplete events. Reconciliation appends a new linked event, preserves the original record, and updates derived views. Late events are accepted within policy and cause affected windows to be recomputed or clearly marked stale.
+
+Data-quality rules can detect:
+
+- Missing start or terminal events.
+- Impossible state transitions or negative durations.
+- Usage without a route, run, or workspace attribution.
+- Cost without units or an exchange-rate basis.
+- Evaluation results without an evaluator version or evidence.
+- Agent analytics that exceed rate, schema, or cardinality policy.
+- Clock skew, sequence gaps, and delayed producer delivery.
+
+#### Desktop and CLI surface
+
+The desktop application and CLI should allow authorized users to:
+
+- Follow live workspace, run, agent, queue, node, model, and optimization events.
+- Search events by time, type, producer, resource, correlation, and permitted dimensions.
+- Inspect an event's schema, producer trust, lineage, redaction, and related resources.
+- Create and share saved analytics, dashboards, and alert rules.
+- Compare cost, time, quality, reliability, and throughput across controlled cohorts.
+- Submit human feedback, labels, corrections, and business outcomes.
+- Start, follow, approve, reject, and inspect optimization runs and proposals.
+- Export an authorized, bounded, versioned dataset with a manifest and query provenance.
+- Inspect rejected or delayed producer events without revealing prohibited payload content.
+- Explain how a displayed value was derived and why some data is unavailable.
+
+The CLI uses versioned JSON or JSONL for queries and streams, durable operation identifiers for long-running exports and optimization runs, and resumable cursors for live events. It does not expose the private event transport as a public management API.
+
+#### Core records
+
+The initial analytics design introduces or formalizes:
+
+- **EventSchema:** namespaced type, version, field definitions, units, classifications, dimensions, producer rules, and retention class.
+- **WorkspaceEvent:** immutable event envelope, typed payload, producer trust, scope, lineage, policy, and delivery state.
+- **AnalyticDefinition:** versioned query or transformation, allowed population, dimensions, outputs, and owner.
+- **DerivedAnalytic:** materialized result with definition version, source interval, freshness, lineage, and permissions.
+- **Dashboard:** versioned composition of saved analytics, layout, filters, sharing policy, and owner.
+- **AlertRule:** versioned condition, scope, window, severity, destinations, deduplication, and action policy.
+- **Evaluation:** objective or rubric result, evaluator identity and version, evidence, confidence, and relationship to a run or artifact.
+- **CostRecord:** estimated or reconciled usage, unit price basis, allocation, currency, and causal resource references.
+- **OptimizationRun:** governed run definition, source population, hypothesis, findings, comparisons, and lifecycle.
+- **OptimizationProposal:** versioned proposed change, evidence, expected impact, risk, experiment, approval, rollout, and rollback state.
+- **ExportManifest:** requester, authorized query, schema versions, interval, classifications, redactions, checksum, and expiry.
+
+#### Version-one boundary
+
+The first analytics and events implementation should prove:
+
+1. One durable workspace event pipeline shared by the control plane, Agent Harness, AI Proxy, execution fabric, integrations, agents, and human feedback.
+2. Versioned schemas and a common envelope with producer identity, trust class, workspace, run, correlation, time, classification, and lineage.
+3. A governed Agent Harness capability allowing agents to emit schema-approved analytics during work.
+4. Authoritative run, model-routing, usage, sandbox, node, queue, tool, and integration lifecycle events.
+5. Cost attribution for model requests and sandbox runtime with separate estimates and reconciliation.
+6. Time breakdown across queueing, startup, model, tool, approval, execution, and rework.
+7. Quality evaluations from one automated evaluator and human feedback, clearly separating agent self-evaluation.
+8. Live event following and historical search through the desktop application and CLI with JSONL and resumable cursors.
+9. One workspace dashboard covering cost, time, quality, run outcomes, and capacity health.
+10. Versioned alert rules for budget, failure, queue delay, and quality regression conditions.
+11. One optimization run that compares a controlled baseline and candidate, produces an evidence-backed proposal, and requires approval before application.
+12. Permission-aware query, export, retention, deletion, redaction, and pipeline-health behavior.
+
+#### Decisions to make next
+
+- Which event and trace backend should implement the first durable workspace pipeline?
+- Which events must be durably recorded before an operation can proceed or complete?
+- Which custom schemas and namespaces may workspace administrators create?
+- What rate, payload, and cardinality limits apply to agent-emitted analytics?
+- Which fields are safe default dimensions, and which remain drill-down identifiers only?
+- How should local-node and local-model costs be estimated and allocated?
+- Which quality evaluators and human-feedback workflows should ship first?
+- How are task difficulty and changing evaluator versions controlled in comparisons?
+- What protected aggregation rules are required for personal and restricted project data?
+- Which alert destinations and actions belong in version one?
+- What evidence threshold permits an optimization experiment to start automatically?
+- Which resources may support policy-controlled automatic canaries, and which always require approval?
+- How long should raw, compacted, derived, audit, billing, and optimization data be retained?
+- How are late, deleted, or corrected events propagated into dashboards and optimization results?
+- What analytics can run entirely on a user's machine, and what requires a shared workspace service?
 
 ### Queues
 
