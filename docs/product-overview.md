@@ -20,6 +20,7 @@
   - [Warm pools](#warm-pools)
   - [Queues](#queues)
   - [Agents](#agents)
+  - [Credentials and integrations](#credentials-and-integrations)
   - [Blazn Agent Harness](#blazn-agent-harness-system)
   - [Smart LLM Router](#smart-llm-router)
   - [LLM Router Policy](#llm-router-policy)
@@ -288,7 +289,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
-| Credentials and integrations | Connect external systems and safely grant scoped access | Planned |
+| [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
 | MCP | Expose Blazn resources and controls to agents and compatible clients | Planned |
 | API | Provide the authoritative programmatic control surface | Planned |
 | Smart LLM Router | Select, queue, load-balance, and fail over model requests across local and cloud capacity | Initial design |
@@ -2395,6 +2396,479 @@ The first Agent implementation should prove:
 - How should agent cloning and export handle private resources and cross-workspace policy?
 - When should an inactive agent be archived automatically?
 
+### Credentials and integrations
+
+#### Definition
+
+Blazn provides a workspace credential system built around policy-controlled vaults. A vault stores and governs credentials for an individual, a team, a project, or an entire workspace. Authorized people and agents can use shared credentials without copying secret values into agent definitions, templates, sandboxes, messages, or local configuration files.
+
+An integration is a configured connection to an external service. It combines a provider adapter, account identity, granted scopes, policies, and credential references into tools and events that people and agents can use. Integrations can be personal connections or shared team, project, and workspace connections.
+
+The guiding principle is:
+
+> Share governed access to a credential or connection, not unmanaged copies of its secret value.
+
+#### Core boundaries
+
+| Concept | Responsibility |
+| --- | --- |
+| **Vault** | Ownership, membership, policy, encryption boundary, and collection of credential records |
+| **Credential** | Stable metadata and purpose for one secret or external authentication capability |
+| **Credential version** | One encrypted value or provider-issued token generation with status and expiry |
+| **Access grant** | Policy decision allowing a principal to perform an operation on a credential or integration |
+| **Credential lease** | Short-lived run- and audience-scoped authorization to use an active credential version |
+| **Integration definition** | Provider adapter, supported authentication methods, tools, events, scopes, and schemas |
+| **Integration connection** | A personal or shared external account connected to a workspace through one definition |
+
+Credential metadata may be searchable under permission. Secret values are not part of workspace search, the company brain, agent context, logs, metrics, or ordinary API responses.
+
+#### Vault types
+
+Blazn supports several vault scopes using one Vault resource:
+
+- **Personal vault:** Owned by one user for personal credentials and individual service connections.
+- **Team vault:** Owned by a workspace team and shared according to team policy.
+- **Project vault:** Scoped to a project or service with access tied to project roles and lifecycle.
+- **Workspace vault:** Shared infrastructure, model-provider, automation, or organization-wide credentials.
+- **System vault:** Blazn-managed operational material unavailable to ordinary workspace users and agents.
+
+A workspace may have several vaults of the same scope—for example separate production and development team vaults—with different policies and administrators.
+
+Personal credentials can be shared directly with named users, teams, or agents through an explicit grant when policy permits. For long-lived operational use, Blazn should recommend moving ownership to a team, project, or workspace vault so access does not depend on one employee's continued membership or personal account.
+
+Moving or copying a credential between vaults is an explicit audited operation. Blazn never widens access merely because a user joins a team or adds a tag.
+
+#### Vault ownership and roles
+
+A vault policy can grant distinct operations rather than one broad member role:
+
+| Role capability | Typical operations |
+| --- | --- |
+| **Own** | Transfer, recovery, key policy, deletion, and administrator assignment |
+| **Administer** | Manage members, policies, approvals, providers, and vault settings |
+| **Manage credentials** | Add, import, rotate, test, disable, revoke, and archive credentials |
+| **Use** | Request a lease or execute an authorized integration action without revealing the secret |
+| **Reveal** | View a secret value through a step-up, time-limited, audited flow when policy allows |
+| **Audit** | View metadata, access history, policy decisions, health, and rotation status |
+
+Roles are conveniences that expand to explicit actions. Policies can grant operations directly to users, teams, agents, service principals, or workspace roles.
+
+The default shared-vault role should allow use without reveal. Agents never receive a general reveal permission. When an agent needs a raw credential for a tool that cannot be brokered, Blazn delivers it through a constrained run-time mechanism without exposing it through agent-facing APIs.
+
+#### Credential types
+
+Vaults can manage:
+
+- API keys and provider tokens.
+- OAuth access and refresh tokens.
+- Usernames and passwords.
+- SSH keys and source-control deploy keys.
+- TLS certificates and private keys.
+- Cloud role, workload-identity, and service-account material.
+- Database and message-broker credentials.
+- Signing, package-registry, and artifact-registry credentials.
+- Webhook secrets and verification keys.
+- Short-lived credentials minted from an external identity or secret provider.
+- References to externally managed secrets that Blazn can lease but does not permanently store.
+
+Each credential declares its type, provider, intended capabilities, allowed audiences, ownership, rotation behavior, and sensitivity. Free-form secrets remain possible, but typed credentials enable safer injection, validation, rotation, redaction, and integration behavior.
+
+#### Credential identity and versions
+
+A Credential record has a stable ID and redacted metadata. Secret material lives in immutable CredentialVersion records stored in the encrypted secret plane.
+
+A credential version can be:
+
+- **Pending:** Added but not validated or activated.
+- **Active:** Eligible for new leases.
+- **Rotating:** A successor is being validated while bounded overlap remains.
+- **Expiring:** Approaching provider or policy expiry.
+- **Disabled:** Temporarily unavailable for new leases.
+- **Revoked:** No longer valid and actively blocked.
+- **Destroyed:** Secret material was removed after retention and audit requirements were satisfied.
+
+Credentials can expose a stable alias such as `github-team-read`, `production-deploy`, or `model-provider-primary`. Consumers reference the credential capability or alias, while leases resolve to an exact active version. Runs record the credential ID and version metadata used but never the value.
+
+Rotation creates a new version. It does not overwrite the prior value. Blazn can validate the successor, gradually direct new leases to it, revoke the predecessor, and retain redacted history. Rollback is permitted only while the prior version remains valid and policy allows it.
+
+#### Vault Policy
+
+A versioned Vault Policy controls discovery, use, sharing, and administration. It can match:
+
+- Subject: user, team, agent, service principal, node, workspace role, or approved external client.
+- Resource: vault, credential, integration connection, credential type, protected label, or provider.
+- Action: list metadata, use, reveal, create, import, rotate, test, share, transfer, export, revoke, delete, approve, or audit.
+- Context: workspace, project, objective, run, tool, integration action, data class, environment trust, node class, region, network, device posture, time, and risk.
+- Conditions: human approval, step-up authentication, ticket or incident reference, budget, allowed audience, maximum lease, and rate limit.
+
+Explicit denial and higher-level workspace restrictions override lower-level grants. A user cannot share access they do not possess, and `use` permission does not imply `reveal`, `export`, `share`, or `manage`.
+
+Policies are versioned, testable against representative requests, and captured on each access decision. Changes that widen reveal, export, production use, external sharing, or agent access require stronger review than ordinary metadata edits.
+
+#### Sharing credentials
+
+A credential owner or authorized vault manager can share access with:
+
+- A named user.
+- A team or workspace role.
+- A project and its approved members.
+- A specific agent or collection of agents.
+- A service principal or automation client.
+- Another vault through an explicit managed reference when policy permits.
+
+Sharing creates or changes a policy grant. It does not duplicate the secret. The owner chooses allowed actions, purposes, environments, projects, agents, audiences, time window, and approval requirements.
+
+The UI should clearly show:
+
+- Who owns the credential.
+- Who can discover, use, reveal, manage, rotate, share, or audit it.
+- Which agents, schedules, sandboxes, and integrations depend on it.
+- Where and when it was last used.
+- When it expires or rotates.
+- Whether continued access depends on an individual user's external account.
+
+Directly sharing a personal credential remains possible when allowed, but the recipient sees that it is personal and may disappear when the owner revokes access or leaves. Blazn recommends a team-owned service account or provider installation for durable shared automation.
+
+#### Access request and lease flow
+
+Agents and tools request a capability, not a plaintext value. A typical flow is:
+
+1. The AgentVersion, sandbox template, MCP tool, or integration declares a credential capability such as `source-control:repo-read`.
+2. At run time, the harness submits the agent, initiating user, objective, tool, requested action, sandbox, and audience context.
+3. Blazn resolves eligible personal and shared credentials without exposing candidates the caller cannot discover.
+4. Vault Policy, Agent Policy, tool policy, environment trust, data policy, and approvals are evaluated.
+5. If permitted, Blazn issues a short-lived credential lease bound to the agent, run, tool, audience, and sandbox or broker.
+6. The broker executes the action, or the sandbox receives the minimum material needed through a protected injection method.
+7. Use, outcome, provider identity, and revocation are audited without logging the secret.
+8. The lease expires or is revoked when the action, run, sandbox, schedule, or approval ends.
+
+Repeated requests use an idempotency key where the provider operation permits it. A lease cannot be reused for another run, tool, audience, or destination merely because it has not expired.
+
+#### Use without reveal
+
+Blazn should prefer brokered use. The credential service or integration worker holds the secret and performs the provider request on behalf of the authorized principal. The agent receives the normalized result, not the credential.
+
+When a tool must run inside a sandbox, Blazn can provide a credential through:
+
+- A local authenticated credential-broker socket.
+- A short-lived mounted file on a memory-backed filesystem.
+- A provider-native workload identity or delegated token.
+- A scoped process environment as a compatibility fallback.
+- A one-operation signed request or ephemeral certificate.
+
+The lease is delivered only after sandbox claim and final trust checks. It is excluded from template layers, refresh artifacts, warm-pool entries, checkpoints, reusable volumes, process listings where possible, command history, logs, and artifacts.
+
+Environment-variable injection is supported only for tools that require it and is treated as a weaker compatibility path. The UI and audit trail should show which delivery method was used.
+
+#### Human reveal and export
+
+Some users need to view or export a value for manual configuration. Reveal and export are separate high-risk actions that can require:
+
+- Explicit vault permission.
+- Recent step-up authentication.
+- Human approval or dual control.
+- A reason, incident, ticket, or destination.
+- A short reveal window and copy warning.
+- Watermarking or client-side protections where practical.
+- Immediate audit and optional owner notification.
+
+Vault policy may prohibit reveal entirely for team or production credentials. Agents and ordinary MCP clients do not receive a reveal tool.
+
+#### Encryption and key hierarchy
+
+Secret values are encrypted in transit and at rest using envelope encryption. Each workspace or vault has a distinct encryption boundary rooted in a managed key hierarchy. Data-encryption keys can rotate without rewriting identity or audit history.
+
+The secret plane is separated from ordinary application data and search indexes. Application databases store credential IDs and redacted metadata; encrypted values are accessed only by the credential service through authorized operations.
+
+Backups retain encrypted values only under the same or stronger controls, with tested recovery and deletion behavior. Logs, traces, analytics, error messages, crash dumps, and support tooling receive redacted identifiers rather than secret content.
+
+Blazn can also use an external vault or cloud secret manager as the source of truth. In that mode, the Credential record stores an external reference and lease policy; the external provider continues to own secret storage and possibly token minting.
+
+#### Integration definitions
+
+An IntegrationDefinition describes how Blazn connects to one service:
+
+- Provider identity, version, supported regions, and data-handling information.
+- Authentication methods such as OAuth, API key, service account, workload identity, or signed application installation.
+- Required and optional scopes.
+- Tools and actions with schemas, side-effect classification, idempotency, and approval hints.
+- Resources and events the connection can expose.
+- Webhook verification, subscription, pagination, rate-limit, and retry behavior.
+- Health checks, token refresh, rotation, revocation, and disconnect behavior.
+- Audit fields and normalized provider error mapping.
+
+Definitions are versioned and reviewed like other executable integrations. A provider adapter cannot ask for arbitrary credential access outside the definition and active connection policy.
+
+#### Personal and shared integration connections
+
+When connecting a service, the user chooses the connection scope:
+
+- **Personal connection:** Represents the user's external account and is available to that user and explicitly authorized agents or people.
+- **Team connection:** Represents a team-owned provider installation, service account, or explicitly shared account.
+- **Project connection:** Available only to a project and its governed members and agents.
+- **Workspace connection:** Shared organization-wide for approved actions.
+
+The IntegrationConnection stores redacted provider-account metadata, scope, owner, granted permissions, integration-definition version, credential references, health, and policy. Tokens and secrets remain in the selected vault.
+
+Team members can connect their own individual accounts without making them team-wide. They can also create or administer a team connection when provider and workspace policy permit it. The UI must make the chosen external identity visible, because an action made through a personal connection may appear at the provider as that person, while a team application or service account represents the organization.
+
+For durable company automation, Blazn should prefer provider application installations, service accounts, delegated roles, or team-owned credentials over sharing one employee's personal OAuth session.
+
+#### Connection selection
+
+An agent or tool requests an integration capability such as `github:repo-read`, `slack:channel-write`, or `support:ticket-update`. Blazn resolves eligible connections using:
+
+- Workspace, team, project, user, and agent context.
+- Connection ownership and sharing policy.
+- Provider account, organization, repository, channel, tenant, or resource scope.
+- Required action and external scopes.
+- Data classification, region, environment, and trust policy.
+- Initiating user's preference or an approved project default.
+- Connection health, rate limits, budget, and queue state.
+
+Blazn does not silently fall back from a team connection to a personal account or from one provider tenant to another. Boundary-changing fallback requires an explicit policy or user choice and is recorded on the run.
+
+If several connections are eligible, the project or agent can reference a stable connection alias. The UI and audit event still reveal the exact external identity selected.
+
+#### OAuth and delegated authorization
+
+For OAuth integrations, Blazn requests the minimum scopes needed for the selected connection and shows them before authorization. Provider access and refresh tokens are stored as credential versions in the chosen vault.
+
+The connection records which user initiated consent, which external account or organization authorized it, the scopes granted, provider expiry, and revocation status. Token refresh happens in the credential service rather than in agent sandboxes.
+
+Personal consent does not automatically authorize team sharing. Changing a personal connection to team scope requires an explicit policy decision and may require reconnecting through a provider-supported organization installation or service account.
+
+When a provider supports short-lived delegated or workload tokens, Blazn mints those for each lease instead of distributing the long-lived refresh credential.
+
+#### Integration tools and actions
+
+An integration exposes normalized, versioned tools to the Blazn Agent Harness and, when permitted, through the Blazn MCP server and API. Each tool declares whether it is:
+
+- Read-only.
+- Reversible.
+- Idempotent.
+- An external write.
+- Destructive or financially consequential.
+- User-visible or affecting another person.
+- Long-running or asynchronous.
+
+Policy can require approval by tool, action, target, environment, data class, cost, or agent. The tool receives an integration connection lease and action-specific authorization, not general access to the vault.
+
+External writes use idempotency and remote-state reconciliation. Losing a response does not authorize the agent to blindly repeat a message, deployment, payment, deletion, or customer update.
+
+#### Events and webhooks
+
+Integration connections can subscribe to provider events that become authenticated Blazn triggers or company-brain records. The integration service:
+
+- Verifies webhook signatures and connection identity.
+- Normalizes provider event schemas.
+- Deduplicates redelivery using provider and Blazn occurrence IDs.
+- Applies workspace routing and data-retention policy.
+- Creates queue items only for active, authorized agents and triggers.
+- Records delivery, processing, retry, and rejection without exposing secrets.
+
+Webhooks do not invoke agents directly on an internet-facing node. They enter the control plane, policy, trigger, and queue path.
+
+#### Integration data and company-brain resources
+
+An integration may expose live resources, synchronized metadata, or imported artifacts. The connection policy defines:
+
+- Which provider resources may be discovered or searched.
+- Whether data is fetched live, cached, synchronized, or pinned as an artifact.
+- Who and which agents may access the imported data.
+- Retention, residency, redaction, deletion, and provider-revocation behavior.
+- Provenance linking Blazn records back to the provider connection and external object.
+
+Connecting an account does not automatically ingest all available data into the company brain. Indexing and synchronization are separate, visible, bounded operations.
+
+#### Credential requirements in agents and templates
+
+Agent versions, sandbox templates, tools, and MCP servers declare credential capabilities, not vault IDs or secret values. For example:
+
+- `source-control:repository-read`
+- `source-control:pull-request-write`
+- `model-provider:inference`
+- `cloud:artifact-publish`
+- `database:analytics-read`
+
+Workspace or project policy maps those capabilities to eligible credentials and connections. This preserves portability and allows rotation or ownership changes without publishing another AgentVersion or template solely to replace a secret.
+
+A definition can require a personal connection, shared team connection, or either. The effective selection is resolved at run time and captured for audit.
+
+#### Sandbox and node behavior
+
+Warm-pool entries, refresh jobs, and unclaimed sandboxes never contain run or user credentials. A claimed sandbox requests leases only after ownership, node trust, network policy, and harness identity are verified.
+
+The node receives only the material required to deliver the lease to the intended sandbox or broker. It cannot list or decrypt unrelated vault contents. Credential material is not persisted in sandbox checkpoints or migrated unless a provider-specific transferable token is explicitly designed for that purpose; resume normally obtains a fresh lease.
+
+If the control plane becomes unavailable, already issued leases may continue only until their bounded expiry and audience conditions. Nodes cannot mint new credentials or expand scopes offline.
+
+Suspension, migration, node loss, quarantine, run completion, agent inactivity, user removal, vault policy change, or integration disconnect triggers lease revocation or prevents renewal. Blazn reports when a provider cannot revoke a token immediately and applies compensating controls.
+
+#### Rotation and expiry
+
+Credential policy can define manual, scheduled, event-driven, or provider-managed rotation. Rotation flow includes:
+
+1. Create or receive a pending successor version.
+2. Validate format, provider identity, scopes, and bounded health checks.
+3. Identify agents, schedules, integrations, templates, and external systems that depend on it.
+4. Activate the successor for new leases.
+5. Observe a bounded overlap or canary period.
+6. Revoke or disable the predecessor at Blazn and the provider where supported.
+7. Verify dependent operations and close the rotation event.
+
+Expiry alerts are routed to vault owners and affected integration administrators before work fails. Queue and agent health explain when a missing or expiring credential blocks a run.
+
+Agents may propose or execute rotation only with explicit vault-management permission, provider-specific support, a bounded scope, and required approvals. Ordinary use permission never includes rotation.
+
+#### Revocation and offboarding
+
+Revocation immediately blocks new leases, fences brokered actions, terminates active sessions where possible, and attempts provider-side invalidation. Existing runs receive a credential-revoked condition and follow their failure or approval policy.
+
+When a user leaves a workspace:
+
+- Their workspace membership and vault grants are removed.
+- Personal connections become unavailable to shared agents unless ownership was explicitly transferred beforehand.
+- Team, project, and workspace connections continue under their non-personal owners.
+- Credentials they created in shared vaults remain owned by the vault, not the former user.
+- Blazn identifies schedules, agents, and integrations that depended on the user's personal connections.
+- Provider sessions and tokens are revoked where required.
+
+Ownership transfer requires both authorization and an external identity that can legitimately assume the connection. Blazn does not relabel a personal provider token as team-owned merely by changing metadata.
+
+#### Break-glass access
+
+Workspace policy can define a narrow emergency path for critical credentials or integrations. Break-glass access requires strong authentication, an authorized role, reason, scope, short duration, and immediate audit and notification.
+
+Break-glass does not disable provider limitations or make unsafe retries acceptable. It grants a specific action for a limited time and should trigger post-incident review and credential rotation when appropriate.
+
+Agents cannot independently invoke break-glass unless an organization explicitly defines an automated incident role with equivalent controls.
+
+#### Security and isolation
+
+The credential and integration system assumes that agents, tools, sandboxes, nodes, repositories, and model output may be untrusted.
+
+- Secret plaintext is handled only in the credential service, trusted broker, or intended short-lived consumer.
+- Services authenticate and authorize every operation with the exact principal and audience.
+- Encryption keys, encrypted values, metadata, and audit records use separated access paths.
+- Agents cannot enumerate vaults or credential metadata they are not allowed to discover.
+- Secret values are redacted using exact and derived patterns without relying only on log filtering.
+- Clipboard, terminal, process, file, artifact, model-context, and error paths are treated as possible exfiltration channels.
+- Network policy limits where a leased credential can be used.
+- Provider adapters and integration definitions are signed, versioned, and sandboxed where practical.
+- Anomaly signals can pause a connection, revoke leases, or require approval.
+
+No policy can guarantee safety after a raw secret is revealed or delivered to an arbitrary process. Blazn makes that boundary visible and prefers brokered, short-lived, and audience-bound credentials.
+
+#### Audit and privacy
+
+Credential audit events include vault creation, policy change, membership, metadata discovery where required, credential creation, import, validation, use, reveal, export, share, transfer, rotation, revocation, deletion, approval, and failed access.
+
+Integration audit events include connect, consent, scope change, health, token refresh, tool action, webhook, synchronization, rate limit, external error, disconnect, and provider revocation.
+
+Each use event records:
+
+- Vault, credential, version identifier, and integration connection without secret value.
+- Requesting user, agent, run, tool, sandbox, node trust class, and audience.
+- Effective policies, approvals, action, target class, and reason.
+- Time, lease duration, provider outcome, and revocation status.
+- Whether raw delivery, brokered use, reveal, or export occurred.
+
+Users can inspect access to their personal credentials. Vault owners and authorized auditors can inspect shared usage. Audit visibility itself follows workspace and privacy policy; detailed personal connection activity is not exposed broadly merely because it occurs in a shared workspace.
+
+#### Metrics and health
+
+Operational metrics include:
+
+- Active, expiring, disabled, revoked, orphaned, and untested credentials.
+- Personal, team, project, and workspace vault and connection counts.
+- Lease requests, grants, denials, approvals, expiry, and revocation latency.
+- Brokered versus raw delivery and reveal frequency.
+- Rotation success, age, overdue rotation, and dependent-resource health.
+- Integration availability, scope drift, token refresh, rate limits, latency, and provider errors.
+- Tool action success, reconciliation, duplicate suppression, approval, and uncertain outcomes.
+- Personal-connection dependencies affecting shared agents or schedules.
+- Secret-detection, anomaly, quarantine, and attempted unauthorized-access events.
+
+Health explains missing scopes, expired consent, revoked tokens, broken external references, policy conflicts, unavailable owners, and provider outages without displaying secret content.
+
+#### Initial records
+
+The Vault record should include:
+
+- Stable vault ID, workspace, scope, owner, name, description, and status.
+- Encryption boundary and external-vault configuration by reference.
+- Membership, role bindings, Vault Policy versions, approval policy, and recovery settings.
+- Credential and integration references, retention, region, health, and audit metadata.
+
+The Credential record should include:
+
+- Stable credential ID, vault, alias, type, provider, purpose, owner, and redacted display fields.
+- Capability, allowed audiences, sensitivity, tags, rotation, expiry, and retention policy.
+- Active and pending version references, health, dependencies, and last-use metadata.
+
+CredentialVersion secret material is stored separately from its metadata. Its record includes encrypted-value reference, creation source, provider scopes, issue and expiry time, status, validation, rotation lineage, and destruction state.
+
+The IntegrationConnection record should include:
+
+- Stable connection ID, workspace, definition and version, scope, owner, and vault.
+- Provider account, tenant, organization, installation, and redacted identity metadata.
+- Authentication method, credential references, granted scopes, and consent actor.
+- Connection aliases, projects, agents, tools, events, rate limits, policies, and approvals.
+- Health, last verification, refresh, expiry, revocation, and disconnect status.
+
+The AccessGrant and CredentialLease records include principal, action, resource, context, policy decision, approval, audience, issue, expiry, revocation, and use result without storing the secret value.
+
+#### API and MCP surface
+
+The initial control surface should support:
+
+- Create and administer personal, team, project, and workspace vaults.
+- List and inspect authorized redacted vault, credential, version, connection, dependency, and health metadata.
+- Add, import, validate, rotate, disable, revoke, transfer, archive, and delete a credential under policy.
+- Share use or management access with named users, teams, projects, agents, and roles.
+- Connect, inspect, authorize, test, update, and disconnect personal or shared integrations.
+- Request a run-scoped credential or integration lease by capability.
+- Execute an authorized brokered integration action.
+- Approve a use, reveal, export, rotation, connection, or external action.
+- Stream redacted credential, lease, integration, webhook, health, and audit events.
+- Explain why a credential or connection is not eligible without revealing inaccessible candidates.
+
+The agent-facing MCP and API surfaces do not expose a generic `get_secret` operation. Agents request capabilities and invoke authorized tools. Human reveal and export use separate strongly authenticated surfaces and permissions.
+
+All mutations use expected versions and idempotency keys. Secret values are accepted only through dedicated protected inputs and never returned in mutation responses.
+
+#### Version-one boundary
+
+The first credentials and integrations implementation should prove:
+
+1. Personal and team vaults with distinct ownership, membership, and policies.
+2. API-key and OAuth credential types with encrypted immutable versions.
+3. Share-by-policy with separate metadata, use, reveal, manage, rotate, and audit permissions.
+4. One personal integration connection and one team-owned connection using the same IntegrationDefinition.
+5. Capability-based resolution from an AgentVersion or tool without embedding a vault or secret value.
+6. Brokered use for one provider and protected sandbox injection for one compatibility tool.
+7. Short-lived run-, tool-, audience-, and sandbox-bound leases with revocation.
+8. Rotation, expiry warning, disablement, provider-side revocation where supported, and offboarding checks.
+9. Team members and agents using a shared credential without being able to reveal it.
+10. Redacted audit events, dependency views, health, and usage metrics.
+11. Authenticated desktop, CLI, API, and MCP management and use surfaces without a generic agent secret-read tool.
+
+#### Decisions to make next
+
+- Which vault scopes should ship in version one beyond personal and team?
+- Which external vault providers should Blazn support first?
+- Which credential types can always use a broker, and which require sandbox delivery?
+- Should direct sharing from a personal vault be allowed by default or require promotion to a shared vault?
+- Which shared credentials, if any, may be revealed to human users?
+- What minimum provider features are required for a connection to be considered team-safe?
+- How should connection selection work when both a personal and team identity are eligible?
+- Which integrations need organization-level application installations rather than user OAuth?
+- How are approval, rate limit, budget, and Queue Policy combined for external actions?
+- What emergency actions justify break-glass access, and who may approve them?
+- Which audit details can team administrators see for personal connections used in workspace runs?
+- How should Blazn recover encrypted vault data while preserving tenant and key separation?
+
 ### Blazn Agent Harness system
 
 #### Definition and authority
@@ -2676,6 +3150,9 @@ flowchart LR
     Queues --> Router[Smart LLM Router / AI Proxy]
     Harness --> Router
     Harness --> Execution
+    Vaults[Personal and shared vaults] --> Harness
+    Vaults --> Integrations[Personal and shared integrations]
+    Integrations --> Harness
     Policy[LLM Router Policy] --> Router
     Router --> Models[Local, provider and Blazn cloud models]
     Templates[Versioned sandbox templates] --> Execution
@@ -2747,6 +3224,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - One immutable, versioned sandbox template with repository and dependency refresh artifacts used by cold starts and warm pools.
 - Isolated Linux execution for an initial class of workloads.
 - Durable queues coordinating run, environment, inference, refresh, and warm-pool capacity with visible fairness and limits.
+- Personal and team vaults sharing credential use through policy, plus personal and team integration connections.
 - Runs with live events, logs, artifacts, and basic metrics.
 - A minimal project/task connection.
 - Secure remote control through an MCP-compatible interface.
