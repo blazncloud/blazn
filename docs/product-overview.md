@@ -25,6 +25,7 @@
   - [Queues](#queues)
   - [Agents](#agents)
   - [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases)
+  - [Development](#development)
   - [Credentials and integrations](#credentials-and-integrations)
   - [CLI control surface](#cli-control-surface)
   - [Management API](#management-api)
@@ -308,7 +309,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
 | [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases) | Safely invoke and interact with agent workflows from Slack, websites, email, integrations, schedules, and external events | Initial design |
-| Development | Build, test, version, evaluate, and release agents and system components | Planned |
+| [Development](#development) | Build, test, version, evaluate, and release agents and system components | Initial design |
 | Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
 | [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
 | [CLI control surface](#cli-control-surface) | Provide the supported local and remote interface for people, scripts, CI, and administration | Initial design |
@@ -4405,6 +4406,545 @@ The first triggers and endpoints implementation should prove:
 - What delivery guarantees can each provider support, and where must the product expose weaker deduplication?
 - Which trigger and endpoint capabilities must remain available in fully local or self-hosted deployments?
 
+### Development
+
+#### Definition
+
+Development is the governed process for creating, testing, evaluating, versioning, publishing, deploying, and improving everything that makes Blazn work. It covers agents, instructions, skills, tools, sandbox templates, refresh logic, workflows, triggers, endpoints, integrations, policies, evaluation datasets, dashboards, API clients, and Blazn's own desktop, CLI, control-plane, node, and cloud components.
+
+The development system should let one person iterate quickly on a local machine while preserving the evidence, reproducibility, review, and rollout controls required by a team or company.
+
+The core lifecycle is:
+
+```mermaid
+flowchart LR
+    Source[Editable source and drafts]
+    Source --> Validate[Schema, policy and dependency validation]
+    Validate --> Build[Reproducible build]
+    Build --> Test[Isolated tests and evaluations]
+    Test --> Review[Human and policy review]
+    Review --> Publish[Immutable published version]
+    Publish --> Deploy[Development, staging or production deployment]
+    Deploy --> Observe[Events, metrics, quality and outcomes]
+    Observe --> Refine[Fix, optimize or refine]
+    Refine --> Source
+    Deploy --> Rollback[Rollback to a known version]
+```
+
+Editable drafts are never executed as if they were approved production versions without an explicit development or preview context. Published versions are immutable. Deployments and runs record the exact versions and evidence used.
+
+#### Development resources
+
+The development system applies a common lifecycle to multiple resource families:
+
+| Resource family | Development concerns |
+| --- | --- |
+| Agents and AgentVersions | Instructions, objectives, skills, tools, model preferences, evaluation, refinement, publication, and rollout |
+| Skills and tools | Schemas, implementation, permissions, side effects, test fixtures, compatibility, signing, and release |
+| Sandbox templates and refreshes | Repositories, images, packages, setup, platforms, reproducibility, security, performance, and promotion |
+| Workflows, triggers, and endpoints | Inputs, matching, identity, sessions, side effects, replies, replay, shadowing, canaries, and rollback |
+| Integrations | Provider contracts, OAuth or authentication flows, scopes, events, rate limits, fixtures, and compatibility |
+| Policies | Queue, LLM routing, credential, retention, indexing, Endpoint, approval, and deployment policy simulation |
+| Analytics and metrics | Schemas, definitions, dimensions, cardinality, dashboards, alerts, migrations, and evidence |
+| Company-brain indexing | Connectors, extraction, chunking, embeddings, ranking, evaluation, permission safety, and migrations |
+| Management API and SDKs | Schemas, compatibility, authentication, generated clients, fixtures, examples, and deprecation |
+| Blazn applications and services | Desktop, CLI, node service, control plane, Agent Harness, proxy, controllers, installers, and cloud releases |
+
+Each family can add domain-specific stages while retaining common records for source, dependency resolution, build, test, evaluation, review, release, deployment, promotion, and rollback.
+
+#### Source and ownership
+
+Development source can live in:
+
+- Blazn-managed drafts edited in the desktop application.
+- Workspace repositories connected through source-control integrations.
+- Local repositories and files selected by a user.
+- Declarative resource bundles used by CI and infrastructure automation.
+- Imported packages from a trusted internal or external registry.
+
+Every development unit records its owner, maintainers, source location, source revision, workspace, project, classification, and release policy. Source access and release authority are separate permissions. The ability to edit a repository does not automatically permit publishing an AgentVersion or deploying a production Endpoint.
+
+Blazn should support both UI-first and code-first workflows. The same resource can be exported into a versioned declarative representation, reviewed in source control, and imported without losing stable identity or provenance. Round trips preserve unknown compatible fields and do not expose secret values.
+
+#### Development projects and environments
+
+A DevelopmentProject groups the related resources, repositories, datasets, environments, tests, policies, owners, and releases for one product area or agent system. It can contain multiple agents, tools, templates, triggers, and integrations that need to be tested and promoted together.
+
+Development environments describe intended use rather than only infrastructure:
+
+- **Local:** one person's machine and approved local resources.
+- **Development:** shared rapid iteration with synthetic or non-production data.
+- **Preview:** isolated environment for one change, branch, candidate, or review.
+- **Staging:** production-like validation with controlled data and integrations.
+- **Production:** approved live use with release, incident, and rollback requirements.
+
+An environment defines eligible workspaces or projects, nodes, sandbox backends, models, integrations, vaults, data classes, Endpoint bindings, budgets, queues, retention, and approval policy. Promotion does not copy production credentials backward into development.
+
+Environment names are not security boundaries by themselves. Authorization and resource policy determine what a build or run can access.
+
+#### Drafts, changes, and immutable versions
+
+A Draft is an editable resource state. A ChangeSet groups one or more related draft changes and explains their purpose, dependencies, expected effects, migration, testing, and rollback.
+
+When a draft is built, Blazn resolves all material inputs:
+
+- Source commit or content digest.
+- Agent instructions, skills, tools, resources, and schemas.
+- Sandbox template, platform variant, refresh, and package lock state.
+- Model and policy references.
+- Evaluation datasets, scenarios, rubrics, and evaluator versions.
+- Trigger, Endpoint, integration, and reply definitions.
+- Compiler, builder, extractor, generator, and dependency versions.
+
+The resulting BuildArtifact is immutable and content-addressed. Publishing creates or points to an immutable domain version such as an AgentVersion, TemplateVersion, ToolVersion, TriggerVersion, PolicyVersion, SDK version, or application release.
+
+Mutable channels such as `development`, `staging`, `stable`, or `current` can point to versions, but runs and deployments resolve and record the exact digest. Moving a channel does not change historical evidence.
+
+#### Declarative bundles
+
+A DevelopmentBundle can describe a related set of Blazn resources for validation and deployment. It contains schema versions, stable or logical references, dependency constraints, environment overlays, and non-secret configuration.
+
+Bundles should support:
+
+- Validation without mutation.
+- Diff and plan against a target workspace or environment.
+- Expected versions for existing resources.
+- Idempotent application through the Management API or CLI.
+- Explicit create, update, publish, deprecate, and delete intent.
+- Separation of portable configuration from workspace-specific bindings.
+- Protected references to credentials and integrations rather than secret values.
+- Export with redaction and cross-workspace compatibility reporting.
+
+Applying a bundle is not one fictional transaction across every backend. Blazn creates a durable ReleaseOperation with ordered stages, target-level results, compensating actions where possible, and a clear partial-completion state.
+
+#### Dependency graph and compatibility
+
+The development system builds a versioned dependency graph across:
+
+- Agents, skills, tools, and models.
+- Templates, refreshes, base images, repositories, packages, and node capabilities.
+- Triggers, endpoints, integrations, credentials, and schemas.
+- Policies, queues, budgets, approvals, and environments.
+- Evaluation datasets, scenarios, metrics, and quality gates.
+- Management API versions, SDKs, desktop, CLI, node, and control-plane components.
+
+Dependencies can be pinned exactly, constrained to a compatible range, or resolved through a governed channel. Production releases should prefer immutable exact versions for behavior that affects reproducibility, permissions, or results.
+
+Before publication or deployment, Blazn reports:
+
+- Missing, incompatible, deprecated, prohibited, vulnerable, or unapproved dependencies.
+- Cycles and conflicting version constraints.
+- Platform, architecture, model, context, sandbox, API, and schema requirements.
+- Whether a dependency is available in the target environment and region.
+- Which downstream resources and deployments will be affected by a change.
+
+An agent cannot make an incompatible tool or model eligible simply by naming it in instructions.
+
+#### Development sandboxes
+
+Builds and tests run in isolated development sandboxes created from versioned templates. The sandbox receives only the source, fixtures, tools, network access, models, and short-lived credentials authorized for the task.
+
+Development sandboxes can support:
+
+- Interactive editing and Agent Harness sessions.
+- Reproducible builds and package installation.
+- Unit, integration, replay, evaluation, security, and performance tests.
+- Preview services and Blazn Button experiences.
+- Mock, simulated, shadow, or approved live integrations.
+- Debugging, traces, event timelines, and artifact inspection.
+- Checkpoints and preserved outputs without preserving credentials.
+
+Kubernetes Agent Sandbox is a candidate backend for Linux development and preview environments. Local virtualization, containers, microVMs, native macOS or Windows workers, and Blazn cloud backends can implement the same development environment contract.
+
+The development system records template, refresh, node class, backend, source, toolchain, inputs, environment variables by safe name, credentials by lease reference, network policy, and output digests.
+
+#### Fast inner loop
+
+The local development experience should support:
+
+1. Open or create a DevelopmentProject.
+2. Edit an agent, skill, tool, template, policy, workflow, or source file.
+3. Validate continuously with quick schema and dependency feedback.
+4. Start a preview Session or targeted test in an eligible local or remote sandbox.
+5. Inspect live events, model routes, tool calls, context, artifacts, cost, and output.
+6. Compare the result with a baseline or expected fixture.
+7. Save a ChangeSet and create a reproducible build.
+
+Fast feedback can reuse refresh artifacts and warm pools, but test records still identify the actual environment and cache state. Local convenience never silently substitutes different models, policies, tools, or permissions from the selected target environment.
+
+#### Validation
+
+Validation is layered and can run without executing the full system:
+
+- Schema and type validation.
+- Required-field, reference, and dependency resolution.
+- Instruction, tool, model, context, and token-budget compatibility.
+- Permission, credential capability, network, and data-policy checks.
+- Template reproducibility and platform compatibility.
+- Trigger match, input mapping, identity, and loop analysis.
+- Metric dimension and analytics schema cardinality checks.
+- Management API and SDK contract compatibility.
+- Release, migration, rollback, and environment-policy checks.
+- Secret, malware, license, provenance, and vulnerability scanning.
+
+Validation findings include stable codes, severity, source location, affected targets, suggested repair, and whether a policy can waive the finding. A waiver is versioned, scoped, expiring, attributable, and cannot override a prohibited security boundary.
+
+#### Test model
+
+Blazn supports several complementary test classes:
+
+| Test class | Purpose |
+| --- | --- |
+| Schema and unit | Verify deterministic definitions, transformations, expressions, and components |
+| Tool contract | Verify input, output, errors, idempotency, permissions, side effects, and timeout behavior |
+| Integration | Verify provider contracts, authentication, events, rate limits, retries, and compensations |
+| Environment | Verify template, dependencies, node compatibility, readiness, cleanup, and isolation |
+| Agent evaluation | Verify objective, quality, safety, cost, latency, and tool behavior over scenarios |
+| Replay | Re-execute recorded inputs and controlled provider responses |
+| Simulation and synthetic | Exercise edge cases without real external effects |
+| Shadow | Observe live inputs while preventing candidate side effects |
+| Security | Test authorization, isolation, injection, exfiltration, secrets, abuse, and supply chain |
+| Performance and load | Test queueing, concurrency, latency, capacity, cost, and degradation |
+| Recovery and chaos | Test restart, retry, idempotency, disconnection, partial failure, and rollback |
+| End-to-end | Verify a complete user or agent workflow across product surfaces |
+
+Each TestDefinition declares inputs, fixtures, environment, allowed side effects, assertions, evaluators, budgets, retries, nondeterminism policy, timeout, cleanup, and evidence requirements.
+
+#### Test fixtures and data
+
+Fixtures are versioned artifacts with provenance, classification, permissions, retention, and intended use. They can include synthetic inputs, redacted historical cases, repository snapshots, provider responses, email or Slack envelopes, documents, tool outputs, database snapshots, and expected results.
+
+Production data is not copied into development because it is convenient. A DataUsePolicy determines whether a record can be transformed, redacted, tokenized, replayed, evaluated, or sent to a model. Holdout evaluation data is protected from candidate agents and developers according to refinement policy.
+
+Mock providers and simulators should reproduce documented behavior, including failures, delays, retries, rate limits, partial responses, and identity. A passing simulation is labeled as simulated evidence and does not replace required live or staging validation.
+
+#### Agent development and refinement
+
+Agent development uses the built-in Agent Refinement tool when repeated evidence-driven iteration is useful. A baseline AgentVersion, evaluation plan, datasets, scenarios, mutation boundary, budgets, and promotion gates define the refinement session.
+
+The refinement agent can propose bounded changes to instructions, approved skills, approved tools, model preferences, delegation, retrieval, or stopping strategy. Each proposal creates an immutable candidate AgentVersion and a normal Build and EvaluationResult.
+
+Refinement does not bypass:
+
+- Source and candidate provenance.
+- Independent evaluation and protected holdouts.
+- Permission and dependency validation.
+- Human or policy review.
+- Publication, canary, promotion, and rollback.
+
+Candidates that are not promoted remain drafts or historical refinement evidence. They do not modify the deployed AgentVersion.
+
+#### Tool and skill development
+
+A ToolDefinition separates the tool's stable identity and contract from versioned implementation and deployment. It defines typed input, typed output, errors, idempotency, read and write behavior, required capabilities, side effects, approval requirements, deadlines, and audit policy.
+
+Tool development should include:
+
+- Contract fixtures for success, validation, authorization, timeout, retry, and provider failure.
+- Explicit side-effect and replay semantics.
+- Brokered credential capabilities rather than embedded secrets.
+- Network and sandbox requirements.
+- Compatibility with the Agent Harness tool contract.
+- Security and data-classification review.
+- Versioned documentation and examples.
+- Signing, provenance, vulnerability, and dependency evidence for executable tools.
+
+Skills and instructions are versioned content with declared tool, model, context, and environment requirements. They can be linted, evaluated, compared, signed, and promoted without being treated as executable permissions.
+
+#### Integration and Endpoint development
+
+Integration adapters and Endpoint bindings require development fixtures for provider signatures, identity mapping, OAuth or authentication, pagination, webhooks, retries, rate limits, errors, and schema changes.
+
+Trigger and Endpoint development supports:
+
+- Synthetic and recorded TriggerEnvelopes.
+- Match and mapping explanation.
+- Identity and participant simulation.
+- Reply rendering for Slack, web, webhook, email, and Blazn Button surfaces.
+- Side effects disabled by default.
+- Shadow delivery and controlled canaries.
+- Loop, fan-out, abuse, rate, and cost tests.
+- Domain, origin, signature, email thread, bounce, and complaint validation.
+
+Publishing a TriggerVersion or EndpointVersion does not automatically activate it. Deployment and traffic policy decide when it receives real occurrences.
+
+#### Policy development and simulation
+
+Policies are executable decisions and require the same rigor as code. A PolicyVersion includes schema, decision logic, defaults, test cases, owner, review, and compatibility.
+
+Before activation, policies can be evaluated against recorded authorized events and requests to show:
+
+- Decisions that would change.
+- Newly allowed or denied actions.
+- Queue, cost, capacity, model route, and fallback impact.
+- Credential, integration, data, and network exposure changes.
+- Users, agents, projects, nodes, and workflows affected.
+- Potential lockout, deadlock, trigger storm, or no-capacity behavior.
+
+Simulation cannot expose historical content or identities the reviewer is not authorized to inspect. A policy canary applies only to an explicit cohort and records every decision difference.
+
+#### Builds and reproducibility
+
+A Build runs from immutable inputs in a recorded environment. It produces BuildArtifacts, logs, events, metrics, dependency manifests, software bills of materials where applicable, signatures, attestations, and test evidence.
+
+A reproducible build should yield the same material output digest from the same declared inputs and compatible builder. When exact reproducibility is not possible, the build records nondeterministic sources such as timestamps, provider-generated code, external registries, model output, or platform-specific tooling.
+
+Build caches are keyed by all behavior-affecting inputs and cannot reuse artifacts across incompatible workspaces, classifications, architectures, or trust policies. A cache hit retains provenance to the original verified build.
+
+#### Evaluation and quality gates
+
+An EvaluationPlan selects TestDefinitions, datasets, scenarios, rubrics, evaluators, performance thresholds, security requirements, and required evidence for a release target.
+
+Quality gates can require:
+
+- Deterministic tests and schema validation.
+- Minimum objective success or rubric scores.
+- No prohibited security or permission findings.
+- Cost, latency, token, retry, and resource limits.
+- No regression beyond an allowed threshold.
+- Evaluator agreement or required human review.
+- Holdout, staging, shadow, or canary evidence.
+- Compatible API, tool, model, template, node, and policy versions.
+- Rollback readiness and operational ownership.
+
+Gate results identify the exact evidence, definition versions, waivers, and decision makers. A single aggregate score cannot hide a failing safety or authorization requirement.
+
+#### Review and approvals
+
+Review policy depends on resource, environment, risk, data, side effects, and blast radius. Reviews can cover source changes, instruction diffs, tool capabilities, template packages, policy effects, evaluation evidence, costs, migrations, and rollback.
+
+The system should support:
+
+- Named owners and required reviewer groups.
+- Separation of author, evaluator, approver, and deployer where required.
+- File-, field-, capability-, or policy-specific ownership.
+- Expiring waivers and exceptions.
+- Signed decision records with comments and evidence.
+- Reapproval when material inputs change after review.
+
+Approval applies to a specific digest and target. Modifying an approved artifact invalidates the approval rather than carrying it forward.
+
+#### Publication, releases, and channels
+
+Publication makes a validated version available for deployment or reuse. A Release groups exact versions, migrations, compatibility, notes, evidence, and rollback targets.
+
+Release channels can include development, preview, beta, stable, long-term support, or workspace-defined channels. Channels are mutable references to immutable releases and have owners and promotion policy.
+
+A release records:
+
+- Source and BuildArtifact digests.
+- Included resource versions and dependency lock.
+- Test and EvaluationResults.
+- Security findings, waivers, provenance, signatures, and attestations.
+- Supported platforms, architectures, API versions, backends, and migration paths.
+- Deployment targets, canary plan, health gates, and rollback release.
+- Release notes, known issues, deprecations, and support window.
+
+#### Deployment and promotion
+
+A Deployment binds an immutable release or resource version to an environment, scope, traffic policy, and effective configuration. Promotion changes deployment intent; it does not rebuild the artifact.
+
+Strategies can include:
+
+- Immediate replacement for low-risk development resources.
+- Rolling update.
+- Canary by workspace, team, project, user, Agent, Endpoint, node class, or percentage.
+- Blue-green environment switch.
+- Shadow execution without side effects.
+- Scheduled activation or maintenance window.
+- Manual promotion after observed evidence.
+
+Deployment waits for policy, capacity, compatibility, migrations, and required approvals. The Queue system coordinates build, test, canary, and rollout work with production capacity.
+
+#### Migrations
+
+Schema, state, index, credential, template, and API changes may require migrations. A MigrationDefinition declares source and target versions, preconditions, stages, checks, idempotency, resumability, compatibility window, backup or checkpoint, rollback or forward-repair behavior, and expected cost.
+
+Migrations are tested against representative fixtures and run as durable Operations. A migration that cannot be rolled back states its point of no return and requires stronger approval. Deployments do not remove the last compatible application version until the migration policy allows it.
+
+#### Canary analysis and promotion gates
+
+Canary analysis compares the candidate and baseline using compatible metrics, events, task cohorts, evaluators, and environments. It can evaluate:
+
+- Availability, failure, rollback, and incident rate.
+- Agent objective success and quality.
+- Model, tool, integration, and Endpoint behavior.
+- Cost, latency, queueing, resource, and human-review impact.
+- Security, policy, permission, and data-handling findings.
+- User or operator feedback.
+
+Promotion policy defines minimum traffic or trial count, observation window, missing-data behavior, thresholds, and required approvals. A canary is not promoted because no alert fired when required telemetry is absent.
+
+#### Rollback and recovery
+
+Every production release identifies a known rollback target and verifies whether state remains compatible. Rollback can restore a previous AgentVersion, policy, template channel, Endpoint version, API client, desktop release, node release, or service deployment.
+
+Rollback does not erase runs, events, artifacts, migrations, or evidence created by the candidate. It records the cause, actor, affected scope, state compatibility, cleanup, and follow-up.
+
+When state cannot safely roll back, the release uses forward repair, disables the affected feature, drains traffic, or restores a compatible checkpoint according to its recovery plan.
+
+#### Feature flags and experiments
+
+Feature flags control exposure separately from artifact deployment. A FeatureFlag defines owner, type, default, cohorts, environments, expiry, metrics, and rollback behavior.
+
+Flags cannot grant permissions, reveal secrets, bypass policy, or make prohibited models and tools eligible. Security boundaries remain enforced even when a feature is enabled.
+
+Experiments define hypothesis, population, assignment, variants, metrics, guardrails, duration, privacy, and stop conditions. Agent or model experiments use controlled cohorts and preserve exact version and route information. Results are analytics evidence, not automatic promotion authority.
+
+#### Supply-chain security
+
+Executable releases and dependencies require verifiable provenance. Blazn should support:
+
+- Content-addressed artifacts and immutable version identities.
+- Signed releases, packages, installers, templates, tools, and update metadata.
+- Dependency locks and software bills of materials where applicable.
+- Builder identity and build attestations.
+- Vulnerability, malware, license, and secret scanning.
+- Trusted registries and publisher identity.
+- Quarantine, revocation, prohibition, and emergency rollback.
+- Verification on download and before execution.
+
+Imported agents, skills, tools, templates, and integrations are not trusted because they are popular or signed by any key. Workspace policy decides which publishers, capabilities, licenses, models, networks, and data classes are allowed.
+
+#### Registries and sharing
+
+Workspace registries store approved reusable agents, skills, tools, templates, workflows, policies, dashboards, evaluation datasets, connectors, and bundles. Packages include metadata, dependencies, compatibility, documentation, provenance, signatures, and release history.
+
+Sharing can be personal, team, workspace, organization, or public. Cross-workspace installation creates a local dependency and policy review rather than granting the publisher ongoing access. Secret values, private integration bindings, personal paths, and restricted evaluation data are never included in a portable package.
+
+An update can be inspected, evaluated, and canaried before adoption. Registries support deprecation, security advisories, revocation, and pinned versions.
+
+#### CI and automation
+
+CI uses dedicated workload identities and the Management API or `blazn` CLI. A pipeline can:
+
+- Validate and plan a bundle.
+- Create a reproducible build.
+- Provision a test sandbox.
+- Run selected tests and evaluations.
+- Upload signed evidence and artifacts.
+- Request review or approval.
+- Publish a version or release.
+- Deploy to preview or staging.
+- Start and evaluate a canary.
+- Promote or roll back according to policy.
+
+CI never requires a person's long-lived token or plaintext production credential. Idempotency keys, expected versions, exact environment and workspace, timeouts, Operation IDs, and structured results make retries deterministic.
+
+#### Blazn product development
+
+Blazn's own components use the same release principles while adding platform-specific requirements:
+
+- Desktop builds for macOS, Linux, and Windows.
+- CLI and generated SDK releases.
+- Node service and local model adapter releases.
+- Control-plane, Agent Harness, Queue, proxy, indexing, analytics, and API services.
+- Kubernetes controllers and Agent Sandbox adapters.
+- Installers, updaters, migrations, and rollback packages.
+
+Compatibility tests cover client and server version windows, node and control-plane skew, API schemas, event versions, sandbox backends, architectures, and upgrade paths. Signed update channels can be pinned by organizations and CI.
+
+#### Debugging and replay
+
+Developers can inspect a Run or Operation timeline, exact versions, context assembly, model routes, tool calls, queue decisions, sandbox state, events, metrics, artifacts, errors, and policy explanations according to permission.
+
+Replay creates a new test or development run using selected historical inputs and controlled dependencies. It never modifies the original run. External writes, credentials, live integrations, current mutable sources, and nondeterministic model calls are replaced, pinned, simulated, or explicitly approved.
+
+A debug attachment uses a short-lived purpose-bound sandbox grant. Debugging permission does not imply access to host resources, raw secrets, hidden holdouts, or another user's private context.
+
+#### Observability and development analytics
+
+Development metrics should include:
+
+- Validation, build, test, evaluation, review, publication, deployment, migration, and rollback duration and outcomes.
+- Queue wait, sandbox startup, cache hit, resource use, model use, integration use, and cost.
+- Failure and flake rates by test, environment, toolchain, template, node class, and safe dependency dimensions.
+- Agent candidate quality, cost, latency, regressions, and refinement efficiency.
+- Review time, blocked reason, waiver use, and reapproval.
+- Canary health, promotion, rollback, incident, and production verification.
+- Dependency age, vulnerability, deprecation, compatibility, and update adoption.
+- Reproducibility, provenance, signature, and attestation status.
+
+Metrics are used to improve the development system, not rank individual employees. Source content, reviewer comments, personal activity, secrets, and private repository names are not default metric dimensions.
+
+#### Desktop, CLI, and Management API surface
+
+Authorized users and clients should be able to:
+
+- Create and manage DevelopmentProjects, environments, drafts, ChangeSets, bundles, tests, evaluation plans, builds, releases, and deployments.
+- Edit and diff agents, instructions, skills, tools, templates, policies, triggers, dashboards, and source-backed resources.
+- Validate continuously and inspect dependencies, compatibility, policy, security, and affected targets.
+- Start local or remote preview sandboxes and Agent Harness Sessions.
+- Run targeted tests, suites, replays, simulations, evaluations, refinements, load tests, and canaries.
+- Inspect logs, events, metrics, traces, artifacts, costs, scorecards, and evidence.
+- Request, perform, and audit reviews, approvals, waivers, publication, promotion, rollback, and revocation.
+- Export, plan, apply, and reconcile declarative bundles.
+- Manage release channels, feature flags, experiments, migrations, support windows, and deprecations.
+- Explain why a build, test, publication, deployment, or promotion is blocked.
+
+The desktop application provides visual editing, comparisons, review, scorecards, and release control. The CLI supports local development and CI workflows. The Management API exposes versioned resources and durable Operations without requiring automation to parse CLI output.
+
+#### Core records
+
+The initial Development design introduces or formalizes:
+
+- **DevelopmentProject:** owners, repositories, resources, environments, datasets, policies, releases, and status.
+- **DevelopmentEnvironment:** purpose, targets, nodes, models, integrations, vaults, policies, budgets, queues, data classes, and approvals.
+- **Draft:** editable resource state, base version, owner, collaboration, validation, and update history.
+- **ChangeSet:** related changes, purpose, diff, dependencies, risk, testing, migration, and rollback plan.
+- **DevelopmentBundle:** portable versioned resource declarations, constraints, overlays, and protected references.
+- **Build:** immutable inputs, builder, environment, Operation, outputs, evidence, status, and reproducibility.
+- **BuildArtifact:** content-addressed output, type, digest, provenance, classification, signature, and retention.
+- **TestDefinition:** type, inputs, fixture, environment, assertions, side effects, budgets, cleanup, and evidence.
+- **TestRun:** exact definitions, inputs, environment, outcome, events, metrics, artifacts, and failure.
+- **EvaluationPlan:** datasets, scenarios, evaluators, rubrics, thresholds, security gates, and target environment.
+- **EvaluationResult:** scores, assertions, evidence, regressions, cost, latency, quality gates, and decision.
+- **Review:** target digest, reviewers, findings, approvals, waivers, comments, evidence, and validity.
+- **Release:** immutable component versions, dependency lock, evidence, signatures, compatibility, notes, and rollback target.
+- **Deployment:** release, environment, configuration, traffic, state, health, Operations, and history.
+- **MigrationDefinition:** versions, stages, checks, idempotency, checkpoint, rollback, forward repair, and approval.
+- **FeatureFlag:** owner, environments, cohorts, variants, expiry, metrics, and rollback.
+- **Experiment:** hypothesis, population, assignment, variants, measures, guardrails, duration, and result.
+- **DevelopmentRegistryPackage:** package identity, versions, publisher, resources, dependencies, compatibility, provenance, and advisories.
+
+#### Version-one boundary
+
+The first Development implementation should prove:
+
+1. One DevelopmentProject containing an Agent, approved tool, sandbox template, trigger, evaluation dataset, and policies.
+2. Editable drafts and ChangeSets that produce immutable AgentVersion, ToolVersion, TemplateVersion, and TriggerVersion candidates.
+3. Versioned declarative bundle validation, diff, plan, and idempotent application through the CLI and Management API.
+4. One reproducible Linux build and test sandbox using an immutable template and refresh artifact.
+5. Schema, dependency, policy, secret, vulnerability, tool-contract, environment, replay, and agent-evaluation tests.
+6. Built-in Agent Refinement producing and comparing at least one candidate under bounded mutation, data, iteration, and cost policy.
+7. Development, preview, staging, and production environment records with distinct models, integrations, vaults, data, and approval policy.
+8. Versioned evaluation plan and quality gates covering correctness, safety, cost, latency, and regression.
+9. Review and approval bound to exact BuildArtifact and candidate digests.
+10. Immutable publication, release, deployment, canary, promotion, and rollback records.
+11. Signed BuildArtifacts with source, dependency, builder, test, and evaluation provenance.
+12. CI automation through a workload identity, Management API, and CLI using durable Operations and structured results.
+13. Desktop comparison of source and resource diffs, test evidence, scorecards, canary health, and release history.
+14. Development events and metrics for time, cost, quality, failures, queues, environments, review, promotion, and rollback.
+15. Compatibility and upgrade testing across the first desktop, CLI, node, Management API, and control-plane releases.
+
+#### Decisions to make next
+
+- Which resources should be UI-first, code-first, or equally supported in both workflows?
+- What declarative bundle format and reference model should Blazn use?
+- How are stable resource IDs preserved across export, source control, preview, and another workspace?
+- Which versioning policy applies to agents, tools, templates, policies, SDKs, and product releases?
+- Which test and evaluation gates are mandatory before production credentials or external writes are allowed?
+- Which development sandboxes and Agent Sandbox features are required for the initial Linux backend?
+- How should macOS and Windows native development and test workloads enter the same pipeline?
+- Which source-control review and status integrations should ship first?
+- What evidence is required for a build or release attestation?
+- Which package and container registries are supported for private and public distribution?
+- Which release strategies and automated rollback conditions belong in version one?
+- What client, server, node, sandbox backend, API, and event version-skew windows are supported?
+- Which migrations require backups, dual writes, forward repair, or maintenance windows?
+- Which development analytics are useful without becoming employee surveillance?
+- How are imported community agents, skills, tools, and templates sandboxed and reviewed safely?
+
 ### Credentials and integrations
 
 #### Definition
@@ -5888,6 +6428,7 @@ flowchart LR
     Clients --> Workspace[Blazn workspace and company brain]
     API --> Workspace
     Workspace --> Orchestration[Agents, projects, runs, schedules and events]
+    Development[Development, evaluation and release] --> Orchestration
     Orchestration --> Queues[Queues and admission]
     Queues --> Harness[Blazn Agent Harness]
     Queues --> Execution[Execution fabric]
@@ -5900,6 +6441,7 @@ flowchart LR
     Policy[LLM Router Policy] --> Router
     Router --> Models[Local, provider and Blazn cloud models]
     Templates[Versioned sandbox templates] --> Execution
+    Development --> Templates
     Refreshes[Refresh artifacts] --> Execution
     Execution --> Nodes[User and team nodes]
     Execution --> Sandboxes[Sandboxes and virtual environments]
@@ -5965,6 +6507,7 @@ It does not need to deliver the full company-brain vision on day one. The early 
 - A single-user workspace with a clear path to team collaboration.
 - Desktop, CLI, and Management API access to the same local control plane.
 - A small agent library running through the Blazn Agent Harness.
+- A development loop for drafting, validating, evaluating, publishing, deploying, and rolling back an AgentVersion and its template.
 - Smart LLM Router access to a local model and selected cloud providers.
 - A versioned LLM Router Policy defining allowed routes, budgets, queueing, and fallback.
 - One contributed machine acting as a worker.
@@ -6018,4 +6561,5 @@ This overview establishes the product direction. Follow-on documents should defi
 10. Agent evaluation, introspection, and governed improvement process.
 11. Blazn Button SDK and embedded interaction model.
 12. Desktop, CLI, and generated SDK technology choices and release strategy.
-13. Commercial model for local, team, and cloud offerings.
+13. Development bundles, test and evaluation pipelines, supply-chain provenance, release channels, deployment, migration, and rollback.
+14. Commercial model for local, team, and cloud offerings.
