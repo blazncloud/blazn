@@ -285,6 +285,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Warm pools](#warm-pools) | Keep policy-controlled environments ready to reduce startup latency | Initial design |
 | Analytics and events | Record the structured history of work and system activity | Planned |
 | Metrics | Measure health, capacity, cost, performance, and outcomes | Planned |
+| Company-brain indexing and retrieval | Ingest, permission-filter, index, relate, retrieve, refresh, and delete company knowledge with provenance | Planned |
 | [Queues](#queues) | Admit and prioritize work across limited models and compute | Initial design |
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
 | Development | Build, test, version, evaluate, and release agents and system components | Planned |
@@ -3265,7 +3266,7 @@ This overview establishes the product direction. Follow-on documents should defi
 5. Node enrollment, sandboxing, native execution, and scheduling model.
 6. AI Proxy compatibility, Smart LLM Router architecture, policy evaluation, and provider strategy.
 7. MCP and public API surface, authentication, and authorization.
-8. Company-brain memory, retrieval, provenance, retention, and privacy model.
+8. Company-brain ingestion, permission-aware indexing, retrieval, provenance, freshness, retention, privacy, and deletion model.
 9. Agent evaluation, introspection, and governed improvement process.
 10. Blazn Button SDK and embedded interaction model.
 11. Desktop/CLI technology choices and release strategy.
