@@ -77,13 +77,22 @@ for (const id of profileIds) {
   if (profile.mutations.some((mutation) => forbiddenKinds.includes(mutation.kind))) fail(`${id} contains a cross-platform mutation`);
 }
 
-const [systemd, launchd, limaText] = await Promise.all([
+const [systemd, launchd, limaText, binaryDigestsText] = await Promise.all([
   readFile(`${sourceTemplates}/blazn-node.service`),
   readFile(`${sourceTemplates}/com.blazn.node.plist`),
   readFile(`${sourceTemplates}/lima-worker-binding.json`, "utf8"),
+  readFile(`${sourceTemplates}/current-binary-digests.json`, "utf8"),
 ]);
 if (sha256(systemd) !== template.profiles["ubuntu-26.04-amd64-worker/v1"].nodeService.definitionSha256 || sha256(systemd) !== template.profiles["existing-linux-worker-adopt/v1"].nodeService.definitionSha256) fail("systemd definition digest drifted");
 if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].nodeService.definitionSha256) fail("launchd definition digest drifted");
+const binaryDigests = JSON.parse(binaryDigestsText);
+exact(binaryDigests, ["schemaVersion", "releaseTag", "binaries"], "current binary digest manifest");
+exact(binaryDigests.binaries, ["darwin-arm64", "linux-amd64", "linux-arm64"], "current binary platforms");
+if (binaryDigests.schemaVersion !== "blazn.dev/current-binary-digests/v1" || binaryDigests.releaseTag !== "v0.1.0-poc.1") fail("current binary release identity drifted");
+for (const [profileId, platform] of [["ubuntu-26.04-amd64-worker/v1", "linux-amd64"], ["existing-linux-worker-adopt/v1", "linux-amd64"], ["macos-lima-worker-adopt/v1", "darwin-arm64"]]) {
+  const component = template.profiles[profileId].components.find((candidate) => candidate.sourceClass === "current_binary");
+  if (!component || component.version !== binaryDigests.releaseTag || component.sha256 !== binaryDigests.binaries[platform]) fail(`${profileId} current binary is not bound to the reviewed executable digest`);
+}
 const lima = JSON.parse(limaText);
 exact(lima, ["schemaVersion", "clusterId", "vmName", "workerName"], "Lima worker binding");
 if (lima.schemaVersion !== "blazn.dev/lima-worker-binding/v1" || lima.clusterId !== template.profiles["macos-lima-worker-adopt/v1"].cluster.id || typeof lima.vmName !== "string" || lima.vmName.length === 0 || typeof lima.workerName !== "string" || lima.workerName.length === 0) fail("Lima worker identity drifted");

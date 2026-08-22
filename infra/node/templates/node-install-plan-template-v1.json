@@ -23,7 +23,7 @@
           "sourceClass": "current_binary",
           "version": "v0.1.0-poc.1",
           "publisher": "KingJammin/blazn",
-          "sha256": "85b781834a461c8dd135467f54944d1688451844b51b40380b15a254b84b6d7c",
+          "sha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
           "ownership": "adopt_exact"
         },
         {
@@ -157,9 +157,9 @@
           "target": "/usr/local/bin/blazn",
           "desired": {
             "sourceComponent": "blazn-linux-amd64",
-            "contentSha256": "85b781834a461c8dd135467f54944d1688451844b51b40380b15a254b84b6d7c"
+            "contentSha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a"
           },
-          "desiredDigest": "sha256:85b781834a461c8dd135467f54944d1688451844b51b40380b15a254b84b6d7c",
+          "desiredDigest": "sha256:5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
           "mode": 493,
           "uid": 0,
           "gid": 0,
@@ -266,7 +266,7 @@
           "sourceClass": "current_binary",
           "version": "v0.1.0-poc.1",
           "publisher": "KingJammin/blazn",
-          "sha256": "85b781834a461c8dd135467f54944d1688451844b51b40380b15a254b84b6d7c",
+          "sha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
           "ownership": "adopt_exact"
         },
         {
@@ -388,9 +388,9 @@
           "target": "/usr/local/bin/blazn",
           "desired": {
             "sourceComponent": "blazn-linux-amd64",
-            "contentSha256": "85b781834a461c8dd135467f54944d1688451844b51b40380b15a254b84b6d7c"
+            "contentSha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a"
           },
-          "desiredDigest": "sha256:85b781834a461c8dd135467f54944d1688451844b51b40380b15a254b84b6d7c",
+          "desiredDigest": "sha256:5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
           "mode": 493,
           "uid": 0,
           "gid": 0,
@@ -496,7 +496,7 @@
           "sourceClass": "current_binary",
           "version": "v0.1.0-poc.1",
           "publisher": "KingJammin/blazn",
-          "sha256": "eb8a639262e90740db2457c35d76591dcc317ed308c66193b609985e281c9c70",
+          "sha256": "672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27",
           "ownership": "adopt_exact"
         },
         {
@@ -566,9 +566,9 @@
           "target": "/usr/local/bin/blazn",
           "desired": {
             "sourceComponent": "blazn-darwin-arm64",
-            "contentSha256": "eb8a639262e90740db2457c35d76591dcc317ed308c66193b609985e281c9c70"
+            "contentSha256": "672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27"
           },
-          "desiredDigest": "sha256:eb8a639262e90740db2457c35d76591dcc317ed308c66193b609985e281c9c70",
+          "desiredDigest": "sha256:672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27",
           "mode": 493,
           "uid": 0,
           "gid": 0,
