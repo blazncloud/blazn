@@ -58,6 +58,7 @@ kctl wait --for=condition=Ready sandbox/synthetic -n blazn-spike --timeout=180s
 
 kctl delete sandbox synthetic -n blazn-spike --wait=true --timeout=120s
 kctl wait --for=delete pod/synthetic -n blazn-spike --timeout=120s
+kctl wait --for=delete workload --all -n blazn-spike --timeout=120s
 [ "$(kctl get workload -n blazn-spike --no-headers 2>/dev/null | wc -l)" -eq 0 ]
 kctl delete namespace blazn-spike --wait=true --timeout=120s
 kctl delete clusterqueue blazn-spike --ignore-not-found >/dev/null
