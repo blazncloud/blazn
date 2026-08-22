@@ -82,6 +82,7 @@ if grep -E '^[[:space:]]+addr:' "$ngrok" | grep -Ev 'http://127\.0\.0\.1:58080$'
   exit 1
 fi
 grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
+grep -F 'Environment=COMPOSE_BAKE=false' "$unit" >/dev/null
 
 for script in "$ROOT_DIR"/scripts/*.sh "$ROOT_DIR"/postgres-init/*.sh "$ROOT_DIR"/tests/*.sh; do
   sh -n "$script"
