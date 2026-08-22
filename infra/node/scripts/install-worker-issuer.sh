@@ -86,14 +86,16 @@ case "$MICROK8S_REVISION" in 9072|9075) ;; *) die "MicroK8s revision is unsuppor
 
 mkdir -p -- "$(dirname -- "$RECEIPT")"
 chmod 0700 "$(dirname -- "$RECEIPT")"
+[ "$(stat -c '%u:%a' "$(dirname -- "$RECEIPT")")" = 0:700 ] || die "ownership directory is unsafe before receipt publication"
 if [ ! -e "$RECEIPT" ]; then
   for managed in "$ROOT" "$BINARY" "$UNIT" "$TMPFILES"; do [ ! -e "$managed" ] || die "managed issuer path exists without its receipt: $managed"; done
   mkdir -p -- "$RECOVERY"
   chmod 0700 "$RECOVERY"
+  [ "$(stat -c '%u:%a' "$RECOVERY")" = 0:700 ] || die "pre-receipt recovery directory is unsafe"
   inventory=$RECOVERY/inventory.json
   if find "$RECOVERY" -mindepth 1 -maxdepth 1 ! -name inventory.json ! -name control-plane.env ! -name control-plane.json -print | grep . >/dev/null; then die "pre-receipt recovery root contains unreviewed residue"; fi
-  if [ -e "$RECOVERY/control-plane.env" ]; then cmp "$ENV_FILE" "$RECOVERY/control-plane.env" >/dev/null || die "pre-receipt environment backup differs"; else cp -- "$ENV_FILE" "$RECOVERY/control-plane.env"; chmod 0600 "$RECOVERY/control-plane.env"; sync_path "$RECOVERY/control-plane.env"; fi
-  if [ -e "$RECOVERY/control-plane.json" ]; then cmp "$MAIN_RECEIPT" "$RECOVERY/control-plane.json" >/dev/null || die "pre-receipt ownership backup differs"; else cp -- "$MAIN_RECEIPT" "$RECOVERY/control-plane.json"; chmod 0600 "$RECOVERY/control-plane.json"; sync_path "$RECOVERY/control-plane.json"; fi
+  if [ -e "$RECOVERY/control-plane.env" ]; then if [ ! -f "$RECOVERY/control-plane.env" ] || [ -L "$RECOVERY/control-plane.env" ] || [ "$(stat -c '%u:%a:%h' "$RECOVERY/control-plane.env")" != 0:600:1 ]; then die "pre-receipt environment backup is unsafe"; fi; cmp "$ENV_FILE" "$RECOVERY/control-plane.env" >/dev/null || die "pre-receipt environment backup differs"; else cp -- "$ENV_FILE" "$RECOVERY/control-plane.env"; chmod 0600 "$RECOVERY/control-plane.env"; sync_path "$RECOVERY/control-plane.env"; fi
+  if [ -e "$RECOVERY/control-plane.json" ]; then if [ ! -f "$RECOVERY/control-plane.json" ] || [ -L "$RECOVERY/control-plane.json" ] || [ "$(stat -c '%u:%a:%h' "$RECOVERY/control-plane.json")" != 0:600:1 ]; then die "pre-receipt ownership backup is unsafe"; fi; cmp "$MAIN_RECEIPT" "$RECOVERY/control-plane.json" >/dev/null || die "pre-receipt ownership backup differs"; else cp -- "$MAIN_RECEIPT" "$RECOVERY/control-plane.json"; chmod 0600 "$RECOVERY/control-plane.json"; sync_path "$RECOVERY/control-plane.json"; fi
   inventory_tmp=$inventory.tmp.$$
   jq -cn --arg source "$SOURCE_DIGEST" --arg key "$RECOVERY/issuer-hmac-v1" --arg env "$RECOVERY/control-plane.env" --arg envDigest "sha256:$(sha "$ENV_FILE")" --arg ownership "$RECOVERY/control-plane.json" --arg ownershipDigest "sha256:$(sha "$MAIN_RECEIPT")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-recovery/v1",prior:{config:"absent",binary:"absent",unit:"absent",tmpfiles:"absent",environment:{backupPath:$env,digest:$envDigest},ownership:{backupPath:$ownership,digest:$ownershipDigest}},sourceDigest:$source,secretRecoveryPath:$key}' >"$inventory_tmp"
   chmod 0600 "$inventory_tmp"; sync_path "$inventory_tmp"; mv -- "$inventory_tmp" "$inventory"
