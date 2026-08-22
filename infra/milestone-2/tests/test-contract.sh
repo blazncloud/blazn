@@ -102,6 +102,8 @@ grep -F 'preflight.sh --existing-deploy' "$ROOT_DIR/workspace-live-integration-r
 grep -F 'verify-live-workspace.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'with-control-plane-env.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'stage-release.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+# This intentionally asserts literal shell variables in the promotion script.
+# shellcheck disable=SC2016
 grep -F 'cmp -s "$unit_source" "$installed_unit"' "$ROOT_DIR/scripts/promote-release.sh" >/dev/null
 if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null; then
   printf 'database initialization grants broad future-table privileges\n' >&2

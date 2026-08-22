@@ -15,10 +15,14 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 printf 'PUBLIC_URL=https://blazn.benpelo.com\nBLAZN_INITIAL_DISPLAY_NAME="Ben Pelo"\n' >"$top/good.env"
+# This is intentionally an unexpanded malicious fixture.
+# shellcheck disable=SC2016
 printf 'PUBLIC_URL=$(touch /tmp/should-not-run)\n' >"$top/bad.env"
 chmod 0600 "$top"/*.env
 sudo chown 0:0 "$top"/*.env
 sudo env BLAZN_CONTROL_PLANE_ENV_FILE="$top/good.env" "$WRAPPER" sh -euc '[ "$PUBLIC_URL" = https://blazn.benpelo.com ] && [ "$BLAZN_INITIAL_DISPLAY_NAME" = "Ben Pelo" ]'
+# Redirection targets are deliberately user-owned test evidence paths.
+# shellcheck disable=SC2024
 if sudo env BLAZN_CONTROL_PLANE_ENV_FILE="$top/bad.env" "$WRAPPER" true >"$top/out" 2>"$top/err"; then
   printf 'unsafe control-plane environment unexpectedly passed\n' >&2
   exit 1

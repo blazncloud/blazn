@@ -92,9 +92,9 @@ workspace_b=$(jq -er .workspace.id "$work/workspace-b.json")
 printf '%s\n' "$workspace_a" | "$SCRIPT_DIR/manage-poc-identity.sh" record-workspace >/dev/null
 printf '%s\n' "$workspace_b" | "$SCRIPT_DIR/manage-poc-identity.sh" record-workspace >/dev/null
 
-owner_cli --output json workspace invite "$workspace_a" --role member --expires-in 15m --request-id workspace-invite-$suffix \
+owner_cli --output json workspace invite "$workspace_a" --role member --expires-in 15m --request-id "workspace-invite-$suffix" \
   | jq -er .inviteToken \
-  | second_cli workspace join --invite-stdin --request-id workspace-join-$suffix >"$work/join.out"
+  | second_cli workspace join --invite-stdin --request-id "workspace-join-$suffix" >"$work/join.out"
 second_cli --output json workspace get "$workspace_a" | jq -e --arg id "$workspace_a" '.workspace.id==$id' >/dev/null
 
 assert_denied() {
@@ -107,7 +107,7 @@ assert_denied hidden-get workspace get "$workspace_b"
 assert_denied hidden-members workspace members "$workspace_b"
 assert_denied hidden-invitations workspace invitations "$workspace_b"
 version=$(jq -er .workspace.version "$work/workspace-a.json")
-assert_denied member-edit workspace edit "$workspace_a" --name forbidden --expected-version "$version" --request-id member-edit-$suffix
+assert_denied member-edit workspace edit "$workspace_a" --name forbidden --expected-version "$version" --request-id "member-edit-$suffix"
 
 owner_cli --output json workspace list | jq -e --arg a "$workspace_a" --arg b "$workspace_b" '([.items[].id] | contains([$a,$b]))' >/dev/null
 second_cli --output json workspace list | jq -e --arg a "$workspace_a" --arg b "$workspace_b" '([.items[].id] | contains([$a]) and (contains([$b])|not))' >/dev/null
