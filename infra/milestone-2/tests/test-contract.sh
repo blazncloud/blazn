@@ -9,8 +9,6 @@ unit=$ROOT_DIR/systemd/blazn-control-plane.service
 
 # The first four strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
-# These strings intentionally assert unexpanded Compose interpolation.
-# shellcheck disable=SC2016
 for expected in \
   '127.0.0.1}:${POSTGRES_PORT:-55432}:5432' \
   '127.0.0.1}:${S3_PORT:-59000}:9000' \
@@ -34,6 +32,8 @@ for expected in \
   }
 done
 
+# These strings intentionally assert unexpanded Compose interpolation.
+# shellcheck disable=SC2016
 for expected in \
   'object-init:' \
   'mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}"' \
