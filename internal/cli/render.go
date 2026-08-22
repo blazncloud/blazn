@@ -30,6 +30,7 @@ var rootCommands = []helpCommand{
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
+	{Name: "workspace", Summary: "Create, select, and manage workspaces"},
 }
 
 func (a *App) writeHelp(format OutputFormat, topic string) int {
@@ -61,6 +62,18 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 				{Name: "logout", Summary: "Revoke and remove this device session"},
 				{Name: "devices", Summary: "List devices for the current user"},
 				{Name: "revoke-device", Summary: "Revoke a device by ID"},
+			},
+		}
+	case "workspace":
+		output = helpOutput{
+			Command: "workspace", Usage: "blazn workspace <command> [--workspace WORKSPACE] [--request-id KEY (required for mutations)]", Summary: "Create, select, and manage Blazn workspaces.",
+			Commands: []helpCommand{
+				{Name: "create", Summary: "Create a workspace"}, {Name: "list", Summary: "List accessible workspaces"},
+				{Name: "get", Summary: "Get a workspace"}, {Name: "edit", Summary: "Edit a workspace"}, {Name: "use", Summary: "Select a workspace locally"},
+				{Name: "invite", Summary: "Create a one-time invitation"}, {Name: "invitations", Summary: "List invitations without tokens"}, {Name: "revoke-invite", Summary: "Revoke an invitation"},
+				{Name: "join", Summary: "Accept an invitation from stdin"}, {Name: "members", Summary: "List workspace members"},
+				{Name: "set-role", Summary: "Change a member role"}, {Name: "remove-member", Summary: "Remove a member"}, {Name: "leave", Summary: "Leave the selected workspace"},
+				{Name: "watch", Summary: "Stream reauthorized workspace events"},
 			},
 		}
 	default:
