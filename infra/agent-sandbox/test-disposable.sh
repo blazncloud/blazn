@@ -39,6 +39,9 @@ trap abort HUP INT TERM
 curl -fsSL "$KIND_URL" -o "$tmp/kind"
 printf '%s  %s\n' "$KIND_SHA256" "$tmp/kind" | sha256sum -c - >/dev/null
 chmod 0755 "$tmp/kind"
+curl -fsSL "$KUBECTL_URL" -o "$tmp/kubectl"
+printf '%s  %s\n' "$KUBECTL_SHA256" "$tmp/kubectl" | sha256sum -c - >/dev/null
+chmod 0755 "$tmp/kubectl"
 curl -fsSL "$AGENT_SANDBOX_MANIFEST_URL" -o "$tmp/agent-sandbox.yaml"
 printf '%s  %s\n' "$AGENT_SANDBOX_MANIFEST_SHA256" "$tmp/agent-sandbox.yaml" | sha256sum -c - >/dev/null
 curl -fsSL "$KUEUE_MANIFEST_URL" -o "$tmp/kueue.yaml"
@@ -68,6 +71,78 @@ while [ -z "$(kctl get endpoints kueue-webhook-service -n kueue-system -o jsonpa
   [ "$attempt" -lt 60 ] || { printf 'Kueue webhook did not publish an endpoint\n' >&2; exit 1; }
   sleep 2
 done
+
+# Exercise the production Phase 4C transaction on this uniquely owned kind
+# cluster. Crash after controller apply, resume the journal, run the canary,
+# and UID-fenced rollback before the original Phase 4A lifecycle continues.
+kctl label node "$node" blazn.dev/sandbox-eligible=true --overwrite >/dev/null
+cat <<EOF | kapply >/dev/null
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: blazn-phase4c-$cluster_suffix
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: blazn-phase4c-$cluster_suffix
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: blazn-poc
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: blazn-phase4c-$cluster_suffix
+      resources:
+      - name: cpu
+        nominalQuota: "1"
+      - name: memory
+        nominalQuota: 1Gi
+EOF
+kctl wait --for=condition=Active "clusterqueue/blazn-phase4c-$cluster_suffix" --timeout=120s
+phase4c_root="$ROOT/phase4c"
+phase4c_id=77777777-7777-4777-8777-$cluster_suffix
+PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" "$phase4c_root/inventory.sh" "$tmp/phase4c-inventory" >/dev/null
+BLAZN_PHASE4C_TRANSACTION_ID=$phase4c_id "$phase4c_root/render-install.sh" "$tmp/phase4c-install.yaml"
+PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
+  BLAZN_PHASE4C_TRANSACTION_ID=$phase4c_id \
+  BLAZN_EXISTING_CLUSTER_QUEUE=blazn-phase4c-$cluster_suffix \
+  BLAZN_SYNTHETIC_IMAGE=$SYNTHETIC_IMAGE \
+  BLAZN_ORCHESTRATION_ONLY_ACK=approved-non-sensitive-phase4c-canary \
+  "$phase4c_root/render-fixtures.sh" "$tmp/phase4c-fixtures" >/dev/null
+sudo -n "$phase4c_root/prepare-transaction.sh" "$tmp/phase4c-install.yaml" "$tmp/phase4c-fixtures" "$tmp/phase4c-inventory" "$tmp/phase4c-transaction" >/dev/null
+phase4c_digest=$(sudo -n cat "$tmp/phase4c-transaction/input.digest")
+phase4c_context=$(cat "$tmp/phase4c-inventory/context")
+phase4c_uid=$(cat "$tmp/phase4c-inventory/kube-system.uid")
+if sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
+  BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
+  BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \
+  BLAZN_PHASE4C_FAIL_AFTER=controller-applied BLAZN_PHASE4C_DISPOSABLE_TEST=true \
+  "$phase4c_root/with-live-lock.sh" "$phase4c_root/canary.sh" "$tmp/phase4c-transaction"; then
+  printf 'Phase 4C disposable failpoint unexpectedly succeeded\n' >&2
+  exit 1
+else
+  [ "$?" -eq 86 ]
+fi
+sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
+  BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
+  BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \
+  "$phase4c_root/with-live-lock.sh" "$phase4c_root/canary.sh" "$tmp/phase4c-transaction"
+sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
+  BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
+  BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \
+  "$phase4c_root/with-live-lock.sh" "$phase4c_root/rollback.sh" "$tmp/phase4c-transaction"
+[ "$(kctl get crd -o name | grep -c agents.x-k8s.io || true)" -eq 0 ]
+[ "$(kctl get namespace blazn-poc --ignore-not-found -o name | wc -l)" -eq 0 ]
+[ "$(kctl get namespace agent-sandbox-system --ignore-not-found -o name | wc -l)" -eq 0 ]
+[ "$(kctl get clusterrole,clusterrolebinding -o name | grep -c blazn-agent-sandbox || true)" -eq 0 ]
+[ "$(kctl get validatingadmissionpolicy,validatingadmissionpolicybinding -o name | grep -c blazn-agent-sandbox || true)" -eq 0 ]
+sudo -n chown -R "$(id -u):$(id -g)" "$tmp/phase4c-transaction"
+kctl delete clusterqueue "blazn-phase4c-$cluster_suffix" --wait=true --timeout=120s >/dev/null
+kctl delete resourceflavor "blazn-phase4c-$cluster_suffix" --wait=true --timeout=120s >/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible- >/dev/null
+
 kapply <"$tmp/agent-sandbox.yaml" >/dev/null
 kctl wait --for=condition=Available deployment/agent-sandbox-controller -n agent-sandbox-system --timeout=180s
 [ "$(kctl get deployment agent-sandbox-controller -n agent-sandbox-system -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$AGENT_SANDBOX_IMAGE" ]

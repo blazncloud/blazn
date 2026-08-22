@@ -132,7 +132,7 @@ spec:
     message: "Only the authenticated Phase 4C creator may create the synthetic Sandbox"
   - expression: "object.metadata.annotations['blazn.dev/phase4c-transaction'] == 'BLAZN_TRANSACTION_ID'"
     message: "Sandbox must carry the sealed Phase 4C transaction identity"
-  - expression: "request.operation != 'UPDATE' || (request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller' && object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && object.metadata.annotations == oldObject.metadata.annotations)"
+  - expression: "request.operation != 'UPDATE' || (request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller' && object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && object.metadata.annotations['blazn.dev/phase4c-transaction'] == oldObject.metadata.annotations['blazn.dev/phase4c-transaction'] && object.metadata.annotations['blazn.dev/non-sensitive-poc'] == oldObject.metadata.annotations['blazn.dev/non-sensitive-poc'])"
     message: "Callers may not mutate the canary after admission"
 ---
 apiVersion: admissionregistration.k8s.io/v1
