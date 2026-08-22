@@ -2,6 +2,7 @@ package proxycontract
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,20 @@ const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 func validPolicy() Policy {
 	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: []Protocol{ProtocolOpenAIChat}, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "local/qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1}, ContentCapture: false}
+}
+
+func TestCanonicalPOCPolicyDecodesWithExactRouteSemantics(t *testing.T) {
+	encoded, err := os.ReadFile("../../packages/contracts/proxy/fixtures/poc-policy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := DecodePolicy(strings.NewReader(string(encoded)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Routes) != 2 || len(policy.Routes[0].SourceProtocols) != 3 || policy.Routes[0].Model != "qwen3.8" || policy.Routes[0].DestinationClass != DestinationLocalNode || policy.Routes[1].Model != "gpt-5.4" || policy.Routes[1].DestinationClass != DestinationProvider {
+		t.Fatalf("canonical POC routes do not preserve local Qwen then cloud fallback semantics: %#v", policy.Routes)
+	}
 }
 
 func journalEnvironment(prior *string) []EnvironmentMutation {
