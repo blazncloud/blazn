@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 test("auth migration grants only the reviewed bootstrap and runtime operations", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const migration = await readFile(path.resolve(here, "../migrations/001_auth.sql"), "utf8");
+  const directory = path.resolve(here, "../migrations");
+  const migration = (await Promise.all((await readdir(directory)).filter((name) => name.endsWith(".sql")).sort().map((name) => readFile(path.join(directory, name), "utf8")))).join("\n");
   const grants = [
     "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM blazn_runtime, blazn_bootstrap;",
     "GRANT SELECT, INSERT ON TABLE users TO blazn_bootstrap;",
