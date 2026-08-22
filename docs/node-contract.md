@@ -123,6 +123,10 @@ PostgreSQL stores the 64 hex characters and API/plan values render
 `sha256:<hex>`. The server persists both and binds the
 enrollment to that machine and returns a signed
 [`NodeInstallPlan`](../packages/contracts/nodes/node-install-plan.schema.json).
+The exchange response wraps that plan with the exact identity row created in
+the same transaction: generation, signing-key ID, public-key fingerprint, and
+issuance/expiry timestamps. Clients persist these returned values for daemon
+proofs and receipt signing; they never infer an initial generation or key ID.
 
 The Node Bootstrap Broker is a separate least-privilege process. It may issue
 one short-lived worker join credential only after verifying the plan signature,
@@ -242,6 +246,14 @@ are resolved beneath the signed platform-specific backup root only after
 no-symlink path validation. Linux uses `/var/lib/blazn/install-backups/<id>`;
 macOS uses `/Library/Application Support/Blazn/install-backups/<id>` and never
 relies on the `/var` symlink.
+Account mutations are first-class receipt entries. A newly created `group` or
+`user` has prior state `absent`, absent rollback material, and is marked
+`removed` when rolled back. An adopted or previously receipt-owned account has
+an exact metadata snapshot and is marked `restored`; it may never be reported
+as removed. Account targets use the same bounded account-name grammar as plans.
+The exchange envelope and account receipt kinds are intentional pre-release
+`v1alpha1` compatibility corrections; no published Node installer predates
+them.
 
 ## Capabilities and local models
 

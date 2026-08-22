@@ -21,10 +21,10 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "590e68d209c1db843a5107a7a48c904c4bb3c455f55b032715f298a62c1263eb"
+	openAPISHA256          = "7a5db0900aa7954b846af74080d4cdee2c500aa1edb766e54d9691bf64dbe953"
 	commonOpenAPISHA256    = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
 	planSHA256             = "d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d"
-	receiptSHA256          = "cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4"
+	receiptSHA256          = "459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6"
 	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
 )
 
@@ -41,7 +41,7 @@ type operation struct {
 
 var operations = []operation{
 	{"/v1/workspaces/{workspaceId}/node-enrollments", "post", "createNodeEnrollment", "201", "CreateNodeEnrollmentRequest", "NodeEnrollmentSecret", "bearer"},
-	{"/v1/node-enrollments/{enrollmentId}/exchange", "post", "exchangeNodeEnrollment", "200", "ExchangeNodeEnrollmentRequest", "nodes/node-install-plan.schema.json", "public"},
+	{"/v1/node-enrollments/{enrollmentId}/exchange", "post", "exchangeNodeEnrollment", "200", "ExchangeNodeEnrollmentRequest", "ExchangeNodeEnrollmentResponse", "public"},
 	{"/v1/workspaces/{workspaceId}/nodes", "get", "listNodes", "200", "", "inline", "bearer"},
 	{"/v1/nodes/{nodeId}", "get", "getNode", "200", "", "Node", "bearer"},
 	{"/v1/nodes/{nodeId}/operations", "post", "createNodeOperation", "202", "CreateNodeOperationRequest", "NodeOperation", "bearer"},
@@ -126,6 +126,12 @@ func validateSources(sources map[string]source, template string) error {
 	if err := validateOpenAPI(openAPI); err != nil {
 		return err
 	}
+	if atString(openAPI, "components", "schemas", "ExchangeNodeEnrollmentResponse", "properties", "plan", "$ref") != "nodes/node-install-plan.schema.json" || atString(openAPI, "components", "schemas", "ExchangeNodeEnrollmentResponse", "properties", "identity", "$ref") != "#/components/schemas/NodeEnrollmentIdentity" {
+		return fmt.Errorf("exchange response must bind the signed plan and exact created identity")
+	}
+	if !requiredExactly(at(openAPI, "components", "schemas", "NodeEnrollmentIdentity", "required"), "expiresAt", "generation", "issuedAt", "publicKeyFingerprint", "signingKeyId") {
+		return fmt.Errorf("exchange identity required fields changed")
+	}
 	if err := validateSharedNodeErrors(openAPI, sources[filepath.Join("packages", "contracts", "openapi.json")].doc); err != nil {
 		return err
 	}
@@ -136,6 +142,9 @@ func validateSources(sources map[string]source, template string) error {
 	}
 	if err := validateInstallSchema(receipt, "Blazn NodeInstallReceipt", []string{"schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "nodeIdentityGeneration", "signerKind", "signerFingerprint", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install receipt: %w", err)
+	}
+	if !containsAllStrings(at(receipt, "properties", "mutations", "items", "properties", "kind", "enum"), "group", "user") {
+		return fmt.Errorf("install receipt must represent group and user mutations")
 	}
 	operationReceipt := sources[filepath.Join("packages", "contracts", "nodes", "node-operation-receipt.schema.json")].doc
 	if err := validateOperationReceiptSchema(operationReceipt); err != nil {
@@ -525,6 +534,43 @@ func atString(value any, path ...string) string {
 func atNumber(value any, path ...string) float64 {
 	result, _ := at(value, path...).(float64)
 	return result
+}
+
+func requiredExactly(value any, expected ...string) bool {
+	values, ok := value.([]any)
+	if !ok || len(values) != len(expected) {
+		return false
+	}
+	actual := make([]string, len(values))
+	for index, value := range values {
+		var stringOK bool
+		actual[index], stringOK = value.(string)
+		if !stringOK {
+			return false
+		}
+	}
+	sort.Strings(actual)
+	sort.Strings(expected)
+	return strings.Join(actual, "\n") == strings.Join(expected, "\n")
+}
+
+func containsAllStrings(value any, expected ...string) bool {
+	values, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	present := make(map[string]bool, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			present[text] = true
+		}
+	}
+	for _, wanted := range expected {
+		if !present[wanted] {
+			return false
+		}
+	}
+	return true
 }
 
 func repositoryRoot() (string, error) {

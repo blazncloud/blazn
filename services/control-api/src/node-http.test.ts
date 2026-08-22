@@ -9,7 +9,7 @@ const workspaceId="11111111-1111-4111-8111-111111111111",nodeId="22222222-2222-4
 
 test("enrollment token stays in the bounded exchange body",async()=>{
   let observed="";let urlSeen="";let headersSeen="";
-  const service={async exchangeEnrollment(_id:string,input:{token:string}){observed=input.token;return{schemaVersion:"nodes/v1alpha1"};}} as unknown as NodeService;
+  const service={async exchangeEnrollment(_id:string,input:{token:string}){observed=input.token;return{plan:{schemaVersion:"nodes/v1alpha1"},identity:{generation:3,signingKeyId:"node-identity/v3",publicKeyFingerprint:`sha256:${"a".repeat(64)}`,issuedAt:"2026-08-22T00:00:00Z",expiresAt:"2026-09-22T00:00:00Z"}};}} as unknown as NodeService;
   const server=nodeServer(new NodeHttpRouter(service));await listen(server);
   try{const token="t".repeat(43);const response=await fetch(origin(server)+`/v1/node-enrollments/${enrollmentId}/exchange`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,machineFingerprint:"a".repeat(64),nodePublicKey:"b".repeat(43),platform:"linux",architecture:"amd64"})});urlSeen=response.url;headersSeen=JSON.stringify(response.headers);assert.equal(response.status,200);assert.equal(observed,token);assert.doesNotMatch(urlSeen,new RegExp(token));assert.doesNotMatch(headersSeen,new RegExp(token));}finally{await close(server);}
 });
