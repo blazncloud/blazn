@@ -10,7 +10,9 @@ trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 cat >"$tmp/bin/stat" <<'EOF'
 #!/bin/sh
 case "$*" in
-  */mnt*|*/backup*|*/mount*) [ "${FAKE_SAME_DEVICE:-0}" = 1 ] && printf '101\n' || printf '202\n' ;;
+  */mnt*|*/backup*|*/mount*)
+    if [ "${FAKE_SAME_DEVICE:-0}" = 1 ]; then printf '101\n'; else printf '202\n'; fi
+    ;;
   *) printf '101\n' ;;
 esac
 EOF

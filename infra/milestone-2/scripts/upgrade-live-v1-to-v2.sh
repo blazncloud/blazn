@@ -200,27 +200,53 @@ case "$bootstrap_password" in
 esac
 case "$bootstrap_password" in *[!a-f0-9]*) die "installed bootstrap password is invalid" ;; esac
 
+for required_role in blazn_migration blazn_runtime; do
+  required_count=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc \
+    "select count(*) from pg_roles where rolname='$required_role'")
+  [ "$required_count" = 1 ] || die "required existing database role is missing: $required_role"
+  membership_count=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc \
+    "select count(*) from pg_auth_members where member=(select oid from pg_roles where rolname='$required_role')")
+  [ "$membership_count" = 0 ] || die "database role has unreviewed inherited role memberships: $required_role"
+done
+printf '%s\n' \
+  'ALTER ROLE blazn_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;' \
+  'ALTER ROLE blazn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;' | \
+  compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+
 role_exists=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_bootstrap'")
 case "$role_exists" in
   0)
-    printf "CREATE ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '%s';\n" "$bootstrap_password" | \
+    printf "CREATE ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s';\n" "$bootstrap_password" | \
       compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
     ;;
-  1) ;;
+  1)
+    membership_count=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc \
+      "select count(*) from pg_auth_members where member=(select oid from pg_roles where rolname='blazn_bootstrap')")
+    [ "$membership_count" = 0 ] || die "existing bootstrap role has unreviewed inherited role memberships"
+    ;;
   *) die "could not determine the existing bootstrap role state" ;;
 esac
-printf "ALTER ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '%s'; GRANT CONNECT ON DATABASE \"%s\" TO blazn_bootstrap; GRANT USAGE ON SCHEMA public TO blazn_bootstrap;\n" \
+printf "ALTER ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s'; GRANT CONNECT ON DATABASE \"%s\" TO blazn_bootstrap; GRANT USAGE ON SCHEMA public TO blazn_bootstrap;\n" \
   "$bootstrap_password" "${POSTGRES_DB:-blazn}" | \
   compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
 
 role_state=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc \
-  "select rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication from pg_roles where rolname='blazn_bootstrap'")
-[ "$role_state" = "blazn_bootstrap|t|f|f|f|f" ] || die "bootstrap role attributes are not least privilege"
+  "select rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls from pg_roles where rolname='blazn_bootstrap'")
+[ "$role_state" = "blazn_bootstrap|t|f|f|f|f|f" ] || die "bootstrap role attributes are not least privilege"
 # The inner shell expands its positional database-name argument.
 # shellcheck disable=SC2016
 authenticated_user=$(printf '%s\n' "$bootstrap_password" | compose exec -T postgres /bin/sh -euc \
   'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -U blazn_bootstrap -d "$1" -Atqc "select current_user"' -- "${POSTGRES_DB:-blazn}")
 [ "$authenticated_user" = blazn_bootstrap ] || die "bootstrap role credential validation failed"
+
+for role_spec in \
+  'blazn_migration|t|f|f|f|f|f' \
+  'blazn_runtime|t|f|f|f|f|f'; do
+  role_name=${role_spec%%|*}
+  role_state=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc \
+    "select rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication,rolbypassrls from pg_roles where rolname='$role_name'")
+  [ "$role_state" = "$role_spec" ] || die "database role attributes are not least privilege: $role_name"
+done
 
 identity_tmp=$UPGRADE_RECEIPT.tmp.$$
 jq --arg validatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \

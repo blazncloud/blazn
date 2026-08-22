@@ -41,7 +41,9 @@ assert_directory_owned_mode() {
   path=$1
   expected_uid=$2
   expected_modes=$3
-  [ -d "$path" ] && [ ! -L "$path" ] || die "expected a non-symlink directory: $path"
+  if [ ! -d "$path" ] || [ -L "$path" ]; then
+    die "expected a non-symlink directory: $path"
+  fi
   [ "$(stat -c '%u' "$path")" = "$expected_uid" ] || die "directory has unexpected owner: $path"
   actual_mode=$(stat -c '%a' "$path")
   case ",$expected_modes," in
@@ -54,7 +56,9 @@ assert_regular_file_owned_mode() {
   path=$1
   expected_uid=$2
   expected_mode=$3
-  [ -f "$path" ] && [ ! -L "$path" ] || die "expected a non-symlink regular file: $path"
+  if [ ! -f "$path" ] || [ -L "$path" ]; then
+    die "expected a non-symlink regular file: $path"
+  fi
   [ "$(stat -c '%u' "$path")" = "$expected_uid" ] || die "file has unexpected owner: $path"
   [ "$(stat -c '%a' "$path")" = "$expected_mode" ] || die "file has unexpected mode: $path"
 }
@@ -64,13 +68,16 @@ assert_approved_backup_mount() {
   backup_mount=${BLAZN_BACKUP_MOUNT:-}
   backup_source=${BLAZN_BACKUP_SOURCE:-}
   backup_fstype=${BLAZN_BACKUP_FSTYPE:-}
-  [ -n "$backup_mount" ] && [ -n "$backup_source" ] && [ -n "$backup_fstype" ] || \
+  if [ -z "$backup_mount" ] || [ -z "$backup_source" ] || [ -z "$backup_fstype" ]; then
     die "BLAZN_BACKUP_MOUNT, BLAZN_BACKUP_SOURCE, and BLAZN_BACKUP_FSTYPE are required"
+  fi
   require_absolute_path BLAZN_BACKUP_MOUNT "$backup_mount"
   require_command findmnt
   require_command realpath
   assert_not_symlink_chain "$backup_mount"
-  [ -d "$backup_mount" ] && [ ! -L "$backup_mount" ] || die "approved backup mountpoint is unavailable: $backup_mount"
+  if [ ! -d "$backup_mount" ] || [ -L "$backup_mount" ]; then
+    die "approved backup mountpoint is unavailable: $backup_mount"
+  fi
   canonical_mount=$(realpath -e "$backup_mount")
   canonical_root=$(realpath -m "$backup_root")
   case "$canonical_root" in
@@ -86,8 +93,9 @@ assert_approved_backup_mount() {
   IFS=' ' read -r actual_target actual_source actual_fstype extra <<EOF
 $mount_record
 EOF
-  [ -n "$actual_target" ] && [ -n "$actual_source" ] && [ -n "$actual_fstype" ] && [ -z "$extra" ] || \
+  if [ -z "$actual_target" ] || [ -z "$actual_source" ] || [ -z "$actual_fstype" ] || [ -n "$extra" ]; then
     die "approved backup mount record is ambiguous"
+  fi
   [ "$actual_target" = "$canonical_mount" ] || die "backup mount target does not match the approved mountpoint"
   [ "$actual_source" = "$backup_source" ] || die "backup mount source does not match the approved source"
   [ "$actual_fstype" = "$backup_fstype" ] || die "backup mount filesystem type does not match the approved type"
