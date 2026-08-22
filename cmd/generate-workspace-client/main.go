@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,7 +19,7 @@ import (
 //go:embed workspace.gen.go.tmpl
 var workspaceTemplate []byte
 
-const supportedWorkspaceContractSHA256 = "3f792738396e1af07dd9e6418b5192529fbdd82ebce0fda33a3d16c60ac90be9"
+const supportedWorkspaceContractSHA256 = "5ef88c48d07f7e65b8b116a2f5ad10a1d129777611ce0cca9801db5afa5c12e1"
 
 type operation struct {
 	path, method, id string
@@ -98,7 +99,8 @@ func main() {
 	var document map[string]any
 	fatalIf(json.Unmarshal(contract, &document))
 	fatalIf(validate(document, string(workspaceTemplate)))
-	generated := render(digestString)
+	generated, err := format.Source(render(digestString))
+	fatalIf(err)
 	if *check {
 		current, err := os.ReadFile(outputPath)
 		fatalIf(err)
@@ -126,6 +128,10 @@ func validate(document map[string]any, template string) error {
 	}
 	if atString(document, "components", "securitySchemes", "bearerAuth", "bearerFormat") != "opaque" {
 		return fmt.Errorf("workspace bearer authentication must be opaque")
+	}
+	servers, _ := at(document, "servers").([]any)
+	if len(servers) != 1 || atString(servers[0], "url") != "https://blazn.benpelo.com" {
+		return fmt.Errorf("workspace API server origin changed")
 	}
 	security, ok := at(document, "security").([]any)
 	if !ok || len(security) != 1 {
@@ -192,6 +198,18 @@ func validate(document map[string]any, template string) error {
 	if fmt.Sprint(roleEnum) != "[owner administrator operator member viewer]" {
 		return fmt.Errorf("Role enum changed: %v", roleEnum)
 	}
+	errorEnum, _ := at(document, "components", "schemas", "WorkspaceError", "properties", "code", "enum").([]any)
+	errorStatuses, _ := at(document, "components", "schemas", "WorkspaceError", "x-blazn-error-status").(map[string]any)
+	if len(errorEnum) == 0 || len(errorEnum) != len(errorStatuses) {
+		return fmt.Errorf("WorkspaceError enum/status map changed")
+	}
+	for _, value := range errorEnum {
+		code, ok := value.(string)
+		status, exists := errorStatuses[code].(float64)
+		if !ok || !exists || status < 400 || status > 599 {
+			return fmt.Errorf("WorkspaceError status missing or invalid for %v", value)
+		}
+	}
 	for schema, fields := range schemaFields {
 		object, ok := at(document, "components", "schemas", schema).(map[string]any)
 		if !ok || object["type"] != "object" || object["additionalProperties"] != false {
@@ -219,10 +237,16 @@ func validate(document map[string]any, template string) error {
 			return fmt.Errorf("schema %s required=%v want %v", schema, requiredNames, schemaRequired[schema])
 		}
 		for _, field := range got {
+			if schema == "WorkspaceError" {
+				continue
+			}
 			if !strings.Contains(template, `json:"`+field) {
 				return fmt.Errorf("workspace template lacks %s.%s", schema, field)
 			}
 		}
+	}
+	if !strings.Contains(template, "type WorkspaceError = ErrorBody") {
+		return fmt.Errorf("workspace error must reuse generated auth ErrorBody")
 	}
 	if atString(document, "components", "schemas", "Membership", "properties", "user", "$ref") != "./openapi.json#/components/schemas/User" {
 		return fmt.Errorf("Membership.user must reuse auth User schema")
@@ -244,7 +268,7 @@ func validateParameters(document map[string]any, base []string, expected []strin
 	for index, name := range expected {
 		object, _ := values[index].(map[string]any)
 		if name == "Last-Event-ID" {
-			if object["name"] != name || object["in"] != "header" || object["required"] != false || atString(object, "schema", "type") != "string" {
+			if object["name"] != name || object["in"] != "header" || object["required"] != false || atString(object, "schema", "type") != "string" || atNumber(object, "schema", "maxLength") != 128 {
 				return fmt.Errorf("Last-Event-ID header changed")
 			}
 			continue
@@ -271,9 +295,23 @@ func validateComponentParameters(document map[string]any) error {
 	}
 	for key, want := range expected {
 		object, _ := parameters[key].(map[string]any)
-		if object["name"] != want[0] || object["in"] != want[1] || atString(object, "schema", "type") != want[2] && atString(object, "schema", "format") != want[2] {
+		if object["name"] != want[0] || object["in"] != want[1] || (atString(object, "schema", "type") != want[2] && atString(object, "schema", "format") != want[2]) {
 			return fmt.Errorf("component parameter %s changed", key)
 		}
+	}
+	for _, key := range []string{"WorkspaceId", "InvitationId", "UserId", "IdempotencyKey", "ExpectedVersion"} {
+		if at(document, "components", "parameters", key, "required") != true {
+			return fmt.Errorf("component parameter %s must be required", key)
+		}
+	}
+	if at(document, "components", "parameters", "Cursor", "required") != false || atNumber(document, "components", "parameters", "Cursor", "schema", "maxLength") != 512 {
+		return fmt.Errorf("Cursor parameter bounds changed")
+	}
+	if atNumber(document, "components", "parameters", "IdempotencyKey", "schema", "minLength") != 8 || atNumber(document, "components", "parameters", "IdempotencyKey", "schema", "maxLength") != 128 {
+		return fmt.Errorf("Idempotency-Key bounds changed")
+	}
+	if atNumber(document, "components", "parameters", "ExpectedVersion", "schema", "minimum") != 1 {
+		return fmt.Errorf("expectedVersion minimum changed")
 	}
 	return nil
 }
@@ -289,6 +327,11 @@ func sortedKeys(values map[string]any) []string {
 
 func atString(root any, path ...string) string {
 	value, _ := at(root, path...).(string)
+	return value
+}
+
+func atNumber(root any, path ...string) float64 {
+	value, _ := at(root, path...).(float64)
 	return value
 }
 
