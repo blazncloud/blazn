@@ -122,6 +122,8 @@ grep -F 'The old main/build receipts remain byte-identical' "$ROOT_DIR/workspace
 grep -F 'longer needs PostgreSQL' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'while the current receipt-bound PostgreSQL container is still healthy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'Hold point B0' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+# This intentionally asserts the literal Markdown code span.
+# shellcheck disable=SC2016
 grep -F '`inputs-backed-up`' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 # This intentionally asserts literal shell variables in the promotion script.
 # shellcheck disable=SC2016
