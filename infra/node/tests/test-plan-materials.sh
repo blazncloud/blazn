@@ -38,7 +38,7 @@ for fault in initialized tree-created key-written metadata-written template-writ
   printf '%s\n' "$verified" >"$root/verify.out"
   sudo jq -e '.status=="ok" and .keyId=="control-plane-node-plan/v1" and .templateId=="frontro-poc-worker/v1"' "$root/verify.out" >/dev/null
   private=$(sudo sed -n '1p' "$root/material/signing-private-v1.b64url")
-  if grep -R -F -- "$private" "$root/journal.json" "$root"/*.out "$root"/*.err >/dev/null; then printf 'raw plan signing key leaked into evidence: %s\n' "$fault" >&2; exit 1; fi
+  if sudo grep -F -- "$private" "$root/journal.json" "$root"/*.out "$root"/*.err >/dev/null; then printf 'raw plan signing key leaked into evidence: %s\n' "$fault" >&2; exit 1; fi
 done
 
 drift=$top/template-drift; mkdir "$drift"; cp "$TEMPLATE" "$drift/source.json"

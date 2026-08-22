@@ -76,4 +76,5 @@ plan_schema_id=$(jq -er '."$id"' "$NODE_ROOT/node-plan-material-receipt.schema.j
 [ "$(jq -er '.properties.nodePlan."$ref"' "$M2_ROOT/ownership-receipt.schema.json")" = "$plan_schema_id" ]
 [ "$(jq -er '.properties.nodePlan."$ref"' "$NODE_ROOT/node-broker-upgrade-receipt.schema.json")" = "$plan_schema_id" ]
 python3 "$TEST_DIR/test-schemas.py"
+python3 "$TEST_DIR/test-template-semantics.py"
 printf 'Node infrastructure contract tests passed\n'
