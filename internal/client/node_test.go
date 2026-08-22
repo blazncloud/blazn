@@ -50,7 +50,15 @@ func addEmbeddedServiceDefinition(plan *NodeInstallPlan) {
 			return
 		}
 	}
-	plan.Components = append(plan.Components, NodeInstallComponent{Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: plan.NodeService.DefinitionSHA256, Ownership: "adopt_exact"})
+	found := false
+	for _, component := range plan.Components {
+		if component.Name == "service-definition" {
+			found = true
+		}
+	}
+	if !found {
+		plan.Components = append(plan.Components, NodeInstallComponent{Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: plan.NodeService.DefinitionSHA256, Ownership: "adopt_exact"})
+	}
 	kind, target, desired := "systemd_unit", "/etc/systemd/system/"+plan.NodeService.UnitName, map[string]any{"unitName": plan.NodeService.UnitName, "sourceComponent": "service-definition"}
 	if plan.NodeService.Manager == "launchd" {
 		kind, target, desired = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist", map[string]any{"label": plan.NodeService.UnitName, "sourceComponent": "service-definition"}
@@ -383,7 +391,7 @@ func signedNodeInstallPlan(t *testing.T) (NodeInstallPlan, NodeInstallPlanTrust)
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodePublicKey, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey, Profile: profile}
 	return plan, trust
 }
