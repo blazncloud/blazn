@@ -17,8 +17,10 @@ if [ "$phase" = rollback-started ]; then "$SYSTEMCTL" disable --now blazn-microk
 if [ "$phase" = service-stopped ]; then
   for field in binary config unit tmpfiles; do path=$(jq -er --arg field "$field" '.[$field].path' "$RECEIPT"); expected=$(jq -er --arg field "$field" '.[$field].digest' "$RECEIPT"); [ -f "$path" ] && [ ! -L "$path" ] && [ "sha256:$(sha "$path")" = "$expected" ] || die "receipt-bound $field changed before rollback"; done
   secret=$(jq -er .secret.path "$RECEIPT"); [ -f "$secret" ] && [ ! -L "$secret" ] && [ "sha256:$(sha "$secret")" = "$(jq -er .secret.digest "$RECEIPT")" ] || die "receipt-bound secret changed before rollback"
+  env=$(jq -er .environment.path "$RECEIPT"); env_backup=$(jq -er .environment.backupPath "$RECEIPT"); [ -f "$env" ] && [ ! -L "$env" ] && [ "sha256:$(sha "$env")" = "$(jq -er .environment.digest "$RECEIPT")" ] || die "receipt-bound environment changed before rollback"; [ -f "$env_backup" ] && [ ! -L "$env_backup" ] && [ "sha256:$(sha "$env_backup")" = "$(jq -er .environment.priorDigest "$RECEIPT")" ] || die "environment backup changed before rollback"
   binary=$(jq -er .binary.path "$RECEIPT"); config=$(jq -er .config.path "$RECEIPT"); unit=$(jq -er .unit.path "$RECEIPT"); tmpfiles=$(jq -er .tmpfiles.path "$RECEIPT")
   rm -f -- "$binary" "$config" "$secret" "$unit" "$tmpfiles"
+  env_tmp=$env.tmp.$$; cp -- "$env_backup" "$env_tmp"; chmod 0600 "$env_tmp"; sync_path "$env_tmp"; mv -- "$env_tmp" "$env"; sync_path "$(dirname -- "$env")"
   root=$(dirname -- "$config"); rmdir -- "$root" 2>/dev/null || die "issuer config root contains unreviewed residue"
   "$SYSTEMCTL" daemon-reload
   write_phase files-restored; phase=files-restored

@@ -11,10 +11,11 @@ require_command docker
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
 assert_regular_file_owned_mode "$ENV_FILE" 0 600
+broker_mode=$(sed -n 's/^BLAZN_NODE_BROKER_LOOPBACK=//p' "$ENV_FILE"); [ -n "$broker_mode" ] || broker_mode=disabled; case "$broker_mode" in enabled|disabled) ;; *) die "Node broker loopback binding must be enabled or disabled without duplicates" ;; esac
 load_control_api_image "$ROOT_DIR"
 
 compose() {
-  docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" "$@"
+  if [ "$broker_mode" = enabled ]; then docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" --profile node-broker "$@"; else docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" "$@"; fi
 }
 
 trap 'exit 0' HUP INT TERM
@@ -29,5 +30,6 @@ while :; do
   verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
   verify_node_prerequisite_containers "$ROOT_DIR" "$ENV_FILE"
   verify_node_plan_container "$ROOT_DIR" "$ENV_FILE"
+  if [ "$broker_mode" = enabled ]; then container=$(compose ps -q node-broker); [ -n "$container" ] && [ "$(docker inspect --format '{{.State.Status}}' "$container")" = running ] || die "Node broker sidecar is not running"; fi
   sleep 5
 done
