@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
-import { verifyOidcIdToken } from "./oidc.js";
+import { verifyOidcIdToken, type Jwk } from "./oidc.js";
 
 const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = pair.publicKey.export({ format: "jwk" });
@@ -15,7 +15,7 @@ function token(overrides: Record<string, unknown> = {}): string {
   return `${header}.${payload}.${signature}`;
 }
 
-const verification = { issuer: "https://identity.blazn.example/", clientId: "client-id", nonce: "nonce", requireMfa: true, keys: [jwk], now: 1_800_000_000 };
+const verification = { issuer: "https://identity.blazn.example/", clientId: "client-id", nonce: "nonce", requireMfa: true, keys: [jwk as Jwk], now: 1_800_000_000 };
 
 test("verified OIDC identity requires signature, issuer, audience, nonce, email, and MFA", () => {
   assert.deepEqual(verifyOidcIdToken(token(), verification), { issuer: verification.issuer, subject: "auth0|user", email: "user@example.com", displayName: "Blaze User", amr: ["pwd", "mfa"] });

@@ -15,11 +15,11 @@ interface Discovery {
   jwks_uri: string;
 }
 
-interface Jwk {
-  kid?: string;
-  kty?: string;
-  use?: string;
-  alg?: string;
+export interface Jwk {
+  kid?: string | undefined;
+  kty?: string | undefined;
+  use?: string | undefined;
+  alg?: string | undefined;
   [key: string]: unknown;
 }
 
@@ -78,7 +78,7 @@ export function verifyOidcIdToken(encoded: string, input: IdTokenVerification): 
   if (header.alg !== "RS256" || typeof header.kid !== "string") throw new Error("ID token uses an unsupported signing algorithm");
   const jwk = input.keys.find((item) => item.kid === header.kid && item.kty === "RSA" && (!item.use || item.use === "sig") && (!item.alg || item.alg === "RS256"));
   if (!jwk) throw new Error("ID token signing key is unavailable");
-  const valid = verify("RSA-SHA256", Buffer.from(`${segments[0]}.${segments[1]}`), createPublicKey({ key: jwk as JsonWebKey, format: "jwk" }), Buffer.from(segments[2]!, "base64url"));
+  const valid = verify("RSA-SHA256", Buffer.from(`${segments[0]}.${segments[1]}`), createPublicKey({ key: jwk as unknown as import("node:crypto").JsonWebKey, format: "jwk" }), Buffer.from(segments[2]!, "base64url"));
   if (!valid) throw new Error("ID token signature is invalid");
   const now = input.now ?? Math.floor(Date.now() / 1000);
   if (claims.iss !== input.issuer || !audienceIncludes(claims.aud, input.clientId) || typeof claims.exp !== "number" || claims.exp < now - 30 || typeof claims.iat !== "number" || claims.iat > now + 30 || claims.nonce !== input.nonce) throw new Error("ID token claims are invalid");
