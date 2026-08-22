@@ -55,6 +55,12 @@ The v2 Social release key fingerprint is
 this rotation continue to trust only the retired v1 key and therefore fail
 closed when presented with v2-signed Social artifacts.
 
+The rotation rollout publishes the v2-trusting root before the first v2-signed
+Social release, then qualifies both exact versions together. The new root
+rejects retired v1-signed Social releases as a deliberate downgrade defense;
+operators must retain the preceding root release only if they must reinstall a
+historical v1-signed Social artifact.
+
 ## Runtime context
 
 Before dispatch, root `blazn` creates a versioned runtime envelope and replaces

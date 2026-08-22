@@ -1,6 +1,57 @@
 package plugin
 
-import "testing"
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSocialCatalogPinsV2AndRejectsRetiredV1Signature(t *testing.T) {
+	sshKeygen, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skip("ssh-keygen unavailable")
+	}
+	definition, ok := DefaultCatalog().Plugin("social")
+	if !ok {
+		t.Fatal("social catalog definition missing")
+	}
+	fields := strings.Fields(definition.AllowedSigner)
+	if len(fields) < 5 || fields[0] != definition.SigningIdentity || fields[1] != `namespaces="blazn-social-release"` || fields[2] != "ssh-ed25519" || fields[4] != "blazn-social-release-v2" {
+		t.Fatalf("malformed Social allowed signer: %q", definition.AllowedSigner)
+	}
+	directory := t.TempDir()
+	publicKey := filepath.Join(directory, "social-v2.pub")
+	if err := os.WriteFile(publicKey, []byte(strings.Join(fields[2:], " ")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := exec.Command(sshKeygen, "-lf", publicKey, "-E", "sha256").CombinedOutput()
+	if err != nil || !strings.Contains(string(fingerprint), "SHA256:L7rcTp4WYKPsYNmDx8ElbxwHlVc8VQvX9EH4SGlLcFQ") {
+		t.Fatalf("Social v2 fingerprint=%q err=%v", fingerprint, err)
+	}
+	installFixture := func(version string) {
+		t.Helper()
+		for _, name := range []string{"SHA256SUMS", "SHA256SUMS.sig"} {
+			encoded, err := os.ReadFile(filepath.Join("testdata", "social-"+version+"-"+name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(directory, name), encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	installFixture("v2")
+	if err := verifySignature(context.Background(), systemCommandRunner{}, definition, directory); err != nil {
+		t.Fatalf("v2 Social release signature rejected: %v", err)
+	}
+	installFixture("v1")
+	if err := verifySignature(context.Background(), systemCommandRunner{}, definition, directory); err == nil {
+		t.Fatal("retired v1 Social release signature accepted by v2 trust root")
+	}
+}
 
 func TestDefaultCatalogResolvesCanonicalAndAliases(t *testing.T) {
 	catalog := DefaultCatalog()
