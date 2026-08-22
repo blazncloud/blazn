@@ -1,7 +1,9 @@
 package node
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +17,25 @@ import (
 
 	"github.com/KingJammin/blazn/internal/client"
 )
+
+type mockJoinAPI struct {
+	issueRequest   client.JoinCredentialRequest
+	issueProof     string
+	consumeRequest client.ConsumeJoinCredentialRequest
+	consumeProof   string
+	credential     client.JoinCredential
+	node           client.Node
+}
+
+func (m *mockJoinAPI) IssueNodeJoinCredential(_ context.Context, proof, _ string, request client.JoinCredentialRequest) (client.JoinCredential, error) {
+	m.issueProof, m.issueRequest = proof, request
+	return m.credential, nil
+}
+
+func (m *mockJoinAPI) ConsumeNodeJoinCredential(_ context.Context, proof, _ string, _ string, request client.ConsumeJoinCredentialRequest) (client.Node, error) {
+	m.consumeProof, m.consumeRequest = proof, request
+	return m.node, nil
+}
 
 type recordedCommand struct {
 	path  string
@@ -212,5 +233,70 @@ func TestDecodeJoinCredentialRejectsUnknownFieldsAndCredentials(t *testing.T) {
 	raw, _ = json.Marshal(value)
 	if _, _, err := decodeJoinCredential(base64.RawURLEncoding.EncodeToString(raw), binding); err == nil {
 		t.Fatal("credential URL userinfo was accepted")
+	}
+}
+
+func TestBrokerJoinCoordinatorBindsIssueAndConsumeToPersistedIdentity(t *testing.T) {
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	identity := Identity{PrivateKey: privateKey, PublicKey: privateKey.Public().(ed25519.PublicKey)}
+	fingerprint, err := identity.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := testJoinPlan("linux")
+	plan.PlanID = "11111111-1111-4111-8111-111111111111"
+	plan.NodeID = "22222222-2222-4222-8222-222222222222"
+	plan.EnrollmentID = "33333333-3333-4333-8333-333333333333"
+	plan.WorkspaceID = "44444444-4444-4444-8444-444444444444"
+	plan.Digest = "sha256:" + strings.Repeat("a", 64)
+	plan.Target.MachineFingerprint = strings.Repeat("b", 64)
+	plan.Target.NodePublicKeyFingerprint = fingerprint
+	plan.ExpiresAt = now.Add(10 * time.Minute).Format(time.RFC3339)
+	state := &memoryState{runtime: RuntimeState{Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: fingerprint, IssuedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(10 * time.Minute).Format(time.RFC3339)}}}}
+	api := &mockJoinAPI{
+		credential: client.JoinCredential{IssuanceID: "55555555-5555-4555-8555-555555555555", Credential: strings.Repeat("x", 43), ExpiresAt: now.Add(5 * time.Minute).Format(time.RFC3339), ClusterID: plan.Cluster.ID, WorkerOnly: true},
+		node:       client.Node{ID: plan.NodeID, WorkspaceID: plan.WorkspaceID, Name: plan.Hostname, Kind: "shared", Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, LifecycleState: "active", TrustState: "verified", Version: 1, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "7"}, CreatedAt: now.Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339)},
+	}
+	coordinator, err := NewBrokerJoinCoordinator(api, state, fixedIdentity{Identity: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Now = func() time.Time { return now }
+	binding, err := coordinator.WorkerCredential(context.Background(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Credential != api.credential.Credential || binding.ExpectedNodeName != plan.Hostname || api.issueRequest.NodePublicKeyFingerprint != fingerprint || len(api.issueProof) != 86 {
+		t.Fatalf("issue binding is incomplete: binding=%+v request=%+v", binding, api.issueRequest)
+	}
+	joined := JoinedNode{Name: plan.Hostname, UID: "uid-1", ResourceVersion: "7"}
+	if err := coordinator.ConfirmJoined(context.Background(), plan, joined); err != nil {
+		t.Fatal(err)
+	}
+	if api.consumeRequest.JoinedNodeUID != joined.UID || api.consumeRequest.ResourceVersion != joined.ResourceVersion || len(api.consumeProof) != 86 {
+		t.Fatalf("consume binding is incomplete: %+v", api.consumeRequest)
+	}
+	if err := coordinator.ConfirmJoined(context.Background(), plan, joined); err == nil {
+		t.Fatal("consumed join issuance was reusable")
+	}
+}
+
+func TestBrokerJoinCoordinatorRejectsCredentialBeyondIdentityExpiry(t *testing.T) {
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	privateKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{8}, ed25519.SeedSize))
+	identity := Identity{PrivateKey: privateKey, PublicKey: privateKey.Public().(ed25519.PublicKey)}
+	fingerprint, _ := identity.Fingerprint()
+	plan := testJoinPlan("linux")
+	plan.PlanID, plan.NodeID = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	plan.EnrollmentID, plan.WorkspaceID = "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
+	plan.Digest, plan.Target.MachineFingerprint, plan.Target.NodePublicKeyFingerprint = "sha256:"+strings.Repeat("a", 64), strings.Repeat("b", 64), fingerprint
+	plan.ExpiresAt = now.Add(10 * time.Minute).Format(time.RFC3339)
+	state := &memoryState{runtime: RuntimeState{Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, PublicKeyFingerprint: fingerprint, IssuedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(time.Minute).Format(time.RFC3339)}}}}
+	api := &mockJoinAPI{credential: client.JoinCredential{IssuanceID: "55555555-5555-4555-8555-555555555555", Credential: strings.Repeat("x", 43), ExpiresAt: now.Add(2 * time.Minute).Format(time.RFC3339), ClusterID: plan.Cluster.ID, WorkerOnly: true}}
+	coordinator, _ := NewBrokerJoinCoordinator(api, state, fixedIdentity{Identity: identity})
+	coordinator.Now = func() time.Time { return now }
+	if _, err := coordinator.WorkerCredential(context.Background(), plan); err == nil {
+		t.Fatal("credential beyond identity expiry was accepted")
 	}
 }
