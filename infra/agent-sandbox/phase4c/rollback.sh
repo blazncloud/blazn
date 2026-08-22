@@ -35,16 +35,16 @@ check_namespace_contents() {
     objects=$(kubectl get "$resource" -n "$namespace" --ignore-not-found -o json)
     [ -n "$objects" ] || continue
     printf '%s' "$objects" | jq -e --arg tx "$transaction_id" --arg ns "$namespace" '
-      [.items[] | select(
-        (.metadata.annotations["blazn.dev/phase4c-transaction"] != $tx) and
-        !(($ns == "blazn-poc") and (.kind == "ServiceAccount") and (.metadata.name == "default")) and
-        !(($ns == "blazn-poc") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt")) and
-        !(($ns == "agent-sandbox-system") and (.kind == "ServiceAccount") and (.metadata.name == "default")) and
-        !(($ns == "agent-sandbox-system") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt"))
-        and !(($ns == "agent-sandbox-system") and (.kind == "Lease") and (.metadata.name == "a3317529.agent-sandbox.x-k8s.io"))
-        and !(($ns == "agent-sandbox-system") and (.kind == "Endpoints") and ((.metadata.name == "agent-sandbox-controller") or (.metadata.name == "agent-sandbox-webhook-service")))
-        and !(($ns == "agent-sandbox-system") and (.kind == "EndpointSlice") and ((.metadata.labels["kubernetes.io/service-name"] == "agent-sandbox-controller") or (.metadata.labels["kubernetes.io/service-name"] == "agent-sandbox-webhook-service")))
-      )] | length == 0' >/dev/null || unexpected="$unexpected $resource"
+      [.items[]
+       | select(.metadata.annotations["blazn.dev/phase4c-transaction"] != $tx)
+       | select(((($ns == "blazn-poc") and (.kind == "ServiceAccount") and (.metadata.name == "default")) or
+                 (($ns == "blazn-poc") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt")) or
+                 (($ns == "agent-sandbox-system") and (.kind == "ServiceAccount") and (.metadata.name == "default")) or
+                 (($ns == "agent-sandbox-system") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt")) or
+                 (($ns == "agent-sandbox-system") and (.kind == "Lease") and (.metadata.name == "a3317529.agent-sandbox.x-k8s.io")) or
+                 (($ns == "agent-sandbox-system") and (.kind == "Endpoints") and ((.metadata.name == "agent-sandbox-controller") or (.metadata.name == "agent-sandbox-webhook-service"))) or
+                 (($ns == "agent-sandbox-system") and (.kind == "EndpointSlice") and ((.metadata.labels["kubernetes.io/service-name"] == "agent-sandbox-controller") or (.metadata.labels["kubernetes.io/service-name"] == "agent-sandbox-webhook-service")))) | not)]
+      | length == 0' >/dev/null || unexpected="$unexpected $resource"
   done
   [ -z "$unexpected" ] || { printf 'refusing namespace deletion with unexpected objects:%s\n' "$unexpected" >&2; exit 1; }
 }
