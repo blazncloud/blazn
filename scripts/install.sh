@@ -141,9 +141,8 @@ blazn_recover_stale_lock() {
       [ -f "$blazn_recovery_fence" ] && [ ! -L "$blazn_recovery_fence" ] && \
         [ "$blazn_recovery_fence" -ef "$blazn_lock_file" ] || \
         blazn_die "stale recovery fence does not match the lifecycle lock"
-      rm -f "$blazn_recovery_fence"
     fi
-    rm -f "$blazn_recovery_claim"
+    blazn_die "a previous lifecycle recoverer stopped unexpectedly; preserve the claim and fence for manual reconciliation"
   fi
 
   blazn_recovery_start=$(blazn_process_start "$$")

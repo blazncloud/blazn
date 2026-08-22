@@ -320,6 +320,36 @@ run_installer >"$test_root/recover-uninstall-prestage.out"
 [ ! -e "$test_install/.blazn-install.lock" ] && [ ! -e "$test_install/.blazn-install.journal" ] || fail "pre-stage uninstall recovery left lock state"
 pass "pre-stage uninstall crash reconciles as a no-op"
 
+stale_owner="$test_install/.blazn-stale-owner-recoverer"
+{
+  printf 'pid=99999997\n'
+  printf 'start=stale-lock\n'
+} > "$stale_owner"
+ln "$stale_owner" "$test_install/.blazn-install.lock"
+rm "$stale_owner"
+{
+  printf 'state=committed\n'
+  printf 'had_binary=1\n'
+  printf 'had_receipt=1\n'
+} > "$test_install/.blazn-install.journal"
+dead_recoverer="$test_install/.blazn-dead-recoverer"
+{
+  printf 'pid=99999996\n'
+  printf 'start=stale-recoverer\n'
+} > "$dead_recoverer"
+ln "$dead_recoverer" "$test_install/.blazn-install.recovery"
+rm "$dead_recoverer"
+ln "$test_install/.blazn-install.lock" "$test_install/.blazn-install.recovery-fence"
+if run_installer >"$test_root/dead-recoverer.out" 2>&1; then
+  fail "dead recovery owner was reclaimed automatically"
+fi
+grep -q 'preserve the claim and fence for manual reconciliation' "$test_root/dead-recoverer.out" || fail "dead recoverer failure is explicit"
+[ -f "$test_install/.blazn-install.recovery" ] && [ -f "$test_install/.blazn-install.recovery-fence" ] || \
+  fail "dead recoverer evidence was not preserved"
+rm "$test_install/.blazn-install.recovery" "$test_install/.blazn-install.recovery-fence" \
+  "$test_install/.blazn-install.lock" "$test_install/.blazn-install.journal"
+pass "dead recovery owner fails closed with evidence preserved"
+
 stale_owner="$test_install/.blazn-stale-owner-concurrent"
 {
   printf 'pid=99999998\n'
@@ -389,4 +419,4 @@ grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fai
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
-printf '1..19\n'
+printf '1..20\n'
