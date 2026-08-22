@@ -54,9 +54,50 @@ func TestValidateTemplateRejectsSchemaAndCrossItemViolations(t *testing.T) {
 func TestValidateTemplateRejectsTrailingDocument(t *testing.T) {
 	manifest, _ := os.ReadFile("../../packages/contracts/testdata/sandbox/template-good.json")
 	result := ValidateTemplate(append(manifest, []byte(` {}`)...))
-	if result.Valid || !strings.Contains(strings.Join(result.Errors, " "), "exactly one") {
+	if result.Valid || result.ManifestDigest != nil || len(result.Errors) == 0 {
 		t.Fatalf("validation = %+v", result)
 	}
+}
+
+func TestValidateTemplateNullUTF8URLAndCodePointBoundaries(t *testing.T) {
+	manifest, _ := os.ReadFile("../../packages/contracts/testdata/sandbox/template-good.json")
+	t.Run("null optional array", func(t *testing.T) {
+		changed := strings.Replace(string(manifest), `"repositories": [{"name": "source", "url": "https://github.com/blazncloud/blazn.git", "destination": "/workspace/src/blazn", "writable": true}],`, `"repositories": null,`, 1)
+		result := ValidateTemplate([]byte(changed))
+		if result.Valid || !strings.Contains(strings.Join(result.Errors, " "), "not null") {
+			t.Fatalf("validation=%+v", result)
+		}
+	})
+	t.Run("invalid utf8", func(t *testing.T) {
+		changed := append([]byte(nil), manifest...)
+		changed[len(changed)/2] = 0xff
+		result := ValidateTemplate(changed)
+		if result.Valid || !strings.Contains(strings.Join(result.Errors, " "), "UTF-8") {
+			t.Fatalf("validation=%+v", result)
+		}
+	})
+	t.Run("at in repository path", func(t *testing.T) {
+		changed := strings.Replace(string(manifest), "https://github.com/blazncloud/blazn.git", "https://github.com/blazncloud/blazn@release.git", 1)
+		if result := ValidateTemplate([]byte(changed)); !result.Valid {
+			t.Fatalf("validation=%+v", result)
+		}
+	})
+	t.Run("query rejected", func(t *testing.T) {
+		changed := strings.Replace(string(manifest), "https://github.com/blazncloud/blazn.git", "https://github.com/blazncloud/blazn.git?ref=main", 1)
+		if result := ValidateTemplate([]byte(changed)); result.Valid {
+			t.Fatal("query URL accepted")
+		}
+	})
+	t.Run("unicode code points", func(t *testing.T) {
+		valid := strings.Replace(string(manifest), "Pinned non-sensitive Phase 5 bootstrap fixture", strings.Repeat("é", 1024), 1)
+		if result := ValidateTemplate([]byte(valid)); !result.Valid {
+			t.Fatalf("1024 code points invalid: %+v", result)
+		}
+		invalid := strings.Replace(string(manifest), "Pinned non-sensitive Phase 5 bootstrap fixture", strings.Repeat("é", 1025), 1)
+		if result := ValidateTemplate([]byte(invalid)); result.Valid {
+			t.Fatal("1025 code points accepted")
+		}
+	})
 }
 
 func TestReadTemplateFileRejectsSymlink(t *testing.T) {

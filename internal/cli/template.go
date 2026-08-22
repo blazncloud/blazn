@@ -47,7 +47,12 @@ func runTemplateCommand(ctx context.Context, format OutputFormat, args []string,
 		}
 		result := sandboxpkg.ValidateTemplate(manifest)
 		if format == OutputJSON {
-			_ = json.NewEncoder(stdout).Encode(result)
+			encoder := json.NewEncoder(stdout)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(result); err != nil {
+				fmt.Fprintln(stderr, "blazn: failed to write output")
+				return ExitFailure
+			}
 		} else if result.Valid {
 			fmt.Fprintf(stdout, "template is valid (%s)\n", *result.ManifestDigest)
 		} else {

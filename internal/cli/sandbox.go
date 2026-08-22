@@ -173,6 +173,11 @@ func runSandboxExec(ctx context.Context, format OutputFormat, args []string, run
 	if len(command) > 32 {
 		return writeSandboxCLIError(format, stderr, stdout, ExitUsage, "usage", "exec command may contain at most 32 arguments", "local")
 	}
+	for _, argument := range command {
+		if argument == "" || len(argument) > 1024 {
+			return writeSandboxCLIError(format, stderr, stdout, ExitUsage, "usage", "exec arguments must contain 1 to 1024 bytes", "local")
+		}
+	}
 	result, err := runtime.Exec(ctx, args[0], command)
 	if err == nil {
 		return writeSandboxValue(format, stdout, stderr, result, "remote command completed")

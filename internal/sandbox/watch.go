@@ -17,12 +17,11 @@ func (s *Service) Watch(ctx context.Context, id, cursor string, emit func(client
 	lastID, lastSequence := cursor, int64(-1)
 	consecutiveErrors := 0
 	for {
-		token, err := s.token(ctx)
+		stream, err := withAccessToken(ctx, s, func(token string) (EventStream, error) { return s.api.StreamSandboxEvents(ctx, token, id, lastID) })
 		if err != nil {
-			return "", err
-		}
-		stream, err := s.api.StreamSandboxEvents(ctx, token, id, lastID)
-		if err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
 			consecutiveErrors++
 			if consecutiveErrors >= s.maxErrors {
 				return "", &UnavailableError{Cause: err}
@@ -36,12 +35,14 @@ func (s *Service) Watch(ctx context.Context, id, cursor string, emit func(client
 			event, nextErr := stream.Next()
 			if nextErr != nil {
 				_ = stream.Close()
-				if !errors.Is(nextErr, io.EOF) {
-					consecutiveErrors++
-				} else {
-					consecutiveErrors = 0
+				if ctx.Err() != nil {
+					return "", ctx.Err()
 				}
+				consecutiveErrors++
 				if consecutiveErrors >= s.maxErrors {
+					if errors.Is(nextErr, io.EOF) {
+						nextErr = errors.New("sandbox event stream ended before a terminal event")
+					}
 					return "", &UnavailableError{Cause: nextErr}
 				}
 				if err := waitContext(ctx, s.reconnect); err != nil {
@@ -49,10 +50,9 @@ func (s *Service) Watch(ctx context.Context, id, cursor string, emit func(client
 				}
 				break
 			}
-			consecutiveErrors = 0
-			if event.EventID == "" || event.SandboxID != id {
+			if err := validateEvent(event, id); err != nil {
 				_ = stream.Close()
-				return "", errors.New("sandbox event identity is invalid")
+				return "", err
 			}
 			if event.EventID == lastID {
 				continue
@@ -65,6 +65,7 @@ func (s *Service) Watch(ctx context.Context, id, cursor string, emit func(client
 				_ = stream.Close()
 				return "", err
 			}
+			consecutiveErrors = 0
 			lastID, lastSequence = event.EventID, event.Sequence
 			if terminal := terminalEvent(event); terminal != "" {
 				_ = stream.Close()

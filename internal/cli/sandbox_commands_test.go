@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -119,6 +120,16 @@ func TestSandboxExecUnavailablePrecedesPartial(t *testing.T) {
 	}
 }
 
+func TestSandboxExecRejectsEmptyAndOversizeArgumentsAsUsage(t *testing.T) {
+	for _, argument := range []string{"", strings.Repeat("x", 1025)} {
+		app, _, stderr := commandApp()
+		code := app.RunSandboxCommand(context.Background(), OutputHuman, []string{"exec", testSandboxID, "--", argument}, &fakeSandboxRuntime{})
+		if code != ExitUsage || !strings.Contains(stderr.String(), "1 to 1024 bytes") {
+			t.Fatalf("arg bytes=%d code=%d stderr=%q", len(argument), code, stderr)
+		}
+	}
+}
+
 func TestSandboxWatchWritesNDJSONAndTerminalExit(t *testing.T) {
 	runtime := &fakeSandboxRuntime{watchEvents: []client.SandboxEvent{{EventID: "22222222-2222-4222-8222-222222222222", SandboxID: testSandboxID, Sequence: 1, Type: "sandbox.failed", Payload: map[string]any{"state": "failed"}}}, watchTerminal: sandboxpkg.WatchFailed}
 	app, out, stderr := commandApp()
@@ -140,5 +151,23 @@ func TestTemplateValidateAndPublishHooks(t *testing.T) {
 	code = app.RunTemplateCommand(context.Background(), OutputJSON, []string{"publish", "-f", path, "--workspace", "workspace-1", "--request-id", "request-123"}, runtime)
 	if code != ExitSuccess || stderr.Len() != 0 || runtime.workspace != "workspace-1" || runtime.key != "request-123" || len(runtime.manifest) == 0 || !strings.Contains(out.String(), `"id":"template"`) {
 		t.Fatalf("code=%d runtime=%+v out=%q stderr=%q", code, runtime, out, stderr)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestTemplateAndWatchPropagateEncoderErrors(t *testing.T) {
+	stderr := &bytes.Buffer{}
+	app := New(failingWriter{}, stderr, testBuild)
+	if code := app.RunTemplateCommand(context.Background(), OutputJSON, []string{"validate", "-f", "../../packages/contracts/testdata/sandbox/template-good.json"}, nil); code != ExitFailure || !strings.Contains(stderr.String(), "failed to write output") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	runtime := &fakeSandboxRuntime{watchEvents: []client.SandboxEvent{{EventID: "22222222-2222-4222-8222-222222222222", SandboxID: testSandboxID, Sequence: 1, Type: "sandbox.ready", Payload: map[string]any{}, CreatedAt: "2026-08-22T00:00:00Z"}}, watchTerminal: sandboxpkg.WatchReady}
+	stderr.Reset()
+	app = New(failingWriter{}, stderr, testBuild)
+	if code := app.RunSandboxCommand(context.Background(), OutputJSON, []string{"watch", testSandboxID}, runtime); code != ExitFailure || !strings.Contains(stderr.String(), "failed to write output") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
 }

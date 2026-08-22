@@ -83,12 +83,12 @@ func (a ClientAPI) DownloadSandboxGrantFile(ctx context.Context, id, token, path
 }
 
 type TokenProvider interface {
-	AccessToken(context.Context) (string, error)
+	AccessToken(context.Context, bool) (string, error)
 }
 type workspaceTokenProvider struct{ sessions workspacepkg.SessionProvider }
 
-func (p workspaceTokenProvider) AccessToken(ctx context.Context) (string, error) {
-	session, err := p.sessions.Session(ctx, false)
+func (p workspaceTokenProvider) AccessToken(ctx context.Context, forceRefresh bool) (string, error) {
+	session, err := p.sessions.Session(ctx, forceRefresh)
 	return session.AccessToken, err
 }
 func NewWorkspaceTokenProvider(provider workspacepkg.SessionProvider) TokenProvider {
@@ -100,10 +100,11 @@ type Service struct {
 	tokens    TokenProvider
 	reconnect time.Duration
 	maxErrors int
+	now       func() time.Time
 }
 
 func NewService(api API, tokens TokenProvider) *Service {
-	return &Service{api: api, tokens: tokens, reconnect: 100 * time.Millisecond, maxErrors: 3}
+	return &Service{api: api, tokens: tokens, reconnect: 100 * time.Millisecond, maxErrors: 3, now: time.Now}
 }
 
 func NewDefaultService() (*Service, error) {
@@ -122,8 +123,8 @@ func NewDefaultService() (*Service, error) {
 	return NewService(ClientAPI{Client: generated}, NewWorkspaceTokenProvider(sessions)), nil
 }
 
-func (s *Service) token(ctx context.Context) (string, error) {
-	value, err := s.tokens.AccessToken(ctx)
+func (s *Service) token(ctx context.Context, forceRefresh bool) (string, error) {
+	value, err := s.tokens.AccessToken(ctx, forceRefresh)
 	if err != nil {
 		return "", &UnavailableError{Cause: err}
 	}
@@ -133,42 +134,63 @@ func (s *Service) token(ctx context.Context) (string, error) {
 	return value, nil
 }
 
+func withAccessToken[T any](ctx context.Context, s *Service, action func(string) (T, error)) (T, error) {
+	var zero T
+	token, err := s.token(ctx, false)
+	if err != nil {
+		return zero, err
+	}
+	result, err := action(token)
+	if !client.IsCode(err, "access_expired") {
+		return result, err
+	}
+	token, refreshErr := s.token(ctx, true)
+	if refreshErr != nil {
+		return zero, refreshErr
+	}
+	return action(token)
+}
+
 func (s *Service) Publish(ctx context.Context, workspace, requestID string, manifest []byte) (TemplatePublish, error) {
 	validation := ValidateTemplate(manifest)
 	if !validation.Valid {
 		return TemplatePublish{}, fmt.Errorf("template invalid: %s", strings.Join(validation.Errors, "; "))
 	}
-	token, err := s.token(ctx)
-	if err != nil {
-		return TemplatePublish{}, err
-	}
 	name, err := TemplateName(manifest)
 	if err != nil {
 		return TemplatePublish{}, err
 	}
-	draft, found, err := s.findTemplate(ctx, token, workspace, name)
+	draft, found, err := s.findTemplate(ctx, workspace, name)
 	if err != nil {
 		return TemplatePublish{}, err
 	}
 	if found {
-		draft, err = s.api.ReplaceSandboxTemplateDraft(ctx, token, draft.Template.ID, requestID, client.ReplaceSandboxTemplateDraftRequest{ExpectedDraftVersion: draft.Template.DraftVersion, Manifest: client.SandboxManifest(append([]byte(nil), manifest...))})
+		draft, err = withAccessToken(ctx, s, func(token string) (client.SandboxTemplateEnvelope, error) {
+			return s.api.ReplaceSandboxTemplateDraft(ctx, token, draft.Template.ID, requestID, client.ReplaceSandboxTemplateDraftRequest{ExpectedDraftVersion: draft.Template.DraftVersion, Manifest: client.SandboxManifest(append([]byte(nil), manifest...))})
+		})
 	} else {
-		draft, err = s.api.CreateSandboxTemplate(ctx, token, workspace, requestID, client.SandboxManifest(append([]byte(nil), manifest...)))
+		draft, err = withAccessToken(ctx, s, func(token string) (client.SandboxTemplateEnvelope, error) {
+			return s.api.CreateSandboxTemplate(ctx, token, workspace, requestID, client.SandboxManifest(append([]byte(nil), manifest...)))
+		})
 	}
 	if err != nil {
 		return TemplatePublish{}, err
 	}
-	published, err := s.api.PublishSandboxTemplateVersion(ctx, token, draft.Template.ID, requestID, client.PublishSandboxTemplateVersionRequest{ExpectedDraftVersion: draft.Template.DraftVersion})
+	published, err := withAccessToken(ctx, s, func(token string) (client.SandboxTemplateVersionEnvelope, error) {
+		return s.api.PublishSandboxTemplateVersion(ctx, token, draft.Template.ID, requestID, client.PublishSandboxTemplateVersionRequest{ExpectedDraftVersion: draft.Template.DraftVersion})
+	})
 	if err != nil {
 		return TemplatePublish{}, err
 	}
 	return TemplatePublish{Template: published.Template, Version: published.Version}, nil
 }
 
-func (s *Service) findTemplate(ctx context.Context, token, workspace, name string) (client.SandboxTemplateEnvelope, bool, error) {
+func (s *Service) findTemplate(ctx context.Context, workspace, name string) (client.SandboxTemplateEnvelope, bool, error) {
 	cursor := ""
 	for page := 0; page < 100; page++ {
-		list, err := s.api.ListSandboxTemplates(ctx, token, workspace, cursor)
+		list, err := withAccessToken(ctx, s, func(token string) (client.SandboxTemplateList, error) {
+			return s.api.ListSandboxTemplates(ctx, token, workspace, cursor)
+		})
 		if err != nil {
 			return client.SandboxTemplateEnvelope{}, false, err
 		}
@@ -189,25 +211,17 @@ func (s *Service) findTemplate(ctx context.Context, token, workspace, name strin
 }
 
 func (s *Service) Create(ctx context.Context, workspace, requestID string, request client.CreateSandboxRequest) (client.SandboxMutation, error) {
-	token, err := s.token(ctx)
-	if err != nil {
-		return client.SandboxMutation{}, err
-	}
-	return s.api.CreateSandbox(ctx, token, workspace, requestID, request)
+	return withAccessToken(ctx, s, func(token string) (client.SandboxMutation, error) {
+		return s.api.CreateSandbox(ctx, token, workspace, requestID, request)
+	})
 }
 func (s *Service) List(ctx context.Context, workspace, cursor string) (client.SandboxList, error) {
-	token, err := s.token(ctx)
-	if err != nil {
-		return client.SandboxList{}, err
-	}
-	return s.api.ListSandboxes(ctx, token, workspace, cursor)
+	return withAccessToken(ctx, s, func(token string) (client.SandboxList, error) {
+		return s.api.ListSandboxes(ctx, token, workspace, cursor)
+	})
 }
 func (s *Service) Get(ctx context.Context, id string) (client.Sandbox, error) {
-	token, err := s.token(ctx)
-	if err != nil {
-		return client.Sandbox{}, err
-	}
-	return s.api.GetSandbox(ctx, token, id)
+	return withAccessToken(ctx, s, func(token string) (client.Sandbox, error) { return s.api.GetSandbox(ctx, token, id) })
 }
 func (s *Service) Stop(ctx context.Context, id, requestID string) (client.SandboxMutation, error) {
 	return s.mutate(ctx, id, requestID, client.SandboxOperationStop)
@@ -216,15 +230,13 @@ func (s *Service) Delete(ctx context.Context, id, requestID string) (client.Sand
 	return s.mutate(ctx, id, requestID, client.SandboxOperationDelete)
 }
 func (s *Service) mutate(ctx context.Context, id, requestID string, operation client.SandboxOperationType) (client.SandboxMutation, error) {
-	token, err := s.token(ctx)
+	current, err := withAccessToken(ctx, s, func(token string) (client.Sandbox, error) { return s.api.GetSandbox(ctx, token, id) })
 	if err != nil {
 		return client.SandboxMutation{}, err
 	}
-	current, err := s.api.GetSandbox(ctx, token, id)
-	if err != nil {
-		return client.SandboxMutation{}, err
-	}
-	return s.api.CreateSandboxOperation(ctx, token, id, requestID, client.CreateSandboxOperationRequest{Type: operation, ExpectedVersion: current.Version})
+	return withAccessToken(ctx, s, func(token string) (client.SandboxMutation, error) {
+		return s.api.CreateSandboxOperation(ctx, token, id, requestID, client.CreateSandboxOperationRequest{Type: operation, ExpectedVersion: current.Version})
+	})
 }
 
 func (s *Service) Exec(ctx context.Context, id string, command []string) (ExecResult, error) {
@@ -236,11 +248,7 @@ func (s *Service) Exec(ctx context.Context, id string, command []string) (ExecRe
 			return ExecResult{}, errors.New("exec arguments must contain 1 to 1024 characters")
 		}
 	}
-	token, err := s.token(ctx)
-	if err != nil {
-		return ExecResult{}, err
-	}
-	grant, err := s.api.CreateSandboxAccessGrant(ctx, token, id, client.CreateSandboxAccessGrantRequest{Kind: client.SandboxGrantExec, ExpiresInSeconds: 60})
+	grant, err := s.createGrant(ctx, id, client.SandboxGrantExec)
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -249,6 +257,9 @@ func (s *Service) Exec(ctx context.Context, id string, command []string) (ExecRe
 	grant.AccessToken = ""
 	if err != nil {
 		return output, &PartialError{Cause: err}
+	}
+	if err := validateExecResult(result); err != nil {
+		return ExecResult{SandboxID: id, GrantID: output.GrantID, Truncated: true}, &PartialError{Cause: err}
 	}
 	if result.Truncated {
 		return output, &PartialError{Cause: errors.New("remote output was truncated")}
@@ -260,6 +271,9 @@ func (s *Service) Exec(ctx context.Context, id string, command []string) (ExecRe
 }
 
 func (s *Service) Upload(ctx context.Context, id, source, destination string) (TransferResult, error) {
+	if !ValidTransferPath(destination) {
+		return TransferResult{}, errors.New("sandbox upload destination path is invalid")
+	}
 	file, info, err := openRegularNoFollow(source)
 	if err != nil {
 		return TransferResult{}, fmt.Errorf("open upload source: %w", err)
@@ -280,11 +294,7 @@ func (s *Service) Upload(ctx context.Context, id, source, destination string) (T
 		return TransferResult{}, err
 	}
 	digest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
-	token, err := s.token(ctx)
-	if err != nil {
-		return TransferResult{}, err
-	}
-	grant, err := s.api.CreateSandboxAccessGrant(ctx, token, id, client.CreateSandboxAccessGrantRequest{Kind: client.SandboxGrantUpload, ExpiresInSeconds: 60})
+	grant, err := s.createGrant(ctx, id, client.SandboxGrantUpload)
 	if err != nil {
 		return TransferResult{}, err
 	}
@@ -301,14 +311,13 @@ func (s *Service) Upload(ctx context.Context, id, source, destination string) (T
 }
 
 func (s *Service) Download(ctx context.Context, id, source, destination string) (TransferResult, error) {
+	if !ValidTransferPath(source) {
+		return TransferResult{}, errors.New("sandbox download source path is invalid")
+	}
 	if err := validateDownloadDestination(destination); err != nil {
 		return TransferResult{}, err
 	}
-	token, err := s.token(ctx)
-	if err != nil {
-		return TransferResult{}, err
-	}
-	grant, err := s.api.CreateSandboxAccessGrant(ctx, token, id, client.CreateSandboxAccessGrantRequest{Kind: client.SandboxGrantDownload, ExpiresInSeconds: 60})
+	grant, err := s.createGrant(ctx, id, client.SandboxGrantDownload)
 	if err != nil {
 		return TransferResult{}, err
 	}
@@ -326,6 +335,19 @@ func (s *Service) Download(ctx context.Context, id, source, destination string) 
 		return output, err
 	}
 	return output, nil
+}
+
+func (s *Service) createGrant(ctx context.Context, id string, kind client.SandboxGrantKind) (client.SandboxAccessGrantCreated, error) {
+	grant, err := withAccessToken(ctx, s, func(token string) (client.SandboxAccessGrantCreated, error) {
+		return s.api.CreateSandboxAccessGrant(ctx, token, id, client.CreateSandboxAccessGrantRequest{Kind: kind, ExpiresInSeconds: 60})
+	})
+	if err != nil {
+		return client.SandboxAccessGrantCreated{}, err
+	}
+	if err := validateGrant(grant, id, kind, s.now().UTC()); err != nil {
+		return client.SandboxAccessGrantCreated{}, err
+	}
+	return grant, nil
 }
 
 func writeVerifiedFile(destination string, body io.Reader, expected int64, digest string) error {

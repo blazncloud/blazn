@@ -10,17 +10,19 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/blazncloud/blazn/internal/client"
 )
 
 var (
-	dnsNamePattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	versionPattern  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	imagePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$`)
-	quantityPattern = regexp.MustCompile(`^(?:[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?|0\.[0-9]+)$`)
-	mediaPattern    = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
+	dnsNamePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	versionPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	imagePattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$`)
+	quantityPattern   = regexp.MustCompile(`^(?:[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?|0\.[0-9]+)$`)
+	mediaPattern      = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
+	repositoryPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+(?:\.git)?$`)
 )
 
 type manifestDocument struct {
@@ -79,6 +81,10 @@ type manifestArtifact struct {
 // frozen schema and computes the RFC 8785 digest over spec only.
 func ValidateTemplate(manifest []byte) TemplateValidation {
 	result := TemplateValidation{Errors: []string{}, Warnings: []string{}}
+	if !utf8.Valid(manifest) {
+		result.Errors = append(result.Errors, "manifest must be valid UTF-8")
+		return result
+	}
 	if err := rejectDuplicateJSONNames(manifest); err != nil {
 		result.Errors = append(result.Errors, "manifest must be strict JSON: "+err.Error())
 		return result
@@ -88,6 +94,10 @@ func ValidateTemplate(manifest []byte) TemplateValidation {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&document); err != nil {
 		result.Errors = append(result.Errors, "manifest must be strict JSON: "+err.Error())
+		return result
+	}
+	if err := rejectNullArrays(manifest); err != nil {
+		result.Errors = append(result.Errors, err.Error())
 		return result
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
@@ -113,7 +123,7 @@ func validateDocument(d manifestDocument, failures *[]string) {
 	require(d.Kind == client.SandboxTemplateKind, "kind must be SandboxTemplate", failures)
 	validName(d.Metadata.Name, "metadata.name", failures)
 	require(versionPattern.MatchString(d.Spec.Version), "spec.version is invalid", failures)
-	require(len(d.Spec.Description) >= 1 && len(d.Spec.Description) <= 1024, "spec.description must contain 1 to 1024 characters", failures)
+	require(codePointLength(d.Spec.Description, 1, 1024), "spec.description must contain 1 to 1024 characters", failures)
 	require(d.Spec.PolicyProfile == "poc-restricted-v1", "spec.policyProfile must be poc-restricted-v1", failures)
 	require(d.Spec.Isolation == "approved-non-sensitive-poc", "spec.isolation must be approved-non-sensitive-poc", failures)
 	require(d.Spec.ExpiresInSeconds >= 60 && d.Spec.ExpiresInSeconds <= 7200, "spec.expiresInSeconds must be between 60 and 7200", failures)
@@ -133,7 +143,7 @@ func validateDocument(d manifestDocument, failures *[]string) {
 		validBoundedPattern(variant.ImageDigest, imagePattern, 512, prefix+".imageDigest", failures)
 		require(len(variant.Command) >= 1 && len(variant.Command) <= 32, prefix+".command must contain 1 to 32 entries", failures)
 		for j, item := range variant.Command {
-			require(len(item) >= 1 && len(item) <= 1024, fmt.Sprintf("%s.command[%d] must contain 1 to 1024 characters", prefix, j), failures)
+			require(codePointLength(item, 1, 1024), fmt.Sprintf("%s.command[%d] must contain 1 to 1024 characters", prefix, j), failures)
 		}
 		validateResources(variant.Resources, prefix+".resources", failures)
 		expected := map[string]string{"amd64": "poc-linux-amd64-v1", "arm64": "poc-mac-arm64-v1"}[variant.Architecture]
@@ -181,7 +191,7 @@ func validName(value, field string, failures *[]string) {
 	validBoundedPattern(value, dnsNamePattern, 63, field, failures)
 }
 func validBoundedPattern(value string, pattern *regexp.Regexp, maximum int, field string, failures *[]string) {
-	require(len(value) <= maximum && pattern.MatchString(value), field+" is invalid", failures)
+	require(utf8.RuneCountInString(value) <= maximum && pattern.MatchString(value), field+" is invalid", failures)
 }
 func require(ok bool, message string, failures *[]string) {
 	if !ok {
@@ -205,14 +215,30 @@ func validRemotePath(value, prefix string) bool {
 	return true
 }
 func validHTTPSRepository(value string) bool {
-	if len(value) > 2048 || !strings.HasPrefix(value, "https://") || strings.ContainsAny(value, "?#@ ") {
-		return false
-	}
-	rest := strings.TrimPrefix(value, "https://")
-	slash := strings.IndexByte(rest, '/')
-	return slash > 0 && slash < len(rest)-1 && !strings.Contains(rest[:slash], "..")
+	return utf8.RuneCountInString(value) <= 2048 && repositoryPattern.MatchString(value)
 }
 func ValidDigest(value string) bool { return digestPattern.MatchString(value) }
+func codePointLength(value string, minimum, maximum int) bool {
+	count := utf8.RuneCountInString(value)
+	return count >= minimum && count <= maximum
+}
+
+func rejectNullArrays(manifest []byte) error {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(manifest, &root); err != nil {
+		return err
+	}
+	var spec map[string]json.RawMessage
+	if err := json.Unmarshal(root["spec"], &spec); err != nil {
+		return errors.New("spec must be an object")
+	}
+	for _, name := range []string{"variants", "repositories", "artifacts"} {
+		if raw, present := spec[name]; present && string(bytes.TrimSpace(raw)) == "null" {
+			return fmt.Errorf("spec.%s must be an array, not null", name)
+		}
+	}
+	return nil
+}
 
 func rejectDuplicateJSONNames(document []byte) error {
 	type frame struct {
