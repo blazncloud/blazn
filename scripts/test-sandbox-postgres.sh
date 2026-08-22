@@ -267,3 +267,15 @@ DO $$ BEGIN
   IF (SELECT token_hash FROM sandbox_access_grants WHERE id='80000000-0000-4000-8000-000000000001') <> repeat('e',64) THEN RAISE EXCEPTION 'grant token is not hash-only'; END IF;
 END $$;
 SQL
+
+tar -C "$repo_root" -cf - services/control-api packages/contracts/testdata/sandbox/template-good.json | docker run --rm -i --network "$network" \
+  -e BLAZN_SANDBOX_API_TEST_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
+  -e BLAZN_SANDBOX_API_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
+  "$node_image" sh -euc '
+    mkdir /work
+    tar -xf - -C /work
+    cd /work/services/control-api
+    npm ci
+    npm run build
+    node --test dist/sandbox-store.integration.test.js
+  '
