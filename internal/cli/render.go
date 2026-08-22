@@ -118,7 +118,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 }
 
 func (a *App) writeVersion(format OutputFormat) int {
-	if format == OutputJSON {
+	if format == OutputJSON || format == OutputJSONL {
 		return a.writeJSON(a.build)
 	}
 	fmt.Fprintf(a.stdout, "blazn %s\n", a.build.Version)
@@ -130,7 +130,7 @@ func (a *App) writeVersion(format OutputFormat) int {
 }
 
 func (a *App) writeError(format OutputFormat, exitCode int, code, message string) int {
-	if format == OutputJSON {
+	if format == OutputJSON || format == OutputJSONL {
 		if result := a.writeJSON(errorOutput{Error: commandError{Code: code, Message: message}, ExitCode: exitCode}); result != ExitSuccess {
 			return result
 		}
