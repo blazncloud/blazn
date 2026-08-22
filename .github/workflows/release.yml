@@ -199,20 +199,27 @@ jobs:
             echo "tag already exists: $VERSION" >&2
             exit 1
           }
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$VERSION" \
+            -f sha="$SOURCE_SHA" >/dev/null
           gh release create "$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --draft \
-            --target "$SOURCE_SHA" \
+            --verify-tag \
             --title "Blazn $VERSION" \
             --generate-notes
-          actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --jq .object.sha)
-          [[ "$actual" == "$SOURCE_SHA" ]] || {
-            echo "draft release tag points to $actual instead of $SOURCE_SHA; preserving draft for reconciliation" >&2
+          draft=$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft)
+          [[ $(jq -r .isDraft <<<"$draft") == true ]]
+          tag_target=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --jq .object.sha)
+          [[ "$tag_target" == "$SOURCE_SHA" ]] || {
+            echo "draft release tag points to $tag_target instead of $SOURCE_SHA; preserving draft for reconciliation" >&2
             exit 1
           }
           gh release edit "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false
+          published_target=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --jq .object.sha)
+          [[ "$published_target" == "$SOURCE_SHA" ]]
 
   post-promotion-smoke:
     if: inputs.mode == 'publish' && github.ref == 'refs/heads/main'
