@@ -49,7 +49,6 @@ fixture() {
 run_rollback() {
   root=$1
   fail_after=${2:-}
-  sql_fail=${3:-0}
   sudo env \
     PATH="$root/bin:$PATH" FAKE_ROLE_STATE="$root/role-ready" BLAZN_FENCING_TOKEN=12 BLAZN_CORRELATION_ID=rollback \
     BLAZN_NODE_INFRA_TEST_MODE=1 BLAZN_NODE_ROLLBACK_TEST_FAIL_AFTER="$fail_after" \
@@ -68,6 +67,7 @@ run_rollback() {
 run_upgrade() {
   root=$1
   fail_after=${2:-}
+  sql_fail=${3:-0}
   sudo env \
     PATH="$root/bin:$PATH" \
     FAKE_ROLE_STATE="$root/role-ready" \
