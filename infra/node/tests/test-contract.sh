@@ -50,10 +50,9 @@ for service_body in "$api_migrate" "$api_bootstrap" "$api_runtime"; do
     fi
   done
 done
-if grep -F 'enrollment-hmac-v1' "$compose" >/dev/null || grep -F 'join-credential-v1' "$compose" >/dev/null; then
-  printf 'broker cryptographic keys are mounted before a broker service exists\n' >&2
-  exit 1
-fi
+broker_service=$(awk '/^  node-broker:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
+for required in 'node_broker_database_url' 'node_broker_join_credential_v1' '/run/blazn/microk8s-worker-issuer.sock' 'network_mode: "service:api"'; do printf '%s\n' "$broker_service" | grep -F "$required" >/dev/null || { printf 'Node broker service lacks narrow dependency: %s\n' "$required" >&2; exit 1; }; done
+for forbidden in enrollment-hmac-v1 node_plan_signing_private_key runtime_database_url docker.sock kubeconfig /var/snap/microk8s issuer-hmac; do if printf '%s\n' "$broker_service" | grep -F "$forbidden" >/dev/null; then printf 'Node broker service receives unapproved capability: %s\n' "$forbidden" >&2; exit 1; fi; done
 
 grep -F 'CREATE ROLE blazn_node_broker' "$M2_ROOT/postgres-init/01-roles.sh" >/dev/null
 grep -F 'GRANT CONNECT ON DATABASE :"database_name" TO blazn_node_broker' "$M2_ROOT/postgres-init/01-roles.sh" >/dev/null
