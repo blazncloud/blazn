@@ -795,11 +795,6 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	}
 	componentNames := make(map[string]NodeInstallComponent, len(plan.Components))
 	for _, component := range plan.Components {
-		if component.SourceClass == "embedded" {
-			if profile.EmbeddedComponentSHA256 == nil || profile.EmbeddedComponentSHA256[component.Name] != component.SHA256 {
-				return fmt.Errorf("embedded component %q is not locally trusted", component.Name)
-			}
-		}
 		if _, exists := componentNames[component.Name]; exists {
 			return fmt.Errorf("component name %q is duplicated", component.Name)
 		}
@@ -1392,6 +1387,9 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		}
 	}
 	for _, component := range plan.Components {
+		if component.SourceClass == "embedded" && (profile.EmbeddedComponentSHA256 == nil || profile.EmbeddedComponentSHA256[component.Name] != component.SHA256) {
+			return fmt.Errorf("embedded component %q is not locally trusted", component.Name)
+		}
 		if component.SourceClass == "https" {
 			if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
 				return err
