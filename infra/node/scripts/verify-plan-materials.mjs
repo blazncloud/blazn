@@ -37,6 +37,8 @@ const template = JSON.parse(templateText);
 exact(template, ["schemaVersion", "templateId", "profiles"], "template bundle");
 if (template.schemaVersion !== "blazn.dev/node-install-plan-templates/v1" || template.templateId !== "frontro-poc-worker/v1") fail("template identity is not frozen");
 const profileIds = ["ubuntu-26.04-amd64-worker/v1", "existing-linux-worker-adopt/v1", "macos-lima-worker-adopt/v1"];
+const microk8sSource = "https://api.snapcraft.io/api/v1/snaps/download/EaXqgt1lyCaxKaQCU349mlodBkDCXRcg_9072.snap";
+const microk8sSHA256 = "36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2";
 exact(template.profiles, profileIds, "template profiles");
 const profileKeys = ["cluster", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback"];
 const validation = ["binary_digest", "service_active", "node_identity", "cluster_ca", "worker_only", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility"];
@@ -75,6 +77,10 @@ for (const id of profileIds) {
   if ((mac ? profile.nodeService.manager !== "launchd" : profile.nodeService.manager !== "systemd") || (mac ? profile.nodeService.runAsGroup !== "wheel" : profile.nodeService.runAsGroup !== "blazn-node")) fail(`${id} service boundary drifted`);
   const forbiddenKinds = mac ? ["systemd_unit", "package"] : ["launchd_unit"];
   if (profile.mutations.some((mutation) => forbiddenKinds.includes(mutation.kind))) fail(`${id} contains a cross-platform mutation`);
+  if (!mac) {
+    const microk8s = profile.components.find((component) => component.name === "microk8s");
+    if (!microk8s || microk8s.artifactType !== "package" || microk8s.sourceClass !== "https" || microk8s.sourceHost !== "api.snapcraft.io" || microk8s.source !== microk8sSource || microk8s.repositoryOrigin !== "https://api.snapcraft.io" || microk8s.version !== "v1.35.6-rev9072" || microk8s.sha256 !== microk8sSHA256) fail(`${id} MicroK8s source is not frozen`);
+  }
 }
 
 const [systemd, launchd, limaText, binaryDigestsText] = await Promise.all([
