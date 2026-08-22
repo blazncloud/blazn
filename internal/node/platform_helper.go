@@ -171,6 +171,9 @@ type CommandExecutor interface {
 	RunInput(context.Context, string, []byte, ...string) ([]byte, error)
 }
 type FixedCommandExecutor struct{}
+type FixedCommandError struct{ ExitCode int }
+
+func (e *FixedCommandError) Error() string { return "fixed privileged command failed" }
 
 func (FixedCommandExecutor) Run(ctx context.Context, path string, args ...string) ([]byte, error) {
 	return (FixedCommandExecutor{}).RunInput(ctx, path, nil, args...)
@@ -183,6 +186,10 @@ func (FixedCommandExecutor) RunInput(ctx context.Context, path string, input []b
 	command.Stdout = &limitedOutput{writer: &stdout, remaining: 1 << 20}
 	command.Stderr = &limitedOutput{writer: &bytes.Buffer{}, remaining: 4096}
 	if err := command.Run(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return nil, &FixedCommandError{ExitCode: exitError.ExitCode()}
+		}
 		return nil, errors.New("fixed privileged command failed")
 	}
 	return stdout.Bytes(), nil
@@ -309,14 +316,22 @@ func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPl
 	if mutation.Kind == "group" {
 		group, err := user.LookupGroup(mutation.Target)
 		if err != nil {
-			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+			var unknown user.UnknownGroupError
+			if errors.As(err, &unknown) {
+				return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+			}
+			return PriorState{}, err
 		}
 		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "group", "name": group.Name, "gid": group.Gid})
 	}
 	if mutation.Kind == "user" {
 		account, err := user.Lookup(mutation.Target)
 		if err != nil {
-			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+			var unknown user.UnknownUserError
+			if errors.As(err, &unknown) {
+				return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+			}
+			return PriorState{}, err
 		}
 		output, err := e.Commands.Run(ctx, "/usr/bin/getent", "passwd", mutation.Target)
 		parts := strings.Split(strings.TrimSpace(string(output)), ":")
@@ -329,9 +344,28 @@ func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPl
 		manager := stringValue(mutation.Desired["manager"])
 		version, err := e.installedPackageVersion(ctx, mutation.Target, manager)
 		if err != nil {
-			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+			var commandError *FixedCommandError
+			if errors.As(err, &commandError) && commandError.ExitCode == 1 {
+				return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+			}
+			return PriorState{}, err
 		}
 		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "package", "name": mutation.Target, "manager": manager, "version": version})
+	}
+	if mutation.Kind == "directory" {
+		info, err := os.Lstat(mutation.Target)
+		if errors.Is(err, os.ErrNotExist) {
+			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return PriorState{}, errors.New("preexisting directory state is unsafe")
+		}
+		uid, _, ownerOK := fileOwner(info)
+		gid, groupOK := fileGroup(info)
+		if !ownerOK || !groupOK {
+			return PriorState{}, errors.New("preexisting directory ownership is unavailable")
+		}
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "directory", "mode": strconv.FormatUint(uint64(info.Mode().Perm()), 8), "uid": strconv.FormatInt(uid, 10), "gid": strconv.FormatInt(gid, 10)})
 	}
 	if strings.HasPrefix(mutation.Target, "/") {
 		info, err := os.Lstat(mutation.Target)
@@ -424,6 +458,9 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 			if m.Kind == "systemd_unit" {
 				_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "enable", "--now", plan.NodeService.UnitName)
 				return err
+			}
+			if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err == nil {
+				return nil
 			}
 			_, err := e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", m.Target)
 			return err
@@ -692,12 +729,33 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 				_, err = e.Commands.Run(ctx, "/usr/bin/systemctl", activeAction, metadata["name"])
 				return err
 			}
+			_, currentErr := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+metadata["name"])
 			if active || enabled {
+				if currentErr == nil {
+					return nil
+				}
 				_, err = e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", m.Target)
 			} else {
+				if currentErr != nil {
+					return nil
+				}
 				_, err = e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+metadata["name"])
 			}
 			return err
+		case "directory":
+			mode, modeErr := strconv.ParseUint(metadata["mode"], 8, 32)
+			uid, uidErr := strconv.ParseInt(metadata["uid"], 10, 32)
+			gid, gidErr := strconv.ParseInt(metadata["gid"], 10, 32)
+			if modeErr != nil || uidErr != nil || gidErr != nil || !canonicalPath(m.Target) {
+				return errors.New("rollback directory metadata is invalid")
+			}
+			if err := verifyNoSymlinkTraversal(m.Target); err != nil {
+				return err
+			}
+			if err := os.Chown(m.Target, int(uid), int(gid)); err != nil {
+				return err
+			}
+			return os.Chmod(m.Target, os.FileMode(mode))
 		default:
 			return errors.New("rollback metadata kind is unsupported")
 		}
