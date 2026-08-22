@@ -343,7 +343,7 @@ docker create --name "$node_runner" --network "$network" --read-only \
   -e HOME=/work/home -e npm_config_cache=/work/.npm \
   -e NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
   -e NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
-  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; npm run build >/dev/null; node --test dist/node-store.integration.test.js' >/dev/null
+  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; node node_modules/typescript/bin/tsc -p tsconfig.json; node --test dist/node-store.integration.test.js' >/dev/null
 docker start -a "$node_runner"
 
 printf 'Node PostgreSQL 17.6 qualification passed\n'
