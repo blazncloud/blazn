@@ -3,8 +3,9 @@
   "$id": "https://blazn.benpelo.com/schemas/v1alpha1/auth-session.schema.json",
   "title": "Blazn device session",
   "type": "object",
-	"required": ["accessToken", "refreshToken", "expiresAt", "deviceId", "devicePrivateKey"],
+	"required": ["apiOrigin", "accessToken", "refreshToken", "expiresAt", "deviceId", "devicePrivateKey"],
   "properties": {
+	"apiOrigin": {"type": "string", "format": "uri", "pattern": "^https://[^/]+$"},
 	"accessToken": {"type": "string", "minLength": 32, "maxLength": 512},
 	"refreshToken": {"type": "string", "minLength": 32, "maxLength": 512},
 	"expiresAt": {"type": "string", "format": "date-time"},

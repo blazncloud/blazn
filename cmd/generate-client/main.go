@@ -22,7 +22,7 @@ var clientTemplate []byte
 // clientTemplate. A contract change therefore cannot be accepted by merely
 // rerunning the generator; the validator and typed template must be reviewed
 // before this fingerprint is deliberately updated.
-const supportedContractSHA256 = "255975f130aeeab11aa3b9169fa2836d6ed0c28347d04fa6bf6209fcef6d1d4e"
+const supportedContractSHA256 = "9e36d86d26ce60d7fe7b34612c4af5548f62202c2cfbd56af669d4e6dcf6d0c7"
 
 type operation struct {
 	path        string
@@ -38,6 +38,7 @@ var operations = []operation{
 	{"/v1/auth/device/sessions", "post", "exchangeDeviceAuthorization", "DeviceSessionRequest", "200", "Session"},
 	{"/v1/auth/device/sessions", "post", "exchangeDeviceAuthorization", "DeviceSessionRequest", "428", "Error"},
 	{"/v1/auth/sessions/refresh", "post", "refreshSession", "RefreshSessionRequest", "200", "Session"},
+	{"/v1/auth/sessions/revoke", "post", "revokeSessionWithProof", "RefreshSessionRequest", "204", ""},
 	{"/v1/auth/session", "delete", "deleteCurrentSession", "", "204", ""},
 	{"/v1/auth/me", "get", "getCurrentUser", "", "200", "CurrentUser"},
 	{"/v1/auth/devices", "get", "listDevices", "", "200", "DeviceList"},
@@ -131,6 +132,8 @@ func validate(document map[string]any, template string) error {
 			if value != schemaRef(expected.responseRef) {
 				return fmt.Errorf("%s response %s schema is %q, want %q", expected.id, expected.status, value, schemaRef(expected.responseRef))
 			}
+		} else if at(document, append(base, "responses", expected.status)...) == nil {
+			return fmt.Errorf("%s response %s is missing", expected.id, expected.status)
 		}
 	}
 	for schema, expected := range schemaFields {

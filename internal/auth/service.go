@@ -230,9 +230,11 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 			return LoginResult{}, err
 		}
 		if slowDown {
-			// APIError does not expose Retry-After yet. Apply the bounded OAuth
-			// device-flow fallback until the generated client carries that header.
-			interval += 5 * time.Second
+			if apiErr.RetryAfter > 0 {
+				interval = time.Duration(apiErr.RetryAfter) * time.Second
+			} else {
+				interval += 5 * time.Second
+			}
 			if interval > 30*time.Second {
 				interval = 30 * time.Second
 			}
@@ -285,21 +287,19 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 		if err != nil {
 			return fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
 		}
-		remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
-		if remoteErr != nil {
-			if !isAccessSessionError(remoteErr) {
-				return fmt.Errorf("revoke remote session; local session preserved for retry: %w", remoteErr)
-			}
-			revoker, ok := s.api.(ProofBoundSessionRevoker)
-			if !ok {
-				return errors.New("access-token revocation was not confirmed and proof-bound session revocation is unavailable; local session preserved")
-			}
+		revoker, ok := s.api.(ProofBoundSessionRevoker)
+		if ok {
 			request, err := refreshProofRequest(credentials)
 			if err != nil {
 				return err
 			}
 			if err := revoker.RevokeSession(ctx, request); err != nil && !isDefinitiveCredentialError(err) {
 				return fmt.Errorf("proof-bound session revocation failed; local session preserved: %w", err)
+			}
+		} else {
+			remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
+			if remoteErr != nil {
+				return fmt.Errorf("proof-bound session revocation is unavailable and access-token revocation failed; local session preserved: %w", remoteErr)
 			}
 		}
 		if err := s.store.Delete(); err != nil {
@@ -514,10 +514,6 @@ func isDefinitiveCredentialError(err error) bool {
 		}
 	}
 	return false
-}
-
-func isAccessSessionError(err error) bool {
-	return client.IsCode(err, "session_revoked") || isDefinitiveCredentialError(err)
 }
 
 func OpenBrowser(uri string) error {
