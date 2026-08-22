@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"time"
 
 	"github.com/KingJammin/blazn/internal/auth"
 	"github.com/KingJammin/blazn/internal/client"
+	workspacepkg "github.com/KingJammin/blazn/internal/workspace"
 )
 
 const (
@@ -44,6 +46,9 @@ type App struct {
 	uninstall   func() (UninstallResult, error)
 	auth        func() (authCommands, error)
 	openBrowser func(string) error
+	workspace   func() (workspaceCommands, error)
+	stdin       io.Reader
+	stdinTTY    func() bool
 }
 
 type authCommands interface {
@@ -72,6 +77,9 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 			return auth.NewDefaultService()
 		},
 		openBrowser: auth.OpenBrowser,
+		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
+		stdin:       os.Stdin,
+		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
 	}
 }
 
@@ -128,6 +136,8 @@ func (a *App) Run(args []string) int {
 		return a.writeUninstall(format)
 	case "auth":
 		return a.runAuth(format, rest)
+	case "workspace":
+		return a.runWorkspace(format, rest)
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
 	}
