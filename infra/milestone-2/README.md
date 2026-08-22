@@ -116,8 +116,11 @@ stopping the exact project and restarting it after a failure.
 The API image is built under that same startup lock with the reviewed Compose
 build. Its source digest covers the Dockerfile, package manifests, TypeScript
 source, migrations, and public contracts. A root-owned build receipt binds that
-digest to the resulting Docker image ID and the main ownership receipt; startup
-refuses a stale, replaced, or unreconciled image.
+digest to a `blazn-control-api:source-<digest>` tag, resulting Docker image ID,
+and the main ownership receipt. Source digests must match before and after the
+candidate build; a race or conflicting immutable tag preserves the prior tag
+and receipt. Startup and the continuous supervisor verify all three API service
+containers use the receipt-bound image ID.
 
 Every API deploy/restart, schema migration, PostgreSQL/object-store restart,
 backup promotion, and production-like restore must use the same

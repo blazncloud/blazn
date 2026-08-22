@@ -14,6 +14,7 @@ esac
 require_command docker
 require_command sha256sum
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
+load_control_api_image "$ROOT_DIR"
 
 work=${TMPDIR:-/tmp}/blazn-object-test-$run_id-$$
 [ ! -e "$work" ] || die "object-test path already exists"

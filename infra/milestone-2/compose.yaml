@@ -138,7 +138,7 @@ services:
       - control
 
   api-migrate:
-    image: blazn-control-api:managed
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
     build:
       context: ../../services/control-api
     command: ["node", "dist/migrate.js"]
@@ -164,7 +164,7 @@ services:
       - control
 
   api-bootstrap:
-    image: blazn-control-api:managed
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
     build:
       context: ../../services/control-api
     command: ["node", "dist/bootstrap.js"]
@@ -199,7 +199,7 @@ services:
       - control
 
   api:
-    image: blazn-control-api:managed
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
     build:
       context: ../../services/control-api
     restart: "no"

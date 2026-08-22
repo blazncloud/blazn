@@ -25,8 +25,11 @@ group_name=$(id -gn blazn-ngrok)
 home=$(getent passwd blazn-ngrok | awk -F: '{print $6}')
 shell=$(getent passwd blazn-ngrok | awk -F: '{print $7}')
 uid=$(id -u blazn-ngrok)
+primary_gid=$(id -g blazn-ngrok)
+group_ids=$(id -G blazn-ngrok)
 [ "$group_name" = blazn-ngrok ] || die "blazn-ngrok user has an unexpected primary group"
 [ "$home" = /nonexistent ] || die "blazn-ngrok user has an unexpected home directory"
 [ "$shell" = /usr/sbin/nologin ] || die "blazn-ngrok user has an interactive or unexpected shell"
 [ "$uid" -lt 1000 ] || die "blazn-ngrok must use a system UID"
+[ "$group_ids" = "$primary_gid" ] || die "blazn-ngrok has unreviewed supplementary group memberships"
 printf 'validated dedicated blazn-ngrok system identity\n'
