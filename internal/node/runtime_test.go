@@ -642,6 +642,96 @@ func TestNodeRepairUninstallAndReinstallLifecycle(t *testing.T) {
 	}
 }
 
+func TestFailedRepairRestoresOriginalReceiptAndUninstallEvidence(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.failAt = platform.applyCalls + 1
+	returned, repairErr := installer.Repair(context.Background(), plan, meta, identity)
+	if repairErr == nil {
+		t.Fatal("failed repair succeeded")
+	}
+	if returned.State != "active" || !sameJSON(state.receipt, original) || state.hasWAL {
+		t.Fatalf("returned=%#v receipt=%#v wal=%v", returned, state.receipt, state.hasWAL)
+	}
+	removed, err := installer.Uninstall(context.Background(), plan, meta, identity, false)
+	if err != nil || removed.State != "removed" {
+		t.Fatalf("uninstall after failed repair=%#v err=%v", removed, err)
+	}
+}
+
+func TestCrashedRepairRecoveryRestoresOriginalActiveReceipt(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &original, ReceiptID: original.ReceiptID, Generation: original.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair_mutation_1", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, ServicePrior: ServicePriorState{Enabled: original.Service.PriorEnabled, Active: original.Service.PriorActive}, Mutations: []client.NodeReceiptMutation{{Ordinal: plan.Mutations[0].Ordinal, Kind: plan.Mutations[0].Kind, Target: plan.Mutations[0].Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: plan.Mutations[0].DesiredDigest, Status: "pending"}}, CreatedAt: original.CreatedAt, UpdatedAt: original.UpdatedAt}
+	if err := state.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := installer.Recover(context.Background(), plan, meta, identity)
+	if err != nil || !sameJSON(recovered, original) || !sameJSON(state.receipt, original) || state.hasWAL || platform.finalized == 0 {
+		t.Fatalf("recovered=%#v receipt=%#v wal=%v finalized=%d err=%v", recovered, state.receipt, state.hasWAL, platform.finalized, err)
+	}
+}
+
+func TestInstallRecoveryHonorsJoinAndPublicationCheckpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name, checkpoint, status, wantState string
+		abortErr                            error
+	}{{"issue", "join_intent", "pending", "removed", nil}, {"join", "join", "pending", "removed", nil}, {"binding_quarantined", "binding", "pending", "recovery_required", errors.New("quarantined")}, {"consume", "broker_consume", "applied", "active", nil}, {"consumed", "broker_consumed", "applied", "active", nil}, {"verify", "verify", "applied", "active", nil}, {"receipt", "receipt", "applied", "active", nil}} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := testIdentity(t)
+			plan := installPlan()
+			meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+			state := &memoryState{}
+			platform := &checkpointPlatform{mockPlatform: &mockPlatform{failAt: -1}, abortErr: tc.abortErr}
+			installer := NewInstaller(platform, state)
+			installer.uid = func() int64 { return 0 }
+			installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+			mutation := plan.Mutations[0]
+			wal := InstallWAL{SchemaVersion: 1, Lifecycle: "install", ReceiptID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "install", Checkpoint: tc.checkpoint, Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: tc.status}}, CreatedAt: plan.IssuedAt, UpdatedAt: plan.IssuedAt}
+			if err := state.CreateWAL(wal); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := installer.Recover(context.Background(), plan, meta, identity)
+			if tc.wantState == "recovery_required" {
+				if err == nil {
+					t.Fatal("quarantined join reported success")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if receipt.State != tc.wantState || platform.reconciled != 1 {
+				t.Fatalf("receipt=%#v reconciled=%d err=%v", receipt, platform.reconciled, err)
+			}
+			if tc.wantState == "active" && len(platform.rolledBack) != 0 {
+				t.Fatalf("forward checkpoint rolled back: %#v", platform.rolledBack)
+			}
+			if tc.wantState == "removed" && platform.finalized == 0 {
+				t.Fatal("removed recovery deleted WAL before finalization")
+			}
+		})
+	}
+}
+
 func TestEnrollmentPinIsCreateOnceAndRejectsTrustReplacement(t *testing.T) {
 	store := FileStateStore{Root: filepath.Join(testRoot(t), "state")}
 	pin := EnrollmentPin{SchemaVersion: 1, EnrollmentID: "11111111-1111-4111-8111-111111111111", PlanSigningKey: client.NodePlanSigningKey{KeyID: "plan/v1", PublicKey: strings.Repeat("A", 43), Fingerprint: "sha256:" + testHash}}
@@ -805,12 +895,27 @@ type mockPlatform struct {
 	rolledBack    []int64
 	prior         *PriorState
 	verifyErr     error
+	rollbackErr   error
+	finalized     int
 	authorizeErr  error
 	authorization *BootstrapAuthorization
 }
 type bindingMockPlatform struct {
 	*mockPlatform
 	binding *client.KubernetesBinding
+}
+type checkpointPlatform struct {
+	*mockPlatform
+	reconcileErr, abortErr error
+	reconciled             int
+}
+
+func (p *checkpointPlatform) ReconcileRecovery(context.Context, client.NodeInstallPlan) error {
+	p.reconciled++
+	return p.reconcileErr
+}
+func (p *checkpointPlatform) AbortIncompleteJoin(context.Context, client.NodeInstallPlan) error {
+	return p.abortErr
 }
 
 func (p *bindingMockPlatform) KubernetesBinding() *client.KubernetesBinding {
@@ -845,10 +950,13 @@ func (m *mockPlatform) Apply(_ context.Context, mutation client.NodeInstallMutat
 }
 func (m *mockPlatform) Rollback(_ context.Context, mutation client.NodeInstallMutation, _ PriorState) error {
 	m.rolledBack = append(m.rolledBack, mutation.Ordinal)
+	return m.rollbackErr
+}
+func (m *mockPlatform) Verify(context.Context, client.NodeInstallPlan) error { return m.verifyErr }
+func (m *mockPlatform) FinalizeServiceState(context.Context, client.NodeInstallPlan) error {
+	m.finalized++
 	return nil
 }
-func (m *mockPlatform) Verify(context.Context, client.NodeInstallPlan) error             { return m.verifyErr }
-func (*mockPlatform) FinalizeServiceState(context.Context, client.NodeInstallPlan) error { return nil }
 
 func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
 	authorization, identity := validBootstrapAuthorization(t)

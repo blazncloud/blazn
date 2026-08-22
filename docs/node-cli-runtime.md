@@ -48,16 +48,26 @@ the host, while worker CPU, memory, and ephemeral storage come exclusively from
 Kubernetes `status.allocatable` through the fixed no-input `node-root-observe`
 helper. The service identity's receipt-bound sudo rule authorizes only that
 subcommand and exposes no kubeconfig, Lima credential, or general root-helper
-operation.
+operation. Observation remains available after the short install-plan and
+initial identity lifetimes only while the exact root authority, active signed
+receipt, and live Kubernetes Node UID still agree.
 
 `node repair` requires the still-current reviewed plan and preserves the
 original uninstall prior-state evidence while journaling repair-time rollback
 material separately. `node uninstall --yes` rolls back receipt-owned service,
 eligibility, identity, and state mutations; package/image runtime is preserved
-unless `--remove-managed-runtime` is explicitly supplied. An expired plan can
-authorize only rollback backed by the exact root WAL or terminal receipt, not
-new apply, repair, join, or capture work. Successful uninstall can therefore be
+unless `--remove-managed-runtime` is explicitly supplied. Apart from the fixed
+active-receipt observation above, an expired plan can authorize only rollback
+backed by the exact root WAL or terminal receipt, not new apply, repair, join,
+or capture work. Successful uninstall can therefore be
 followed by a clean enrollment and reinstall.
+Repair WALs embed the original signed active receipt. A failed or interrupted
+repair restores its repair-time captures, republishes that original receipt,
+and never reports the Node removed. Install recovery checkpoints persist the
+non-secret broker issuance ID and reconcile issue, host join, root binding,
+broker consumption, verification, and receipt publication. An exact joined UID
+that cannot be removed remains bootstrap-tainted and is reported as a
+`recovery_required` quarantine residue.
 
 The concrete isolated HTTP replay and root-owned authority persistence are
 implemented by the privileged Linux/macOS adapter milestone. This contract

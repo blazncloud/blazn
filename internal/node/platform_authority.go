@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -172,11 +174,6 @@ func archivePrivateExact(path string, value []byte) error {
 }
 
 func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, authority RootInstallAuthority, profile client.NodeTrustedInstallProfile, profileSHA256 string) error {
-	switch request.Operation {
-	case RootProbe, RootRollback, RootLoadWAL, RootSaveWAL, RootRemoveWAL, RootSaveReceipt, RootLoadReceipt, RootFinalizeState, RootRemoveSupport, RootAbortJoin:
-	default:
-		return errors.New("expired authority is not valid for this operation")
-	}
 	issuedAt, err := time.Parse(time.RFC3339, authority.Plan.IssuedAt)
 	if err != nil {
 		return err
@@ -192,16 +189,47 @@ func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, aut
 		}
 		root = paths.RootStateRoot
 	}
-	wal, err := (FileStateStore{Root: root}).LoadWAL()
-	if err != nil || wal.PlanID != authority.Plan.PlanID || wal.PlanDigest != authority.Plan.Digest || wal.NodeID != authority.Plan.NodeID {
-		if request.Operation != RootRemoveSupport && request.Operation != RootLoadReceipt {
+	store := FileStateStore{Root: root}
+	receipt, receiptErr := store.LoadReceipt()
+	if request.Operation == RootObserve {
+		if receiptErr != nil {
+			return errors.New("expired observation lacks active receipt")
+		}
+		return verifyAuthorityReceipt(authority, receipt, "active")
+	}
+	if request.Operation == RootCreateWAL {
+		if request.WAL == nil || request.WAL.Lifecycle != "uninstall" || request.WAL.OriginalReceipt == nil || receiptErr != nil || !sameJSON(*request.WAL.OriginalReceipt, receipt) {
+			return errors.New("expired uninstall WAL lacks exact active receipt ownership")
+		}
+		if err := verifyAuthorityReceipt(authority, receipt, "active"); err != nil {
+			return err
+		}
+		return validateAuthorityWAL(authority, *request.WAL)
+	}
+	wal, walErr := store.LoadWAL()
+	if walErr != nil {
+		if request.Operation != RootFinalizeState && request.Operation != RootRemoveSupport && request.Operation != RootLoadReceipt {
 			return errors.New("expired recovery lacks receipt-bound WAL authority")
 		}
-		receipt, receiptErr := (FileStateStore{Root: root}).LoadReceipt()
-		if receiptErr != nil || receipt.PlanID != authority.Plan.PlanID || receipt.PlanDigest != authority.Plan.Digest || receipt.NodeID != authority.Plan.NodeID || (receipt.State != "removed" && receipt.State != "recovery_required") {
-			return errors.New("expired recovery lacks receipt-bound terminal receipt")
+		if receiptErr != nil {
+			return errors.New("expired recovery lacks terminal receipt")
 		}
-		return nil
+		return verifyAuthorityReceipt(authority, receipt, "active", "removed", "recovery_required")
+	}
+	if err := validateAuthorityWAL(authority, wal); err != nil {
+		return err
+	}
+	if (wal.Lifecycle == "repair" || wal.Lifecycle == "uninstall") && (wal.OriginalReceipt == nil || verifyAuthorityReceipt(authority, *wal.OriginalReceipt, "active") != nil) {
+		return errors.New("expired lifecycle WAL lacks its original active receipt")
+	}
+	switch request.Operation {
+	case RootProbe, RootRollback, RootLoadWAL, RootSaveWAL, RootRemoveWAL, RootSaveReceipt, RootLoadReceipt, RootFinalizeState, RootRemoveSupport:
+	case RootAbortJoin, RootQuarantineJoin:
+		if wal.Lifecycle != "install" {
+			return errors.New("expired non-install WAL cannot reconcile join")
+		}
+	default:
+		return errors.New("expired authority is not valid for this lifecycle operation")
 	}
 	if request.Operation == RootRollback {
 		matched := false
@@ -217,6 +245,140 @@ func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, aut
 	}
 	if request.WAL != nil && (request.WAL.ReceiptID != wal.ReceiptID || request.WAL.Generation != wal.Generation || request.WAL.PlanDigest != wal.PlanDigest) {
 		return errors.New("expired recovery WAL generation differs from root authority")
+	}
+	if request.Operation == RootSaveWAL && !validExpiredWALTransition(authority, wal, *request.WAL) {
+		return errors.New("expired WAL update rewrites immutable lifecycle evidence")
+	}
+	if request.Operation == RootSaveReceipt {
+		if request.Receipt == nil {
+			return errors.New("expired receipt publication is missing")
+		}
+		if err := verifyAuthorityReceipt(authority, *request.Receipt, "active", "removed", "recovery_required"); err != nil {
+			return err
+		}
+		if wal.Lifecycle == "repair" && request.Receipt.State != "active" {
+			return errors.New("repair lifecycle cannot publish a non-active receipt")
+		}
+		restoringOriginal := wal.Lifecycle == "repair" && wal.OriginalReceipt != nil && sameJSON(*request.Receipt, *wal.OriginalReceipt)
+		if !restoringOriginal && (request.Receipt.ReceiptID != wal.ReceiptID || request.Receipt.Generation != wal.Generation) {
+			return errors.New("terminal receipt differs from lifecycle WAL generation")
+		}
+		if wal.Lifecycle == "repair" && request.Receipt.State == "active" && !restoringOriginal {
+			if wal.OriginalReceipt == nil || len(request.Receipt.Mutations) != len(wal.OriginalReceipt.Mutations) {
+				return errors.New("repair receipt lost original uninstall evidence")
+			}
+			for index := range request.Receipt.Mutations {
+				want := wal.OriginalReceipt.Mutations[index]
+				want.Status = "applied"
+				if !sameJSON(request.Receipt.Mutations[index], want) {
+					return errors.New("repair receipt changed original uninstall evidence")
+				}
+			}
+		}
+		if !restoringOriginal && wal.Lifecycle != "repair" && !terminalReceiptMatchesWAL(*request.Receipt, wal) {
+			return errors.New("terminal receipt mutations differ from lifecycle WAL")
+		}
+	}
+	if request.Operation == RootRemoveWAL {
+		if receiptErr != nil || verifyAuthorityReceipt(authority, receipt, "active", "removed", "recovery_required") != nil {
+			return errors.New("expired WAL removal lacks terminal receipt")
+		}
+	}
+	return nil
+}
+
+func validExpiredWALTransition(authority RootInstallAuthority, current, next InstallWAL) bool {
+	if validateAuthorityWAL(authority, next) != nil || current.Lifecycle != next.Lifecycle || current.ReceiptID != next.ReceiptID || current.Generation != next.Generation || current.PlanID != next.PlanID || current.PlanDigest != next.PlanDigest || current.NodeID != next.NodeID || !sameJSON(current.OriginalReceipt, next.OriginalReceipt) || !sameJSON(current.Owner, next.Owner) || !sameJSON(current.ServicePrior, next.ServicePrior) || current.CreatedAt != next.CreatedAt {
+		return false
+	}
+	stageRank := map[string]int{"preflight": 0, "install": 1, "configure": 2, "complete": 3}
+	currentRank, currentOK := stageRank[current.Stage]
+	nextRank, nextOK := stageRank[next.Stage]
+	if !currentOK || !nextOK || nextRank < currentRank {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, next.UpdatedAt); err != nil {
+		return false
+	}
+	if !validWALCheckpoint(next.Checkpoint, authority.Plan) {
+		return false
+	}
+	if len(next.Mutations) < len(current.Mutations) || len(next.Mutations) > len(current.Mutations)+1 {
+		return false
+	}
+	for index := range current.Mutations {
+		before, after := current.Mutations[index], next.Mutations[index]
+		beforeStatus, afterStatus := before.Status, after.Status
+		before.Status, after.Status = "", ""
+		if !sameJSON(before, after) || !validWALStatusTransition(beforeStatus, afterStatus) {
+			return false
+		}
+	}
+	if len(next.Mutations) == len(current.Mutations)+1 {
+		entry := next.Mutations[len(current.Mutations)]
+		mutation, err := mutationByOrdinal(authority.Plan, entry.Ordinal)
+		if err != nil || entry.Status != "pending" || entry.Kind != mutation.Kind || entry.Target != mutation.Target || entry.DesiredDigest != mutation.DesiredDigest {
+			return false
+		}
+		if validatePriorState(PriorState{State: entry.PriorState, Material: entry.RollbackMaterial}) != nil {
+			return false
+		}
+		for _, existing := range current.Mutations {
+			if existing.Ordinal == entry.Ordinal {
+				return false
+			}
+		}
+	}
+	return true
+}
+func validWALStatusTransition(before, after string) bool {
+	if before == after {
+		return true
+	}
+	switch before {
+	case "pending":
+		return after == "applied" || after == "restored" || after == "removed" || after == "residue"
+	case "applied":
+		return after == "restored" || after == "removed" || after == "residue"
+	}
+	return false
+}
+func validWALCheckpoint(value string, plan client.NodeInstallPlan) bool {
+	switch value {
+	case "", "join_intent", "join", "binding", "broker_consume", "broker_consumed", "verify", "receipt", "repair", "uninstall":
+		return true
+	}
+	const prefix = "repair_mutation_"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	ordinal, err := strconv.ParseInt(strings.TrimPrefix(value, prefix), 10, 64)
+	if err != nil {
+		return false
+	}
+	_, err = mutationByOrdinal(plan, ordinal)
+	return err == nil
+}
+func terminalReceiptMatchesWAL(receipt client.NodeInstallReceipt, wal InstallWAL) bool {
+	return receipt.ReceiptID == wal.ReceiptID && receipt.Generation == wal.Generation && receipt.PlanID == wal.PlanID && receipt.PlanDigest == wal.PlanDigest && receipt.NodeID == wal.NodeID && sameJSON(receipt.Mutations, wal.Mutations)
+}
+
+func validateAuthorityWAL(authority RootInstallAuthority, wal InstallWAL) error {
+	if wal.SchemaVersion != 1 || wal.ReceiptID == "" || wal.Generation < 1 || wal.PlanID != authority.Plan.PlanID || wal.PlanDigest != authority.Plan.Digest || wal.NodeID != authority.Plan.NodeID || (wal.Lifecycle != "install" && wal.Lifecycle != "repair" && wal.Lifecycle != "uninstall") || validateWALOwner(wal.Owner) != nil {
+		return errors.New("lifecycle WAL differs from root authority")
+	}
+	return nil
+}
+func verifyAuthorityReceipt(authority RootInstallAuthority, receipt client.NodeInstallReceipt, states ...string) error {
+	allowed := false
+	for _, state := range states {
+		allowed = allowed || receipt.State == state
+	}
+	key, keyErr := base64.RawURLEncoding.DecodeString(authority.NodePublicKey)
+	fingerprint, fpErr := client.NodePublicKeyFingerprint(ed25519.PublicKey(key))
+	trust := client.NodeInstallReceiptTrust{PlanID: authority.Plan.PlanID, PlanDigest: authority.Plan.Digest, NodeID: authority.Plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: authority.Identity.SigningKeyID, Generation: authority.Identity.Generation, Fingerprint: fingerprint, PublicKey: ed25519.PublicKey(key)}, BackupRoot: authority.Plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
+	if !allowed || keyErr != nil || fpErr != nil || client.VerifyNodeInstallReceipt(receipt, trust) != nil {
+		return errors.New("receipt is not trusted by root authority")
 	}
 	return nil
 }
@@ -550,35 +712,42 @@ func (e NativeRootEngine) beginRootJoinIntent(plan client.NodeInstallPlan, join 
 }
 
 func (e NativeRootEngine) abortRootJoinIntent(ctx context.Context, plan client.NodeInstallPlan) error {
+	_, err := e.reconcileRootJoinRecovery(ctx, plan)
+	return err
+}
+func (e NativeRootEngine) reconcileRootJoinRecovery(ctx context.Context, plan client.NodeInstallPlan) (*client.KubernetesBinding, error) {
 	_, _, path, err := e.authorityPaths()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	authority, err := loadRootAuthority(path)
 	if err != nil || authority.Plan.Digest != plan.Digest || authority.Plan.Mode != client.NodeModeFresh {
-		return errors.New("join intent rollback authority is invalid")
+		return nil, errors.New("join intent rollback authority is invalid")
 	}
-	if authority.KubernetesBinding != nil || authority.JoinIntent == nil {
-		return nil
+	if authority.KubernetesBinding != nil {
+		return authority.KubernetesBinding, nil
 	}
-	if _, observeErr := e.observeNode(ctx, plan, plan.Hostname); observeErr == nil {
-		return errors.New("joined Node exists and cannot be cleared as an incomplete intent")
+	if authority.JoinIntent == nil {
+		return nil, nil
+	}
+	if joined, observeErr := e.observeNode(ctx, plan, plan.Hostname); observeErr == nil {
+		return e.updateRootKubernetesBinding(plan, joined)
 	} else {
 		var commandErr *FixedCommandError
 		if !errors.As(observeErr, &commandErr) || commandErr.ExitCode != 1 {
-			return errors.New("joined Node absence cannot be proven")
+			return nil, errors.New("joined Node absence cannot be proven")
 		}
 	}
 	authority.JoinIntent = nil
 	authority.Digest, err = RootInstallAuthorityDigest(authority)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	encoded, err := json.Marshal(authority)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return writePrivateAtomic(path, encoded)
+	return nil, writePrivateAtomic(path, encoded)
 }
 
 func bindRootJoinIntent(authority *RootInstallAuthority, join *RootJoinBinding, now time.Time) (bool, error) {

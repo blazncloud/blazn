@@ -125,7 +125,7 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 		return client.NodeInstallReceipt{}, err
 	}
 	created := i.now().UTC()
-	wal := InstallWAL{SchemaVersion: 1, ReceiptID: receiptID, Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, ServicePrior: servicePrior, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "install", ReceiptID: receiptID, Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, ServicePrior: servicePrior, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
 	if err := i.state.CreateWAL(wal); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
@@ -215,13 +215,38 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 	if err := i.platform.Preflight(ctx, plan); err != nil {
 		return client.NodeInstallReceipt{}, fmt.Errorf("recovery platform preflight: %w", err)
 	}
+	if reconciler, ok := i.platform.(interface {
+		ReconcileRecovery(context.Context, client.NodeInstallPlan) error
+	}); ok {
+		if err := reconciler.ReconcileRecovery(ctx, plan); err != nil {
+			return client.NodeInstallReceipt{}, fmt.Errorf("reconcile recovery checkpoint: %w", err)
+		}
+	}
+	if wal.Lifecycle == "repair" {
+		return i.recoverRepair(ctx, plan, identityMeta, identity, &wal)
+	}
 	servicePrior := wal.ServicePrior
-	if wal.Stage == "complete" {
+	forward := wal.Stage == "complete" || ((wal.Checkpoint == "broker_consume" || wal.Checkpoint == "broker_consumed" || wal.Checkpoint == "verify" || wal.Checkpoint == "receipt") && allMutationStatuses(wal.Mutations, "applied"))
+	if forward {
+		if wal.Stage != "complete" {
+			if err := i.platform.Verify(ctx, plan); err != nil {
+				return client.NodeInstallReceipt{}, fmt.Errorf("resume install verification: %w", err)
+			}
+			wal.Stage = "complete"
+			wal.Checkpoint = "receipt"
+			wal.UpdatedAt = nowString(i.now())
+			if err := i.state.SaveWAL(wal); err != nil {
+				return client.NodeInstallReceipt{}, err
+			}
+		}
 		receipt, err := i.receipt(plan, identityMeta, identity, servicePrior, wal, "active", nil)
 		if err != nil {
 			return receipt, err
 		}
 		if err := i.state.SaveReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		if err := i.FinalizeServiceState(ctx, plan); err != nil {
 			return receipt, err
 		}
 		if err := i.state.RemoveWAL(); err != nil {
@@ -245,12 +270,69 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 		return receipt, err
 	}
 	if state == "removed" {
+		if err := i.FinalizeServiceState(ctx, plan); err != nil {
+			return receipt, err
+		}
 		if err := i.state.RemoveWAL(); err != nil {
 			return receipt, err
 		}
 		return receipt, nil
 	}
 	return receipt, errors.New("install recovery left receipt-bound residues")
+}
+
+func allMutationStatuses(mutations []client.NodeReceiptMutation, status string) bool {
+	for _, mutation := range mutations {
+		if mutation.Status != status {
+			return false
+		}
+	}
+	return true
+}
+
+func (i *Installer) recoverRepair(ctx context.Context, plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, wal *InstallWAL) (client.NodeInstallReceipt, error) {
+	if wal.OriginalReceipt == nil || i.verifyReceiptValue(plan, meta, identity, *wal.OriginalReceipt, "active") != nil {
+		return client.NodeInstallReceipt{}, errors.New("repair WAL original active receipt is untrusted")
+	}
+	original := *wal.OriginalReceipt
+	if wal.Stage == "complete" {
+		receiptWAL := *wal
+		receiptWAL.Mutations = append([]client.NodeReceiptMutation(nil), original.Mutations...)
+		for index := range receiptWAL.Mutations {
+			receiptWAL.Mutations[index].Status = "applied"
+		}
+		receipt, err := i.receipt(plan, meta, identity, wal.ServicePrior, receiptWAL, "active", nil)
+		if err != nil {
+			return receipt, err
+		}
+		if err := i.state.SaveReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		if err := i.FinalizeServiceState(ctx, plan); err != nil {
+			return receipt, err
+		}
+		if err := i.state.RemoveWAL(); err != nil {
+			return receipt, err
+		}
+		return receipt, nil
+	}
+	residues, err := i.rollback(ctx, plan, wal)
+	if err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	if len(residues) > 0 {
+		return original, errors.New("repair recovery left pre-repair restoration residues")
+	}
+	if err := i.state.SaveReceipt(original); err != nil {
+		return original, err
+	}
+	if err := i.FinalizeServiceState(ctx, plan); err != nil {
+		return original, err
+	}
+	if err := i.state.RemoveWAL(); err != nil {
+		return original, err
+	}
+	return original, nil
 }
 
 func (i *Installer) Repair(ctx context.Context, plan client.NodeInstallPlan, identityMeta client.NodeEnrollmentIdentity, identity Identity) (client.NodeInstallReceipt, error) {
@@ -277,7 +359,7 @@ func (i *Installer) Repair(ctx context.Context, plan client.NodeInstallPlan, ide
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
-	wal := InstallWAL{SchemaVersion: 1, ReceiptID: existing.ReceiptID, Generation: existing.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Checkpoint: "repair", Owner: owner, ServicePrior: ServicePriorState{Enabled: existing.Service.PriorEnabled, Active: existing.Service.PriorActive}, Mutations: []client.NodeReceiptMutation{}, CreatedAt: existing.CreatedAt, UpdatedAt: nowString(i.now())}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &existing, ReceiptID: existing.ReceiptID, Generation: existing.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Checkpoint: "repair", Owner: owner, ServicePrior: ServicePriorState{Enabled: existing.Service.PriorEnabled, Active: existing.Service.PriorActive}, Mutations: []client.NodeReceiptMutation{}, CreatedAt: existing.CreatedAt, UpdatedAt: nowString(i.now())}
 	if err := i.state.CreateWAL(wal); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
@@ -289,10 +371,10 @@ func (i *Installer) Repair(ctx context.Context, plan client.NodeInstallPlan, ide
 	for _, mutation := range mutations {
 		prior, captureErr := i.platform.Capture(ctx, mutation, plan.Rollback.BackupRoot)
 		if captureErr != nil {
-			return i.failAndRollback(ctx, plan, identityMeta, identity, wal.ServicePrior, &wal, captureErr)
+			return i.failRepairAndRollback(ctx, plan, identityMeta, identity, &wal, captureErr)
 		}
 		if err := validatePriorState(prior); err != nil {
-			return i.failAndRollback(ctx, plan, identityMeta, identity, wal.ServicePrior, &wal, err)
+			return i.failRepairAndRollback(ctx, plan, identityMeta, identity, &wal, err)
 		}
 		wal.Mutations = append(wal.Mutations, client.NodeReceiptMutation{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: prior.State, RollbackMaterial: prior.Material, DesiredDigest: mutation.DesiredDigest, Status: "pending"})
 		wal.Checkpoint = fmt.Sprintf("repair_mutation_%d", mutation.Ordinal)
@@ -301,7 +383,7 @@ func (i *Installer) Repair(ctx context.Context, plan client.NodeInstallPlan, ide
 			return client.NodeInstallReceipt{}, err
 		}
 		if err := i.platform.Apply(ctx, mutation); err != nil {
-			return i.failAndRollback(ctx, plan, identityMeta, identity, wal.ServicePrior, &wal, err)
+			return i.failRepairAndRollback(ctx, plan, identityMeta, identity, &wal, err)
 		}
 		wal.Mutations[len(wal.Mutations)-1].Status = "applied"
 		wal.UpdatedAt = nowString(i.now())
@@ -310,7 +392,7 @@ func (i *Installer) Repair(ctx context.Context, plan client.NodeInstallPlan, ide
 		}
 	}
 	if err := i.platform.Verify(ctx, plan); err != nil {
-		return i.failAndRollback(ctx, plan, identityMeta, identity, wal.ServicePrior, &wal, err)
+		return i.failRepairAndRollback(ctx, plan, identityMeta, identity, &wal, err)
 	}
 	wal.Stage, wal.Checkpoint, wal.UpdatedAt = "complete", "receipt", nowString(i.now())
 	if err := i.state.SaveWAL(wal); err != nil {
@@ -358,7 +440,7 @@ func (i *Installer) Uninstall(ctx context.Context, plan client.NodeInstallPlan, 
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
-	wal := InstallWAL{SchemaVersion: 1, ReceiptID: existing.ReceiptID, Generation: existing.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "uninstall", Owner: owner, ServicePrior: ServicePriorState{Enabled: existing.Service.PriorEnabled, Active: existing.Service.PriorActive}, Mutations: append([]client.NodeReceiptMutation(nil), existing.Mutations...), CreatedAt: existing.CreatedAt, UpdatedAt: nowString(i.now())}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "uninstall", OriginalReceipt: &existing, ReceiptID: existing.ReceiptID, Generation: existing.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "uninstall", Owner: owner, ServicePrior: ServicePriorState{Enabled: existing.Service.PriorEnabled, Active: existing.Service.PriorActive}, Mutations: append([]client.NodeReceiptMutation(nil), existing.Mutations...), CreatedAt: existing.CreatedAt, UpdatedAt: nowString(i.now())}
 	if !removeManagedRuntime {
 		for index := range wal.Mutations {
 			if wal.Mutations[index].Kind == "package" || wal.Mutations[index].Kind == "image" {
@@ -401,15 +483,45 @@ func (i *Installer) trustedActiveReceipt(plan client.NodeInstallPlan, meta clien
 	if err != nil {
 		return receipt, err
 	}
-	fingerprint, err := identity.Fingerprint()
-	if err != nil {
-		return receipt, err
-	}
-	trust := client.NodeInstallReceiptTrust{PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: meta.SigningKeyID, Generation: meta.Generation, Fingerprint: fingerprint, PublicKey: identity.PublicKey}, BackupRoot: plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: i.verifyNoSymlink}
-	if receipt.State != "active" || client.VerifyNodeInstallReceipt(receipt, trust) != nil {
+	if i.verifyReceiptValue(plan, meta, identity, receipt, "active") != nil {
 		return receipt, errors.New("active node install receipt is untrusted")
 	}
 	return receipt, nil
+}
+func (i *Installer) verifyReceiptValue(plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, receipt client.NodeInstallReceipt, state string) error {
+	fingerprint, err := identity.Fingerprint()
+	if err != nil {
+		return err
+	}
+	trust := client.NodeInstallReceiptTrust{PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: meta.SigningKeyID, Generation: meta.Generation, Fingerprint: fingerprint, PublicKey: identity.PublicKey}, BackupRoot: plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: i.verifyNoSymlink}
+	if receipt.State != state {
+		return errors.New("receipt state differs")
+	}
+	return client.VerifyNodeInstallReceipt(receipt, trust)
+}
+
+func (i *Installer) failRepairAndRollback(ctx context.Context, plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, wal *InstallWAL, cause error) (client.NodeInstallReceipt, error) {
+	if wal.OriginalReceipt == nil {
+		return client.NodeInstallReceipt{}, cause
+	}
+	original := *wal.OriginalReceipt
+	residues, rollbackErr := i.rollback(ctx, plan, wal)
+	if rollbackErr != nil {
+		return original, fmt.Errorf("%v; persist repair rollback WAL: %w", cause, rollbackErr)
+	}
+	if len(residues) > 0 {
+		return original, fmt.Errorf("%v; repair rollback left restoration residues", cause)
+	}
+	if err := i.state.SaveReceipt(original); err != nil {
+		return original, fmt.Errorf("%v; restore original active receipt: %w", cause, err)
+	}
+	if err := i.FinalizeServiceState(ctx, plan); err != nil {
+		return original, fmt.Errorf("%v; finalize repaired service state: %w", cause, err)
+	}
+	if err := i.state.RemoveWAL(); err != nil {
+		return original, fmt.Errorf("%v; remove repair WAL: %w", cause, err)
+	}
+	return original, cause
 }
 
 func (i *Installer) failAndRollback(ctx context.Context, plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, servicePrior ServicePriorState, wal *InstallWAL, cause error) (client.NodeInstallReceipt, error) {
@@ -470,11 +582,13 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 			return residues, err
 		}
 	}
-	if aborter, ok := i.platform.(interface {
-		AbortIncompleteJoin(context.Context, client.NodeInstallPlan) error
-	}); ok {
-		if err := aborter.AbortIncompleteJoin(ctx, plan); err != nil {
-			residues = append(residues, client.NodeReceiptResidue{Target: plan.Hostname, ReasonCode: "join_intent_recovery_required", SafeMessage: "an incomplete worker join intent could not be safely cleared"})
+	if wal.Lifecycle == "" || wal.Lifecycle == "install" {
+		if aborter, ok := i.platform.(interface {
+			AbortIncompleteJoin(context.Context, client.NodeInstallPlan) error
+		}); ok {
+			if err := aborter.AbortIncompleteJoin(ctx, plan); err != nil {
+				residues = append(residues, client.NodeReceiptResidue{Target: plan.Hostname, ReasonCode: "join_intent_recovery_required", SafeMessage: "an incomplete worker join intent could not be safely cleared"})
+			}
 		}
 	}
 	return residues, nil

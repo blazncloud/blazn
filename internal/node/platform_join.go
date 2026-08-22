@@ -129,6 +129,28 @@ func (c *BrokerJoinCoordinator) ConfirmJoined(ctx context.Context, plan client.N
 	return nil
 }
 
+func (c *BrokerJoinCoordinator) ReconcileRecovery(ctx context.Context, plan client.NodeInstallPlan, joined *JoinedNode) error {
+	state, _, err := c.boundRuntime(plan)
+	if err != nil {
+		return err
+	}
+	if state.PendingJoin == nil {
+		return nil
+	}
+	if joined != nil {
+		return c.ConfirmJoined(ctx, plan, *joined)
+	}
+	state.PendingJoin = nil
+	state.UpdatedAt = nowString(c.now())
+	if err := c.State.SaveRuntime(state); err != nil {
+		return errors.New("clear inaccessible join issuance: " + err.Error())
+	}
+	c.mu.Lock()
+	c.pending = nil
+	c.mu.Unlock()
+	return nil
+}
+
 func (c *BrokerJoinCoordinator) boundRuntime(plan client.NodeInstallPlan) (RuntimeState, Identity, error) {
 	state, err := c.State.LoadRuntime()
 	if err != nil {

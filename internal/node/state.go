@@ -39,19 +39,21 @@ type PendingJoinState struct {
 }
 
 type InstallWAL struct {
-	SchemaVersion int                          `json:"schemaVersion"`
-	ReceiptID     string                       `json:"receiptId"`
-	Generation    int64                        `json:"generation"`
-	PlanID        string                       `json:"planId"`
-	PlanDigest    string                       `json:"planDigest"`
-	NodeID        string                       `json:"nodeId"`
-	Stage         string                       `json:"stage"`
-	Checkpoint    string                       `json:"checkpoint"`
-	Owner         client.NodeReceiptOwner      `json:"owner"`
-	ServicePrior  ServicePriorState            `json:"servicePrior"`
-	Mutations     []client.NodeReceiptMutation `json:"mutations"`
-	CreatedAt     string                       `json:"createdAt"`
-	UpdatedAt     string                       `json:"updatedAt"`
+	SchemaVersion   int                          `json:"schemaVersion"`
+	Lifecycle       string                       `json:"lifecycle"`
+	ReceiptID       string                       `json:"receiptId"`
+	Generation      int64                        `json:"generation"`
+	PlanID          string                       `json:"planId"`
+	PlanDigest      string                       `json:"planDigest"`
+	NodeID          string                       `json:"nodeId"`
+	Stage           string                       `json:"stage"`
+	Checkpoint      string                       `json:"checkpoint"`
+	OriginalReceipt *client.NodeInstallReceipt   `json:"originalReceipt,omitempty"`
+	Owner           client.NodeReceiptOwner      `json:"owner"`
+	ServicePrior    ServicePriorState            `json:"servicePrior"`
+	Mutations       []client.NodeReceiptMutation `json:"mutations"`
+	CreatedAt       string                       `json:"createdAt"`
+	UpdatedAt       string                       `json:"updatedAt"`
 }
 
 type StateStore interface {
@@ -133,8 +135,8 @@ func (s FileStateStore) CreateWAL(v InstallWAL) error {
 }
 func (s FileStateStore) LoadWAL() (InstallWAL, error) {
 	var v InstallWAL
-	err := s.read("install-wal.json", 256<<10, &v)
-	if err == nil && v.SchemaVersion != 1 {
+	err := s.read("install-wal.json", 1<<20, &v)
+	if err == nil && (v.SchemaVersion != 1 || (v.Lifecycle != "" && v.Lifecycle != "install" && v.Lifecycle != "repair" && v.Lifecycle != "uninstall") || (v.Lifecycle == "repair" && v.OriginalReceipt == nil)) {
 		err = errors.New("install WAL schema is unsupported")
 	}
 	return v, err

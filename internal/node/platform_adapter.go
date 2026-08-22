@@ -32,24 +32,25 @@ const (
 type RootOperation string
 
 const (
-	RootProbe         RootOperation = "probe"
-	RootAuthorize     RootOperation = "authorize_bootstrap"
-	RootServiceState  RootOperation = "service_state"
-	RootCapture       RootOperation = "capture"
-	RootApply         RootOperation = "apply"
-	RootRollback      RootOperation = "rollback"
-	RootVerify        RootOperation = "verify"
-	RootObserve       RootOperation = "observe"
-	RootJoin          RootOperation = "join"
-	RootAbortJoin     RootOperation = "abort_join_intent"
-	RootFinalizeState RootOperation = "finalize_service_state"
-	RootRemoveSupport RootOperation = "remove_service_support"
-	RootCreateWAL     RootOperation = "create_wal"
-	RootSaveWAL       RootOperation = "save_wal"
-	RootLoadWAL       RootOperation = "load_wal"
-	RootRemoveWAL     RootOperation = "remove_wal"
-	RootSaveReceipt   RootOperation = "save_receipt"
-	RootLoadReceipt   RootOperation = "load_receipt"
+	RootProbe          RootOperation = "probe"
+	RootAuthorize      RootOperation = "authorize_bootstrap"
+	RootServiceState   RootOperation = "service_state"
+	RootCapture        RootOperation = "capture"
+	RootApply          RootOperation = "apply"
+	RootRollback       RootOperation = "rollback"
+	RootVerify         RootOperation = "verify"
+	RootObserve        RootOperation = "observe"
+	RootJoin           RootOperation = "join"
+	RootAbortJoin      RootOperation = "abort_join_intent"
+	RootQuarantineJoin RootOperation = "quarantine_joined_node"
+	RootFinalizeState  RootOperation = "finalize_service_state"
+	RootRemoveSupport  RootOperation = "remove_service_support"
+	RootCreateWAL      RootOperation = "create_wal"
+	RootSaveWAL        RootOperation = "save_wal"
+	RootLoadWAL        RootOperation = "load_wal"
+	RootRemoveWAL      RootOperation = "remove_wal"
+	RootSaveReceipt    RootOperation = "save_receipt"
+	RootLoadReceipt    RootOperation = "load_receipt"
 )
 
 type RootRequest struct {
@@ -268,11 +269,48 @@ func (a *PlatformAdapter) RemoveServiceSupport(ctx context.Context, plan client.
 	return err
 }
 func (a *PlatformAdapter) AbortIncompleteJoin(ctx context.Context, plan client.NodeInstallPlan) error {
-	if plan.Mode != client.NodeModeFresh || a.joined != nil {
+	if plan.Mode != client.NodeModeFresh {
 		return nil
+	}
+	if a.joined != nil {
+		request := a.request(RootQuarantineJoin, plan, 0)
+		request.Join = a.joined
+		if _, err := a.Privileged.Call(ctx, request); err != nil {
+			return err
+		}
+		return errors.New("joined worker remains quarantined for explicit recovery")
 	}
 	_, err := a.Privileged.Call(ctx, a.request(RootAbortJoin, plan, 0))
 	return err
+}
+
+func (a *PlatformAdapter) ReconcileRecovery(ctx context.Context, plan client.NodeInstallPlan) error {
+	if plan.Mode != client.NodeModeFresh {
+		return nil
+	}
+	reconciler, ok := a.Join.(interface {
+		ReconcileRecovery(context.Context, client.NodeInstallPlan, *JoinedNode) error
+	})
+	if !ok {
+		return errors.New("join recovery coordinator is unavailable")
+	}
+	if a.joined == nil {
+		response, err := a.Privileged.Call(ctx, a.request(RootAbortJoin, plan, 0))
+		if err != nil {
+			return err
+		}
+		if response.KubernetesBinding == nil {
+			return reconciler.ReconcileRecovery(ctx, plan, nil)
+		}
+		binding := response.KubernetesBinding
+		a.joined = &RootJoinBinding{ClusterID: binding.ClusterID, ExpectedNodeName: binding.NodeName, ExpectedNodeUID: binding.NodeUID, ExpectedResourceVersion: binding.ResourceVersion, BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	}
+	joined := &JoinedNode{Name: a.joined.ExpectedNodeName, UID: a.joined.ExpectedNodeUID, ResourceVersion: a.joined.ExpectedResourceVersion}
+	if err := reconciler.ReconcileRecovery(ctx, plan, joined); err != nil {
+		return err
+	}
+	a.joinConfirmed = true
+	return nil
 }
 
 func NewPlatformAdapter(platform string, privileged PrivilegedClient, materials MaterialResolver, join JoinCoordinator) (*PlatformAdapter, error) {

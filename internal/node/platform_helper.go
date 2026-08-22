@@ -129,6 +129,10 @@ func validateRootRequestShape(request RootRequest) error {
 		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
 			return errors.New("root join request fields are invalid")
 		}
+	case RootQuarantineJoin:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt != nil {
+			return errors.New("root quarantine request fields are invalid")
+		}
 	case RootVerify:
 		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
 			return errors.New("root verify request fields are invalid")
@@ -238,15 +242,6 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if e.Platform != request.Platform {
 			return RootResponse{}, errors.New("root helper OS mismatch")
 		}
-		if request.Plan.Target.Platform == client.NodePlatformMacOS {
-			paths, pathErr := NodeProductionPaths(request.Plan.Target.Platform)
-			if pathErr != nil {
-				return RootResponse{}, pathErr
-			}
-			if identityErr := e.ensureMacOSServiceIdentity(ctx, request.Plan.NodeService, paths.ServiceStateRoot); identityErr != nil {
-				return RootResponse{}, identityErr
-			}
-		}
 		binding, err := e.rootKubernetesBinding()
 		if err == nil && binding != nil {
 			observed, observeErr := e.observeNode(ctx, request.Plan, binding.NodeName)
@@ -331,7 +326,10 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		binding, err := e.updateRootKubernetesBinding(request.Plan, joined)
 		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion, KubernetesBinding: binding}, err
 	case RootAbortJoin:
-		return RootResponse{}, e.abortRootJoinIntent(ctx, request.Plan)
+		binding, err := e.reconcileRootJoinRecovery(ctx, request.Plan)
+		return RootResponse{KubernetesBinding: binding}, err
+	case RootQuarantineJoin:
+		return RootResponse{}, e.verifyQuarantinedJoin(ctx, request.Plan, request.Join)
 	case RootVerify:
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	case RootFinalizeState:
@@ -686,19 +684,41 @@ func exactDSCLAttributes(output []byte, expected map[string]string) bool {
 func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeInstallService) (RootResponse, error) {
 	state := ServicePriorState{}
 	if service.Manager == "systemd" {
-		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-enabled", service.UnitName); err == nil && strings.TrimSpace(string(output)) == "enabled" {
-			state.Enabled = true
+		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-enabled", service.UnitName); err == nil {
+			switch strings.TrimSpace(string(output)) {
+			case "enabled":
+				state.Enabled = true
+			case "disabled":
+			default:
+				return RootResponse{}, errors.New("capture systemd enabled state is ambiguous")
+			}
+		} else if err != nil && !fixedExit(err, 1) {
+			return RootResponse{}, errors.New("capture systemd enabled state failed")
 		}
-		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", service.UnitName); err == nil && strings.TrimSpace(string(output)) == "active" {
-			state.Active = true
+		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", service.UnitName); err == nil {
+			switch strings.TrimSpace(string(output)) {
+			case "active":
+				state.Active = true
+			case "inactive":
+			default:
+				return RootResponse{}, errors.New("capture systemd active state is ambiguous")
+			}
+		} else if err != nil && !fixedExit(err, 3) {
+			return RootResponse{}, errors.New("capture systemd active state failed")
 		}
 	} else {
 		if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+service.UnitName); err == nil {
 			state.Enabled = true
 			state.Active = true
+		} else if !fixedExit(err, 113) && !fixedExit(err, 3) {
+			return RootResponse{}, errors.New("capture launchd state failed")
 		}
 	}
 	return RootResponse{Service: &state}, nil
+}
+func fixedExit(err error, code int) bool {
+	var commandErr *FixedCommandError
+	return errors.As(err, &commandErr) && commandErr.ExitCode == code
 }
 func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, backupRoot string, join *RootJoinBinding) (PriorState, error) {
 	if !canonicalPath(backupRoot) {
@@ -889,6 +909,13 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 				_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "enable", "--now", plan.NodeService.UnitName)
 				return err
 			}
+			paths, pathErr := NodeProductionPaths(plan.Target.Platform)
+			if pathErr != nil {
+				return pathErr
+			}
+			if identityErr := e.ensureMacOSServiceIdentity(ctx, plan.NodeService, paths.ServiceStateRoot); identityErr != nil {
+				return identityErr
+			}
 			if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err == nil {
 				return nil
 			}
@@ -1049,6 +1076,9 @@ func verifyExactDirectory(path string, mode os.FileMode, uid, gid int64) error {
 }
 func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, prior PriorState, backupRoot string, join *RootJoinBinding) error {
 	if err := e.verifyRollbackDesired(ctx, plan, m, join); err != nil {
+		if matches, priorErr := e.matchesCapturedPrior(ctx, plan, m, prior, backupRoot, join); priorErr == nil && matches {
+			return nil
+		}
 		return fmt.Errorf("rollback compare-and-swap rejected drift: %w", err)
 	}
 	if prior.State == "absent" {
@@ -1182,6 +1212,122 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 	}
 	return errors.New("rollback material kind is unsupported")
 }
+
+func (e NativeRootEngine) matchesCapturedPrior(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, prior PriorState, backupRoot string, join *RootJoinBinding) (bool, error) {
+	if prior.State == "absent" {
+		switch m.Kind {
+		case "label", "taint":
+			state, err := e.readClusterNode(ctx, plan, join)
+			if err != nil {
+				return false, err
+			}
+			if m.Kind == "label" {
+				_, ok := state.Labels[m.Target]
+				return !ok, nil
+			}
+			for _, taint := range state.Taints {
+				if taint.Key == m.Target && taint.Effect == stringValue(m.Desired["effect"]) {
+					return false, nil
+				}
+			}
+			return true, nil
+		case "group":
+			_, err := user.LookupGroup(m.Target)
+			var unknown user.UnknownGroupError
+			return errors.As(err, &unknown), nil
+		case "user":
+			_, err := user.Lookup(m.Target)
+			var unknown user.UnknownUserError
+			return errors.As(err, &unknown), nil
+		case "package":
+			_, err := e.installedPackageVersion(ctx, m.Target, stringValue(m.Desired["manager"]))
+			return fixedExit(err, 1), nil
+		default:
+			_, err := os.Lstat(m.Target)
+			return errors.Is(err, os.ErrNotExist), nil
+		}
+	}
+	path, err := client.ResolveNodeRollbackLocator(backupRoot, prior.Material.Locator)
+	if err != nil {
+		return false, err
+	}
+	content, err := readBoundedRegular(path, 512<<20)
+	if err != nil {
+		return false, err
+	}
+	sum := sha256.Sum256(content)
+	if "sha256:"+hex.EncodeToString(sum[:]) != prior.Material.Digest {
+		return false, errors.New("captured prior digest mismatch")
+	}
+	if prior.Material.Kind == "file_backup" {
+		if prior.Material.Mode == nil || prior.Material.UID == nil || prior.Material.GID == nil {
+			return false, errors.New("captured file metadata is incomplete")
+		}
+		info, statErr := os.Lstat(m.Target)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm() != os.FileMode(*prior.Material.Mode).Perm() {
+			return false, nil
+		}
+		owner, _, ownerOK := fileOwner(info)
+		group, groupOK := fileGroup(info)
+		if !ownerOK || !groupOK || owner != *prior.Material.UID || group != *prior.Material.GID {
+			return false, nil
+		}
+		current, readErr := readBoundedRegular(m.Target, 512<<20)
+		return readErr == nil && bytes.Equal(current, content), readErr
+	}
+	if prior.Material.Kind != "metadata_snapshot" {
+		return false, nil
+	}
+	var metadata map[string]string
+	if decodeSingleJSON(content, &metadata) != nil {
+		return false, errors.New("captured prior metadata is invalid")
+	}
+	switch metadata["kind"] {
+	case "service":
+		response, err := e.serviceState(ctx, plan.NodeService)
+		if err != nil || response.Service == nil {
+			return false, err
+		}
+		enabled, _ := strconv.ParseBool(metadata["enabled"])
+		active, _ := strconv.ParseBool(metadata["active"])
+		return response.Service.Enabled == enabled && response.Service.Active == active, nil
+	case "directory":
+		info, err := os.Lstat(m.Target)
+		if err != nil {
+			return false, nil
+		}
+		uid, _, ownerOK := fileOwner(info)
+		gid, groupOK := fileGroup(info)
+		mode, _ := strconv.ParseUint(metadata["mode"], 8, 32)
+		return info.IsDir() && ownerOK && groupOK && uid == mustParseInt(metadata["uid"]) && gid == mustParseInt(metadata["gid"]) && info.Mode().Perm() == os.FileMode(mode), nil
+	case "label", "taint":
+		state, err := e.readClusterNode(ctx, plan, join)
+		if err != nil {
+			return false, err
+		}
+		if metadata["kind"] == "label" {
+			value, ok := state.Labels[m.Target]
+			return ok && value == metadata["value"], nil
+		}
+		for _, taint := range state.Taints {
+			if taint.Key == m.Target && taint.Value == metadata["value"] && taint.Effect == metadata["effect"] {
+				return true, nil
+			}
+		}
+		return false, nil
+	case "group":
+		group, err := user.LookupGroup(m.Target)
+		return err == nil && group.Gid == metadata["gid"], nil
+	case "user":
+		account, err := user.Lookup(m.Target)
+		return err == nil && account.Uid == metadata["uid"] && account.Gid == metadata["gid"] && account.HomeDir == metadata["home"], nil
+	case "package":
+		version, err := e.installedPackageVersion(ctx, m.Target, metadata["manager"])
+		return err == nil && version == metadata["version"], nil
+	}
+	return false, nil
+}
+func mustParseInt(value string) int64 { parsed, _ := strconv.ParseInt(value, 10, 64); return parsed }
 
 func (e NativeRootEngine) restoreServicePrior(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, metadata map[string]string) error {
 	enabled, enabledErr := strconv.ParseBool(metadata["enabled"])
@@ -1526,6 +1672,27 @@ func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPla
 		return errors.New("bootstrap taint is not observed")
 	}
 	return nil
+}
+
+func (e NativeRootEngine) verifyQuarantinedJoin(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
+	state, err := e.readClusterNode(ctx, plan, binding)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(plan.Cluster.BootstrapTaint, ":")
+	if len(parts) != 2 {
+		return errors.New("bootstrap quarantine taint is invalid")
+	}
+	keyValue := strings.SplitN(parts[0], "=", 2)
+	if len(keyValue) != 2 {
+		return errors.New("bootstrap quarantine taint is invalid")
+	}
+	for _, taint := range state.Taints {
+		if taint.Key == keyValue[0] && taint.Value == keyValue[1] && taint.Effect == parts[1] {
+			return nil
+		}
+	}
+	return errors.New("joined worker is not safely quarantined")
 }
 
 func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, labels map[string]string, taints []struct {

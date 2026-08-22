@@ -397,11 +397,16 @@ func TestServiceStateRequiresExactSystemdOutputs(t *testing.T) {
 	}}
 	engine := NativeRootEngine{Platform: "linux", Commands: commands}
 	response, err := engine.serviceState(context.Background(), client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || response.Service != nil {
+		t.Fatalf("ambiguous service state was accepted: %+v err=%v", response.Service, err)
 	}
-	if response.Service == nil || response.Service.Enabled || response.Service.Active {
-		t.Fatalf("non-exact service states were accepted: %+v", response.Service)
+}
+
+func TestServiceStateFailsOnUnclassifiedManagerErrors(t *testing.T) {
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) { return nil, &FixedCommandError{ExitCode: 9} }}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands}
+	if _, err := engine.serviceState(context.Background(), client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}); err == nil {
+		t.Fatal("unclassified systemd error became a false prior state")
 	}
 }
 
@@ -558,7 +563,7 @@ func TestExpiredPlanAllowsOnlyReceiptBoundRecovery(t *testing.T) {
 	authority.Digest = digest
 	root := filepath.Join(testRoot(t), "root-state")
 	store := FileStateStore{Root: root}
-	wal := InstallWAL{SchemaVersion: 1, ReceiptID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Mutations: []client.NodeReceiptMutation{}}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "install", ReceiptID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{}}
 	if err := store.SaveWAL(wal); err != nil {
 		t.Fatal(err)
 	}
@@ -570,6 +575,128 @@ func TestExpiredPlanAllowsOnlyReceiptBoundRecovery(t *testing.T) {
 	request.Operation = RootApply
 	if err := engine.authorizeReceiptBoundRecovery(request, authority, profile, "sha256:"+testHash); err == nil {
 		t.Fatal("expired authority applied a new mutation")
+	}
+}
+
+func TestExpiredObservationAndUninstallRequireExactActiveReceipt(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	profile := trustedBootstrapProfile(plan)
+	state := &memoryState{}
+	installer := NewInstaller(&mockPlatform{failAt: -1}, state)
+	installer.uid = func() int64 { return 0 }
+	issued, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+	installer.now = func() time.Time { return issued.Add(time.Minute) }
+	receipt, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: profile.ID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: profile.ControlPlaneOrigin, AuthorizedAt: plan.IssuedAt}
+	authority.Digest, _ = RootInstallAuthorityDigest(authority)
+	root := filepath.Join(testRoot(t), "expired-root")
+	store := FileStateStore{Root: root}
+	if err := store.SaveReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	engine := NativeRootEngine{RootStateRoot: root}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootObserve, Plan: plan}, authority, profile, "sha256:"+testHash); err != nil {
+		t.Fatalf("post-lifetime observation: %v", err)
+	}
+	owner := client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "uninstall", OriginalReceipt: &receipt, ReceiptID: receipt.ReceiptID, Generation: receipt.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Owner: owner, Mutations: append([]client.NodeReceiptMutation(nil), receipt.Mutations...)}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootCreateWAL, Plan: plan, WAL: &wal}, authority, profile, "sha256:"+testHash); err != nil {
+		t.Fatalf("expired uninstall WAL: %v", err)
+	}
+	tampered := wal
+	tampered.PlanDigest = "sha256:" + strings.Repeat("b", 64)
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootCreateWAL, Plan: plan, WAL: &tampered}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("tampered expired uninstall WAL authorized")
+	}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootApply, Plan: plan}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("expired active receipt authorized arbitrary mutation")
+	}
+	repairWAL := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &receipt, ReceiptID: receipt.ReceiptID, Generation: receipt.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair", Owner: owner, ServicePrior: ServicePriorState{Enabled: receipt.Service.PriorEnabled, Active: receipt.Service.PriorActive}, Mutations: append([]client.NodeReceiptMutation(nil), receipt.Mutations...), CreatedAt: receipt.CreatedAt, UpdatedAt: receipt.UpdatedAt}
+	for index := range repairWAL.Mutations {
+		repairWAL.Mutations[index].Status = "residue"
+	}
+	if err := store.SaveWAL(repairWAL); err != nil {
+		t.Fatal(err)
+	}
+	recoveryReceipt, receiptErr := installer.receipt(plan, authorization.Expected.Identity, identity, repairWAL.ServicePrior, repairWAL, "recovery_required", []client.NodeReceiptResidue{{Target: plan.Hostname, ReasonCode: "test_residue", SafeMessage: "test repair residue"}})
+	if receiptErr != nil {
+		t.Fatal(receiptErr)
+	}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootSaveReceipt, Plan: plan, Receipt: &recoveryReceipt}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("expired repair authorized recovery_required receipt escape")
+	}
+	removedWAL := repairWAL
+	removedWAL.Mutations = append([]client.NodeReceiptMutation(nil), repairWAL.Mutations...)
+	for index := range removedWAL.Mutations {
+		if removedWAL.Mutations[index].PriorState == "absent" {
+			removedWAL.Mutations[index].Status = "removed"
+		} else {
+			removedWAL.Mutations[index].Status = "restored"
+		}
+	}
+	removedEscape, receiptErr := installer.receipt(plan, authorization.Expected.Identity, identity, removedWAL.ServicePrior, removedWAL, "removed", nil)
+	if receiptErr != nil {
+		t.Fatal(receiptErr)
+	}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootSaveReceipt, Plan: plan, Receipt: &removedEscape}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("expired repair authorized removed receipt escape")
+	}
+	if err := store.RemoveWAL(); err != nil {
+		t.Fatal(err)
+	}
+	removed, removeErr := installer.Uninstall(context.Background(), plan, authorization.Expected.Identity, identity, false)
+	if removeErr != nil {
+		t.Fatal(removeErr)
+	}
+	if err := store.SaveReceipt(removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootFinalizeState, Plan: plan}, authority, profile, "sha256:"+testHash); err != nil {
+		t.Fatalf("terminal receipt finalize after WAL deletion: %v", err)
+	}
+}
+
+func TestExpiredWALTransitionsRejectHostileEvidenceRewrite(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	owner := client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}
+	current := InstallWAL{SchemaVersion: 1, Lifecycle: "install", ReceiptID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "install", Checkpoint: "binding", Owner: owner, Mutations: []client.NodeReceiptMutation{}, CreatedAt: plan.IssuedAt, UpdatedAt: plan.IssuedAt}
+	mutation := plan.Mutations[0]
+	next := current
+	next.Mutations = []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: "pending"}}
+	next.UpdatedAt = plan.ApprovedAt
+	if !validExpiredWALTransition(RootInstallAuthority{Plan: plan}, current, next) {
+		t.Fatal("reviewed pending append was rejected")
+	}
+	hostile := next
+	hostile.Mutations = append([]client.NodeReceiptMutation(nil), next.Mutations...)
+	hostile.Mutations[0].Target = "/etc/shadow"
+	if validExpiredWALTransition(RootInstallAuthority{Plan: plan}, current, hostile) {
+		t.Fatal("expired WAL rewrote immutable mutation target")
+	}
+	applied := next
+	applied.Mutations = append([]client.NodeReceiptMutation(nil), next.Mutations...)
+	applied.Mutations[0].Status = "applied"
+	if !validExpiredWALTransition(RootInstallAuthority{Plan: plan}, next, applied) {
+		t.Fatal("pending-to-applied transition rejected")
+	}
+	rewrittenPrior := applied
+	rewrittenPrior.Mutations = append([]client.NodeReceiptMutation(nil), applied.Mutations...)
+	rewrittenPrior.Mutations[0].PriorState = "preexisting_exact"
+	if validExpiredWALTransition(RootInstallAuthority{Plan: plan}, applied, rewrittenPrior) {
+		t.Fatal("expired WAL rewrote captured prior state")
+	}
+	receipt := client.NodeInstallReceipt{ReceiptID: applied.ReceiptID, Generation: applied.Generation, PlanID: applied.PlanID, PlanDigest: applied.PlanDigest, NodeID: applied.NodeID, Mutations: append([]client.NodeReceiptMutation(nil), applied.Mutations...)}
+	if !terminalReceiptMatchesWAL(receipt, applied) {
+		t.Fatal("exact terminal receipt binding rejected")
+	}
+	receipt.Mutations[0].Target = "other"
+	if terminalReceiptMatchesWAL(receipt, applied) {
+		t.Fatal("terminal receipt escaped WAL mutation binding")
 	}
 }
 

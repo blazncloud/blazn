@@ -132,9 +132,6 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 		return client.NodeInstallReceipt{}, errors.New("node recovery installer is unavailable")
 	}
 	receipt, err := c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
-	if finalizeErr := c.Installer.FinalizeServiceState(ctx, state.Exchange.Plan); finalizeErr != nil && err == nil {
-		err = finalizeErr
-	}
 	return receipt, err
 }
 
