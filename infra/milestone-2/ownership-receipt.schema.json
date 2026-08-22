@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/control-plane-ownership-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "owner",
+    "host",
+    "createdAt",
+    "paths",
+    "ports",
+    "units",
+    "images",
+    "configDigest"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/control-plane-ownership/v1" },
+    "owner": { "const": "blazn-poc" },
+    "host": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data", "backup", "secrets"],
+      "properties": {
+        "data": { "type": "string" },
+        "backup": { "type": "string" },
+        "secrets": { "type": "string" }
+      }
+    },
+    "ports": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+    },
+    "units": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "images": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "@sha256:[a-f0-9]{64}$" }
+    },
+    "configDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}
