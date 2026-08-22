@@ -139,6 +139,11 @@ control_api_source_digest() {
       die "control API build input is missing or symlinked: $required_input"
     fi
   done
+  for required_dir in services/control-api/src services/control-api/migrations packages/contracts; do
+    if [ ! -d "$repo_root/$required_dir" ] || [ -L "$repo_root/$required_dir" ]; then
+      die "control API build directory is missing or symlinked: $required_dir"
+    fi
+  done
   if find "$repo_root/services/control-api/src" "$repo_root/services/control-api/migrations" "$repo_root/packages/contracts" -type l -print | grep . >/dev/null; then
     die "control API build tree contains a symbolic link"
   fi
