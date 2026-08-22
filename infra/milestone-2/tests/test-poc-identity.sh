@@ -135,19 +135,19 @@ for failpoint in after-db after-files after-receipt; do
     exit 1
   fi
   grep -F 'injected POC identity cleanup failure' "$fixture/identity-$failpoint.err" >/dev/null
-  [ -e "$fixture/ownership/identity-cleanup.runtime.json" ]
+  sudo test -f "$fixture/ownership/identity-cleanup.runtime.json"
   [ "$(sudo stat -c %a "$fixture/ownership/identity-cleanup.runtime.json")" = 444 ]
 done
 run_manage cleanup >"$fixture/cleanup.out"
 [ ! -e "$fixture/identity" ]
 [ ! -e "$fixture/cli-users" ]
-[ ! -e "$fixture/ownership/identity-cleanup.runtime.json" ]
+sudo test ! -e "$fixture/ownership/identity-cleanup.runtime.json"
 getent passwd "$owner_os" >/dev/null 2>&1 && exit 1
 getent passwd "$second_os" >/dev/null 2>&1 && exit 1
 sudo jq -e '.status=="cleaned" and .cleanupCounts.workspaceCount==1' "$fixture/ownership/identity.json" >/dev/null
 sudo sh -euc 'printf "stale-runtime-copy\n" >"$1"; chown 0:0 "$1"; chmod 0444 "$1"' sh "$fixture/ownership/identity-cleanup.runtime.json"
 run_manage cleanup >"$fixture/cleaned-retry.out"
-[ ! -e "$fixture/ownership/identity-cleanup.runtime.json" ]
+sudo test ! -e "$fixture/ownership/identity-cleanup.runtime.json"
 [ "$(root_store_digest)" = "$root_before" ] || { printf 'existing root Blazn state changed during POC CLI qualification test\n' >&2; exit 1; }
 
 trap - EXIT HUP INT TERM
