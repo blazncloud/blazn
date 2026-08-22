@@ -42,15 +42,18 @@ export interface BrokerBinding {
   enrollmentId: string;
   enrollmentStatus: string;
   enrollmentExpiresAt: Date;
+  enrollmentCreatedBy?: string;
   nodePublicKey: string;
   nodePublicKeyFingerprint: string;
   machineFingerprint: string;
   nodeId: string;
+  nodeMachineFingerprint?: string;
   nodeLifecycleState: string;
   nodeTrustState: string;
   planId: string;
   planDigest: string;
   planStatus: string;
+  planApprovedBy?: string;
   planExpiresAt: Date;
   canonicalPlan: Record<string, unknown>;
   planSigningKeyId: string;
