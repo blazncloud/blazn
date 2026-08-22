@@ -9,6 +9,9 @@ function exact(value, keys, label) {
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) fail(`${label} is not closed`);
 }
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const canonical = (value) => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+  : value && typeof value === "object" ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
+    : JSON.stringify(value);
 const root = process.env.BLAZN_NODE_PLAN_ROOT ?? "/etc/blazn/node-plan";
 const sourceTemplates = process.env.BLAZN_NODE_PLAN_SOURCE_TEMPLATES ?? "/opt/blazn-node/templates";
 const privateFile = process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? `${root}/signing-private-v1.b64url`;
@@ -66,6 +69,7 @@ for (const id of profileIds) {
     if (mutation.desired?.sourceComponent && !names.has(mutation.desired.sourceComponent)) fail(`${id} mutation references an unknown component`);
     if (mutation.desired?.componentName && !names.has(mutation.desired.componentName)) fail(`${id} mutation references an unknown component`);
     if (mutation.target === "/" || mutation.target.split("/").includes("..")) fail(`${id} mutation target is unsafe`);
+    if (["group", "user"].includes(mutation.kind) && mutation.desiredDigest !== `sha256:${sha256(canonical(mutation.desired))}`) fail(`${id} service-account desired digest is not canonical`);
   }
   const mac = id === "macos-lima-worker-adopt/v1";
   if ((mac ? profile.nodeService.manager !== "launchd" : profile.nodeService.manager !== "systemd") || (mac ? profile.nodeService.runAsGroup !== "wheel" : profile.nodeService.runAsGroup !== "blazn-node")) fail(`${id} service boundary drifted`);
@@ -83,7 +87,7 @@ if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].nodeServ
 const lima = JSON.parse(limaText);
 exact(lima, ["schemaVersion", "clusterId", "vmName", "workerName"], "Lima worker binding");
 if (lima.schemaVersion !== "blazn.dev/lima-worker-binding/v1" || lima.clusterId !== template.profiles["macos-lima-worker-adopt/v1"].cluster.id || typeof lima.vmName !== "string" || lima.vmName.length === 0 || typeof lima.workerName !== "string" || lima.workerName.length === 0) fail("Lima worker identity drifted");
-const canonicalLima = JSON.stringify(Object.fromEntries(Object.keys(lima).sort().map((key) => [key, lima[key]])));
+const canonicalLima = canonical(lima);
 const limaSha256 = sha256(canonicalLima);
 const macProfile = template.profiles["macos-lima-worker-adopt/v1"];
 const limaComponents = macProfile.components.filter((component) => component.name === "lima-worker-binding");
