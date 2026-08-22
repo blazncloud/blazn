@@ -35,7 +35,10 @@ func (m *memoryContexts) Load(origin, userID string) (workspacepkg.Selection, er
 	}
 	return m.selection, nil
 }
-func (m *memoryContexts) Save(value workspacepkg.Selection) error { m.saved, m.selection = value, value; return nil }
+func (m *memoryContexts) Save(value workspacepkg.Selection) error {
+	m.saved, m.selection = value, value
+	return nil
+}
 
 type fakeAPI struct {
 	projects        []client.Project

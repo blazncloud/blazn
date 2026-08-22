@@ -72,7 +72,9 @@ func (s *Service) List(ctx context.Context, status string) (client.ProjectList, 
 	})
 }
 
-func (s *Service) Get(ctx context.Context, value string) (client.ProjectEnvelope, error) { return s.resolve(ctx, value) }
+func (s *Service) Get(ctx context.Context, value string) (client.ProjectEnvelope, error) {
+	return s.resolve(ctx, value)
+}
 
 func (s *Service) Use(ctx context.Context, value string) (client.ProjectEnvelope, error) {
 	project, err := s.resolve(ctx, value)
