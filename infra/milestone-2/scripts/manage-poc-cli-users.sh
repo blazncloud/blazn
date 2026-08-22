@@ -29,7 +29,7 @@ validate_account() {
   account_name=$1
   expected_home=$2
   passwd_record=$(getent passwd "$account_name") || die "receipted POC CLI user is absent: $account_name"
-  IFS=: read -r actual_name ignored uid gid ignored_gecos actual_home actual_shell <<EOF
+  IFS=: read -r actual_name _passwd uid gid _gecos actual_home actual_shell <<EOF
 $passwd_record
 EOF
   [ "$actual_name" = "$account_name" ] && [ "$actual_home" = "$expected_home" ] && [ "$actual_shell" = "$nologin" ] || die "POC CLI passwd record differs from its receipt plan"
