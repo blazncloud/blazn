@@ -56,7 +56,9 @@
         },
         "allOf": [
           {"if": {"properties": {"destinationClass": {"const": "local_node"}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"resolvedAddressPolicy": {"enum": ["loopback_only", "authenticated_node_tunnel"]}}}}}},
-          {"if": {"properties": {"destinationClass": {"enum": ["provider", "blazn_cloud"]}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"scheme": {"const": "https"}, "resolvedAddressPolicy": {"const": "public_unicast_only"}}}}}}
+          {"if": {"properties": {"destinationClass": {"const": "local_node"}}, "required": ["destinationClass"]}, "then": {"properties": {"dataBoundary": {"const": "local"}}}},
+          {"if": {"properties": {"destinationClass": {"const": "company"}}, "required": ["destinationClass"]}, "then": {"properties": {"dataBoundary": {"const": "company"}}}},
+          {"if": {"properties": {"destinationClass": {"enum": ["provider", "blazn_cloud"]}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"scheme": {"const": "https"}, "resolvedAddressPolicy": {"const": "public_unicast_only"}}}, "dataBoundary": {"const": "external"}}}}
         ]
       }
     },

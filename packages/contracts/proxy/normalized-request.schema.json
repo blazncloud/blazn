@@ -18,7 +18,11 @@
     "capabilitiesRequired": {"type": "array", "uniqueItems": true, "items": {"enum": ["text", "tools", "structured_output", "streaming"]}}
   },
   "$defs": {
-    "block": {"type": "object", "additionalProperties": false, "required": ["role", "type"], "properties": {"role": {"enum": ["system", "developer", "user", "assistant", "tool"]}, "type": {"enum": ["text", "tool_call", "tool_result"]}, "text": {"type": "string"}, "callId": {"type": "string", "maxLength": 256}, "toolName": {"type": "string", "maxLength": 128}, "arguments": {}, "result": {}}},
+    "block": {"type": "object", "additionalProperties": false, "required": ["role", "type"], "properties": {"role": {"enum": ["system", "developer", "user", "assistant", "tool"]}, "type": {"enum": ["text", "tool_call", "tool_result"]}, "text": {"type": "string"}, "callId": {"type": "string", "minLength": 1, "maxLength": 256}, "toolName": {"type": "string", "minLength": 1, "maxLength": 128}, "arguments": {}, "result": {}}, "oneOf": [
+      {"properties": {"type": {"const": "text"}}, "required": ["text"], "not": {"anyOf": [{"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["arguments"]}, {"required": ["result"]}]}},
+      {"properties": {"type": {"const": "tool_call"}, "role": {"const": "assistant"}}, "required": ["callId", "toolName", "arguments"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["result"]}]}},
+      {"properties": {"type": {"const": "tool_result"}, "role": {"const": "tool"}}, "required": ["callId", "result"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["toolName"]}, {"required": ["arguments"]}]}}
+    ]},
     "tool": {"type": "object", "additionalProperties": false, "required": ["name", "inputSchema"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "description": {"type": "string", "maxLength": 4096}, "inputSchema": {"type": "object"}}}
   }
 }

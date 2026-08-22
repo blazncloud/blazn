@@ -1,6 +1,6 @@
 # Proxy and LLM Router Contract Freeze
 
-**Contract:** `proxy/v1alpha1`  
+**Contract:** `proxy/v1alpha1`
 **Scope:** process/session endpoint activation, authenticated loopback listener, OpenAI/Anthropic subsets, deterministic policy and one bounded fallback
 
 ## Narrow POC gate
@@ -30,12 +30,12 @@ are reported `BYPASS/UNSUPPORTED`.
 ## CLI
 
 ```text
-blazn proxy on [--policy POLICY] [--mode auto|session]
+blazn proxy on --policy POLICY [--mode auto|session]
 blazn proxy off [--remove-ca]
 blazn proxy status
-blazn proxy doctor [--policy POLICY]
-blazn proxy routes [--policy POLICY]
-blazn proxy run [--policy POLICY] -- COMMAND...
+blazn proxy doctor --policy POLICY
+blazn proxy routes --policy POLICY
+blazn proxy run --policy POLICY -- COMMAND...
 blazn proxy tail [--cursor CURSOR] [--follow]
 blazn proxy reset --yes [--remove-ca]
 ```
@@ -104,9 +104,15 @@ policy digest, listener process identity, and published environment digests.
 
 Restoration is compare-and-set: restore only values still carrying the recorded
 marker/digest. PID termination additionally requires process-start identity,
-executable identity, and activation nonce. One valid ownership record may
-repair the other. If both are corrupt or ownership is ambiguous, leave user
-state untouched, stop only a fully verified listener, and return exit `9`.
+executable identity, binary digest, listener-key fingerprint, activation nonce,
+owner UID, generation, mode, and OS-session identity. If the journal is valid,
+exact prior values may be restored and a missing/corrupt receipt repaired. If
+the protected journal is corrupt or missing, the receipt can prove and stop the
+listener but cannot reconstruct prior environment values: it leaves the
+environment untouched, records `RECOVERY_REQUIRED`, and returns exit `9` with
+exact manual remediation. A receipt never contains prior values. If both
+records are corrupt or ownership is ambiguous, no environment or process state
+is changed.
 
 ## Listener and protocols
 
@@ -186,11 +192,31 @@ and does not follow a redirect outside the route allowlist.
 
 - macOS ARM64: scoped run; qualified launchctl user-session publication for new
   apps; default Keychain destination storage.
-- Ubuntu AMD64/ARM64: scoped run required; user-session publication only when
-  doctor proves inheritance.
-- Required fixtures: generic OpenAI, Hermes OpenAI, Codex Responses including a
-  nested child, and Claude Code Anthropic subset.
+- Ubuntu AMD64/ARM64: scoped `proxy run` is the POC requirement. `on --mode
+  session` fails `PROXY_SESSION_UNSUPPORTED`; `auto` starts a `scoped_only`
+  listener unless doctor proves a user-systemd environment inherited by newly
+  launched applications.
+- Required exact fixtures: generic OpenAI fixture `proxy-fixture/v1`, Hermes
+  Agent `0.19.0`, Codex CLI `0.147.0` Responses including a nested child, and
+  Claude Code `2.1.212` Anthropic Messages. A version mismatch is unsupported
+  until its endpoint-variable behavior passes the same fixture.
 - Windows is deferred and must report unsupported without mutation.
+
+The POC policy is always supplied as an explicit local `--policy` file. The
+file is a real owner-only file whose RFC 8785 digest is verified before network
+activity. Dynamic Management API retrieval, cache refresh, and hot policy swap
+are deferred; `off` and recovery never read the policy file or use the network.
+
+The qualification policy uses logical alias `company-assistant`, local primary
+model `qwen3.8` over OpenAI Chat at `http://127.0.0.1:11434/v1` (or the same
+loopback endpoint established by an authenticated node tunnel), and one cloud
+fallback `gpt-5.4` over OpenAI Responses at
+`https://api.openai.com:443/v1`. The only external hostname allowlisted is
+`api.openai.com`; its destination credential reference is
+`workspace-vault://poc/model-providers/openai`. Local-to-external fallback is
+enabled only for `public` and `company` data. `restricted` and `local_only`
+remain local. Qualification fails rather than substituting another model,
+endpoint, protocol, or credential.
 
 ## Required tests
 
@@ -219,14 +245,15 @@ and does not follow a redirect outside the route allowlist.
 Shared state schema, normalized envelope, errors, and policy schema remain
 integration-owner serialization gates. Per-host proxy mutation is exclusive.
 
-## Blocking decisions
+## Qualification inputs
 
-- Exact local Qwen endpoint/model/capability set and one cloud fallback.
-- Codex, Claude Code, and Hermes fixture versions and endpoint behavior.
-- macOS launchctl and Linux scoped/session boundaries.
-- Blaze Proxy source/fixture reuse rights.
-- Policy retrieval/cache and destination hostname allowlist.
-- Sacrificial user sessions and config snapshot inventory.
+The exact model routes, harness versions, policy source, and platform behavior
+above are frozen. Before native activation, the qualification operator records
+one sacrificial macOS user session and one disposable Linux user, snapshots the
+five published environment variables plus known Codex/Claude/Hermes config
+trees, and reserves the per-user proxy mutation lock. Existing Blaze Proxy code
+is not copied into the POC unless a later provenance review approves specific
+files; behavior is reimplemented against these schemas and fixtures.
 
 ## Deferred hardening
 

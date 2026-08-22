@@ -19,7 +19,7 @@
     "binary": {"type": "object", "additionalProperties": false, "required": ["path", "digest"], "properties": {"path": {"type": "string", "pattern": "^/"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
     "listener": {"type": "object", "additionalProperties": false, "required": ["pid", "processStartIdentity", "executableIdentity", "address", "listenerKeyFingerprint"], "properties": {"pid": {"type": "integer", "minimum": 1}, "processStartIdentity": {"type": "string", "minLength": 1}, "executableIdentity": {"type": "string", "minLength": 1}, "address": {"type": "string", "pattern": "^(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}$"}, "listenerKeyFingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
     "environment": {
-      "type": "array", "maxItems": 16,
+      "type": "array", "minItems": 5, "maxItems": 5,
       "items": {
         "type": "object", "additionalProperties": false,
         "required": ["name", "priorPresent", "desiredValueDigest", "activationMarker", "rollbackAction"],
@@ -35,7 +35,14 @@
           {"if": {"properties": {"priorPresent": {"const": true}}, "required": ["priorPresent"]}, "then": {"required": ["priorValue"], "properties": {"rollbackAction": {"const": "restore_prior_value"}}}},
           {"if": {"properties": {"priorPresent": {"const": false}}, "required": ["priorPresent"]}, "then": {"not": {"required": ["priorValue"]}, "properties": {"rollbackAction": {"const": "remove_blazn_value"}}}}
         ]
-      }
+      },
+      "allOf": [
+        {"contains": {"type": "object", "required": ["name"], "properties": {"name": {"const": "OPENAI_BASE_URL"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "required": ["name"], "properties": {"name": {"const": "OPENAI_API_KEY"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "required": ["name"], "properties": {"name": {"const": "ANTHROPIC_BASE_URL"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "required": ["name"], "properties": {"name": {"const": "ANTHROPIC_API_KEY"}}}, "minContains": 1, "maxContains": 1},
+        {"contains": {"type": "object", "required": ["name"], "properties": {"name": {"const": "ANTHROPIC_AUTH_TOKEN"}}}, "minContains": 1, "maxContains": 1}
+      ]
     },
     "ca": {"type": "null"},
     "rollbackActions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["ordinal", "operation", "target"], "properties": {"ordinal": {"type": "integer", "minimum": 1}, "operation": {"enum": ["restore_environment", "stop_listener", "remove_scoped_state"]}, "target": {"type": "string", "minLength": 1, "maxLength": 256}}}},
