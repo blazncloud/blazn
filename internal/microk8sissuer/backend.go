@@ -3,6 +3,9 @@ package microk8sissuer
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -65,6 +68,11 @@ func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
 	if !b.allowTestPaths && (b.AddNodePath != "/snap/bin/microk8s.add-node" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt") {
 		return fmt.Errorf("MicroK8s paths are not allowlisted")
 	}
+	if !b.allowTestPaths {
+		if err := validatePinnedMicroK8s(); err != nil {
+			return err
+		}
+	}
 	return b.validateTokenFile()
 }
 func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (BackendIssue, error) {
@@ -90,6 +98,9 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 		if !validJoinURL(candidate, parsed.Token) {
 			return BackendIssue{}, fmt.Errorf("unexpected MicroK8s URL")
 		}
+	}
+	if tokenLineCount(b.TokenFile, token) != 1 {
+		return BackendIssue{}, fmt.Errorf("MicroK8s token persistence is ambiguous")
 	}
 	now := time.Now
 	if b.Now != nil {
@@ -118,20 +129,46 @@ func (b *MicroK8sBackend) validateTokenFile() error {
 	return nil
 }
 func tokenLineAbsentOrExact(path, token string) bool {
+	count := tokenLineCount(path, token)
+	return count >= 0 && count <= 1
+}
+func tokenLineCount(path, token string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false
+		return -1
 	}
 	count := 0
 	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		if strings.HasPrefix(line, token) {
 			if line != token && !strings.HasPrefix(line, token+"|") {
-				return false
+				return 2
 			}
 			count++
 		}
 	}
-	return count <= 1
+	return count
+}
+
+func validatePinnedMicroK8s() error {
+	target, err := os.Readlink("/snap/microk8s/current")
+	if err != nil || (target != "9072" && target != "9075" && target != "/snap/microk8s/9072" && target != "/snap/microk8s/9075") {
+		return fmt.Errorf("MicroK8s revision is unsupported")
+	}
+	pins := map[string]string{
+		"/snap/microk8s/current/scripts/wrappers/add_token.py": "3e3cc5b9a7b041595770635836992e36e19ca342f3b095a0bc0b3759ad915b8c",
+		"/snap/microk8s/current/microk8s-add-node.wrapper":     "3a56a5bf4b6c2f10d6df299b4949b5c706928a68953f21c686772a874a78d717",
+	}
+	for path, want := range pins {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return fmt.Errorf("pinned MicroK8s helper is unavailable")
+		}
+		sum := sha256.Sum256(data)
+		if !hmac.Equal([]byte(hex.EncodeToString(sum[:])), []byte(want)) {
+			return fmt.Errorf("pinned MicroK8s helper digest mismatch")
+		}
+	}
+	return nil
 }
 func rewriteTokenFile(path string, uid uint32, token string) error {
 	info, err := os.Lstat(path)

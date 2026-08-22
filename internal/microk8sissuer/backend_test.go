@@ -11,14 +11,18 @@ import (
 )
 
 type fakeRunner struct {
-	output []byte
-	args   []string
-	calls  int
+	output    []byte
+	args      []string
+	calls     int
+	tokenFile string
 }
 
 func (f *fakeRunner) Run(_ context.Context, _ string, args []string) ([]byte, error) {
 	f.calls++
 	f.args = append([]string(nil), args...)
+	if len(args) >= 2 && f.tokenFile != "" {
+		_ = os.WriteFile(f.tokenFile, []byte(args[1]+"|1060\n"), 0600)
+	}
 	return f.output, nil
 }
 func backendFixture(t *testing.T, content string) (*MicroK8sBackend, *fakeRunner, string) {
@@ -29,6 +33,7 @@ func backendFixture(t *testing.T, content string) (*MicroK8sBackend, *fakeRunner
 	}
 	uid := os.Getuid()
 	runner := &fakeRunner{}
+	runner.tokenFile = path
 	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: path, ExpectedUID: uint32(uid), Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
 }
 func TestBackendUsesOnlyFixedCommandAndParsesExactJSON(t *testing.T) {

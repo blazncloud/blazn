@@ -1,5 +1,6 @@
 import { request as httpRequest } from "node:http";
 import { lstat } from "node:fs/promises";
+import { createConnection } from "node:net";
 import type {
   IssuedWorkerCredential,
   WorkerCredentialIssueRequest,
@@ -36,10 +37,19 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
   }
 
   static async connect(socketPath: string, timeoutMs = 5_000): Promise<UnixMicroK8sWorkerCredentialIssuer> {
+    if (!socketPath.startsWith("/") || timeoutMs < 1 || timeoutMs > 30_000) {
+      throw new Error("MicroK8s worker issuer configuration is invalid");
+    }
     const info = await lstat(socketPath);
     if (!info.isSocket() || info.isSymbolicLink() || info.nlink !== 1 || info.uid !== 0 || (info.mode & 0o007) !== 0) {
       throw new Error("MicroK8s worker issuer socket is unsafe");
     }
+    await new Promise<void>((resolve, reject) => {
+      const socket = createConnection(socketPath);
+      const timer = setTimeout(() => socket.destroy(new Error("MicroK8s worker issuer startup probe timed out")), timeoutMs);
+      socket.once("connect", () => { clearTimeout(timer); socket.end(); resolve(); });
+      socket.once("error", (error) => { clearTimeout(timer); reject(error); });
+    });
     return new UnixMicroK8sWorkerCredentialIssuer(socketPath, timeoutMs);
   }
 
