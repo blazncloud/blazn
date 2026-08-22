@@ -38,6 +38,7 @@ export interface WorkerCredentialIssuer {
 }
 
 export interface BrokerBinding {
+  databaseNow?: Date;
   workspaceId: string;
   enrollmentId: string;
   enrollmentStatus: string;
