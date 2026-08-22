@@ -2,7 +2,9 @@ package proxycontract
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,7 @@ const id2 = "123e4567-e89b-42d3-a456-426614174001"
 const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func validPolicy() Policy {
-	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: []Protocol{ProtocolOpenAIChat}, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "local/qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1}, ContentCapture: false}
+	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: []Protocol{ProtocolOpenAIChat}, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "local/qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1, RetryableReasons: []RetryableReason{}, AllowedBoundaryTransitions: []BoundaryTransition{}}, ContentCapture: false}
 }
 
 func TestCanonicalPOCPolicyDecodesWithExactRouteSemantics(t *testing.T) {
@@ -25,8 +27,31 @@ func TestCanonicalPOCPolicyDecodesWithExactRouteSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(policy.Routes) != 2 || len(policy.Routes[0].SourceProtocols) != 3 || policy.Routes[0].Model != "qwen3.8" || policy.Routes[0].DestinationClass != DestinationLocalNode || policy.Routes[1].Model != "gpt-5.4" || policy.Routes[1].DestinationClass != DestinationProvider {
-		t.Fatalf("canonical POC routes do not preserve local Qwen then cloud fallback semantics: %#v", policy.Routes)
+	expected := canonicalPOCPolicy()
+	if !reflect.DeepEqual(policy, expected) {
+		t.Fatalf("canonical POC policy does not match every frozen field\ngot:  %#v\nwant: %#v", policy, expected)
+	}
+}
+
+func canonicalPOCPolicy() Policy {
+	protocols := []Protocol{ProtocolOpenAIResponses, ProtocolOpenAIChat, ProtocolAnthropicMessages}
+	localID := "33333333-3333-4333-8333-333333333333"
+	cloudID := "44444444-4444-4444-8444-444444444444"
+	return Policy{
+		ID: "11111111-1111-4111-8111-111111111111", Version: 1, WorkspaceID: "22222222-2222-4222-8222-222222222222", Protocols: protocols,
+		Aliases: map[string]Alias{
+			"company-assistant":            {RouteIDs: []string{localID, cloudID}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal, BoundaryExternal}},
+			"company-assistant-public":     {RouteIDs: []string{localID, cloudID}, DataClass: DataPublic, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal, BoundaryExternal}},
+			"company-assistant-restricted": {RouteIDs: []string{localID}, DataClass: DataRestricted, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}},
+			"company-assistant-local":      {RouteIDs: []string{localID}, DataClass: DataLocalOnly, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}},
+		},
+		Routes: []Route{
+			{ID: localID, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "127.0.0.1", Port: 11434, BasePath: "/v1", HostnameAllowlist: []string{"127.0.0.1"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: protocols, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen3.8", Capabilities: []Capability{CapabilityText, CapabilityTools, CapabilityStructuredOutput, CapabilityStreaming}, AcceptedDataClasses: []DataClass{DataPublic, DataCompany, DataRestricted, DataLocalOnly}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 2000, CredentialRef: "node-route://qwen38", CostClass: CostLocal},
+			{ID: cloudID, DestinationClass: DestinationProvider, Endpoint: Endpoint{Scheme: "https", Hostname: "api.openai.com", Port: 443, BasePath: "/v1", HostnameAllowlist: []string{"api.openai.com"}, ResolvedAddressPolicy: AddressPublicUnicast}, SourceProtocols: protocols, DestinationProtocol: ProtocolOpenAIResponses, Model: "gpt-5.4", Capabilities: []Capability{CapabilityText, CapabilityTools, CapabilityStructuredOutput, CapabilityStreaming}, AcceptedDataClasses: []DataClass{DataPublic, DataCompany}, DataBoundary: BoundaryExternal, HealthTimeoutMS: 5000, CredentialRef: "workspace-vault://poc/model-providers/openai", CostClass: CostMeteredHigh},
+		},
+		RequestLimits:  RequestLimits{MaxContextTokens: 131072, MaxOutputTokens: 8192, TimeoutMS: 120000, Streaming: true, MaxCostClass: CostMeteredHigh},
+		Fallback:       Fallback{MaxAttempts: 2, RetryableReasons: []RetryableReason{ReasonConnectionFailure, ReasonTimeoutBeforeFirstByte, ReasonRateLimited, ReasonUpstream5xx, ReasonModelUnavailable, ReasonCompatibleContextOverflow}, AllowedBoundaryTransitions: []BoundaryTransition{"local_to_external"}},
+		ContentCapture: false,
 	}
 }
 
@@ -49,6 +74,171 @@ func receiptEnvironment() []ReceiptEnvironment {
 		out = append(out, ReceiptEnvironment{Name: name, DesiredValueDigest: digest, ActivationMarker: "activation-marker"})
 	}
 	return out
+}
+
+func validActivationRecords() (ActivationJournal, ActivationReceipt) {
+	prior := "old"
+	journal := ActivationJournal{SchemaVersion: "proxy/v1alpha1", ActivationID: id1, Nonce: strings.Repeat("a", 32), Generation: 1, State: JournalActive, OwnerUID: 1, Platform: PlatformLinux, Mode: ModeScopedRun, SessionIdentity: "uid:1", Policy: PolicyIdentity{ID: id2, Version: 1, Digest: digest}, Binary: BinaryIdentity{Path: "/usr/bin/blazn", Digest: digest}, Listener: ListenerIdentity{PID: 10, ProcessStartIdentity: "start", ExecutableIdentity: "exe", Address: "127.0.0.1:8080", ListenerKeyFingerprint: digest}, Environment: journalEnvironment(&prior), CA: json.RawMessage("null"), RollbackActions: []RollbackStep{}, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z", Checksum: digest}
+	receipt := ActivationReceipt{SchemaVersion: "proxy/v1alpha1", ActivationID: id1, Nonce: journal.Nonce, Generation: 1, OwnerUID: 1, JournalDigest: digest, PolicyDigest: digest, Platform: PlatformLinux, Mode: ModeScopedRun, SessionIdentity: "uid:1", Binary: journal.Binary, Listener: ReceiptListener{PID: 10, ProcessStartIdentity: "start", ExecutableIdentity: "exe", Address: "127.0.0.1:8080", ListenerKeyFingerprint: digest}, PublicationMechanism: "process_environment", Environment: receiptEnvironment(), RollbackSummary: []RollbackStep{}, ActivatedAt: "2026-01-01T00:00:00Z", State: "active", Checksum: digest}
+	return journal, receipt
+}
+
+func TestRequiredCollectionsAndZeroUsageRoundTrip(t *testing.T) {
+	hello := "hello"
+	policy := validPolicy()
+	request := NormalizedRequest{LogicalRequestID: id1, Protocol: ProtocolOpenAIChat, ModelAlias: "local", DataClass: DataCompany, Blocks: []RequestBlock{{Role: "user", Type: "text", Text: &hello}}, Tools: []Tool{}, Limits: NormalizedLimits{MaxOutputTokens: 10, DeadlineAt: "2026-01-01T00:00:00Z"}, CapabilitiesRequired: []Capability{}}
+	response := NormalizedResponse{LogicalRequestID: id1, ModelAlias: "local", RouteID: id2, Blocks: []ResponseBlock{}, FinishReason: "stop", Usage: Usage{}}
+	journal, receipt := validActivationRecords()
+
+	for name, roundTrip := range map[string]func() error{
+		"policy": func() error {
+			encoded, err := json.Marshal(policy)
+			if err != nil {
+				return err
+			}
+			_, err = DecodePolicy(strings.NewReader(string(encoded)))
+			return err
+		},
+		"request": func() error {
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				return err
+			}
+			_, err = DecodeNormalizedRequest(strings.NewReader(string(encoded)))
+			return err
+		},
+		"response": func() error {
+			encoded, err := json.Marshal(response)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(encoded), `"usage":{"inputTokens":0,"outputTokens":0}`) {
+				return fmt.Errorf("required zero usage fields missing from %s", encoded)
+			}
+			_, err = DecodeNormalizedResponse(strings.NewReader(string(encoded)))
+			return err
+		},
+		"journal": func() error {
+			encoded, err := json.Marshal(journal)
+			if err != nil {
+				return err
+			}
+			_, err = DecodeActivationJournal(strings.NewReader(string(encoded)))
+			return err
+		},
+		"receipt": func() error {
+			encoded, err := json.Marshal(receipt)
+			if err != nil {
+				return err
+			}
+			_, err = DecodeActivationReceipt(strings.NewReader(string(encoded)))
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := roundTrip(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	for name, invalid := range map[string]func() error{
+		"retry reasons": func() error { value := validPolicy(); value.Fallback.RetryableReasons = nil; return value.Validate() },
+		"boundary transitions": func() error {
+			value := validPolicy()
+			value.Fallback.AllowedBoundaryTransitions = nil
+			return value.Validate()
+		},
+		"journal rollback": func() error {
+			value, _ := validActivationRecords()
+			value.RollbackActions = nil
+			return value.Validate()
+		},
+		"receipt rollback": func() error {
+			_, value := validActivationRecords()
+			value.RollbackSummary = nil
+			return value.Validate()
+		},
+		"request tools":        func() error { value := request; value.Tools = nil; return value.Validate() },
+		"request capabilities": func() error { value := request; value.CapabilitiesRequired = nil; return value.Validate() },
+		"response blocks":      func() error { value := response; value.Blocks = nil; return value.Validate() },
+	} {
+		t.Run("nil "+name, func(t *testing.T) {
+			if err := invalid(); err == nil {
+				t.Fatal("nil required collection accepted")
+			}
+		})
+	}
+}
+
+func TestReceiptPlatformModePublicationMatrix(t *testing.T) {
+	for name, configure := range map[string]func(*ActivationReceipt){
+		"linux auto scoped": func(r *ActivationReceipt) {
+			r.Platform = PlatformLinux
+			r.Mode = ModeScopedRun
+			r.PublicationMechanism = "process_environment"
+		},
+		"darwin scoped": func(r *ActivationReceipt) {
+			r.Platform = PlatformDarwin
+			r.Mode = ModeScopedRun
+			r.PublicationMechanism = "process_environment"
+		},
+		"darwin session": func(r *ActivationReceipt) {
+			r.Platform = PlatformDarwin
+			r.Mode = ModeSession
+			r.PublicationMechanism = "launchctl_user_environment"
+		},
+		"linux session": func(r *ActivationReceipt) {
+			r.Platform = PlatformLinux
+			r.Mode = ModeSession
+			r.PublicationMechanism = "systemd_user_environment"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, receipt := validActivationRecords()
+			configure(&receipt)
+			if err := receipt.Validate(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for name, configure := range map[string]func(*ActivationReceipt){
+		"scoped launchctl": func(r *ActivationReceipt) {
+			r.Platform = PlatformDarwin
+			r.Mode = ModeScopedRun
+			r.PublicationMechanism = "launchctl_user_environment"
+		},
+		"darwin session systemd": func(r *ActivationReceipt) {
+			r.Platform = PlatformDarwin
+			r.Mode = ModeSession
+			r.PublicationMechanism = "systemd_user_environment"
+		},
+		"linux session process": func(r *ActivationReceipt) {
+			r.Platform = PlatformLinux
+			r.Mode = ModeSession
+			r.PublicationMechanism = "process_environment"
+		},
+	} {
+		t.Run("reject "+name, func(t *testing.T) {
+			_, receipt := validActivationRecords()
+			configure(&receipt)
+			if err := receipt.Validate(); err == nil {
+				t.Fatal("invalid platform/mode/publication tuple accepted")
+			}
+		})
+	}
+}
+
+func TestAliasMustCoverEveryEnabledProtocol(t *testing.T) {
+	policy := validPolicy()
+	policy.Protocols = []Protocol{ProtocolOpenAIChat, ProtocolAnthropicMessages}
+	if err := policy.Validate(); err == nil {
+		t.Fatal("alias without an Anthropic-capable route accepted")
+	}
+	policy.Routes[0].SourceProtocols = append(policy.Routes[0].SourceProtocols, ProtocolAnthropicMessages)
+	if err := policy.Validate(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPolicyValidationEnforcesRoutesBoundaryAndCapture(t *testing.T) {
