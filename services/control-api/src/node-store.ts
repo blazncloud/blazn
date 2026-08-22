@@ -68,7 +68,8 @@ class PgNodeTransaction implements NodeTransaction {
   }
   async exchangeByEnrollment(enrollmentId: string): Promise<ExchangeNodeEnrollmentResponse | undefined> {
     const result = await this.client.query(`SELECT p.canonical_plan,i.generation,i.signing_key_id,i.public_key_fingerprint,i.issued_at,i.expires_at
-      FROM node_install_plans p JOIN nodes n ON n.id=p.node_id JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation
+      FROM node_install_plans p JOIN node_enrollments e ON e.id=p.enrollment_id
+      JOIN node_identities i ON i.node_id=p.node_id AND i.public_key_fingerprint=e.node_public_key_fingerprint AND i.issued_at=p.issued_at
       WHERE p.enrollment_id=$1`, [enrollmentId]);
     const row=result.rows[0];return row ? {plan:row.canonical_plan,identity:enrollmentIdentityRow(row)} : undefined;
   }
