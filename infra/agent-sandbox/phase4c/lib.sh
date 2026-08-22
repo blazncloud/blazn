@@ -72,6 +72,17 @@ phase4c_verify_transaction() {
     return 1
   fi
   : "${BLAZN_REVIEWED_INPUT_DIGEST:?set the separately reviewed transaction input digest}"
+  for relative in input.sha256 input.digest install.yaml $(awk '{print $2}' "$transaction/input.sha256"); do
+    file=$transaction/$relative
+    if [ -L "$file" ] || [ ! -f "$file" ] || [ "$(stat -c '%u:%a:%h' "$file")" != '0:400:1' ]; then
+      printf 'sealed transaction file metadata is unsafe: %s\n' "$relative" >&2
+      return 1
+    fi
+  done
+  if [ -L "$transaction/phase" ] || [ ! -f "$transaction/phase" ] || [ "$(stat -c '%u:%a:%h' "$transaction/phase")" != '0:600:1' ]; then
+    printf 'transaction journal metadata is unsafe\n' >&2
+    return 1
+  fi
   [ "$(cat "$transaction/input.digest")" = "$BLAZN_REVIEWED_INPUT_DIGEST" ] || { printf 'reviewed input digest mismatch\n' >&2; return 1; }
   (cd "$transaction" && sha256sum -c input.sha256 >/dev/null) || { printf 'sealed transaction input changed\n' >&2; return 1; }
 }

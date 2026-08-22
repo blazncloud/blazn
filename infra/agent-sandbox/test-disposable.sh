@@ -77,6 +77,13 @@ done
 # cluster. Crash after controller apply, resume the journal, run the canary,
 # and UID-fenced rollback before the original Phase 4A lifecycle continues.
 kctl label node "$node" blazn.dev/sandbox-eligible=true --overwrite >/dev/null
+attempt=0
+until printf '%s\n' 'apiVersion: kueue.x-k8s.io/v1beta2' 'kind: ResourceFlavor' 'metadata:' '  name: blazn-phase4c-webhook-probe' |
+  $docker_cmd exec -i "$node" kubectl create --dry-run=server -f - >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 60 ] || { printf 'Kueue admission webhook did not become ready\n' >&2; exit 1; }
+  sleep 2
+done
 cat <<EOF | kapply >/dev/null
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ResourceFlavor
