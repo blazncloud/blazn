@@ -122,9 +122,9 @@ for fault in rollback-started role-removed secrets-retained environment-restored
   if ! run_rollback "$root" >"$root/rollback-retry.out" 2>"$root/rollback-retry.err"; then sudo tail -80 "$root/rollback-retry.err" >&2; exit 1; fi
   sudo jq -e '(.nodeBroker|not)' "$root/ownership/control-plane.json" >/dev/null
   sudo jq -e '.phase=="rolled-back"' "$root/ownership/node-broker-upgrade.json" >/dev/null
-  [ ! -e "$root/etc/node-broker" ] && [ -d "$root/ownership/node-broker-rollback-rollback" ] || { printf 'rollback retention state is invalid after %s\n' "$fault" >&2; sudo find "$root" -maxdepth 3 -print >&2; exit 1; }
+  sudo test ! -e "$root/etc/node-broker" && sudo test -d "$root/ownership/node-broker-rollback-rollback" || { printf 'rollback retention state is invalid after %s\n' "$fault" >&2; exit 1; }
   [ ! -e "$root/role-ready" ] || { printf 'rollback retry left database role\n' >&2; exit 1; }
-  [ ! -s "$root/control-plane.env" ] || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
+  sudo test ! -s "$root/control-plane.env" || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
 done
 
 trap - EXIT HUP INT TERM
