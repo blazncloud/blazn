@@ -75,7 +75,8 @@ export class WorkspaceService {
         await this.authorize(transaction, principal, workspaceId, "invite", true);
         const invitationId = randomUUID();
         const token = invitationToken(key, workspaceId, invitationId, idempotencyKey);
-        const invitation = await transaction.insertInvitation(invitationId, workspaceId, sha256(token), input.role, principal.userId, new Date(Date.now() + input.expiresIn * 1000));
+        const invitationRole = input.role as Exclude<WorkspaceRole, "owner">;
+        const invitation = await transaction.insertInvitation(invitationId, workspaceId, sha256(token), invitationRole, principal.userId, new Date(Date.now() + input.expiresIn * 1000));
         await transaction.insertAudit(randomUUID(), workspaceId, principal.userId, "invitation.created", undefined, invitation.id, { role: input.role, expiresAt: invitation.expiresAt });
         return { workspaceId, response: { invitation, inviteToken: token }, storedResponse: { invitation }, status: 201 };
       },
@@ -183,7 +184,7 @@ export class WorkspaceService {
     positiveVersion(expectedVersion);
     return this.idempotent(principal, {
       operation: leave ? "membership.leave" : "membership.remove", key: idempotencyKey, digest: requestDigest({ userId, expectedVersion }), targetKey: `user:${userId}`,
-      replayCapability: leave ? undefined : "manage_members",
+      ...(leave ? {} : { replayCapability: "manage_members" as const }),
       execute: async (transaction) => {
         const workspace = await this.authorize(transaction, principal, workspaceId, leave ? "read" : "manage_members", true);
         const target = await transaction.getMembership(workspaceId, userId, true);
