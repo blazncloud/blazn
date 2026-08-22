@@ -3,6 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { BlockList, isIP } from "node:net";
 import type { Database } from "./db.js";
 import { HttpError } from "./http.js";
+import { secretMatches } from "./security.js";
 
 type AddressFamily = "ipv4" | "ipv6";
 
@@ -46,20 +47,31 @@ export class TrustedProxyPolicy {
   }
 }
 
-export function remoteIdentity(request: IncomingMessage, policy: TrustedProxyPolicy): string {
+export function remoteIdentity(request: IncomingMessage, policy: TrustedProxyPolicy, proxySecret?: string): string {
   const direct = parsedAddress(request.socket.remoteAddress ?? "");
   if (!direct) return "unknown";
   if (!policy.contains(direct.address)) return direct.address;
 
+  if (proxySecret !== undefined) {
+    const authorizations = request.headersDistinct["x-blazn-proxy-authorization"] ?? [];
+    if (authorizations.length !== 1 || !secretMatches(authorizations[0] ?? "", proxySecret)) {
+      throw new HttpError("proxy_auth_invalid", "trusted proxy authorization is missing or invalid");
+    }
+  }
+
   const forwarded = request.headers["x-forwarded-for"];
-  if (typeof forwarded !== "string") return direct.address;
+  if (typeof forwarded !== "string") throw new HttpError("forwarded_identity_invalid", "trusted proxy request has no singular forwarded identity chain");
   const chain = forwarded.split(",").map(parsedAddress);
-  if (chain.length !== policy.hops || chain.some((address) => !address)) return direct.address;
+  if (chain.length !== policy.hops || chain.some((address) => !address)) {
+    throw new HttpError("forwarded_identity_invalid", "trusted proxy request has a malformed or unexpected forwarded identity chain");
+  }
 
   // The direct peer is the final trusted hop. Every forwarded hop after the
   // selected client must also be a configured proxy; exact length prevents a
   // caller-controlled prefix from changing which address is selected.
-  for (const proxy of chain.slice(1)) if (!proxy || !policy.contains(proxy.address)) return direct.address;
+  for (const proxy of chain.slice(1)) {
+    if (!proxy || !policy.contains(proxy.address)) throw new HttpError("forwarded_identity_invalid", "forwarded identity chain contains an untrusted proxy hop");
+  }
   return chain[0]?.address ?? direct.address;
 }
 

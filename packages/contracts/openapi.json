@@ -9,6 +9,7 @@
       "responses": {
         "201": {"description": "Device authorization created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceAuthorization"}}}},
         "400": {"$ref": "#/components/responses/BadRequest"},
+        "403": {"$ref": "#/components/responses/Forbidden"},
         "413": {"$ref": "#/components/responses/RequestTooLarge"},
         "429": {"$ref": "#/components/responses/RateLimited"},
         "503": {"$ref": "#/components/responses/ServiceUnavailable"},
@@ -194,6 +195,7 @@
           "device_proof_invalid": 403,
           "device_revoked": 401,
           "expired_token": 400,
+          "forwarded_identity_invalid": 400,
           "identity_rejected": 403,
           "internal_error": 500,
           "invalid_json": 400,
@@ -202,6 +204,7 @@
           "method_not_allowed": 405,
           "not_found": 404,
           "object_storage_unavailable": 503,
+          "proxy_auth_invalid": 403,
           "rate_limited": 429,
           "request_too_large": 413,
           "session_revoked": 401,
@@ -209,7 +212,7 @@
           "unauthorized": 401
         },
         "properties": {
-		  "code": {"type": "string", "enum": ["access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending", "device_not_found", "device_proof_invalid", "device_revoked", "expired_token", "identity_rejected", "internal_error", "invalid_json", "invalid_public_key", "invalid_request", "method_not_allowed", "not_found", "object_storage_unavailable", "rate_limited", "request_too_large", "session_revoked", "slow_down", "unauthorized"]},
+		  "code": {"type": "string", "enum": ["access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending", "device_not_found", "device_proof_invalid", "device_revoked", "expired_token", "forwarded_identity_invalid", "identity_rejected", "internal_error", "invalid_json", "invalid_public_key", "invalid_request", "method_not_allowed", "not_found", "object_storage_unavailable", "proxy_auth_invalid", "rate_limited", "request_too_large", "session_revoked", "slow_down", "unauthorized"]},
           "message": {"type": "string", "minLength": 1, "maxLength": 1024},
           "requestId": {"type": "string", "minLength": 1, "maxLength": 128}
         }
