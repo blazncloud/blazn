@@ -211,6 +211,17 @@ func validateOpenAPI(document map[string]any) error {
 				return fmt.Errorf("%s must inherit global bearer auth", expected.id)
 			}
 		}
+		needsIdempotency := expected.id == "createNodeEnrollment" || expected.id == "createNodeOperation" || expected.id == "issueNodeJoinCredential" || expected.id == "consumeNodeJoinCredential"
+		parameters, _ := at(document, append(base, "parameters")...).([]any)
+		hasIdempotency := false
+		for _, parameter := range parameters {
+			if atString(parameter, "$ref") == "#/components/parameters/IdempotencyKey" {
+				hasIdempotency = true
+			}
+		}
+		if needsIdempotency != hasIdempotency {
+			return fmt.Errorf("%s idempotency header contract changed", expected.id)
+		}
 	}
 	if atString(document, "components", "schemas", "ExchangeNodeEnrollmentRequest", "properties", "token", "type") != "string" {
 		return fmt.Errorf("enrollment token must remain in JSON request body")

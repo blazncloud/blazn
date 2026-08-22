@@ -28,6 +28,8 @@ jobs:
         run: make check-generated
       - name: Check generated workspace API client
         run: make check-workspace-generated
+      - name: Check generated Node API client and signed models
+        run: make check-node-generated
       - name: Run unit tests
         run: make test
       - name: Verify release packaging

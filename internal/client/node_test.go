@@ -328,3 +328,22 @@ func TestJoinCredentialRequiresWorkerOnlyConst(t *testing.T) {
 		t.Fatal("control-plane-capable join credential passed")
 	}
 }
+
+func TestIssueJoinCredentialRequiresAndSendsStableIdempotencyKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Blazn-Node-Proof") != "proof" || request.Header.Get("Idempotency-Key") != "join-key-1" {
+			t.Fatalf("proof=%q key=%q", request.Header.Get("X-Blazn-Node-Proof"), request.Header.Get("Idempotency-Key"))
+		}
+		_ = json.NewEncoder(w).Encode(JoinCredential{IssuanceID: testUUIDA, Credential: strings.Repeat("x", 43), ExpiresAt: "2026-08-21T00:05:00Z", ClusterID: "cluster-1", WorkerOnly: true, Replayed: false})
+	}))
+	defer server.Close()
+	api, _ := New(server.URL, server.Client())
+	request := JoinCredentialRequest{EnrollmentID: testUUIDA, PlanID: testUUIDB, PlanDigest: "sha256:" + testHash, NodeID: testUUIDC, MachineFingerprint: testHash, NodePublicKeyFingerprint: "sha256:" + testHash}
+	credential, err := api.IssueNodeJoinCredential(context.Background(), "proof", "join-key-1", request)
+	if err != nil || credential.IssuanceID != testUUIDA {
+		t.Fatalf("credential=%#v err=%v", credential, err)
+	}
+	if _, err := api.IssueNodeJoinCredential(context.Background(), "proof", "", request); err == nil {
+		t.Fatal("missing issuance idempotency key passed")
+	}
+}
