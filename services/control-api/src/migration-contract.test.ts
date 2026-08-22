@@ -101,7 +101,7 @@ test("sandbox persistence freezes immutable versions and workspace-scoped bindin
 
 test("sandbox duration migration derives expiry from one database clock and retires timestamp authority", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(path.resolve(here, "../migrations/010_sandbox_expiry_duration.sql"), "utf8");
+  const sql = await readFile(path.resolve(here, "../migrations/011_sandbox_expiry_duration.sql"), "utf8");
   assert.match(sql, /CREATE FUNCTION sandbox_create_bound_sandbox_for_duration/);
   assert.match(sql, /p_expires_in_seconds < 60 OR p_expires_in_seconds > 7200/);
   assert.match(sql, /effective_expires_at := effective_now \+ make_interval\(secs => p_expires_in_seconds\)/);
