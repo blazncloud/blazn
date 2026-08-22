@@ -332,18 +332,22 @@ expect_denied "SET ROLE blazn_runtime; UPDATE node_join_issuances SET credential
 expect_denied "SET ROLE blazn_bootstrap; SELECT * FROM nodes;" bootstrap_node_read
 
 runtime_password=node-runtime-ci
+broker_password=node-broker-ci
 psql_admin <<SQL
 ALTER ROLE blazn_runtime LOGIN PASSWORD '$runtime_password';
+ALTER ROLE blazn_node_broker LOGIN PASSWORD '$broker_password';
 SQL
 created_node_runner=true
 docker create --name "$node_runner" --network "$network" --read-only \
   --tmpfs /work:rw,nosuid,nodev,size=256m,mode=0700,uid=1000,gid=1000 \
   --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
-  -v "$repo_root/services/control-api:/source:ro" -w /work \
+  -v "$repo_root/services/control-api:/source:ro" -v "$repo_root:/repo:ro" -w /work \
   -e HOME=/work/home -e npm_config_cache=/work/.npm \
   -e NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
   -e NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
-  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; node node_modules/typescript/bin/tsc -p tsconfig.json; node --test dist/node-store.integration.test.js' >/dev/null
+  -e NODE_TEST_BROKER_DATABASE_URL="postgresql://blazn_node_broker:$broker_password@$postgres:5432/blazn" \
+  -e NODE_TEST_REPO_ROOT=/repo \
+  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; node node_modules/typescript/bin/tsc -p tsconfig.json; node --test dist/node-store.integration.test.js dist/node-broker-store.integration.test.js' >/dev/null
 docker start -a "$node_runner"
 
 printf 'Node PostgreSQL 17.6 qualification passed\n'

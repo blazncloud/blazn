@@ -15,7 +15,7 @@ export interface NodeBrokerStore { transaction<T>(action:(tx:NodeBrokerTransacti
 
 export class PgNodeBrokerStore implements NodeBrokerStore {
   constructor(private readonly database:Database){}
-  async transaction<T>(action:(tx:NodeBrokerTransaction)=>Promise<T>):Promise<T>{const client=await this.database.connect();try{await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ");const result=await action(new PgNodeBrokerTransaction(client));await client.query("COMMIT");return result;}catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}}
+  async transaction<T>(action:(tx:NodeBrokerTransaction)=>Promise<T>):Promise<T>{const client=await this.database.connect();try{await client.query("BEGIN");const result=await action(new PgNodeBrokerTransaction(client));await client.query("COMMIT");return result;}catch(error){await client.query("ROLLBACK");throw error;}finally{client.release();}}
 }
 
 class PgNodeBrokerTransaction implements NodeBrokerTransaction {
