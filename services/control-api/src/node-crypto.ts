@@ -41,6 +41,14 @@ export function verifyNodeProof(publicKey: string, prefix: string, body: unknown
   } catch { return false; }
 }
 
+export function verifyNodePlanSignature(publicKey: string, digest: string, signature: string): boolean {
+  try {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(publicKey) || !/^sha256:[0-9a-f]{64}$/.test(digest) || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
+    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: publicKey }, format: "jwk" });
+    return verify(null, Buffer.from(`blazn-node-install-plan-v1\n${digest}`, "utf8"), key, Buffer.from(signature, "base64url"));
+  } catch { return false; }
+}
+
 export interface NodePlanSigner {
   readonly keyId: string;
   publicKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;

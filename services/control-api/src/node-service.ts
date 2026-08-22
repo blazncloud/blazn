@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { canonicalJson, enrollmentToken, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex, verifyNodeProof } from "./node-crypto.js";
+import { canonicalJson, enrollmentToken, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex, verifyNodePlanSignature, verifyNodeProof } from "./node-crypto.js";
 import type { NodePlanFactory } from "./node-plan.js";
 import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction } from "./node-store.js";
 import { nodeRoleAllows, NodeHttpError, type KubernetesBinding, type NodeArchitecture, type NodeEvent, type NodeOperationType, type NodeOperationView, type NodePlanSigningKey, type NodePlatform, type NodePrincipal, type NodeView } from "./node-types.js";
@@ -51,7 +51,7 @@ export class NodeService {
       const configuredSigningKey=validSigningKey(await this.planFactory.signingKey());if(!sameSigningKey(configuredSigningKey,enrollment.planSigningKey))throw new Error("configured Node plan signer does not match enrollment-pinned trust");
       const issuedAt=this.now(),expiresAt=new Date(issuedAt.getTime()+15*60_000),nodeId=randomUUID(),planId=randomUUID();
       const plan=await this.planFactory.create({planId,nodeId,enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,nodePublicKeyFingerprint:fingerprint,issuedAt,expiresAt});
-      const digest=requiredRenderedDigest(plan.digest,"plan digest"); const signature=requiredSignature(plan.signature); const signingKeyId=requiredText(plan.signingKeyId,"signingKeyId",128);
+      const digest=requiredRenderedDigest(plan.digest,"plan digest"); const signature=requiredSignature(plan.signature); const signingKeyId=requiredText(plan.signingKeyId,"signingKeyId",128);if(signingKeyId!==enrollment.planSigningKey.keyId||!verifyNodePlanSignature(enrollment.planSigningKey.publicKey,digest,signature))throw new Error("Node install plan signature does not match enrollment-pinned trust");
       await tx.createExchangedNode({nodeId,identityId:randomUUID(),enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,publicKey:input.nodePublicKey,publicKeyFingerprint:fingerprint,...(input.kubernetesBinding?{kubernetesBinding:input.kubernetesBinding}:{}),planId,plan,planDigest:digest.slice(7),signingKeyId,signature,issuedAt,expiresAt});
       return plan;
     });
