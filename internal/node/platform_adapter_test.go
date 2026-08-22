@@ -528,6 +528,7 @@ func TestPrivilegedObservationParsesRealShapedLinuxAndMacWorkers(t *testing.T) {
 				plan.Components = []client.NodeInstallComponent{{Name: "lima-worker-binding", SourceClass: "embedded", ArtifactType: "configuration", SHA256: hex.EncodeToString(sum[:])}}
 				engine.LimaBindingPath = path
 			}
+			engine.ObservationIdentity = RootObservedIdentity{PublicKey: "public-key", PublicKeyFingerprint: "sha256:" + testHash, SigningKeyID: "node-key", Generation: 1, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, WorkspaceID: plan.WorkspaceID, ControlPlaneOriginDigest: "sha256:" + testHash}
 			engine.Commands = scriptedExecutor{run: func(path string, args []string, _ []byte) ([]byte, error) {
 				joined := strings.Join(args, " ")
 				if strings.Contains(joined, "get node worker-1 -o json") {
@@ -557,6 +558,12 @@ func TestPrivilegedObservationParsesRealShapedLinuxAndMacWorkers(t *testing.T) {
 			}
 			if observed.AllocatableCPUMillis != 3500 || observed.AllocatableMemoryBytes != 16<<30 || observed.AllocatableDiskBytes != 120<<30 || !observed.NodeReady || !observed.ServiceActive || len(observed.RuntimeClasses) != 1 || !containsArgument(observed.ReasonCodes, "api_discovery_failed") {
 				t.Fatalf("observation=%#v", observed)
+			}
+			if observed.Plan.PlanID != plan.PlanID || observed.Plan.ExpiresAt != plan.ExpiresAt || observed.Plan.Digest != plan.Digest || observed.Plan.Signature != plan.Signature {
+				t.Fatalf("signed plan provenance=%#v", observed.Plan)
+			}
+			if observed.Identity != engine.ObservationIdentity {
+				t.Fatalf("node identity provenance=%#v", observed.Identity)
 			}
 		})
 	}
@@ -916,6 +923,19 @@ func TestDefaultRootAuthorityPathsFollowPlatformContract(t *testing.T) {
 	profile, binary, authority, err = mac.authorityPaths()
 	if err != nil || profile != MacOSNodeProfileRoot || binary != defaultRootBinaryPath || authority != "/Library/Application Support/BlaznNodeRoot/install-authority.json" {
 		t.Fatalf("mac paths profile=%q binary=%q authority=%q err=%v", profile, binary, authority, err)
+	}
+}
+
+func TestObservedIdentityIsAnchoredToRootAuthority(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	authority := RootInstallAuthority{Plan: authorization.Expected.Plan, Identity: authorization.Expected.Identity, NodePublicKey: authorization.NodePublicKey, ControlPlaneOrigin: "https://control.example.test"}
+	observed, err := observedIdentityFromAuthority(authority)
+	if err != nil || observed.PublicKey != authority.NodePublicKey || observed.PublicKeyFingerprint != authority.Identity.PublicKeyFingerprint || observed.SigningKeyID != authority.Identity.SigningKeyID || observed.Generation != authority.Identity.Generation || observed.EnrollmentID != authority.Plan.EnrollmentID || observed.NodeID != authority.Plan.NodeID || observed.WorkspaceID != authority.Plan.WorkspaceID || observed.ControlPlaneOriginDigest == "" {
+		t.Fatalf("observed=%#v err=%v", observed, err)
+	}
+	authority.NodePublicKey = strings.Repeat("A", 43)
+	if _, err := observedIdentityFromAuthority(authority); err == nil {
+		t.Fatal("unrelated public key passed authoritative identity observation")
 	}
 }
 

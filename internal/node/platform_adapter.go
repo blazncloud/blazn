@@ -127,6 +127,30 @@ type RootNodeObservation struct {
 	RuntimeClasses         []string                 `json:"runtimeClasses"`
 	SandboxBackends        []string                 `json:"sandboxBackends"`
 	ReasonCodes            []string                 `json:"reasonCodes"`
+	Plan                   RootObservedPlan         `json:"plan"`
+	Identity               RootObservedIdentity     `json:"identity"`
+}
+
+// RootObservedIdentity is the public identity tuple authorized by the root
+// authority and active receipt. It contains no private key or credential.
+type RootObservedIdentity struct {
+	PublicKey                string `json:"publicKey"`
+	PublicKeyFingerprint     string `json:"publicKeyFingerprint"`
+	SigningKeyID             string `json:"signingKeyId"`
+	Generation               int64  `json:"generation"`
+	EnrollmentID             string `json:"enrollmentId"`
+	NodeID                   string `json:"nodeId"`
+	WorkspaceID              string `json:"workspaceId"`
+	ControlPlaneOriginDigest string `json:"controlPlaneOriginDigest"`
+}
+
+// RootObservedPlan exposes only public signed-plan provenance. It deliberately
+// excludes credentials, origins, mutations, rollback material, and key bytes.
+type RootObservedPlan struct {
+	PlanID    string `json:"planId"`
+	ExpiresAt string `json:"expiresAt"`
+	Digest    string `json:"digest"`
+	Signature string `json:"signature"`
 }
 
 type PrivilegedClient interface {
