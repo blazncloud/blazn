@@ -5,7 +5,7 @@ export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempote
 
 const brokerOrigin = "http://127.0.0.1:8081";
 const maxBytes = 16 * 1024;
-const statuses = new Set([200, 400, 401, 404, 405, 409, 413, 429, 500, 502, 503, 504]);
+const statuses = new Set([200, 400, 401, 403, 404, 405, 409, 410, 413, 429, 500, 502, 503, 504]);
 
 export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
   constructor(origin = brokerOrigin, private readonly timeoutMs = 5_000) {

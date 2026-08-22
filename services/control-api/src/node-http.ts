@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { jsonBody, sendJson } from "./http.js";
 import type { NodeService } from "./node-service.js";
 import { NodeHttpError, type NodeArchitecture, type NodeOperationType, type NodePlatform, type NodePrincipal } from "./node-types.js";
-import type { NodeBrokerProxy } from "./node-broker-proxy.js";
+import type { BrokerProxyReply, NodeBrokerProxy } from "./node-broker-proxy.js";
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -12,10 +12,11 @@ export class NodeHttpRouter {
   async handle(request:IncomingMessage,response:ServerResponse,url:URL,authenticate:()=>Promise<NodePrincipal>):Promise<void>{
     const path=url.pathname;
     if(path==="/v1/node-service/join-credentials"){
+      if(url.search!=="")throw new NodeHttpError("invalid_request","query parameters are not accepted");
       if(request.method!=="POST")throw method();if(!this.broker)throw new NodeHttpError("node_broker_unavailable","Node broker is unavailable");if(request.headers.authorization!==undefined)throw new NodeHttpError("unauthorized","user credentials are not accepted");
       const content=request.headersDistinct["content-type"]??[];if(content.length!==1||content[0]!=="application/json")throw new NodeHttpError("invalid_request","content-type must be application/json");
       const body=await jsonBody(request,16*1024);exact(body,["enrollmentId","planId","planDigest","nodeId","machineFingerprint","nodePublicKeyFingerprint"]);for(const [key,max] of [["enrollmentId",64],["planId",64],["planDigest",71],["nodeId",64],["machineFingerprint",64],["nodePublicKeyFingerprint",71]] as const)string(body[key],key,max);
-      const result=await this.broker.issue(body,idempotency(request),proof(request),AbortSignal.timeout(5_000));if(result.retryAfter)response.setHeader("retry-after",result.retryAfter);response.writeHead(result.status,{"content-type":"application/json","content-length":result.body.length,"cache-control":"no-store"});response.end(result.body);return;
+      let result:BrokerProxyReply;try{result=await this.broker.issue(body,idempotency(request),proof(request),AbortSignal.timeout(5_000));}catch{throw new NodeHttpError("node_broker_unavailable","Node broker is unavailable");}if(result.retryAfter)response.setHeader("retry-after",result.retryAfter);response.writeHead(result.status,{"content-type":"application/json","content-length":result.body.length,"cache-control":"no-store"});response.end(result.body);return;
     }
     const createEnrollment=path.match(/^\/v1\/workspaces\/([^/]+)\/node-enrollments$/);
     if(createEnrollment){if(request.method!=="POST")throw method();const principal=await authenticate();const body=await jsonBody(request);exact(body,["name","mode","platform"],["architecture"]);const result=await this.service.createEnrollment(principal,uuid(createEnrollment[1]!,"workspaceId"),idempotency(request),{name:string(body.name,"name",128),mode:one(body.mode,"mode",["fresh","adopt"]),platform:one(body.platform,"platform",["linux","macos"]) as NodePlatform,...(body.architecture===undefined?{}:{architecture:one(body.architecture,"architecture",["amd64","arm64"]) as NodeArchitecture})});return sendJson(response,201,result);}
