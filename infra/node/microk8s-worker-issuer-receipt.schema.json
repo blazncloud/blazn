@@ -8,7 +8,7 @@
     "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer-infra/v1"},
     "owner": {"const": "blazn-poc"},
     "host": {"type": "string", "minLength": 1},
-    "phase": {"enum": ["initialized", "secret-created", "config-bound", "files-installed", "service-started", "complete", "rollback-started", "service-stopped", "files-restored", "rolled-back"]},
+    "phase": {"enum": ["initialized", "secret-created", "config-bound", "files-installed", "service-started", "complete", "rollback-started", "service-stopped", "rollback-validated", "binary-removed", "config-removed", "secret-removed", "unit-removed", "tmpfiles-removed", "state-removed", "environment-restored", "main-restored", "files-restored", "rolled-back"]},
     "createdAt": {"type": "string", "format": "date-time"},
     "updatedAt": {"type": "string", "format": "date-time"},
     "binary": {"$ref": "#/$defs/artifact"},

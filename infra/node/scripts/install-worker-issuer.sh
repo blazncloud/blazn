@@ -7,7 +7,7 @@ die(){ printf 'blazn-worker-issuer-infra: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 [ "$(id -u)" -eq 0 ] || die "installation requires root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "installation requires the control-plane lock"
-for command_name in awk cmp cp dirname find getent grep install jq mv openssl rm sha256sum stat sync wc xxd; do need "$command_name"; done
+for command_name in awk cmp cp dirname find getent grep install jq mv openssl python3 rm sha256sum stat sync wc xxd; do need "$command_name"; done
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 SOURCE=${BLAZN_ISSUER_BINARY_SOURCE:?set BLAZN_ISSUER_BINARY_SOURCE to the reviewed helper binary}
@@ -73,6 +73,15 @@ else
   getent group blazn-node-broker >/dev/null || die "dedicated blazn-node-broker group must be provisioned before this transaction"
   group_created=false
   BROKER_GID=$(getent group blazn-node-broker | awk -F: '{print $3}')
+  broker_passwd=$(getent passwd blazn-node-broker) || die "dedicated broker account is unavailable"
+  IFS=: read -r broker_name _ broker_uid broker_primary_gid _ broker_home broker_shell <<EOF
+$broker_passwd
+EOF
+  if [ "$broker_name" != blazn-node-broker ] || [ "$broker_uid" != "$BROKER_UID" ] || [ "$broker_primary_gid" != "$BROKER_GID" ] || [ "$broker_home" != /nonexistent ] || [ "$broker_shell" != /usr/sbin/nologin ]; then die "dedicated broker account attributes differ from contract"; fi
+  [ "$(getent passwd "$BROKER_UID" | awk -F: '{print $1}')" = blazn-node-broker ] || die "broker UID collides with another account"
+  [ "$(getent group "$BROKER_GID" | awk -F: '{print $1}')" = blazn-node-broker ] || die "broker GID collides with another group"
+  [ -z "$(getent group blazn-node-broker | awk -F: '{print $4}')" ] || die "broker group has unexpected supplementary members"
+  [ "$(id -G blazn-node-broker)" = "$BROKER_GID" ] || die "broker account has unexpected supplementary groups"
   MICROK8S_GID=$(getent group microk8s | awk -F: '{print $3}')
   [ -n "$MICROK8S_GID" ] || die "MicroK8s group is unavailable"
   current=$(readlink /snap/microk8s/current) || die "MicroK8s current revision is unavailable"
@@ -138,7 +147,7 @@ if [ "$current" = secret-created ]; then
   tmp=$RECEIPT.tmp.$$; jq --arg config "sha256:$(sha "$ROOT/config.json")" --arg env "sha256:$(sha "$ENV_FILE")" '.config.digest=$config|.environment.digest=$env' "$RECEIPT" >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$RECEIPT"; phase config-bound; current=config-bound; fault config-bound
 fi
 if [ "$current" = config-bound ]; then
-  install -o root -g root -m 0755 "$SOURCE" "$BINARY"
+  python3 "$SCRIPT_DIR/install-issuer-binary.py" "$SOURCE" "$BINARY" "$SOURCE_DIGEST" "$TEST_MODE"
   install -o root -g root -m 0644 "$SCRIPT_DIR/../systemd/blazn-microk8s-worker-issuer.service" "$UNIT"
   install -o root -g root -m 0644 "$SCRIPT_DIR/../systemd/blazn-microk8s-worker-issuer.tmpfiles" "$TMPFILES"
   sync_path "$BINARY"; sync_path "$UNIT"; sync_path "$TMPFILES"
