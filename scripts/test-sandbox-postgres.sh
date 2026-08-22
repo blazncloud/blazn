@@ -58,7 +58,7 @@ tar -C "$repo_root" -cf - services/control-api | docker run --rm -i --network "$
 
 docker exec -i -e PGPASSWORD="$admin_password" "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d blazn <<'SQL'
 DO $$ BEGIN
-  IF (SELECT count(*) FROM schema_migrations) <> 11 THEN RAISE EXCEPTION 'expected exactly eleven applied migrations'; END IF;
+  IF (SELECT count(*) FROM schema_migrations) <> 12 THEN RAISE EXCEPTION 'expected exactly twelve applied migrations'; END IF;
 END $$;
 
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
@@ -79,6 +79,25 @@ INSERT INTO workspaces(id,slug,name,created_by) VALUES
 INSERT INTO workspace_memberships(workspace_id,user_id,role,status) VALUES
  ('40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','owner','active'),
  ('40000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000002','owner','active');
+INSERT INTO projects(id,workspace_id,slug,kind,name,created_by) VALUES
+ ('41000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','synthetic-run','content','Synthetic Run','10000000-0000-4000-8000-000000000001');
+INSERT INTO runs(id,workspace_id,project_id,kind,proof_class,status,plan_digest,requested_by) VALUES
+ ('42000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001','content.render','synthetic','queued','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','10000000-0000-4000-8000-000000000001');
+DO $$ BEGIN
+  BEGIN
+    UPDATE runs SET status='succeeded',completed_at=now(),version=version+1 WHERE id='42000000-0000-4000-8000-000000000001';
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'terminal Run without receipt passed';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+BEGIN;
+UPDATE runs SET status='succeeded',completed_at=now(),version=version+1 WHERE id='42000000-0000-4000-8000-000000000001';
+INSERT INTO run_receipts(run_id,workspace_id,project_id,proof_class,outcome,plan_digest,receipt) VALUES
+ ('42000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001','synthetic','succeeded','sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{"schemaVersion":"blazn.run/receipt/v1alpha1","proofClass":"synthetic","outcome":"succeeded","planDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifactIds":[],"summary":{"steps":0,"warnings":[]}}');
+COMMIT;
+INSERT INTO artifacts(id,workspace_id,project_id,source_run_id,kind,media_type,name,status,version,digest,size_bytes,object_key,created_by) VALUES
+ ('43000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','41000000-0000-4000-8000-000000000001','42000000-0000-4000-8000-000000000001','content.receipt','data','receipt.json','ready',1,'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',10,'projects/41000000-0000-4000-8000-000000000001/artifacts/43000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001');
 \set canonical_spec '{"artifacts":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}],"description":"fixture","expiresInSeconds":900,"isolation":"approved-non-sensitive-poc","networkProfile":"default-deny-v1","policyProfile":"poc-restricted-v1","repositories":[{"destination":"/workspace/src/blazn","name":"source","url":"https://github.com/blazncloud/blazn.git","writable":true}],"variants":[{"architecture":"amd64","command":["/bin/true"],"imageDigest":"registry.invalid/poc@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","imageIndex":"registry.invalid/poc@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","name":"linux-amd64","placementProfile":"poc-linux-amd64-v1","platform":"linux","resources":{"limits":{"cpu":"500m","ephemeralStorage":"2Gi","memory":"512Mi"},"requests":{"cpu":"100m","ephemeralStorage":"1Gi","memory":"128Mi"}}}],"version":"1"}'
 SELECT encode(digest(convert_to(:'canonical_spec','UTF8'),'sha256'),'hex') AS template_digest \gset
 SELECT :'template_digest' = '6b3a0b490870f60ada6fcc54574b2702eddd220705d287fb05b79610fb25d8c8' AS template_digest_ok \gset
