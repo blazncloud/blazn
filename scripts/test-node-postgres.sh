@@ -324,7 +324,8 @@ BEGIN
     WHERE p.oid='node_broker_lock_join_binding(uuid,uuid,uuid)'::regprocedure;
   IF owner_name <> 'blazn_migration'
     OR config NOT LIKE '%search_path=pg_catalog, public%'
-    OR position('=X/' in coalesce(acl,'')) > 0
+    OR coalesce(acl,'') LIKE '=X/%'
+    OR coalesce(acl,'') LIKE '%,=X/%'
     OR NOT has_function_privilege('blazn_node_broker','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')
     OR has_function_privilege('blazn_runtime','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')
     OR has_function_privilege('blazn_bootstrap','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE') THEN
