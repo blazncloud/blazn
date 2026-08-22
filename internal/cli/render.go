@@ -1,6 +1,10 @@
 package cli
 
-import "fmt"
+import (
+	"encoding/csv"
+	"fmt"
+	"strconv"
+)
 
 type helpOutput struct {
 	Command  string        `json:"command"`
@@ -97,7 +101,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown help topic %q", topic))
 	}
 
-	if format == OutputJSON {
+	if format == OutputJSON || format == OutputJSONL {
 		return a.writeJSON(output)
 	}
 
@@ -129,6 +133,17 @@ func (a *App) writeError(format OutputFormat, exitCode int, code, message string
 	if format == OutputJSON {
 		if result := a.writeJSON(errorOutput{Error: commandError{Code: code, Message: message}, ExitCode: exitCode}); result != ExitSuccess {
 			return result
+		}
+		return exitCode
+	}
+	if format == OutputCSV {
+		writer := csv.NewWriter(a.stdout)
+		_ = writer.Write([]string{"status", "error_code", "error_message", "exit_code"})
+		_ = writer.Write([]string{"error", code, message, strconv.Itoa(exitCode)})
+		writer.Flush()
+		if err := writer.Error(); err != nil {
+			fmt.Fprintf(a.stderr, "blazn: failed to write output: %v\n", err)
+			return ExitFailure
 		}
 		return exitCode
 	}

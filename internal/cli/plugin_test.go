@@ -105,12 +105,18 @@ func TestMissingPluginJSONAndNonTTYFailClosed(t *testing.T) {
 func TestMissingPluginExtendedMachineFormatsFailClosed(t *testing.T) {
 	for _, format := range []string{"jsonl", "csv"} {
 		fake := &fakePlugins{}
-		app, _, _ := pluginApp("yes\n", true, fake)
+		app, stdout, stderr := pluginApp("yes\n", true, fake)
 		if code := app.Run([]string{"person", "search", "--output=" + format}); code != ExitUnavailable {
 			t.Fatalf("format=%s code=%d", format, code)
 		}
 		if fake.installs != 0 || fake.runs != 0 {
 			t.Fatalf("format=%s implicit mutation occurred: %#v", format, fake)
+		}
+		if stderr.String() != "" || !strings.Contains(stdout.String(), "plugin_required") {
+			t.Fatalf("format=%s stdout=%q stderr=%q", format, stdout, stderr)
+		}
+		if format == "csv" && !strings.HasPrefix(stdout.String(), "status,error_code,error_message,exit_code\n") {
+			t.Fatalf("CSV error=%q", stdout)
 		}
 	}
 }
