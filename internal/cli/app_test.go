@@ -359,8 +359,9 @@ func TestRunUninstallAtPreservesMultipleResidues(t *testing.T) {
 
 	ops := defaultUninstallOps
 	ops.remove = func(path string) error {
-		switch filepath.Base(path) {
-		case ".blazn-uninstall-receipt", ".blazn-install.lock":
+		base := filepath.Base(path)
+		switch {
+		case base == ".blazn-uninstall-receipt", base == ".blazn-install.journal", base == ".blazn-install.lock", strings.HasPrefix(base, ".blazn-lock-owner."):
 			return errors.New("injected cleanup failure")
 		default:
 			return os.Remove(path)
@@ -370,11 +371,22 @@ func TestRunUninstallAtPreservesMultipleResidues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected structured residue result, got %v", err)
 	}
-	if result.Status != "removed_with_residue" || len(result.Residues) != 2 {
+	if result.Status != "removed_with_residue" || len(result.Residues) != 4 {
 		t.Fatalf("result=%#v", result)
 	}
-	if filepath.Base(result.Residues[0]) != ".blazn-uninstall-receipt" || filepath.Base(result.Residues[1]) != ".blazn-install.lock" {
-		t.Fatalf("residues=%v", result.Residues)
+	want := map[string]bool{".blazn-uninstall-receipt": false, ".blazn-install.journal": false, ".blazn-install.lock": false, "candidate": false}
+	for _, residue := range result.Residues {
+		base := filepath.Base(residue)
+		if strings.HasPrefix(base, ".blazn-lock-owner.") {
+			want["candidate"] = true
+		} else if _, ok := want[base]; ok {
+			want[base] = true
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Fatalf("missing residue %s in %v", name, result.Residues)
+		}
 	}
 }
 

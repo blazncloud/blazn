@@ -126,16 +126,43 @@ blazn_recover_stale_lock() {
   [ -f "$blazn_lock_file" ] && [ ! -L "$blazn_lock_file" ] || \
     blazn_die "lifecycle lock path is not a regular file: $blazn_lock_file"
 
-  if [ -f "$blazn_lock_file" ] && [ ! -L "$blazn_lock_file" ]; then
-    blazn_owner_pid=$(blazn_receipt_value "$blazn_lock_file" pid 2>/dev/null || true)
-    blazn_owner_start=$(blazn_receipt_value "$blazn_lock_file" start 2>/dev/null || true)
-    if [ -n "$blazn_owner_pid" ] && [ -n "$blazn_owner_start" ] && kill -0 "$blazn_owner_pid" 2>/dev/null; then
-      blazn_live_start=$(blazn_process_start "$blazn_owner_pid" 2>/dev/null || true)
-      if [ "$blazn_live_start" = "$blazn_owner_start" ]; then
-        blazn_die "another Blazn install or uninstall operation owns $blazn_lock_file"
+  if [ -e "$blazn_recovery_claim" ]; then
+    [ -f "$blazn_recovery_claim" ] && [ ! -L "$blazn_recovery_claim" ] && \
+      [ "$blazn_recovery_claim" -ef "$blazn_lock_file" ] || \
+      blazn_die "recovery claim does not match the lifecycle lock"
+    blazn_recovery_pid=$(blazn_receipt_value "$blazn_recovery_claim" pid 2>/dev/null || true)
+    blazn_recovery_start=$(blazn_receipt_value "$blazn_recovery_claim" start 2>/dev/null || true)
+    if [ -n "$blazn_recovery_pid" ] && [ -n "$blazn_recovery_start" ] && kill -0 "$blazn_recovery_pid" 2>/dev/null; then
+      blazn_live_start=$(blazn_process_start "$blazn_recovery_pid" 2>/dev/null || true)
+      if [ "$blazn_live_start" = "$blazn_recovery_start" ]; then
+        blazn_die "another installer is reconciling $blazn_lock_file"
       fi
     fi
+    rm -f "$blazn_recovery_claim"
   fi
+
+  if ! ln "$blazn_lock_file" "$blazn_recovery_claim" 2>/dev/null; then
+    blazn_die "another installer claimed lifecycle recovery"
+  fi
+  [ "$blazn_recovery_claim" -ef "$blazn_lock_file" ] || \
+    blazn_die "lifecycle recovery claim lost its fencing identity"
+
+  blazn_owner_pid=$(blazn_receipt_value "$blazn_recovery_claim" pid 2>/dev/null || true)
+  blazn_owner_start=$(blazn_receipt_value "$blazn_recovery_claim" start 2>/dev/null || true)
+  if [ -n "$blazn_owner_pid" ] && [ -n "$blazn_owner_start" ] && kill -0 "$blazn_owner_pid" 2>/dev/null; then
+    blazn_live_start=$(blazn_process_start "$blazn_owner_pid" 2>/dev/null || true)
+    if [ "$blazn_live_start" = "$blazn_owner_start" ]; then
+      rm -f "$blazn_recovery_claim"
+      blazn_die "another Blazn install or uninstall operation owns $blazn_lock_file"
+    fi
+  fi
+
+  blazn_recovery_start=$(blazn_process_start "$$")
+  [ -n "$blazn_recovery_start" ] || blazn_die "could not determine recovery process identity"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'start=%s\n' "$blazn_recovery_start"
+  } > "$blazn_recovery_claim" || blazn_die "could not publish lifecycle recovery owner"
 
   if [ -f "$blazn_lock_journal" ] && [ ! -L "$blazn_lock_journal" ]; then
     blazn_stale_state=$(blazn_receipt_value "$blazn_lock_journal" state) || \
@@ -194,7 +221,9 @@ blazn_recover_stale_lock() {
     blazn_die "stale lifecycle lock has transaction files but no valid journal"
   fi
 
-  rm -f "$blazn_lock_file" "$blazn_lock_journal"
+  [ "$blazn_recovery_claim" -ef "$blazn_lock_file" ] || \
+    blazn_die "lifecycle lock changed during recovery"
+  rm -f "$blazn_lock_file" "$blazn_lock_journal" "$blazn_recovery_claim"
 }
 
 blazn_test_checkpoint() {
@@ -439,6 +468,7 @@ blazn_destination="$blazn_install_dir/blazn"
 blazn_receipt="$blazn_install_dir/.blazn-install-receipt"
 blazn_lock_file="$blazn_install_dir/.blazn-install.lock"
 blazn_lock_journal="$blazn_install_dir/.blazn-install.journal"
+blazn_recovery_claim="$blazn_install_dir/.blazn-install.recovery"
 blazn_stage_binary="$blazn_install_dir/.blazn.new"
 blazn_stage_receipt="$blazn_install_dir/.blazn-receipt.new"
 blazn_backup_binary="$blazn_install_dir/.blazn.backup"

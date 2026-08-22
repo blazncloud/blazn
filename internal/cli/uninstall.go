@@ -85,24 +85,32 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 		}
 		return UninstallResult{}, fmt.Errorf("create lifecycle lock %s: %w", lockFile, err)
 	}
-	_ = ops.remove(lockCandidate)
+	cleanupResidues := make([]string, 0, 3)
+	if err := ops.remove(lockCandidate); err != nil {
+		cleanupResidues = append(cleanupResidues, lockCandidate)
+	}
 	lockOwned := true
 	defer func() {
 		if !lockOwned {
 			return
 		}
-		_ = ops.remove(lockJournal)
+		if err := ops.remove(lockJournal); err != nil && !os.IsNotExist(err) {
+			cleanupResidues = append(cleanupResidues, lockJournal)
+		}
 		if err := ops.remove(lockFile); err != nil {
+			if !os.IsNotExist(err) {
+				cleanupResidues = append(cleanupResidues, lockFile)
+			}
+		}
+		if len(cleanupResidues) > 0 {
 			if result.Status != "" {
 				if result.Status == "removed" {
 					result.Status = "removed_with_residue"
 				}
-				result.Residues = append(result.Residues, lockFile)
+				result.Residues = append(result.Residues, cleanupResidues...)
 				resultErr = nil
-				return
-			}
-			if resultErr == nil {
-				resultErr = fmt.Errorf("remove lifecycle lock: %w", err)
+			} else if resultErr == nil {
+				resultErr = fmt.Errorf("cleanup lifecycle state; residue at %s", strings.Join(cleanupResidues, ", "))
 			}
 		}
 	}()

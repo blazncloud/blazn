@@ -309,6 +309,36 @@ run_installer >"$test_root/recover-uninstall-prestage.out"
 [ ! -e "$test_install/.blazn-install.lock" ] && [ ! -e "$test_install/.blazn-install.journal" ] || fail "pre-stage uninstall recovery left lock state"
 pass "pre-stage uninstall crash reconciles as a no-op"
 
+stale_owner="$test_install/.blazn-stale-owner-concurrent"
+{
+  printf 'pid=99999998\n'
+  printf 'start=stale\n'
+} > "$stale_owner"
+ln "$stale_owner" "$test_install/.blazn-install.lock"
+rm "$stale_owner"
+{
+  printf 'state=committed\n'
+  printf 'had_binary=1\n'
+  printf 'had_receipt=1\n'
+} > "$test_install/.blazn-install.journal"
+set +e
+run_installer >"$test_root/concurrent-recovery-1.out" 2>&1 &
+recovery_one=$!
+run_installer >"$test_root/concurrent-recovery-2.out" 2>&1 &
+recovery_two=$!
+wait "$recovery_one"
+status_one=$?
+wait "$recovery_two"
+status_two=$?
+set -e
+if [ "$status_one" -ne 0 ] && [ "$status_two" -ne 0 ]; then
+  fail "all concurrent stale-lock recoverers failed"
+fi
+[ -f "$test_install/blazn" ] && [ -f "$test_install/.blazn-install-receipt" ] || fail "concurrent recovery damaged owned pair"
+[ ! -e "$test_install/.blazn-install.lock" ] && [ ! -e "$test_install/.blazn-install.journal" ] && \
+  [ ! -e "$test_install/.blazn-install.recovery" ] || fail "concurrent recovery left lifecycle state"
+pass "concurrent stale-lock recovery has one fenced owner"
+
 active_lock_candidate="$test_install/.blazn-active-lock-owner"
 {
   printf 'pid=%s\n' "$$"
@@ -341,4 +371,4 @@ grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fai
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
-printf '1..18\n'
+printf '1..19\n'
