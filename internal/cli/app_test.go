@@ -55,7 +55,7 @@ func TestJSONHelpIsDeterministic(t *testing.T) {
 	if code != ExitSuccess || first != second {
 		t.Fatalf("JSON help differs:\n%s\n%s", first, second)
 	}
-	const want = "{\"command\":\"blazn\",\"usage\":\"blazn [--output human|json] <command>\",\"summary\":\"Control Blazn from the command line.\",\"commands\":[{\"name\":\"auth\",\"summary\":\"Authenticate this device and manage sessions\"},{\"name\":\"doctor\",\"summary\":\"Run offline readiness checks\"},{\"name\":\"help\",\"summary\":\"Show help for a command\"},{\"name\":\"uninstall\",\"summary\":\"Remove a receipt-owned direct installation\"},{\"name\":\"version\",\"summary\":\"Show build and contract version information\"}]}\n"
+	const want = "{\"command\":\"blazn\",\"usage\":\"blazn [--output human|json] <command>\",\"summary\":\"Control Blazn from the command line.\",\"commands\":[{\"name\":\"auth\",\"summary\":\"Authenticate this device and manage sessions\"},{\"name\":\"doctor\",\"summary\":\"Run offline readiness checks\"},{\"name\":\"help\",\"summary\":\"Show help for a command\"},{\"name\":\"uninstall\",\"summary\":\"Remove a receipt-owned direct installation\"},{\"name\":\"version\",\"summary\":\"Show build and contract version information\"},{\"name\":\"workspace\",\"summary\":\"Create, select, and manage workspaces\"}]}\n"
 	if first != want {
 		t.Fatalf("JSON help = %q, want %q", first, want)
 	}
@@ -140,8 +140,8 @@ func TestDoctorJSONAndExitCodes(t *testing.T) {
 }
 
 func TestExitCodeConstants(t *testing.T) {
-	if ExitSuccess != 0 || ExitFailure != 1 || ExitUsage != 2 || ExitUnavailable != 7 {
-		t.Fatalf("exit codes changed: %d %d %d %d", ExitSuccess, ExitFailure, ExitUsage, ExitUnavailable)
+	if ExitSuccess != 0 || ExitFailure != 1 || ExitUsage != 2 || ExitUnavailable != 7 || ExitPartial != 9 {
+		t.Fatalf("exit codes changed: %d %d %d %d %d", ExitSuccess, ExitFailure, ExitUsage, ExitUnavailable, ExitPartial)
 	}
 }
 
