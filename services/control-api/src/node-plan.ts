@@ -29,7 +29,10 @@ export class TemplateNodePlanFactory implements NodePlanFactory {
     const profile = (context.enrollment.mode === "fresh" ? "ubuntu-26.04-amd64-worker/v1"
       : context.enrollment.expectedPlatform === "macos" ? "macos-lima-worker-adopt/v1" : "existing-linux-worker-adopt/v1") as NodeInstallProfile;
     if (profile === "ubuntu-26.04-amd64-worker/v1" && context.architecture !== "amd64") throw new Error("fresh POC install profile requires amd64");
-    const selected=profiles[profile];if(!selected||typeof selected!=="object"||Array.isArray(selected))throw new Error(`node install plan profile ${profile} is invalid`);
+    const variants=profiles[profile];if(!variants||typeof variants!=="object"||Array.isArray(variants))throw new Error(`node install plan profile ${profile} variants are invalid`);
+    const architectureKeys=profile==="existing-linux-worker-adopt/v1"?["amd64","arm64"]:[profile==="ubuntu-26.04-amd64-worker/v1"?"amd64":"arm64"];
+    exactKeys(variants as Record<string,unknown>,architectureKeys,`template profile ${profile} architecture variants`);
+    const selected=(variants as Record<string,unknown>)[context.architecture];if(!selected||typeof selected!=="object"||Array.isArray(selected))throw new Error(`node install plan profile ${profile}/${context.architecture} is invalid`);
     const template=selected as Record<string,unknown>;exactKeys(template,["cluster","registryTrust","components","nodeService","labels","taints","resourceBounds","mutations","validationTests","rollback"],`template profile ${profile}`);
     const unsigned = {
       ...template,
