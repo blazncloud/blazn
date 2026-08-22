@@ -211,6 +211,7 @@ services:
       TRUSTED_PROXY_CIDRS: 172.18.0.1/32
       TRUSTED_PROXY_HOPS: "1"
       TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret
+      WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
@@ -221,6 +222,7 @@ services:
       - s3_runtime_access_key
       - s3_runtime_secret_key
       - proxy_auth_secret
+      - workspace_invitation_hmac_v1
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-58080}:8080"
     depends_on:
@@ -281,3 +283,5 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-secret-key
   proxy_auth_secret:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/proxy-auth-secret
+  workspace_invitation_hmac_v1:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/workspace-invitation-hmac-v1

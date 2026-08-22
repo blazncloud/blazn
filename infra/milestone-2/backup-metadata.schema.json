@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/control-plane-backup-v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "correlationId", "fencingToken", "createdAt", "database", "bucket", "configDigest", "controlApi", "secretDigests"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/control-plane-backup/v2" },
+    "correlationId": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
+    "fencingToken": { "type": "integer", "minimum": 1 },
+    "createdAt": { "type": "string", "minLength": 1 },
+    "database": { "type": "string", "minLength": 1 },
+    "bucket": { "type": "string", "minLength": 1 },
+    "configDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "controlApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceDigest", "image", "imageId"],
+      "properties": {
+        "sourceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "image": { "type": "string", "pattern": "^blazn-control-api:source-[a-f0-9]{64}$" },
+        "imageId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "secretDigests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace-invitation-hmac-v1"],
+      "properties": {
+        "workspace-invitation-hmac-v1": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    }
+  }
+}

@@ -27,6 +27,7 @@ for expected in \
   'TRUSTED_PROXY_CIDRS: 172.18.0.1/32' \
   'TRUSTED_PROXY_HOPS: "1"' \
   'TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret' \
+  'WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1' \
   'S3_ENDPOINT: http://object:9000' \
   'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
   'S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key'; do
@@ -72,6 +73,18 @@ for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_I
     exit 1
   fi
 done
+printf '%s\n' "$runtime_api" | grep -F -- '- workspace_invitation_hmac_v1' >/dev/null
+for privileged_service in api-migrate api-bootstrap postgres object object-init object-client; do
+  service_block=$(awk -v service="$privileged_service" '
+    $0 == "  " service ":" { in_service=1; next }
+    in_service && /^  [a-zA-Z0-9_-]+:$/ { exit }
+    in_service { print }
+  ' "$compose")
+  if printf '%s\n' "$service_block" | grep -F 'workspace_invitation_hmac_v1' >/dev/null; then
+    printf 'workspace invitation HMAC key reaches non-runtime service: %s\n' "$privileged_service" >&2
+    exit 1
+  fi
+done
 
 grep -F 'CREATE ROLE blazn_migration' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'CREATE ROLE blazn_runtime' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
@@ -79,6 +92,8 @@ grep -F 'CREATE ROLE blazn_bootstrap' "$ROOT_DIR/postgres-init/01-roles.sh" >/de
 grep -F 'NOBYPASSRLS' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'NOBYPASSRLS' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'pg_auth_members' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
+grep -F 'openssl rand -hex 32' "$ROOT_DIR/scripts/upgrade-live-v2-to-workspace.sh" >/dev/null
+grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
 if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null; then
   printf 'database initialization grants broad future-table privileges\n' >&2
   exit 1

@@ -29,11 +29,20 @@ environment, and a successful preflight. `preflight.sh --plan` is read-only.
 
 The long-running TypeScript API contract is `GET /healthz` plus `PORT`,
 `BIND_ADDRESS`, `PUBLIC_URL`, `DATABASE_URL_FILE`, `S3_ENDPOINT`, `S3_REGION`,
-`S3_BUCKET`, `S3_ACCESS_KEY_FILE`, and `S3_SECRET_KEY_FILE`. It receives only
+`S3_BUCKET`, `S3_ACCESS_KEY_FILE`, `S3_SECRET_KEY_FILE`, and
+`WORKSPACE_INVITATION_HMAC_KEY_FILE`. It receives only
 the DML-only runtime database URL. A one-shot migration service receives the
 non-superuser schema-owner URL, then a one-shot bootstrap service receives the
 dedicated bootstrap URL and initial-login password. Neither elevated secret reaches the
 runtime API.
+
+Workspace invitation tokens use a dedicated 32-byte HMAC key encoded as exactly
+64 lowercase hexadecimal characters in the root-controlled
+`workspace-invitation-hmac-v1` named file. Only the long-running runtime API
+receives that file. Fresh preparation generates it; an existing v2 installation
+uses the retryable `upgrade-live-v2-to-workspace.sh` and then separately
+reconciles the main ownership receipt. Receipts and backups store only its
+SHA-256 digest, never the key.
 
 Fresh PostgreSQL initialization creates three distinct identities: the
 container-only administrative user, `blazn_migration` as the non-superuser
@@ -95,6 +104,9 @@ checksum, restart, auth, and revocation tests
 with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-id>
 restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host only
 ```
+
+The serialized Workspace migration and two-user acceptance procedure is
+[`workspace-live-integration-runbook.md`](workspace-live-integration-runbook.md).
 
 For an existing installation or reviewed source update, run
 `build-control-api.sh` under the control-plane lock, review its source/image
@@ -179,6 +191,11 @@ operator reconciles the main receipt in a separate reviewed lock operation.
   Milestone 2 has no database object-metadata table, so this proves bucket
   stability rather than cross-store referential consistency. The first such
   schema must introduce an application-level snapshot barrier.
+- Backup v2 metadata binds the full configuration, API image and source
+  (including migrations), and invitation-key digest. The key itself remains in
+  the separate root-controlled configuration recovery boundary.
+- `verify-rollback-inventory.sh` proves a backup matches the staged release,
+  image, config, main receipt, and installed invitation key before rollback.
 - `restore-test.sh` refuses ben1 and any non-disposable target path, verifies all
   backup checksums, requires a canonical direct child of the restore directory,
   restores to an isolated database, and retains evidence.

@@ -18,6 +18,9 @@ control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/owne
 control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
 control_api_image=$(jq -er .image "$control_api_build_receipt")
 control_api_image_id=$(jq -er .imageId "$control_api_build_receipt")
+secrets_root=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}
+validate_workspace_invitation_secret "$secrets_root/workspace-invitation-hmac-v1"
+workspace_invitation_hmac_digest=sha256:$(sha256_file "$secrets_root/workspace-invitation-hmac-v1")
 
 receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
@@ -49,7 +52,8 @@ jq --arg digest "$digest" \
   --arg controlApiSource "$control_api_source" \
   --arg controlApiImage "$control_api_image" \
   --arg controlApiImageId "$control_api_image_id" \
-  '.configDigest=$digest | .configUpdatedAt=$updatedAt | .backupMount={target:$backupMount,source:$backupSource,fstype:$backupFstype} | .controlApi={sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId}' "$receipt" >"$tmp"
+  --arg workspaceInvitationHmacDigest "$workspace_invitation_hmac_digest" \
+  '.configDigest=$digest | .configUpdatedAt=$updatedAt | .backupMount={target:$backupMount,source:$backupSource,fstype:$backupFstype} | .controlApi={sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId} | .secretDigests={"workspace-invitation-hmac-v1":$workspaceInvitationHmacDigest}' "$receipt" >"$tmp"
 chmod 0600 "$tmp"
 mv -- "$tmp" "$receipt"
 printf 'updated control-plane receipt config digest to %s\n' "$digest"

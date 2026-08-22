@@ -17,8 +17,27 @@ require_command docker
 require_command sha256sum
 require_command cmp
 require_command sort
+require_command jq
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 load_control_api_image "$ROOT_DIR"
+SECRETS_ROOT=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}
+RECEIPT_PATH=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
+validate_workspace_invitation_secret "$SECRETS_ROOT/workspace-invitation-hmac-v1"
+assert_regular_file_owned_mode "$RECEIPT_PATH" 0 600
+workspace_invitation_hmac_digest=sha256:$(sha256_file "$SECRETS_ROOT/workspace-invitation-hmac-v1")
+control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
+control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
+control_api_image=$(jq -er .image "$control_api_build_receipt")
+control_api_image_id=$(jq -er .imageId "$control_api_build_receipt")
+config_digest=sha256:$(control_plane_config_digest "$ROOT_DIR")
+jq -e \
+  --arg configDigest "$config_digest" \
+  --arg sourceDigest "$control_api_source" \
+  --arg image "$control_api_image" \
+  --arg imageId "$control_api_image_id" \
+  --arg secretDigest "$workspace_invitation_hmac_digest" \
+  '.configDigest == $configDigest and .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest}' \
+  "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not bind the current API, migration, config, and workspace invitation key"
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 [ -n "$BACKUP_ROOT" ] || die "BLAZN_BACKUP_ROOT is required"
@@ -75,8 +94,19 @@ manifest_tmp=$staging.sha256.$$
   find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
 ) >"$manifest_tmp"
 mv -- "$manifest_tmp" "$staging/SHA256SUMS"
-printf '{"schemaVersion":"blazn.dev/control-plane-backup/v1","correlationId":"%s","fencingToken":%s,"createdAt":"%s","database":"%s","bucket":"%s"}\n' \
-  "$correlation" "$BLAZN_FENCING_TOKEN" "$timestamp" "${POSTGRES_DB:-blazn}" "${S3_BUCKET:-blazn-poc}" >"$staging/metadata.json"
+jq -cn \
+  --arg correlationId "$correlation" \
+  --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
+  --arg createdAt "$timestamp" \
+  --arg database "${POSTGRES_DB:-blazn}" \
+  --arg bucket "${S3_BUCKET:-blazn-poc}" \
+  --arg configDigest "$config_digest" \
+  --arg sourceDigest "$control_api_source" \
+  --arg image "$control_api_image" \
+  --arg imageId "$control_api_image_id" \
+  --arg secretDigest "$workspace_invitation_hmac_digest" \
+  '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest}}' \
+  >"$staging/metadata.json"
 (
   cd "$staging"
   sha256sum metadata.json >>SHA256SUMS

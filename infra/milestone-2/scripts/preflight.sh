@@ -113,6 +113,8 @@ if [ "$MODE" = deploy ]; then
   control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
   control_api_image=$(jq -er .image "$control_api_build_receipt")
   control_api_image_id=$(jq -er .imageId "$control_api_build_receipt")
+  validate_workspace_invitation_secret "$SECRETS_ROOT/workspace-invitation-hmac-v1"
+  workspace_invitation_hmac_digest=sha256:$(sha256_file "$SECRETS_ROOT/workspace-invitation-hmac-v1")
   [ "${PUBLIC_URL:-}" = https://blazn.benpelo.com ] || die "PUBLIC_URL must be https://blazn.benpelo.com for the live POC deployment"
   [ -n "${BLAZN_INITIAL_LOGIN:-}" ] || die "BLAZN_INITIAL_LOGIN is required"
   [ "${BLAZN_INITIAL_LOGIN:-}" != admin@example.invalid ] || die "the placeholder BLAZN_INITIAL_LOGIN is forbidden for deployment"
@@ -137,6 +139,7 @@ if [ "$MODE" = deploy ]; then
     --arg controlApiSource "$control_api_source" \
     --arg controlApiImage "$control_api_image" \
     --arg controlApiImageId "$control_api_image_id" \
+    --arg workspaceInvitationHmacDigest "$workspace_invitation_hmac_digest" \
     --arg postgresImage "$POSTGRES_IMAGE" \
     --arg minioImage "$MINIO_IMAGE" \
     --arg minioMcImage "$MINIO_MC_IMAGE" \
@@ -149,11 +152,12 @@ if [ "$MODE" = deploy ]; then
      .paths == {data:$data,backup:$backup,secrets:$secrets} and
      .backupMount == {target:$backupMount,source:$backupSource,fstype:$backupFstype} and
      .controlApi == {sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId} and
+     .secretDigests == {"workspace-invitation-hmac-v1":$workspaceInvitationHmacDigest} and
      .ports == [$postgresPort,$s3Port,$s3ConsolePort,$apiPort] and
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
+  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret workspace-invitation-hmac-v1; do
     assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444
   done
 fi

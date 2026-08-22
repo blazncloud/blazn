@@ -127,6 +127,17 @@ sha256_file() {
   sha256sum "$1" | awk '{ print $1 }'
 }
 
+validate_workspace_invitation_secret() {
+  secret_file=$1
+  assert_regular_file_owned_mode "$secret_file" 0 444
+  [ "$(wc -c <"$secret_file" | tr -d ' ')" = 65 ] || \
+    die "workspace invitation HMAC key must contain exactly 64 lowercase hexadecimal characters and one newline"
+  [ "$(wc -l <"$secret_file" | tr -d ' ')" = 1 ] || \
+    die "workspace invitation HMAC key must contain exactly one line"
+  LC_ALL=C grep -Eq '^[a-f0-9]{64}$' "$secret_file" || \
+    die "workspace invitation HMAC key must contain exactly 64 lowercase hexadecimal characters"
+}
+
 control_api_source_digest() {
   infra_root=$1
   repo_root=$(CDPATH='' cd -- "$infra_root/../.." && pwd)
