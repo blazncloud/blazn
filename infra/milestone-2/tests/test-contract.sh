@@ -135,6 +135,32 @@ grep -F 'direct child' "$boundary_tmp/err" >/dev/null
 cleanup_boundary
 trap - EXIT HUP INT TERM
 
+nofollow_tmp=${TMPDIR:-/tmp}/blazn-nofollow-contract-$$
+mkdir "$nofollow_tmp" "$nofollow_tmp/real-directory"
+touch "$nofollow_tmp/real-secret"
+chmod 0444 "$nofollow_tmp/real-secret"
+ln -s "$nofollow_tmp/real-secret" "$nofollow_tmp/linked-secret"
+ln -s "$nofollow_tmp/real-directory" "$nofollow_tmp/linked-directory"
+current_uid=$(id -u)
+if (
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/scripts/common.sh"
+  assert_regular_file_owned_mode "$nofollow_tmp/linked-secret" "$current_uid" 444
+); then
+  printf 'symlinked secret unexpectedly passed no-follow validation\n' >&2
+  exit 1
+fi
+if (
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/scripts/common.sh"
+  assert_directory_owned_mode "$nofollow_tmp/linked-directory" "$current_uid" 700,2700
+); then
+  printf 'symlinked data directory unexpectedly passed no-follow validation\n' >&2
+  exit 1
+fi
+rm -f "$nofollow_tmp/linked-secret" "$nofollow_tmp/linked-directory" "$nofollow_tmp/real-secret"
+rmdir "$nofollow_tmp/real-directory" "$nofollow_tmp"
+
 for script in "$ROOT_DIR"/scripts/*.sh "$ROOT_DIR"/postgres-init/*.sh "$ROOT_DIR"/tests/*.sh; do
   sh -n "$script"
 done

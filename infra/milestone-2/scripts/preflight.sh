@@ -114,9 +114,9 @@ if [ "$MODE" = deploy ]; then
   [ -n "${BLAZN_INITIAL_DISPLAY_NAME:-}" ] || die "BLAZN_INITIAL_DISPLAY_NAME is required"
   DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli} docker compose version >/dev/null 2>&1 || die "Blazn-owned Docker Compose v2 is unavailable"
   require_command flock
-  assert_directory_owned_mode "$DATA_ROOT" 0 700
+  assert_directory_owned_mode "$DATA_ROOT" 0 700,2700
   assert_directory_owned_mode "$DATA_ROOT/postgres" 999 700
-  assert_directory_owned_mode "$DATA_ROOT/objects" 1000 700
+  assert_directory_owned_mode "$DATA_ROOT/objects" 1000 700,2700
   assert_directory_owned_mode "$SECRETS_ROOT" 0 700
   assert_regular_file_owned_mode "$RECEIPT_PATH" 0 600
   config_digest=sha256:$(control_plane_config_digest "$ROOT_DIR")

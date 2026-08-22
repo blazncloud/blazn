@@ -22,7 +22,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/srv/frontro/blazn-poc /var/lib/blazn /run/lock/blazn-poc /etc/blazn/docker-cli
+ReadWritePaths=/srv/frontro/blazn-poc /var/lib/blazn /etc/blazn/docker-cli
 
 [Install]
 WantedBy=multi-user.target
