@@ -1,0 +1,161 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Blazn Management API",
+    "version": "v1alpha1"
+  },
+  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "paths": {
+    "/v1/auth/device/authorizations": {
+      "post": {
+        "operationId": "createDeviceAuthorization",
+		"requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceAuthorizationRequest"}}}},
+        "responses": {"201": {"description": "Device authorization created"}}
+      }
+    },
+    "/v1/auth/device/sessions": {
+      "post": {
+        "operationId": "exchangeDeviceAuthorization",
+        "responses": {
+          "200": {"description": "Device authorization approved"},
+          "428": {"description": "Authorization is pending"}
+        }
+      }
+    },
+    "/v1/auth/sessions/refresh": {
+      "post": {
+        "operationId": "refreshSession",
+        "responses": {"200": {"description": "Session refreshed"}}
+      }
+    },
+    "/v1/auth/session": {
+      "delete": {
+        "operationId": "deleteCurrentSession",
+        "security": [{"bearerAuth": []}],
+        "responses": {"204": {"description": "Session revoked"}}
+      }
+    },
+    "/v1/auth/me": {
+      "get": {
+        "operationId": "getCurrentUser",
+        "security": [{"bearerAuth": []}],
+        "responses": {"200": {"description": "Current user and device"}}
+      }
+    },
+    "/v1/auth/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "security": [{"bearerAuth": []}],
+        "responses": {"200": {"description": "Devices for current user"}}
+      }
+    },
+    "/v1/auth/devices/{deviceId}": {
+      "delete": {
+        "operationId": "revokeDevice",
+        "security": [{"bearerAuth": []}],
+        "parameters": [{"name": "deviceId", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "Device revoked"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}
+    },
+    "schemas": {
+      "DeviceAuthorization": {
+        "type": "object",
+        "required": ["deviceCode", "userCode", "verificationUri", "challenge", "expiresIn", "interval"],
+        "properties": {
+          "deviceCode": {"type": "string"},
+          "userCode": {"type": "string"},
+          "verificationUri": {"type": "string", "format": "uri"},
+          "verificationUriComplete": {"type": "string", "format": "uri"},
+		  "challenge": {"type": "string"},
+          "expiresIn": {"type": "integer", "minimum": 1},
+          "interval": {"type": "integer", "minimum": 1}
+        }
+      },
+	  "DeviceAuthorizationRequest": {
+		"type": "object",
+		"required": ["devicePublicKey", "deviceName", "platform"],
+		"properties": {
+		  "devicePublicKey": {"type": "string"},
+		  "deviceName": {"type": "string"},
+		  "platform": {"type": "string"}
+		}
+	  },
+      "DeviceSessionRequest": {
+        "type": "object",
+		"required": ["deviceCode", "proof"],
+		"properties": {
+		  "deviceCode": {"type": "string"},
+		  "proof": {"type": "string"}
+		}
+      },
+      "RefreshSessionRequest": {
+        "type": "object",
+		"required": ["refreshToken", "deviceId", "proof"],
+		"properties": {
+		  "refreshToken": {"type": "string"},
+		  "deviceId": {"type": "string"},
+		  "proof": {"type": "string"}
+		}
+      },
+      "Session": {
+        "type": "object",
+        "required": ["accessToken", "refreshToken", "expiresIn", "deviceId"],
+        "properties": {
+          "accessToken": {"type": "string"},
+          "refreshToken": {"type": "string"},
+          "expiresIn": {"type": "integer", "minimum": 1},
+          "deviceId": {"type": "string"}
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": ["id", "displayName", "status"],
+        "properties": {
+          "id": {"type": "string"},
+          "displayName": {"type": "string"},
+          "email": {"type": "string"},
+          "status": {"type": "string"}
+        }
+      },
+      "CurrentUser": {
+        "type": "object",
+        "required": ["user", "device"],
+        "properties": {
+          "user": {"$ref": "#/components/schemas/User"},
+          "device": {"$ref": "#/components/schemas/Device"}
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": ["id", "name", "platform", "status", "createdAt"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "platform": {"type": "string"},
+          "status": {"type": "string"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "lastUsedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "DeviceList": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Device"}}}
+      },
+      "Error": {
+        "type": "object",
+        "required": ["code", "message", "requestId"],
+        "properties": {
+          "code": {"type": "string"},
+          "message": {"type": "string"},
+          "requestId": {"type": "string"}
+        }
+      }
+    }
+  }
+}
