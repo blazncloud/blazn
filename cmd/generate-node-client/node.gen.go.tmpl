@@ -490,6 +490,8 @@ type NodeTrustedInstallProfile struct {
 	AllowedDownloadOrigins   []string
 	AllowedRegistryOrigins   []string
 	AllowedMutationRoots     []string
+	CurrentBinaryVersion     string
+	CurrentBinarySHA256      string
 	EmbeddedComponentSHA256  map[string]string
 	LimaBinding              *NodeTrustedLimaBinding
 	VerifyNoSymlinkTraversal func(string) error
@@ -1387,6 +1389,9 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		}
 	}
 	for _, component := range plan.Components {
+		if component.SourceClass == "current_binary" && (profile.CurrentBinaryVersion == "" || component.Version != profile.CurrentBinaryVersion || !nodeHashPattern.MatchString(profile.CurrentBinarySHA256) || component.SHA256 != profile.CurrentBinarySHA256) {
+			return fmt.Errorf("current binary component %q does not match the locally measured executable", component.Name)
+		}
 		if component.SourceClass == "embedded" && (profile.EmbeddedComponentSHA256 == nil || profile.EmbeddedComponentSHA256[component.Name] != component.SHA256) {
 			return fmt.Errorf("embedded component %q is not locally trusted", component.Name)
 		}
@@ -1840,6 +1845,9 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 	if !nodeHasValidation(plan.ValidationTests, "binary_digest") || !nodeHasServiceBinary(plan) {
 		return fmt.Errorf("node service binary lacks an authenticated current-binary mutation")
 	}
+	if !nodeHasValidation(plan.ValidationTests, "service_active") || !nodeHasServiceDefinition(plan) {
+		return fmt.Errorf("node service lacks exactly one embedded manager definition")
+	}
 	wantImagePlatform := "linux/amd64"
 	if plan.Target.Architecture == NodeArchARM64 {
 		wantImagePlatform = "linux/arm64"
@@ -1900,7 +1908,26 @@ func nodeHasServiceBinary(plan NodeInstallPlan) bool {
 	count := 0
 	for _, mutation := range plan.Mutations {
 		component := components[nodeMutationSourceComponent(mutation)]
-		if mutation.Kind == "file" && mutation.Target == plan.NodeService.BinaryPath && component.ArtifactType == "binary" && component.SourceClass == "current_binary" && component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Desired["contentSha256"] == component.SHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+		if mutation.Kind == "file" && mutation.Target == plan.NodeService.BinaryPath && component.ArtifactType == "binary" && component.SourceClass == "current_binary" && component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Mode == 0755 && mutation.UID == 0 && mutation.GID == 0 && mutation.Desired["contentSha256"] == component.SHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+			count++
+		}
+	}
+	return count == 1
+}
+
+func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
+	components := make(map[string]NodeInstallComponent, len(plan.Components))
+	for _, component := range plan.Components {
+		components[component.Name] = component
+	}
+	wantedKind, wantedTarget := "systemd_unit", "/etc/systemd/system/"+plan.NodeService.UnitName
+	if plan.NodeService.Manager == "launchd" {
+		wantedKind, wantedTarget = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist"
+	}
+	count := 0
+	for _, mutation := range plan.Mutations {
+		component := components[nodeMutationSourceComponent(mutation)]
+		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
 			count++
 		}
 	}

@@ -167,6 +167,12 @@ and URL; packages/images additionally bind their repository or registry.
 installed by Milestone 1, and `embedded` means a digest-pinned service/config
 asset compiled into that binary. Neither class permits a URL, removing any
 bootstrap dependency on a private GitHub release or unreserved hostname.
+Before consuming mutations, the CLI measures its own executable and supplies
+the locally trusted version and SHA-256 to plan verification. The plan must
+contain exactly one root-owned `0755` `adopt_exact` mutation from that component
+to the service binary path and require `binary_digest` evidence. It must also
+contain exactly one manager-matching embedded service definition and require
+`service_active` evidence.
 Ubuntu/existing-Linux profiles require systemd, Linux image platform, the
 profile architecture, `blazn-node:blazn-node`, and approved apt/snap inputs;
 they reject launchd/brew. The macOS/Lima profile requires launchd, ARM64 Linux
@@ -177,7 +183,9 @@ root-only unwritable tree. The signed mutation binds fixed UID/GID values;
 creation rejects collisions and `adopt_exact` rejects any name, ID, group,
 home, or shell mismatch. The macOS profile embeds a digest-pinned Lima binding
 configuration naming the exact existing VM/worker and requires
-`lima_worker_binding` evidence before eligibility.
+`lima_worker_binding` evidence before eligibility. Local profile trust pins the
+asset name, exact Application Support target, digest, VM name, and worker name;
+a generic embedded configuration is insufficient.
 
 The enrollment row pins the plan-signing key ID, raw public key, and fingerprint
 at first creation. An idempotent enrollment replay and its later exchange return
