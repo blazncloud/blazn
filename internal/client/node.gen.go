@@ -315,12 +315,13 @@ type NodeEventStream struct {
 }
 
 var (
-	nodeUUIDPattern      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
-	nodeHashPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	nodeDigestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	nodeBase64URLPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-	nodeLabelPattern     = regexp.MustCompile(`^blazn\.dev/[a-z0-9][a-z0-9._-]{0,62}$`)
-	nodeVersionPattern   = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
+	nodeUUIDPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	nodeHashPattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	nodeDigestPattern      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	nodeBase64URLPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	nodeIdempotencyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+	nodeLabelPattern       = regexp.MustCompile(`^blazn\.dev/[a-z0-9][a-z0-9._-]{0,62}$`)
+	nodeVersionPattern     = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
 )
 
 func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) error {
@@ -517,7 +518,7 @@ func validateTimeWindow(startValue, endValue string) error {
 
 func (c *Client) CreateNodeEnrollment(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request CreateNodeEnrollmentRequest) (NodeEnrollmentSecret, error) {
 	var output NodeEnrollmentSecret
-	if len(request.Name) < 1 || len(request.Name) > 128 || (request.Mode != NodeModeFresh && request.Mode != NodeModeAdopt) || !validPlatform(request.Platform) || (request.Architecture != "" && !validArchitecture(request.Architecture)) {
+	if accessToken == "" || !validNodeIdempotencyKey(idempotencyKey) || len(request.Name) < 1 || len(request.Name) > 128 || (request.Mode != NodeModeFresh && request.Mode != NodeModeAdopt) || !validPlatform(request.Platform) || (request.Architecture != "" && !validArchitecture(request.Architecture)) {
 		return output, fmt.Errorf("node enrollment request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/node-enrollments", accessToken, "", idempotencyKey, request, &output, http.StatusCreated)
@@ -538,18 +539,27 @@ func (c *Client) ExchangeNodeEnrollment(ctx context.Context, enrollmentID string
 
 func (c *Client) ListNodes(ctx context.Context, accessToken, workspaceID string) (NodeList, error) {
 	var output NodeList
+	if accessToken == "" {
+		return output, fmt.Errorf("access token is required")
+	}
 	err := c.nodeDo(ctx, http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/nodes", accessToken, "", "", nil, &output, http.StatusOK)
 	return output, err
 }
 
 func (c *Client) GetNode(ctx context.Context, accessToken, nodeID string) (Node, error) {
 	var output Node
+	if accessToken == "" {
+		return output, fmt.Errorf("access token is required")
+	}
 	err := c.nodeDo(ctx, http.MethodGet, "/v1/nodes/"+url.PathEscape(nodeID), accessToken, "", "", nil, &output, http.StatusOK)
 	return output, err
 }
 
 func (c *Client) CreateNodeOperation(ctx context.Context, accessToken, nodeID, idempotencyKey string, request CreateNodeOperationRequest) (NodeOperation, error) {
 	var output NodeOperation
+	if accessToken == "" || !validNodeIdempotencyKey(idempotencyKey) {
+		return output, fmt.Errorf("access token and valid idempotency key are required")
+	}
 	if err := ValidateCreateNodeOperationRequest(request); err != nil {
 		return output, err
 	}
@@ -616,7 +626,7 @@ func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProo
 	if accessToken != "" && nodeProof != "" {
 		return fmt.Errorf("request cannot use both bearer and node proof authentication")
 	}
-	if idempotencyKey != "" && (len(idempotencyKey) < 8 || len(idempotencyKey) > 128) {
+	if idempotencyKey != "" && !validNodeIdempotencyKey(idempotencyKey) {
 		return fmt.Errorf("idempotency key must contain between 8 and 128 characters")
 	}
 	var body io.Reader
@@ -656,8 +666,25 @@ func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProo
 		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 		return err
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output); err != nil {
+	if err := decodeClosedNodeResponse(io.LimitReader(response.Body, 1<<20), output); err != nil {
 		return fmt.Errorf("decode node response: %w", err)
+	}
+	return nil
+}
+
+func validNodeIdempotencyKey(value string) bool {
+	return len(value) >= 8 && len(value) <= 128 && nodeIdempotencyPattern.MatchString(value)
+}
+
+func decodeClosedNodeResponse(input io.Reader, output any) error {
+	decoder := json.NewDecoder(input)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("response must contain exactly one JSON value")
 	}
 	return nil
 }
