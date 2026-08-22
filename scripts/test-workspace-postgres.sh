@@ -21,7 +21,7 @@ case "$network:$postgres" in
 esac
 
 cleanup() {
-  docker rm -f "$postgres" >/dev/null 2>&1 || true
+  docker rm -f -v "$postgres" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT HUP INT TERM
