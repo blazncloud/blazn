@@ -54,7 +54,7 @@ func (execRunner) Run(name string, args []string, stdin []byte) ([]byte, error) 
 }
 
 func (execRunner) RunPasswordPrompt(name string, args []string, secret []byte) error {
-	return runPasswordPrompt(name, args, secret)
+	return storeDarwinCredential(secret)
 }
 
 type systemStore struct {
