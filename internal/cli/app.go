@@ -15,6 +15,7 @@ import (
 	"github.com/blazncloud/blazn/internal/client"
 	nodepkg "github.com/blazncloud/blazn/internal/node"
 	pluginpkg "github.com/blazncloud/blazn/internal/plugin"
+	projectpkg "github.com/blazncloud/blazn/internal/project"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
@@ -58,6 +59,7 @@ type App struct {
 	stdinTTY      func() bool
 	plugins       pluginCommands
 	pluginContext func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
+	project       func() (projectCommands, error)
 }
 
 type pluginCommands interface {
@@ -104,6 +106,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		},
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
+		project:     func() (projectCommands, error) { return projectpkg.NewDefaultService() },
 		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
 		stdin:       os.Stdin,
 		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
@@ -129,6 +132,7 @@ func (a *App) resolvePluginContext(ctx context.Context, format OutputFormat) (pl
 		runtimeContext.ReasonCode = ""
 		runtimeContext.UserID = selection.UserID
 		runtimeContext.WorkspaceID = selection.WorkspaceID
+		runtimeContext.ProjectID = selection.ProjectID
 		return runtimeContext, runtimeContext.Validate()
 	}
 	if errors.Is(err, workspacepkg.ErrNoContext) {
@@ -232,6 +236,8 @@ func (a *App) Run(args []string) int {
 		return a.runAuth(format, rest)
 	case "workspace":
 		return a.runWorkspace(format, rest)
+	case "project":
+		return a.runProject(format, rest)
 	case "node":
 		return a.runNode(format, rest)
 	case "plugins":

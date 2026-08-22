@@ -14,12 +14,12 @@ func TestContextStoreIsOriginAndUserScopedAtomicAndPrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selection := Selection{APIOrigin: "https://one.example", UserID: "user-one", WorkspaceID: "workspace-one", SelectedAt: time.Now().UTC()}
+	selection := Selection{APIOrigin: "https://one.example", UserID: "user-one", WorkspaceID: "workspace-one", ProjectID: "00000000-0000-4000-8000-000000000001", SelectedAt: time.Now().UTC()}
 	if err := store.Save(selection); err != nil {
 		t.Fatal(err)
 	}
 	got, err := store.Load(selection.APIOrigin, selection.UserID)
-	if err != nil || got.WorkspaceID != "workspace-one" {
+	if err != nil || got.WorkspaceID != "workspace-one" || got.ProjectID != selection.ProjectID {
 		t.Fatalf("got=%#v err=%v", got, err)
 	}
 	info, err := os.Stat(store.path(selection.APIOrigin, selection.UserID))
@@ -31,6 +31,14 @@ func TestContextStoreIsOriginAndUserScopedAtomicAndPrivate(t *testing.T) {
 	}
 	if _, err := store.Load(selection.APIOrigin, "user-two"); !errors.Is(err, ErrNoContext) {
 		t.Fatalf("cross-user err=%v", err)
+	}
+}
+
+func TestContextStoreRejectsInvalidProjectIdentity(t *testing.T) {
+	store, _ := NewFileContextStoreAtHome(t.TempDir())
+	selection := Selection{APIOrigin: "https://one.example", UserID: "user-one", WorkspaceID: "workspace-one", ProjectID: "../escape", SelectedAt: time.Now().UTC()}
+	if err := store.Save(selection); err == nil {
+		t.Fatal("invalid Project identity was saved")
 	}
 }
 

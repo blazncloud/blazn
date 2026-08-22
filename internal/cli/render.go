@@ -35,6 +35,7 @@ var rootCommands = []helpCommand{
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
 	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
+	{Name: "project", Summary: "Create, select, and manage Workspace Projects"},
 	{Name: "social", Summary: "Search public entities and manage social content (plugin)"},
 	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
@@ -82,6 +83,17 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 				{Name: "join", Summary: "Accept an invitation from stdin"}, {Name: "members", Summary: "List workspace members"},
 				{Name: "set-role", Summary: "Change a member role"}, {Name: "remove-member", Summary: "Remove a member"}, {Name: "leave", Summary: "Leave the selected workspace"},
 				{Name: "watch", Summary: "Stream reauthorized workspace events"},
+			},
+		}
+	case "project":
+		output = helpOutput{
+			Command: "project", Usage: "blazn project create|list|get|use|edit [options]", Summary: "Create, select, and manage Projects in the selected Workspace.",
+			Commands: []helpCommand{
+				{Name: "create", Summary: "Create a Project in the selected Workspace"},
+				{Name: "list", Summary: "List Projects in the selected Workspace"},
+				{Name: "get", Summary: "Get a Project by ID, slug, or current selection"},
+				{Name: "use", Summary: "Select a Project locally"},
+				{Name: "edit", Summary: "Update or archive a Project"},
 			},
 		}
 	case "node":

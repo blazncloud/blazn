@@ -19,6 +19,9 @@ func TestDefaultCatalogResolvesCanonicalAndAliases(t *testing.T) {
 	if _, ok := catalog.Resolve("auth"); ok {
 		t.Fatal("reserved core command resolved as a plugin")
 	}
+	if _, ok := catalog.Resolve("project"); ok {
+		t.Fatal("Project core command resolved as a plugin")
+	}
 	if _, ok := catalog.Resolve("unknown"); ok {
 		t.Fatal("unknown command resolved as a plugin")
 	}

@@ -46,7 +46,7 @@ var contentDefinition = Definition{
 }
 
 func DefaultCatalog() Catalog {
-	catalog, err := NewCatalog([]Definition{socialDefinition, contentDefinition}, []string{"auth", "doctor", "help", "node", "plugins", "uninstall", "version", "workspace"})
+	catalog, err := NewCatalog([]Definition{socialDefinition, contentDefinition}, []string{"auth", "doctor", "help", "node", "plugins", "project", "uninstall", "version", "workspace"})
 	if err != nil {
 		panic(err)
 	}
