@@ -4,6 +4,8 @@
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM blazn_runtime, blazn_bootstrap;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public
   REVOKE ALL ON TABLES FROM blazn_runtime, blazn_bootstrap;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public
+  REVOKE ALL ON SEQUENCES FROM blazn_runtime, blazn_bootstrap;
 
 GRANT SELECT, INSERT ON TABLE users TO blazn_bootstrap;
 

@@ -55,6 +55,7 @@ func TestErrorContractAndBearerHeader(t *testing.T) {
 			t.Fatalf("authorization = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "17")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"code":"session_revoked","message":"device was revoked","requestId":"req-1"}`))
 	}))
@@ -63,6 +64,28 @@ func TestErrorContractAndBearerHeader(t *testing.T) {
 	_, err := api.GetCurrentUser(context.Background(), "token")
 	if !IsCode(err, "session_revoked") {
 		t.Fatalf("error = %T %v", err, err)
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok || apiErr.RetryAfter != 17 {
+		t.Fatalf("retry-after error = %#v", err)
+	}
+}
+
+func TestRejectsCrossOriginRedirect(t *testing.T) {
+	var targetCalled bool
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetCalled = true }))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+	api, err := New(source.URL, source.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = api.CreateDeviceAuthorization(context.Background(), DeviceAuthorizationRequest{DevicePublicKey: "public", DeviceName: "test", Platform: "linux/amd64"})
+	if err == nil || targetCalled {
+		t.Fatalf("err=%v targetCalled=%v", err, targetCalled)
 	}
 }
 
