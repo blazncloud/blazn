@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -19,6 +20,11 @@ import (
 )
 
 const defaultAPIURL = "https://blazn.benpelo.com"
+
+const (
+	maxDeviceAuthorizationLifetime = 15 * time.Minute
+	maxAccessTokenLifetime         = 24 * time.Hour
+)
 
 type API interface {
 	CreateDeviceAuthorization(context.Context, client.DeviceAuthorizationRequest) (client.DeviceAuthorization, error)
@@ -96,6 +102,9 @@ func NewDefaultService() (*Service, error) {
 	if apiURL == "" {
 		apiURL = defaultAPIURL
 	}
+	if err := validateAuthAPIURL(apiURL); err != nil {
+		return nil, err
+	}
 	api, err := client.New(apiURL, &http.Client{Timeout: 30 * time.Second})
 	if err != nil {
 		return nil, err
@@ -124,7 +133,7 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 	if err != nil {
 		return LoginStart{}, "", 0, err
 	}
-	if authorization.DeviceCode == "" || authorization.UserCode == "" || authorization.VerificationURI == "" || authorization.Challenge == "" || authorization.ExpiresIn <= 0 || authorization.Interval <= 0 {
+	if authorization.DeviceCode == "" || authorization.UserCode == "" || authorization.VerificationURI == "" || authorization.Challenge == "" || authorization.ExpiresIn <= 0 || authorization.Interval <= 0 || authorization.ExpiresIn > int(maxDeviceAuthorizationLifetime/time.Second) {
 		return LoginStart{}, "", 0, errors.New("API returned an incomplete device authorization")
 	}
 	s.pendingPrivateKey = privateKey
@@ -284,7 +293,7 @@ func (s *Service) load() (Credentials, error) {
 }
 
 func (s *Service) save(session client.Session, privateKey ed25519.PrivateKey) error {
-	if session.AccessToken == "" || session.RefreshToken == "" || session.DeviceID == "" || session.ExpiresIn <= 0 {
+	if session.AccessToken == "" || session.RefreshToken == "" || session.DeviceID == "" || session.ExpiresIn <= 0 || session.ExpiresIn > int(maxAccessTokenLifetime/time.Second) {
 		return errors.New("API returned an incomplete session")
 	}
 	if len(privateKey) != ed25519.PrivateKeySize {
@@ -331,4 +340,18 @@ func OpenBrowser(uri string) error {
 		return fmt.Errorf("launch browser: %w", err)
 	}
 	return nil
+}
+
+func validateAuthAPIURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("parse API URL: %w", err)
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") && os.Getenv("BLAZN_ALLOW_INSECURE_LOCALHOST") == "1" {
+		return nil
+	}
+	return errors.New("authentication API must use HTTPS; insecure HTTP is allowed only for an explicitly enabled loopback test server")
 }

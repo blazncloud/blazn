@@ -203,3 +203,13 @@ func TestLoginContextCancellationStopsPolling(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestAuthAPIRequiresTLSExceptExplicitLoopback(t *testing.T) {
+	if err := validateAuthAPIURL("http://example.com"); err == nil {
+		t.Fatal("cleartext remote API was accepted")
+	}
+	t.Setenv("BLAZN_ALLOW_INSECURE_LOCALHOST", "1")
+	if err := validateAuthAPIURL("http://127.0.0.1:8080"); err != nil {
+		t.Fatalf("explicit loopback API rejected: %v", err)
+	}
+}
