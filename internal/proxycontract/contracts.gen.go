@@ -289,8 +289,8 @@ type Event struct {
 	Usage            *Usage           `json:"usage,omitempty"`
 }
 type Usage struct {
-	InputTokens  int `json:"inputTokens,omitempty"`
-	OutputTokens int `json:"outputTokens,omitempty"`
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
 }
 
 type NormalizedRequest struct {
@@ -791,11 +791,23 @@ func (p Policy) Validate() error {
 				}
 			}
 		}
+		for _, protocol := range p.Protocols {
+			covered := false
+			for _, id := range alias.RouteIDs {
+				if containsProtocol(routes[id].SourceProtocols, protocol) {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				return fmt.Errorf("alias %q has no route for enabled protocol %s", name, protocol)
+			}
+		}
 	}
 	if p.RequestLimits.MaxContextTokens < 1 || p.RequestLimits.MaxOutputTokens < 1 || p.RequestLimits.TimeoutMS < 1000 || p.RequestLimits.TimeoutMS > 3600000 || !validCost(p.RequestLimits.MaxCostClass) {
 		return errors.New("policy request limits are invalid")
 	}
-	if p.Fallback.MaxAttempts < 1 || p.Fallback.MaxAttempts > 2 || duplicateStrings(retryStrings(p.Fallback.RetryableReasons)) || !allRetryReasons(p.Fallback.RetryableReasons) || duplicateStrings(transitionStrings(p.Fallback.AllowedBoundaryTransitions)) || !allTransitions(p.Fallback.AllowedBoundaryTransitions) {
+	if p.Fallback.RetryableReasons == nil || p.Fallback.AllowedBoundaryTransitions == nil || p.Fallback.MaxAttempts < 1 || p.Fallback.MaxAttempts > 2 || duplicateStrings(retryStrings(p.Fallback.RetryableReasons)) || !allRetryReasons(p.Fallback.RetryableReasons) || duplicateStrings(transitionStrings(p.Fallback.AllowedBoundaryTransitions)) || !allTransitions(p.Fallback.AllowedBoundaryTransitions) {
 		return errors.New("policy fallback is invalid")
 	}
 	if p.ContentCapture {
@@ -877,6 +889,9 @@ func (j ActivationJournal) Validate() error {
 	if len(seen) != 5 {
 		return errors.New("activation journal environment set is incomplete")
 	}
+	if j.RollbackActions == nil {
+		return errors.New("activation journal rollback actions must be an array")
+	}
 	for index, action := range j.RollbackActions {
 		if action.Ordinal != index+1 || !validRollbackOperation(action.Operation) || len(action.Target) < 1 || len(action.Target) > 256 {
 			return errors.New("activation journal rollback action is invalid")
@@ -919,13 +934,16 @@ func (r ActivationReceipt) Validate() error {
 	if len(seen) != 5 {
 		return errors.New("activation receipt environment set is incomplete")
 	}
+	if r.RollbackSummary == nil {
+		return errors.New("activation receipt rollback summary must be an array")
+	}
 	for index, action := range r.RollbackSummary {
 		if action.Ordinal != index+1 || !validRollbackOperation(action.Operation) || len(action.Target) < 1 || len(action.Target) > 256 {
 			return errors.New("activation receipt rollback summary is invalid")
 		}
 	}
-	if r.Mode == ModeScopedRun && r.PublicationMechanism != "process_environment" {
-		return errors.New("scoped receipt must use process environment")
+	if (r.Mode == ModeScopedRun && r.PublicationMechanism != "process_environment") || (r.Mode == ModeSession && r.Platform == PlatformDarwin && r.PublicationMechanism != "launchctl_user_environment") || (r.Mode == ModeSession && r.Platform == PlatformLinux && r.PublicationMechanism != "systemd_user_environment") {
+		return errors.New("receipt platform, mode, and publication mechanism disagree")
 	}
 	return nil
 }
@@ -947,7 +965,7 @@ func (e Event) Validate() error {
 }
 
 func (r NormalizedRequest) Validate() error {
-	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || (r.ToolChoice != "" && !validToolChoice(r.ToolChoice)) || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
+	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || r.Tools == nil || r.CapabilitiesRequired == nil || (r.ToolChoice != "" && !validToolChoice(r.ToolChoice)) || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
 		return errors.New("normalized request is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, r.Limits.DeadlineAt); err != nil {
@@ -1000,7 +1018,7 @@ func (b RequestBlock) Validate() error {
 	return nil
 }
 func (r NormalizedResponse) Validate() error {
-	if !uuidPattern.MatchString(r.LogicalRequestID) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !uuidPattern.MatchString(r.RouteID) || !validFinish(r.FinishReason) || r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 {
+	if !uuidPattern.MatchString(r.LogicalRequestID) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !uuidPattern.MatchString(r.RouteID) || r.Blocks == nil || !validFinish(r.FinishReason) || r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 {
 		return errors.New("normalized response is invalid")
 	}
 	for _, b := range r.Blocks {
@@ -1253,6 +1271,11 @@ func ValidateJournalReceipt(j ActivationJournal, r ActivationReceipt) error {
 	}
 	return nil
 }
+
+// AllowsVerifiedListenerStop proves only receipt integrity. The lifecycle
+// implementation must still compare the live PID start identity, executable,
+// binary digest, listener key, owner, generation, mode, and OS session before
+// it signals a process.
 func (r ActivationReceipt) AllowsVerifiedListenerStop() bool {
 	return r.Validate() == nil && VerifyContractChecksum(r, r.Checksum) == nil
 }
@@ -1300,6 +1323,14 @@ func validEventReason(v EventReasonCode) bool {
 }
 func validToolChoice(v ToolChoice) bool {
 	return v == ToolChoiceNone || v == ToolChoiceAuto || v == ToolChoiceRequired
+}
+func containsProtocol(values []Protocol, want Protocol) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 func allProtocols(values []Protocol) bool {
 	for _, value := range values {
