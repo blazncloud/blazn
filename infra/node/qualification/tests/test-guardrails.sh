@@ -51,6 +51,14 @@ if "${base_env[@]}" BLAZN_QUALIFICATION_LXD_MEMORY=17GiB "$qual_dir/lxd-disposab
   printf 'LXD plan accepted an excessive memory limit\n' >&2
   exit 1
 fi
+if "${base_env[@]}" BLAZN_QUALIFICATION_LXD_ROOT_DISK=128GiB "$qual_dir/lxd-disposable.sh" plan >/dev/null 2>&1; then
+  printf 'LXD plan accepted an excessive root disk limit\n' >&2
+  exit 1
+fi
+if "${base_env[@]}" BLAZN_QUALIFICATION_LXD_PROCESSES=4096 "$qual_dir/lxd-disposable.sh" plan >/dev/null 2>&1; then
+  printf 'LXD plan accepted an excessive process limit\n' >&2
+  exit 1
+fi
 
 # shellcheck disable=SC2016
 digest_one=$("${base_env[@]}" bash -c 'source "$1/lib/common.sh"; qual_validate_lxd_limits; qual_approval_input_digest lxd-create' _ "$qual_dir")
@@ -58,9 +66,20 @@ digest_one=$("${base_env[@]}" bash -c 'source "$1/lib/common.sh"; qual_validate_
 digest_two=$("${base_env[@]}" BLAZN_QUALIFICATION_LXD_CPU=5 bash -c 'source "$1/lib/common.sh"; qual_validate_lxd_limits; qual_approval_input_digest lxd-create' _ "$qual_dir")
 [[ "$digest_one" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'approval digest is malformed\n' >&2; exit 1; }
 [ "$digest_one" != "$digest_two" ] || { printf 'approval digest did not bind LXD CPU\n' >&2; exit 1; }
+for binding in \
+  BLAZN_QUALIFICATION_INSTALL_PROFILE_SHA256=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+  BLAZN_QUALIFICATION_EXPECTED_HOSTNAME=mac-mini-3 \
+  BLAZN_QUALIFICATION_LOCK_IDENTITY=1:2:0:600 \
+  BLAZN_QUALIFICATION_CRASH_TIMEOUT_SECONDS=301 \
+  BLAZN_QUALIFICATION_LXD_ROOT_DISK=48GiB \
+  BLAZN_QUALIFICATION_LXD_PROCESSES=1200; do
+  # shellcheck disable=SC2016
+  bound_digest=$("${base_env[@]}" "$binding" bash -c 'source "$1/lib/common.sh"; qual_validate_lxd_limits; qual_approval_input_digest lxd-create' _ "$qual_dir")
+  [ "$bound_digest" != "$digest_one" ] || { printf 'approval digest omitted %s\n' "${binding%%=*}" >&2; exit 1; }
+done
 
 bash -c 'source "$1/lib/common.sh"; qual_require_expired_repair_denial "$2"' _ "$qual_dir" \
-  '{"error":{"code":"node_failed","message":"repair requires an authorized fresh, unexpired plan: expired"},"exitCode":1}'
+  '{"error":{"code":"node_failed","message":"repair requires an authorized fresh, unexpired plan: install plan is not active at trusted current time"},"exitCode":1}'
 if bash -c 'source "$1/lib/common.sh"; qual_require_expired_repair_denial "$2"' _ "$qual_dir" \
   '{"error":{"code":"node_failed","message":"network unavailable"},"exitCode":1}' >/dev/null 2>&1; then
   printf 'unrelated repair failure passed expired-plan gate\n' >&2
@@ -73,6 +92,11 @@ bash -c 'source "$1/lib/common.sh"; qual_require_stale_cas_rejection "$2"' _ "$q
 if bash -c 'source "$1/lib/common.sh"; qual_require_stale_cas_rejection "$2"' _ "$qual_dir" \
   '{"kind":"Status","status":"Failure","reason":"Forbidden","code":403,"message":"forbidden"}' >/dev/null 2>&1; then
   printf 'RBAC denial passed stale-CAS gate\n' >&2
+  exit 1
+fi
+if bash -c 'source "$1/lib/common.sh"; qual_require_stale_cas_rejection "$2"' _ "$qual_dir" \
+  '{"kind":"Status","status":"Failure","reason":"Invalid","code":422,"message":"unsupported media type"}' >/dev/null 2>&1; then
+  printf 'generic Invalid response passed stale-CAS gate\n' >&2
   exit 1
 fi
 

@@ -20,13 +20,14 @@ CORRELATION = re.compile(r"^nodequal-[a-z0-9][a-z0-9.-]{6,63}$")
 STEP = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 EMPTY_STATUS_DIGEST = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 FORBIDDEN_ARTIFACT_MARKERS = (
     b'"accesstoken"', b'"refreshtoken"', b'"enrollmenttoken"',
     b'"joincredential"', b'authorization: bearer ', b'private key-----',
 )
 FRESH_GATES = {
-    "source-provenance", "baseline-invariants", "target-baseline", "ubuntu-preflight",
+    "source-provenance", "baseline-invariants", "lxd-create", "target-baseline", "ubuntu-preflight",
     "service-identity", "no-input-sudo-observe", "install", "idempotent-install",
     "repair", "expired-observe", "expired-repair-denied", "expired-uninstall",
     "install-crash-resume", "cleanup-crash-resume", "reinstall",
@@ -40,6 +41,11 @@ MAC_GATES = {
     "cleanup-crash-resume", "reinstall", "kubernetes-uid-rv",
     "kubernetes-stale-cas-denied", "kubernetes-quarantine-noschedule",
     "target-post-uninstall", "zero-residue", "post-invariants",
+}
+MUTATION_GATES = {
+    "install", "adopt-install", "idempotent-install", "repair",
+    "expired-repair-denied", "expired-uninstall", "install-crash-resume",
+    "cleanup-crash-resume", "reinstall", "kubernetes-stale-cas-denied", "lxd-create",
 }
 
 
@@ -81,38 +87,76 @@ def artifact_json(path: pathlib.Path, step: str) -> Any:
         die(f"step {step} stdout is not one machine-readable JSON document: {exc}")
 
 
-def gate_semantics(step: str, value: Any) -> bool:
+def valid_receipt(value: Any, run: dict[str, Any], state: str) -> bool:
+    if not isinstance(value, dict):
+        return False
+    mutations = value.get("mutations")
+    wanted = {"applied"} if state == "active" else {"restored", "removed"}
+    return (
+        value.get("schemaVersion") == "nodes/v1alpha1"
+        and all(UUID.fullmatch(str(value.get(field, ""))) for field in ("receiptId", "planId", "nodeId"))
+        and DIGEST.fullmatch(str(value.get("planDigest", ""))) is not None
+        and value.get("state") == state and value.get("currentStage") == "complete"
+        and value.get("residues") == [] and isinstance(mutations, list) and bool(mutations)
+        and all(isinstance(item, dict) and item.get("status") in wanted for item in mutations)
+        and isinstance(value.get("binary"), dict)
+        and value["binary"].get("digest") == run.get("source", {}).get("binaryDigest")
+        and DIGEST.fullmatch(str(value.get("digest", ""))) is not None
+        and isinstance(value.get("signingKeyId"), str) and bool(value["signingKeyId"])
+        and re.fullmatch(r"[A-Za-z0-9_-]{86}", str(value.get("signature", ""))) is not None
+    )
+
+
+def semantic_receipt(step: str, value: dict[str, Any]) -> dict[str, Any] | None:
+    if step in ("install-crash-resume", "cleanup-crash-resume"):
+        candidate = value.get("recovery")
+    else:
+        result = value.get("result") if isinstance(value.get("result"), dict) else value
+        candidate = result.get("receipt") if isinstance(result.get("receipt"), dict) else result
+    if not isinstance(candidate, dict) or "receiptId" not in candidate:
+        return None
+    return {key: candidate.get(key) for key in ("receiptId", "planId", "planDigest", "nodeId", "digest", "signature", "signingKeyId")}
+
+
+def gate_semantics(step: str, value: Any, run: dict[str, Any]) -> bool:
     """Validate the minimum machine-produced assertion for each pass gate."""
     if not isinstance(value, dict):
         return False
-    receipt = value.get("receipt") if isinstance(value.get("receipt"), dict) else value
+    result = value.get("result") if isinstance(value.get("result"), dict) else value
+    receipt = result.get("receipt") if isinstance(result.get("receipt"), dict) else result
     observation = value.get("observation") if isinstance(value.get("observation"), dict) else {}
     checks = {
-        "source-provenance": lambda: value.get("status") == "passed" and isinstance(value.get("source"), dict),
-        "baseline-invariants": lambda: value.get("phase") == "before" and isinstance(value.get("protected"), dict),
-        "post-invariants": lambda: value.get("phase") == "after" and isinstance(value.get("protected"), dict),
-        "target-baseline": lambda: value.get("phase") == "before" and isinstance(value.get("state"), dict),
-        "target-post-uninstall": lambda: value.get("phase") == "after" and isinstance(value.get("state"), dict),
+        "source-provenance": lambda: value.get("status") == "passed" and value.get("source") == {key: run["source"][key] for key in ("head", "tree", "remote")},
+        "baseline-invariants": lambda: value.get("phase") == "before" and value.get("correlationId") == run.get("correlationId") and value.get("source") == {key: run["source"][key] for key in ("head", "tree")} and isinstance(value.get("protected"), dict),
+        "post-invariants": lambda: value.get("phase") == "after" and value.get("correlationId") == run.get("correlationId") and value.get("source") == {key: run["source"][key] for key in ("head", "tree")} and isinstance(value.get("protected"), dict),
+        "target-baseline": lambda: value.get("phase") == "before" and value.get("correlationId") == run.get("correlationId") and value.get("target") == run.get("target") and value.get("source") == {key: run["source"][key] for key in ("head", "tree")} and isinstance(value.get("state"), dict),
+        "target-post-uninstall": lambda: value.get("phase") == "after" and value.get("correlationId") == run.get("correlationId") and value.get("target") == run.get("target") and value.get("source") == {key: run["source"][key] for key in ("head", "tree")} and isinstance(value.get("state"), dict),
         "ubuntu-preflight": lambda: value.get("os") == "ubuntu" and value.get("osVersion") == "26.04",
+        "lxd-create": lambda: value.get("status") == "passed" and value.get("target") == run.get("target") and DIGEST.fullmatch(str(value.get("imageFingerprintDigest", ""))) is not None and isinstance(value.get("limits"), dict),
         "native-mac-preflight": lambda: value.get("status") == "passed" and value.get("host") in ("mac-mini-3", "mac-mini-3.local") and value.get("architecture") == "arm64",
         "service-identity": lambda: isinstance(value.get("service"), dict) and value["service"].get("accountUid") not in (None, "", "0", "absent") and value["service"].get("processUid") == value["service"].get("accountUid"),
         "no-input-sudo-observe": lambda: value.get("noInputRootObservation") == "allowed",
-        "install": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
-        "idempotent-install": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
-        "repair": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
-        "reinstall": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
+        "install": lambda: valid_receipt(receipt, run, "active"),
+        "adopt-install": lambda: valid_receipt(receipt, run, "active"),
+        "idempotent-install": lambda: valid_receipt(receipt, run, "active"),
+        "repair": lambda: valid_receipt(receipt, run, "active"),
+        "reinstall": lambda: valid_receipt(receipt, run, "active"),
         "expired-observe": lambda: value.get("schemaVersion") == "blazn.dev/node-root-helper/v1" and value.get("ok") is True and bool(observation),
-        "expired-repair-denied": lambda: value.get("status") == "passed" and value.get("expiredRepairDenied") is True and isinstance(value.get("denial"), dict) and value["denial"].get("exitCode") == 1 and value["denial"].get("error", {}).get("code") == "node_failed",
-        "expired-uninstall": lambda: receipt.get("state") == "removed" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
-        "install-crash-resume": lambda: value.get("status") == "passed" and value.get("crash", {}).get("lifecycle") == "install" and value.get("recovery", {}).get("state") == "active" and value.get("recovery", {}).get("residues") == [],
-        "cleanup-crash-resume": lambda: value.get("status") == "passed" and value.get("crash", {}).get("lifecycle") == "cleanup" and value.get("recovery", {}).get("state") == "removed" and value.get("recovery", {}).get("residues") == [],
+        "expired-repair-denied": lambda: value.get("status") == "passed" and value.get("expiredRepairDenied") is True and isinstance(value.get("denial"), dict) and value["denial"].get("exitCode") == 1 and value["denial"].get("error", {}).get("code") == "node_failed" and value["denial"].get("error", {}).get("message") == "repair requires an authorized fresh, unexpired plan: install plan is not active at trusted current time" and isinstance(value.get("signedPlan"), dict) and valid_timestamp(value["signedPlan"].get("expiresAt")) and UUID.fullmatch(str(value["signedPlan"].get("planId", ""))) is not None and DIGEST.fullmatch(str(value["signedPlan"].get("digest", ""))) is not None and re.fullmatch(r"[A-Za-z0-9_-]{86}", str(value["signedPlan"].get("signature", ""))) is not None,
+        "expired-uninstall": lambda: valid_receipt(receipt, run, "removed"),
+        "install-crash-resume": lambda: value.get("status") == "passed" and value.get("crash", {}).get("lifecycle") == "install" and valid_receipt(value.get("recovery"), run, "active"),
+        "cleanup-crash-resume": lambda: value.get("status") == "passed" and value.get("crash", {}).get("lifecycle") == "cleanup" and valid_receipt(value.get("recovery"), run, "removed"),
         "kubernetes-uid-rv": lambda: isinstance(value.get("node"), dict) and bool(value["node"].get("uid")) and bool(value["node"].get("resourceVersion")),
         "kubernetes-stale-cas-denied": lambda: value.get("status") == "passed" and value.get("staleCASDenied") is True and value.get("stateUnchanged") is True and value.get("rejection", {}).get("classification") in ("kubernetes-status-invalid-422-jsonpatch-test", "kubectl-invalid-jsonpatch-test") and value.get("rejection", {}).get("reason") == "Invalid",
         "kubernetes-quarantine-noschedule": lambda: value.get("status") == "passed" and value.get("quarantineNoSchedule") is True and value.get("ordinaryWorkloads") == 0,
         "zero-residue": lambda: value.get("status") == "passed" and value.get("guestResidue") == 0 and value.get("kubernetesResidue") == 0 and value.get("protectedInvariants") is True,
     }
     check = checks.get(step)
-    return check is not None and bool(check())
+    approval_bound = step not in MUTATION_GATES or DIGEST.fullmatch(str(value.get("qualificationApprovalInputDigest", ""))) is not None
+    try:
+        return check is not None and approval_bound and bool(check())
+    except (KeyError, TypeError, AttributeError):
+        return False
 
 
 def valid_timestamp(value: Any) -> bool:
@@ -238,7 +282,7 @@ def record(args: argparse.Namespace) -> None:
     if not isinstance(metadata, dict):
         die("metadata must be a JSON object")
     semantic = artifact_json(stdout, args.step)
-    if not gate_semantics(args.step, semantic):
+    if not gate_semantics(args.step, semantic, run):
         die(f"step {args.step} stdout does not satisfy its gate-specific semantic contract")
     lowered_metadata = json.dumps(metadata, sort_keys=True).lower()
     if any(marker in lowered_metadata for marker in (
@@ -254,6 +298,8 @@ def record(args: argparse.Namespace) -> None:
         "stdout": {"path": rel_stdout, "digest": digest_file(stdout), "bytes": stdout.stat().st_size},
         "stderr": {"path": rel_stderr, "digest": digest_file(stderr), "bytes": stderr.stat().st_size},
         "metadata": metadata,
+        "approvalInputDigest": semantic.get("qualificationApprovalInputDigest"),
+        "receiptEvidence": semantic_receipt(args.step, semantic),
     })
     atomic_json(path, run)
     if status != "passed":
@@ -302,7 +348,7 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
         return errors + ["steps is not an array"]
     ids: list[str] = []
     for item in steps:
-        if not isinstance(item, dict) or set(item) != {"id", "status", "observedAt", "exitCode", "stdout", "stderr", "metadata"}:
+        if not isinstance(item, dict) or set(item) != {"id", "status", "observedAt", "exitCode", "stdout", "stderr", "metadata", "approvalInputDigest", "receiptEvidence"}:
             errors.append("step has invalid fields")
             continue
         sid = item.get("id", "")
@@ -320,6 +366,12 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
             "authorization", "privatekey", "credential",
         )):
             errors.append(f"step {sid} metadata contains a prohibited credential marker")
+        approval_digest = item.get("approvalInputDigest")
+        if sid in MUTATION_GATES:
+            if not DIGEST.fullmatch(str(approval_digest or "")):
+                errors.append(f"step {sid} lacks its accepted approval input digest")
+        elif approval_digest is not None:
+            errors.append(f"read-only step {sid} unexpectedly records an approval input digest")
         if not valid_timestamp(item.get("observedAt")):
             errors.append(f"step {sid} observedAt is invalid")
         for stream in ("stdout", "stderr"):
@@ -350,10 +402,28 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 errors.append(f"step {sid} stdout is not one machine-readable JSON document")
             else:
-                if not gate_semantics(str(sid), semantic):
+                if not gate_semantics(str(sid), semantic, run):
                     errors.append(f"step {sid} stdout fails its gate-specific semantic contract")
+                if item.get("receiptEvidence") != semantic_receipt(str(sid), semantic):
+                    errors.append(f"step {sid} receipt digest/signature evidence differs from its artifact")
     if len(ids) != len(set(ids)):
         errors.append("duplicate step IDs")
+    semantic_by_id: dict[str, Any] = {}
+    for item in steps:
+        if not isinstance(item, dict) or not isinstance(item.get("stdout"), dict):
+            continue
+        candidate = root / str(item["stdout"].get("path", ""))
+        try:
+            semantic_by_id[str(item.get("id", ""))] = json.loads(candidate.read_text())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    for before_id, after_id, field in (
+        ("baseline-invariants", "post-invariants", "protected"),
+        ("target-baseline", "target-post-uninstall", "state"),
+    ):
+        before_value, after_value = semantic_by_id.get(before_id), semantic_by_id.get(after_id)
+        if isinstance(before_value, dict) and isinstance(after_value, dict) and before_value.get(field) != after_value.get(field):
+            errors.append(f"{before_id}/{after_id} {field} comparison differs")
     if require_complete:
         required = FRESH_GATES if run.get("scope") == "fresh-linux" else MAC_GATES if run.get("scope") == "native-mac" else set()
         errors.extend(f"required gate is missing: {gate}" for gate in sorted(required - set(ids)))

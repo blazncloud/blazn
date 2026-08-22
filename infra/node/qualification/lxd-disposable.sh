@@ -20,11 +20,12 @@ image="images:${image_fingerprint}"
 case "$action" in plan|create) qual_validate_lxd_limits ;; esac
 
 if [ "$action" = plan ]; then
-  printf '%s\n' "target=${guest}" "imageFingerprint=${image_fingerprint}" 'mutations=create|snapshot|restore|delete (one explicit action per approval)'
+  printf '%s\n' "target=${guest}" "imageFingerprint=${image_fingerprint}" "cpu=${BLAZN_QUALIFICATION_LXD_CPU}" "memory=${BLAZN_QUALIFICATION_LXD_MEMORY}" "rootDisk=${BLAZN_QUALIFICATION_LXD_ROOT_DISK}" "processes=${BLAZN_QUALIFICATION_LXD_PROCESSES}" 'mutations=create|snapshot|restore|delete (one explicit action per approval)'
   exit 0
 fi
 
 qual_require_command lxc
+qual_require_command jq
 
 guest_exists() { lxc info "$guest" >/dev/null 2>&1; }
 guest_owned() {
@@ -36,9 +37,13 @@ do_create() {
   lxc launch "$image" "$guest" \
     -c limits.cpu="$BLAZN_QUALIFICATION_LXD_CPU" \
     -c limits.memory="$BLAZN_QUALIFICATION_LXD_MEMORY" \
+    -c limits.processes="$BLAZN_QUALIFICATION_LXD_PROCESSES" \
+    -d root,size="$BLAZN_QUALIFICATION_LXD_ROOT_DISK" \
     -c security.privileged=false \
     -c user.blazn.qualification="$BLAZN_QUALIFICATION_CORRELATION_ID" \
-    -c user.blazn.purpose=node-platform-qualification
+    -c user.blazn.purpose=node-platform-qualification >/dev/null
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --arg image "$image_fingerprint" --arg cpu "$BLAZN_QUALIFICATION_LXD_CPU" --arg memory "$BLAZN_QUALIFICATION_LXD_MEMORY" --arg rootDisk "$BLAZN_QUALIFICATION_LXD_ROOT_DISK" --arg processes "$BLAZN_QUALIFICATION_LXD_PROCESSES" \
+    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,target:$target,imageFingerprintDigest:("sha256:"+$image),limits:{cpu:$cpu,memory:$memory,rootDisk:$rootDisk,processes:$processes}}'
 }
 
 do_delete() {

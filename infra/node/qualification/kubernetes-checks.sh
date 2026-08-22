@@ -46,7 +46,7 @@ case "$action" in
       after=$(kubectl --context "$BLAZN_QUALIFICATION_KUBE_CONTEXT" get node "$node" -o json)
       [ "$(jq -r '.metadata.uid' <<<"$after")" = "$uid" ] || qual_die 'Node UID changed during stale CAS check'
       [ "$(jq -r '.metadata.resourceVersion' <<<"$after")" = "$rv" ] || qual_die 'failed stale CAS changed Node resourceVersion'
-      jq -n --arg node "$node" --arg uid "$uid" --arg rv "$rv" --argjson rejection "$rejection" '{schemaVersion:1,status:"passed",node:$node,uid:$uid,resourceVersion:$rv,staleCASDenied:true,stateUnchanged:true,rejection:$rejection}'
+      jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg node "$node" --arg uid "$uid" --arg rv "$rv" --argjson rejection "$rejection" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,node:$node,uid:$uid,resourceVersion:$rv,staleCASDenied:true,stateUnchanged:true,rejection:$rejection}'
     }
     qual_with_lock do_stale_cas
     ;;

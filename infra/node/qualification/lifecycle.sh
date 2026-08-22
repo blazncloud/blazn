@@ -58,6 +58,11 @@ target_daemon_observe() {
 verify_plan_expired() {
   expires=${BLAZN_QUALIFICATION_PLAN_EXPIRES_AT:-}
   [ -n "$expires" ] || qual_die 'BLAZN_QUALIFICATION_PLAN_EXPIRES_AT is required for expired-plan gates'
+  runtime_path=/var/lib/blazn/node/runtime.json
+  if [ "$BLAZN_QUALIFICATION_PROFILE" = native-mac ]; then runtime_path='/Library/Application Support/Blazn/Node/runtime.json'; fi
+  plan_binding=$(target_exec jq -c '{expiresAt:.exchange.plan.expiresAt,digest:.exchange.plan.digest,signature:.exchange.plan.signature,planId:.exchange.plan.planId}' "$runtime_path")
+  jq -e --arg expires "$expires" '.expiresAt == $expires and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.signature | test("^[A-Za-z0-9_-]{86}$")) and (.planId | type == "string" and length > 0)' <<<"$plan_binding" >/dev/null ||
+    qual_die 'requested expiry is not bound to the locally persisted signed install plan'
   expiry_epoch=$(python3 - "$expires" <<'PY'
 import datetime as dt, sys
 try:
@@ -75,12 +80,15 @@ PY
     target_epoch=$(date -u +%s)
   fi
   [ "$target_epoch" -ge "$expiry_epoch" ] || qual_die 'target clock has not reached the signed plan expiry'
+  BLAZN_QUALIFICATION_EXPIRED_PLAN_BINDING=$plan_binding
+  export BLAZN_QUALIFICATION_EXPIRED_PLAN_BINDING
 }
 
 validate_install_inputs() {
   for name in BLAZN_QUALIFICATION_WORKSPACE BLAZN_QUALIFICATION_REQUEST_ID BLAZN_QUALIFICATION_MACHINE_FINGERPRINT BLAZN_QUALIFICATION_INSTALL_PROFILE BLAZN_QUALIFICATION_CLUSTER_ID BLAZN_QUALIFICATION_CLUSTER_ORIGIN; do
     [ -n "${!name:-}" ] || qual_die "${name} is required"
   done
+  [[ "${BLAZN_QUALIFICATION_INSTALL_PROFILE_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'trusted profile content digest is required'
   case "$BLAZN_QUALIFICATION_REQUEST_ID" in *[!a-zA-Z0-9_.:-]*|'') qual_die 'request ID has unsafe characters' ;; esac
   case "$BLAZN_QUALIFICATION_WORKSPACE" in *[!a-zA-Z0-9_.:-]*|'') qual_die 'workspace has unsafe characters' ;; esac
   [[ "$BLAZN_QUALIFICATION_MACHINE_FINGERPRINT" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'machine fingerprint must be an exact sha256 digest'
@@ -97,6 +105,12 @@ validate_install_inputs() {
   # shellcheck disable=SC2016
   target_exec jq -e --arg origin "$BLAZN_QUALIFICATION_CLUSTER_ORIGIN" \
     '.allowedClusterOrigins == [$origin]' "$BLAZN_QUALIFICATION_INSTALL_PROFILE" >/dev/null || qual_die 'trusted profile does not pin exactly the approved disposable cluster origin'
+  if [ "$BLAZN_QUALIFICATION_PROFILE" = lxd-ubuntu-26.04 ]; then
+    profile_digest=$(target_exec sha256sum "$BLAZN_QUALIFICATION_INSTALL_PROFILE" | awk '{print "sha256:" $1}')
+  else
+    profile_digest=$(target_exec shasum -a 256 "$BLAZN_QUALIFICATION_INSTALL_PROFILE" | awk '{print "sha256:" $1}')
+  fi
+  [ "$profile_digest" = "$BLAZN_QUALIFICATION_INSTALL_PROFILE_SHA256" ] || qual_die 'trusted profile content differs from approval-bound digest'
   if [ "$BLAZN_QUALIFICATION_PROFILE" = native-mac ]; then
     # shellcheck disable=SC2016
     target_exec jq -e --arg cluster "$BLAZN_QUALIFICATION_CLUSTER_ID" \
@@ -198,8 +212,8 @@ run_crash_case() {
   else
     recovery=$(target_exec "$binary" --output=json node uninstall --yes --remove-managed-runtime)
   fi
-  jq -n --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" \
-    '{schemaVersion:1,status:"passed",crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" \
+    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
 }
 
 do_action() {
@@ -207,17 +221,20 @@ do_action() {
   case "$action" in
     install|idempotent-install)
       validate_install_inputs
-      run_install "$BLAZN_QUALIFICATION_REQUEST_ID"
+      result=$(run_install "$BLAZN_QUALIFICATION_REQUEST_ID")
+      jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --argjson result "$result" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,result:$result}'
       ;;
     reinstall)
       validate_install_inputs
       reinstall_id=${BLAZN_QUALIFICATION_REINSTALL_REQUEST_ID:-}
       [ -n "$reinstall_id" ] && [ "$reinstall_id" != "$BLAZN_QUALIFICATION_REQUEST_ID" ] || qual_die 'reinstall requires a distinct BLAZN_QUALIFICATION_REINSTALL_REQUEST_ID'
       case "$reinstall_id" in *[!a-zA-Z0-9_.:-]*) qual_die 'reinstall request ID has unsafe characters' ;; esac
-      run_install "$reinstall_id"
+      result=$(run_install "$reinstall_id")
+      jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --argjson result "$result" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,result:$result}'
       ;;
     repair)
-      target_exec "$binary" --output=json node repair
+      result=$(target_exec "$binary" --output=json node repair)
+      jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --argjson result "$result" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,result:$result}'
       ;;
     expired-observe)
       verify_plan_expired
@@ -230,13 +247,14 @@ do_action() {
         qual_die 'repair unexpectedly accepted an expired plan'
       fi
       qual_require_expired_repair_denial "$repair_output"
-      jq -n --argjson denial "$repair_output" '{schemaVersion:1,status:"passed",expiredRepairDenied:true,denial:$denial}'
+      jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --argjson denial "$repair_output" --argjson plan "$BLAZN_QUALIFICATION_EXPIRED_PLAN_BINDING" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,expiredRepairDenied:true,denial:$denial,signedPlan:$plan}'
       ;;
     expired-uninstall|uninstall)
       if [ "$action" = expired-uninstall ]; then verify_plan_expired; fi
       uninstall_args=("$binary" --output=json node uninstall --yes)
       if [ "$BLAZN_QUALIFICATION_PROFILE" = lxd-ubuntu-26.04 ]; then uninstall_args+=(--remove-managed-runtime); fi
-      target_exec "${uninstall_args[@]}"
+      result=$(target_exec "${uninstall_args[@]}")
+      jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --argjson result "$result" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,result:$result}'
       ;;
     *) qual_die "unsupported lifecycle action: ${action}" ;;
   esac

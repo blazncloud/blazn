@@ -37,7 +37,7 @@
     "step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "status", "observedAt", "exitCode", "stdout", "stderr", "metadata"],
+      "required": ["id", "status", "observedAt", "exitCode", "stdout", "stderr", "metadata", "approvalInputDigest", "receiptEvidence"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
         "status": {"enum": ["passed", "failed"]},
@@ -45,7 +45,17 @@
         "exitCode": {"type": "integer", "minimum": 0, "maximum": 255},
         "stdout": {"$ref": "#/$defs/artifact"},
         "stderr": {"$ref": "#/$defs/artifact"},
-        "metadata": {"type": "object"}
+        "metadata": {"type": "object"},
+        "approvalInputDigest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "receiptEvidence": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["receiptId", "planId", "planDigest", "nodeId", "digest", "signature", "signingKeyId"],
+          "properties": {
+            "receiptId": {"type": "string"}, "planId": {"type": "string"}, "planDigest": {"type": "string"},
+            "nodeId": {"type": "string"}, "digest": {"type": "string"}, "signature": {"type": "string"}, "signingKeyId": {"type": "string"}
+          }
+        }
       }
     },
     "artifact": {

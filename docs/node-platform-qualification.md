@@ -29,6 +29,8 @@ The fresh-Linux run requires:
   image fingerprint, correlation ID, target, and complete before inventory;
 - a clean Ubuntu 26.04 AMD64 guest that is not the LXD host, with only the
   released Blazn binary and explicitly recorded authentication bootstrap;
+- the structured `lxd-create` result with the accepted approval-input digest,
+  image fingerprint, target, and bounded CPU/memory/root-disk/process limits;
 - install, same-request idempotent install, no-op repair, signed-plan-expired
   root observation, expired-plan repair denial, expired-plan uninstall with
   managed-runtime removal, and a new-request reinstall;
@@ -69,7 +71,9 @@ export BLAZN_QUALIFICATION_PROFILE=lxd-ubuntu-26.04
 export BLAZN_QUALIFICATION_MODE=mutate
 export BLAZN_QUALIFICATION_APPROVED_HEAD="$(git rev-parse HEAD)"
 export BLAZN_QUALIFICATION_LOCK_FILE=/var/lock/blazn-qualification/node-lifecycle-blazn-q-20260822-a1.lock
-input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_approval_input_digest "$1"' _ ACTION)
+source infra/node/qualification/lib/common.sh
+qual_export_lock_identity
+input_digest=$(qual_approval_input_digest ACTION)
 export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:ACTION:${input_digest}"
 ```
 
@@ -87,10 +91,13 @@ released binary digest, LXD image fingerprint, cluster identity, Node UID, or
 Node resourceVersion change. Never put credentials in these variables, shell
 arguments, approval strings, evidence metadata, or command logs.
 The digest is canonical JSON over the action, source HEAD, target/profile,
-binary and image digests, guest CPU/memory, snapshot, cluster/context identity,
-Node UID/resourceVersion, trusted profile, workspace, request IDs, machine
-fingerprint, operator identity, Lima VM, and plan expiry. Set every applicable
-input before calculating it; changing any bound value requires a new approval.
+binary and image digests, guest CPU/memory/root-disk/process limits, snapshot,
+cluster/context identity, Node UID/resourceVersion, trusted profile path and
+content digest, workspace, request IDs, machine fingerprint, operator identity,
+expected native hostname, Lima VM, crash timeout, plan expiry, and lock
+path/device/inode/owner/mode identity. Set every applicable input and create the
+root-owned lock before calculating it; changing any bound value requires a new
+approval.
 
 ## Safe local checks
 
@@ -175,7 +182,11 @@ the current correlation, and parses stdout as one JSON document against the
 gate-specific semantic contract. A successful exit or a generic
 `{"status":"passed"}` assertion is insufficient. The verifier repeats semantic
 validation so replacing an artifact and updating only its descriptor cannot
-manufacture a passed gate. It also rejects common credential markers. Redact at the
+manufacture a passed gate. It cross-binds source/inventory HEAD and tree,
+correlation/target, pre/post protected and target inventories, complete receipt
+identity/digests/signature metadata, and the released binary digest. Mutating
+gate artifacts persist the exact accepted approval-input digest. It also rejects
+common credential markers. Redact at the
 producer before writing an artifact; never edit an artifact after recording.
 The verifier detects changed size or digest.
 
@@ -233,21 +244,29 @@ one action:
 export BLAZN_QUALIFICATION_LXD_IMAGE_FINGERPRINT=<64-lowercase-hex>
 export BLAZN_QUALIFICATION_LXD_CPU=4
 export BLAZN_QUALIFICATION_LXD_MEMORY=8GiB
-input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_validate_lxd_limits; qual_approval_input_digest lxd-create')
+export BLAZN_QUALIFICATION_LXD_ROOT_DISK=32GiB
+export BLAZN_QUALIFICATION_LXD_PROCESSES=1024
+source infra/node/qualification/lib/common.sh
+qual_validate_lxd_limits
+qual_export_lock_identity
+input_digest=$(qual_approval_input_digest lxd-create)
 export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:lxd-create:${input_digest}"
 infra/node/qualification/lxd-disposable.sh create
 ```
 
 The script refuses an existing instance, launches an unprivileged guest with
-an integer CPU limit from 1 through 8 and an integer memory limit from 1GiB
-through 16GiB, and writes correlation/purpose instance properties. Both limits
-and the immutable image fingerprint are approval-bound.
+an integer CPU limit from 1 through 8, integer memory limit from 1GiB through
+16GiB, root disk from 16GiB through 64GiB, and process limit from 256 through
+2048, and writes correlation/purpose instance properties. All limits and the
+immutable image fingerprint are approval-bound.
 `inspect` is read-only. Snapshot, restore, and delete each need a distinct
 approval, for example:
 
 ```bash
 export BLAZN_QUALIFICATION_SNAPSHOT=checkpoint-clean-ubuntu
-input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_approval_input_digest lxd-snapshot')
+source infra/node/qualification/lib/common.sh
+qual_export_lock_identity
+input_digest=$(qual_approval_input_digest lxd-snapshot)
 export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:lxd-snapshot:${input_digest}"
 infra/node/qualification/lxd-disposable.sh snapshot
 ```
@@ -279,6 +298,7 @@ export BLAZN_QUALIFICATION_REQUEST_ID=<unique-install-request-id>
 export BLAZN_QUALIFICATION_REINSTALL_REQUEST_ID=<different-reinstall-request-id>
 export BLAZN_QUALIFICATION_MACHINE_FINGERPRINT=sha256:<64-lowercase-hex>
 export BLAZN_QUALIFICATION_INSTALL_PROFILE=/etc/blazn/node/profiles/qualification.json
+export BLAZN_QUALIFICATION_INSTALL_PROFILE_SHA256=sha256:<64-lowercase-hex>
 export BLAZN_QUALIFICATION_CLUSTER_ID=<disposable-cluster-id>
 export BLAZN_QUALIFICATION_CLUSTER_ORIGIN=https://<disposable-api-host>:<port>
 ```
@@ -299,10 +319,14 @@ the expected node identity. Repair must be a no-op with unchanged owned state.
 Run `observe-target.sh` to bind Ubuntu version, service UID/GID, systemd user,
 live process UID, and the daemon account's no-input root observation.
 
-To test expiry, wait until the signed plan's recorded `expiresAt`; do not change
-the host clock. `expired-observe` is read-only and must succeed. Then separately
-approve `expired-repair-denied` and `expired-uninstall`. The repair attempt must
-be rejected before mutation. Uninstall must produce a verified `removed`
+To test expiry, bind `BLAZN_QUALIFICATION_PLAN_EXPIRES_AT` to the exact locally
+persisted `exchange.plan.expiresAt`, then wait until that signed time; do not
+change the host clock. `expired-observe` is read-only and must succeed. Then
+separately approve `expired-repair-denied` and `expired-uninstall`. The repair
+attempt must return the exact underlying `install plan is not active at trusted
+current time` verification error. The harness persists the plan expiry, digest,
+and signature in the denial evidence; a generic `node_failed` wrapper fails.
+Uninstall must produce a verified `removed`
 receipt with zero residues. A recovery-required receipt fails the gate even if
 later manual cleanup appears successful.
 
@@ -328,7 +352,9 @@ approval, and bounded poll timeout, then invoke the action name itself:
 ```bash
 export BLAZN_QUALIFICATION_SNAPSHOT=checkpoint-clean-ubuntu
 export BLAZN_QUALIFICATION_CRASH_TIMEOUT_SECONDS=300
-input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_approval_input_digest crash-install-binding')
+source infra/node/qualification/lib/common.sh
+qual_export_lock_identity
+input_digest=$(qual_approval_input_digest crash-install-binding)
 export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:crash-install-binding:${input_digest}"
 infra/node/qualification/lifecycle.sh crash-install-binding
 ```
