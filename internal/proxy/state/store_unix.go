@@ -277,7 +277,10 @@ func (tx *ActivationTransaction) Transition(expected ExpectedActivation, next *J
 	if current.Generation != expected.Generation || current.State != expected.State {
 		return ErrLifecycleConflict
 	}
-	if next.Generation != current.Generation || !sameActivationIdentity(current, next) || !validStateTransition(current.State, next.State) {
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	if next.Generation != current.Generation || !sameActivationIdentity(current, next) || !validStateTransition(current.State, next.State) || !next.UpdatedAt.After(current.UpdatedAt) {
 		return fmt.Errorf("%w: invalid activation transition", ErrInvalidState)
 	}
 	receipt, receiptErr := tx.locked.readReceipt()
@@ -297,6 +300,9 @@ func (tx *ActivationTransaction) Transition(expected ExpectedActivation, next *J
 		if mechanism == "" {
 			mechanism = receipt.PublicationMechanism
 		}
+	}
+	if (next.State == "active" || next.State == "recovery_required") && mechanism != publicationMechanism(next) {
+		return fmt.Errorf("%w: publication mechanism does not match mode and platform", ErrInvalidState)
 	}
 	if !errors.Is(receiptErr, ErrNotFound) {
 		if err := removeSecureFile(tx.locked.store.paths.Receipt, tx.locked.store.uid, tx.locked.store.faults); err != nil {
@@ -502,7 +508,7 @@ func (locked *lockedStore) readReservation() (*Reservation, error) {
 	if err := readRecord(locked.store.paths.Reservation, locked.store.uid, &reservation); err != nil {
 		return nil, err
 	}
-	if reservation.OwnerUID != locked.store.uid || len(reservation.Nonce) < 32 || reservation.ExpiresAt.IsZero() {
+	if reservation.OwnerUID != locked.store.uid || !validNonce(reservation.Nonce) || reservation.ExpiresAt.IsZero() {
 		return nil, ErrInvalidState
 	}
 	if err := verifyChecksum(&reservation, reservation.Checksum); err != nil {
@@ -538,6 +544,14 @@ func ValidateBinding(journal *Journal, receipt *Receipt) error {
 			return ErrOwnershipAmbiguous
 		}
 	}
+	expectedReceiptState := "active"
+	if journal.State != "active" {
+		expectedReceiptState = "recovery_required"
+	}
+	if receipt.State != expectedReceiptState || receipt.PublicationMechanism != publicationMechanism(journal) ||
+		receipt.ActivatedAt.After(journal.UpdatedAt) || !reflect.DeepEqual(receipt.RollbackSummary, journal.RollbackActions) {
+		return ErrOwnershipAmbiguous
+	}
 	return nil
 }
 
@@ -548,6 +562,9 @@ func receiptFromJournal(journal *Journal, mechanism string) (*Receipt, error) {
 func receiptFromJournalAt(journal *Journal, mechanism string, activatedAt time.Time) (*Receipt, error) {
 	if journal.Checksum == "" || validateDigest(journal.Checksum) != nil {
 		return nil, fmt.Errorf("%w: journal must be checksummed first", ErrInvalidState)
+	}
+	if mechanism != publicationMechanism(journal) {
+		return nil, fmt.Errorf("%w: publication mechanism does not match journal", ErrInvalidState)
 	}
 	environment := make([]ReceiptEnvironment, 0, len(journal.Environment))
 	for _, item := range journal.Environment {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -416,7 +417,7 @@ func TestBothCorruptMutatesNothing(t *testing.T) {
 func TestCASConflictPersistsBoundRecoveryRecords(t *testing.T) {
 	store := testStore(t)
 	journal := testJournal()
-	writeActiveRecords(t, store, journal)
+	activeReceipt := writeActiveRecords(t, store, journal)
 	environment := &fakeEnvironment{conflict: map[string]bool{"OPENAI_API_KEY": true}}
 	result, err := store.Recover(context.Background(), environment, newFakeListener(proofFromJournal(journal)))
 	if !errors.Is(err, ErrRecoveryRequired) || result.Status != RecoveryRequired {
@@ -433,8 +434,47 @@ func TestCASConflictPersistsBoundRecoveryRecords(t *testing.T) {
 	if persistedJournal.State != "recovery_required" || persistedReceipt.State != "recovery_required" {
 		t.Fatalf("journal=%s receipt=%s", persistedJournal.State, persistedReceipt.State)
 	}
+	if !persistedReceipt.ActivatedAt.Equal(activeReceipt.ActivatedAt) || persistedReceipt.PublicationMechanism != "process_environment" ||
+		!reflect.DeepEqual(persistedReceipt.RollbackSummary, persistedJournal.RollbackActions) {
+		t.Fatalf("receipt fields drifted from schema/binding: %+v", persistedReceipt)
+	}
 	if err := ValidateBinding(persistedJournal, persistedReceipt); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTransitionPrevalidationDoesNotMutateBoundRecords(t *testing.T) {
+	store := testStore(t)
+	journal := testJournal()
+	writeActiveRecords(t, store, journal)
+	beforeJournal, err := os.ReadFile(store.paths.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeReceipt, err := os.ReadFile(store.paths.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := store.Reserve(context.Background(), nonceFor('v'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *journal
+	next.State = "recovery_required"
+	next.UpdatedAt = next.UpdatedAt.Add(time.Second)
+	err = store.WithReservation(context.Background(), reservation, func(tx *ActivationTransaction) error {
+		return tx.Transition(ExpectedActivation{Generation: journal.Generation, State: "active"}, &next, "launchctl_user_environment")
+	})
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("invalid mechanism error = %v", err)
+	}
+	if err := store.CancelReservation(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	afterJournal, _ := os.ReadFile(store.paths.Journal)
+	afterReceipt, _ := os.ReadFile(store.paths.Receipt)
+	if !bytes.Equal(beforeJournal, afterJournal) || !bytes.Equal(beforeReceipt, afterReceipt) {
+		t.Fatal("invalid transition mutated durable records")
 	}
 }
 
@@ -450,6 +490,32 @@ func TestUnverifiedStopRequiresRecovery(t *testing.T) {
 	}
 	if len(result.ManualRemediation) == 0 || !strings.Contains(result.ManualRemediation[0], "do not signal a PID") {
 		t.Fatalf("unsafe or missing listener remediation: %+v", result.ManualRemediation)
+	}
+}
+
+func TestListenerFailuresProvideEvidenceSpecificSafeRemediation(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		evidence  string
+		configure func(*fakeListener)
+	}{
+		{name: "inspect", evidence: "listener_inspection_failed", configure: func(listener *fakeListener) { listener.inspectErr = errors.New("identity service unavailable") }},
+		{name: "stop", evidence: "listener_stop_failed", configure: func(listener *fakeListener) { listener.stopErr = errors.New("stop denied") }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			store := testStore(t)
+			journal := testJournal()
+			writeActiveRecords(t, store, journal)
+			listener := newFakeListener(proofFromJournal(journal))
+			testCase.configure(listener)
+			result, err := store.Recover(context.Background(), &fakeEnvironment{}, listener)
+			if !errors.Is(err, ErrRecoveryRequired) || result.ListenerEvidence != testCase.evidence {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+			if len(result.ManualRemediation) == 0 || !strings.Contains(result.ManualRemediation[0], "do not signal a PID") {
+				t.Fatalf("unsafe or missing listener remediation: %+v", result.ManualRemediation)
+			}
+		})
 	}
 }
 
@@ -568,10 +634,12 @@ func (f *fakeEnvironment) CompareAndSet(_ context.Context, request CompareAndSet
 }
 
 type fakeListener struct {
-	live      LiveListenerProof
-	present   bool
-	keepLive  bool
-	stopCalls int
+	live       LiveListenerProof
+	present    bool
+	keepLive   bool
+	stopCalls  int
+	inspectErr error
+	stopErr    error
 }
 
 func newFakeListener(proof LiveListenerProof) *fakeListener {
@@ -579,6 +647,9 @@ func newFakeListener(proof LiveListenerProof) *fakeListener {
 }
 
 func (f *fakeListener) Inspect(context.Context, int) (LiveListenerProof, bool, error) {
+	if f.inspectErr != nil {
+		return LiveListenerProof{}, false, f.inspectErr
+	}
 	return f.live, f.present, nil
 }
 
@@ -587,6 +658,9 @@ func (f *fakeListener) Stop(_ context.Context, proof LiveListenerProof) error {
 		return errors.New("attempted to stop a mismatched listener")
 	}
 	f.stopCalls++
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	if !f.keepLive {
 		f.present = false
 	}
