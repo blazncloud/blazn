@@ -62,22 +62,22 @@ type systemStore struct {
 	runner commandRunner
 }
 
-func darwinKeychainArgs(args []string) ([]string, error) {
+func selectedDarwinKeychainPath() (string, error) {
 	path := os.Getenv("BLAZN_TEST_KEYCHAIN_PATH")
 	if path == "" {
-		return args, nil
+		return "", nil
 	}
 	if os.Getenv("BLAZN_ALLOW_TEST_KEYCHAIN") != "1" {
-		return nil, errors.New("BLAZN_TEST_KEYCHAIN_PATH requires BLAZN_ALLOW_TEST_KEYCHAIN=1")
+		return "", errors.New("BLAZN_TEST_KEYCHAIN_PATH requires BLAZN_ALLOW_TEST_KEYCHAIN=1")
 	}
 	if !filepath.IsAbs(path) {
-		return nil, errors.New("test Keychain path must be absolute")
+		return "", errors.New("test Keychain path must be absolute")
 	}
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("test Keychain path must be an existing regular file")
+		return "", errors.New("test Keychain path must be an existing regular file")
 	}
-	return append(args, path), nil
+	return path, nil
 }
 
 func NewSystemStore() (CredentialStore, error) {
@@ -257,11 +257,7 @@ func (s *systemStore) Get() ([]byte, error) {
 	var output []byte
 	var err error
 	if s.goos == "darwin" {
-		args, argsErr := darwinKeychainArgs([]string{"find-generic-password", "-s", credentialService, "-a", credentialAccount, "-w"})
-		if argsErr != nil {
-			return nil, argsErr
-		}
-		output, err = s.runner.Run("security", args, nil)
+		return loadDarwinCredential()
 	} else {
 		output, err = s.runner.Run("secret-tool", []string{"lookup", "service", credentialService, "account", credentialAccount}, nil)
 	}
@@ -287,11 +283,7 @@ func (s *systemStore) Put(secret []byte) error {
 func (s *systemStore) Delete() error {
 	var err error
 	if s.goos == "darwin" {
-		args, argsErr := darwinKeychainArgs([]string{"delete-generic-password", "-s", credentialService, "-a", credentialAccount})
-		if argsErr != nil {
-			return argsErr
-		}
-		_, err = s.runner.Run("security", args, nil)
+		return deleteDarwinCredential()
 	} else {
 		_, err = s.runner.Run("secret-tool", []string{"clear", "service", credentialService, "account", credentialAccount}, nil)
 	}

@@ -5,7 +5,6 @@ package auth
 import (
 	"errors"
 	"fmt"
-	"os"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -14,6 +13,7 @@ import (
 const (
 	errSecSuccess       int32 = 0
 	errSecDuplicateItem int32 = -25299
+	errSecItemNotFound  int32 = -25300
 )
 
 func stringPointer(value string) uintptr {
@@ -59,10 +59,11 @@ func storeDarwinCredential(secret []byte) error {
 	service := credentialService
 	account := credentialAccount
 	var keychain uintptr
-	if path := os.Getenv("BLAZN_TEST_KEYCHAIN_PATH"); path != "" {
-		if os.Getenv("BLAZN_ALLOW_TEST_KEYCHAIN") != "1" {
-			return errors.New("BLAZN_TEST_KEYCHAIN_PATH requires BLAZN_ALLOW_TEST_KEYCHAIN=1")
-		}
+	path, err := selectedDarwinKeychainPath()
+	if err != nil {
+		return err
+	}
+	if path != "" {
 		pathBytes := append([]byte(path), 0)
 		status := open(bytesPointer(pathBytes), &keychain)
 		if status != errSecSuccess || keychain == 0 {
@@ -93,4 +94,109 @@ func storeDarwinCredential(secret []byte) error {
 		return fmt.Errorf("Keychain update failed with OSStatus %d", status)
 	}
 	return nil
+}
+
+func loadDarwinCredential() ([]byte, error) {
+	security, err := purego.Dlopen("/System/Library/Frameworks/Security.framework/Security", purego.RTLD_NOW|purego.RTLD_LOCAL)
+	if err != nil {
+		return nil, fmt.Errorf("open Security framework: %w", err)
+	}
+	defer purego.Dlclose(security)
+	coreFoundation, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_NOW|purego.RTLD_LOCAL)
+	if err != nil {
+		return nil, fmt.Errorf("open CoreFoundation framework: %w", err)
+	}
+	defer purego.Dlclose(coreFoundation)
+	var find func(uintptr, uint32, uintptr, uint32, uintptr, *uint32, *uintptr, *uintptr) int32
+	var freeContent func(uintptr, uintptr) int32
+	var open func(uintptr, *uintptr) int32
+	var release func(uintptr)
+	purego.RegisterLibFunc(&find, security, "SecKeychainFindGenericPassword")
+	purego.RegisterLibFunc(&freeContent, security, "SecKeychainItemFreeContent")
+	purego.RegisterLibFunc(&open, security, "SecKeychainOpen")
+	purego.RegisterLibFunc(&release, coreFoundation, "CFRelease")
+	keychain, err := openSelectedKeychain(open)
+	if err != nil {
+		return nil, err
+	}
+	if keychain != 0 {
+		defer release(keychain)
+	}
+	var length uint32
+	var data uintptr
+	var item uintptr
+	status := find(keychain, uint32(len(credentialService)), stringPointer(credentialService), uint32(len(credentialAccount)), stringPointer(credentialAccount), &length, &data, &item)
+	if status == errSecItemNotFound {
+		return nil, ErrNotFound
+	}
+	if status != errSecSuccess {
+		return nil, fmt.Errorf("Keychain read failed with OSStatus %d", status)
+	}
+	if item != 0 {
+		defer release(item)
+	}
+	if data == 0 || length == 0 {
+		if data != 0 {
+			_ = freeContent(0, data)
+		}
+		return nil, ErrNotFound
+	}
+	defer freeContent(0, data)
+	value := append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(data)), int(length))...)
+	return value, nil
+}
+
+func deleteDarwinCredential() error {
+	security, err := purego.Dlopen("/System/Library/Frameworks/Security.framework/Security", purego.RTLD_NOW|purego.RTLD_LOCAL)
+	if err != nil {
+		return fmt.Errorf("open Security framework: %w", err)
+	}
+	defer purego.Dlclose(security)
+	coreFoundation, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_NOW|purego.RTLD_LOCAL)
+	if err != nil {
+		return fmt.Errorf("open CoreFoundation framework: %w", err)
+	}
+	defer purego.Dlclose(coreFoundation)
+	var find func(uintptr, uint32, uintptr, uint32, uintptr, uintptr, uintptr, *uintptr) int32
+	var remove func(uintptr) int32
+	var open func(uintptr, *uintptr) int32
+	var release func(uintptr)
+	purego.RegisterLibFunc(&find, security, "SecKeychainFindGenericPassword")
+	purego.RegisterLibFunc(&remove, security, "SecKeychainItemDelete")
+	purego.RegisterLibFunc(&open, security, "SecKeychainOpen")
+	purego.RegisterLibFunc(&release, coreFoundation, "CFRelease")
+	keychain, err := openSelectedKeychain(open)
+	if err != nil {
+		return err
+	}
+	if keychain != 0 {
+		defer release(keychain)
+	}
+	var item uintptr
+	status := find(keychain, uint32(len(credentialService)), stringPointer(credentialService), uint32(len(credentialAccount)), stringPointer(credentialAccount), 0, 0, &item)
+	if status == errSecItemNotFound {
+		return nil
+	}
+	if status != errSecSuccess || item == 0 {
+		return fmt.Errorf("Keychain lookup for deletion failed with OSStatus %d", status)
+	}
+	defer release(item)
+	if status = remove(item); status != errSecSuccess {
+		return fmt.Errorf("Keychain deletion failed with OSStatus %d", status)
+	}
+	return nil
+}
+
+func openSelectedKeychain(open func(uintptr, *uintptr) int32) (uintptr, error) {
+	path, err := selectedDarwinKeychainPath()
+	if err != nil || path == "" {
+		return 0, err
+	}
+	pathBytes := append([]byte(path), 0)
+	var keychain uintptr
+	status := open(bytesPointer(pathBytes), &keychain)
+	if status != errSecSuccess || keychain == 0 {
+		return 0, fmt.Errorf("open test Keychain failed with OSStatus %d", status)
+	}
+	return keychain, nil
 }

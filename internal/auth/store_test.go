@@ -74,13 +74,13 @@ func TestDarwinTestKeychainRequiresExplicitSafePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("BLAZN_TEST_KEYCHAIN_PATH", path)
-	if _, err := darwinKeychainArgs([]string{"lookup"}); err == nil {
+	if _, err := selectedDarwinKeychainPath(); err == nil {
 		t.Fatal("test keychain path worked without explicit opt-in")
 	}
 	t.Setenv("BLAZN_ALLOW_TEST_KEYCHAIN", "1")
-	args, err := darwinKeychainArgs([]string{"lookup"})
-	if err != nil || !reflect.DeepEqual(args, []string{"lookup", path}) {
-		t.Fatalf("args=%v err=%v", args, err)
+	got, err := selectedDarwinKeychainPath()
+	if err != nil || got != path {
+		t.Fatalf("path=%q err=%v", got, err)
 	}
 }
 
