@@ -27,16 +27,16 @@ write_journal_phase() {
 test_fault() { [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ] || return 0; [ "${BLAZN_NODE_SECRET_TEST_FAIL_AFTER:-}" != "$1" ] || die "injected secret-create fault after $1"; }
 validate_url() {
   file=$1
-  [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c '%u:%a' "$file")" = 0:444 ] || die "database URL has unsafe ownership or mode"
+  if [ ! -f "$file" ] || [ -L "$file" ] || [ "$(stat -c '%u:%a' "$file")" != 0:444 ]; then die "database URL has unsafe ownership or mode"; fi
   value=$(sed -n '1p' "$file")
   case "$value" in postgresql://blazn_node_broker:????????????????????????????????????????????????????????????????@postgres:5432/blazn) ;; *) die "database URL has an invalid fixed form" ;; esac
   password=${value#*://*:}; password=${password%%@*}; case "$password" in *[!a-f0-9]*) die "database password is not lowercase hexadecimal" ;; esac
 }
-validate_key() { file=$1; [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c '%u:%a' "$file")" = 0:400 ] || die "Node broker key has unsafe ownership or mode"; [ "$(wc -c <"$file" | tr -d ' ')" = 32 ] || die "Node broker key must be exactly 32 bytes"; }
+validate_key() { file=$1; if [ ! -f "$file" ] || [ -L "$file" ] || [ "$(stat -c '%u:%a' "$file")" != 0:400 ]; then die "Node broker key has unsafe ownership or mode"; fi; [ "$(wc -c <"$file" | tr -d ' ')" = 32 ] || die "Node broker key must be exactly 32 bytes"; }
 validate_tree() {
   root=$1
-  [ -d "$root" ] && [ ! -L "$root" ] && [ "$(stat -c '%u:%a' "$root")" = 0:700 ] || die "Node broker root has unsafe ownership or mode"
-  [ -d "$root/secrets" ] && [ ! -L "$root/secrets" ] && [ "$(stat -c '%u:%a' "$root/secrets")" = 0:700 ] || die "Node broker secrets directory has unsafe ownership or mode"
+  if [ ! -d "$root" ] || [ -L "$root" ] || [ "$(stat -c '%u:%a' "$root")" != 0:700 ]; then die "Node broker root has unsafe ownership or mode"; fi
+  if [ ! -d "$root/secrets" ] || [ -L "$root/secrets" ] || [ "$(stat -c '%u:%a' "$root/secrets")" != 0:700 ]; then die "Node broker secrets directory has unsafe ownership or mode"; fi
   validate_url "$root/secrets/database-url"; validate_key "$root/secrets/enrollment-hmac-v1"; validate_key "$root/secrets/join-credential-v1"
 }
 publish_file() {
@@ -61,7 +61,7 @@ if [ ! -e "$journal" ]; then
   chmod 0600 "$tmp"; sync_path "$tmp"; ln -- "$tmp" "$journal" || { rm -f -- "$tmp"; die "secret creation journal target appeared"; }; rm -f -- "$tmp"; sync_path "$(dirname -- "$journal")"; test_fault initialized
 fi
 
-[ -f "$journal" ] && [ ! -L "$journal" ] && [ "$(stat -c '%u:%a' "$journal")" = 0:600 ] || die "secret creation journal has unsafe ownership or mode"
+if [ ! -f "$journal" ] || [ -L "$journal" ] || [ "$(stat -c '%u:%a' "$journal")" != 0:600 ]; then die "secret creation journal has unsafe ownership or mode"; fi
 jq -e --arg target "$target" '.schemaVersion=="blazn.dev/node-broker-secret-create/v1" and .owner=="blazn-poc" and .target==$target and (.stage|type=="string")' "$journal" >/dev/null || die "secret creation journal is invalid"
 stage=$(jq -er .stage "$journal")
 case "$stage" in "$(dirname -- "$target")"/.node-broker-create-*) ;; *) die "secret creation staging path is outside the reviewed parent" ;; esac
@@ -71,7 +71,7 @@ case "$phase" in initialized|tree-created|database-written|hmac-written|join-wri
 
 if [ "$phase" = initialized ]; then
   if [ ! -e "$stage" ]; then mkdir -p -- "$stage/secrets"; chmod 0700 "$stage" "$stage/secrets"; sync_path "$(dirname -- "$stage")"; fi
-  [ -d "$stage/secrets" ] && [ "$(stat -c '%u:%a' "$stage")" = 0:700 ] && [ "$(stat -c '%u:%a' "$stage/secrets")" = 0:700 ] || die "secret staging tree is invalid"
+  if [ ! -d "$stage/secrets" ] || [ "$(stat -c '%u:%a' "$stage")" != 0:700 ] || [ "$(stat -c '%u:%a' "$stage/secrets")" != 0:700 ]; then die "secret staging tree is invalid"; fi
   write_journal_phase tree-created; phase=tree-created; test_fault tree-created
 fi
 if [ "$phase" = tree-created ]; then publish_file "$stage/secrets/database-url" 0444 url; write_journal_phase database-written; phase=database-written; test_fault database-written; fi
