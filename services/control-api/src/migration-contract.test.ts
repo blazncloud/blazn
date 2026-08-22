@@ -48,7 +48,8 @@ test("Node broker durable intents and row-lock function are narrowly granted", a
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/008_node_broker_intents.sql"), "utf8");
   assert.match(sql, /provider_handle text NOT NULL CHECK \(provider_handle = id::text\)/);
-  assert.match(sql, /status IN \('pending', 'revoke_required', 'completed', 'revoked'\)/);
+  assert.match(sql, /status IN \('pending', 'issuing', 'revoke_required', 'completed', 'revoked'\)/);
+  assert.match(sql, /CHECK \(\(status = 'issuing'\) = \(lease_expires_at IS NOT NULL\)\)/);
   assert.match(sql, /FOR UPDATE OF e,p,n/);
   assert.match(sql, /REVOKE ALL ON FUNCTION node_broker_lock_join_binding/);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION node_broker_lock_join_binding/);

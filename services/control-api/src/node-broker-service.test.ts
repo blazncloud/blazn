@@ -290,6 +290,7 @@ function fakeStore(
         insertIntent: async (value) => {
           intent = value;
         },
+        claimIntent: async () => true,
         setIntentStatus: async (_id, status) => {
           if (!intent) throw new Error("intent missing");
           intent = { ...intent, status };
@@ -324,6 +325,11 @@ function durableStore(binding: BrokerBinding) {
           intent: async () => intent,
           insertIntent: async (value) => {
             intent = value;
+          },
+          claimIntent: async () => {
+            if (!intent || intent.status === "issuing") return false;
+            intent = { ...intent, status: "issuing" };
+            return true;
           },
           setIntentStatus: async (_id, status) => {
             if (!intent) throw new Error("intent missing");

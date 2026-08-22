@@ -7,9 +7,11 @@ CREATE TABLE node_join_issuance_intents (
   provider_handle text NOT NULL CHECK (provider_handle = id::text),
   idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 8 AND 128),
   request_digest char(64) NOT NULL CHECK (request_digest ~ '^[0-9a-f]{64}$'),
-  status text NOT NULL CHECK (status IN ('pending', 'revoke_required', 'completed', 'revoked')),
+  status text NOT NULL CHECK (status IN ('pending', 'issuing', 'revoke_required', 'completed', 'revoked')),
+  lease_expires_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK ((status = 'issuing') = (lease_expires_at IS NOT NULL)),
   UNIQUE (node_id, idempotency_key),
   FOREIGN KEY (enrollment_id, workspace_id) REFERENCES node_enrollments(id, workspace_id),
   FOREIGN KEY (plan_id, workspace_id, enrollment_id, node_id)
@@ -21,7 +23,7 @@ REVOKE ALL ON TABLE node_join_issuance_intents FROM PUBLIC, blazn_runtime, blazn
 GRANT SELECT ON TABLE node_join_issuance_intents TO blazn_node_broker;
 GRANT INSERT (id, workspace_id, enrollment_id, plan_id, node_id, provider_handle,
   idempotency_key, request_digest, status) ON TABLE node_join_issuance_intents TO blazn_node_broker;
-GRANT UPDATE (status, updated_at) ON TABLE node_join_issuance_intents TO blazn_node_broker;
+GRANT UPDATE (status, lease_expires_at, updated_at) ON TABLE node_join_issuance_intents TO blazn_node_broker;
 
 CREATE FUNCTION node_broker_lock_join_binding(p_enrollment_id uuid, p_plan_id uuid, p_node_id uuid)
 RETURNS boolean

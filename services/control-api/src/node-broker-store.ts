@@ -18,7 +18,8 @@ export interface BrokerIssuanceIntent {
   providerHandle: string;
   idempotencyKey: string;
   requestDigest: string;
-  status: "pending" | "revoke_required" | "completed" | "revoked";
+  status: "pending" | "issuing" | "revoke_required" | "completed" | "revoked";
+  leaseExpiresAt?: Date | null;
 }
 
 export interface NodeBrokerTransaction {
@@ -32,6 +33,7 @@ export interface NodeBrokerTransaction {
     request: JoinCredentialRequest,
   ): Promise<BrokerIssuanceIntent | undefined>;
   insertIntent(value: BrokerIssuanceIntent): Promise<void>;
+  claimIntent(id: string, leaseMs: number): Promise<boolean>;
   setIntentStatus(
     id: string,
     status: BrokerIssuanceIntent["status"],
@@ -122,7 +124,8 @@ class PgNodeBrokerTransaction implements NodeBrokerTransaction {
           providerHandle: r.provider_handle,
           idempotencyKey: r.idempotency_key,
           requestDigest: r.request_digest.trim(),
-          status: r.status,
+      status: r.status,
+      leaseExpiresAt: r.lease_expires_at,
         }
       : undefined;
   }
@@ -147,11 +150,19 @@ class PgNodeBrokerTransaction implements NodeBrokerTransaction {
     status: BrokerIssuanceIntent["status"],
   ): Promise<void> {
     const result = await this.client.query(
-      "UPDATE node_join_issuance_intents SET status=$2,updated_at=clock_timestamp() WHERE id=$1",
+      "UPDATE node_join_issuance_intents SET status=$2,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE id=$1",
       [id, status],
     );
     if (result.rowCount !== 1)
       throw new Error("join issuance intent disappeared");
+  }
+  async claimIntent(id: string, leaseMs: number): Promise<boolean> {
+    const result = await this.client.query(
+      `UPDATE node_join_issuance_intents SET status='issuing',lease_expires_at=clock_timestamp()+$2*interval '1 millisecond',updated_at=clock_timestamp()
+       WHERE id=$1 AND (status<>'issuing' OR lease_expires_at<=clock_timestamp())`,
+      [id, leaseMs],
+    );
+    return result.rowCount === 1;
   }
   async insertIssuance(v: NewJoinIssuance): Promise<void> {
     await this.client.query(

@@ -315,6 +315,22 @@ BEGIN
     RAISE EXCEPTION 'Node broker/runtime privilege matrix is invalid';
   END IF;
 END $$;
+
+DO $$
+DECLARE owner_name text; config text; acl text;
+BEGIN
+  SELECT r.rolname,array_to_string(p.proconfig,','),array_to_string(p.proacl,',')
+    INTO owner_name,config,acl FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+    WHERE p.oid='node_broker_lock_join_binding(uuid,uuid,uuid)'::regprocedure;
+  IF owner_name <> 'blazn_migration'
+    OR config NOT LIKE '%search_path=pg_catalog, public%'
+    OR position('=X/' in coalesce(acl,'')) > 0
+    OR NOT has_function_privilege('blazn_node_broker','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')
+    OR has_function_privilege('blazn_runtime','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')
+    OR has_function_privilege('blazn_bootstrap','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE') THEN
+    RAISE EXCEPTION 'Node broker row-lock function ownership, search_path, or ACL is invalid';
+  END IF;
+END $$;
 SQL
 
 expect_denied() {
@@ -331,6 +347,8 @@ expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_capability_version
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_operations;" broker_operation_read
 expect_denied "SET ROLE blazn_node_broker; UPDATE node_join_issuances SET credential_hash=repeat('f',64);" broker_issuance_update
 expect_denied "SET ROLE blazn_node_broker; INSERT INTO node_join_issuances(joined_node_uid) VALUES('uid');" broker_issuance_unreviewed_insert
+expect_denied "SET ROLE blazn_runtime; SELECT node_broker_lock_join_binding('55555555-5555-4555-8555-555555555555','99999999-9999-4999-8999-999999999999','33333333-3333-4333-8333-333333333333');" runtime_broker_lock
+expect_denied "SET ROLE blazn_bootstrap; SELECT node_broker_lock_join_binding('55555555-5555-4555-8555-555555555555','99999999-9999-4999-8999-999999999999','33333333-3333-4333-8333-333333333333');" bootstrap_broker_lock
 expect_denied "SET ROLE blazn_runtime; INSERT INTO node_join_issuances DEFAULT VALUES;" runtime_issue
 expect_denied "SET ROLE blazn_runtime; SELECT credential_hash FROM node_join_issuances;" runtime_select_hash
 expect_denied "SET ROLE blazn_runtime; SELECT credential_ciphertext FROM node_join_issuances;" runtime_select_ciphertext

@@ -80,15 +80,25 @@ export class NodeBrokerService {
         };
         await tx.insertIntent(intent);
       }
-      return { binding, intent };
+      const owner = await tx.claimIntent(
+        intent.id,
+        this.providerTimeoutMs + 5_000,
+      );
+      return { binding, intent, owner };
     });
     if ("response" in prepared) return prepared.response!;
     const intent = prepared.intent!;
+    if (!prepared.owner)
+      return await this.waitForExisting(
+        request,
+        idempotencyKey,
+        digest,
+        key,
+      );
     try {
       await this.providerCall((signal) =>
         this.issuer.revoke(intent.providerHandle, signal),
       );
-      await this.setIntent(intent.id, "pending");
     } catch (error) {
       await this.setIntent(intent.id, "revoke_required").catch(() => {});
       throw error;
@@ -228,6 +238,25 @@ export class NodeBrokerService {
           )
         : undefined;
     });
+  }
+  private async waitForExisting(
+    request: JoinCredentialRequest,
+    key: string,
+    digest: string,
+    encryptionKey: Buffer,
+  ): Promise<JoinCredentialResponse> {
+    const deadline = Date.now() + this.providerTimeoutMs + 5_000;
+    while (Date.now() < deadline) {
+      const existing = await this.recover(
+        request,
+        key,
+        digest,
+        encryptionKey,
+      );
+      if (existing) return existing;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("join credential issuance is still in progress");
   }
   private async compensate(intent: BrokerIssuanceIntent) {
     await this.setIntent(intent.id, "revoke_required").catch(() => {});
