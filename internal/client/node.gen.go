@@ -13,6 +13,7 @@ import (
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -32,8 +33,10 @@ import (
 )
 
 const (
-	NodeSchemaVersion = "nodes/v1alpha1"
-	nodeMaxJSONBytes  = 8 << 20
+	NodeSchemaVersion        = "nodes/v1alpha1"
+	NodeEnrollmentTokenKeyID = "node-enrollment/v1"
+	NodeJoinCredentialKeyID  = "node-join-credential/v1"
+	nodeMaxJSONBytes         = 8 << 20
 )
 
 type NodePlatform string
@@ -477,6 +480,8 @@ type NodeTrustedInstallProfile struct {
 }
 
 type NodeTrustedSigner struct {
+	Kind        string
+	Status      string
 	KeyID       string
 	Generation  int64
 	Fingerprint string
@@ -721,7 +726,7 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		return fmt.Errorf("plan collection limit exceeded")
 	}
 	for index, trust := range plan.RegistryTrust {
-		if len(trust.Hostname) < 1 || len(trust.Hostname) > 253 || !nodeHashPattern.MatchString(trust.CABundleSHA256) {
+		if len(trust.Hostname) < 1 || len(trust.Hostname) > 253 || !nodeHostnamePattern.MatchString(trust.Hostname) || !nodeHashPattern.MatchString(trust.CABundleSHA256) {
 			return fmt.Errorf("registryTrust[%d] is invalid", index)
 		}
 	}
@@ -1144,7 +1149,11 @@ func NodeJoinCredentialAAD(context NodeJoinCredentialContext) ([]byte, error) {
 	return []byte("blazn-node-join-credential-v1\n" + context.WorkspaceID + "\n" + context.EnrollmentID + "\n" + context.PlanID + "\n" + context.NodeID + "\n" + context.IssuanceID + "\n" + context.IdempotencyKey + "\n" + context.RequestDigest), nil
 }
 
-func SealNodeJoinCredential(key []byte, randomness io.Reader, credential string, context NodeJoinCredentialContext) ([]byte, error) {
+func SealNodeJoinCredential(key []byte, credential string, context NodeJoinCredentialContext) ([]byte, error) {
+	return sealNodeJoinCredential(key, rand.Reader, credential, context)
+}
+
+func sealNodeJoinCredential(key []byte, randomness io.Reader, credential string, context NodeJoinCredentialContext) ([]byte, error) {
 	if len(key) != 32 || randomness == nil || len(credential) < 43 || len(credential) > 4096 {
 		return nil, fmt.Errorf("join credential encryption input is invalid")
 	}
@@ -1415,7 +1424,7 @@ func VerifyNodeInstallReceipt(receipt NodeInstallReceipt, trust NodeInstallRecei
 	if !nodeSecureEqual(receipt.Digest, digest) {
 		return fmt.Errorf("install receipt digest mismatch")
 	}
-	if trust.Signer.Generation < 1 || receipt.NodeIdentityGeneration != trust.Signer.Generation || receipt.SignerKind != "node_identity" {
+	if trust.Signer.Kind != "node_identity" || trust.Signer.Status != "active" || trust.Signer.Generation < 1 || receipt.NodeIdentityGeneration != trust.Signer.Generation || receipt.SignerKind != "node_identity" {
 		return fmt.Errorf("install receipt identity generation does not match trusted active signer")
 	}
 	if err := verifyTrustedNodeSigner(trust.Signer, receipt.SigningKeyID, receipt.SignerFingerprint, receipt.Signature, "blazn-node-install-receipt-v1\n", digest); err != nil {
@@ -1443,12 +1452,12 @@ func VerifyNodeOperationReceipt(receipt NodeOperationReceipt, trust NodeOperatio
 	var signer *NodeTrustedSigner
 	if receipt.SignerKind == "node_identity" {
 		signer = trust.NodeIdentitySigner
-		if signer == nil || receipt.IdentityGeneration == nil || signer.Generation < 1 || *receipt.IdentityGeneration != signer.Generation {
+		if signer == nil || signer.Kind != "node_identity" || signer.Status != "active" || receipt.IdentityGeneration == nil || signer.Generation < 1 || *receipt.IdentityGeneration != signer.Generation {
 			return fmt.Errorf("operation receipt node identity generation does not match trusted signer")
 		}
 	} else {
 		signer = trust.ControlPlaneSigner
-		if signer == nil || signer.Generation != 0 || receipt.IdentityGeneration != nil {
+		if signer == nil || signer.Kind != "control_plane" || signer.Generation != 0 || receipt.IdentityGeneration != nil {
 			return fmt.Errorf("operation receipt control-plane signer is invalid")
 		}
 	}
@@ -1561,7 +1570,7 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 			SourceComponent string `json:"sourceComponent"`
 			ContentSHA256   string `json:"contentSha256"`
 		}
-		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
+		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderChildAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
 			return fmt.Errorf("file action or payload is invalid")
 		}
 	case "directory":
@@ -1657,6 +1666,19 @@ func nodePathUnderAny(target string, roots []string) bool {
 	return false
 }
 
+func nodePathUnderChildAny(target string, roots []string) bool {
+	if !strings.HasPrefix(target, "/") || path.Clean(target) != target || nodeHasParentTraversal(target) {
+		return false
+	}
+	for _, root := range roots {
+		cleanRoot := path.Clean(root)
+		if cleanRoot != "/" && strings.HasPrefix(target, cleanRoot+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func nodeMutationKinds() []string {
 	return []string{"package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"}
 }
@@ -1674,7 +1696,7 @@ func validNodeOperationType(value NodeOperationType) bool {
 }
 
 func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {
-	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != "node-enrollment/v1" {
+	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != NodeEnrollmentTokenKeyID {
 		return fmt.Errorf("node enrollment response is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, secret.ExpiresAt); err != nil {
