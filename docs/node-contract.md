@@ -78,6 +78,12 @@ The broker has read-only access to the Node, enrollment, and signed-plan rows
 needed for verification, plus select/insert/update on join issuances. It has no
 membership, user, credential, capability, operation, or general Node mutation
 privilege.
+The runtime role can read only issuance identity/binding/timing columns and
+update `consumed_at` plus `joined_node_uid`; ciphertext, credential hash, and
+encryption key ID remain broker-only. PostgreSQL composite keys bind receipt
+key ID/fingerprint/generation to the same Node identity row. A Node's current
+identity foreign key includes status `active`, so revocation must atomically
+clear eligibility or rotate the binding.
 Migration `004_nodes.sql` must not be applied live until the separate Node
 infrastructure PR has created an authenticated `blazn_node_broker` login,
 root-owned database URL and encryption/HMAC key files, granted database CONNECT
@@ -147,7 +153,13 @@ mutation roots for `ubuntu-26.04-amd64-worker/v1`,
 `existing-linux-worker-adopt/v1`, or `macos-lima-worker-adopt/v1`. URL host must
 equal the component `sourceHost`; redirects are revalidated. Targets may never
 be `/`, contain `..`, escape the profile roots, or traverse a symlink. Mutation
-kind/action/payload must match the schema's discriminated rules.
+kind/action/payload must match the schema's discriminated rules. Package and
+image mutations name a signed component; repository/registry origin, version,
+OCI reference, and digest must match that component and the local profile.
+Ubuntu/existing-Linux profiles require systemd, Linux image platform, the
+profile architecture, `blazn-node:blazn-node`, and approved apt/snap inputs;
+they reject launchd/brew. The macOS/Lima profile requires launchd, ARM64 Linux
+images, `root:wheel`, approved brew inputs, and rejects systemd/apt/snap.
 
 The long-running service uses a renewable node identity, never the user's
 access/refresh token. Rotation overlaps old/new identities only for a bounded
@@ -180,6 +192,11 @@ that signature before accepting the completed installation. Verification
 requires the trusted active Node identity key ID, generation, public-key
 fingerprint, and public key to exactly match the receipt; a generic keyring
 lookup is insufficient.
+Rollback locators are opaque single-segment `receipt-backup://<id>` values and
+are resolved beneath the signed platform-specific backup root only after
+no-symlink path validation. Linux uses `/var/lib/blazn/install-backups/<id>`;
+macOS uses `/Library/Application Support/Blazn/install-backups/<id>` and never
+relies on the `/var` symlink.
 
 ## Capabilities and local models
 

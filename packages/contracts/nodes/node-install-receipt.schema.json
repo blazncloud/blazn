@@ -31,7 +31,7 @@
           "priorState": {"enum": ["absent", "owned", "preexisting_exact"]},
           "rollbackMaterial": {"oneOf": [
             {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "absent"}}},
-            {"type": "object", "additionalProperties": false, "required": ["kind", "locator", "digest", "mode", "uid", "gid"], "properties": {"kind": {"enum": ["file_backup", "package_snapshot", "unit_snapshot", "firewall_snapshot", "metadata_snapshot"]}, "locator": {"type": "string", "pattern": "^receipt-backup://[A-Za-z0-9._/-]{1,512}$"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "mode": {"type": "integer", "minimum": 0, "maximum": 4095}, "uid": {"type": "integer", "minimum": 0}, "gid": {"type": "integer", "minimum": 0}}}
+            {"type": "object", "additionalProperties": false, "required": ["kind", "locator", "digest", "mode", "uid", "gid"], "properties": {"kind": {"enum": ["file_backup", "package_snapshot", "unit_snapshot", "firewall_snapshot", "metadata_snapshot"]}, "locator": {"type": "string", "pattern": "^receipt-backup://[A-Za-z0-9_-]{1,128}$"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "mode": {"type": "integer", "minimum": 0, "maximum": 4095}, "uid": {"type": "integer", "minimum": 0}, "gid": {"type": "integer", "minimum": 0}}}
           ]},
           "desiredDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
           "status": {"enum": ["pending", "applied", "restored", "removed", "residue"]}

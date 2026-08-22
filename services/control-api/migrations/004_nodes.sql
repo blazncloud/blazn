@@ -15,6 +15,7 @@ CREATE TABLE nodes (
   last_heartbeat_at timestamptz,
   offline_after timestamptz,
   current_identity_generation bigint,
+  current_identity_status text CHECK (current_identity_status IS NULL OR current_identity_status = 'active'),
   current_capability_version bigint,
   kubernetes_cluster_id text CHECK (kubernetes_cluster_id IS NULL OR char_length(kubernetes_cluster_id) BETWEEN 1 AND 128),
   kubernetes_node_name text CHECK (kubernetes_node_name IS NULL OR char_length(kubernetes_node_name) BETWEEN 1 AND 253),
@@ -27,7 +28,8 @@ CREATE TABLE nodes (
   CHECK ((kubernetes_cluster_id IS NOT NULL) = (kubernetes_node_name IS NOT NULL)
     AND (kubernetes_cluster_id IS NOT NULL) = (kubernetes_node_uid IS NOT NULL)
     AND (kubernetes_cluster_id IS NOT NULL) = (kubernetes_resource_version IS NOT NULL)),
-  CHECK (NOT agent_eligible OR (lifecycle_state = 'active' AND trust_state = 'verified'
+  CHECK ((current_identity_generation IS NOT NULL) = (current_identity_status IS NOT NULL)),
+  CHECK (NOT agent_eligible OR (lifecycle_state = 'active' AND trust_state = 'verified' AND current_identity_status = 'active'
     AND kubernetes_node_uid IS NOT NULL AND current_identity_generation IS NOT NULL
     AND current_capability_version IS NOT NULL))
 );
@@ -77,6 +79,7 @@ CREATE TABLE node_identities (
   node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
   public_key_fingerprint char(64) NOT NULL CHECK (public_key_fingerprint ~ '^[0-9a-f]{64}$'),
   public_key text NOT NULL CHECK (public_key ~ '^[A-Za-z0-9_-]{43}$'),
+  signing_key_id text NOT NULL,
   generation bigint NOT NULL CHECK (generation > 0),
   status text NOT NULL CHECK (status IN ('active', 'rotating', 'revoked', 'expired')),
   issued_at timestamptz NOT NULL,
@@ -84,6 +87,8 @@ CREATE TABLE node_identities (
   rotated_at timestamptz,
   revoked_at timestamptz,
   UNIQUE (node_id, generation),
+  UNIQUE (node_id, generation, status),
+  UNIQUE (node_id, generation, public_key_fingerprint, signing_key_id),
   CHECK (expires_at > issued_at),
   CHECK (rotated_at IS NULL OR rotated_at >= issued_at),
   CHECK (revoked_at IS NULL OR revoked_at >= issued_at)
@@ -92,7 +97,8 @@ CREATE TABLE node_identities (
 CREATE UNIQUE INDEX node_identities_one_active_idx ON node_identities(node_id) WHERE status = 'active';
 
 ALTER TABLE nodes ADD CONSTRAINT nodes_current_identity_fk
-  FOREIGN KEY (id, current_identity_generation) REFERENCES node_identities(node_id, generation) DEFERRABLE INITIALLY DEFERRED;
+  FOREIGN KEY (id, current_identity_generation, current_identity_status)
+  REFERENCES node_identities(node_id, generation, status) DEFERRABLE INITIALLY DEFERRED;
 
 CREATE TABLE node_capability_versions (
   id uuid PRIMARY KEY,
@@ -162,7 +168,8 @@ CREATE TABLE node_install_receipts (
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
   FOREIGN KEY (plan_id, workspace_id, node_id) REFERENCES node_install_plans(id, workspace_id, node_id),
-  FOREIGN KEY (node_id, identity_generation) REFERENCES node_identities(node_id, generation)
+  FOREIGN KEY (node_id, identity_generation, signer_fingerprint, signing_key_id)
+    REFERENCES node_identities(node_id, generation, public_key_fingerprint, signing_key_id)
 );
 
 CREATE TABLE node_operation_receipts (
@@ -182,7 +189,8 @@ CREATE TABLE node_operation_receipts (
   UNIQUE (id, operation_id, workspace_id, node_id, operation_type),
   CHECK ((signer_kind = 'node_identity') = (identity_generation IS NOT NULL)),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
-  FOREIGN KEY (node_id, identity_generation) REFERENCES node_identities(node_id, generation)
+  FOREIGN KEY (node_id, identity_generation, signer_fingerprint, signing_key_id)
+    REFERENCES node_identities(node_id, generation, public_key_fingerprint, signing_key_id)
 );
 
 CREATE TABLE node_operations (
@@ -269,7 +277,9 @@ CREATE TABLE node_audit_events (
 );
 
 GRANT SELECT, INSERT, UPDATE ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operation_receipts, node_operations, node_operation_events, node_audit_events TO blazn_runtime;
-GRANT SELECT ON TABLE node_join_issuances TO blazn_runtime;
+GRANT SELECT (id, workspace_id, enrollment_id, plan_id, node_id, node_public_key_fingerprint,
+  machine_fingerprint, idempotency_key, request_digest, issued_at, expires_at,
+  consumed_at, revoked_at, joined_node_uid) ON TABLE node_join_issuances TO blazn_runtime;
 GRANT UPDATE (consumed_at, joined_node_uid) ON TABLE node_join_issuances TO blazn_runtime;
 GRANT SELECT ON TABLE nodes, node_enrollments, node_install_plans TO blazn_node_broker;
 GRANT SELECT, INSERT, UPDATE ON TABLE node_join_issuances TO blazn_node_broker;
