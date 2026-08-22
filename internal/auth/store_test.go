@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -70,8 +71,19 @@ func TestProtectedFileStoreRecoversCredentialStagingAfterSIGKILL(t *testing.T) {
 	if err := command.Wait(); err == nil {
 		t.Fatal("SIGKILL helper exited successfully")
 	}
-	if _, err := store.Get(); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Get after recovery = %v", err)
+	locker, err := newCredentialLockerAtHome("https://recovery.example", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var getErr error
+	if err := locker.WithLock(context.Background(), func() error {
+		_, getErr = store.Get()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(getErr, ErrNotFound) {
+		t.Fatalf("Get after recovery = %v", getErr)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
