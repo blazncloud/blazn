@@ -321,7 +321,7 @@ func testStore(t *testing.T) *Store { return testStoreWithOptions(t) }
 func testStoreWithOptions(t *testing.T, options ...Option) *Store {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy")
-	store, err := NewAt(root, os.Getuid(), options...)
+	store, err := newAt(root, os.Getuid(), options...)
 	if err != nil {
 		t.Fatal(err)
 	}

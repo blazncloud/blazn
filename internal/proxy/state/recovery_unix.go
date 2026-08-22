@@ -5,7 +5,6 @@ package state
 import (
 	"context"
 	"errors"
-	"fmt"
 )
 
 type CompareAndSetRequest struct {
@@ -126,7 +125,9 @@ func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, li
 				continue
 			}
 			if cas != CASRestored && cas != CASAlreadyRestored {
-				return fmt.Errorf("%w: invalid compare-and-set result", ErrInvalidState)
+				environmentOK = false
+				result.ConflictedEnvironment = append(result.ConflictedEnvironment, item.Name)
+				continue
 			}
 			result.RestoredEnvironment = append(result.RestoredEnvironment, item.Name)
 		}

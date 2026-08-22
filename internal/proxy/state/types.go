@@ -3,7 +3,11 @@ package state
 import (
 	"errors"
 	"fmt"
+	"net"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,6 +29,8 @@ var (
 	ErrLifecycleConflict  = errors.New("proxy lifecycle conflict")
 	ErrRecoveryRequired   = errors.New("proxy recovery required")
 )
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type PolicyIdentity struct {
 	ID      string `json:"id"`
@@ -109,16 +115,16 @@ type Receipt struct {
 }
 
 func (j *Journal) Validate() error {
-	if j.SchemaVersion != SchemaVersion || j.ActivationID == "" || len(j.Nonce) < 32 || j.Generation < 1 {
+	if j.SchemaVersion != SchemaVersion || !uuidPattern.MatchString(j.ActivationID) || !validNonce(j.Nonce) || j.Generation < 1 {
 		return fmt.Errorf("%w: invalid journal identity", ErrInvalidState)
 	}
-	if j.OwnerUID < 0 || !oneOf(j.Platform, "darwin", "linux") || !oneOf(j.Mode, "session", "scoped_run") || j.SessionIdentity == "" {
+	if j.OwnerUID < 0 || !oneOf(j.Platform, "darwin", "linux") || !oneOf(j.Mode, "session", "scoped_run") || j.SessionIdentity == "" || len(j.SessionIdentity) > 256 || j.CA != nil {
 		return fmt.Errorf("%w: invalid journal owner or platform", ErrInvalidState)
 	}
 	if !oneOf(j.State, "prepared", "publishing", "active", "deactivating", "recovery_required") {
 		return fmt.Errorf("%w: invalid journal lifecycle state", ErrInvalidState)
 	}
-	if err := validateDigest(j.Policy.Digest); err != nil || j.Policy.ID == "" || j.Policy.Version < 1 {
+	if err := validateDigest(j.Policy.Digest); err != nil || !uuidPattern.MatchString(j.Policy.ID) || j.Policy.Version < 1 {
 		return fmt.Errorf("%w: invalid policy identity", ErrInvalidState)
 	}
 	if err := validateBinaryListener(j.Binary, j.Listener); err != nil {
@@ -134,7 +140,7 @@ func (j *Journal) Validate() error {
 }
 
 func (r *Receipt) Validate() error {
-	if r.SchemaVersion != SchemaVersion || r.ActivationID == "" || len(r.Nonce) < 32 || r.Generation < 1 || r.OwnerUID < 0 {
+	if r.SchemaVersion != SchemaVersion || !uuidPattern.MatchString(r.ActivationID) || !validNonce(r.Nonce) || r.Generation < 1 || r.OwnerUID < 0 {
 		return fmt.Errorf("%w: invalid receipt identity", ErrInvalidState)
 	}
 	if err := validateDigest(r.JournalDigest); err != nil {
@@ -143,7 +149,7 @@ func (r *Receipt) Validate() error {
 	if err := validateDigest(r.PolicyDigest); err != nil {
 		return fmt.Errorf("%w: invalid policy digest", ErrInvalidState)
 	}
-	if !oneOf(r.Platform, "darwin", "linux") || !oneOf(r.Mode, "session", "scoped_run") || r.SessionIdentity == "" {
+	if !oneOf(r.Platform, "darwin", "linux") || !oneOf(r.Mode, "session", "scoped_run") || r.SessionIdentity == "" || len(r.SessionIdentity) > 256 {
 		return fmt.Errorf("%w: invalid receipt platform", ErrInvalidState)
 	}
 	if !oneOf(r.PublicationMechanism, "process_environment", "launchctl_user_environment", "systemd_user_environment") || !oneOf(r.State, "active", "recovery_required") {
@@ -162,11 +168,26 @@ func (r *Receipt) Validate() error {
 }
 
 func validateBinaryListener(binary BinaryIdentity, listener ListenerIdentity) error {
-	if !strings.HasPrefix(binary.Path, "/") || validateDigest(binary.Digest) != nil {
+	if !filepath.IsAbs(binary.Path) || filepath.Clean(binary.Path) != binary.Path || validateDigest(binary.Digest) != nil {
 		return fmt.Errorf("%w: invalid binary identity", ErrInvalidState)
 	}
 	if listener.PID < 1 || listener.ProcessStartIdentity == "" || listener.ExecutableIdentity == "" || listener.Address == "" || validateDigest(listener.ListenerKeyFingerprint) != nil {
 		return fmt.Errorf("%w: invalid listener identity", ErrInvalidState)
+	}
+	if err := validateLoopbackAddress(listener.Address); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateLoopbackAddress(address string) error {
+	host, portText, err := net.SplitHostPort(address)
+	if err != nil || (host != "127.0.0.1" && host != "::1") {
+		return fmt.Errorf("%w: listener is not a loopback address", ErrInvalidState)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("%w: invalid listener port", ErrInvalidState)
 	}
 	return nil
 }
@@ -242,6 +263,18 @@ func validateDigest(value string) error {
 		}
 	}
 	return nil
+}
+
+func validNonce(value string) bool {
+	if len(value) < 32 || len(value) > 128 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func oneOf(value string, choices ...string) bool {

@@ -193,6 +193,9 @@ func readSecureFile(path string, uid int, max int64) ([]byte, error) {
 
 func atomicWrite(path string, uid int, data []byte, faults FaultInjector) error {
 	dir := filepath.Dir(path)
+	if err := validateSecureFile(path, uid); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	suffix, err := randomSuffix()
 	if err != nil {
 		return err

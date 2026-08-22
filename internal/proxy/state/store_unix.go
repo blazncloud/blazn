@@ -49,9 +49,9 @@ func NewForCurrentAccount(options ...Option) (*Store, error) {
 	return newStore(paths, os.Getuid(), options...)
 }
 
-// NewAt is intended for tests and isolated qualification accounts. Production
-// callers should use NewForCurrentAccount so HOME/XDG cannot choose the root.
-func NewAt(root string, uid int, options ...Option) (*Store, error) {
+// newAt is intentionally unexported. Production callers cannot redirect state
+// away from the OS-account-derived root.
+func newAt(root string, uid int, options ...Option) (*Store, error) {
 	return newStore(pathsAt(root), uid, options...)
 }
 
