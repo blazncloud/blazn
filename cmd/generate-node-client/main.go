@@ -21,7 +21,7 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "7a5db0900aa7954b846af74080d4cdee2c500aa1edb766e54d9691bf64dbe953"
+	openAPISHA256          = "73c3703e8715a841ed6a1c7cfb6b6b296449b43978108c9665025dc825a213b0"
 	commonOpenAPISHA256    = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
 	planSHA256             = "d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d"
 	receiptSHA256          = "459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6"
@@ -63,6 +63,7 @@ func main() {
 	generated = bytes.ReplaceAll(generated, []byte("PLAN_SHA256"), []byte(planSHA256))
 	generated = bytes.ReplaceAll(generated, []byte("OPERATION_RECEIPT_SHA256"), []byte(operationReceiptSHA256))
 	generated = bytes.ReplaceAll(generated, []byte("RECEIPT_SHA256"), []byte(receiptSHA256))
+	generated = bytes.ReplaceAll(generated, []byte("NODE_ERROR_STATUSES"), []byte(nodeErrorStatusSource(sources[filepath.Join("packages", "contracts", "nodes.openapi.json")].doc)))
 	generated, err = format.Source(generated)
 	fatalIf(err)
 	output := filepath.Join(root, "internal", "client", "node.gen.go")
@@ -399,7 +400,7 @@ func validateNodeError(document map[string]any) error {
 		"expired_token": 400, "forwarded_identity_invalid": 400, "heartbeat_replay": 409, "heartbeat_skew": 400,
 		"identity_rejected": 403, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
 		"invalid_public_key": 400, "invalid_request": 400, "join_credential_consumed": 410, "join_credential_invalid": 400,
-		"membership_required": 403, "method_not_allowed": 405, "node_not_found": 404, "not_found": 404,
+		"membership_required": 403, "method_not_allowed": 405, "node_broker_unavailable": 503, "node_not_found": 404, "not_found": 404,
 		"object_storage_unavailable": 503, "permission_denied": 403, "proxy_auth_invalid": 403, "rate_limited": 429,
 		"request_too_large": 413, "session_revoked": 401, "slow_down": 429, "state_conflict": 409,
 		"unauthorized": 401, "version_conflict": 409,
@@ -446,6 +447,16 @@ func validateSharedNodeErrors(node, common map[string]any) error {
 		return fmt.Errorf("NodeOperation error must reference local NodeError")
 	}
 	return validateLocalRefs(node)
+}
+
+func nodeErrorStatusSource(document map[string]any) string {
+	statuses := at(document, "components", "schemas", "NodeError", "x-blazn-error-status").(map[string]any)
+	keys := make([]string, 0, len(statuses))
+	for key := range statuses { keys = append(keys, key) }
+	sort.Strings(keys)
+	var output strings.Builder
+	for _, key := range keys { fmt.Fprintf(&output, "\t%q: %d,\n", key, int(statuses[key].(float64))) }
+	return output.String()
 }
 
 func validateLocalRefs(document map[string]any) error {
