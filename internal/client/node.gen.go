@@ -1364,12 +1364,12 @@ func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, hear
 	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
 }
 
-func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof string, request JoinCredentialRequest) (JoinCredential, error) {
+func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof, idempotencyKey string, request JoinCredentialRequest) (JoinCredential, error) {
 	var output JoinCredential
-	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.EnrollmentID) || !nodeUUIDPattern.MatchString(request.PlanID) || !nodeUUIDPattern.MatchString(request.NodeID) || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeDigestPattern.MatchString(request.NodePublicKeyFingerprint) {
+	if nodeProof == "" || !validNodeIdempotencyKey(idempotencyKey) || !nodeUUIDPattern.MatchString(request.EnrollmentID) || !nodeUUIDPattern.MatchString(request.PlanID) || !nodeUUIDPattern.MatchString(request.NodeID) || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeDigestPattern.MatchString(request.NodePublicKeyFingerprint) {
 		return output, fmt.Errorf("join credential request is invalid")
 	}
-	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/join-credentials", "", nodeProof, "", request, &output, http.StatusOK)
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/join-credentials", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
 	return output, err
 }
 
