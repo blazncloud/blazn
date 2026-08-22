@@ -45,6 +45,8 @@ kctl wait --for=condition=Available deployment/agent-sandbox-controller -n agent
 [ "$(kctl get crd -o name | grep -c agents.x-k8s.io)" -eq 4 ]
 secret_access=$(kctl auth can-i --as=system:serviceaccount:agent-sandbox-system:agent-sandbox-controller list secrets --all-namespaces || true)
 [ "$secret_access" = no ]
+pod_delete=$(kctl auth can-i --as=system:serviceaccount:agent-sandbox-system:agent-sandbox-controller delete pods --all-namespaces || true)
+[ "$pod_delete" = yes ]
 
 sed \
   -e "s|SYNTHETIC_IMAGE|$SYNTHETIC_IMAGE|" \
@@ -53,6 +55,9 @@ kctl wait --for=condition=Ready sandbox/synthetic -n blazn-spike --timeout=180s
 [ "$(kctl get pod synthetic -n blazn-spike -o jsonpath='{.metadata.labels.kueue\.x-k8s\.io/queue-name}')" = blazn-spike ]
 [ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].status.admission.clusterQueue}')" = blazn-spike ]
 [ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].status.conditions[?(@.type=="Admitted")].status}')" = True ]
+[ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].spec.podSets[0].template.spec.containers[0].resources.requests.cpu}')" = 100m ]
+[ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].spec.podSets[0].template.spec.containers[0].resources.requests.memory}')" = 64Mi ]
+kctl get workload -n blazn-spike -o jsonpath='{.items[0].metadata.finalizers}' | grep -F 'kueue.x-k8s.io/resource-in-use' >/dev/null
 
 kctl delete sandbox synthetic -n blazn-spike --wait=true --timeout=120s
 kctl wait --for=delete pod/synthetic -n blazn-spike --timeout=120s
@@ -64,8 +69,10 @@ $docker_cmd exec -i "$node" kubectl delete -f - --ignore-not-found --wait=true -
 [ "$(kctl get crd -o name | grep -c agents.x-k8s.io || true)" -eq 0 ]
 [ "$(kctl get clusterrole,clusterrolebinding -o name | grep -c agent-sandbox || true)" -eq 0 ]
 [ "$(kctl get mutatingwebhookconfiguration,validatingwebhookconfiguration -o name | grep -c agent-sandbox || true)" -eq 0 ]
+[ "$(kctl get namespace agent-sandbox-system --ignore-not-found -o name | wc -l)" -eq 0 ]
 $docker_cmd exec -i "$node" kubectl delete -f - --ignore-not-found --wait=true --timeout=240s <"$tmp/kueue.yaml" >/dev/null
 [ "$(kctl get crd -o name | grep -c kueue.x-k8s.io || true)" -eq 0 ]
+[ "$(kctl get namespace kueue-system --ignore-not-found -o name | wc -l)" -eq 0 ]
 
 if [ "$docker_cmd" = docker ]; then "$tmp/kind" delete cluster --name "$cluster"; else sudo "$tmp/kind" delete cluster --name "$cluster"; fi
 [ "$($docker_cmd ps -a --filter "name=$cluster" -q | wc -l)" -eq 0 ]
