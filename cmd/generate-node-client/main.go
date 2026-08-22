@@ -20,7 +20,8 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "f28ec23eeb970b53ec886639f369fa923da98e38a2e26c3131eaeaf6c03fb47d"
+	openAPISHA256          = "566c781b50ece53494e5c153085f5bb472aaabae8d729069de76782a3983217e"
+	commonOpenAPISHA256    = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
 	planSHA256             = "111984c682128e09a2caba46d405feb848c34e65ded478dbc49d9e74a677341e"
 	receiptSHA256          = "cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4"
 	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
@@ -90,6 +91,7 @@ func main() {
 func loadSources(root string) (map[string]source, error) {
 	definitions := []source{
 		{path: filepath.Join("packages", "contracts", "nodes.openapi.json"), digest: openAPISHA256},
+		{path: filepath.Join("packages", "contracts", "openapi.json"), digest: commonOpenAPISHA256},
 		{path: filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json"), digest: planSHA256},
 		{path: filepath.Join("packages", "contracts", "nodes", "node-install-receipt.schema.json"), digest: receiptSHA256},
 		{path: filepath.Join("packages", "contracts", "nodes", "node-operation-receipt.schema.json"), digest: operationReceiptSHA256},
@@ -116,6 +118,9 @@ func loadSources(root string) (map[string]source, error) {
 func validateSources(sources map[string]source, template string) error {
 	openAPI := sources[filepath.Join("packages", "contracts", "nodes.openapi.json")].doc
 	if err := validateOpenAPI(openAPI); err != nil {
+		return err
+	}
+	if err := validateSharedNodeErrors(openAPI, sources[filepath.Join("packages", "contracts", "openapi.json")].doc); err != nil {
 		return err
 	}
 	plan := sources[filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json")].doc
@@ -303,7 +308,7 @@ func validateNodeError(document map[string]any) error {
 		"capability_digest_invalid": 400, "device_not_found": 404, "device_proof_invalid": 403, "device_revoked": 401,
 		"enrollment_consumed": 410, "enrollment_expired": 410, "enrollment_invalid": 400, "enrollment_not_found": 404,
 		"expired_token": 400, "forwarded_identity_invalid": 400, "heartbeat_replay": 409, "heartbeat_skew": 400,
-		"identity_rejected": 401, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
+		"identity_rejected": 403, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
 		"invalid_public_key": 400, "invalid_request": 400, "join_credential_consumed": 410, "join_credential_invalid": 400,
 		"membership_required": 403, "method_not_allowed": 405, "node_not_found": 404, "not_found": 404,
 		"object_storage_unavailable": 503, "permission_denied": 403, "proxy_auth_invalid": 403, "rate_limited": 429,
@@ -331,6 +336,55 @@ func validateNodeError(document map[string]any) error {
 		return fmt.Errorf("NodeError code set is incomplete")
 	}
 	return nil
+}
+
+func validateSharedNodeErrors(node, common map[string]any) error {
+	nodeStatuses, ok := at(node, "components", "schemas", "NodeError", "x-blazn-error-status").(map[string]any)
+	if !ok {
+		return fmt.Errorf("NodeError status map is unavailable")
+	}
+	commonStatuses, ok := at(common, "components", "schemas", "Error", "x-blazn-error-status").(map[string]any)
+	if !ok {
+		return fmt.Errorf("common Error status map is unavailable")
+	}
+	for code, commonStatus := range commonStatuses {
+		if nodeStatus, exists := nodeStatuses[code]; exists && nodeStatus != commonStatus {
+			return fmt.Errorf("shared error status differs for %s", code)
+		}
+	}
+	variants, ok := at(node, "components", "schemas", "NodeOperation", "properties", "error", "oneOf").([]any)
+	if !ok || len(variants) != 2 || atString(variants[0], "$ref") != "#/components/schemas/NodeError" {
+		return fmt.Errorf("NodeOperation error must reference local NodeError")
+	}
+	return validateLocalRefs(node)
+}
+
+func validateLocalRefs(document map[string]any) error {
+	var walk func(any) error
+	walk = func(value any) error {
+		switch typed := value.(type) {
+		case map[string]any:
+			if ref, ok := typed["$ref"].(string); ok && strings.HasPrefix(ref, "#/") {
+				parts := strings.Split(strings.TrimPrefix(ref, "#/"), "/")
+				if at(document, parts...) == nil {
+					return fmt.Errorf("unresolved local reference %s", ref)
+				}
+			}
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(document)
 }
 
 func validateOperationReceiptSchema(document map[string]any) error {
