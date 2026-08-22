@@ -21,7 +21,11 @@ func (f *fakeRunner) Run(_ context.Context, _ string, args []string) ([]byte, er
 	f.calls++
 	f.args = append([]string(nil), args...)
 	if len(args) >= 2 && args[0] == "--token" && f.tokenFile != "" {
-		_ = os.WriteFile(f.tokenFile, []byte(args[1]+"|1060\n"), 0600)
+		file, _ := os.OpenFile(f.tokenFile, os.O_APPEND|os.O_WRONLY, 0)
+		if file != nil {
+			_, _ = file.WriteString(args[1] + "|0000001060\n")
+			_ = file.Close()
+		}
 	}
 	return f.output, nil
 }
@@ -71,7 +75,8 @@ func TestBackendRejectsDuplicateURLs(t *testing.T) {
 }
 func TestRevokeRemovesOnlyExactTokenAndIsIdempotent(t *testing.T) {
 	token := "0123456789abcdef0123456789abcdef"
-	backend, _, path := backendFixture(t, token+"|123\nother|456\n")
+	other := "fedcba9876543210fedcba9876543210"
+	backend, _, path := backendFixture(t, token+"|0000000123\n"+other+"|0000000456\n")
 	if err := backend.Revoke(context.Background(), token); err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +84,38 @@ func TestRevokeRemovesOnlyExactTokenAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != "other|456\n" {
+	if string(data) != other+"|0000000456\n" {
 		t.Fatalf("unexpected token file %q", data)
+	}
+}
+
+func TestRevokeMergesAConcurrentExternalAppend(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	other := "fedcba9876543210fedcba9876543210"
+	backend, _, path := backendFixture(t, token+"|0000001060\n")
+	backend.beforeTokenReplace = func() {
+		file, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if file != nil {
+			_, _ = file.WriteString(other + "|0000001061\n")
+			_ = file.Close()
+		}
+	}
+	if err := backend.Revoke(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != other+"|0000001061\n" {
+		t.Fatalf("concurrent token was lost: %q", data)
+	}
+}
+
+func TestTokenFileRejectsMalformedSuffixAndEpochRange(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	for _, content := range []string{token + "|anything\n", token + "|0000000000\n", token + "|9999999999\n", token + "|123\n"} {
+		backend, _, _ := backendFixture(t, content)
+		if err := backend.Revoke(context.Background(), token); err == nil {
+			t.Fatalf("malformed token accepted: %q", content)
+		}
 	}
 }
 func TestUnsafeAndAmbiguousTokenFilesFailClosed(t *testing.T) {
