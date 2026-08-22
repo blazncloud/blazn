@@ -3,11 +3,14 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -22,14 +25,28 @@ func validNodeInstallPlan() NodeInstallPlan {
 	return NodeInstallPlan{
 		SchemaVersion: NodeSchemaVersion,
 		PlanID:        testUUIDA, NodeID: testUUIDB, EnrollmentID: testUUIDC, WorkspaceID: testUUIDD,
-		Mode:       NodeModeFresh,
-		Cluster:    NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash},
-		Target:     NodeInstallTarget{Platform: NodePlatformLinux, Architecture: NodeArchAMD64, MachineFingerprint: testHash, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240},
-		Components: []NodeInstallComponent{{Name: "kubernetes", Version: "1.0", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
-		Mutations:  []NodeInstallMutation{{Ordinal: 1, Kind: "file", Target: "/etc/blazn/node", DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}},
-		Rollback:   NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required"},
-		IssuedAt:   "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
+		IdempotencyKey: "install-key-1", ApprovedBy: testUUIDA, ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: NodeModeFresh,
+		Cluster:       NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, APIServer: "https://cluster.example.test", KubernetesVersion: "v1.36.1", JoinCredentialEndpoint: "/v1/node-service/join-credentials", BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash, RegistryEndpoints: []string{"https://registry.example.test"}},
+		Target:        NodeInstallTarget{Platform: NodePlatformLinux, Architecture: NodeArchAMD64, MachineFingerprint: testHash, NodePublicKeyFingerprint: "sha256:" + testHash, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240},
+		RegistryTrust: []NodeRegistryTrust{},
+		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", Version: "1.0", Publisher: "Blazn", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
+		NodeService:   NodeInstallService{Manager: "systemd", UnitName: "blazn-node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "root", DefinitionSHA256: testHash},
+		Labels:        map[string]string{"blazn.dev/pool": "default"}, Taints: []NodeTaint{}, ResourceBounds: NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
+		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/node", Desired: map[string]any{"state": "configured"}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "remove_if_owned"}},
+		ValidationTests: []string{"binary_digest", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRoot: "/var/lib/blazn/receipts"},
+		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
 	}
+}
+
+func validNodeCapability() NodeCapability {
+	return NodeCapability{Version: 1,
+		Host:            NodeHostCapacity{Platform: NodePlatformMacOS, Architecture: NodeArchARM64, CPUMillis: 8000, MemoryBytes: 1024, DiskBytes: 1024, Accelerators: []NodeAccelerator{}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}},
+		Worker:          NodeWorkerCapacity{Platform: NodePlatformLinux, Architecture: NodeArchARM64, AllocatableCPUMillis: 6000, AllocatableMemoryBytes: 1024, AllocatableDiskBytes: 1024, Labels: map[string]string{"blazn.dev/pool": "local-ai"}, Limits: NodeCapabilityLimits{MaxConcurrentAgents: 4}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, KubernetesBinding: KubernetesBinding{ClusterID: "cluster-1", NodeName: "worker-1", NodeUID: "uid-1", ResourceVersion: "1"}},
+		SandboxBackends: []string{"agent-sandbox"}, RuntimeClasses: []string{"gvisor"}, LocalModels: []LocalModelCapability{{RouteID: testUUIDA, DisplayName: "Qwen 3.8", Model: "qwen3.8", Protocol: "openai-chat", EndpointClass: "authenticated_node_tunnel", Capabilities: []string{"text", "streaming"}, DataBoundary: "local", Healthy: true, MaxConcurrency: 2, MaxContextTokens: 32768, MaxOutputTokens: 4096}}}
+}
+
+func validNodeResponse() Node {
+	return Node{ID: testUUIDA, WorkspaceID: testUUIDD, Name: "worker-1", Kind: "shared", Platform: NodePlatformLinux, Architecture: NodeArchAMD64, LifecycleState: "pending", TrustState: "unverified", AgentEligible: false, Version: 1, CapabilityVersion: nil, Identity: nil, KubernetesBinding: nil, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:00:00Z"}
 }
 
 func TestValidateNodeInstallPlanSafetyAndMutationUniqueness(t *testing.T) {
@@ -97,14 +114,19 @@ func TestHeartbeatUsesOnlyNodeProof(t *testing.T) {
 	}))
 	defer server.Close()
 	api, _ := New(server.URL, server.Client())
-	heartbeat := NodeHeartbeat{NodeID: testUUIDA, IdentityGeneration: 1, BootID: "boot", Sequence: 0, SentAt: "2026-08-21T00:00:00Z", CapabilityDigest: "sha256:" + testHash, Capability: NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 4, MemoryBytes: 1024, DiskBytes: 1024, Accelerators: []NodeAccelerator{}, Labels: map[string]string{}, Limits: NodeCapabilityLimits{}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []LocalModelCapability{}}}
+	capability := validNodeCapability()
+	digest, err := NodeCapabilityDigest(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := NodeHeartbeat{NodeID: testUUIDA, IdentityGeneration: 1, BootID: "boot", Sequence: 0, SentAt: "2026-08-21T00:00:00Z", CapabilityDigest: digest, Capability: capability}
 	if err := api.SubmitNodeHeartbeat(context.Background(), "proof", heartbeat); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestNodeCapabilityValidatesLocalCompanyModel(t *testing.T) {
-	capability := NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 8, MemoryBytes: 1024, DiskBytes: 1024, Accelerators: []NodeAccelerator{}, Labels: map[string]string{"blazn.dev/pool": "local-ai"}, Limits: NodeCapabilityLimits{MaxConcurrentAgents: 4}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, SandboxBackends: []string{"agent-sandbox"}, RuntimeClasses: []string{"gvisor"}, LocalModels: []LocalModelCapability{{RouteID: testUUIDA, DisplayName: "Qwen 3.8", Model: "qwen3.8", Protocol: "openai-chat", EndpointClass: "authenticated_node_tunnel", Capabilities: []string{"text", "streaming"}, DataBoundary: "local", Healthy: true, MaxConcurrency: 2, MaxContextTokens: 32768, MaxOutputTokens: 4096}}}
+	capability := validNodeCapability()
 	if err := ValidateNodeCapability(capability); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +137,7 @@ func TestNodeCapabilityValidatesLocalCompanyModel(t *testing.T) {
 }
 
 func TestNodeCapabilityRejectsNullRequiredCollections(t *testing.T) {
-	capability := NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 1, MemoryBytes: 1, DiskBytes: 1, Accelerators: []NodeAccelerator{}, Labels: map[string]string{}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []LocalModelCapability{}}
+	capability := validNodeCapability()
 	if err := ValidateNodeCapability(capability); err != nil {
 		t.Fatal(err)
 	}
@@ -166,5 +188,162 @@ func TestDecodeNodeInstallPlanRequiresPresentCollections(t *testing.T) {
 	encoded, _ = json.Marshal(raw)
 	if _, err := DecodeNodeInstallPlan(bytes.NewReader(encoded)); err == nil || !strings.Contains(err.Error(), "components") {
 		t.Fatalf("missing components error=%v", err)
+	}
+}
+
+func testSigningKey() (ed25519.PublicKey, ed25519.PrivateKey) {
+	return ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize)).Public().(ed25519.PublicKey), ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+}
+
+func signedNodeInstallPlan(t *testing.T) (NodeInstallPlan, NodeInstallPlanTrust) {
+	t.Helper()
+	publicKey, privateKey := testSigningKey()
+	plan := validNodeInstallPlan()
+	digest, err := NodeInstallPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest = digest
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKeyFingerprint: plan.Target.NodePublicKeyFingerprint, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey}
+	return plan, trust
+}
+
+func TestVerifyNodeInstallPlanPinsSignatureExpiryAndLocalBindings(t *testing.T) {
+	plan, trust := signedNodeInstallPlan(t)
+	if err := VerifyNodeInstallPlan(plan, trust); err != nil {
+		t.Fatal(err)
+	}
+	tampered := plan
+	tampered.Hostname = "attacker.example.test"
+	if err := VerifyNodeInstallPlan(tampered, trust); err == nil {
+		t.Fatal("tampered hostname passed signature verification")
+	}
+	wrongBinding := trust
+	wrongBinding.MachineFingerprint = strings.Repeat("b", 64)
+	if err := VerifyNodeInstallPlan(plan, wrongBinding); err == nil {
+		t.Fatal("wrong trusted machine binding passed")
+	}
+	expired := trust
+	expired.Now = time.Date(2026, 8, 21, 0, 10, 0, 0, time.UTC)
+	if err := VerifyNodeInstallPlan(plan, expired); err == nil {
+		t.Fatal("expired plan passed")
+	}
+	wrongSigner := trust
+	otherPublic, _, _ := ed25519.GenerateKey(nil)
+	wrongSigner.Keyring = NodeSigningKeyring{plan.SigningKeyID: otherPublic}
+	if err := VerifyNodeInstallPlan(plan, wrongSigner); err == nil {
+		t.Fatal("wrong pinned signer passed")
+	}
+}
+
+func validInstallReceipt() NodeInstallReceipt {
+	return NodeInstallReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, PlanID: testUUIDB, PlanDigest: "sha256:" + testHash, NodeID: testUUIDC, Generation: 1, State: "active", CurrentStage: "complete", Owner: NodeReceiptOwner{UID: 0, PID: 10, ProcessStartIdentity: "start-1", Nonce: strings.Repeat("A", 32)}, Binary: NodeReceiptBinary{Path: "/usr/local/bin/blazn", Digest: "sha256:" + testHash}, Service: NodeReceiptService{Manager: "systemd", Name: "blazn-node", DefinitionDigest: "sha256:" + testHash}, Mutations: []NodeReceiptMutation{{Ordinal: 1, Kind: "file", Target: "/etc/blazn/node", PriorState: "absent", RollbackMaterial: NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}, Residues: []NodeReceiptResidue{}, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:05:00Z", SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
+}
+
+func validOperationReceipt() NodeOperationReceipt {
+	return NodeOperationReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, OperationID: testUUIDB, NodeID: testUUIDC, WorkspaceID: testUUIDD, OperationType: "pause", ExpectedNodeVersion: 2, StartedAt: "2026-08-21T00:00:00Z", CompletedAt: "2026-08-21T00:01:00Z", Outcome: "succeeded", KubernetesBefore: nil, KubernetesAfter: nil, Actions: []NodeReceiptAction{}, Residues: []NodeReceiptResidue{}, SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
+}
+
+func TestVerifySignedInstallAndOperationReceipts(t *testing.T) {
+	publicKey, privateKey := testSigningKey()
+	install := validInstallReceipt()
+	digest, err := NodeInstallReceiptDigest(install)
+	if err != nil {
+		t.Fatal(err)
+	}
+	install.Digest = digest
+	install.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-receipt-v1\n"+digest)))
+	if err := VerifyNodeInstallReceipt(install, NodeInstallReceiptTrust{Keyring: NodeSigningKeyring{install.SigningKeyID: publicKey}, PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID}); err != nil {
+		t.Fatal(err)
+	}
+	operation := validOperationReceipt()
+	digest, err = NodeOperationReceiptDigest(operation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation.Digest = digest
+	operation.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-operation-receipt-v1\n"+digest)))
+	trust := NodeOperationReceiptTrust{Keyring: NodeSigningKeyring{operation.SigningKeyID: publicKey}, OperationID: operation.OperationID, NodeID: operation.NodeID, WorkspaceID: operation.WorkspaceID, OperationType: operation.OperationType, ExpectedNodeVersion: operation.ExpectedNodeVersion}
+	if err := VerifyNodeOperationReceipt(operation, trust); err != nil {
+		t.Fatal(err)
+	}
+	operation.Actions = append(operation.Actions, NodeReceiptAction{Ordinal: 1, Kind: "filesystem", Target: "/tmp/tampered", Outcome: "applied"})
+	if err := VerifyNodeOperationReceipt(operation, trust); err == nil {
+		t.Fatal("tampered operation receipt passed")
+	}
+}
+
+func TestCapabilityDigestUsesDomainAndStableCanonicalJSON(t *testing.T) {
+	capability := validNodeCapability()
+	first, err := NodeCapabilityDigest(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability.Worker.Labels["blazn.dev/another"] = "value"
+	second, err := NodeCapabilityDigest(capability)
+	if err != nil || first == second {
+		t.Fatalf("first=%s second=%s err=%v", first, second, err)
+	}
+	canonical, err := nodeCanonicalJSON(map[string]any{"b": 2, "a": 1})
+	if err != nil || string(canonical) != `{"a":1,"b":2}` {
+		t.Fatalf("canonical=%s err=%v", canonical, err)
+	}
+}
+
+func TestCapabilityRejectsDuplicateLocalRouteIDs(t *testing.T) {
+	capability := validNodeCapability()
+	capability.LocalModels = append(capability.LocalModels, capability.LocalModels[0])
+	if err := ValidateNodeCapability(capability); err == nil || !strings.Contains(err.Error(), "routeId") {
+		t.Fatalf("duplicate route error=%v", err)
+	}
+}
+
+func TestNodeOperationRequiresSignedReceiptForPartialOutcome(t *testing.T) {
+	operation := NodeOperation{ID: testUUIDB, NodeID: testUUIDC, Type: "pause", Status: "partial", ExpectedNodeVersion: 2, CreatedAt: "2026-08-21T00:00:00Z"}
+	if err := ValidateNodeOperation(operation); err == nil {
+		t.Fatal("partial operation without receipt passed")
+	}
+}
+
+func TestConsumeJoinCredentialUsesNodeProofIdempotencyAndStrictNodeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Blazn-Node-Proof") != "proof" || request.Header.Get("Idempotency-Key") != "consume-key-1" || !strings.HasSuffix(request.URL.Path, "/"+testUUIDA+"/consume") {
+			t.Fatalf("headers/path proof=%q key=%q path=%q", request.Header.Get("X-Blazn-Node-Proof"), request.Header.Get("Idempotency-Key"), request.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(validNodeResponse())
+	}))
+	defer server.Close()
+	api, _ := New(server.URL, server.Client())
+	request := ConsumeJoinCredentialRequest{NodeID: testUUIDA, EnrollmentID: testUUIDB, PlanID: testUUIDC, JoinedNodeUID: "uid-1", JoinedNodeName: "worker-1", ResourceVersion: "1", ClusterID: "cluster-1"}
+	node, err := api.ConsumeNodeJoinCredential(context.Background(), "proof", testUUIDA, "consume-key-1", request)
+	if err != nil || node.ID != testUUIDA {
+		t.Fatalf("node=%#v err=%v", node, err)
+	}
+}
+
+func TestJoinCredentialRequiresWorkerOnlyConst(t *testing.T) {
+	credential := JoinCredential{IssuanceID: testUUIDA, Credential: strings.Repeat("x", 43), ExpiresAt: "2026-08-21T00:05:00Z", ClusterID: "cluster-1", WorkerOnly: false}
+	if err := ValidateJoinCredential(credential); err == nil {
+		t.Fatal("control-plane-capable join credential passed")
+	}
+}
+
+func TestIssueJoinCredentialRequiresAndSendsStableIdempotencyKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("X-Blazn-Node-Proof") != "proof" || request.Header.Get("Idempotency-Key") != "join-key-1" {
+			t.Fatalf("proof=%q key=%q", request.Header.Get("X-Blazn-Node-Proof"), request.Header.Get("Idempotency-Key"))
+		}
+		_ = json.NewEncoder(w).Encode(JoinCredential{IssuanceID: testUUIDA, Credential: strings.Repeat("x", 43), ExpiresAt: "2026-08-21T00:05:00Z", ClusterID: "cluster-1", WorkerOnly: true, Replayed: false})
+	}))
+	defer server.Close()
+	api, _ := New(server.URL, server.Client())
+	request := JoinCredentialRequest{EnrollmentID: testUUIDA, PlanID: testUUIDB, PlanDigest: "sha256:" + testHash, NodeID: testUUIDC, MachineFingerprint: testHash, NodePublicKeyFingerprint: "sha256:" + testHash}
+	credential, err := api.IssueNodeJoinCredential(context.Background(), "proof", "join-key-1", request)
+	if err != nil || credential.IssuanceID != testUUIDA {
+		t.Fatalf("credential=%#v err=%v", credential, err)
+	}
+	if _, err := api.IssueNodeJoinCredential(context.Background(), "proof", "", request); err == nil {
+		t.Fatal("missing issuance idempotency key passed")
 	}
 }
