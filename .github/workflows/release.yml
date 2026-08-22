@@ -205,14 +205,18 @@ jobs:
             --target "$SOURCE_SHA" \
             --title "Blazn $VERSION" \
             --generate-notes
-          actual=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --jq .object.sha)
+          draft=$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish)
+          [[ $(jq -r .isDraft <<<"$draft") == true ]]
+          actual=$(jq -r .targetCommitish <<<"$draft")
           [[ "$actual" == "$SOURCE_SHA" ]] || {
-            echo "draft release tag points to $actual instead of $SOURCE_SHA; preserving draft for reconciliation" >&2
+            echo "draft release targets $actual instead of $SOURCE_SHA; preserving draft for reconciliation" >&2
             exit 1
           }
           gh release edit "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false
+          tag_target=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --jq .object.sha)
+          [[ "$tag_target" == "$SOURCE_SHA" ]]
 
   post-promotion-smoke:
     if: inputs.mode == 'publish' && github.ref == 'refs/heads/main'
