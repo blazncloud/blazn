@@ -39,3 +39,7 @@ export function verifyDeviceProof(publicKey: string, canonical: string, signatur
     return false;
   }
 }
+
+export function sessionRevokePayload(deviceId: string): string {
+  return `blazn-session-revoke-v1\n${deviceId}`;
+}
