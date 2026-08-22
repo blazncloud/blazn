@@ -16,6 +16,7 @@ export interface NodeTransaction {
   insertEnrollment(input: { id: string; workspaceId: string; name: string; mode: string; platform: string; architecture: string | null; tokenHash: string; idempotencyKey: string; createdBy: string; planSigningKey: NodePlanSigningKey; expiresAt: Date }): Promise<void>;
   enrollmentById(id: string, lock?: boolean): Promise<EnrollmentRecord | undefined>;
   exchangeByEnrollment(enrollmentId: string): Promise<ExchangeNodeEnrollmentResponse | undefined>;
+  exchangeBindingByEnrollment(enrollmentId: string): Promise<KubernetesBinding | null | undefined>;
   createExchangedNode(input: { nodeId: string; identityId: string; enrollment: EnrollmentRecord; architecture: string; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<NodeEnrollmentIdentity>;
   nodeById(nodeId: string, lock?: boolean): Promise<NodeView | undefined>;
   listNodes(workspaceId: string): Promise<NodeView[]>;
@@ -72,6 +73,10 @@ class PgNodeTransaction implements NodeTransaction {
       JOIN node_identities i ON i.node_id=p.node_id AND i.public_key_fingerprint=e.node_public_key_fingerprint AND i.issued_at=p.issued_at
       WHERE p.enrollment_id=$1`, [enrollmentId]);
     const row=result.rows[0];return row ? {plan:row.canonical_plan,identity:enrollmentIdentityRow(row)} : undefined;
+  }
+  async exchangeBindingByEnrollment(enrollmentId: string): Promise<KubernetesBinding | null | undefined> {
+    const result=await this.client.query(`SELECT n.kubernetes_cluster_id,n.kubernetes_node_name,n.kubernetes_node_uid,n.kubernetes_resource_version FROM node_install_plans p JOIN nodes n ON n.id=p.node_id WHERE p.enrollment_id=$1`,[enrollmentId]);
+    const row=result.rows[0];if(!row)return undefined;const values=[row.kubernetes_cluster_id,row.kubernetes_node_name,row.kubernetes_node_uid,row.kubernetes_resource_version];if(values.every(value=>value===null))return null;if(values.some(value=>typeof value!=="string"||!value))throw new Error("persisted enrollment Kubernetes binding is incomplete");return{clusterId:row.kubernetes_cluster_id,nodeName:row.kubernetes_node_name,nodeUid:row.kubernetes_node_uid,resourceVersion:row.kubernetes_resource_version};
   }
   async createExchangedNode(input: { nodeId: string; identityId: string; enrollment: EnrollmentRecord; architecture: string; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<NodeEnrollmentIdentity> {
     await this.client.query(`INSERT INTO nodes(id,workspace_id,name,kind,owner_user_id,machine_fingerprint,host_platform,host_architecture,lifecycle_state,trust_state,agent_eligible,service_version,kubernetes_cluster_id,kubernetes_node_name,kubernetes_node_uid,kubernetes_resource_version)

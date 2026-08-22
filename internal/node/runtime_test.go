@@ -5,7 +5,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,134 @@ import (
 )
 
 const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestBootstrapAuthorizationNeverSerializesOrFormatsToken(t *testing.T) {
+	token := strings.Repeat("s", 43)
+	authorization := BootstrapAuthorization{EnrollmentID: "enrollment", Token: token, MachineFingerprint: testHash, NodePublicKey: strings.Repeat("A", 43)}
+	encoded, err := json.Marshal(authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{string(encoded), fmt.Sprint(authorization), fmt.Sprintf("%#v", authorization)} {
+		if strings.Contains(output, token) {
+			t.Fatalf("bootstrap token leaked: %s", output)
+		}
+	}
+}
+
+func TestControlPlaneOriginIsExactHTTPSOrigin(t *testing.T) {
+	if !validControlPlaneOrigin("https://control.example.test:8443") {
+		t.Fatal("exact HTTPS control-plane origin was rejected")
+	}
+	if !validControlPlaneOrigin("https://[2001:db8::1]:443") {
+		t.Fatal("canonical bracketed IPv6 control-plane origin was rejected")
+	}
+	for _, value := range []string{"http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment", "https://control.example.test:", "https://control.example.test:0", "https://control.example.test:65536", "https://control.example.test:invalid", "https://2001:db8::1"} {
+		if validControlPlaneOrigin(value) {
+			t.Fatalf("unsafe control-plane origin %q was accepted", value)
+		}
+	}
+}
+
+func TestInstallerBootstrapAuthorizationFailsClosedBeforePlatform(t *testing.T) {
+	platform := &mockPlatform{}
+	installer := NewInstaller(platform, &memoryState{})
+	err := installer.AuthorizeBootstrap(context.Background(), BootstrapAuthorization{Token: strings.Repeat("s", 43)})
+	if err == nil || platform.authorization != nil {
+		t.Fatalf("authorization=%#v err=%v", platform.authorization, err)
+	}
+}
+
+func TestInstallerPassesValidBootstrapAuthorizationOnlyInMemory(t *testing.T) {
+	platform := &mockPlatform{}
+	installer := NewInstaller(platform, &memoryState{})
+	authorization, _ := validBootstrapAuthorization(t)
+	if err := installer.AuthorizeBootstrap(context.Background(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	if platform.authorization == nil || platform.authorization.Token != authorization.Token {
+		t.Fatal("bootstrap token was not handed directly to the privileged platform")
+	}
+}
+
+func TestServiceAuthorizesBootstrapBeforeRuntimePersistenceAndInstall(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	platform := &mockPlatform{authorizeErr: errors.New("injected root authorization failure")}
+	state := &memoryState{}
+	installer := NewInstaller(platform, state)
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected}
+	service := NewService(api, fixedIdentity{Identity: identity}, state, installer)
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
+	plan := authorization.Expected.Plan
+	profile := trustedBootstrapProfile(plan)
+	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: plan.WorkspaceID, IdempotencyKey: plan.IdempotencyKey, Name: plan.Hostname, Mode: plan.Mode, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, MachineFingerprint: plan.Target.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
+	if err == nil || platform.authorization == nil || platform.authorization.Token != authorization.Token || state.runtime.SchemaVersion != 0 || platform.applyCalls != 0 {
+		t.Fatalf("authorization=%#v runtime=%#v apply=%d err=%v", platform.authorization, state.runtime, platform.applyCalls, err)
+	}
+}
+
+func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: "2026-08-21T00:00:30Z"}
+	authority.Digest, _ = RootInstallAuthorityDigest(authority)
+	trust := RootInstallAuthorityTrust{Now: time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC), Profile: trustedBootstrapProfile(plan), ProfileSHA256: authority.ProfileSHA256}
+	if err := VerifyRootInstallAuthority(authority, trust); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(authority)
+	if strings.Contains(string(encoded), "token") {
+		t.Fatalf("root authority unexpectedly contains token material: %s", encoded)
+	}
+	if _, err := DecodeRootInstallAuthority(encoded); err != nil {
+		t.Fatal(err)
+	}
+	var unknown map[string]any
+	_ = json.Unmarshal(encoded, &unknown)
+	unknown["enrollmentToken"] = strings.Repeat("s", 43)
+	withToken, _ := json.Marshal(unknown)
+	if _, err := DecodeRootInstallAuthority(withToken); err == nil {
+		t.Fatal("token-like unknown root-authority field was accepted")
+	}
+	delete(unknown, "enrollmentToken")
+	delete(unknown, "kubernetesBinding")
+	missingBinding, _ := json.Marshal(unknown)
+	if _, err := DecodeRootInstallAuthority(missingBinding); err == nil {
+		t.Fatal("root authority with an omitted nullable binding was accepted")
+	}
+	tamperedBinding := authority
+	bindingCopy := *authority.KubernetesBinding
+	bindingCopy.NodeUID = "substituted-uid"
+	tamperedBinding.KubernetesBinding = &bindingCopy
+	if err := VerifyRootInstallAuthority(tamperedBinding, trust); err == nil {
+		t.Fatal("tampered root-authority Kubernetes binding was accepted")
+	}
+	tamperedKey := authority
+	otherSigner := testIdentity(t)
+	otherFingerprint := mustFingerprint(t, otherSigner)
+	tamperedKey.PlanSigningKey = client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: otherSigner.PublicBase64(), Fingerprint: otherFingerprint}
+	tamperedKey.Digest, _ = RootInstallAuthorityDigest(tamperedKey)
+	if err := VerifyRootInstallAuthority(tamperedKey, trust); err == nil {
+		t.Fatal("tampered root-authority plan key was accepted")
+	}
+	tamperedPlan := authority
+	tamperedPlan.Plan.Hostname = "attacker.example.test"
+	tamperedPlan.Digest, _ = RootInstallAuthorityDigest(tamperedPlan)
+	if err := VerifyRootInstallAuthority(tamperedPlan, trust); err == nil {
+		t.Fatal("tampered root-authority plan was accepted")
+	}
+	tamperedSignature := authority
+	tamperedSignature.Plan.Signature = strings.Repeat("B", 86)
+	tamperedSignature.Digest, _ = RootInstallAuthorityDigest(tamperedSignature)
+	if err := VerifyRootInstallAuthority(tamperedSignature, trust); err == nil {
+		t.Fatal("tampered root-authority plan signature was accepted")
+	}
+	expiredTrust := trust
+	expiredTrust.Now = time.Date(2026, 8, 21, 0, 11, 0, 0, time.UTC)
+	if err := VerifyRootInstallAuthority(authority, expiredTrust); err == nil {
+		t.Fatal("expired root-authority plan was accepted")
+	}
+}
 
 func TestFileIdentityStoreCreatesPrivateStableKey(t *testing.T) {
 	path := filepath.Join(testRoot(t), "private", "identity.json")
@@ -48,7 +178,7 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("binary"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"schemaVersion":1,"id":"ubuntu-26.04-amd64-worker/v1","allowedClusterOrigins":["https://cluster.example.test"],"allowedDownloadOrigins":[],"allowedDownloadHostSuffixes":[],"allowedRegistryOrigins":[],"allowedMutationRoots":["/var/lib/blazn"],"embeddedComponentSha256":{}}`
+	profile := `{"schemaVersion":1,"id":"ubuntu-26.04-amd64-worker/v1","controlPlaneOrigin":"https://control.example.test","allowedClusterOrigins":["https://cluster.example.test"],"allowedDownloadOrigins":[],"allowedDownloadHostSuffixes":[],"allowedRegistryOrigins":[],"allowedMutationRoots":["/var/lib/blazn"],"embeddedComponentSha256":{}}`
 	if err := os.WriteFile(profilePath, []byte(profile), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +188,16 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	}
 	if trusted.CurrentBinarySHA256 == "" || trusted.CurrentBinaryVersion != "v1" {
 		t.Fatalf("profile=%#v", trusted)
+	}
+	withoutOrigin := strings.Replace(profile, `"controlPlaneOrigin":"https://control.example.test",`, "", 1)
+	if err := os.WriteFile(profilePath, []byte(withoutOrigin), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTrustedProfile(profilePath, binary, "v1"); err == nil {
+		t.Fatal("trusted profile without a control-plane origin was accepted")
+	}
+	if err := os.WriteFile(profilePath, []byte(profile), 0600); err != nil {
+		t.Fatal(err)
 	}
 	link := filepath.Join(root, "link")
 	if err := os.Symlink(binary, link); err != nil {
@@ -389,13 +529,19 @@ func (m *memoryState) LoadReceipt() (client.NodeInstallReceipt, error) {
 }
 
 type mockPlatform struct {
-	failAt     int
-	applyCalls int
-	rolledBack []int64
-	prior      *PriorState
-	verifyErr  error
+	failAt        int
+	applyCalls    int
+	rolledBack    []int64
+	prior         *PriorState
+	verifyErr     error
+	authorizeErr  error
+	authorization *BootstrapAuthorization
 }
 
+func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
+	m.authorization = &authorization
+	return m.authorizeErr
+}
 func (*mockPlatform) Preflight(context.Context, client.NodeInstallPlan) error { return nil }
 func (*mockPlatform) ServiceState(context.Context, client.NodeInstallService) (ServicePriorState, error) {
 	return ServicePriorState{}, nil
@@ -440,6 +586,36 @@ func testIdentity(t *testing.T) Identity {
 		t.Fatal(err)
 	}
 	return Identity{PrivateKey: privateKey, PublicKey: publicKey}
+}
+
+func validBootstrapAuthorization(t *testing.T) (BootstrapAuthorization, Identity) {
+	t.Helper()
+	nodeIdentity := testIdentity(t)
+	nodeFingerprint := mustFingerprint(t, nodeIdentity)
+	planSigner := testIdentity(t)
+	planFingerprint := mustFingerprint(t, planSigner)
+	plan := client.NodeInstallPlan{
+		SchemaVersion: client.NodeSchemaVersion, PlanID: "11111111-1111-4111-8111-111111111111", NodeID: "22222222-2222-4222-8222-222222222222", EnrollmentID: "33333333-3333-4333-8333-333333333333", WorkspaceID: "44444444-4444-4444-8444-444444444444",
+		IdempotencyKey: "install-key-1", ApprovedBy: "11111111-1111-4111-8111-111111111111", ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: client.NodeModeAdopt, InstallProfile: "existing-linux-worker-adopt/v1",
+		Cluster: client.NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, APIServer: "https://cluster.example.test", KubernetesVersion: "v1.36.1", JoinCredentialEndpoint: "/v1/node-service/join-credentials", BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash, RegistryEndpoints: []string{"https://registry.example.test"}},
+		Target:  client.NodeInstallTarget{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, MachineFingerprint: testHash, NodePublicKeyFingerprint: nodeFingerprint, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240}, RegistryTrust: []client.NodeRegistryTrust{},
+		Components:  []client.NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}},
+		NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash}, Labels: map[string]string{"blazn.dev/pool": "default"}, Taints: []client.NodeTaint{}, ResourceBounds: client.NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
+		Mutations:       []client.NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 2, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 3, Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, UID: 0, GID: 0, Rollback: "restore_prior"}},
+		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: client.NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
+		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
+	}
+	digest, err := client.NodeInstallPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest = digest
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(planSigner.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+	return BootstrapAuthorization{EnrollmentID: plan.EnrollmentID, Token: strings.Repeat("s", 43), MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodeIdentity.PublicBase64(), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "7"}, PlanSigningKey: client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: planSigner.PublicBase64(), Fingerprint: planFingerprint}, Expected: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: nodeFingerprint, IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, ProfileID: plan.InstallProfile, ProfilePath: "/etc/blazn/node/profiles/existing-linux-worker-adopt.json"}, nodeIdentity
+}
+
+func trustedBootstrapProfile(plan client.NodeInstallPlan) client.NodeTrustedInstallProfile {
+	return client.NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 }
 func mustFingerprint(t *testing.T, identity Identity) string {
 	t.Helper()

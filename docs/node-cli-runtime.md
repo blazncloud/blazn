@@ -7,7 +7,25 @@ persists the enrollment token, and verifies the returned plan with the
 generated strict contract implementation plus a local trusted-install profile.
 The local profile binds the measured current executable, embedded component
 digests, allowed origins and redirect suffixes, mutation roots, symlink checks,
-and (when applicable) the exact Lima VM/worker material.
+and (when applicable) the exact Lima VM/worker material. It also pins one exact
+`controlPlaneOrigin`: an HTTPS origin with no credentials, path, query, or
+fragment. This is the TLS trust anchor used by the privileged adapter to replay
+the enrollment exchange independently.
+
+When installation is requested, the service hands the validated enrollment ID,
+one-time token, exact exchange input, signing-key tuple, and expected response
+directly to `Platform.AuthorizeBootstrap` in memory after exchange and before
+any install operation. The token is excluded from JSON and redacted from Go
+string formatting; it is never added to runtime state, the install WAL, a
+receipt, CLI output, arguments, environment variables, or logs. A platform that
+cannot authorize this bootstrap fails closed. Successful implementations write
+only the token-free, digested `blazn.dev/node-root-install-authority/v1` record
+to root-owned state. That authority includes the exact plan-signing public-key
+tuple, Node public key, and the replay-authenticated nullable Kubernetes binding
+so every later privileged operation can recompute both fingerprints, verify the
+stored plan signature and current expiry against the root-owned profile, re-prove
+the adopted Node UID/resourceVersion, and avoid the service-owned enrollment pin
+entirely.
 
 Privileged mutation is exposed through the narrow `node.Platform` interface.
 Before each mutation, prior state and rollback material are durably written to
@@ -22,8 +40,7 @@ checks its fingerprint and expiry, binds host/worker capability to the verified
 plan, computes the frozen capability digest, and signs canonical JSON with the
 node-proof prefix. A new process uses a new boot ID and starts sequence zero.
 
-This milestone intentionally provides mock platform/capability adapters only.
-The real Linux and macOS privileged adapters, their OS-specific local trusted
-profile packaging, and live host installation are separate acceptance work.
-The production CLI factory therefore fails closed until those adapters are
-injected; it never substitutes unprivileged or unmanaged mutations.
+The concrete isolated HTTP replay and root-owned authority persistence are
+implemented by the privileged Linux/macOS adapter milestone. This contract
+does not permit a platform to trust the service-owned enrollment pin/runtime
+as root authority and never substitutes unprivileged or unmanaged mutations.

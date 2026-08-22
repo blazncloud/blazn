@@ -56,7 +56,7 @@ func TestNodeHelpAndHeartbeat(t *testing.T) {
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
 	app.node = func() (nodeCommands, error) { return fake, nil }
-	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node enroll|recover|heartbeat") {
+	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node enroll|recover|heartbeat") || !strings.Contains(stdout.String(), "root-authorize") {
 		t.Fatalf("help=%q code=%d", stdout.String(), code)
 	}
 	stdout.Reset()

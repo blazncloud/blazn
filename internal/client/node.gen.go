@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -546,6 +547,7 @@ type NodeSigningKeyring map[string]ed25519.PublicKey
 
 type NodeTrustedInstallProfile struct {
 	ID                          string
+	ControlPlaneOrigin          string
 	AllowedClusterOrigins       []string
 	AllowedDownloadOrigins      []string
 	AllowedDownloadHostSuffixes []string
@@ -1466,7 +1468,7 @@ func VerifyNodeInstallPlan(plan NodeInstallPlan, trust NodeInstallPlanTrust) err
 }
 
 func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstallProfile) error {
-	if profile.ID == "" || plan.InstallProfile != profile.ID || profile.VerifyNoSymlinkTraversal == nil || !validNodeProfileTarget(profile.ID, plan.Mode, plan.Target.Platform, plan.Target.Architecture) {
+	if profile.ID == "" || !validNodeControlPlaneOrigin(profile.ControlPlaneOrigin) || plan.InstallProfile != profile.ID || profile.VerifyNoSymlinkTraversal == nil || !validNodeProfileTarget(profile.ID, plan.Mode, plan.Target.Platform, plan.Target.Architecture) {
 		return fmt.Errorf("trusted install profile does not match plan target")
 	}
 	if err := validateNodeTrustedOrigins(profile.AllowedClusterOrigins); err != nil {
@@ -1537,6 +1539,18 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		return fmt.Errorf("macOS Lima binding does not match locally trusted VM and worker material")
 	}
 	return nil
+}
+
+func validNodeControlPlaneOrigin(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.String() != value || strings.HasSuffix(parsed.Host, ":") {
+		return false
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		return err == nil && port >= 1 && port <= 65535
+	}
+	return true
 }
 
 func ValidateNodeComponentRedirect(profile NodeTrustedInstallProfile, component NodeInstallComponent, candidateURL string) error {
