@@ -265,6 +265,81 @@ test("provider deadline aborts outside database transactions and leaves recovera
   }
 });
 
+test("ambiguous commit is recovered from the durable issuance without revoking it", async () => {
+  const f = await fixture();
+  try {
+    const durable = durableStore(f.binding);
+    durable.failCommit.value = true;
+    let revokes = 0;
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => ({
+        providerHandle: input.issuanceId,
+        credential: "q".repeat(43),
+        clusterId: input.clusterId,
+        clusterHealthy: true,
+        workerOnly: true,
+        expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+      }),
+      revoke: async () => {
+        revokes++;
+      },
+    };
+    const service = new NodeBrokerService(
+      durable.store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    const recovered = await service.issue("join-key-1", f.request, f.proof);
+    assert.equal(recovered.credential, "q".repeat(43));
+    assert.equal(recovered.replayed, true);
+    assert.equal(revokes, 1);
+    assert.equal(durable.intent()?.status, "completed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("fresh locked recheck rejects trust revocation during slow provider issuance", async () => {
+  const f = await fixture();
+  try {
+    const durable = durableStore(f.binding);
+    let revokes = 0;
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => {
+        durable.setTrust("revoked");
+        return {
+          providerHandle: input.issuanceId,
+          credential: "v".repeat(43),
+          clusterId: input.clusterId,
+          clusterHealthy: true,
+          workerOnly: true,
+          expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+        };
+      },
+      revoke: async () => {
+        revokes++;
+      },
+    };
+    const service = new NodeBrokerService(
+      durable.store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, f.proof),
+      (error: unknown) =>
+        error instanceof NodeHttpError &&
+        error.code === "join_credential_invalid",
+    );
+    assert.equal(revokes, 2);
+    assert.equal(durable.intent()?.status, "revoked");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 function fakeStore(
   binding: BrokerBinding,
   get: () => StoredJoinIssuance | undefined,
@@ -305,8 +380,9 @@ function durableStore(binding: BrokerBinding) {
   let existing: StoredJoinIssuance | undefined;
   let active = false;
   const failInsert = { value: false };
+  const failCommit = { value: false };
   const approvedBy = String(binding.canonicalPlan.approvedBy);
-  const complete = {
+  let complete = {
     ...binding,
     databaseNow: new Date("2029-01-01T00:00:00.000Z"),
     enrollmentCreatedBy: approvedBy,
@@ -316,8 +392,9 @@ function durableStore(binding: BrokerBinding) {
   const store: NodeBrokerStore = {
     transaction: async (action) => {
       active = true;
+      let inserted = false;
       try {
-        return await action({
+        const result = await action({
           lockNode: async () => {},
           lockBinding: async () => true,
           binding: async () => complete,
@@ -339,8 +416,14 @@ function durableStore(binding: BrokerBinding) {
             if (failInsert.value)
               throw new Error("injected persistence failure");
             existing = value;
+            inserted = true;
           },
         });
+        if (inserted && failCommit.value) {
+          failCommit.value = false;
+          throw new Error("injected ambiguous commit result");
+        }
+        return result;
       } finally {
         active = false;
       }
@@ -349,8 +432,12 @@ function durableStore(binding: BrokerBinding) {
   return {
     store,
     failInsert,
+    failCommit,
     intent: () => intent,
     inTransaction: () => active,
+    setTrust: (trustState: string) => {
+      complete = { ...complete, nodeTrustState: trustState };
+    },
   };
 }
 

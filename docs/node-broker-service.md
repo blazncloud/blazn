@@ -28,3 +28,18 @@ The broker refuses to start without an injected provider.
 This PR does not claim an end-to-end Node join. A real MicroK8s provider and
 platform adapter must implement this interface and be live-qualified before the
 Node join milestone is complete.
+
+## Crash and retry phases
+
+| Durable state | Meaning | Retry behavior |
+| --- | --- | --- |
+| `pending` | Intent committed; no provider owner yet | Claim a bounded lease, revoke the deterministic handle, then issue |
+| `issuing` with live lease | Another request owns provider work | Poll for the encrypted issuance without holding a database connection |
+| `issuing` with expired lease | Owner crashed or exceeded its deadline | Reclaim, idempotently revoke the same handle, then issue |
+| `revoke_required` | Persistence or provider work failed and compensation was inconclusive | Revoke the persisted handle before any new issue |
+| `revoked` | Compensation completed | Reuse the same intent/handle for a clean retry |
+| `completed` | Encrypted issuance committed | Decrypt and replay; a completed intent without its issuance fails closed |
+
+An ambiguous commit is resolved by rereading the issuance before compensation.
+If the row exists, it is replayed and the live provider credential is retained;
+otherwise the intent remains recoverable until deterministic revocation works.
