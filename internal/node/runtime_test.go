@@ -88,6 +88,11 @@ func TestInstallerPersistsSignedReceiptAndRollsBackOnFailure(t *testing.T) {
 				if err := client.VerifyNodeInstallReceipt(receipt, trust); err != nil {
 					t.Fatal(err)
 				}
+				applied := platform.applyCalls
+				replayed, err := installer.Install(context.Background(), plan, meta, identity)
+				if err != nil || replayed.ReceiptID != receipt.ReceiptID || platform.applyCalls != applied {
+					t.Fatalf("replayed=%#v applyCalls=%d err=%v", replayed, platform.applyCalls, err)
+				}
 			} else {
 				if err == nil {
 					t.Fatal("expected failure")

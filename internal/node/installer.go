@@ -49,9 +49,24 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 	if i.platform == nil || i.state == nil {
 		return client.NodeInstallReceipt{}, errors.New("installer dependencies are incomplete")
 	}
+	if i.uid() != 0 {
+		return client.NodeInstallReceipt{}, errors.New("privileged node install requires UID 0")
+	}
 	fingerprint, err := identity.Fingerprint()
 	if err != nil || identityMeta.Generation < 1 || identityMeta.SigningKeyID == "" || identityMeta.PublicKeyFingerprint != fingerprint {
 		return client.NodeInstallReceipt{}, errors.New("installer identity does not match the enrolled identity")
+	}
+	if existing, loadErr := i.state.LoadReceipt(); loadErr == nil {
+		trust := client.NodeInstallReceiptTrust{PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: identityMeta.SigningKeyID, Generation: identityMeta.Generation, Fingerprint: fingerprint, PublicKey: identity.PublicKey}, BackupRoot: plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+		if existing.State != "active" {
+			return client.NodeInstallReceipt{}, errors.New("prior node install receipt requires explicit recovery before reinstall")
+		}
+		if err := client.VerifyNodeInstallReceipt(existing, trust); err != nil {
+			return client.NodeInstallReceipt{}, fmt.Errorf("existing node install receipt is untrusted: %w", err)
+		}
+		return existing, nil
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return client.NodeInstallReceipt{}, loadErr
 	}
 	if err := i.platform.Preflight(ctx, plan); err != nil {
 		return client.NodeInstallReceipt{}, err
