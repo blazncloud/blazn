@@ -107,7 +107,7 @@ assert_denied() {
   label=$1
   shift
   if second_cli --output json "$@" >"$work/$label.json" 2>"$work/$label.err"; then die "cross-tenant API operation unexpectedly passed: $label"; fi
-  jq -e '.code=="workspace_not_found" or .code=="forbidden"' "$work/$label.json" >/dev/null || die "cross-tenant API denial used an unexpected error contract: $label"
+  jq -e '.error.code=="workspace_not_found" or .error.code=="forbidden"' "$work/$label.json" >/dev/null || die "cross-tenant API denial used an unexpected error contract: $label"
 }
 assert_denied hidden-get workspace get "$workspace_b"
 assert_denied hidden-members workspace members "$workspace_b"

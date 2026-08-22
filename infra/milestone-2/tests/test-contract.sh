@@ -100,6 +100,10 @@ grep -F 'passwordRecord' "$ROOT_DIR/../../services/control-api/src/poc-identity.
 grep -F 'workspace reference outside the exact cleanup inventory' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
 grep -F 'preflight.sh --existing-deploy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'verify-live-workspace.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+printf '%s\n' '{"error":{"code":"workspace_not_found","message":"not found"},"exitCode":1}' \
+  | jq -e '.error.code=="workspace_not_found" or .error.code=="forbidden"' >/dev/null
+printf '%s\n' '{"error":{"code":"permission_denied","message":"denied"},"exitCode":1}' \
+  | jq -e '(.error.code=="workspace_not_found" or .error.code=="forbidden")|not' >/dev/null
 grep -F 'with-control-plane-env.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'stage-release.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 # This intentionally asserts literal shell variables in the promotion script.
