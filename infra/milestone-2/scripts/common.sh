@@ -62,3 +62,15 @@ is_uint() {
 sha256_file() {
   sha256sum "$1" | awk '{ print $1 }'
 }
+
+control_plane_config_digest() {
+  root=$1
+  (
+    cd "$root"
+    sha256sum \
+      compose.yaml \
+      postgres-init/01-roles.sh \
+      ngrok.example.yml \
+      systemd/blazn-control-plane.service
+  ) | sha256sum | awk '{ print $1 }'
+}

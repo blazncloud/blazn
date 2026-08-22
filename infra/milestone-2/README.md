@@ -22,9 +22,19 @@ environment, and a successful preflight. `preflight.sh --plan` is read-only.
   digests. The API build is sourced from `services/control-api` and uses that
   service's own Node 22 Dockerfile and `CMD`.
 
-The TypeScript API contract is `GET /healthz` plus `PORT`, `PUBLIC_URL`,
-`BLAZN_BOOTSTRAP_SECRET_FILE`, `DATABASE_URL_FILE`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
-`S3_ACCESS_KEY_FILE`, and `S3_SECRET_KEY_FILE`.
+The long-running TypeScript API contract is `GET /healthz` plus `PORT`,
+`BIND_ADDRESS`, `PUBLIC_URL`, `DATABASE_URL_FILE`, `S3_ENDPOINT`, `S3_REGION`,
+`S3_BUCKET`, `S3_ACCESS_KEY_FILE`, and `S3_SECRET_KEY_FILE`. It receives only
+the DML-only runtime database URL. A one-shot migration service receives the
+non-superuser schema-owner URL, then a one-shot bootstrap service receives the
+runtime URL and initial-login password. Neither elevated secret reaches the
+runtime API.
+
+Fresh PostgreSQL initialization creates three distinct identities: the
+container-only administrative user, `blazn_migration` as the non-superuser
+database/schema owner, and `blazn_runtime` with connect, schema usage, table
+DML, and sequence-use privileges only. Default privileges make future objects
+created by migrations available to runtime without granting runtime DDL.
 
 ## Required decisions before a ben1 deployment
 
@@ -38,6 +48,8 @@ The TypeScript API contract is `GET /healthz` plus `PORT`, `PUBLIC_URL`,
    collisions.
 4. Provision the ngrok credential and DNS/domain mapping without exposing any
    database or object-store endpoint.
+   The live environment must use `PUBLIC_URL=https://blazn.benpelo.com`; local
+   tests may retain the loopback default.
 5. Review the image digests and MinIO's AGPLv3 obligations before deployment.
 
 The exact pinned MinIO image was inspected for Linux AMD64 and contains

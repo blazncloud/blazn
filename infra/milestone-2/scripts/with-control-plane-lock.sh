@@ -13,6 +13,9 @@ purpose=$1
 correlation=$2
 expected=$3
 shift 3
+case "$purpose:$correlation" in
+  *[!a-zA-Z0-9._:/-]*) die "purpose and correlation ID contain unsupported characters" ;;
+esac
 LOCK_ROOT=${BLAZN_LOCK_ROOT:-/run/lock/blazn-poc}
 require_absolute_path BLAZN_LOCK_ROOT "$LOCK_ROOT"
 assert_not_symlink_chain "$LOCK_ROOT"
@@ -22,6 +25,9 @@ mkdir -p -- "$LOCK_ROOT"
 chmod 0700 -- "$LOCK_ROOT"
 exec 9>"$LOCK_ROOT/ben1-control-plane-mutation.lock"
 flock -x 9
+
+holder=$LOCK_ROOT/ben1-control-plane-mutation.holder
+[ ! -e "$holder" ] || die "a stale control-plane holder record requires explicit reconciliation: $holder"
 
 counter=$LOCK_ROOT/ben1-control-plane-mutation.counter
 current=0
@@ -37,7 +43,6 @@ printf '%s\n' "$token" >"$counter_tmp"
 chmod 0600 "$counter_tmp"
 mv -f -- "$counter_tmp" "$counter"
 
-holder=$LOCK_ROOT/ben1-control-plane-mutation.holder
 holder_tmp=$holder.tmp.$$
 created_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 printf '{"owner":"blazn-poc","purpose":"%s","correlationId":"%s","fencingToken":%s,"pid":%s,"createdAt":"%s"}\n' \

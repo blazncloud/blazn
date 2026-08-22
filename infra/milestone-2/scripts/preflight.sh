@@ -105,6 +105,10 @@ if [ "$MODE" = deploy ]; then
   require_command docker
   require_command jq
   require_command sha256sum
+  [ "${PUBLIC_URL:-}" = https://blazn.benpelo.com ] || die "PUBLIC_URL must be https://blazn.benpelo.com for the live POC deployment"
+  [ -n "${BLAZN_INITIAL_LOGIN:-}" ] || die "BLAZN_INITIAL_LOGIN is required"
+  [ "${BLAZN_INITIAL_LOGIN:-}" != admin@example.invalid ] || die "the placeholder BLAZN_INITIAL_LOGIN is forbidden for deployment"
+  [ -n "${BLAZN_INITIAL_DISPLAY_NAME:-}" ] || die "BLAZN_INITIAL_DISPLAY_NAME is required"
   DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli} docker compose version >/dev/null 2>&1 || die "Blazn-owned Docker Compose v2 is unavailable"
   require_command flock
   [ -d "$DATA_ROOT/postgres" ] || die "prepared PostgreSQL directory is missing"
@@ -113,7 +117,7 @@ if [ "$MODE" = deploy ]; then
   [ -f "$RECEIPT_PATH" ] || die "ownership receipt is missing"
   [ "$(stat -c '%u' "$RECEIPT_PATH")" -eq 0 ] || die "ownership receipt must be owned by root"
   [ "$(stat -c '%a' "$RECEIPT_PATH")" = 600 ] || die "ownership receipt must have mode 0600"
-  config_digest=sha256:$(sha256_file "$ROOT_DIR/compose.yaml")
+  config_digest=sha256:$(control_plane_config_digest "$ROOT_DIR")
   jq -e \
     --arg host "$(hostname)" \
     --arg data "$DATA_ROOT" \
@@ -134,7 +138,7 @@ if [ "$MODE" = deploy ]; then
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password postgres-url s3-access-key s3-secret-key bootstrap-secret; do
+  for secret in postgres-password migration-database-url runtime-database-url initial-password s3-access-key s3-secret-key; do
     [ -f "$SECRETS_ROOT/$secret" ] || die "required secret file is missing: $secret"
     [ "$(stat -c '%u' "$SECRETS_ROOT/$secret")" -eq 0 ] || die "secret file must be owned by root: $secret"
     mode=$(stat -c '%a' "$SECRETS_ROOT/$secret")

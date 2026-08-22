@@ -57,9 +57,11 @@ umask 077
 mkdir -p -- "$plugin_dir" "$(dirname -- "$receipt")"
 tmp=$plugin_dir/.docker-compose.$$
 installed=0
+receipt_tmp=
 cleanup() {
   rm -f -- "$tmp"
-  [ "$installed" -eq 0 ] || rm -f -- "$plugin"
+  [ -z "$receipt_tmp" ] || rm -f -- "$receipt_tmp"
+  [ "$installed" -eq 0 ] || rm -f -- "$plugin" "$receipt"
 }
 trap cleanup EXIT HUP INT TERM
 url=https://github.com/docker/compose/releases/download/$version/$asset
