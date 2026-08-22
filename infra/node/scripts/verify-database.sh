@@ -74,7 +74,7 @@ if [ "$mode" = post-migration ]; then
     from information_schema.tables where table_schema='public' and table_name like 'node_%' or table_schema='public' and table_name='nodes'")
   required='node_audit_events=false,false,false,false,false,false,false;node_capability_versions=false,false,false,false,false,false,false;node_enrollments=true,false,false,false,false,false,false;node_heartbeat_state=false,false,false,false,false,false,false;node_identities=false,false,false,false,false,false,false;node_install_plans=true,false,false,false,false,false,false;node_install_receipts=false,false,false,false,false,false,false;node_join_issuances=true,true,true,false,false,false,false;node_operation_events=false,false,false,false,false,false,false;node_operation_receipts=false,false,false,false,false,false,false;node_operations=false,false,false,false,false,false,false;nodes=true,false,false,false,false,false,false'
   [ "$expected" = "$required" ] || {
-    printf 'node broker table privilege matrix differs from migration 004\n' >&2
+    printf 'node broker table privilege matrix differs from migration 004: %s\n' "$expected" >&2
     exit 1
   }
 fi
