@@ -28,10 +28,17 @@ docker run -d --name "$postgres" --network "$network" \
   "$postgres_image" >/dev/null
 
 ready=false
+stable_checks=0
 for _attempt in $(seq 1 60); do
-  if docker exec -e PGPASSWORD="$admin_password" "$postgres" pg_isready -q -U postgres -d blazn; then
-    ready=true
-    break
+  if docker exec -e PGPASSWORD="$admin_password" "$postgres" \
+      psql -qAt -U postgres -d blazn -c 'SELECT 1' 2>/dev/null | grep -Fx 1 >/dev/null; then
+    stable_checks=$((stable_checks + 1))
+    if [ "$stable_checks" -ge 3 ]; then
+      ready=true
+      break
+    fi
+  else
+    stable_checks=0
   fi
   sleep 1
 done
