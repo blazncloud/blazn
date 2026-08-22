@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/nodes/v1alpha1/node-install-receipt.json",
+  "title": "Blazn NodeInstallReceipt",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "owner", "binary", "service", "mutations", "createdAt", "updatedAt", "checksum"],
+  "properties": {
+    "schemaVersion": {"const": "nodes/v1alpha1"},
+    "receiptId": {"type": "string", "format": "uuid"},
+    "planId": {"type": "string", "format": "uuid"},
+    "planDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nodeId": {"type": "string", "format": "uuid"},
+    "generation": {"type": "integer", "minimum": 1},
+    "state": {"enum": ["preparing", "installing", "joining", "verifying", "active", "rolling_back", "recovery_required", "removed"]},
+    "owner": {"type": "object", "additionalProperties": false, "required": ["uid", "pid", "processStartIdentity", "nonce"], "properties": {"uid": {"type": "integer", "minimum": 0}, "pid": {"type": "integer", "minimum": 1}, "processStartIdentity": {"type": "string", "minLength": 1}, "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{32,128}$"}}},
+    "binary": {"type": "object", "additionalProperties": false, "required": ["path", "digest"], "properties": {"path": {"type": "string", "pattern": "^/"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
+    "service": {"type": "object", "additionalProperties": false, "required": ["manager", "name", "definitionDigest"], "properties": {"manager": {"enum": ["systemd", "launchd"]}, "name": {"type": "string", "minLength": 1, "maxLength": 256}, "definitionDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
+    "mutations": {"type": "array", "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["ordinal", "kind", "target", "priorState", "desiredDigest", "status"], "properties": {"ordinal": {"type": "integer", "minimum": 1}, "kind": {"enum": ["package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"]}, "target": {"type": "string", "minLength": 1, "maxLength": 1024}, "priorState": {"enum": ["absent", "owned", "preexisting_exact"]}, "priorDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "desiredDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "status": {"enum": ["pending", "applied", "restored", "removed", "residue"]}}}},
+    "residues": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["target", "reason"], "properties": {"target": {"type": "string", "minLength": 1}, "reason": {"type": "string", "minLength": 1, "maxLength": 512}}}},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "checksum": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

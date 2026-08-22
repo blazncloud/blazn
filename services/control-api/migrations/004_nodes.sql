@@ -1,0 +1,172 @@
+CREATE TABLE nodes (
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 128),
+  kind text NOT NULL CHECK (kind IN ('personal', 'shared', 'managed')),
+  owner_user_id uuid NOT NULL REFERENCES users(id),
+  machine_fingerprint char(64) NOT NULL CHECK (machine_fingerprint ~ '^[0-9a-f]{64}$'),
+  host_platform text NOT NULL CHECK (host_platform IN ('linux', 'macos')),
+  host_architecture text NOT NULL CHECK (host_architecture IN ('amd64', 'arm64')),
+  lifecycle_state text NOT NULL CHECK (lifecycle_state IN ('pending', 'installing', 'verifying', 'active', 'paused', 'draining', 'offline', 'quarantined', 'removed')),
+  trust_state text NOT NULL CHECK (trust_state IN ('unverified', 'verifying', 'verified', 'rotating', 'revoked')),
+  agent_eligible boolean NOT NULL DEFAULT false,
+  service_version text NOT NULL,
+  version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
+  last_heartbeat_at timestamptz,
+  offline_after timestamptz,
+  current_capability_version bigint,
+  kubernetes_cluster_id text,
+  kubernetes_node_name text,
+  kubernetes_node_uid text,
+  kubernetes_resource_version text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX nodes_active_machine_idx ON nodes(workspace_id, machine_fingerprint) WHERE lifecycle_state <> 'removed';
+CREATE UNIQUE INDEX nodes_kubernetes_binding_idx ON nodes(kubernetes_cluster_id, kubernetes_node_uid) WHERE kubernetes_node_uid IS NOT NULL;
+
+CREATE TABLE node_enrollments (
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  requested_name text NOT NULL CHECK (char_length(requested_name) BETWEEN 1 AND 128),
+  mode text NOT NULL CHECK (mode IN ('fresh', 'adopt')),
+  expected_platform text NOT NULL CHECK (expected_platform IN ('linux', 'macos')),
+  expected_architecture text CHECK (expected_architecture IN ('amd64', 'arm64')),
+  token_hash char(64) NOT NULL UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  created_by uuid NOT NULL REFERENCES users(id),
+  expires_at timestamptz NOT NULL,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'exchanged', 'consumed', 'expired', 'revoked')),
+  machine_binding char(64) CHECK (machine_binding ~ '^[0-9a-f]{64}$'),
+  consumed_by_node_id uuid REFERENCES nodes(id),
+  version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (expires_at > created_at),
+  CHECK ((status = 'consumed') = (consumed_by_node_id IS NOT NULL))
+);
+
+CREATE TABLE node_identities (
+  id uuid PRIMARY KEY,
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  public_key_fingerprint char(64) NOT NULL CHECK (public_key_fingerprint ~ '^[0-9a-f]{64}$'),
+  generation bigint NOT NULL CHECK (generation > 0),
+  status text NOT NULL CHECK (status IN ('active', 'rotating', 'revoked', 'expired')),
+  issued_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  rotated_at timestamptz,
+  revoked_at timestamptz,
+  UNIQUE (node_id, generation),
+  CHECK (expires_at > issued_at)
+);
+
+CREATE UNIQUE INDEX node_identities_one_active_idx ON node_identities(node_id) WHERE status = 'active';
+
+CREATE TABLE node_capability_versions (
+  id uuid PRIMARY KEY,
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  version bigint NOT NULL CHECK (version > 0),
+  digest char(64) NOT NULL CHECK (digest ~ '^[0-9a-f]{64}$'),
+  payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
+  observed_at timestamptz NOT NULL,
+  UNIQUE (node_id, version),
+  UNIQUE (node_id, digest)
+);
+
+ALTER TABLE nodes ADD CONSTRAINT nodes_current_capability_fk
+  FOREIGN KEY (id, current_capability_version) REFERENCES node_capability_versions(node_id, version) DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE node_heartbeat_state (
+  node_id uuid PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+  identity_generation bigint NOT NULL CHECK (identity_generation > 0),
+  boot_id text NOT NULL CHECK (char_length(boot_id) BETWEEN 1 AND 128),
+  sequence bigint NOT NULL CHECK (sequence >= 0),
+  sent_at timestamptz NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  capability_digest char(64) CHECK (capability_digest ~ '^[0-9a-f]{64}$'),
+  health jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(health))
+);
+
+CREATE TABLE node_install_plans (
+  id uuid PRIMARY KEY,
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  enrollment_id uuid NOT NULL REFERENCES node_enrollments(id),
+  plan_digest char(64) NOT NULL UNIQUE CHECK (plan_digest ~ '^[0-9a-f]{64}$'),
+  signing_key_id text NOT NULL,
+  signature text NOT NULL CHECK (signature ~ '^[A-Za-z0-9_-]{86}$'),
+  canonical_plan jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(canonical_plan)),
+  issued_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  status text NOT NULL CHECK (status IN ('issued', 'accepted', 'expired', 'revoked')),
+  CHECK (expires_at > issued_at)
+);
+
+CREATE TABLE node_install_receipts (
+  id uuid PRIMARY KEY,
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  plan_id uuid NOT NULL REFERENCES node_install_plans(id),
+  receipt_digest char(64) NOT NULL UNIQUE CHECK (receipt_digest ~ '^[0-9a-f]{64}$'),
+  payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE node_operations (
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  type text NOT NULL CHECK (type IN ('pause', 'resume', 'label', 'cordon', 'uncordon', 'rotate_identity', 'repair', 'update', 'drain', 'remove')),
+  status text NOT NULL CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+  expected_node_version bigint NOT NULL CHECK (expected_node_version > 0),
+  requested_by uuid NOT NULL REFERENCES users(id),
+  idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 8 AND 128),
+  request_digest char(64) NOT NULL CHECK (request_digest ~ '^[0-9a-f]{64}$'),
+  parameters jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (NOT workspace_json_contains_secret_key(parameters)),
+  result jsonb CHECK (result IS NULL OR NOT workspace_json_contains_secret_key(result)),
+  error jsonb CHECK (error IS NULL OR NOT workspace_json_contains_secret_key(error)),
+  receipt_id uuid REFERENCES node_install_receipts(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  UNIQUE (requested_by, type, idempotency_key)
+);
+
+CREATE TABLE node_operation_events (
+  id uuid PRIMARY KEY,
+  operation_id uuid NOT NULL REFERENCES node_operations(id) ON DELETE CASCADE,
+  sequence bigint NOT NULL CHECK (sequence >= 0),
+  type text NOT NULL,
+  payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (operation_id, sequence)
+);
+
+CREATE TABLE node_join_issuances (
+  id uuid PRIMARY KEY,
+  enrollment_id uuid NOT NULL REFERENCES node_enrollments(id),
+  plan_id uuid NOT NULL REFERENCES node_install_plans(id),
+  node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+  node_public_key_fingerprint char(64) NOT NULL CHECK (node_public_key_fingerprint ~ '^[0-9a-f]{64}$'),
+  machine_fingerprint char(64) NOT NULL CHECK (machine_fingerprint ~ '^[0-9a-f]{64}$'),
+  credential_hash char(64) NOT NULL UNIQUE CHECK (credential_hash ~ '^[0-9a-f]{64}$'),
+  issued_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  consumed_at timestamptz,
+  revoked_at timestamptz,
+  joined_node_uid text,
+  CHECK (expires_at > issued_at),
+  CHECK (NOT (consumed_at IS NOT NULL AND revoked_at IS NOT NULL))
+);
+
+CREATE TABLE node_audit_events (
+  id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  node_id uuid REFERENCES nodes(id),
+  actor_user_id uuid REFERENCES users(id),
+  event_type text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (NOT workspace_json_contains_secret_key(payload)),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+GRANT SELECT, INSERT, UPDATE ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operations, node_operation_events, node_audit_events TO blazn_runtime;
+GRANT SELECT ON TABLE node_join_issuances TO blazn_runtime;
+GRANT SELECT, INSERT, UPDATE ON TABLE node_join_issuances TO blazn_node_broker;
+REVOKE ALL ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operations, node_operation_events, node_join_issuances, node_audit_events FROM blazn_bootstrap;

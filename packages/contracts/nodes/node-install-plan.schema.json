@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/nodes/v1alpha1/node-install-plan.json",
+  "title": "Blazn NodeInstallPlan",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "mode", "cluster", "target", "components", "mutations", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"],
+  "properties": {
+    "schemaVersion": {"const": "nodes/v1alpha1"},
+    "planId": {"type": "string", "format": "uuid"},
+    "nodeId": {"type": "string", "format": "uuid"},
+    "enrollmentId": {"type": "string", "format": "uuid"},
+    "workspaceId": {"type": "string", "format": "uuid"},
+    "mode": {"enum": ["fresh", "adopt"]},
+    "cluster": {"type": "object", "additionalProperties": false, "required": ["id", "workerOnly", "bootstrapTaint", "expectedCaFingerprint"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 128}, "workerOnly": {"const": true}, "bootstrapTaint": {"const": "blazn.dev/bootstrap=pending:NoSchedule"}, "expectedCaFingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
+    "target": {"type": "object", "additionalProperties": false, "required": ["platform", "architecture", "machineFingerprint", "minCpu", "minMemoryBytes", "minDiskBytes"], "properties": {"platform": {"enum": ["linux", "macos"]}, "architecture": {"enum": ["amd64", "arm64"]}, "machineFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "minCpu": {"type": "integer", "minimum": 1}, "minMemoryBytes": {"type": "integer", "minimum": 1073741824}, "minDiskBytes": {"type": "integer", "minimum": 10737418240}}},
+    "components": {"type": "array", "maxItems": 64, "items": {"type": "object", "additionalProperties": false, "required": ["name", "version", "source", "sha256", "ownership"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "version": {"type": "string", "minLength": 1, "maxLength": 128}, "source": {"type": "string", "format": "uri", "pattern": "^https://"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "ownership": {"enum": ["install", "adopt_exact"]}}}},
+    "mutations": {"type": "array", "maxItems": 256, "items": {"type": "object", "additionalProperties": false, "required": ["ordinal", "kind", "target", "desiredDigest", "rollback"], "properties": {"ordinal": {"type": "integer", "minimum": 1}, "kind": {"enum": ["package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"]}, "target": {"type": "string", "minLength": 1, "maxLength": 1024}, "desiredDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "rollback": {"enum": ["restore_prior", "remove_if_owned", "leave_and_report"]}}}},
+    "rollback": {"type": "object", "additionalProperties": false, "required": ["preserveUserData", "preserveControlPlane", "ambiguousOwnership"], "properties": {"preserveUserData": {"const": true}, "preserveControlPlane": {"const": true}, "ambiguousOwnership": {"const": "recovery_required"}}},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "signingKeyId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+  }
+}
