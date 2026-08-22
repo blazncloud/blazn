@@ -101,3 +101,29 @@ func TestHeartbeatUsesOnlyNodeProof(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNodeMutationsRequireBearerAndContractIdempotencyKey(t *testing.T) {
+	api, _ := New("https://example.test", nil)
+	request := CreateNodeOperationRequest{Type: "pause", ExpectedVersion: 1, Parameters: json.RawMessage(`{}`)}
+	for _, testCase := range []struct{ token, key string }{{"", "valid-key"}, {"token", ""}, {"token", "invalid key"}} {
+		if _, err := api.CreateNodeOperation(context.Background(), testCase.token, testUUIDA, testCase.key, request); err == nil {
+			t.Fatalf("token=%q key=%q unexpectedly accepted", testCase.token, testCase.key)
+		}
+	}
+}
+
+func TestExchangeRejectsUnknownOrTrailingPlanFields(t *testing.T) {
+	for _, suffix := range []string{`,"unexpected":true}`, `} {}`} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			encoded, _ := json.Marshal(validNodeInstallPlan())
+			encoded = encoded[:len(encoded)-1]
+			_, _ = w.Write(append(encoded, []byte(suffix)...))
+		}))
+		api, _ := New(server.URL, server.Client())
+		_, err := api.ExchangeNodeEnrollment(context.Background(), testUUIDC, ExchangeNodeEnrollmentRequest{Token: strings.Repeat("t", 43), MachineFingerprint: testHash, NodePublicKey: strings.Repeat("A", 43), Platform: NodePlatformLinux, Architecture: NodeArchAMD64})
+		server.Close()
+		if err == nil {
+			t.Fatalf("unsafe response suffix %q passed", suffix)
+		}
+	}
+}
