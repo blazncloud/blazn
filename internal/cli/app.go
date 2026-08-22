@@ -20,6 +20,7 @@ const (
 	ExitFailure     = 1
 	ExitUsage       = 2
 	ExitUnavailable = 7
+	ExitPartial     = 9
 )
 
 type OutputFormat string

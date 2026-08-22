@@ -140,8 +140,8 @@ func TestDoctorJSONAndExitCodes(t *testing.T) {
 }
 
 func TestExitCodeConstants(t *testing.T) {
-	if ExitSuccess != 0 || ExitFailure != 1 || ExitUsage != 2 || ExitUnavailable != 7 {
-		t.Fatalf("exit codes changed: %d %d %d %d", ExitSuccess, ExitFailure, ExitUsage, ExitUnavailable)
+	if ExitSuccess != 0 || ExitFailure != 1 || ExitUsage != 2 || ExitUnavailable != 7 || ExitPartial != 9 {
+		t.Fatalf("exit codes changed: %d %d %d %d %d", ExitSuccess, ExitFailure, ExitUsage, ExitUnavailable, ExitPartial)
 	}
 }
 

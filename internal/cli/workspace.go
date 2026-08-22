@@ -23,7 +23,7 @@ type workspaceCommands interface {
 	Invite(context.Context, string, client.Role, int, string) (client.InvitationCreated, error)
 	Invitations(context.Context, string) (client.InvitationList, error)
 	RevokeInvitation(context.Context, string, string, int, string) (client.MutationResult, error)
-	Join(context.Context, string, string) (client.WorkspaceEnvelope, error)
+	Join(context.Context, string, string) (workspacepkg.JoinResult, error)
 	Members(context.Context, string) (client.MembershipList, error)
 	SetRole(context.Context, string, string, client.Role, int, string) (client.Membership, error)
 	RemoveMember(context.Context, string, string, int, string) (client.MutationResult, error)
@@ -44,6 +44,9 @@ func (a *App) runWorkspace(format OutputFormat, args []string) int {
 	}
 	if command == "join" && (len(rest) != 1 || rest[0] != "--invite-stdin" || opts.workspace != "") {
 		return a.workspaceUsage(format, errors.New("join requires --invite-stdin; invitation tokens are never accepted as arguments"))
+	}
+	if workspaceMutation(command) && opts.requestID == "" {
+		return a.workspaceUsage(format, errors.New("workspace mutations require explicit --request-id for safe retry"))
 	}
 	commands, err := a.workspace()
 	if err != nil {
@@ -146,7 +149,7 @@ func (a *App) runWorkspace(format OutputFormat, args []string) int {
 			return a.workspaceUsage(format, err)
 		}
 		result, err := commands.Join(ctx, token, opts.requestID)
-		return a.writeWorkspaceEnvelope(format, result, err, "joined")
+		return a.writeJoinResult(format, result, err)
 	case "members":
 		value, err := optionalWorkspace(rest, opts.workspace)
 		if err != nil || opts.requestID != "" {
@@ -210,6 +213,14 @@ func (a *App) runWorkspace(format OutputFormat, args []string) int {
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown workspace command %q", command))
 	}
+}
+
+func workspaceMutation(command string) bool {
+	switch command {
+	case "create", "edit", "invite", "revoke-invite", "join", "set-role", "remove-member", "leave":
+		return true
+	}
+	return false
 }
 
 func parseWorkspaceOptions(args []string) (workspaceOptions, []string, error) {
@@ -438,6 +449,26 @@ func (a *App) writeMutation(f OutputFormat, r client.MutationResult, e error) in
 		return a.writeJSON(r)
 	}
 	fmt.Fprintf(a.stdout, "%s workspace %s (version %d)\n", titleWord(r.Status), r.WorkspaceID, r.Version)
+	return ExitSuccess
+}
+
+func (a *App) writeJoinResult(format OutputFormat, result workspacepkg.JoinResult, err error) int {
+	var partial *workspacepkg.PartialJoinError
+	if errors.As(err, &partial) {
+		if format == OutputJSON {
+			_ = a.writeJSON(result)
+		} else {
+			fmt.Fprintf(a.stdout, "Accepted invitation for workspace %s, but local selection failed.\nRun: blazn workspace use %s\nRequest ID: %s\n", result.Workspace.Name, result.Workspace.ID, result.IdempotencyKey)
+		}
+		return ExitPartial
+	}
+	if err != nil {
+		return a.writeWorkspaceError(format, err)
+	}
+	if format == OutputJSON {
+		return a.writeJSON(result)
+	}
+	fmt.Fprintf(a.stdout, "Joined and selected workspace %s (%s)\n", result.Workspace.Name, result.Workspace.ID)
 	return ExitSuccess
 }
 

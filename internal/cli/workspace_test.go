@@ -3,14 +3,20 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/KingJammin/blazn/internal/client"
+	workspacepkg "github.com/KingJammin/blazn/internal/workspace"
 )
 
-type fakeWorkspaceCommands struct{ joinedToken, workspaceValue, requestID string }
+type fakeWorkspaceCommands struct {
+	joinedToken, workspaceValue, requestID string
+	joinResult                             workspacepkg.JoinResult
+	joinErr                                error
+}
 
 func (f *fakeWorkspaceCommands) Create(context.Context, string, string, string) (client.WorkspaceEnvelope, error) {
 	return client.WorkspaceEnvelope{Workspace: client.Workspace{ID: "w1", Name: "Acme"}}, nil
@@ -37,10 +43,13 @@ func (f *fakeWorkspaceCommands) Invitations(context.Context, string) (client.Inv
 func (f *fakeWorkspaceCommands) RevokeInvitation(context.Context, string, string, int, string) (client.MutationResult, error) {
 	return client.MutationResult{}, nil
 }
-func (f *fakeWorkspaceCommands) Join(_ context.Context, token, key string) (client.WorkspaceEnvelope, error) {
+func (f *fakeWorkspaceCommands) Join(_ context.Context, token, key string) (workspacepkg.JoinResult, error) {
 	f.joinedToken = token
 	f.requestID = key
-	return client.WorkspaceEnvelope{Workspace: client.Workspace{ID: "w1", Name: "Acme"}}, nil
+	if f.joinErr != nil {
+		return f.joinResult, f.joinErr
+	}
+	return workspacepkg.JoinResult{Workspace: client.Workspace{ID: "w1", Name: "Acme"}, Accepted: true, Selected: true, IdempotencyKey: key}, nil
 }
 func (f *fakeWorkspaceCommands) Members(context.Context, string) (client.MembershipList, error) {
 	return client.MembershipList{}, nil
@@ -100,5 +109,28 @@ func TestWorkspaceWatchStreamsSSE(t *testing.T) {
 	app, out, _ := workspaceApp(fake)
 	if code := app.Run([]string{"workspace", "watch"}); code != ExitSuccess || !strings.Contains(out.String(), "event: ready") {
 		t.Fatalf("code=%d out=%q", code, out.String())
+	}
+}
+
+func TestWorkspaceMutationsRequireExplicitRequestID(t *testing.T) {
+	fake := &fakeWorkspaceCommands{}
+	app, _, stderr := workspaceApp(fake)
+	if code := app.Run([]string{"workspace", "invite", "--role", "member"}); code != ExitUsage || !strings.Contains(stderr.String(), "--request-id") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	app.stdin = strings.NewReader(strings.Repeat("a", 43))
+	if code := app.Run([]string{"workspace", "join", "--invite-stdin"}); code != ExitUsage || fake.joinedToken != "" {
+		t.Fatalf("code=%d token=%q", code, fake.joinedToken)
+	}
+}
+
+func TestWorkspaceJoinPartialResultUsesExitNine(t *testing.T) {
+	result := workspacepkg.JoinResult{Workspace: client.Workspace{ID: "w1", Name: "Acme"}, Accepted: true, Selected: false, IdempotencyKey: "same-request-id", SelectionError: "disk full"}
+	fake := &fakeWorkspaceCommands{joinResult: result, joinErr: &workspacepkg.PartialJoinError{Cause: errors.New("disk full")}}
+	app, out, stderr := workspaceApp(fake)
+	app.stdin = strings.NewReader(strings.Repeat("a", 43))
+	code := app.Run([]string{"workspace", "join", "--invite-stdin", "--request-id", "same-request-id", "--output=json"})
+	if code != ExitPartial || stderr.Len() != 0 || !strings.Contains(out.String(), `"accepted":true`) || !strings.Contains(out.String(), `"selected":false`) || !strings.Contains(out.String(), `"idempotencyKey":"same-request-id"`) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out.String(), stderr.String())
 	}
 }

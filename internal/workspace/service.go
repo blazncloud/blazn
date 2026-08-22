@@ -2,8 +2,6 @@ package workspace
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,8 +33,21 @@ type Service struct {
 	sessions  SessionProvider
 	contexts  ContextStore
 	now       func() time.Time
-	newKey    func() (string, error)
 }
+
+type JoinResult struct {
+	Workspace      client.Workspace `json:"workspace"`
+	Accepted       bool             `json:"accepted"`
+	Selected       bool             `json:"selected"`
+	IdempotencyKey string           `json:"idempotencyKey"`
+	SelectionError string           `json:"selectionError,omitempty"`
+}
+type PartialJoinError struct{ Cause error }
+
+func (e *PartialJoinError) Error() string {
+	return "invitation was accepted but local workspace selection failed: " + e.Cause.Error()
+}
+func (e *PartialJoinError) Unwrap() error { return e.Cause }
 
 func NewDefaultService() (*Service, error) {
 	sessions, err := NewDefaultSessionProvider()
@@ -58,15 +69,7 @@ func NewDefaultService() (*Service, error) {
 }
 
 func NewService(api API, sessions SessionProvider, contexts ContextStore) *Service {
-	return &Service{api: api, streamAPI: api, sessions: sessions, contexts: contexts, now: time.Now, newKey: randomKey}
-}
-
-func randomKey() (string, error) {
-	value := make([]byte, 16)
-	if _, err := rand.Read(value); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(value), nil
+	return &Service{api: api, streamAPI: api, sessions: sessions, contexts: contexts, now: time.Now}
 }
 
 func (s *Service) Create(ctx context.Context, name, slug, requestID string) (client.WorkspaceEnvelope, error) {
@@ -154,19 +157,29 @@ func (s *Service) RevokeInvitation(ctx context.Context, workspaceValue, invitati
 	})
 }
 
-func (s *Service) Join(ctx context.Context, inviteToken, requestID string) (client.WorkspaceEnvelope, error) {
+func (s *Service) Join(ctx context.Context, inviteToken, requestID string) (JoinResult, error) {
 	key, err := s.idempotencyKey(requestID)
 	if err != nil {
-		return client.WorkspaceEnvelope{}, err
+		return JoinResult{}, err
 	}
 	workspace, err := withSession(ctx, s.sessions, func(session Session) (client.WorkspaceEnvelope, error) {
 		return s.api.AcceptWorkspaceInvitation(ctx, session.AccessToken, key, client.AcceptInvitationRequest{InviteToken: inviteToken})
 	})
 	if err != nil {
-		return workspace, err
+		return JoinResult{}, err
 	}
-	_, err = s.Use(ctx, workspace.Workspace.ID)
-	return workspace, err
+	result := JoinResult{Workspace: workspace.Workspace, Accepted: true, Selected: false, IdempotencyKey: key}
+	session, err := s.sessions.Session(ctx, false)
+	if err != nil {
+		result.SelectionError = err.Error()
+		return result, &PartialJoinError{Cause: err}
+	}
+	if err := s.contexts.Save(Selection{APIOrigin: s.sessions.Origin(), UserID: session.UserID, WorkspaceID: workspace.Workspace.ID, SelectedAt: s.now().UTC()}); err != nil {
+		result.SelectionError = err.Error()
+		return result, &PartialJoinError{Cause: err}
+	}
+	result.Selected = true
+	return result, nil
 }
 
 func (s *Service) Members(ctx context.Context, value string) (client.MembershipList, error) {
@@ -291,13 +304,10 @@ func (s *Service) resolve(ctx context.Context, value string) (client.WorkspaceEn
 }
 
 func (s *Service) idempotencyKey(value string) (string, error) {
-	if value != "" {
-		if len(value) < 8 || len(value) > 128 {
-			return "", errors.New("request ID must contain between 8 and 128 characters")
-		}
-		return value, nil
+	if len(value) < 8 || len(value) > 128 {
+		return "", errors.New("an explicit request ID between 8 and 128 characters is required for workspace mutations")
 	}
-	return s.newKey()
+	return value, nil
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)

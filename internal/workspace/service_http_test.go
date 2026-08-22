@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,7 +23,10 @@ func (s *fakeSessions) Session(_ context.Context, force bool) (Session, error) {
 	return Session{AccessToken: "old-access", UserID: "user-1"}, nil
 }
 
-type memoryContexts struct{ selection Selection }
+type memoryContexts struct {
+	selection Selection
+	saveErr   error
+}
 
 func (m *memoryContexts) Load(origin, user string) (Selection, error) {
 	if m.selection.WorkspaceID == "" {
@@ -30,7 +34,13 @@ func (m *memoryContexts) Load(origin, user string) (Selection, error) {
 	}
 	return m.selection, nil
 }
-func (m *memoryContexts) Save(value Selection) error { m.selection = value; return nil }
+func (m *memoryContexts) Save(value Selection) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
+	m.selection = value
+	return nil
+}
 
 func TestJoinUsesBodyOnlyRetriesAccessAndSelectsWorkspace(t *testing.T) {
 	const workspaceID = "123e4567-e89b-42d3-a456-426614174000"
@@ -64,9 +74,8 @@ func TestJoinUsesBodyOnlyRetriesAccessAndSelectsWorkspace(t *testing.T) {
 	sessions := &fakeSessions{}
 	contexts := &memoryContexts{}
 	service := NewService(api, sessions, contexts)
-	service.newKey = func() (string, error) { return "request-123", nil }
-	result, err := service.Join(context.Background(), token, "")
-	if err != nil || result.Workspace.ID != workspaceID || sessions.forced != 1 || accepts != 2 {
+	result, err := service.Join(context.Background(), token, "request-123")
+	if err != nil || result.Workspace.ID != workspaceID || !result.Accepted || !result.Selected || sessions.forced != 1 || accepts != 2 {
 		t.Fatalf("result=%#v forced=%d accepts=%d err=%v", result, sessions.forced, accepts, err)
 	}
 	if acceptURI != "/v1/workspace-invitations/accept" || acceptBody != token || strings.Contains(acceptURI, token) || idempotency != "request-123" {
@@ -74,5 +83,31 @@ func TestJoinUsesBodyOnlyRetriesAccessAndSelectsWorkspace(t *testing.T) {
 	}
 	if contexts.selection.APIOrigin != sessions.Origin() || contexts.selection.UserID != "user-1" || contexts.selection.WorkspaceID != workspaceID {
 		t.Fatalf("selection=%#v", contexts.selection)
+	}
+}
+
+func TestJoinContextFailureIsExplicitPartialAndDoesNotReaccept(t *testing.T) {
+	const workspaceID = "123e4567-e89b-42d3-a456-426614174000"
+	token := strings.Repeat("t", 43)
+	accepts := 0
+	var key string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspace-invitations/accept" {
+			t.Fatalf("unexpected %s", r.URL.Path)
+		}
+		accepts++
+		key = r.Header.Get("Idempotency-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"workspace":{"id":"` + workspaceID + `","slug":"team","name":"Team","status":"active","version":1,"currentUserRole":"member","createdAt":"now","updatedAt":"now"}}`))
+	}))
+	defer server.Close()
+	api, _ := client.New(server.URL, server.Client())
+	sessions := &fakeSessions{}
+	contexts := &memoryContexts{saveErr: errors.New("disk full")}
+	service := NewService(api, sessions, contexts)
+	result, err := service.Join(context.Background(), token, "same-request-id")
+	var partial *PartialJoinError
+	if !errors.As(err, &partial) || !result.Accepted || result.Selected || result.IdempotencyKey != "same-request-id" || result.SelectionError == "" || accepts != 1 || key != "same-request-id" {
+		t.Fatalf("result=%#v accepts=%d key=%q err=%v", result, accepts, key, err)
 	}
 }
