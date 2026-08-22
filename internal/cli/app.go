@@ -12,6 +12,7 @@ import (
 
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
+	pluginpkg "github.com/blazncloud/blazn/internal/plugin"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
@@ -51,6 +52,17 @@ type App struct {
 	node        func() (nodeCommands, error)
 	stdin       io.Reader
 	stdinTTY    func() bool
+	plugins     pluginCommands
+}
+
+type pluginCommands interface {
+	Resolve(string) (pluginpkg.Definition, bool)
+	Installed(string) (pluginpkg.Installed, error)
+	Install(context.Context, string) (pluginpkg.Receipt, error)
+	List() []pluginpkg.Status
+	Rollback(string) (pluginpkg.Receipt, error)
+	Remove(string) error
+	Run(context.Context, pluginpkg.Definition, []string, string, pluginpkg.Stdio) (int, error)
 }
 
 type authCommands interface {
@@ -69,6 +81,11 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 	if build.GOARCH == "" {
 		build.GOARCH = runtime.GOARCH
 	}
+	pluginService, pluginErr := pluginpkg.NewService(build.Version)
+	var plugins pluginCommands
+	if pluginErr == nil {
+		plugins = pluginService
+	}
 	return &App{
 		stdout:    stdout,
 		stderr:    stderr,
@@ -85,6 +102,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		},
 		stdin:    os.Stdin,
 		stdinTTY: func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		plugins:  plugins,
 	}
 }
 
@@ -145,7 +163,18 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(format, rest)
 	case "node":
 		return a.runNode(format, rest)
+	case "plugins":
+		return a.runPlugins(format, rest)
 	default:
+		if a.plugins != nil {
+			if definition, ok := a.plugins.Resolve(command); ok {
+				pluginArgs := positional
+				if command == definition.CanonicalCommand {
+					pluginArgs = rest
+				}
+				return a.runPlugin(format, definition, pluginArgs)
+			}
+		}
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
 	}
 }

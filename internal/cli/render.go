@@ -29,6 +29,8 @@ var rootCommands = []helpCommand{
 	{Name: "doctor", Summary: "Run offline readiness checks"},
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
+	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
+	{Name: "social", Summary: "Search public entities and manage social content (plugin)"},
 	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
 	{Name: "workspace", Summary: "Create, select, and manage workspaces"},
@@ -79,7 +81,19 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		}
 	case "node":
 		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|heartbeat [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll, root-authorize, and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}}}
+	case "plugins":
+		output = helpOutput{Command: "plugins", Usage: "blazn plugins list|doctor|install|rollback|remove [NAME] [--yes]", Summary: "Install and manage signed allowlisted Blazn plugins.", Commands: []helpCommand{{Name: "list", Summary: "List allowlisted plugins"}, {Name: "doctor", Summary: "Validate installed plugin receipts"}, {Name: "install", Summary: "Install a signed plugin release"}, {Name: "rollback", Summary: "Activate the previous installed version"}, {Name: "remove", Summary: "Remove a receipt-owned plugin"}}}
 	default:
+		if a.plugins != nil {
+			if definition, ok := a.plugins.Resolve(topic); ok {
+				commands := make([]helpCommand, 0, len(definition.Aliases))
+				for _, alias := range definition.Aliases {
+					commands = append(commands, helpCommand{Name: alias, Summary: "Run the " + alias + " command through " + definition.Name})
+				}
+				output = helpOutput{Command: definition.CanonicalCommand, Usage: "blazn " + definition.CanonicalCommand + " <command> [options]", Summary: "Commands provided by the signed " + definition.Name + " plugin.", Commands: commands}
+				break
+			}
+		}
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown help topic %q", topic))
 	}
 
