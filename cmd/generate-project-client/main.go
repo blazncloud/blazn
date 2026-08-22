@@ -22,10 +22,10 @@ var projectTemplate []byte
 const supportedProjectContractSHA256 = "f5d00176485165a83b62dbf25e42d1bccc82a61df4028b35a91396e2e9160598"
 
 var operations = map[string]string{
-	"POST /v1/workspaces/{workspaceId}/projects":                   "createProject",
-	"GET /v1/workspaces/{workspaceId}/projects":                    "listProjects",
-	"GET /v1/workspaces/{workspaceId}/projects/{projectId}":        "getProject",
-	"PATCH /v1/workspaces/{workspaceId}/projects/{projectId}":      "updateProject",
+	"POST /v1/workspaces/{workspaceId}/projects":              "createProject",
+	"GET /v1/workspaces/{workspaceId}/projects":               "listProjects",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}":   "getProject",
+	"PATCH /v1/workspaces/{workspaceId}/projects/{projectId}": "updateProject",
 }
 
 var schemaFields = map[string][]string{
