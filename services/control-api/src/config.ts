@@ -44,7 +44,7 @@ export function loadConfig(): Config {
     publicUrl,
     sessionTtlSeconds: boundedInteger("SESSION_TTL_SECONDS", 900, 60, 3600),
     refreshTtlSeconds: boundedInteger("REFRESH_TTL_SECONDS", 60 * 60 * 24 * 30, 3600, 60 * 60 * 24 * 90),
-    deviceCodeTtlSeconds: boundedInteger("DEVICE_CODE_TTL_SECONDS", 600, 60, 1800),
+    deviceCodeTtlSeconds: boundedInteger("DEVICE_CODE_TTL_SECONDS", 600, 60, 900),
     s3Endpoint,
     s3Region: process.env.S3_REGION ?? "us-east-1",
     s3Bucket: process.env.S3_BUCKET ?? "blazn-poc",

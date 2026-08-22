@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { API_ERROR_STATUS, type ApiErrorCode } from "./contract.js";
 
 export async function jsonBody(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -6,7 +7,7 @@ export async function jsonBody(request: IncomingMessage, limit = 64 * 1024): Pro
   for await (const chunk of request) {
     const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += bytes.length;
-    if (size > limit) throw new HttpError(413, "request_too_large", "request body is too large");
+    if (size > limit) throw new HttpError("request_too_large", "request body is too large");
     chunks.push(bytes);
   }
   if (chunks.length === 0) return {};
@@ -15,7 +16,7 @@ export async function jsonBody(request: IncomingMessage, limit = 64 * 1024): Pro
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("object required");
     return value as Record<string, unknown>;
   } catch {
-    throw new HttpError(400, "invalid_json", "request body must be a JSON object");
+    throw new HttpError("invalid_json", "request body must be a JSON object");
   }
 }
 
@@ -26,15 +27,18 @@ export function sendJson(response: ServerResponse, status: number, body: unknown
 }
 
 export class HttpError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfter?: number) {
+  readonly status: number;
+
+  constructor(readonly code: ApiErrorCode, message: string, readonly retryAfter?: number) {
     super(message);
+    this.status = API_ERROR_STATUS[code];
   }
 }
 
 export function requiredString(body: Record<string, unknown>, key: string, max = 256): string {
   const value = body[key];
   if (typeof value !== "string" || value.trim() === "" || value.length > max) {
-    throw new HttpError(400, "invalid_request", `${key} must be a non-empty string of at most ${max} characters`);
+    throw new HttpError("invalid_request", `${key} must be a non-empty string of at most ${max} characters`);
   }
   return value.trim();
 }
@@ -42,7 +46,15 @@ export function requiredString(body: Record<string, unknown>, key: string, max =
 export function requiredSecret(body: Record<string, unknown>, key: string, max = 1024): string {
   const value = body[key];
   if (typeof value !== "string" || value.length === 0 || value.length > max) {
-    throw new HttpError(400, "invalid_request", `${key} must be a non-empty string of at most ${max} characters`);
+    throw new HttpError("invalid_request", `${key} must be a non-empty string of at most ${max} characters`);
   }
   return value;
+}
+
+export function requireExactKeys(body: Record<string, unknown>, expected: readonly string[]): void {
+  const allowed = new Set(expected);
+  const actual = Object.keys(body);
+  if (actual.length !== expected.length || actual.some((key) => !allowed.has(key))) {
+    throw new HttpError("invalid_request", `request body must contain exactly: ${expected.join(", ")}`);
+  }
 }

@@ -27,6 +27,6 @@ export async function enforceLimit(database: Database, scope: string, identity: 
       count = CASE WHEN auth_rate_limits.window_start + ($2 * interval '1 second') <= now() THEN 1 ELSE auth_rate_limits.count + 1 END
     RETURNING count, greatest(1, ceil(extract(epoch FROM (window_start + ($2 * interval '1 second') - now()))))::int AS retry_after`, [key, windowSeconds]);
   const row = result.rows[0];
-  if (row && row.count > maximum) throw new HttpError(429, "rate_limited", "too many authentication attempts; retry later", row.retry_after);
+  if (row && row.count > maximum) throw new HttpError("rate_limited", "too many authentication attempts; retry later", row.retry_after);
   if (Math.random() < 0.01) await database.query("DELETE FROM auth_rate_limits WHERE window_start < now() - interval '1 day'");
 }
