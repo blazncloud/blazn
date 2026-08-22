@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated test test-control-api test-infra release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-infra test-sandbox-contract test-sandbox-postgres release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -29,6 +29,12 @@ generate-node-client:
 
 check-node-generated:
 	go run ./cmd/generate-node-client --check
+
+generate-sandbox-client:
+	go run ./cmd/generate-sandbox-client
+
+check-sandbox-generated:
+	go run ./cmd/generate-sandbox-client --check
 
 generate-proxy-contract:
 	go run ./cmd/generate-proxy-contract
@@ -64,6 +70,12 @@ test-infra:
 	./infra/agent-sandbox/test-adapter-static.sh
 	shellcheck infra/agent-sandbox/*.sh
 
+test-sandbox-contract:
+	./scripts/test-sandbox-contract.sh
+
+test-sandbox-postgres:
+	./scripts/test-sandbox-postgres.sh
+
 release:
 	./scripts/release.sh
 
@@ -73,4 +85,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-proxy-generated check-node-generated test test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-proxy-generated check-node-generated check-sandbox-generated test test-sandbox-contract test-release test-install

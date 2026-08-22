@@ -56,3 +56,21 @@ test("Node broker durable intents and row-lock function are narrowly granted", a
   const intentTable = sql.match(/CREATE TABLE node_join_issuance_intents \([\s\S]*?\n\);/)?.[0] ?? "";
   assert.doesNotMatch(intentTable, /credential_(?:hash|ciphertext)|\b(?:token|secret)\b/i);
 });
+
+test("sandbox persistence freezes immutable versions and workspace-scoped bindings", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/009_sandboxes.sql"), "utf8");
+  assert.match(sql, /sandbox_template_versions_immutable/);
+  assert.match(sql, /canonical_spec bytea NOT NULL/);
+  assert.match(sql, /UNIQUE \(template_id, version\)/);
+  assert.match(sql, /UNIQUE \(template_id, content_digest\)/);
+  assert.match(sql, /FOREIGN KEY \(template_version_id, workspace_id, template_id, template_version, template_digest\)[\s\S]*REFERENCES sandbox_template_versions\(id, workspace_id, template_id, version, content_digest\)/);
+  assert.match(sql, /token_hash char\(64\) NOT NULL UNIQUE/);
+  assert.match(sql, /FOREIGN KEY \(session_id, user_id\) REFERENCES sessions\(id, user_id\)/);
+  assert.match(sql, /CHECK \(expires_at > created_at AND expires_at <= created_at \+ interval '60 seconds'\)/);
+  assert.match(sql, /CHECK \(NOT workspace_json_contains_secret_key\(artifact_contract\)\)/);
+  assert.match(sql, /REVOKE ALL ON TABLE[\s\S]*FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker/);
+  assert.match(sql, /GRANT SELECT, INSERT ON TABLE sandbox_template_versions TO blazn_runtime/);
+  assert.match(sql, /GRANT UPDATE \(state, consumed_at, revoked_at\) ON TABLE sandbox_access_grants TO blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT SELECT, INSERT, UPDATE(?:, DELETE)? ON TABLE sandbox_template_versions/);
+});

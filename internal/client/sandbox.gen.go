@@ -1,0 +1,510 @@
+// Code generated from the Blazn sandbox contracts; DO NOT EDIT.
+// Sandbox OpenAPI SHA256: 996b5143c4e99f8a356c1d7da45570b48859d277c3267ef7140e6536123a712e
+// SandboxTemplate SHA256: 29c0779892c4fb7bf25682bf39d3721649602b3927b8b9764b00398a1c784acf
+// Sandbox CLI contract SHA256: 772cea3cb6a3fc9247e1aa85330a2d3de56dfd63cecb06aec876390e22f79808
+
+package client
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/gowebpki/jcs"
+)
+
+const (
+	SandboxSchemaVersion            = "sandboxes/v1alpha1"
+	SandboxTemplateAPIVersion       = "blazn.dev/v1alpha1"
+	SandboxTemplateKind             = "SandboxTemplate"
+	SandboxIsolationNotice          = "POC orchestration isolation only; approved non-sensitive workloads only"
+	SandboxMaxFileBytes       int64 = 8 << 20
+)
+
+type SandboxError = ErrorBody
+type SandboxManifest = json.RawMessage
+type SandboxArchitecture string
+type SandboxAllocationMode string
+type SandboxState string
+type SandboxDesiredState string
+type SandboxOperationType string
+type SandboxOperationStatus string
+type SandboxGrantKind string
+type SandboxGrantState string
+
+const (
+	SandboxAMD64         SandboxArchitecture   = "amd64"
+	SandboxARM64         SandboxArchitecture   = "arm64"
+	SandboxDirect        SandboxAllocationMode = "direct"
+	SandboxClaim         SandboxAllocationMode = "claim"
+	SandboxGrantExec     SandboxGrantKind      = "exec"
+	SandboxGrantUpload   SandboxGrantKind      = "upload"
+	SandboxGrantDownload SandboxGrantKind      = "download"
+)
+
+type SandboxTemplate struct {
+	ID                 string          `json:"id"`
+	WorkspaceID        string          `json:"workspaceId"`
+	Name               string          `json:"name"`
+	DraftVersion       int64           `json:"draftVersion"`
+	DraftManifest      SandboxManifest `json:"draftManifest"`
+	DraftDigest        string          `json:"draftDigest"`
+	PublishedVersionID *string         `json:"publishedVersionId"`
+	CreatedAt          string          `json:"createdAt"`
+	UpdatedAt          string          `json:"updatedAt"`
+}
+
+type SandboxTemplateEnvelope struct {
+	Template SandboxTemplate `json:"template"`
+}
+type SandboxTemplateList struct {
+	Items      []SandboxTemplate `json:"items"`
+	NextCursor *string           `json:"nextCursor"`
+}
+type ReplaceSandboxTemplateDraftRequest struct {
+	ExpectedDraftVersion int64           `json:"expectedDraftVersion"`
+	Manifest             SandboxManifest `json:"manifest"`
+}
+type PublishSandboxTemplateVersionRequest struct {
+	ExpectedDraftVersion int64 `json:"expectedDraftVersion"`
+}
+
+type SandboxTemplateVersion struct {
+	ID            string          `json:"id"`
+	WorkspaceID   string          `json:"workspaceId"`
+	TemplateID    string          `json:"templateId"`
+	Name          string          `json:"name"`
+	Version       string          `json:"version"`
+	ContentDigest string          `json:"contentDigest"`
+	Manifest      SandboxManifest `json:"manifest"`
+	Status        string          `json:"status"`
+	CreatedAt     string          `json:"createdAt"`
+}
+
+type SandboxTemplateVersionEnvelope struct {
+	Template SandboxTemplate        `json:"template"`
+	Version  SandboxTemplateVersion `json:"version"`
+}
+type SandboxTemplateVersionList struct {
+	Items      []SandboxTemplateVersion `json:"items"`
+	NextCursor *string                  `json:"nextCursor"`
+}
+type SandboxTemplateReference struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+type SandboxSource struct {
+	Repository string `json:"repository"`
+	Commit     string `json:"commit"`
+}
+
+type CreateSandboxRequest struct {
+	Template             SandboxTemplateReference `json:"template"`
+	Architecture         SandboxArchitecture      `json:"architecture"`
+	AllocationMode       SandboxAllocationMode    `json:"allocationMode"`
+	ExpiresInSeconds     int64                    `json:"expiresInSeconds"`
+	Sources              []SandboxSource          `json:"sources"`
+	ApprovedNonSensitive bool                     `json:"approvedNonSensitive"`
+}
+
+type SandboxCondition struct {
+	Type       string `json:"type"`
+	Status     string `json:"status"`
+	Reason     string `json:"reason"`
+	Message    string `json:"message,omitempty"`
+	ObservedAt string `json:"observedAt"`
+}
+
+type Sandbox struct {
+	ID                string                `json:"id"`
+	WorkspaceID       string                `json:"workspaceId"`
+	RequestedBy       string                `json:"requestedBy"`
+	TemplateID        string                `json:"templateId"`
+	TemplateVersionID string                `json:"templateVersionId"`
+	TemplateName      string                `json:"templateName"`
+	TemplateVersion   string                `json:"templateVersion"`
+	TemplateDigest    string                `json:"templateDigest"`
+	VariantName       string                `json:"variantName"`
+	ImageDigest       string                `json:"imageDigest"`
+	Architecture      SandboxArchitecture   `json:"architecture"`
+	AllocationMode    SandboxAllocationMode `json:"allocationMode"`
+	State             SandboxState          `json:"state"`
+	DesiredState      SandboxDesiredState   `json:"desiredState"`
+	Version           int64                 `json:"version"`
+	QueueName         string                `json:"queueName"`
+	AdmissionID       *string               `json:"admissionId"`
+	Isolation         string                `json:"isolation"`
+	ExpiresAt         string                `json:"expiresAt"`
+	Conditions        []SandboxCondition    `json:"conditions"`
+	CreatedAt         string                `json:"createdAt"`
+	UpdatedAt         string                `json:"updatedAt"`
+	StoppedAt         *string               `json:"stoppedAt,omitempty"`
+	DeletedAt         *string               `json:"deletedAt,omitempty"`
+}
+
+type SandboxList struct {
+	Items      []Sandbox `json:"items"`
+	NextCursor *string   `json:"nextCursor"`
+}
+type CreateSandboxOperationRequest struct {
+	Type            SandboxOperationType `json:"type"`
+	ExpectedVersion int64                `json:"expectedVersion"`
+}
+type SandboxOperation struct {
+	ID                     string                 `json:"id"`
+	SandboxID              string                 `json:"sandboxId"`
+	Type                   SandboxOperationType   `json:"type"`
+	Status                 SandboxOperationStatus `json:"status"`
+	ExpectedSandboxVersion int64                  `json:"expectedSandboxVersion"`
+	CreatedAt              string                 `json:"createdAt"`
+	CompletedAt            *string                `json:"completedAt,omitempty"`
+}
+type SandboxMutation struct {
+	Sandbox   Sandbox          `json:"sandbox"`
+	Operation SandboxOperation `json:"operation"`
+}
+type CreateSandboxAccessGrantRequest struct {
+	Kind             SandboxGrantKind `json:"kind"`
+	ExpiresInSeconds int64            `json:"expiresInSeconds"`
+}
+type SandboxAccessGrant struct {
+	ID          string            `json:"id"`
+	SandboxID   string            `json:"sandboxId"`
+	WorkspaceID string            `json:"workspaceId"`
+	Scope       string            `json:"scope"`
+	Kind        SandboxGrantKind  `json:"kind"`
+	State       SandboxGrantState `json:"state"`
+	ExpiresAt   string            `json:"expiresAt"`
+	CreatedAt   string            `json:"createdAt"`
+}
+type SandboxAccessGrantCreated struct {
+	Grant       SandboxAccessGrant `json:"grant"`
+	AccessToken string             `json:"accessToken"`
+	Endpoint    string             `json:"endpoint"`
+}
+type SandboxExecRequest struct {
+	Command []string `json:"command"`
+}
+type SandboxExecResult struct {
+	RemoteExitCode int    `json:"remoteExitCode"`
+	StdoutBase64   string `json:"stdoutBase64"`
+	StderrBase64   string `json:"stderrBase64"`
+	Truncated      bool   `json:"truncated"`
+}
+type SandboxFileTransferResult struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+}
+
+var sandboxErrorHTTPStatuses = map[string]int{
+	"access_expired":                   401,
+	"access_grant_consumed":            410,
+	"access_grant_expired":             410,
+	"access_grant_revoked":             410,
+	"idempotency_conflict":             409,
+	"internal_error":                   500,
+	"invalid_json":                     400,
+	"invalid_request":                  400,
+	"membership_required":              403,
+	"permission_denied":                403,
+	"rate_limited":                     429,
+	"request_too_large":                413,
+	"sandbox_access_denied":            404,
+	"sandbox_architecture_unavailable": 409,
+	"sandbox_backend_unavailable":      503,
+	"sandbox_cleanup_incomplete":       409,
+	"sandbox_not_found":                404,
+	"sandbox_state_conflict":           409,
+	"sandbox_template_unavailable":     409,
+	"session_revoked":                  401,
+	"template_invalid":                 400,
+	"template_name_conflict":           409,
+	"template_not_found":               404,
+	"template_policy_denied":           403,
+	"template_version_conflict":        409,
+	"template_version_not_found":       404,
+	"unauthorized":                     401,
+	"version_conflict":                 409}
+
+func SandboxErrorHTTPStatus(code string) (int, bool) {
+	status, ok := sandboxErrorHTTPStatuses[code]
+	return status, ok
+}
+
+// CanonicalSandboxTemplateDigest computes the frozen content identity over only
+// the fully resolved spec, using RFC 8785/JCS and a SHA-256 digest.
+func CanonicalSandboxTemplateDigest(manifest []byte) (string, []byte, error) {
+	var root struct {
+		Spec json.RawMessage `json:"spec"`
+	}
+	if err := json.Unmarshal(manifest, &root); err != nil {
+		return "", nil, fmt.Errorf("decode sandbox template: %w", err)
+	}
+	if len(root.Spec) == 0 || string(root.Spec) == "null" {
+		return "", nil, fmt.Errorf("sandbox template spec is required")
+	}
+	canonical, err := jcs.Transform(root.Spec)
+	if err != nil {
+		return "", nil, fmt.Errorf("canonicalize sandbox template spec: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:]), canonical, nil
+}
+
+func (c *Client) CreateSandboxTemplate(ctx context.Context, accessToken, workspaceID, idempotencyKey string, manifest SandboxManifest) (SandboxTemplateEnvelope, error) {
+	var out SandboxTemplateEnvelope
+	err := c.sandboxJSON(ctx, http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/sandbox-templates", accessToken, idempotencyKey, nil, manifest, &out, http.StatusCreated)
+	return out, err
+}
+func (c *Client) ListSandboxTemplates(ctx context.Context, accessToken, workspaceID, cursor string) (SandboxTemplateList, error) {
+	var out SandboxTemplateList
+	q := url.Values{}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	err := c.sandboxJSON(ctx, http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/sandbox-templates", accessToken, "", q, nil, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) GetSandboxTemplate(ctx context.Context, accessToken, templateID string) (SandboxTemplateEnvelope, error) {
+	var out SandboxTemplateEnvelope
+	err := c.sandboxJSON(ctx, http.MethodGet, "/v1/sandbox-templates/"+url.PathEscape(templateID), accessToken, "", nil, nil, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) ReplaceSandboxTemplateDraft(ctx context.Context, accessToken, templateID, idempotencyKey string, request ReplaceSandboxTemplateDraftRequest) (SandboxTemplateEnvelope, error) {
+	var out SandboxTemplateEnvelope
+	err := c.sandboxJSON(ctx, http.MethodPut, "/v1/sandbox-templates/"+url.PathEscape(templateID)+"/draft", accessToken, idempotencyKey, nil, request, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) PublishSandboxTemplateVersion(ctx context.Context, accessToken, templateID, idempotencyKey string, request PublishSandboxTemplateVersionRequest) (SandboxTemplateVersionEnvelope, error) {
+	var out SandboxTemplateVersionEnvelope
+	err := c.sandboxJSON(ctx, http.MethodPost, "/v1/sandbox-templates/"+url.PathEscape(templateID)+"/versions", accessToken, idempotencyKey, nil, request, &out, http.StatusCreated)
+	return out, err
+}
+func (c *Client) ListSandboxTemplateVersions(ctx context.Context, accessToken, templateID, cursor string) (SandboxTemplateVersionList, error) {
+	var out SandboxTemplateVersionList
+	q := url.Values{}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	err := c.sandboxJSON(ctx, http.MethodGet, "/v1/sandbox-templates/"+url.PathEscape(templateID)+"/versions", accessToken, "", q, nil, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) GetSandboxTemplateVersion(ctx context.Context, accessToken, versionID string) (SandboxTemplateVersionEnvelope, error) {
+	var out SandboxTemplateVersionEnvelope
+	err := c.sandboxJSON(ctx, http.MethodGet, "/v1/sandbox-template-versions/"+url.PathEscape(versionID), accessToken, "", nil, nil, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) CreateSandbox(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request CreateSandboxRequest) (SandboxMutation, error) {
+	var out SandboxMutation
+	if !request.ApprovedNonSensitive {
+		return out, fmt.Errorf("approvedNonSensitive must be true: %s", SandboxIsolationNotice)
+	}
+	err := c.sandboxJSON(ctx, http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/sandboxes", accessToken, idempotencyKey, nil, request, &out, http.StatusAccepted)
+	return out, err
+}
+func (c *Client) ListSandboxes(ctx context.Context, accessToken, workspaceID, cursor string) (SandboxList, error) {
+	var out SandboxList
+	q := url.Values{}
+	if cursor != "" {
+		q.Set("cursor", cursor)
+	}
+	err := c.sandboxJSON(ctx, http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/sandboxes", accessToken, "", q, nil, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) GetSandbox(ctx context.Context, accessToken, sandboxID string) (Sandbox, error) {
+	var out Sandbox
+	err := c.sandboxJSON(ctx, http.MethodGet, "/v1/sandboxes/"+url.PathEscape(sandboxID), accessToken, "", nil, nil, &out, http.StatusOK)
+	return out, err
+}
+func (c *Client) CreateSandboxOperation(ctx context.Context, accessToken, sandboxID, idempotencyKey string, request CreateSandboxOperationRequest) (SandboxMutation, error) {
+	var out SandboxMutation
+	err := c.sandboxJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(sandboxID)+"/operations", accessToken, idempotencyKey, nil, request, &out, http.StatusAccepted)
+	return out, err
+}
+func (c *Client) CreateSandboxAccessGrant(ctx context.Context, accessToken, sandboxID, idempotencyKey string, request CreateSandboxAccessGrantRequest) (SandboxAccessGrantCreated, error) {
+	var out SandboxAccessGrantCreated
+	err := c.sandboxJSON(ctx, http.MethodPost, "/v1/sandboxes/"+url.PathEscape(sandboxID)+"/access-grants", accessToken, idempotencyKey, nil, request, &out, http.StatusCreated)
+	return out, err
+}
+
+func (c *Client) StreamSandboxEvents(ctx context.Context, accessToken, sandboxID, lastEventID string) (io.ReadCloser, error) {
+	endpoint := c.sandboxEndpoint("/v1/sandboxes/"+url.PathEscape(sandboxID)+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "text/event-stream")
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, decodeSandboxAPIError(resp)
+	}
+	return resp.Body, nil
+}
+
+func (c *Client) ExecuteSandboxGrant(ctx context.Context, grantID, grantToken string, request SandboxExecRequest) (SandboxExecResult, error) {
+	var out SandboxExecResult
+	err := c.sandboxGrantJSON(ctx, http.MethodPost, "/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/exec", grantToken, request, &out)
+	return out, err
+}
+
+func (c *Client) UploadSandboxGrantFile(ctx context.Context, grantID, grantToken, sandboxPath, digest string, content io.Reader, size int64) (SandboxFileTransferResult, error) {
+	var out SandboxFileTransferResult
+	if size < 0 || size > SandboxMaxFileBytes {
+		return out, fmt.Errorf("sandbox upload size must be between 0 and %d bytes", SandboxMaxFileBytes)
+	}
+	if !validSandboxTransferPath(sandboxPath) {
+		return out, fmt.Errorf("sandbox transfer path is not confined")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.sandboxEndpoint("/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/file", nil), io.LimitReader(content, SandboxMaxFileBytes+1))
+	if err != nil {
+		return out, err
+	}
+	req.ContentLength = size
+	req.Header.Set("Authorization", "Blazn-Grant "+grantToken)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Blazn-Sandbox-Path", sandboxPath)
+	req.Header.Set("X-Content-SHA256", digest)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, decodeSandboxAPIError(resp)
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out)
+	return out, err
+}
+
+func (c *Client) DownloadSandboxGrantFile(ctx context.Context, grantID, grantToken, sandboxPath string) (io.ReadCloser, int64, string, error) {
+	if !validSandboxTransferPath(sandboxPath) {
+		return nil, 0, "", fmt.Errorf("sandbox transfer path is not confined")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.sandboxEndpoint("/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/file", nil), nil)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	req.Header.Set("Authorization", "Blazn-Grant "+grantToken)
+	req.Header.Set("X-Blazn-Sandbox-Path", sandboxPath)
+	req.Header.Set("Accept", "application/octet-stream")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		return nil, 0, "", decodeSandboxAPIError(resp)
+	}
+	if resp.ContentLength < 0 || resp.ContentLength > SandboxMaxFileBytes {
+		resp.Body.Close()
+		return nil, 0, "", fmt.Errorf("sandbox download exceeds %d bytes", SandboxMaxFileBytes)
+	}
+	return &sandboxBoundedReadCloser{Reader: io.LimitReader(resp.Body, SandboxMaxFileBytes), Closer: resp.Body}, resp.ContentLength, resp.Header.Get("X-Content-SHA256"), nil
+}
+
+type sandboxBoundedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func validSandboxTransferPath(value string) bool {
+	if strings.Contains(value, "\\") || strings.Contains(value, "//") || strings.Contains(value, "/../") || strings.HasSuffix(value, "/..") || strings.HasSuffix(value, "/.") {
+		return false
+	}
+	for _, prefix := range []string{"/workspace/src/", "/workspace/artifacts/", "/workspace/tmp/"} {
+		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) sandboxGrantJSON(ctx context.Context, method, path, grantToken string, input, output any) error {
+	body, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.sandboxEndpoint(path, nil), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Blazn-Grant "+grantToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return decodeSandboxAPIError(resp)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(output)
+}
+
+func (c *Client) sandboxJSON(ctx context.Context, method, path, accessToken, idempotencyKey string, query url.Values, input, output any, success int) error {
+	var body io.Reader
+	if input != nil {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.sandboxEndpoint(path, query), body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != success {
+		return decodeSandboxAPIError(resp)
+	}
+	if output == nil {
+		return nil
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(output)
+}
+func (c *Client) sandboxEndpoint(path string, query url.Values) string {
+	base := *c.baseURL
+	base.Path = strings.TrimSuffix(base.Path, "/") + path
+	base.RawQuery = query.Encode()
+	return base.String()
+}
+func decodeSandboxAPIError(resp *http.Response) error {
+	apiErr := &APIError{StatusCode: resp.StatusCode}
+	if retry := resp.Header.Get("Retry-After"); retry != "" {
+		apiErr.RetryAfter, _ = strconv.Atoi(retry)
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&apiErr.Body)
+	return apiErr
+}
