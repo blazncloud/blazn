@@ -7,10 +7,11 @@ die(){ printf 'blazn-worker-issuer-infra: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 [ "$(id -u)" -eq 0 ] || die "installation requires root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "installation requires the control-plane lock"
-for command_name in awk cmp cp dirname find getent grep install jq mv openssl rm sha256sum stat sync wc; do need "$command_name"; done
+for command_name in awk cmp cp dirname find getent grep install jq mv openssl rm sha256sum stat sync wc xxd; do need "$command_name"; done
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 SOURCE=${BLAZN_ISSUER_BINARY_SOURCE:?set BLAZN_ISSUER_BINARY_SOURCE to the reviewed helper binary}
+SOURCE_DIGEST=${BLAZN_ISSUER_BINARY_SHA256:?set BLAZN_ISSUER_BINARY_SHA256 to the reviewed sha256 digest}
 ROOT=${BLAZN_ISSUER_CONFIG_ROOT:-/etc/blazn/microk8s-worker-issuer}
 BINARY=${BLAZN_ISSUER_BINARY_PATH:-/usr/libexec/blazn/blazn-microk8s-worker-issuer}
 UNIT=${BLAZN_ISSUER_UNIT_PATH:-/etc/systemd/system/blazn-microk8s-worker-issuer.service}
@@ -23,6 +24,8 @@ TEST_MODE=${BLAZN_ISSUER_INFRA_TEST_MODE:-0}
 case "$BROKER_UID" in ''|*[!0-9]*|0) die "broker UID must be a positive integer" ;; esac
 for path in "$SOURCE" "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECEIPT" "$RECOVERY" "$ENV_FILE"; do case "$path" in /*) ;; *) die "all issuer paths must be absolute" ;; esac; done
 [ -f "$SOURCE" ] && [ ! -L "$SOURCE" ] || die "helper binary source is unavailable or linked"
+case "$SOURCE_DIGEST" in sha256:*) digest_value=${SOURCE_DIGEST#sha256:}; case "$digest_value" in ''|*[!0-9a-f]*) die "helper digest is invalid" ;; esac; [ "${#digest_value}" -eq 64 ] || die "helper digest length is invalid" ;; *) die "helper digest is invalid" ;; esac
+[ "sha256:$(sha256sum "$SOURCE" | awk '{print $1}')" = "$SOURCE_DIGEST" ] || die "helper binary source differs from reviewed digest"
 [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] && [ "$(stat -c '%u:%a' "$ENV_FILE")" = 0:600 ] || die "control-plane environment is unsafe"
 
 sha(){ sha256sum "$1" | awk '{print $1}'; }
@@ -59,6 +62,7 @@ if [ "$TEST_MODE" = 1 ]; then
   TMPFILES_CMD=${BLAZN_ISSUER_TEST_TMPFILES:?}
   group_created=false
 else
+  [ "$(stat -c '%u:%a:%h' "$SOURCE")" = 0:755:1 ] || die "helper binary source ownership, mode, or link count is unsafe"
   getent group blazn-node-broker >/dev/null || die "dedicated blazn-node-broker group must be provisioned before this transaction"
   group_created=false
   BROKER_GID=$(getent group blazn-node-broker | awk -F: '{print $3}')
@@ -83,7 +87,7 @@ if [ ! -e "$RECEIPT" ]; then
   if find "$RECOVERY" -mindepth 1 -maxdepth 1 ! -name inventory.json ! -name control-plane.env -print | grep . >/dev/null; then die "pre-receipt recovery root contains unreviewed residue"; fi
   if [ -e "$RECOVERY/control-plane.env" ]; then cmp "$ENV_FILE" "$RECOVERY/control-plane.env" >/dev/null || die "pre-receipt environment backup differs"; else cp -- "$ENV_FILE" "$RECOVERY/control-plane.env"; chmod 0600 "$RECOVERY/control-plane.env"; sync_path "$RECOVERY/control-plane.env"; fi
   inventory_tmp=$inventory.tmp.$$
-  jq -cn --arg source "sha256:$(sha "$SOURCE")" --arg key "$RECOVERY/issuer-hmac-v1" --arg env "$RECOVERY/control-plane.env" --arg envDigest "sha256:$(sha "$ENV_FILE")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-recovery/v1",prior:{config:"absent",binary:"absent",unit:"absent",tmpfiles:"absent",environment:{backupPath:$env,digest:$envDigest}},sourceDigest:$source,secretRecoveryPath:$key}' >"$inventory_tmp"
+  jq -cn --arg source "$SOURCE_DIGEST" --arg key "$RECOVERY/issuer-hmac-v1" --arg env "$RECOVERY/control-plane.env" --arg envDigest "sha256:$(sha "$ENV_FILE")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-recovery/v1",prior:{config:"absent",binary:"absent",unit:"absent",tmpfiles:"absent",environment:{backupPath:$env,digest:$envDigest}},sourceDigest:$source,secretRecoveryPath:$key}' >"$inventory_tmp"
   chmod 0600 "$inventory_tmp"; sync_path "$inventory_tmp"; mv -- "$inventory_tmp" "$inventory"
   chmod 0600 "$inventory"; sync_path "$inventory"
   fault recovery-created
@@ -100,15 +104,17 @@ case "$current" in initialized|secret-created|config-bound|files-installed|servi
 mkdir -p -- "$ROOT" "$(dirname -- "$BINARY")" "$(dirname -- "$UNIT")" "$(dirname -- "$TMPFILES")"
 chmod 0700 "$ROOT"
 if [ "$current" = initialized ]; then
-  raw=$ROOT/.issuer-raw.$$
-  keytmp=$ROOT/.issuer-key.$$
-  openssl rand -out "$raw" 32; chmod 0600 "$raw"; sync_path "$raw"
-  openssl base64 -A -in "$raw" | tr '+/' '-_' | tr -d '=' >"$keytmp"
-  chmod 0400 "$keytmp"; sync_path "$keytmp"; rm -f -- "$raw"
-  [ "$(wc -c <"$keytmp" | tr -d ' ')" = 43 ] || die "issuer key encoding is invalid"
-  mv -- "$keytmp" "$ROOT/issuer-hmac-v1"; sync_path "$ROOT"
-  validate_key "$ROOT/issuer-hmac-v1"
-  cp -- "$ROOT/issuer-hmac-v1" "$RECOVERY/issuer-hmac-v1"; chmod 0400 "$RECOVERY/issuer-hmac-v1"; sync_path "$RECOVERY/issuer-hmac-v1"
+  active_key=$ROOT/issuer-hmac-v1; keytmp=$ROOT/.issuer-key.pending
+  if [ -e "$active_key" ]; then validate_key "$active_key"; else
+    if [ -e "$keytmp" ] && { [ ! -f "$keytmp" ] || [ -L "$keytmp" ] || [ "$(stat -c %u "$keytmp")" != 0 ]; }; then die "issuer key pending path is unsafe"; fi
+    hex=$(openssl rand -hex 32); printf '%s' "$hex" | xxd -r -p | openssl base64 -A | tr '+/' '-_' | tr -d '=' >"$keytmp"; unset hex
+    chmod 0400 "$keytmp"; sync_path "$keytmp"; validate_key "$keytmp"; mv -- "$keytmp" "$active_key"; sync_path "$ROOT"
+  fi
+  recovery_key=$RECOVERY/issuer-hmac-v1; recovery_tmp=$RECOVERY/.issuer-hmac.pending
+  if [ -e "$recovery_key" ]; then validate_key "$recovery_key"; cmp "$active_key" "$recovery_key" >/dev/null || die "recovery key generation conflicts"; else
+    if [ -e "$recovery_tmp" ] && { [ ! -f "$recovery_tmp" ] || [ -L "$recovery_tmp" ] || [ "$(stat -c %u "$recovery_tmp")" != 0 ]; }; then die "recovery key pending path is unsafe"; fi
+    cp -- "$active_key" "$recovery_tmp"; chmod 0400 "$recovery_tmp"; sync_path "$recovery_tmp"; mv -- "$recovery_tmp" "$recovery_key"; sync_path "$RECOVERY"
+  fi
   tmp=$RECEIPT.tmp.$$; jq --arg digest "sha256:$(sha "$ROOT/issuer-hmac-v1")" '.secret.digest=$digest' "$RECEIPT" >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$RECEIPT"; phase secret-created; current=secret-created; fault secret-created
 fi
 if [ "$current" = secret-created ]; then
@@ -142,6 +148,7 @@ if [ "$current" = files-installed ]; then
 fi
 if [ "$current" = service-started ]; then phase complete; current=complete; fault complete; fi
 [ "$current" = complete ] || die "issuer installation did not complete"
+[ "sha256:$(sha "$BINARY")" = "$SOURCE_DIGEST" ] || die "installed helper differs from reviewed source digest"
 [ "sha256:$(sha "$BINARY")" = "$(jq -er .binary.digest "$RECEIPT")" ] || die "helper binary differs from receipt"
 [ "sha256:$(sha "$ROOT/config.json")" = "$(jq -er .config.digest "$RECEIPT")" ] || die "helper config differs from receipt"
 [ "sha256:$(sha "$ROOT/issuer-hmac-v1")" = "$(jq -er .secret.digest "$RECEIPT")" ] || die "helper secret differs from receipt"

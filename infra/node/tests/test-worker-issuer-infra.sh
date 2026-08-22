@@ -23,7 +23,7 @@ printf '#!/bin/sh\nexit 0\n' >"$tmpfiles"; chmod 0755 "$tmpfiles"
 run_install(){
   root=$1; fault=${2:-}
   sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_TEST_FAIL_AFTER="$fault" BLAZN_TEST_LOG="$root/systemctl.log" \
-    BLAZN_ISSUER_BINARY_SOURCE="$helper" BLAZN_NODE_BROKER_UID=65532 BLAZN_ISSUER_TEST_BROKER_GID=65531 BLAZN_ISSUER_TEST_MICROK8S_GID=1001 BLAZN_ISSUER_TEST_REVISION=9072 \
+    BLAZN_ISSUER_BINARY_SOURCE="$helper" BLAZN_ISSUER_BINARY_SHA256="sha256:$(sha256sum "$helper" | awk '{print $1}')" BLAZN_NODE_BROKER_UID=65532 BLAZN_ISSUER_TEST_BROKER_GID=65531 BLAZN_ISSUER_TEST_MICROK8S_GID=1001 BLAZN_ISSUER_TEST_REVISION=9072 \
     BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_ISSUER_TEST_TMPFILES="$tmpfiles" \
     BLAZN_ISSUER_CONFIG_ROOT="$root/etc/issuer" BLAZN_ISSUER_BINARY_PATH="$root/usr/libexec/issuer" BLAZN_ISSUER_UNIT_PATH="$root/etc/systemd/issuer.service" BLAZN_ISSUER_TMPFILES_PATH="$root/etc/tmpfiles/issuer.conf" \
     BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" "$INSTALLER"
@@ -33,6 +33,7 @@ for fault in recovery-created initialized secret-created config-bound files-inst
   root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env"
   if run_install "$root" "$fault" >"$top/$fault.out" 2>"$top/$fault.err"; then printf 'issuer fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null
+  if [ "$fault" = initialized ]; then sudo sh -c 'printf partial >"$1/.issuer-key.pending"; chmod 0600 "$1/.issuer-key.pending"' sh "$root/etc/issuer"; fi
   run_install "$root" >"$top/$fault-retry.out"
   sudo jq -e '.phase=="complete" and .liveJoinBlocked==true and .secret.decodedBytes==32 and .socket.path=="/run/blazn/microk8s-worker-issuer.sock"' "$root/ownership/issuer.json" >/dev/null
   before=$(sudo sha256sum "$root/etc/issuer/issuer-hmac-v1" "$root/etc/issuer/config.json" "$root/usr/libexec/issuer")
