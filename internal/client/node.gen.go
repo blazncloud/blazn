@@ -1,5 +1,5 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: 075126546f4277f5b3def6381746c9bbc6b222c9408cf17e03950d5075b60571
+// OpenAPI SHA256: f28ec23eeb970b53ec886639f369fa923da98e38a2e26c3131eaeaf6c03fb47d
 // NodeInstallPlan SHA256: 111984c682128e09a2caba46d405feb848c34e65ded478dbc49d9e74a677341e
 // NodeInstallReceipt SHA256: cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
@@ -62,6 +62,8 @@ type CreateNodeEnrollmentRequest struct {
 	Platform     NodePlatform       `json:"platform"`
 	Architecture NodeArchitecture   `json:"architecture,omitempty"`
 }
+
+type NodeError = ErrorBody
 
 type NodeEnrollmentSecret struct {
 	ID         string `json:"id"`
@@ -157,7 +159,7 @@ type NodeOperation struct {
 	Status              NodeOperationStatus   `json:"status"`
 	ExpectedNodeVersion int64                 `json:"expectedNodeVersion"`
 	Result              map[string]any        `json:"result"`
-	Error               *ErrorBody            `json:"error"`
+	Error               *NodeError            `json:"error"`
 	Receipt             *NodeOperationReceipt `json:"receipt"`
 	CreatedAt           string                `json:"createdAt"`
 }
@@ -2145,7 +2147,7 @@ func decodeClosedNodeResponse(input io.Reader, output any) error {
 }
 
 func decodeNodeAPIError(response *http.Response) error {
-	var apiError ErrorBody
+	var apiError NodeError
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&apiError); err != nil && err != io.EOF {
 		apiError.Message = http.StatusText(response.StatusCode)
 	}
