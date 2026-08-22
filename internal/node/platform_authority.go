@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	defaultRootAuthorityPath = "/var/lib/blazn/root/install-authority.json"
+	defaultRootAuthorityPath = "/var/lib/blazn-node-root/install-authority.json"
 	defaultRootProfileRoot   = "/etc/blazn/node/profiles"
 	defaultRootBinaryPath    = "/usr/local/bin/blazn"
 )
