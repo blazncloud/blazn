@@ -57,6 +57,7 @@ test-infra:
 	./infra/node/tests/test-plan-materials.sh
 	./infra/node/tests/test-upgrade-resume.sh
 	./infra/node/tests/test-backup-metadata.sh
+	./infra/node/tests/test-worker-issuer-infra.sh
 	./infra/node/tests/test-postgres-privileges.sh
 	shellcheck infra/node/scripts/*.sh infra/node/tests/*.sh
 	./infra/agent-sandbox/test-adapter-static.sh

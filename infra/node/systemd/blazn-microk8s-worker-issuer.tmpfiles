@@ -1,0 +1,2 @@
+d /run/blazn 0750 root blazn-node-broker -
+d /var/lib/blazn/microk8s-worker-issuer 0700 root root -

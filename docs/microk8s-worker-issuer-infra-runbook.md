@@ -1,0 +1,29 @@
+# MicroK8s worker issuer infrastructure runbook
+
+This installs only the credential issuer boundary. It does not issue a
+credential or join a Node. Live join remains blocked until the expected
+Kubernetes Node name/UID and bootstrap-taint observer is reviewed. Never apply
+this qualification to `ben1` or shared MicroK8s.
+
+Before installation, hold the serialized control-plane lock and record merged
+source/helper/ownership-receipt digests, broker UID/GID, MicroK8s v1.35.6
+revision 9072 or 9075, `microk8s` GID, and zero active bootstrap issuances.
+Confirm HomeAI is outside the Compose project and rollback targets. Refuse
+managed paths without the issuer receipt, links, or missing operator
+correlation.
+
+Read-only preflight includes `snap info microk8s`, the `current` revision,
+both group records, helper SHA-256, and `docker compose --profile node-broker
+config`. After normal prebackup and restore qualification, install under the
+lock with `BLAZN_ISSUER_BINARY_SOURCE` and the receipt-bound broker UID.
+
+Verify the receipt is complete and still says `liveJoinBlocked`, the service is
+active, and `/run/blazn` plus its socket have the receipted owner/GID/modes.
+The broker profile must expose no Docker socket, kubeconfig, MicroK8s directory,
+host network, added capability, or issuer HMAC key. Do not call issuance until
+the post-join enforcement milestone is complete.
+
+Rollback first removes the broker sidecar, then runs
+`rollback-worker-issuer.sh` under the same lock. It refuses changed artifacts,
+removes only receipt-owned active files, and retains the root-only recovery
+key, inventory, receipt, and empty broker group for audited disposal.
