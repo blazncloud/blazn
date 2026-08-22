@@ -121,6 +121,12 @@ func TestWorkspaceClientRejectsUnsafeMutationInputsBeforeNetwork(t *testing.T) {
 	if _, err := api.LeaveWorkspace(context.Background(), "access", "workspace", 0, "valid-idem"); err == nil {
 		t.Fatal("invalid expected version was accepted")
 	}
+	if _, err := api.UpdateWorkspace(context.Background(), "access", "workspace", "valid-idem", UpdateWorkspaceRequest{Name: "x", ExpectedVersion: 0}); err == nil {
+		t.Fatal("invalid workspace body version was accepted")
+	}
+	if _, err := api.UpdateWorkspaceMember(context.Background(), "access", "workspace", "user", "valid-idem", UpdateMembershipRequest{Role: RoleMember, ExpectedVersion: -1}); err == nil {
+		t.Fatal("invalid membership body version was accepted")
+	}
 	if _, err := api.CreateWorkspace(context.Background(), "access", "short", CreateWorkspaceRequest{Name: "x"}); err == nil {
 		t.Fatal("short idempotency key was accepted")
 	}
