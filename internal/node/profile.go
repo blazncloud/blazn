@@ -44,7 +44,7 @@ func LoadTrustedProfile(path, currentBinaryPath, currentVersion string) (client.
 	if err := decoder.Decode(&stored); err != nil {
 		return client.NodeTrustedInstallProfile{}, errors.New("trusted install profile is invalid")
 	}
-	if stored.SchemaVersion != 1 || stored.ID == "" {
+	if stored.SchemaVersion != 1 || stored.ID == "" || !validControlPlaneOrigin(stored.ControlPlaneOrigin) {
 		return client.NodeTrustedInstallProfile{}, errors.New("trusted install profile schema or ID is invalid")
 	}
 	binaryInfo, err := os.Lstat(currentBinaryPath)

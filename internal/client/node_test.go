@@ -537,6 +537,13 @@ func TestVerifyNodeInstallPlanPinsSignatureExpiryAndLocalBindings(t *testing.T) 
 
 func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing.T) {
 	plan, trust := signedNodeInstallPlan(t)
+	for _, origin := range []string{"", "http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment"} {
+		invalid := trust.Profile
+		invalid.ControlPlaneOrigin = origin
+		if err := ValidateNodeInstallProfile(plan, invalid); err == nil {
+			t.Fatalf("unsafe control-plane origin %q passed", origin)
+		}
+	}
 	plan.Components = append(plan.Components, NodeInstallComponent{Name: "download", ArtifactType: "certificate", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/download", SHA256: testHash, Ownership: "adopt_exact"})
 	digest, _ := NodeInstallPlanDigest(plan)
 	plan.Digest = digest

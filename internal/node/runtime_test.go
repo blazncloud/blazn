@@ -112,6 +112,16 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	if trusted.CurrentBinarySHA256 == "" || trusted.CurrentBinaryVersion != "v1" {
 		t.Fatalf("profile=%#v", trusted)
 	}
+	withoutOrigin := strings.Replace(profile, `"controlPlaneOrigin":"https://control.example.test",`, "", 1)
+	if err := os.WriteFile(profilePath, []byte(withoutOrigin), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTrustedProfile(profilePath, binary, "v1"); err == nil {
+		t.Fatal("trusted profile without a control-plane origin was accepted")
+	}
+	if err := os.WriteFile(profilePath, []byte(profile), 0600); err != nil {
+		t.Fatal(err)
+	}
 	link := filepath.Join(root, "link")
 	if err := os.Symlink(binary, link); err != nil {
 		t.Fatal(err)
