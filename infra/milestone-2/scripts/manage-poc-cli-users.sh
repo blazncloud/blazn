@@ -32,8 +32,8 @@ validate_account() {
   IFS=: read -r actual_name _passwd uid gid _gecos actual_home actual_shell <<EOF
 $passwd_record
 EOF
-  [ "$actual_name" = "$account_name" ] && [ "$actual_home" = "$expected_home" ] && [ "$actual_shell" = "$nologin" ] || die "POC CLI passwd record differs from its receipt plan"
-  is_uint "$uid" && is_uint "$gid" && [ "$uid" -gt 0 ] && [ "$gid" -gt 0 ] || die "POC CLI user IDs are invalid"
+  if [ "$actual_name" != "$account_name" ] || [ "$actual_home" != "$expected_home" ] || [ "$actual_shell" != "$nologin" ]; then die "POC CLI passwd record differs from its receipt plan"; fi
+  if ! is_uint "$uid" || ! is_uint "$gid" || [ "$uid" -le 0 ] || [ "$gid" -le 0 ]; then die "POC CLI user IDs are invalid"; fi
   [ "$(id -G "$account_name")" = "$gid" ] || die "POC CLI user has supplementary groups"
   assert_directory_owned_mode "$expected_home" "$uid" 700
   printf '%s:%s\n' "$uid" "$gid"

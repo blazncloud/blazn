@@ -51,7 +51,7 @@ second_name=$(jq -er .second.name "$cli_users_receipt"); second_uid=$(jq -er .se
 for spec in "$owner_name:$owner_uid:$owner_gid:$owner_home" "$second_name:$second_uid:$second_gid:$second_home"; do
   name=${spec%%:*}; rest=${spec#*:}; uid=${rest%%:*}; rest=${rest#*:}; gid=${rest%%:*}; home=${rest#*:}
   passwd_record=$(getent passwd "$name") || die "qualification CLI OS user is absent"
-  [ "$(printf '%s\n' "$passwd_record" | cut -d: -f3)" = "$uid" ] && [ "$(printf '%s\n' "$passwd_record" | cut -d: -f4)" = "$gid" ] && [ "$(printf '%s\n' "$passwd_record" | cut -d: -f6)" = "$home" ] || die "qualification CLI OS user differs from its receipt"
+  if [ "$(printf '%s\n' "$passwd_record" | cut -d: -f3)" != "$uid" ] || [ "$(printf '%s\n' "$passwd_record" | cut -d: -f4)" != "$gid" ] || [ "$(printf '%s\n' "$passwd_record" | cut -d: -f6)" != "$home" ]; then die "qualification CLI OS user differs from its receipt"; fi
   [ "$(id -G "$name")" = "$gid" ] || die "qualification CLI OS user has supplementary groups"
   assert_directory_owned_mode "$home" "$uid" 700
 done
