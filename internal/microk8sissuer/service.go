@@ -42,6 +42,7 @@ type durableState struct {
 	RequestDigest string    `json:"requestDigest"`
 	TokenHash     string    `json:"tokenHash"`
 	Credential    string    `json:"credential,omitempty"`
+	IssuedAt      time.Time `json:"issuedAt,omitempty"`
 	ExpiresAt     time.Time `json:"expiresAt,omitempty"`
 }
 type credentialPayload struct {
@@ -86,6 +87,9 @@ func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error)
 			return err
 		}
 		if exists && state.Status == "issued" && s.now().Before(state.ExpiresAt) {
+			if err := s.backend.Healthy(ctx); err != nil {
+				return &ProtocolError{Code: "microk8s_unavailable", Message: "MicroK8s readiness check failed"}
+			}
 			response = s.response(state)
 			return nil
 		}
@@ -117,6 +121,7 @@ func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error)
 		encoded, _ := json.Marshal(payload)
 		state.Status = "issued"
 		state.Credential = base64.RawURLEncoding.EncodeToString(encoded)
+		state.IssuedAt = issued.ExpiresAt.UTC().Add(-time.Duration(req.TTLSeconds) * time.Second)
 		state.ExpiresAt = issued.ExpiresAt.UTC()
 		if err := s.writeState(path, state); err != nil {
 			_ = s.backend.Revoke(ctx, token)
@@ -266,7 +271,7 @@ func (s *Service) validateState(st durableState) error {
 		return fmt.Errorf("issuer state binding is invalid")
 	}
 	if st.Status == "issued" {
-		if st.Credential == "" || st.ExpiresAt.IsZero() {
+		if st.Credential == "" || st.IssuedAt.IsZero() || st.ExpiresAt.IsZero() || !st.IssuedAt.Add(time.Duration(req.TTLSeconds)*time.Second).Equal(st.ExpiresAt) {
 			return fmt.Errorf("issued state is incomplete")
 		}
 		return s.validateCredential(st)

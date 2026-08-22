@@ -9,7 +9,8 @@ that exact provider handle.
 The compiled production socket is `/run/blazn/microk8s-worker-issuer.sock`.
 The receipt installer must create `/run/blazn` as root and the broker primary
 group with mode `0750`; the helper creates the socket as root and that group
-with mode `0660`. An absolute-path override exists only for disposable tests.
+with mode `0660`. Tests inject the provider object directly; production has no
+socket-path environment override.
 
 The helper accepts only the configured cluster ID, a DNS-safe expected node
 name, `workerOnly: true`, the exact
@@ -26,6 +27,9 @@ command is fixed to:
 ```text
 /snap/bin/microk8s.add-node --token <derived-32-hex> --token-ttl <1..300> --format json
 ```
+
+Before claiming `clusterHealthy`, it runs only the additional fixed readiness
+probe `/snap/bin/microk8s.status --wait-ready --timeout 5`.
 
 The helper parses a closed JSON response, requires the same token plus server
 certificate check in every cluster-agent URL, and returns a base64url-encoded

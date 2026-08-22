@@ -54,13 +54,13 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 }
 
 type MicroK8sBackend struct {
-	AddNodePath, TokenFile string
-	ExpectedUID            uint32
-	ExpectedGID            uint32
-	ExpectedMode           os.FileMode
-	Runner                 CommandRunner
-	Now                    func() time.Time
-	allowTestPaths         bool
+	AddNodePath, StatusPath, TokenFile string
+	ExpectedUID                        uint32
+	ExpectedGID                        uint32
+	ExpectedMode                       os.FileMode
+	Runner                             CommandRunner
+	Now                                func() time.Time
+	allowTestPaths                     bool
 }
 type upstreamResponse struct {
 	Token string   `json:"token"`
@@ -68,7 +68,16 @@ type upstreamResponse struct {
 }
 
 func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
-	if !b.allowTestPaths && (b.AddNodePath != "/snap/bin/microk8s.add-node" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt") {
+	if err := b.validateConfiguration(); err != nil {
+		return err
+	}
+	if _, err := b.Runner.Run(ctx, b.StatusPath, []string{"--wait-ready", "--timeout", "5"}); err != nil {
+		return fmt.Errorf("MicroK8s is not ready")
+	}
+	return b.validateTokenFile(false)
+}
+func (b *MicroK8sBackend) validateConfiguration() error {
+	if !b.allowTestPaths && (b.AddNodePath != "/snap/bin/microk8s.add-node" || b.StatusPath != "/snap/bin/microk8s.status" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt") {
 		return fmt.Errorf("MicroK8s paths are not allowlisted")
 	}
 	if !b.allowTestPaths {
@@ -76,7 +85,10 @@ func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
 			return err
 		}
 	}
-	return b.validateTokenFile(false)
+	if b.Runner == nil {
+		return fmt.Errorf("MicroK8s runner is missing")
+	}
+	return nil
 }
 func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (BackendIssue, error) {
 	if err := b.Healthy(ctx); err != nil {
@@ -122,10 +134,13 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 	return BackendIssue{TokenCheck: parsed.Token, URLs: parsed.URLs, ExpiresAt: now().UTC().Add(time.Duration(ttl) * time.Second)}, nil
 }
 func (b *MicroK8sBackend) Revoke(ctx context.Context, token string) error {
+	if err := b.validateConfiguration(); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(b.TokenFile); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if err := b.Healthy(ctx); err != nil {
+	if err := b.validateTokenFile(true); err != nil {
 		return err
 	}
 	return rewriteTokenFile(b.TokenFile, b.ExpectedUID, b.ExpectedGID, b.ExpectedMode, token)
@@ -182,9 +197,6 @@ func (b *MicroK8sBackend) validateTokenFile(required bool) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || stat.Nlink != 1 || stat.Uid != b.ExpectedUID || stat.Gid != b.ExpectedGID || info.Mode().Perm() != b.ExpectedMode.Perm() {
 		return fmt.Errorf("MicroK8s token file is unsafe")
-	}
-	if b.Runner == nil {
-		return fmt.Errorf("MicroK8s runner is missing")
 	}
 	return nil
 }

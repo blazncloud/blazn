@@ -36,6 +36,7 @@ func TestSocketPathRecoversOnlyOwnedStaleSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
 	if err := os.Chmod(path, 0660); err != nil {
 		t.Fatal(err)
 	}

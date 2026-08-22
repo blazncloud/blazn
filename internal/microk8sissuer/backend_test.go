@@ -20,7 +20,7 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, _ string, args []string) ([]byte, error) {
 	f.calls++
 	f.args = append([]string(nil), args...)
-	if len(args) >= 2 && f.tokenFile != "" {
+	if len(args) >= 2 && args[0] == "--token" && f.tokenFile != "" {
 		_ = os.WriteFile(f.tokenFile, []byte(args[1]+"|1060\n"), 0600)
 	}
 	return f.output, nil
@@ -34,7 +34,7 @@ func backendFixture(t *testing.T, content string) (*MicroK8sBackend, *fakeRunner
 	uid := os.Getuid()
 	runner := &fakeRunner{}
 	runner.tokenFile = path
-	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: path, ExpectedUID: uint32(uid), ExpectedGID: uint32(os.Getgid()), ExpectedMode: 0600, Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
+	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", StatusPath: "/snap/bin/microk8s.status", TokenFile: path, ExpectedUID: uint32(uid), ExpectedGID: uint32(os.Getgid()), ExpectedMode: 0600, Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
 }
 func TestBackendUsesOnlyFixedCommandAndParsesExactJSON(t *testing.T) {
 	backend, runner, _ := backendFixture(t, "")

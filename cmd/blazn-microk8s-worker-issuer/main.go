@@ -50,7 +50,7 @@ func run() error {
 	if err != nil || len(key) != 32 {
 		return fmt.Errorf("invalid key")
 	}
-	backend := &microk8sissuer.MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: tokenFile, ExpectedUID: 0, ExpectedGID: cfg.MicroK8sGID, ExpectedMode: 0660, Runner: microk8sissuer.ExecRunner{}}
+	backend := &microk8sissuer.MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", StatusPath: "/snap/bin/microk8s.status", TokenFile: tokenFile, ExpectedUID: 0, ExpectedGID: cfg.MicroK8sGID, ExpectedMode: 0660, Runner: microk8sissuer.ExecRunner{}}
 	service, err := microk8sissuer.NewService(stateRoot, key, backend)
 	if err != nil {
 		return err
