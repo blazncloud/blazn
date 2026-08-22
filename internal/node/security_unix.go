@@ -17,13 +17,12 @@ func writeRootAtomicNative(path string, value []byte, mode os.FileMode, uid, gid
 	if err := verifyRootOwnedDirectoryChain(directoryPath); err != nil {
 		return err
 	}
-	directoryFD, err := syscall.Open(directoryPath, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	root, err := os.OpenRoot(directoryPath)
 	if err != nil {
 		return err
 	}
-	defer syscall.Close(directoryFD)
-	directory := os.NewFile(uintptr(directoryFD), directoryPath)
-	directoryInfo, err := directory.Stat()
+	defer root.Close()
+	directoryInfo, err := root.Lstat(".")
 	if err != nil {
 		return err
 	}
@@ -36,13 +35,11 @@ func writeRootAtomicNative(path string, value []byte, mode os.FileMode, uid, gid
 		return err
 	}
 	temporaryName := ".blazn-root-" + hex.EncodeToString(random)
-	fd, err := syscall.Openat(directoryFD, temporaryName, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NOFOLLOW, 0600)
+	file, err := root.OpenFile(temporaryName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
-	temporaryPath := filepath.Join(directoryPath, temporaryName)
-	defer os.Remove(temporaryPath)
-	file := os.NewFile(uintptr(fd), temporaryPath)
+	defer root.Remove(temporaryName)
 	closed := false
 	defer func() {
 		if !closed {
@@ -73,10 +70,15 @@ func writeRootAtomicNative(path string, value []byte, mode os.FileMode, uid, gid
 		return err
 	}
 	closed = true
-	if err := syscall.Renameat(directoryFD, temporaryName, directoryFD, filepath.Base(path)); err != nil {
+	if err := root.Rename(temporaryName, filepath.Base(path)); err != nil {
 		return err
 	}
-	return syscall.Fsync(directoryFD)
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func verifyRootOwnedDirectoryChain(path string) error {
