@@ -16,10 +16,10 @@ const cliProjectTestProjectID = "00000000-0000-4000-8000-000000000002"
 
 type fakeProjectCommands struct {
 	createdName, requestID, status, value string
-	changes                              projectpkg.Update
-	version                              int
-	selection                            workspacepkg.Selection
-	err                                  error
+	changes                               projectpkg.Update
+	version                               int
+	selection                             workspacepkg.Selection
+	err                                   error
 }
 
 func (f *fakeProjectCommands) Create(_ context.Context, name, _slug, _kind, _description, requestID string) (client.ProjectEnvelope, error) {
@@ -40,10 +40,13 @@ func (f *fakeProjectCommands) Use(_ context.Context, value string) (client.Proje
 }
 func (f *fakeProjectCommands) Update(_ context.Context, value, requestID string, version int, changes projectpkg.Update) (client.ProjectEnvelope, error) {
 	f.value, f.requestID, f.version, f.changes = value, requestID, version, changes
-	project := projectFixture(); project.Version = version + 1
+	project := projectFixture()
+	project.Version = version + 1
 	return client.ProjectEnvelope{Project: project}, f.err
 }
-func (f *fakeProjectCommands) CurrentSelection(context.Context) (workspacepkg.Selection, error) { return f.selection, f.err }
+func (f *fakeProjectCommands) CurrentSelection(context.Context) (workspacepkg.Selection, error) {
+	return f.selection, f.err
+}
 
 func projectApp(fake *fakeProjectCommands) (*App, *bytes.Buffer, *bytes.Buffer) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
