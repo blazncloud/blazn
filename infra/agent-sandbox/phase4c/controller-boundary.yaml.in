@@ -11,14 +11,6 @@ rules:
 - apiGroups: ["agents.x-k8s.io"]
   resources: ["sandboxes"]
   verbs: ["get", "list", "watch"]
-- apiGroups: ["apiextensions.k8s.io"]
-  resources: ["customresourcedefinitions"]
-  resourceNames:
-  - sandboxclaims.extensions.agents.x-k8s.io
-  - sandboxes.agents.x-k8s.io
-  - sandboxtemplates.extensions.agents.x-k8s.io
-  - sandboxwarmpools.extensions.agents.x-k8s.io
-  verbs: ["get", "patch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -43,13 +35,6 @@ metadata:
   labels:
     app.kubernetes.io/part-of: blazn-phase4c
 rules:
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["create"]
-- apiGroups: [""]
-  resources: ["secrets"]
-  resourceNames: ["agent-sandbox-webhook-certs"]
-  verbs: ["get", "patch", "update"]
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
   verbs: ["create", "get", "list", "patch", "update", "watch"]
@@ -135,14 +120,20 @@ spec:
     message: "Sandbox Pods must target reviewed sandbox-eligible nodes"
   - expression: "(!has(object.spec.podTemplate.spec.hostNetwork) || object.spec.podTemplate.spec.hostNetwork == false) && (!has(object.spec.podTemplate.spec.hostPID) || object.spec.podTemplate.spec.hostPID == false) && (!has(object.spec.podTemplate.spec.hostIPC) || object.spec.podTemplate.spec.hostIPC == false)"
     message: "Sandbox Pods may not share host namespaces"
-  - expression: "(!has(object.spec.podTemplate.spec.volumes) || size(object.spec.podTemplate.spec.volumes) == 0) && (!has(object.spec.podTemplate.spec.initContainers) || size(object.spec.podTemplate.spec.initContainers) == 0)"
-    message: "The Phase 4C canary may not inject volumes or init containers"
-  - expression: "object.spec.podTemplate.spec.securityContext.runAsNonRoot == true && object.spec.podTemplate.spec.securityContext.runAsUser == 65532 && object.spec.podTemplate.spec.securityContext.runAsGroup == 65532 && object.spec.podTemplate.spec.securityContext.fsGroup == 65532 && object.spec.podTemplate.spec.securityContext.seccompProfile.type == 'RuntimeDefault'"
+  - expression: "(!has(object.spec.podTemplate.spec.shareProcessNamespace) || object.spec.podTemplate.spec.shareProcessNamespace == false) && (!has(object.spec.podTemplate.spec.hostAliases) || size(object.spec.podTemplate.spec.hostAliases) == 0) && (!has(object.spec.podTemplate.spec.volumes) || size(object.spec.podTemplate.spec.volumes) == 0) && (!has(object.spec.podTemplate.spec.initContainers) || size(object.spec.podTemplate.spec.initContainers) == 0) && (!has(object.spec.podTemplate.spec.ephemeralContainers) || size(object.spec.podTemplate.spec.ephemeralContainers) == 0)"
+    message: "The Phase 4C canary may not inject host aliases, volumes, init containers, or ephemeral containers"
+  - expression: "object.spec.podTemplate.spec.securityContext.runAsNonRoot == true && object.spec.podTemplate.spec.securityContext.runAsUser == 65532 && object.spec.podTemplate.spec.securityContext.runAsGroup == 65532 && object.spec.podTemplate.spec.securityContext.fsGroup == 65532 && object.spec.podTemplate.spec.securityContext.seccompProfile.type == 'RuntimeDefault' && (!has(object.spec.podTemplate.spec.securityContext.sysctls) || size(object.spec.podTemplate.spec.securityContext.sysctls) == 0)"
     message: "Sandbox Pods must use the reviewed non-root pod security context"
-  - expression: "size(object.spec.podTemplate.spec.containers) > 0 && object.spec.podTemplate.spec.containers.all(c, c.image.matches('^.+@sha256:[0-9a-f]{64}$') && (!has(c.env) || size(c.env) == 0) && (!has(c.envFrom) || size(c.envFrom) == 0) && (!has(c.volumeMounts) || size(c.volumeMounts) == 0) && c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
+  - expression: "size(object.spec.podTemplate.spec.containers) > 0 && object.spec.podTemplate.spec.containers.all(c, c.image.matches('^.+@sha256:[0-9a-f]{64}$') && (!has(c.env) || size(c.env) == 0) && (!has(c.envFrom) || size(c.envFrom) == 0) && (!has(c.volumeMounts) || size(c.volumeMounts) == 0) && (!has(c.volumeDevices) || size(c.volumeDevices) == 0) && (!has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)) && c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
     message: "Every Sandbox container must use a pinned image and the reviewed restricted security context"
   - expression: "BLAZN_RUNTIME_ADMISSION_EXPRESSION"
     message: "Sandbox runtime selection must equal the capability reviewed for this change"
+  - expression: "request.operation != 'CREATE' || request.userInfo.username == 'BLAZN_CREATE_PRINCIPAL'"
+    message: "Only the authenticated Phase 4C creator may create the synthetic Sandbox"
+  - expression: "object.metadata.annotations['blazn.dev/phase4c-transaction'] == 'BLAZN_TRANSACTION_ID'"
+    message: "Sandbox must carry the sealed Phase 4C transaction identity"
+  - expression: "request.operation != 'UPDATE' || (request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller' && object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && object.metadata.annotations == oldObject.metadata.annotations)"
+    message: "Callers may not mutate the canary after admission"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

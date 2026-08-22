@@ -11,7 +11,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 for script in "$PHASE4C"/*.sh; do sh -n "$script"; done
-"$PHASE4C/render-install.sh" "$tmp/install.yaml"
+BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 "$PHASE4C/render-install.sh" "$tmp/install.yaml"
 grep -F 'image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.6@sha256:' "$tmp/install.yaml" >/dev/null
 grep -F -- '- --leader-election-namespace=agent-sandbox-system' "$tmp/install.yaml" >/dev/null
 grep -F -- '- --cache-label-selectors=true' "$tmp/install.yaml" >/dev/null
@@ -27,6 +27,7 @@ case "$*" in
   *'get runtimeclass blazn-qualified'*) printf 'runsc' ;;
   *'get clusterqueue.kueue.x-k8s.io'*) printf 'True' ;;
   *'get nodes -l blazn.dev/sandbox-eligible=true'*) printf 'node/node-a' ;;
+  *'auth whoami'*) printf 'phase4c-reviewer' ;;
   *) printf 'unexpected fake kubectl invocation: %s\n' "$*" >&2; exit 1 ;;
 esac
 EOF
@@ -35,6 +36,7 @@ PATH="$tmp/bin:$PATH" \
   BLAZN_EXISTING_CLUSTER_QUEUE=shared-capacity \
   BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   BLAZN_ORCHESTRATION_ONLY_ACK=approved-non-sensitive-phase4c-canary \
+  BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 \
   "$PHASE4C/render-fixtures.sh" "$tmp/orchestration-only" >/dev/null
 grep -F 'blazn.dev/runtime-trust: orchestration-only' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null
 if grep -F 'runtimeClassName:' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null; then exit 1; fi
@@ -44,6 +46,7 @@ PATH="$tmp/bin:$PATH" \
   BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   BLAZN_RUNTIME_CLASS=blazn-qualified \
   BLAZN_EXPECTED_RUNTIME_HANDLER=runsc \
+  BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 \
   "$PHASE4C/render-fixtures.sh" "$tmp/qualified-runtime" >/dev/null
 grep -F 'blazn.dev/runtime-trust: qualified-runtime' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
 grep -F 'runtimeClassName: blazn-qualified' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
@@ -54,12 +57,21 @@ grep -F 'object.metadata.namespace == '\''blazn-poc'\''' "$PHASE4C/controller-bo
 grep -F 'validationActions: [Deny]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "c.image.matches('^.+@sha256:[0-9a-f]{64}$')" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "size(object.spec.podTemplate.spec.volumes) == 0" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "request.userInfo.username == 'BLAZN_CREATE_PRINCIPAL'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "object.spec == oldObject.spec" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+if grep -A30 'name: blazn-agent-sandbox-observer' "$PHASE4C/controller-boundary.yaml.in" | grep -F 'customresourcedefinitions' >/dev/null; then exit 1; fi
+grep -F 'verbs: ["get", "patch"]' "$PHASE4C/bootstrap.yaml.in" >/dev/null
+if grep -F 'verbs: ["get", "patch", "update"]' "$PHASE4C/bootstrap.yaml.in" >/dev/null; then exit 1; fi
+grep -F 'readOnlyRootFilesystem: true' "$tmp/install.yaml" >/dev/null
+grep -F 'secretName: agent-sandbox-webhook-certs' "$tmp/install.yaml" >/dev/null
 grep -F 'clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE' "$PHASE4C/blazn-poc.yaml.in" >/dev/null
 grep -F "approved-non-sensitive-phase4c-canary" "$PHASE4C/render-fixtures.sh" >/dev/null
-grep -F 'readlink "/proc/$$/fd/9"' "$PHASE4C/lib.sh" >/dev/null
-grep -F "stat -c '%u:%a'" "$PHASE4C/lib.sh" >/dev/null
+grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
+grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'cmp "$pre/$file" "$post/$file"' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'phase4c_write_phase "$transaction" rollback-intent' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'sha256sum -c input.sha256' "$PHASE4C/lib.sh" >/dev/null
 if grep -E 'kubectl (apply|create|delete|edit|label|patch|replace|scale)' "$PHASE4C/inventory.sh" >/dev/null; then exit 1; fi
 
 printf 'Phase 4C non-mutating preparation audit passed\n'

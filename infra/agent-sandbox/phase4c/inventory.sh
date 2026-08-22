@@ -10,9 +10,11 @@ mkdir -m 0700 "$evidence"
 
 context=$(kubectl config current-context)
 cluster_uid=$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}')
-[ -n "$context" ] && [ -n "$cluster_uid" ]
+principal=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}')
+[ -n "$context" ] && [ -n "$cluster_uid" ] && [ -n "$principal" ]
 printf '%s\n' "$context" >"$evidence/context"
 printf '%s\n' "$cluster_uid" >"$evidence/kube-system.uid"
+printf '%s\n' "$principal" >"$evidence/creator-principal"
 kubectl version -o json | jq -S . >"$evidence/version.json"
 
 targets='crd/sandboxes.agents.x-k8s.io
@@ -54,7 +56,7 @@ kubectl get clusterqueue.kueue.x-k8s.io -o json | jq -S 'del(.metadata.resourceV
 
 (
   cd "$evidence"
-  sha256sum api-resources.txt relevant-crds.txt relevant-admission.txt runtimeclasses.json clusterqueues.json | LC_ALL=C sort >inventory.sha256
+  sha256sum context kube-system.uid creator-principal version.json phase4c-targets api-resources.txt relevant-crds.txt relevant-admission.txt runtimeclasses.json clusterqueues.json | LC_ALL=C sort >inventory.sha256
 )
 chmod 0400 "$evidence"/*
 printf 'Read-only Phase 4C inventory captured for context %s, cluster %s\n' "$context" "$cluster_uid"

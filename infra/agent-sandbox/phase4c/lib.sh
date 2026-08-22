@@ -30,13 +30,13 @@ phase4c_require_mutation_authority() {
     printf 'live-cluster lock must be inherited on file descriptor 9\n' >&2
     return 1
   }
-  lock_path=/run/lock/blazn/live-cluster-mutation.lock
-  [ "$(readlink "/proc/$$/fd/9")" = "$lock_path" ] || {
-    printf 'file descriptor 9 is not the authoritative live-cluster lock\n' >&2
+  lock_id=$(stat -Lc '%d:%i' "/proc/$$/fd/9")
+  [ -n "${BLAZN_LIVE_CLUSTER_LOCK_ID:-}" ] && [ "$lock_id" = "$BLAZN_LIVE_CLUSTER_LOCK_ID" ] || {
+    printf 'inherited live-cluster lock inode identity changed\n' >&2
     return 1
   }
-  [ "$(stat -c '%u:%a' "$lock_path")" = '0:600' ] || {
-    printf 'live-cluster lock ownership or mode is unsafe\n' >&2
+  [ "$(stat -Lc '%u:%a:%h' "/proc/$$/fd/9")" = '0:600:1' ] || {
+    printf 'inherited live-cluster lock metadata is unsafe\n' >&2
     return 1
   }
   [ "$(cat /run/lock/blazn/live-cluster-mutation.fence)" = "$BLAZN_FENCING_TOKEN" ] || {
@@ -47,4 +47,78 @@ phase4c_require_mutation_authority() {
 
 phase4c_count() {
   kubectl get "$@" --no-headers 2>/dev/null | wc -l | tr -d ' '
+}
+
+phase4c_write_phase() {
+  transaction=$1
+  next_phase=$2
+  tmp_phase=$(mktemp "$transaction/.phase.XXXXXX")
+  printf '%s\n' "$next_phase" >"$tmp_phase"
+  chmod 0600 "$tmp_phase"
+  sync -f "$tmp_phase"
+  mv "$tmp_phase" "$transaction/phase"
+  sync -f "$transaction"
+  if [ -n "${BLAZN_PHASE4C_FAIL_AFTER:-}" ] && [ "$BLAZN_PHASE4C_FAIL_AFTER" = "$next_phase" ]; then
+    [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = 'true' ] || { printf 'failpoints require disposable test mode\n' >&2; return 1; }
+    printf 'disposable failpoint after %s\n' "$next_phase" >&2
+    return 86
+  fi
+}
+
+phase4c_verify_transaction() {
+  transaction=$1
+  [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' "$transaction")" = '0:700' ] || {
+    printf 'transaction directory metadata is unsafe\n' >&2
+    return 1
+  }
+  : "${BLAZN_REVIEWED_INPUT_DIGEST:?set the separately reviewed transaction input digest}"
+  [ "$(cat "$transaction/input.digest")" = "$BLAZN_REVIEWED_INPUT_DIGEST" ] || { printf 'reviewed input digest mismatch\n' >&2; return 1; }
+  (cd "$transaction" && sha256sum -c input.sha256 >/dev/null) || { printf 'sealed transaction input changed\n' >&2; return 1; }
+}
+
+phase4c_start_uid_proxy() {
+  transaction=$1
+  command -v curl >/dev/null 2>&1 || { printf 'curl is required for UID-precondition deletes\n' >&2; return 1; }
+  phase4c_proxy_socket=$transaction/kubernetes-api.sock
+  [ ! -e "$phase4c_proxy_socket" ] || { printf 'stale transaction API socket requires reconciliation\n' >&2; return 1; }
+  kubectl proxy --unix-socket="$phase4c_proxy_socket" --api-prefix=/ --accept-hosts='^localhost$' >"$transaction/kubectl-proxy.log" 2>&1 &
+  phase4c_proxy_pid=$!
+  attempt=0
+  while [ ! -S "$phase4c_proxy_socket" ]; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 50 ] && kill -0 "$phase4c_proxy_pid" 2>/dev/null || { printf 'private Kubernetes API proxy did not start\n' >&2; return 1; }
+    sleep 0.1
+  done
+  chmod 0600 "$phase4c_proxy_socket"
+}
+
+phase4c_stop_uid_proxy() {
+  if [ -n "${phase4c_proxy_pid:-}" ]; then
+    kill "$phase4c_proxy_pid" 2>/dev/null || :
+    wait "$phase4c_proxy_pid" 2>/dev/null || :
+    phase4c_proxy_pid=''
+  fi
+}
+
+phase4c_delete_uid() {
+  api_path=$1
+  expected_uid=$2
+  case "$expected_uid" in ????????-????-????-????-????????????) ;; *) printf 'invalid deletion UID\n' >&2; return 1 ;; esac
+  payload=$(printf '{"apiVersion":"v1","kind":"DeleteOptions","propagationPolicy":"Foreground","preconditions":{"uid":"%s"}}' "$expected_uid")
+  curl --fail-with-body --silent --show-error --unix-socket "$phase4c_proxy_socket" \
+    -X DELETE -H 'content-type: application/json' --data-binary "$payload" "http://localhost$api_path" >/dev/null
+}
+
+phase4c_owned_uid() {
+  resource=$1
+  name=$2
+  namespace=${3:-}
+  transaction_id=$4
+  if [ -n "$namespace" ]; then
+    kubectl get "$resource" "$name" -n "$namespace" -o json |
+      jq -er --arg tx "$transaction_id" 'select(.metadata.annotations["blazn.dev/phase4c-transaction"] == $tx) | .metadata.uid'
+  else
+    kubectl get "$resource" "$name" -o json |
+      jq -er --arg tx "$transaction_id" 'select(.metadata.annotations["blazn.dev/phase4c-transaction"] == $tx) | .metadata.uid'
+  fi
 }
