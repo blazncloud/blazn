@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -91,6 +93,96 @@ func TestSandboxTransferPathsAreConfined(t *testing.T) {
 		if validSandboxTransferPath(value) {
 			t.Errorf("unsafe path accepted: %s", value)
 		}
+	}
+}
+
+func TestChunkedSandboxDownloadVerifiesDeclaredSizeAndDigest(t *testing.T) {
+	content := []byte("chunked-content")
+	sum := sha256.Sum256(content)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Content-Size", "15")
+		w.Header().Set("X-Content-SHA256", "sha256:"+hex.EncodeToString(sum[:]))
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+	client, err := New(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, size, digest, err := client.DownloadSandboxGrantFile(context.Background(), "11111111-1111-4111-8111-111111111111", "grant", "/workspace/src/repo/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	got, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) || size != int64(len(content)) || digest != "sha256:"+hex.EncodeToString(sum[:]) {
+		t.Fatalf("download mismatch: %q %d %s", got, size, digest)
+	}
+}
+
+func TestSandboxDownloadRejectsDotSegmentHeadersBeforeNetwork(t *testing.T) {
+	client, err := New("https://example.invalid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"/workspace/src/./escape", "/workspace/src/../escape"} {
+		if _, _, _, err := client.DownloadSandboxGrantFile(context.Background(), "11111111-1111-4111-8111-111111111111", "grant", value); err == nil {
+			t.Errorf("dot segment accepted: %s", value)
+		}
+	}
+}
+
+func TestCreateAccessGrantNeverSendsIdempotencyKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Idempotency-Key"); got != "" {
+			t.Errorf("unexpected Idempotency-Key %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"grant":{"id":"11111111-1111-4111-8111-111111111111","sandboxId":"22222222-2222-4222-8222-222222222222","workspaceId":"33333333-3333-4333-8333-333333333333","scope":"sandbox.exec","kind":"exec","state":"active","expiresAt":"2026-08-22T00:00:30Z","createdAt":"2026-08-22T00:00:00Z"},"accessToken":"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ","endpoint":"https://example.invalid/v1/sandbox-access-grants/11111111-1111-4111-8111-111111111111/exec"}`)
+	}))
+	defer server.Close()
+	client, err := New(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CreateSandboxAccessGrant(context.Background(), "access", "22222222-2222-4222-8222-222222222222", CreateSandboxAccessGrantRequest{Kind: SandboxGrantExec, ExpiresInSeconds: 30}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSandboxEventStreamDecodesTypedGlobalCursor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Last-Event-ID"); got != "prior-event" {
+			t.Errorf("Last-Event-ID = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "id: 44444444-4444-4444-8444-444444444444\ndata: {\"eventId\":\"44444444-4444-4444-8444-444444444444\",\"sandboxId\":\"22222222-2222-4222-8222-222222222222\",\"operationId\":null,\"sequence\":7,\"type\":\"sandbox.ready\",\"payload\":{},\"createdAt\":\"2026-08-22T00:00:00Z\"}\n\n")
+	}))
+	defer server.Close()
+	client, err := New(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.StreamSandboxEvents(context.Background(), "access", "22222222-2222-4222-8222-222222222222", "prior-event")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	event, err := stream.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Sequence != 7 || event.Type != "sandbox.ready" {
+		t.Fatalf("unexpected event: %+v", event)
 	}
 }
 

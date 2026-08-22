@@ -73,17 +73,54 @@ INSERT INTO workspaces(id,slug,name,created_by) VALUES
  ('40000000-0000-4000-8000-000000000002','sandbox-two','Sandbox Two','10000000-0000-4000-8000-000000000002');
 INSERT INTO sandbox_templates(id,workspace_id,name,draft_spec,draft_digest,created_by) VALUES
  ('50000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','coding-small','{"version":"1"}',repeat('a',64),'10000000-0000-4000-8000-000000000001');
+BEGIN;
 INSERT INTO sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by) VALUES
- ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','1',convert_to('{"version":"1"}','UTF8'),'{"version":"1"}',repeat('b',64),'10000000-0000-4000-8000-000000000001');
+ ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','1',convert_to('{"version":"1"}','UTF8'),'{"version":"1","variants":[{"name":"linux-amd64","architecture":"amd64"}],"repositories":[{"name":"source","destination":"/workspace/src/blazn"}],"artifacts":[{"name":"patch","path":"/workspace/artifacts/change.patch"}]}',repeat('b',64),'10000000-0000-4000-8000-000000000001');
+INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile) VALUES
+ ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','linux-amd64','amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'poc-linux-amd64-v1');
+INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES
+ ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','source','https://github.com/blazncloud/blazn.git','/workspace/src/blazn',true);
+INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES
+ ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','patch','/workspace/artifacts/change.patch','text/plain',true);
 INSERT INTO sandbox_template_version_status(version_id,workspace_id,template_id,status,changed_by) VALUES
  ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','published','10000000-0000-4000-8000-000000000001');
 UPDATE sandbox_templates SET current_published_version_id='60000000-0000-4000-8000-000000000001' WHERE id='50000000-0000-4000-8000-000000000001';
+COMMIT;
 
 SET ROLE blazn_runtime;
-INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,source_bindings,artifact_contract,isolation,approved_non_sensitive,expires_at) VALUES
- ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local','[]','[]','approved-non-sensitive-poc',true,now()+interval '15 minutes');
+BEGIN;
+INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES
+ ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('9',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes');
+INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES
+ ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','source',repeat('1',40));
+INSERT INTO sandbox_artifact_contract_entries(sandbox_id,workspace_id,template_version_id,name,path,media_type,required) VALUES
+ ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','patch','/workspace/artifacts/change.patch','text/plain',true);
+COMMIT;
 INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
  ('80000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.exec','exec',repeat('e',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
+DO $$ BEGIN
+  IF NOT sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec', now()) THEN RAISE EXCEPTION 'atomic grant consume failed'; END IF;
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec', now()) THEN RAISE EXCEPTION 'consumed grant replay succeeded'; END IF;
+END $$;
+INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
+ ('80000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.download','download',repeat('d',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
+DO $$ BEGIN
+  IF sandbox_revoke_access_grants('40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',now()) <> 1 THEN RAISE EXCEPTION 'atomic grant revoke failed'; END IF;
+END $$;
+
+INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
+ ('90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','pending',1,'10000000-0000-4000-8000-000000000001','stop-request-1',repeat('3',64)),
+ ('90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','pending',1,'10000000-0000-4000-8000-000000000001','delete-request-1',repeat('4',64));
+INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES
+ ('91000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.stop.requested');
+DO $$ BEGIN
+  BEGIN INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES ('91000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.delete.requested'); RAISE EXCEPTION 'sandbox-wide duplicate event sequence succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+END $$;
+DO $$ BEGIN
+  BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed) VALUES ('92000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','succeeded',false,true,true,true); RAISE EXCEPTION 'incomplete succeeded receipt was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
 
 DO $$ BEGIN
   BEGIN UPDATE sandbox_template_versions SET version='changed' WHERE id='60000000-0000-4000-8000-000000000001'; RAISE EXCEPTION 'runtime changed immutable version';
@@ -91,19 +128,54 @@ DO $$ BEGIN
 END $$;
 
 DO $$ BEGIN
-  BEGIN
-    INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,isolation,approved_non_sensitive,expires_at) VALUES
-     ('70000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local','approved-non-sensitive-poc',true,now()+interval '15 minutes');
-    RAISE EXCEPTION 'cross-workspace version binding unexpectedly succeeded';
+  BEGIN INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','duplicate-amd64','amd64','registry.invalid/poc@sha256:'||repeat('5',64),'registry.invalid/poc@sha256:'||repeat('6',64),'poc-linux-amd64-v1'); RAISE EXCEPTION 'duplicate architecture unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','dot-path','https://example.invalid/repo.git','/workspace/src/../escape',false); RAISE EXCEPTION 'repository dot segment unexpectedly succeeded';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','duplicate-path','https://example.invalid/repo.git','/workspace/src/blazn',false); RAISE EXCEPTION 'duplicate repository path unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','source','https://example.invalid/repo.git','/workspace/src/other',false); RAISE EXCEPTION 'duplicate repository name unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','dot-artifact','/workspace/artifacts/./escape','text/plain',false); RAISE EXCEPTION 'artifact dot segment unexpectedly succeeded';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','duplicate-path','/workspace/artifacts/change.patch','text/plain',false); RAISE EXCEPTION 'duplicate artifact path unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','patch','/workspace/artifacts/other.patch','text/plain',false); RAISE EXCEPTION 'duplicate artifact name unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','source',repeat('7',40)); RAISE EXCEPTION 'duplicate source repository unexpectedly succeeded';
+  EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','unknown',repeat('7',40)); RAISE EXCEPTION 'unknown source repository unexpectedly succeeded';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
 
 DO $$ BEGIN
-  BEGIN INSERT INTO sandbox_templates(id,workspace_id,name,draft_spec,draft_digest,created_by) VALUES ('50000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','secret-template','{"accessToken":"forbidden"}',repeat('f',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'secret-bearing JSON unexpectedly succeeded';
+  BEGIN
+    INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES ('70000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('9',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes');
+    EXECUTE 'SET CONSTRAINTS sandbox_create_children_complete IMMEDIATE';
+    RAISE EXCEPTION 'missing source coverage unexpectedly succeeded';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 
+DO $$ BEGIN
+  BEGIN
+    INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES
+     ('70000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('9',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes');
+    RAISE EXCEPTION 'cross-workspace version binding unexpectedly succeeded';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+END $$;
+
+DO $$ DECLARE secret_key text; BEGIN
+  FOREACH secret_key IN ARRAY ARRAY['apiKey','api_key','private-key','clientSecret','client_secret','sessionToken','bearer-token','signing.key'] LOOP
+    BEGIN INSERT INTO sandbox_templates(id,workspace_id,name,draft_spec,draft_digest,created_by) VALUES (gen_random_uuid(),'40000000-0000-4000-8000-000000000001','secret-'||lower(regexp_replace(secret_key,'[^a-zA-Z0-9]','','g')),jsonb_build_object('nested',jsonb_build_object(secret_key,'forbidden')),repeat('f',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'secret-bearing JSON unexpectedly succeeded for %',secret_key;
+    EXCEPTION WHEN check_violation THEN NULL; END;
+  END LOOP;
+END $$;
+
 INSERT INTO sandbox_idempotency_receipts(principal_id,workspace_id,operation,idempotency_key,request_digest,response_status,response_body) VALUES ('10000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','sandbox.create','request-unique-1',repeat('1',64),202,'{"sandboxId":"70000000-0000-4000-8000-000000000001"}');
+DO $$ BEGIN
+  BEGIN INSERT INTO sandbox_idempotency_receipts(principal_id,workspace_id,operation,idempotency_key,request_digest,response_status,response_body) VALUES ('10000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','sandbox.access_grant.create','grant-request-1',repeat('8',64),201,'{}'); RAISE EXCEPTION 'grant response entered idempotency receipts';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
 DO $$ BEGIN
   BEGIN INSERT INTO sandbox_idempotency_receipts(principal_id,workspace_id,operation,idempotency_key,request_digest,response_status,response_body) VALUES ('10000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','sandbox.create','request-unique-1',repeat('2',64),202,'{}'); RAISE EXCEPTION 'idempotency collision unexpectedly succeeded';
   EXCEPTION WHEN unique_violation THEN NULL; END;
@@ -113,6 +185,13 @@ RESET ROLE;
 DO $$ BEGIN
   BEGIN UPDATE sandbox_template_versions SET version='owner-change' WHERE id='60000000-0000-4000-8000-000000000001'; RAISE EXCEPTION 'table owner changed immutable version';
   EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL; END;
+END $$;
+
+DO $$ BEGIN
+  BEGIN UPDATE sandbox_access_grants SET state='active', consumed_at=NULL WHERE id='80000000-0000-4000-8000-000000000001'; RAISE EXCEPTION 'consumed grant was revived';
+  EXCEPTION WHEN object_not_in_prerequisite_state THEN NULL; END;
+  BEGIN UPDATE sandbox_access_grants SET revoked_at=NULL WHERE id='80000000-0000-4000-8000-000000000002'; RAISE EXCEPTION 'terminal grant timestamp was cleared';
+  EXCEPTION WHEN object_not_in_prerequisite_state OR check_violation THEN NULL; END;
 END $$;
 
 DO $$ BEGIN

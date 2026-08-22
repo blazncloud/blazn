@@ -6,12 +6,14 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
@@ -94,6 +96,9 @@ type CreateSandboxRequest struct {
 }
 
 type SandboxCondition struct { Type string `json:"type"`; Status string `json:"status"`; Reason string `json:"reason"`; Message string `json:"message,omitempty"`; ObservedAt string `json:"observedAt"` }
+type SandboxSourceBinding struct { Repository string `json:"repository"`; URL string `json:"url"`; Destination string `json:"destination"`; Writable bool `json:"writable"`; Commit string `json:"commit"` }
+type SandboxArtifactContractEntry struct { Name string `json:"name"`; Path string `json:"path"`; MediaType string `json:"mediaType"`; Required bool `json:"required"` }
+type SandboxArtifactContract struct { Digest string `json:"digest"`; Items []SandboxArtifactContractEntry `json:"items"` }
 
 type Sandbox struct {
 	ID string `json:"id"`
@@ -105,9 +110,12 @@ type Sandbox struct {
 	TemplateVersion string `json:"templateVersion"`
 	TemplateDigest string `json:"templateDigest"`
 	VariantName string `json:"variantName"`
+	ImageIndexDigest string `json:"imageIndexDigest"`
 	ImageDigest string `json:"imageDigest"`
 	Architecture SandboxArchitecture `json:"architecture"`
 	AllocationMode SandboxAllocationMode `json:"allocationMode"`
+	SourceBindings []SandboxSourceBinding `json:"sourceBindings"`
+	ArtifactContract SandboxArtifactContract `json:"artifactContract"`
 	State SandboxState `json:"state"`
 	DesiredState SandboxDesiredState `json:"desiredState"`
 	Version int64 `json:"version"`
@@ -124,7 +132,9 @@ type Sandbox struct {
 
 type SandboxList struct { Items []Sandbox `json:"items"`; NextCursor *string `json:"nextCursor"` }
 type CreateSandboxOperationRequest struct { Type SandboxOperationType `json:"type"`; ExpectedVersion int64 `json:"expectedVersion"` }
-type SandboxOperation struct { ID string `json:"id"`; SandboxID string `json:"sandboxId"`; Type SandboxOperationType `json:"type"`; Status SandboxOperationStatus `json:"status"`; ExpectedSandboxVersion int64 `json:"expectedSandboxVersion"`; CreatedAt string `json:"createdAt"`; CompletedAt *string `json:"completedAt,omitempty"` }
+type SandboxCleanupResult struct { ArtifactIDs []string `json:"artifactIds"`; Warnings []string `json:"warnings"` }
+type SandboxOperationReceipt struct { ID string `json:"id"`; OperationID string `json:"operationId"`; Status SandboxOperationStatus `json:"status"`; CleanupComplete bool `json:"cleanupComplete"`; ArtifactExportComplete bool `json:"artifactExportComplete"`; GrantsRevoked bool `json:"grantsRevoked"`; BackendDestroyed bool `json:"backendDestroyed"`; Result *SandboxCleanupResult `json:"result"`; Error *SandboxError `json:"error"`; CreatedAt string `json:"createdAt"` }
+type SandboxOperation struct { ID string `json:"id"`; SandboxID string `json:"sandboxId"`; Type SandboxOperationType `json:"type"`; Status SandboxOperationStatus `json:"status"`; ExpectedSandboxVersion int64 `json:"expectedSandboxVersion"`; Receipt *SandboxOperationReceipt `json:"receipt"`; CreatedAt string `json:"createdAt"`; CompletedAt *string `json:"completedAt"` }
 type SandboxMutation struct { Sandbox Sandbox `json:"sandbox"`; Operation SandboxOperation `json:"operation"` }
 type CreateSandboxAccessGrantRequest struct { Kind SandboxGrantKind `json:"kind"`; ExpiresInSeconds int64 `json:"expiresInSeconds"` }
 type SandboxAccessGrant struct { ID string `json:"id"`; SandboxID string `json:"sandboxId"`; WorkspaceID string `json:"workspaceId"`; Scope string `json:"scope"`; Kind SandboxGrantKind `json:"kind"`; State SandboxGrantState `json:"state"`; ExpiresAt string `json:"expiresAt"`; CreatedAt string `json:"createdAt"` }
@@ -132,6 +142,10 @@ type SandboxAccessGrantCreated struct { Grant SandboxAccessGrant `json:"grant"`;
 type SandboxExecRequest struct { Command []string `json:"command"` }
 type SandboxExecResult struct { RemoteExitCode int `json:"remoteExitCode"`; StdoutBase64 string `json:"stdoutBase64"`; StderrBase64 string `json:"stderrBase64"`; Truncated bool `json:"truncated"` }
 type SandboxFileTransferResult struct { Path string `json:"path"`; Size int64 `json:"size"`; SHA256 string `json:"sha256"` }
+type SandboxEvent struct { EventID string `json:"eventId"`; SandboxID string `json:"sandboxId"`; OperationID *string `json:"operationId"`; Sequence int64 `json:"sequence"`; Type string `json:"type"`; Payload map[string]any `json:"payload"`; CreatedAt string `json:"createdAt"` }
+type SandboxArtifactDownload struct { Endpoint string `json:"endpoint"`; Size int64 `json:"size"`; SHA256 string `json:"sha256"`; MediaType string `json:"mediaType"` }
+type SandboxArtifact struct { ID string `json:"id"`; WorkspaceID string `json:"workspaceId"`; SandboxID string `json:"sandboxId"`; Name string `json:"name"`; Path string `json:"path"`; MediaType string `json:"mediaType"`; Size int64 `json:"size"`; SHA256 string `json:"sha256"`; ExportedAt string `json:"exportedAt"`; Download SandboxArtifactDownload `json:"download"` }
+type SandboxArtifactList struct { Items []SandboxArtifact `json:"items"`; NextCursor *string `json:"nextCursor"` }
 
 var sandboxErrorHTTPStatuses = map[string]int{SANDBOX_ERROR_STATUSES}
 
@@ -167,30 +181,43 @@ func (c *Client) CreateSandbox(ctx context.Context, accessToken, workspaceID, id
 func (c *Client) ListSandboxes(ctx context.Context, accessToken, workspaceID, cursor string) (SandboxList,error) {var out SandboxList;q:=url.Values{};if cursor!=""{q.Set("cursor",cursor)};err:=c.sandboxJSON(ctx,http.MethodGet,"/v1/workspaces/"+url.PathEscape(workspaceID)+"/sandboxes",accessToken,"",q,nil,&out,http.StatusOK);return out,err}
 func (c *Client) GetSandbox(ctx context.Context, accessToken, sandboxID string) (Sandbox,error) {var out Sandbox;err:=c.sandboxJSON(ctx,http.MethodGet,"/v1/sandboxes/"+url.PathEscape(sandboxID),accessToken,"",nil,nil,&out,http.StatusOK);return out,err}
 func (c *Client) CreateSandboxOperation(ctx context.Context, accessToken, sandboxID, idempotencyKey string, request CreateSandboxOperationRequest) (SandboxMutation,error) {var out SandboxMutation;err:=c.sandboxJSON(ctx,http.MethodPost,"/v1/sandboxes/"+url.PathEscape(sandboxID)+"/operations",accessToken,idempotencyKey,nil,request,&out,http.StatusAccepted);return out,err}
-func (c *Client) CreateSandboxAccessGrant(ctx context.Context, accessToken, sandboxID, idempotencyKey string, request CreateSandboxAccessGrantRequest) (SandboxAccessGrantCreated,error) {var out SandboxAccessGrantCreated;err:=c.sandboxJSON(ctx,http.MethodPost,"/v1/sandboxes/"+url.PathEscape(sandboxID)+"/access-grants",accessToken,idempotencyKey,nil,request,&out,http.StatusCreated);return out,err}
+func (c *Client) CreateSandboxAccessGrant(ctx context.Context, accessToken, sandboxID string, request CreateSandboxAccessGrantRequest) (SandboxAccessGrantCreated,error) {var out SandboxAccessGrantCreated;err:=c.sandboxJSON(ctx,http.MethodPost,"/v1/sandboxes/"+url.PathEscape(sandboxID)+"/access-grants",accessToken,"",nil,request,&out,http.StatusCreated);return out,err}
+func (c *Client) GetSandboxOperation(ctx context.Context, accessToken, operationID string) (SandboxOperation,error) {var out SandboxOperation;err:=c.sandboxJSON(ctx,http.MethodGet,"/v1/sandbox-operations/"+url.PathEscape(operationID),accessToken,"",nil,nil,&out,http.StatusOK);return out,err}
+func (c *Client) ListSandboxArtifacts(ctx context.Context, accessToken, sandboxID, cursor string) (SandboxArtifactList,error) {var out SandboxArtifactList;q:=url.Values{};if cursor!=""{q.Set("cursor",cursor)};err:=c.sandboxJSON(ctx,http.MethodGet,"/v1/sandboxes/"+url.PathEscape(sandboxID)+"/artifacts",accessToken,"",q,nil,&out,http.StatusOK);return out,err}
+func (c *Client) GetSandboxArtifact(ctx context.Context, accessToken, artifactID string) (SandboxArtifact,error) {var out SandboxArtifact;err:=c.sandboxJSON(ctx,http.MethodGet,"/v1/sandbox-artifacts/"+url.PathEscape(artifactID),accessToken,"",nil,nil,&out,http.StatusOK);return out,err}
 
-func (c *Client) StreamSandboxEvents(ctx context.Context, accessToken, sandboxID, lastEventID string) (io.ReadCloser,error) {
+func (c *Client) StreamSandboxEvents(ctx context.Context, accessToken, sandboxID, lastEventID string) (*SandboxEventStream,error) {
 	endpoint:=c.sandboxEndpoint("/v1/sandboxes/"+url.PathEscape(sandboxID)+"/events",nil)
 	req,err:=http.NewRequestWithContext(ctx,http.MethodGet,endpoint,nil);if err!=nil{return nil,err};req.Header.Set("Authorization","Bearer "+accessToken);req.Header.Set("Accept","text/event-stream");if lastEventID!=""{req.Header.Set("Last-Event-ID",lastEventID)}
-	resp,err:=c.http.Do(req);if err!=nil{return nil,err};if resp.StatusCode!=http.StatusOK{defer resp.Body.Close();return nil,decodeSandboxAPIError(resp)};return resp.Body,nil
+	resp,err:=c.http.Do(req);if err!=nil{return nil,err};if resp.StatusCode!=http.StatusOK{defer resp.Body.Close();return nil,decodeSandboxAPIError(resp)};if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")),"text/event-stream"){resp.Body.Close();return nil,fmt.Errorf("sandbox event API returned unsupported content type")};scanner:=bufio.NewScanner(resp.Body);scanner.Buffer(make([]byte,4096),1<<20);return &SandboxEventStream{body:resp.Body,scanner:scanner},nil
 }
+
+type SandboxEventStream struct { body io.ReadCloser; scanner *bufio.Scanner }
+func (s *SandboxEventStream) Close() error { return s.body.Close() }
+func (s *SandboxEventStream) Next() (SandboxEvent,error) {var event SandboxEvent;var eventID string;var data strings.Builder;for s.scanner.Scan(){line:=s.scanner.Text();if line==""{if data.Len()==0{continue};if err:=json.Unmarshal([]byte(data.String()),&event);err!=nil{return event,fmt.Errorf("decode sandbox event: %w",err)};if eventID==""||event.EventID!=eventID{return event,fmt.Errorf("sandbox SSE id does not match typed eventId")};return event,nil};if strings.HasPrefix(line,"id:"){eventID=strings.TrimSpace(strings.TrimPrefix(line,"id:"))};if strings.HasPrefix(line,"data:"){if data.Len()>0{data.WriteByte('\n')};data.WriteString(strings.TrimSpace(strings.TrimPrefix(line,"data:")))}};if err:=s.scanner.Err();err!=nil{return event,err};return event,io.EOF}
 
 func (c *Client) ExecuteSandboxGrant(ctx context.Context, grantID, grantToken string, request SandboxExecRequest) (SandboxExecResult,error) {var out SandboxExecResult;err:=c.sandboxGrantJSON(ctx,http.MethodPost,"/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/exec",grantToken,request,&out);return out,err}
 
 func (c *Client) UploadSandboxGrantFile(ctx context.Context, grantID, grantToken, sandboxPath, digest string, content io.Reader, size int64) (SandboxFileTransferResult,error) {
 	var out SandboxFileTransferResult;if size<0||size>SandboxMaxFileBytes{return out,fmt.Errorf("sandbox upload size must be between 0 and %d bytes",SandboxMaxFileBytes)}
 	if !validSandboxTransferPath(sandboxPath) { return out, fmt.Errorf("sandbox transfer path is not confined") }
-	req,err:=http.NewRequestWithContext(ctx,http.MethodPut,c.sandboxEndpoint("/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/file",nil),io.LimitReader(content,SandboxMaxFileBytes+1));if err!=nil{return out,err};req.ContentLength=size;req.Header.Set("Authorization","Blazn-Grant "+grantToken);req.Header.Set("Content-Type","application/octet-stream");req.Header.Set("X-Blazn-Sandbox-Path",sandboxPath);req.Header.Set("X-Content-SHA256",digest);req.Header.Set("Accept","application/json")
+	if !validSandboxDigest(digest) { return out, fmt.Errorf("sandbox upload digest is invalid") }
+	req,err:=http.NewRequestWithContext(ctx,http.MethodPut,c.sandboxEndpoint("/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/file",nil),io.LimitReader(content,size));if err!=nil{return out,err};req.ContentLength=size;req.Header.Set("Authorization","Blazn-Grant "+grantToken);req.Header.Set("Content-Type","application/octet-stream");req.Header.Set("X-Blazn-Sandbox-Path",sandboxPath);req.Header.Set("X-Content-Size",strconv.FormatInt(size,10));req.Header.Set("X-Content-SHA256",digest);req.Header.Set("Accept","application/json")
 	resp,err:=c.http.Do(req);if err!=nil{return out,err};defer resp.Body.Close();if resp.StatusCode!=http.StatusOK{return out,decodeSandboxAPIError(resp)};err=json.NewDecoder(io.LimitReader(resp.Body,1<<20)).Decode(&out);return out,err
 }
 
 func (c *Client) DownloadSandboxGrantFile(ctx context.Context, grantID, grantToken, sandboxPath string) (io.ReadCloser,int64,string,error) {
 	if !validSandboxTransferPath(sandboxPath) { return nil,0,"",fmt.Errorf("sandbox transfer path is not confined") }
 	req,err:=http.NewRequestWithContext(ctx,http.MethodGet,c.sandboxEndpoint("/v1/sandbox-access-grants/"+url.PathEscape(grantID)+"/file",nil),nil);if err!=nil{return nil,0,"",err};req.Header.Set("Authorization","Blazn-Grant "+grantToken);req.Header.Set("X-Blazn-Sandbox-Path",sandboxPath);req.Header.Set("Accept","application/octet-stream")
-	resp,err:=c.http.Do(req);if err!=nil{return nil,0,"",err};if resp.StatusCode!=http.StatusOK{defer resp.Body.Close();return nil,0,"",decodeSandboxAPIError(resp)};if resp.ContentLength<0||resp.ContentLength>SandboxMaxFileBytes{resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download exceeds %d bytes",SandboxMaxFileBytes)};return &sandboxBoundedReadCloser{Reader:io.LimitReader(resp.Body,SandboxMaxFileBytes),Closer:resp.Body},resp.ContentLength,resp.Header.Get("X-Content-SHA256"),nil
+	resp,err:=c.http.Do(req);if err!=nil{return nil,0,"",err};if resp.StatusCode!=http.StatusOK{defer resp.Body.Close();return nil,0,"",decodeSandboxAPIError(resp)};return verifiedSandboxDownload(resp,SandboxMaxFileBytes)
 }
-type sandboxBoundedReadCloser struct { io.Reader; io.Closer }
+func (c *Client) DownloadSandboxArtifact(ctx context.Context, accessToken, artifactID string) (io.ReadCloser,int64,string,error) {req,err:=http.NewRequestWithContext(ctx,http.MethodGet,c.sandboxEndpoint("/v1/sandbox-artifacts/"+url.PathEscape(artifactID)+"/content",nil),nil);if err!=nil{return nil,0,"",err};req.Header.Set("Authorization","Bearer "+accessToken);req.Header.Set("Accept","application/octet-stream");resp,err:=c.http.Do(req);if err!=nil{return nil,0,"",err};if resp.StatusCode!=http.StatusOK{defer resp.Body.Close();return nil,0,"",decodeSandboxAPIError(resp)};return verifiedSandboxDownload(resp,-1)}
+type sandboxVerifiedReadCloser struct { body io.ReadCloser; digest hash.Hash; expectedSize int64; expectedDigest string; maximum int64; read int64; complete bool }
+func (r *sandboxVerifiedReadCloser) Read(p []byte)(int,error){if r.complete{return 0,io.EOF};n,err:=r.body.Read(p);if n>0{r.read+=int64(n);_,_=r.digest.Write(p[:n]);if (r.maximum>=0&&r.read>r.maximum)||r.read>r.expectedSize{return 0,fmt.Errorf("sandbox download exceeded declared size")}};if err==io.EOF{r.complete=true;if r.read!=r.expectedSize{return n,fmt.Errorf("sandbox download size %d does not match declared %d",r.read,r.expectedSize)};got:="sha256:"+hex.EncodeToString(r.digest.Sum(nil));if got!=r.expectedDigest{return n,fmt.Errorf("sandbox download digest mismatch")}};return n,err}
+func (r *sandboxVerifiedReadCloser) Close() error{return r.body.Close()}
+func verifiedSandboxDownload(resp *http.Response,maximum int64)(io.ReadCloser,int64,string,error){mediaType:=strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"),";")[0]);if !strings.EqualFold(mediaType,"application/octet-stream"){resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download has invalid content type")};size,err:=strconv.ParseInt(resp.Header.Get("X-Content-Size"),10,64);if err!=nil||size<0||(maximum>=0&&size>maximum){resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download has invalid X-Content-Size")};digest:=resp.Header.Get("X-Content-SHA256");if !validSandboxDigest(digest){resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download has invalid X-Content-SHA256")};return &sandboxVerifiedReadCloser{body:resp.Body,digest:sha256.New(),expectedSize:size,expectedDigest:digest,maximum:maximum},size,digest,nil}
 func validSandboxTransferPath(value string) bool { if strings.Contains(value,"\\")||strings.Contains(value,"//")||strings.Contains(value,"/../")||strings.HasSuffix(value,"/..")||strings.HasSuffix(value,"/."){return false};for _,prefix:=range []string{"/workspace/src/","/workspace/artifacts/","/workspace/tmp/"}{if strings.HasPrefix(value,prefix)&&len(value)>len(prefix){return true}};return false }
+func validSandboxDigest(value string) bool { if len(value)!=71||!strings.HasPrefix(value,"sha256:"){return false};_,err:=hex.DecodeString(strings.TrimPrefix(value,"sha256:"));return err==nil }
 
 func (c *Client) sandboxGrantJSON(ctx context.Context, method,path,grantToken string,input,output any) error { body,err:=json.Marshal(input);if err!=nil{return err};req,err:=http.NewRequestWithContext(ctx,method,c.sandboxEndpoint(path,nil),bytes.NewReader(body));if err!=nil{return err};req.Header.Set("Authorization","Blazn-Grant "+grantToken);req.Header.Set("Content-Type","application/json");req.Header.Set("Accept","application/json");resp,err:=c.http.Do(req);if err!=nil{return err};defer resp.Body.Close();if resp.StatusCode!=http.StatusOK{return decodeSandboxAPIError(resp)};return json.NewDecoder(io.LimitReader(resp.Body,16<<20)).Decode(output) }
 

@@ -21,14 +21,42 @@ import (
 var clientTemplate []byte
 
 const (
-	openAPISHA256  = "996b5143c4e99f8a356c1d7da45570b48859d277c3267ef7140e6536123a712e"
-	templateSHA256 = "29c0779892c4fb7bf25682bf39d3721649602b3927b8b9764b00398a1c784acf"
-	cliSHA256      = "772cea3cb6a3fc9247e1aa85330a2d3de56dfd63cecb06aec876390e22f79808"
+	openAPISHA256  = "ccb86d200b07b91de21b0447da0e5cc761300cb35b38046a2f01593bfb8965d0"
+	templateSHA256 = "e555682663c8c45c6813d65faf1937d5a860e670f2c816fdf31b7fbb96f932e1"
+	cliSHA256      = "83eeeb9d7574e4956acdd0026279f6be7b6fbcad16f0b3450a8d541459333b35"
 )
 
 type source struct {
 	path, digest string
 	document     map[string]any
+}
+
+type operationSpec struct {
+	path, method, id, success, requestRef, requestMedia, responseRef, responseMedia, security string
+	parameters                                                                                []string
+}
+
+var sandboxOperations = []operationSpec{
+	{"/v1/workspaces/{workspaceId}/sandbox-templates", "post", "createSandboxTemplate", "201", "sandbox-template.schema.json", "application/json", "SandboxTemplateEnvelope", "application/json", "bearer", []string{"WorkspaceId", "IdempotencyKey"}},
+	{"/v1/workspaces/{workspaceId}/sandbox-templates", "get", "listSandboxTemplates", "200", "", "", "SandboxTemplateList", "application/json", "bearer", []string{"WorkspaceId", "Cursor"}},
+	{"/v1/sandbox-templates/{templateId}", "get", "getSandboxTemplate", "200", "", "", "SandboxTemplateEnvelope", "application/json", "bearer", []string{"TemplateId"}},
+	{"/v1/sandbox-templates/{templateId}/draft", "put", "replaceSandboxTemplateDraft", "200", "ReplaceTemplateDraftRequest", "application/json", "SandboxTemplateEnvelope", "application/json", "bearer", []string{"TemplateId", "IdempotencyKey"}},
+	{"/v1/sandbox-templates/{templateId}/versions", "post", "publishSandboxTemplateVersion", "201", "PublishTemplateVersionRequest", "application/json", "SandboxTemplateVersionEnvelope", "application/json", "bearer", []string{"TemplateId", "IdempotencyKey"}},
+	{"/v1/sandbox-templates/{templateId}/versions", "get", "listSandboxTemplateVersions", "200", "", "", "SandboxTemplateVersionList", "application/json", "bearer", []string{"TemplateId", "Cursor"}},
+	{"/v1/sandbox-template-versions/{versionId}", "get", "getSandboxTemplateVersion", "200", "", "", "SandboxTemplateVersionEnvelope", "application/json", "bearer", []string{"VersionId"}},
+	{"/v1/workspaces/{workspaceId}/sandboxes", "post", "createSandbox", "202", "CreateSandboxRequest", "application/json", "SandboxMutation", "application/json", "bearer", []string{"WorkspaceId", "IdempotencyKey"}},
+	{"/v1/workspaces/{workspaceId}/sandboxes", "get", "listSandboxes", "200", "", "", "SandboxList", "application/json", "bearer", []string{"WorkspaceId", "Cursor"}},
+	{"/v1/sandboxes/{sandboxId}", "get", "getSandbox", "200", "", "", "Sandbox", "application/json", "bearer", []string{"SandboxId"}},
+	{"/v1/sandboxes/{sandboxId}/events", "get", "streamSandboxEvents", "200", "", "", "SandboxEvent", "text/event-stream", "bearer", []string{"SandboxId", "LastEventId"}},
+	{"/v1/sandboxes/{sandboxId}/operations", "post", "createSandboxOperation", "202", "CreateSandboxOperationRequest", "application/json", "SandboxMutation", "application/json", "bearer", []string{"SandboxId", "IdempotencyKey"}},
+	{"/v1/sandboxes/{sandboxId}/access-grants", "post", "createSandboxAccessGrant", "201", "CreateAccessGrantRequest", "application/json", "AccessGrantCreated", "application/json", "bearer", []string{"SandboxId"}},
+	{"/v1/sandbox-access-grants/{grantId}/exec", "post", "executeSandboxGrant", "200", "ExecRequest", "application/json", "ExecResult", "application/json", "grant", []string{"GrantId"}},
+	{"/v1/sandbox-access-grants/{grantId}/file", "put", "uploadSandboxGrantFile", "200", "binary", "application/octet-stream", "FileTransferResult", "application/json", "grant", []string{"GrantId", "SandboxPath", "ContentSize", "ContentSHA256"}},
+	{"/v1/sandbox-access-grants/{grantId}/file", "get", "downloadSandboxGrantFile", "200", "", "", "binary", "application/octet-stream", "grant", []string{"GrantId", "SandboxPath"}},
+	{"/v1/sandbox-operations/{operationId}", "get", "getSandboxOperation", "200", "", "", "SandboxOperation", "application/json", "bearer", []string{"OperationId"}},
+	{"/v1/sandboxes/{sandboxId}/artifacts", "get", "listSandboxArtifacts", "200", "", "", "SandboxArtifactList", "application/json", "bearer", []string{"SandboxId", "Cursor"}},
+	{"/v1/sandbox-artifacts/{artifactId}", "get", "getSandboxArtifact", "200", "", "", "SandboxArtifact", "application/json", "bearer", []string{"ArtifactId"}},
+	{"/v1/sandbox-artifacts/{artifactId}/content", "get", "downloadSandboxArtifact", "200", "", "", "binary", "application/octet-stream", "bearer", []string{"ArtifactId"}},
 }
 
 func main() {
@@ -102,25 +130,11 @@ func validate(sources map[string]source, template string) error {
 		return fmt.Errorf("sandbox authentication contract changed")
 	}
 	paths, _ := at(api, "paths").(map[string]any)
-	if len(paths) != 12 {
-		return fmt.Errorf("sandbox paths changed: got %d want 12", len(paths))
+	if len(paths) != 16 {
+		return fmt.Errorf("sandbox paths changed: got %d want 16", len(paths))
 	}
-	wantOps := []string{"createSandboxTemplate", "listSandboxTemplates", "getSandboxTemplate", "replaceSandboxTemplateDraft", "publishSandboxTemplateVersion", "listSandboxTemplateVersions", "getSandboxTemplateVersion", "createSandbox", "listSandboxes", "getSandbox", "streamSandboxEvents", "createSandboxOperation", "createSandboxAccessGrant", "executeSandboxGrant", "uploadSandboxGrantFile", "downloadSandboxGrantFile"}
-	seen := map[string]bool{}
-	for _, pathValue := range paths {
-		methods, _ := pathValue.(map[string]any)
-		for _, operationValue := range methods {
-			operation, _ := operationValue.(map[string]any)
-			seen[atString(operation, "operationId")] = true
-			if atString(operation, "responses", "default", "$ref") != "#/components/responses/SandboxError" {
-				return fmt.Errorf("sandbox operation %q lacks common error response", atString(operation, "operationId"))
-			}
-		}
-	}
-	for _, op := range wantOps {
-		if !seen[op] {
-			return fmt.Errorf("sandbox operation missing: %s", op)
-		}
+	if err := validateOperations(api, template); err != nil {
+		return err
 	}
 	if atString(manifest, "properties", "apiVersion", "const") != "blazn.dev/v1alpha1" || atString(manifest, "properties", "kind", "const") != "SandboxTemplate" {
 		return fmt.Errorf("template identity changed")
@@ -148,9 +162,18 @@ func validate(sources map[string]source, template string) error {
 			return fmt.Errorf("CLI command missing: %s", command)
 		}
 	}
-	for _, marker := range []string{"func CanonicalSandboxTemplateDigest(", `"Blazn-Grant "+grantToken`, `"Idempotency-Key",idempotencyKey`, `"Last-Event-ID",lastEventID`, "SandboxMaxFileBytes", "ApprovedNonSensitive"} {
-		if !strings.Contains(template, marker) {
-			return fmt.Errorf("sandbox client template lacks marker %q", marker)
+	if !requiredExactly(at(api, "components", "schemas", "Sandbox"), "id", "workspaceId", "requestedBy", "templateId", "templateVersionId", "templateName", "templateVersion", "templateDigest", "variantName", "imageIndexDigest", "imageDigest", "architecture", "allocationMode", "sourceBindings", "artifactContract", "state", "desiredState", "version", "queueName", "admissionId", "isolation", "expiresAt", "conditions", "createdAt", "updatedAt") {
+		return fmt.Errorf("Sandbox required fields changed")
+	}
+	if !requiredExactly(at(api, "components", "schemas", "SandboxOperationReceipt"), "id", "operationId", "status", "cleanupComplete", "artifactExportComplete", "grantsRevoked", "backendDestroyed", "result", "error", "createdAt") || !requiredExactly(at(api, "components", "schemas", "SandboxEvent"), "eventId", "sandboxId", "operationId", "sequence", "type", "payload", "createdAt") || !requiredExactly(at(api, "components", "schemas", "SandboxArtifact"), "id", "workspaceId", "sandboxId", "name", "path", "mediaType", "size", "sha256", "exportedAt", "download") {
+		return fmt.Errorf("typed operation/event/artifact required fields changed")
+	}
+	if !enumExactly(at(api, "components", "schemas", "CreateSandboxOperationRequest", "properties", "type", "enum"), "delete", "stop") || !enumExactly(at(api, "components", "schemas", "CreateAccessGrantRequest", "properties", "kind", "enum"), "download", "exec", "upload") {
+		return fmt.Errorf("sandbox mutation enums changed")
+	}
+	for _, schemaName := range []string{"template", "templateVersion", "sandbox", "operation", "receipt", "event"} {
+		if at(cli, "$defs", schemaName, "additionalProperties") != false {
+			return fmt.Errorf("CLI schema %s must be closed", schemaName)
 		}
 	}
 	for _, unsafe := range []string{`PathEscape(grantToken)`, `query.Set("token"`} {
@@ -183,6 +206,130 @@ func validateExternalRefs(value any) error {
 		}
 	}
 	return nil
+}
+
+func validateOperations(api map[string]any, template string) error {
+	seen := map[string]bool{}
+	for _, expected := range sandboxOperations {
+		operation, ok := at(api, "paths", expected.path, expected.method).(map[string]any)
+		if !ok || atString(operation, "operationId") != expected.id {
+			return fmt.Errorf("%s %s operationId changed", expected.method, expected.path)
+		}
+		seen[expected.path+" "+expected.method] = true
+		if atString(operation, "responses", "default", "$ref") != "#/components/responses/SandboxError" {
+			return fmt.Errorf("%s lacks common error", expected.id)
+		}
+		parameters, _ := operation["parameters"].([]any)
+		if len(parameters) != len(expected.parameters) {
+			return fmt.Errorf("%s parameters=%d want %d", expected.id, len(parameters), len(expected.parameters))
+		}
+		for i, want := range expected.parameters {
+			if atString(parameters[i], "$ref") != "#/components/parameters/"+want {
+				return fmt.Errorf("%s parameter %d changed", expected.id, i)
+			}
+		}
+		body := at(operation, "requestBody")
+		if expected.requestRef == "" {
+			if body != nil {
+				return fmt.Errorf("%s unexpectedly has request body", expected.id)
+			}
+		} else {
+			if at(operation, "requestBody", "required") != true {
+				return fmt.Errorf("%s body must be required", expected.id)
+			}
+			schema := at(operation, "requestBody", "content", expected.requestMedia, "schema")
+			if expected.requestRef == "binary" {
+				if atString(schema, "type") != "string" || atString(schema, "format") != "binary" {
+					return fmt.Errorf("%s raw body changed", expected.id)
+				}
+			} else {
+				want := "#/components/schemas/" + expected.requestRef
+				if expected.requestRef == "sandbox-template.schema.json" {
+					want = expected.requestRef
+				}
+				if atString(schema, "$ref") != want {
+					return fmt.Errorf("%s request schema changed", expected.id)
+				}
+			}
+		}
+		responseSchema := at(operation, "responses", expected.success, "content", expected.responseMedia, "schema")
+		if expected.responseRef == "binary" {
+			if atString(responseSchema, "type") != "string" || atString(responseSchema, "format") != "binary" {
+				return fmt.Errorf("%s raw response changed", expected.id)
+			}
+		} else if atString(responseSchema, "$ref") != "#/components/schemas/"+expected.responseRef {
+			return fmt.Errorf("%s response schema changed", expected.id)
+		}
+		security := expected.security
+		if security == "grant" {
+			scopes, ok := at(operation, "security").([]any)
+			if !ok || len(scopes) != 1 {
+				return fmt.Errorf("%s grant security changed", expected.id)
+			}
+			entry, ok := scopes[0].(map[string]any)
+			values, exists := entry["grantAuth"].([]any)
+			if !ok || !exists || len(values) != 0 {
+				return fmt.Errorf("%s grant security changed", expected.id)
+			}
+		} else if at(operation, "security") != nil {
+			return fmt.Errorf("%s unexpectedly overrides bearer security", expected.id)
+		}
+		goName := strings.ToUpper(expected.id[:1]) + expected.id[1:]
+		if strings.Count(template, "func (c *Client) "+goName+"(") != 1 {
+			return fmt.Errorf("generated client method parity changed for %s", expected.id)
+		}
+	}
+	paths, _ := at(api, "paths").(map[string]any)
+	count := 0
+	for path, pathValue := range paths {
+		methods, _ := pathValue.(map[string]any)
+		for method := range methods {
+			count++
+			if !seen[path+" "+method] {
+				return fmt.Errorf("unrepresented sandbox operation %s %s", method, path)
+			}
+		}
+	}
+	if count != len(sandboxOperations) {
+		return fmt.Errorf("sandbox operation count=%d want %d", count, len(sandboxOperations))
+	}
+	grantParams, _ := at(api, "paths", "/v1/sandboxes/{sandboxId}/access-grants", "post", "parameters").([]any)
+	for _, parameter := range grantParams {
+		if strings.HasSuffix(atString(parameter, "$ref"), "/IdempotencyKey") {
+			return fmt.Errorf("one-time grant creation must not be idempotent")
+		}
+	}
+	for _, header := range []string{"X-Content-Size", "X-Content-SHA256"} {
+		if at(api, "paths", "/v1/sandbox-access-grants/{grantId}/file", "get", "responses", "200", "headers", header, "required") != true {
+			return fmt.Errorf("grant download header %s must be required", header)
+		}
+	}
+	return nil
+}
+
+func requiredExactly(schema any, want ...string) bool {
+	values, _ := at(schema, "required").([]any)
+	got := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			got = append(got, text)
+		}
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	return strings.Join(got, "\x00") == strings.Join(want, "\x00")
+}
+func enumExactly(value any, want ...string) bool {
+	values, _ := value.([]any)
+	got := make([]string, 0, len(values))
+	for _, item := range values {
+		if text, ok := item.(string); ok {
+			got = append(got, text)
+		}
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	return strings.Join(got, "\x00") == strings.Join(want, "\x00")
 }
 
 func containsString(value any, want string) bool {

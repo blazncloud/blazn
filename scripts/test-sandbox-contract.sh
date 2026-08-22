@@ -13,7 +13,7 @@ jq -e '
   .openapi == "3.1.0" and .info.version == "v1alpha1" and
   (.security == [{"bearerAuth":[]}]) and
   (.components.securitySchemes.grantAuth.name == "Authorization") and
-  ([.paths[][] | .operationId] as $operations | ($operations | length) == 16 and ($operations | unique | length) == 16) and
+  ([.paths[][] | .operationId] as $operations | ($operations | length) == 20 and ($operations | unique | length) == 20) and
   ([.paths[][] | select(.responses.default."$ref" != "#/components/responses/SandboxError")] | length == 0) and
   (.paths["/v1/sandboxes/{sandboxId}/access-grants"].post.responses["201"].headers["Cache-Control"].schema.const == "no-store") and
   (.components.schemas.CreateSandboxRequest.properties.approvedNonSensitive.const == true) and
@@ -61,9 +61,10 @@ if validate_fixture "$fixtures/template-bad-privileged.json"; then
   exit 1
 fi
 
-jq -e '.contractVersion == "sandbox-cli/v1alpha1" and (.commands | keys | length == 11) and .commands["sandbox exec"].exitCodes.truncated == 9 and .commands["sandbox watch"].stream == "application/x-ndjson" and (.security.forbiddenArgv | index("accessToken") != null)' "$contracts/sandbox-cli-contract.json" >/dev/null
+jq -e '.contractVersion == "sandbox-cli/v1alpha1" and (.commands | keys | length == 11) and .commands["sandbox exec"].exitCodes.truncated_or_partial_evidence_even_if_remote_nonzero == 9 and .commands["sandbox watch"].stream == "application/x-ndjson" and .commands["sandbox watch"].outputSchema."$ref" == "#/$defs/event" and (.security.forbiddenArgv | index("accessToken") != null)' "$contracts/sandbox-cli-contract.json" >/dev/null
 jq -e '.remoteExitCode == 0 and .truncated == false and (has("accessToken") | not)' "$fixtures/cli-exec-success.json" >/dev/null
-jq -e '.error.code == "sandbox_not_found" and .exitCode == 1' "$fixtures/cli-error.json" >/dev/null
+jq -e '.error.code == "sandbox_not_found" and (.error.requestId | length > 0) and .exitCode == 1' "$fixtures/cli-error.json" >/dev/null
 
 (cd "$repo_root" && go run ./cmd/generate-sandbox-client --check)
 (cd "$repo_root" && go test ./cmd/generate-sandbox-client ./internal/client)
+(cd "$repo_root/services/control-api" && npm ci --ignore-scripts && npm run build && node --test dist/sandbox-contract-validation.test.js)
