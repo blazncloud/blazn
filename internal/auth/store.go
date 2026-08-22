@@ -79,6 +79,11 @@ type systemStore struct {
 	account string
 }
 
+const (
+	backendSecretService = "secret-service"
+	backendProtectedFile = "protected-file"
+)
+
 func NewSystemStore() (CredentialStore, error) {
 	return NewSystemStoreForOrigin(defaultAPIURL)
 }
@@ -106,27 +111,140 @@ func newSystemStoreForOriginAtHome(goos string, runner commandRunner, origin, ho
 func newSystemStoreWithFallback(goos string, runner commandRunner, origin string, fallback func() (CredentialStore, error)) (CredentialStore, error) {
 	account := credentialAccountForOrigin(origin)
 	store := &systemStore{goos: goos, runner: runner, account: account}
-	var command string
 	switch goos {
 	case "darwin":
-		command = "security"
+		if _, err := runner.LookPath("security"); err != nil {
+			return nil, fmt.Errorf("secure credential store %q is unavailable: %w", "security", err)
+		}
+		return store, nil
 	case "linux":
-		command = "secret-tool"
+		return selectLinuxCredentialBackend(runner, store, fallback, account)
 	default:
 		return nil, fmt.Errorf("secure credential storage is unsupported on %s", goos)
 	}
-	if _, err := runner.LookPath(command); err != nil {
-		if goos == "linux" {
-			return fallback()
-		}
-		return nil, fmt.Errorf("secure credential store %q is unavailable: %w", command, err)
+}
+
+func selectLinuxCredentialBackend(runner commandRunner, secretStore *systemStore, fallback func() (CredentialStore, error), account string) (CredentialStore, error) {
+	protected, err := fallback()
+	if err != nil {
+		return nil, err
 	}
-	if goos == "linux" {
-		if _, err := runner.Run("secret-tool", []string{"search", "--all", "service", credentialService}, nil); err != nil && !isMissingSecretToolItem(err) {
-			return fallback()
+	fileStore, ok := protected.(*protectedFileStore)
+	if !ok {
+		return nil, errors.New("protected credential fallback has an unexpected implementation")
+	}
+	receiptPath := filepath.Join(fileStore.dir, account+".backend")
+	selected, err := readBackendReceipt(receiptPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err == nil {
+		switch selected {
+		case backendProtectedFile:
+			return protected, nil
+		case backendSecretService:
+			if err := probeSecretService(runner); err != nil {
+				return nil, fmt.Errorf("selected Secret Service backend is unavailable; refusing backend switch: %w", err)
+			}
+			return secretStore, nil
+		default:
+			return nil, fmt.Errorf("credential backend receipt has unsupported value %q", selected)
 		}
 	}
-	return store, nil
+
+	protectedExists, err := credentialExists(protected)
+	if err != nil {
+		return nil, err
+	}
+	secretAvailable := probeSecretService(runner) == nil
+	secretExists := false
+	if secretAvailable {
+		secretExists, err = credentialExists(secretStore)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if protectedExists && secretExists {
+		return nil, errors.New("credentials exist in both Secret Service and protected-file backends; refusing ambiguous selection")
+	}
+	selection := backendProtectedFile
+	chosen := protected
+	if secretExists || (!protectedExists && secretAvailable) {
+		selection = backendSecretService
+		chosen = secretStore
+	}
+	if err := writeBackendReceipt(receiptPath, selection); err != nil {
+		return nil, err
+	}
+	return chosen, nil
+}
+
+func probeSecretService(runner commandRunner) error {
+	if _, err := runner.LookPath("secret-tool"); err != nil {
+		return err
+	}
+	if _, err := runner.Run("secret-tool", []string{"search", "--all", "service", credentialService}, nil); err != nil && !isMissingSecretToolItem(err) {
+		return err
+	}
+	return nil
+}
+
+func credentialExists(store CredentialStore) (bool, error) {
+	_, err := store.Get()
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func readBackendReceipt(path string) (string, error) {
+	if err := validateOwnedMode(path, false); err != nil {
+		return "", err
+	}
+	encoded, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if len(encoded) > 64 {
+		return "", errors.New("credential backend receipt is too large")
+	}
+	return strings.TrimSpace(string(encoded)), nil
+}
+
+func writeBackendReceipt(path, backend string) error {
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, ".backend.tmp.*")
+	if err != nil {
+		return fmt.Errorf("create credential backend receipt: %w", err)
+	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		_ = temp.Close()
+		if !committed {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temp.Write([]byte(backend + "\n")); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	committed = true
+	return syncDirectory(dir, "credential backend selection")
 }
 
 func credentialAccountForOrigin(origin string) string {
