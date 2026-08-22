@@ -23,8 +23,20 @@ NODE_PLAN_ROOT=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
 [ ! -e "$RECEIPT_PATH" ] || die "ownership receipt already exists: $RECEIPT_PATH"
 [ ! -e "$DATA_ROOT" ] || die "data root already exists without an ownership receipt: $DATA_ROOT"
 [ ! -e "$SECRETS_ROOT" ] || die "secrets root already exists without an ownership receipt: $SECRETS_ROOT"
-[ ! -e /etc/blazn/node-broker ] || die "node broker secrets already exist without an ownership receipt"
-[ ! -e "$NODE_PLAN_ROOT" ] || die "node plan material already exists without an ownership receipt"
+if [ -e /etc/blazn/node-broker ]; then
+  [ -f /var/lib/blazn/ownership/node-broker-secret-create.json ] || die "node broker secrets exist without their creation journal"
+fi
+if [ -e "$NODE_PLAN_ROOT" ]; then
+  [ -f /var/lib/blazn/ownership/node-plan-material-create.json ] || die "node plan material exists without its creation journal"
+fi
+
+# Run the independently journaled prerequisite publishers before creating the
+# main data/secrets trees. A crash at any injected material phase can therefore
+# be resumed by rerunning prepare-host without ambiguous partially-owned data.
+BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS_ROOT" \
+  "$ROOT_DIR/../node/scripts/create-secrets.sh" >/dev/null
+BLAZN_NODE_PLAN_ROOT="$NODE_PLAN_ROOT" \
+  "$ROOT_DIR/../node/scripts/create-plan-materials.sh" >/dev/null
 
 umask 077
 mkdir -p -- "$DATA_ROOT/postgres" "$DATA_ROOT/objects" "$SECRETS_ROOT" "$(dirname -- "$RECEIPT_PATH")"
@@ -60,11 +72,6 @@ printf '%s\n' "$initial_password" >"$SECRETS_ROOT/initial-password"
 # The parent directory is root-only. Compose bind-mounts only the named files;
 # mode 0444 lets explicitly configured non-root container users read them.
 chmod 0444 -- "$SECRETS_ROOT"/*
-
-BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS_ROOT" \
-  "$ROOT_DIR/../node/scripts/create-secrets.sh" >/dev/null
-BLAZN_NODE_PLAN_ROOT="$NODE_PLAN_ROOT" \
-  "$ROOT_DIR/../node/scripts/create-plan-materials.sh" >/dev/null
 
 "$SCRIPT_DIR/build-control-api.sh" >/dev/null
 CONTROL_API_BUILD_RECEIPT=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
