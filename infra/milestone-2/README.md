@@ -118,6 +118,16 @@ reviewed cleanup must enumerate the exact receipt paths, reject links/mount
 surprises, decide retain/export/delete for each data class, and obtain separate
 confirmation before deletion.
 
+Existing v1 ben1 installations use `upgrade-live-v1-to-v2.sh` once under the
+control-plane lock before starting the hardened Compose project. It validates
+the old receipt and secrets, preserves the current MinIO root credential under
+the new names, stages and atomically links newly generated bootstrap/runtime
+credentials, and reconciles the restricted `blazn_bootstrap` role through the
+exact running PostgreSQL service. Its separate digest-only upgrade receipt makes
+power-loss retries deterministic and never replaces the main ownership receipt.
+After migration `002` applies explicit table grants, the operator reconciles the
+main receipt in a separate reviewed lock operation.
+
 ## Evidence and tests
 
 - `tests/test-preflight.sh` proves fail-closed behavior for same-filesystem

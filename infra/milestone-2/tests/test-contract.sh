@@ -112,6 +112,8 @@ grep -F 'assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444' "$ROOT_DI
 grep -F 'objects.before.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'objects.after.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'configUpdatedAt' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
+grep -F 'control-plane-v2-upgrade/v1' "$ROOT_DIR/upgrade-receipt.schema.json" >/dev/null
+grep -F 'reconcile the main ownership receipt separately' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'with-public-origin-lock.sh qualification' "$ROOT_DIR/systemd/blazn-ngrok-qualification.service" >/dev/null
 
 boundary_tmp=${TMPDIR:-/tmp}/blazn-restore-boundary-$$
