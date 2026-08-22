@@ -415,7 +415,10 @@ func DecodeEvent(reader io.Reader) (Event, error) {
 	if err == nil {
 		err = optionalNonNull(raw, "usage")
 	}
-	return value, firstError(err, value.Validate())
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
 }
 func DecodeActivationReceipt(reader io.Reader) (ActivationReceipt, error) {
 	value, raw, err := decodeStrict[ActivationReceipt](reader)
@@ -666,12 +669,6 @@ func optionalArrayNonNull(raw json.RawMessage, parent string, names ...string) e
 		}
 	}
 	return nil
-}
-func firstError(left, right error) error {
-	if left != nil {
-		return left
-	}
-	return right
 }
 func validateUnionObject(raw json.RawMessage, required, forbidden []string) error {
 	if err := requiredPresentJSON(raw, required...); err != nil {
