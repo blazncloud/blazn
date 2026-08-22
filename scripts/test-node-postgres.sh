@@ -121,13 +121,15 @@ INSERT INTO node_enrollments(id,workspace_id,requested_name,mode,expected_platfo
   ('55555555-5555-4555-8555-555555555555','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','worker-a','fresh','linux','amd64',repeat('c',64),'node-enrollment/v1','enroll-key-a','11111111-1111-4111-8111-111111111111',now()+interval '10 minutes'),
   ('66666666-6666-4666-8666-666666666666','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','worker-b','fresh','linux','amd64',repeat('d',64),'node-enrollment/v1','enroll-key-b','22222222-2222-4222-8222-222222222222',now()+interval '10 minutes');
 
-INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,generation,status,issued_at,expires_at) VALUES
-  ('77777777-7777-4777-8777-777777777777','33333333-3333-4333-8333-333333333333',repeat('e',64),repeat('A',43),1,'active',now(),now()+interval '1 hour');
+INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,signing_key_id,generation,status,issued_at,expires_at) VALUES
+  ('77777777-7777-4777-8777-777777777777','33333333-3333-4333-8333-333333333333',repeat('e',64),repeat('A',43),'node-identity/v1',1,'active',now(),now()+interval '1 hour'),
+  ('77777777-2222-4222-8222-222222222222','44444444-4444-4444-8444-444444444444',repeat('d',64),repeat('B',43),'node-identity-b/v1',1,'revoked',now(),now()+interval '1 hour');
 INSERT INTO node_capability_versions(id,node_id,version,digest,payload,observed_at) VALUES
-  ('88888888-1111-4111-8111-111111111111','33333333-3333-4333-8333-333333333333',1,repeat('f',64),'{}',now());
+  ('88888888-1111-4111-8111-111111111111','33333333-3333-4333-8333-333333333333',1,repeat('f',64),'{}',now()),
+  ('88888888-2222-4222-8222-222222222222','44444444-4444-4444-8444-444444444444',1,repeat('c',64),'{}',now());
 
 UPDATE nodes SET lifecycle_state='active', trust_state='verified', agent_eligible=true,
-  current_identity_generation=1, current_capability_version=1,
+  current_identity_generation=1, current_identity_status='active', current_capability_version=1,
   kubernetes_cluster_id='cluster-a', kubernetes_node_name='worker-a',
   kubernetes_node_uid='uid-a', kubernetes_resource_version='1'
   WHERE id='33333333-3333-4333-8333-333333333333';
@@ -135,8 +137,8 @@ UPDATE nodes SET lifecycle_state='active', trust_state='verified', agent_eligibl
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,generation,status,issued_at,expires_at) VALUES
-      ('88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444',repeat('f',64),'not-a-key',1,'active',now(),now()+interval '1 hour');
+    INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,signing_key_id,generation,status,issued_at,expires_at) VALUES
+      ('88888888-8888-4888-8888-888888888888','44444444-4444-4444-8444-444444444444',repeat('f',64),'not-a-key','invalid/v1',2,'active',now(),now()+interval '1 hour');
     RAISE EXCEPTION 'invalid identity public key accepted';
   EXCEPTION WHEN check_violation THEN NULL; END;
   BEGIN
@@ -144,6 +146,20 @@ BEGIN
       machine_binding=repeat('a',64), node_public_key=repeat('A',43), node_public_key_fingerprint=repeat('e',64),
       exchanged_at=now(), consumed_at=now() WHERE id='55555555-5555-4555-8555-555555555555';
     RAISE EXCEPTION 'cross-workspace enrollment consumption accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+  BEGIN
+    UPDATE nodes SET lifecycle_state='active',trust_state='verified',agent_eligible=true,
+      current_identity_generation=1,current_identity_status='active',current_capability_version=1,
+      kubernetes_cluster_id='cluster-b',kubernetes_node_name='worker-b',kubernetes_node_uid='uid-b',kubernetes_resource_version='1'
+      WHERE id='44444444-4444-4444-8444-444444444444';
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'revoked current identity accepted for eligible Node';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+  BEGIN
+    UPDATE node_identities SET status='revoked',revoked_at=now()
+      WHERE id='77777777-7777-4777-8777-777777777777';
+    SET CONSTRAINTS ALL IMMEDIATE;
+    RAISE EXCEPTION 'active identity revocation without Node transition accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
 
@@ -165,6 +181,16 @@ BEGIN
     INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
       ('cccccccc-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('d',64),'node_identity',99,repeat('e',64),'node-identity/v99',repeat('A',86),'{}');
     RAISE EXCEPTION 'unbound install receipt signer generation accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+  BEGIN
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+      ('cccccccc-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('b',64),'node_identity',1,repeat('d',64),'node-identity/v1',repeat('A',86),'{}');
+    RAISE EXCEPTION 'install receipt signer fingerprint mismatch accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+  BEGIN
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+      ('cccccccc-4444-4444-8444-444444444444','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('a',64),'node_identity',1,repeat('e',64),'wrong-key/v1',repeat('A',86),'{}');
+    RAISE EXCEPTION 'install receipt signer key mismatch accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
 
@@ -242,6 +268,11 @@ SELECT has_table_privilege('blazn_node_broker','nodes','SELECT') AS broker_nodes
        has_table_privilege('blazn_node_broker','nodes','UPDATE') AS broker_node_update,
        has_table_privilege('blazn_node_broker','users','SELECT') AS broker_user_read,
        has_table_privilege('blazn_runtime','node_join_issuances','INSERT') AS runtime_issue,
+       has_table_privilege('blazn_runtime','node_join_issuances','SELECT') AS runtime_select_all,
+       has_column_privilege('blazn_runtime','node_join_issuances','id','SELECT') AS runtime_select_id,
+       has_column_privilege('blazn_runtime','node_join_issuances','credential_hash','SELECT') AS runtime_select_hash,
+       has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','SELECT') AS runtime_select_ciphertext,
+       has_column_privilege('blazn_runtime','node_join_issuances','credential_key_id','SELECT') AS runtime_select_key_id,
        has_column_privilege('blazn_runtime','node_join_issuances','consumed_at','UPDATE') AS runtime_consume_time,
        has_column_privilege('blazn_runtime','node_join_issuances','joined_node_uid','UPDATE') AS runtime_consume_uid,
        has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','UPDATE') AS runtime_ciphertext_update,
@@ -260,6 +291,11 @@ BEGIN
     OR has_table_privilege('blazn_node_broker','nodes','UPDATE')
     OR has_table_privilege('blazn_node_broker','users','SELECT')
     OR has_table_privilege('blazn_runtime','node_join_issuances','INSERT')
+    OR has_table_privilege('blazn_runtime','node_join_issuances','SELECT')
+    OR NOT has_column_privilege('blazn_runtime','node_join_issuances','id','SELECT')
+    OR has_column_privilege('blazn_runtime','node_join_issuances','credential_hash','SELECT')
+    OR has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','SELECT')
+    OR has_column_privilege('blazn_runtime','node_join_issuances','credential_key_id','SELECT')
     OR NOT has_column_privilege('blazn_runtime','node_join_issuances','consumed_at','UPDATE')
     OR NOT has_column_privilege('blazn_runtime','node_join_issuances','joined_node_uid','UPDATE')
     OR has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','UPDATE') THEN
@@ -281,6 +317,10 @@ expect_denied "SET ROLE blazn_node_broker; SELECT * FROM users;" broker_user_rea
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_capability_versions;" broker_capability_read
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_operations;" broker_operation_read
 expect_denied "SET ROLE blazn_runtime; INSERT INTO node_join_issuances DEFAULT VALUES;" runtime_issue
+expect_denied "SET ROLE blazn_runtime; SELECT credential_hash FROM node_join_issuances;" runtime_select_hash
+expect_denied "SET ROLE blazn_runtime; SELECT credential_ciphertext FROM node_join_issuances;" runtime_select_ciphertext
+expect_denied "SET ROLE blazn_runtime; SELECT credential_key_id FROM node_join_issuances;" runtime_select_key_id
+expect_denied "SET ROLE blazn_runtime; SELECT * FROM node_join_issuances;" runtime_select_all
 expect_denied "SET ROLE blazn_runtime; UPDATE node_join_issuances SET credential_ciphertext=decode(repeat('bb',29),'hex');" runtime_ciphertext_update
 expect_denied "SET ROLE blazn_bootstrap; SELECT * FROM nodes;" bootstrap_node_read
 
