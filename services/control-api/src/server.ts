@@ -74,7 +74,7 @@ async function health(response: ServerResponse): Promise<void> {
 }
 
 async function startDeviceAuthorization(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  await enforceLimit(database, "device-start", remoteIdentity(request, trustedProxies), 20, 60);
+  await enforceLimit(database, "device-start", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 20, 60);
   const body = await jsonBody(request);
   requireExactKeys(body, ["devicePublicKey", "deviceName", "platform"]);
   const deviceName = requiredString(body, "deviceName", 128);
@@ -136,7 +136,7 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
   const code = requiredString(body, "user_code", 16).toUpperCase();
   const email = requiredString(body, "email", 254).toLowerCase();
   const password = requiredSecret(body, "password", 1024);
-  const callerIdentity = remoteIdentity(request, trustedProxies);
+  const callerIdentity = remoteIdentity(request, trustedProxies, config.trustedProxySecret);
   await enforceLimit(database, "device-approve-ip", callerIdentity, 20, 15 * 60);
   const liveAuthorization = await database.query<{ id: string }>("SELECT id FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL", [code]);
   const live = liveAuthorization.rows[0];

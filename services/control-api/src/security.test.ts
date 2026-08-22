@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { passwordRecord, randomToken, sessionRevokePayload, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
+import { passwordRecord, randomToken, secretMatches, sessionRevokePayload, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
 
 test("tokens are random and only hashes are retained", () => {
   const first = randomToken();
@@ -43,4 +43,9 @@ test("device proofs require the matching key and canonical message", () => {
 
 test("session revoke proof is stable across refresh rotation", () => {
   assert.equal(sessionRevokePayload("device-1"), "blazn-session-revoke-v1\ndevice-1");
+});
+
+test("proxy secrets compare without raw length-dependent equality", () => {
+  assert.equal(secretMatches("same-secret", "same-secret"), true);
+  assert.equal(secretMatches("short", "a-different-and-longer-secret"), false);
 });

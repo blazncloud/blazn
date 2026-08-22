@@ -32,6 +32,7 @@ export interface Config {
   s3SecretKey: string;
   trustedProxyCidrs: string[];
   trustedProxyHops: number;
+  trustedProxySecret?: string;
 }
 
 function cidrList(name: string): string[] {
@@ -50,6 +51,10 @@ export function loadConfig(): Config {
   if (process.env.NODE_ENV === "production" && !publicUrl.startsWith("https://")) throw new Error("PUBLIC_URL must use https in production");
   const s3Endpoint = process.env.S3_ENDPOINT;
   if (!s3Endpoint) throw new Error("S3_ENDPOINT is required");
+  const trustedProxySecretFile = process.env.TRUSTED_PROXY_SECRET_FILE;
+  if (process.env.NODE_ENV === "production" && !trustedProxySecretFile) throw new Error("TRUSTED_PROXY_SECRET_FILE is required in production");
+  const trustedProxySecret = trustedProxySecretFile ? readFileSync(trustedProxySecretFile, "utf8").trim() : undefined;
+  if (trustedProxySecret !== undefined && (trustedProxySecret.length < 32 || trustedProxySecret.length > 512)) throw new Error("trusted proxy secret must contain between 32 and 512 characters");
   return {
     port: boundedInteger("PORT", 8080, 1, 65535),
     bindAddress: process.env.BIND_ADDRESS ?? "127.0.0.1",
@@ -65,5 +70,6 @@ export function loadConfig(): Config {
     s3SecretKey: valueOrFile("S3_SECRET_KEY"),
     trustedProxyCidrs: cidrList("TRUSTED_PROXY_CIDRS"),
     trustedProxyHops: boundedInteger("TRUSTED_PROXY_HOPS", 1, 1, 8),
+    ...(trustedProxySecret === undefined ? {} : { trustedProxySecret }),
   };
 }
