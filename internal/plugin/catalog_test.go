@@ -28,7 +28,8 @@ func TestSocialCatalogPinsV2AndRejectsRetiredV1Signature(t *testing.T) {
 		t.Fatal(err)
 	}
 	fingerprint, err := exec.Command(sshKeygen, "-lf", publicKey, "-E", "sha256").CombinedOutput()
-	if err != nil || !strings.Contains(string(fingerprint), "SHA256:L7rcTp4WYKPsYNmDx8ElbxwHlVc8VQvX9EH4SGlLcFQ") {
+	fingerprintFields := strings.Fields(string(fingerprint))
+	if err != nil || len(fingerprintFields) < 2 || fingerprintFields[1] != "SHA256:L7rcTp4WYKPsYNmDx8ElbxwHlVc8VQvX9EH4SGlLcFQ" {
 		t.Fatalf("Social v2 fingerprint=%q err=%v", fingerprint, err)
 	}
 	installFixture := func(version string) {
@@ -48,6 +49,11 @@ func TestSocialCatalogPinsV2AndRejectsRetiredV1Signature(t *testing.T) {
 		t.Fatalf("v2 Social release signature rejected: %v", err)
 	}
 	installFixture("v1")
+	v1Definition := definition
+	v1Definition.AllowedSigner = `blazn-social-release namespaces="blazn-social-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5dgrZCi276ezBnP1qZBMvwK8bRBAzkXhC5nk/VC7uT blazn-social-release-v1`
+	if err := verifySignature(context.Background(), systemCommandRunner{}, v1Definition, directory); err != nil {
+		t.Fatalf("valid retired v1 fixture rejected by its historical trust root: %v", err)
+	}
 	if err := verifySignature(context.Background(), systemCommandRunner{}, definition, directory); err == nil {
 		t.Fatal("retired v1 Social release signature accepted by v2 trust root")
 	}
