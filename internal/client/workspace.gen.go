@@ -1,4 +1,5 @@
 // Code generated from packages/contracts/workspaces.openapi.json; DO NOT EDIT.
+// Contract SHA256: 5ef88c48d07f7e65b8b116a2f5ad10a1d129777611ce0cca9801db5afa5c12e1
 
 package client
 
@@ -66,7 +67,7 @@ type Invitation struct {
 }
 
 type InvitationCreated struct {
-	Invitation Invitation `json:"invitation"`
+	Invitation  Invitation `json:"invitation"`
 	InviteToken string     `json:"inviteToken"`
 }
 
