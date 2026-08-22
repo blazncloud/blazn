@@ -327,9 +327,6 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 			return nil
 		}
 		if err != nil {
-			return err
-		}
-		if err != nil {
 			if client.IsCode(err, "session_revoked") {
 				if revokeErr := s.revokeSessionStable(ctx, credentials); revokeErr != nil {
 					return fmt.Errorf("session may be superseded; stable device revocation was not confirmed and local credentials were preserved: %w", revokeErr)
