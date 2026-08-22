@@ -121,7 +121,7 @@ mkdir "$blazn_tmp_dir/extract"
 blazn_version=${BLAZN_VERSION:-}
 case "$blazn_version" in
   '') blazn_die "BLAZN_VERSION is required; use an immutable release tag such as v0.1.0" ;;
-  .|..|*[!A-Za-z0-9._-]*) blazn_die "invalid release version" ;;
+  .|..|*[!A-Za-z0-9._+-]*) blazn_die "invalid release version" ;;
 esac
 blazn_asset_version=${blazn_version#v}
 [ -n "$blazn_asset_version" ] || blazn_die "invalid release version"
