@@ -30,6 +30,7 @@ type commandError struct {
 
 var rootCommands = []helpCommand{
 	{Name: "auth", Summary: "Authenticate this device and manage sessions"},
+	{Name: "content", Summary: "Create, edit, render, and train media (plugin)"},
 	{Name: "doctor", Summary: "Run offline readiness checks"},
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},

@@ -17,6 +17,7 @@ type fakePlugins struct {
 	runs      int
 	args      []string
 	format    string
+	name      string
 }
 
 func (f *fakePlugins) definition() pluginpkg.Definition {
@@ -32,9 +33,10 @@ func (f *fakePlugins) Installed(string) (pluginpkg.Installed, error) {
 	}
 	return pluginpkg.Installed{Receipt: pluginpkg.Receipt{Version: "v1.0.0"}, Path: "/safe/blazn-social"}, nil
 }
-func (f *fakePlugins) Install(context.Context, string) (pluginpkg.Receipt, error) {
+func (f *fakePlugins) Install(_ context.Context, name string) (pluginpkg.Receipt, error) {
 	f.installs++
 	f.installed = true
+	f.name = name
 	return pluginpkg.Receipt{Version: "v1.0.0"}, nil
 }
 func (f *fakePlugins) List() []pluginpkg.Status {
@@ -44,11 +46,33 @@ func (f *fakePlugins) Rollback(string) (pluginpkg.Receipt, error) {
 	return pluginpkg.Receipt{Version: "v0.9.0"}, nil
 }
 func (f *fakePlugins) Remove(string) error { f.installed = false; return nil }
-func (f *fakePlugins) Run(_ context.Context, _ pluginpkg.Definition, args []string, format string, streams pluginpkg.Stdio) (int, error) {
+func (f *fakePlugins) Run(_ context.Context, definition pluginpkg.Definition, args []string, format string, streams pluginpkg.Stdio) (int, error) {
 	f.runs++
-	f.args, f.format = append([]string(nil), args...), format
+	f.args, f.format, f.name = append([]string(nil), args...), format, definition.Name
 	_, _ = streams.Stdout.Write([]byte("plugin output\n"))
 	return 3, nil
+}
+
+func TestMissingContentPluginApproveInstallsAndReplaysCanonicalCommand(t *testing.T) {
+	fake := &fakePlugins{}
+	app, stdout, _ := pluginApp("yes\n", true, fake)
+	if code := app.Run([]string{"content", "doctor"}); code != 3 {
+		t.Fatalf("code=%d", code)
+	}
+	if fake.installs != 1 || fake.runs != 1 || fake.name != "content" || !reflect.DeepEqual(fake.args, []string{"doctor"}) || stdout.String() != "plugin output\n" {
+		t.Fatalf("unexpected state: %#v stdout=%q", fake, stdout)
+	}
+}
+
+func TestMissingContentPluginMachineModeNamesExactInstall(t *testing.T) {
+	fake := &fakePlugins{}
+	app, stdout, _ := pluginApp("yes\n", true, fake)
+	if code := app.Run([]string{"image", "generate", "--output=json"}); code != ExitUnavailable {
+		t.Fatalf("code=%d", code)
+	}
+	if fake.installs != 0 || !strings.Contains(stdout.String(), "plugins install content --yes") {
+		t.Fatalf("unexpected state: %#v stdout=%q", fake, stdout)
+	}
 }
 
 func pluginApp(input string, tty bool, plugins pluginCommands) (*App, *bytes.Buffer, *bytes.Buffer) {

@@ -4,9 +4,15 @@ import "testing"
 
 func TestDefaultCatalogResolvesCanonicalAndAliases(t *testing.T) {
 	catalog := DefaultCatalog()
-	for _, command := range []string{"social", "person", "company", "contact", "connections", "content", "post", "evidence", "entity", "data", "providers"} {
+	for _, command := range []string{"social", "person", "company", "contact", "connections", "post", "evidence", "entity", "data", "providers"} {
 		definition, ok := catalog.Resolve(command)
 		if !ok || definition.Name != "social" {
+			t.Fatalf("Resolve(%q) = %#v, %v", command, definition, ok)
+		}
+	}
+	for _, command := range []string{"content", "media", "image", "video", "audio", "render", "remix"} {
+		definition, ok := catalog.Resolve(command)
+		if !ok || definition.Name != "content" {
 			t.Fatalf("Resolve(%q) = %#v, %v", command, definition, ok)
 		}
 	}
@@ -15,6 +21,19 @@ func TestDefaultCatalogResolvesCanonicalAndAliases(t *testing.T) {
 	}
 	if _, ok := catalog.Resolve("unknown"); ok {
 		t.Fatal("unknown command resolved as a plugin")
+	}
+}
+
+func TestContentUsesIndependentRepositoryAndSigner(t *testing.T) {
+	definition, ok := DefaultCatalog().Plugin("content")
+	if !ok {
+		t.Fatal("content plugin is missing")
+	}
+	if definition.Repository != "blazncloud/blazn-content" || definition.Executable != "blazn-content" {
+		t.Fatalf("content distribution = %#v", definition)
+	}
+	if definition.SigningIdentity != "blazn-content-release" || definition.SignatureNamespace != "blazn-content-release" || definition.AllowedSigner == socialDefinition.AllowedSigner {
+		t.Fatalf("content trust root = %#v", definition)
 	}
 }
 
