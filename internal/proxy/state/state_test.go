@@ -3,6 +3,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -49,6 +50,13 @@ func TestStoreWritesChecksummedSingleLinkRecords(t *testing.T) {
 			t.Fatalf("%s mode is %o", path, info.Mode().Perm())
 		}
 	}
+	receiptBytes, err := os.ReadFile(store.paths.Receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(receiptBytes, []byte("prior-value")) {
+		t.Fatal("receipt leaked a prior environment value")
+	}
 }
 
 func TestAccountPathsIgnoreHOMEAndXDG(t *testing.T) {
@@ -71,6 +79,24 @@ func TestAccountPathsIgnoreHOMEAndXDG(t *testing.T) {
 	}
 	if darwin.Root != "/account/home/Library/Application Support/Blazn/proxy" {
 		t.Fatalf("unexpected Darwin path %q", darwin.Root)
+	}
+}
+
+func TestJournalRequiresExactlyOneOfEachEnvironmentName(t *testing.T) {
+	journal := testJournal()
+	journal.Environment[4].Name = journal.Environment[0].Name
+	if err := journal.Validate(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("duplicate environment error = %v", err)
+	}
+	journal = testJournal()
+	journal.Nonce = "contains spaces and is much longer than thirty two bytes"
+	if err := journal.Validate(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("invalid nonce error = %v", err)
+	}
+	journal = testJournal()
+	journal.Listener.Address = "0.0.0.0:8123"
+	if err := journal.Validate(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("non-loopback listener error = %v", err)
 	}
 }
 
@@ -215,6 +241,31 @@ func TestValidJournalRepairsCorruptReceipt(t *testing.T) {
 	}
 	if !result.ReceiptRepaired || result.Status != RecoveryComplete {
 		t.Fatalf("unexpected recovery result: %+v", result)
+	}
+}
+
+func TestReconcileRepairsReceiptWithoutTouchingRuntime(t *testing.T) {
+	store := testStore(t)
+	journal := testJournal()
+	writeActiveRecords(t, store, journal)
+	if err := os.WriteFile(store.paths.Receipt, []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Reconcile(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != ReconciliationActive || !result.ReceiptRepaired || result.ActivationID != journal.ActivationID {
+		t.Fatalf("unexpected reconciliation: %+v", result)
+	}
+	if err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error {
+		repaired, err := locked.ReadReceipt()
+		if err != nil {
+			return err
+		}
+		return ValidateBinding(journal, repaired)
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

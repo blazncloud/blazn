@@ -182,6 +182,78 @@ func (locked *LockedStore) RemoveRecords() error {
 	return removeSecureFile(locked.store.paths.Journal, locked.store.uid, locked.store.faults)
 }
 
+type ReconciliationState string
+
+const (
+	ReconciliationInactive         ReconciliationState = "inactive"
+	ReconciliationActive           ReconciliationState = "active"
+	ReconciliationRecoveryRequired ReconciliationState = "recovery_required"
+)
+
+type Reconciliation struct {
+	State           ReconciliationState
+	ActivationID    string
+	Generation      int64
+	LifecycleState  string
+	ReceiptRepaired bool
+}
+
+// Reconcile validates the redundant records without touching the listener or
+// environment. A valid protected journal is authoritative and can repair a
+// missing/corrupt receipt; a receipt can never repair a journal because it
+// intentionally contains no prior values.
+func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error) {
+	err = s.WithLifecycleLock(ctx, func(locked *LockedStore) error {
+		journal, journalErr := locked.ReadJournal()
+		receipt, receiptErr := locked.ReadReceipt()
+		if ownershipError(journalErr) || ownershipError(receiptErr) {
+			return ErrOwnershipAmbiguous
+		}
+		if journalErr == nil && receiptErr == nil {
+			if err := ValidateBinding(journal, receipt); err != nil {
+				return err
+			}
+			result = reconciliationFromJournal(journal, false)
+			return nil
+		}
+		if journalErr == nil {
+			repaired, err := ReceiptFromJournal(journal, publicationMechanism(journal))
+			if err != nil {
+				return err
+			}
+			if journal.State != "active" {
+				repaired.State = "recovery_required"
+			}
+			if err := locked.WriteReceipt(repaired); err != nil {
+				return err
+			}
+			result = reconciliationFromJournal(journal, true)
+			return nil
+		}
+		if receiptErr == nil {
+			result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required"}
+			return ErrRecoveryRequired
+		}
+		if errors.Is(journalErr, ErrNotFound) && errors.Is(receiptErr, ErrNotFound) {
+			result.State = ReconciliationInactive
+			return nil
+		}
+		return ErrOwnershipAmbiguous
+	})
+	return result, err
+}
+
+func reconciliationFromJournal(journal *Journal, repaired bool) Reconciliation {
+	state := ReconciliationActive
+	if journal.State != "active" {
+		state = ReconciliationRecoveryRequired
+	}
+	return Reconciliation{
+		State: state, ActivationID: journal.ActivationID, Generation: journal.Generation,
+		LifecycleState: journal.State, ReceiptRepaired: repaired,
+	}
+}
+
 func readJournal(path string, uid int) (*Journal, error) {
 	var journal Journal
 	if err := readRecord(path, uid, &journal); err != nil {
