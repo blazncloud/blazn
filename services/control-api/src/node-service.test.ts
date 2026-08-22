@@ -22,7 +22,7 @@ test("enrollment is authorized before replay and reconstructs no stored secret",
   const first=await service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"});
   const replay=await service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"});
   assert.equal(replay.token,first.token);assert.equal(replay.replayed,true);assert.equal(first.token,enrollmentToken(key,workspaceId,enrollmentId,userId,"same-key-1"));assert.equal(insertedTokenHash.length,64);
-  assert.equal(JSON.stringify(receipts).includes(first.token),false);
+  assert.equal(JSON.stringify([...receipts.values()]).includes(first.token),false);
   authorized=false;
   await assert.rejects(()=>service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="membership_required");
 });
