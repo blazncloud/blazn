@@ -24,7 +24,8 @@ The initial CLI includes:
 Install the current public release with:
 
 ```bash
-curl -fsSL https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
+curl -fL --progress-bar --show-error \
+  https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
   BLAZN_VERSION=v0.1.0-poc.3 sh
 ```
 
@@ -36,7 +37,10 @@ profile. The entry applies to new terminals; an installer subprocess cannot
 change the environment of the shell that launched it. Set
 `BLAZN_NO_PATH_UPDATE=1` for managed environments that own shell configuration,
 or use `BLAZN_SHELL_PROFILE` to select an explicit POSIX profile. Override the
-destination with `BLAZN_INSTALL_DIR`.
+destination with `BLAZN_INSTALL_DIR`. The installer prints named lifecycle
+stages and, on an interactive terminal, a curl progress bar for the selected
+release archive. `BLAZN_NO_PROGRESS=1` hides the bar while retaining stage
+messages; `BLAZN_QUIET=1` suppresses non-error progress for automation.
 
 ## Release trust
 

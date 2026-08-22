@@ -10,6 +10,8 @@
 #                       Set to 1 to leave shell profiles unchanged.
 #   BLAZN_SHELL_PROFILE Explicit POSIX shell profile to update when PATH setup
 #                       cannot be inferred from SHELL.
+#   BLAZN_NO_PROGRESS   Set to 1 to hide the archive download progress bar.
+#   BLAZN_QUIET         Set to 1 to hide all non-error progress messages.
 #
 # A controlled distribution can provide BLAZN_ALLOWED_SIGNERS and
 # BLAZN_SIGNING_FINGERPRINT together. Production releases use the public key
@@ -33,6 +35,10 @@ blazn_err() {
 blazn_die() {
   blazn_err "$*"
   exit 1
+}
+
+blazn_status() {
+  [ "${BLAZN_QUIET:-0}" = "1" ] || printf 'blazn installer: %s\n' "$*" >&2
 }
 
 blazn_command_required() {
@@ -141,11 +147,20 @@ blazn_configure_path() {
 blazn_download() {
   blazn_download_url=$1
   blazn_download_output=$2
+  blazn_download_progress=${3:-0}
 
   case "$blazn_download_url" in
     https://*)
-      curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 \
-        --connect-timeout 15 --output "$blazn_download_output" "$blazn_download_url"
+      if [ "$blazn_download_progress" = "1" ] && \
+         [ "${BLAZN_NO_PROGRESS:-0}" != "1" ] && \
+         [ "${BLAZN_QUIET:-0}" != "1" ] && [ -t 2 ]; then
+        curl -fL --progress-bar --show-error --proto '=https' --tlsv1.2 \
+          --retry 3 --retry-delay 1 --connect-timeout 15 \
+          --output "$blazn_download_output" "$blazn_download_url"
+      else
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 \
+          --connect-timeout 15 --output "$blazn_download_output" "$blazn_download_url"
+      fi
       ;;
     file://*)
       if [ "${BLAZN_ALLOW_INSECURE_TEST_ORIGIN:-}" != "1" ]; then
@@ -428,6 +443,7 @@ blazn_cleanup() {
   fi
 }
 
+blazn_status "Checking installer prerequisites"
 blazn_command_required curl
 blazn_command_required tar
 blazn_command_required ssh-keygen
@@ -475,6 +491,8 @@ blazn_asset_version=${blazn_version#v}
 blazn_asset="blazn_${blazn_asset_version}_${blazn_os}_${blazn_arch}.tar.gz"
 blazn_release_url="$blazn_dist_url/download/$blazn_version"
 
+blazn_status "Preparing $blazn_version for $blazn_os/$blazn_arch"
+blazn_status "Downloading signed release metadata"
 blazn_download "$blazn_release_url/SHA256SUMS" "$blazn_tmp_dir/SHA256SUMS"
 blazn_download "$blazn_release_url/SHA256SUMS.sig" "$blazn_tmp_dir/SHA256SUMS.sig"
 
@@ -498,6 +516,7 @@ case "$blazn_expected_fingerprint" in
   *) blazn_die "signing fingerprint must use SHA256 format" ;;
 esac
 
+blazn_status "Verifying release signature"
 # `ssh-keygen -l` reads public-key records, not allowed_signers records with
 # principals and options. Extract only each key type and base64 body before
 # fingerprinting it, then require one trust root in total.
@@ -551,7 +570,9 @@ esac
 [ "${#blazn_expected_checksum}" -eq 64 ] || \
   blazn_die "invalid SHA-256 checksum length for $blazn_asset"
 
-blazn_download "$blazn_release_url/$blazn_asset" "$blazn_tmp_dir/archive.tar.gz"
+blazn_status "Downloading $blazn_asset"
+blazn_download "$blazn_release_url/$blazn_asset" "$blazn_tmp_dir/archive.tar.gz" 1
+blazn_status "Verifying release archive"
 blazn_actual_checksum=$(blazn_sha256 "$blazn_tmp_dir/archive.tar.gz")
 [ "$blazn_actual_checksum" = "$blazn_expected_checksum" ] || \
   blazn_die "checksum mismatch for $blazn_asset"
@@ -589,6 +610,7 @@ mkdir -p "$blazn_install_dir" || blazn_die "could not create $blazn_install_dir"
 [ -d "$blazn_install_dir" ] && [ ! -L "$blazn_install_dir" ] || \
   blazn_die "installation destination must be a real directory, not a symbolic link"
 
+blazn_status "Installing to $blazn_install_dir"
 blazn_destination="$blazn_install_dir/blazn"
 blazn_receipt="$blazn_install_dir/.blazn-install-receipt"
 blazn_lock_file="$blazn_install_dir/.blazn-install.lock"
