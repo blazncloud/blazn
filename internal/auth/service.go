@@ -208,12 +208,15 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 			if lockErr != nil && !entered {
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				cleanupErr := s.locker.WithLock(cleanupCtx, func() error {
-					return s.cleanupIssuedSession(cleanupCtx, session, s.pendingPrivateKey, false, fmt.Errorf("credential lock failed after session exchange: %w", lockErr))
-				})
-				if cleanupErr != nil {
-					return LoginResult{}, cleanupErr
+				revokeErr := s.revokeIssuedSession(cleanupCtx, session, s.pendingPrivateKey)
+				if revokeErr == nil {
+					return LoginResult{}, fmt.Errorf("credential lock failed after session exchange: %w; issued session was revoked", lockErr)
 				}
+				retainErr := s.locker.WithLock(cleanupCtx, func() error { return s.save(session, s.pendingPrivateKey) })
+				if retainErr != nil {
+					return LoginResult{}, fmt.Errorf("credential lock failed after session exchange: %v; remote cleanup failed: %v; retaining credentials failed: %w", lockErr, revokeErr, retainErr)
+				}
+				return LoginResult{}, fmt.Errorf("credential lock failed after session exchange: %v; remote cleanup failed and credentials were retained: %w", lockErr, revokeErr)
 			}
 			return result, lockErr
 		}
