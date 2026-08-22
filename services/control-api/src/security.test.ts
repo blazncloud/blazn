@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { passwordRecord, randomToken, tokenHash, userCode, verifyPassword } from "./security.js";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { passwordRecord, randomToken, secretMatches, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
 
 test("tokens are random and only hashes are retained", () => {
   const first = randomToken();
@@ -27,4 +28,20 @@ test("password records verify without retaining the password", async () => {
 
 test("short passwords are rejected", async () => {
   await assert.rejects(passwordRecord("too-short"), /at least 12/);
+});
+
+test("device proofs require the matching key and canonical message", () => {
+  const keys = generateKeyPairSync("ed25519");
+  const publicKey = keys.publicKey.export({ format: "jwk" }).x;
+  assert.ok(publicKey);
+  const canonical = "blazn-device-session-v1\ndevice-code\nchallenge";
+  const signature = sign(null, Buffer.from(canonical), keys.privateKey).toString("base64url");
+  assert.equal(verifyDeviceProof(publicKey, canonical, signature), true);
+  assert.equal(verifyDeviceProof(publicKey, `${canonical}-changed`, signature), false);
+  assert.equal(verifyDeviceProof("invalid", canonical, signature), false);
+});
+
+test("bootstrap secrets compare by digest", () => {
+  assert.equal(secretMatches("one secret", "one secret"), true);
+  assert.equal(secretMatches("one secret", "another secret"), false);
 });

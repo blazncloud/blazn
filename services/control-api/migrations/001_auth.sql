@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS devices (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name text NOT NULL,
   platform text NOT NULL,
+  public_key text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
@@ -28,9 +29,13 @@ CREATE TABLE IF NOT EXISTS device_authorizations (
   user_code text NOT NULL UNIQUE,
   device_name text NOT NULL,
   platform text NOT NULL,
+  public_key text NOT NULL,
+  challenge text NOT NULL,
   expires_at timestamptz NOT NULL,
   approved_user_id uuid REFERENCES users(id),
   consumed_at timestamptz,
+  last_polled_at timestamptz,
+  poll_count integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -39,6 +44,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
   token_hash text NOT NULL UNIQUE,
+  refresh_token_hash text NOT NULL UNIQUE,
+  refresh_version integer NOT NULL DEFAULT 1,
   expires_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
