@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { createHash, createPublicKey, randomBytes, scrypt as scryptCallback, timingSafeEqual, verify } from "node:crypto";
 import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCallback);
@@ -29,4 +29,19 @@ export async function verifyPassword(password: string, salt: string, expected: s
   const derived = (await scrypt(password, salt, 32)) as Buffer;
   const expectedBytes = Buffer.from(expected, "base64url");
   return expectedBytes.length === derived.length && timingSafeEqual(expectedBytes, derived);
+}
+
+export function verifyDeviceProof(publicKey: string, canonical: string, signature: string): boolean {
+  try {
+    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: publicKey }, format: "jwk" });
+    return verify(null, Buffer.from(canonical, "utf8"), key, Buffer.from(signature, "base64url"));
+  } catch {
+    return false;
+  }
+}
+
+export function secretMatches(actual: string, expected: string): boolean {
+  const actualDigest = Buffer.from(tokenHash(actual), "hex");
+  const expectedDigest = Buffer.from(tokenHash(expected), "hex");
+  return timingSafeEqual(actualDigest, expectedDigest);
 }
