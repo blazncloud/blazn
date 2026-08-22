@@ -26,11 +26,11 @@ run_install(){
     BLAZN_ISSUER_BINARY_SOURCE="$helper" BLAZN_ISSUER_BINARY_SHA256="sha256:$(sha256sum "$helper" | awk '{print $1}')" BLAZN_NODE_BROKER_UID=65532 BLAZN_ISSUER_TEST_BROKER_GID=65531 BLAZN_ISSUER_TEST_MICROK8S_GID=1001 BLAZN_ISSUER_TEST_REVISION=9072 \
     BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_ISSUER_TEST_TMPFILES="$tmpfiles" \
     BLAZN_ISSUER_CONFIG_ROOT="$root/etc/issuer" BLAZN_ISSUER_BINARY_PATH="$root/usr/libexec/issuer" BLAZN_ISSUER_UNIT_PATH="$root/etc/systemd/issuer.service" BLAZN_ISSUER_TMPFILES_PATH="$root/etc/tmpfiles/issuer.conf" \
-    BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" "$INSTALLER"
+    BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" BLAZN_RECEIPT_PATH="$root/control-plane.json" "$INSTALLER"
 }
 
 for fault in recovery-created initialized key-pending recovery-key-pending secret-created config-bound files-installed service-started complete; do
-  root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env"
+  root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"
   if run_install "$root" "$fault" >"$top/$fault.out" 2>"$top/$fault.err"; then printf 'issuer fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null
   run_install "$root" >"$top/$fault-retry.out"
@@ -45,13 +45,17 @@ for fault in recovery-created initialized key-pending recovery-key-pending secre
   sudo grep -Fx 'BLAZN_NODE_BROKER_LOOPBACK=enabled' "$root/control-plane.env" >/dev/null
   sudo grep -Fx 'BLAZN_NODE_BROKER_UID=65532' "$root/control-plane.env" >/dev/null
   sudo grep -Fx 'BLAZN_NODE_BROKER_GID=65531' "$root/control-plane.env" >/dev/null
+  sudo jq -e '.microk8sIssuer.materialDigest|test("^sha256:[a-f0-9]{64}$")' "$root/control-plane.json" >/dev/null
   if sudo grep -F -- "$(sudo sed -n '1p' "$root/etc/issuer/issuer-hmac-v1")" "$root/ownership/issuer.json" "$root/ownership/recovery/inventory.json" >/dev/null; then printf 'issuer secret leaked into evidence\n' >&2; exit 1; fi
-  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$root/systemctl.log" "$ROLLBACK" >/dev/null
+  sudo mkdir -p "$root/issuer-state"; sudo chmod 0700 "$root/issuer-state"
+  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_STATE_ROOT="$root/issuer-state" BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$root/systemctl.log" "$ROLLBACK" >/dev/null
   sudo jq -e '.phase=="rolled-back" and .rollback.retainedRecovery==true and .rollback.groupRetained==true' "$root/ownership/issuer.json" >/dev/null
   sudo test -f "$root/ownership/recovery/issuer-hmac-v1"
   sudo test ! -e "$root/usr/libexec/issuer"
+  sudo test ! -e "$root/issuer-state"
   [ "$(sudo sed -n '1,2p' "$root/control-plane.env")" = 'BASELINE=value
 BLAZN_NODE_BROKER_LOOPBACK=disabled' ]
+  sudo jq -e 'has("microk8sIssuer")|not' "$root/control-plane.json" >/dev/null
 done
 
 grep -F 'source: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null

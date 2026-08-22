@@ -19,19 +19,21 @@ TMPFILES=${BLAZN_ISSUER_TMPFILES_PATH:-/etc/tmpfiles.d/blazn-microk8s-worker-iss
 RECEIPT=${BLAZN_ISSUER_RECEIPT_PATH:-/var/lib/blazn/ownership/microk8s-worker-issuer.json}
 RECOVERY=${BLAZN_ISSUER_RECOVERY_ROOT:-/var/lib/blazn/ownership/microk8s-worker-issuer-recovery}
 ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
+MAIN_RECEIPT=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 BROKER_UID=${BLAZN_NODE_BROKER_UID:?set the receipt-bound node broker UID}
 TEST_MODE=${BLAZN_ISSUER_INFRA_TEST_MODE:-0}
 case "$BROKER_UID" in ''|*[!0-9]*|0) die "broker UID must be a positive integer" ;; esac
-for path in "$SOURCE" "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECEIPT" "$RECOVERY" "$ENV_FILE"; do case "$path" in /*) ;; *) die "all issuer paths must be absolute" ;; esac; done
+for path in "$SOURCE" "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECEIPT" "$RECOVERY" "$ENV_FILE" "$MAIN_RECEIPT"; do case "$path" in /*) ;; *) die "all issuer paths must be absolute" ;; esac; done
 [ -f "$SOURCE" ] && [ ! -L "$SOURCE" ] || die "helper binary source is unavailable or linked"
 case "$SOURCE_DIGEST" in sha256:*) digest_value=${SOURCE_DIGEST#sha256:}; case "$digest_value" in ''|*[!0-9a-f]*) die "helper digest is invalid" ;; esac; [ "${#digest_value}" -eq 64 ] || die "helper digest length is invalid" ;; *) die "helper digest is invalid" ;; esac
 [ "sha256:$(sha256sum "$SOURCE" | awk '{print $1}')" = "$SOURCE_DIGEST" ] || die "helper binary source differs from reviewed digest"
-[ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] && [ "$(stat -c '%u:%a' "$ENV_FILE")" = 0:600 ] || die "control-plane environment is unsafe"
+[ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] && [ "$(stat -c '%u:%a:%h' "$ENV_FILE")" = 0:600:1 ] || die "control-plane environment is unsafe"
+[ -f "$MAIN_RECEIPT" ] && [ ! -L "$MAIN_RECEIPT" ] && [ "$(stat -c '%u:%a:%h' "$MAIN_RECEIPT")" = 0:600:1 ] || die "main ownership receipt is unsafe"
 
 sha(){ sha256sum "$1" | awk '{print $1}'; }
 sync_path(){ sync -f "$1"; }
 validate_key(){
-  key=$1; [ -f "$key" ] && [ ! -L "$key" ] && [ "$(stat -c '%u:%a' "$key")" = 0:400 ] || die "issuer key is unsafe"
+  key=$1; [ -f "$key" ] && [ ! -L "$key" ] && [ "$(stat -c '%u:%a:%h' "$key")" = 0:400:1 ] || die "issuer key is unsafe"
   if [ "$(wc -c <"$key" | tr -d ' ')" != 43 ] || ! LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$key"; then die "issuer key encoding is invalid"; fi
   decoded=$ROOT/.decoded-key.$$
   { tr '_-' '/+' <"$key"; printf '='; } | openssl base64 -d -A >"$decoded" 2>/dev/null || { rm -f -- "$decoded"; die "issuer key cannot be decoded"; }
@@ -49,10 +51,16 @@ bind_environment(){
     chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$ENV_FILE"; sync_path "$(dirname -- "$ENV_FILE")"
   done
 }
+bind_main_receipt(){
+  material=$(jq -cS '{binary,config,unit,tmpfiles,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$RECEIPT"); material_digest=sha256:$(printf '%s' "$material" | sha256sum | awk '{print $1}')
+  if jq -e --arg digest "$material_digest" '.microk8sIssuer=={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$MAIN_RECEIPT" >/dev/null; then return; fi
+  jq -e 'has("microk8sIssuer")|not' "$MAIN_RECEIPT" >/dev/null || die "main ownership receipt has a conflicting issuer binding"
+  tmp=$MAIN_RECEIPT.tmp.$$; jq --arg digest "$material_digest" '.microk8sIssuer={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$MAIN_RECEIPT" >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$MAIN_RECEIPT"; sync_path "$(dirname -- "$MAIN_RECEIPT")"
+}
 phase(){ value=$1; tmp=$RECEIPT.tmp.$$; jq --arg phase "$value" --arg updatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.phase=$phase|.updatedAt=$updatedAt' "$RECEIPT" >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$RECEIPT"; sync_path "$(dirname -- "$RECEIPT")"; }
 fault(){ [ "$TEST_MODE" = 1 ] || return 0; [ "${BLAZN_ISSUER_TEST_FAIL_AFTER:-}" != "$1" ] || die "injected issuer fault after $1"; }
 safe_parent(){ candidate=$1; while [ "$candidate" != / ]; do [ ! -L "$candidate" ] || die "issuer path contains a symlink: $candidate"; candidate=$(dirname -- "$candidate"); done; }
-for path in "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECEIPT" "$RECOVERY" "$ENV_FILE"; do safe_parent "$path"; done
+for path in "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECEIPT" "$RECOVERY" "$ENV_FILE" "$MAIN_RECEIPT"; do safe_parent "$path"; done
 
 if [ "$TEST_MODE" = 1 ]; then
   BROKER_GID=${BLAZN_ISSUER_TEST_BROKER_GID:?}
@@ -84,25 +92,27 @@ if [ ! -e "$RECEIPT" ]; then
   mkdir -p -- "$RECOVERY"
   chmod 0700 "$RECOVERY"
   inventory=$RECOVERY/inventory.json
-  if find "$RECOVERY" -mindepth 1 -maxdepth 1 ! -name inventory.json ! -name control-plane.env -print | grep . >/dev/null; then die "pre-receipt recovery root contains unreviewed residue"; fi
+  if find "$RECOVERY" -mindepth 1 -maxdepth 1 ! -name inventory.json ! -name control-plane.env ! -name control-plane.json -print | grep . >/dev/null; then die "pre-receipt recovery root contains unreviewed residue"; fi
   if [ -e "$RECOVERY/control-plane.env" ]; then cmp "$ENV_FILE" "$RECOVERY/control-plane.env" >/dev/null || die "pre-receipt environment backup differs"; else cp -- "$ENV_FILE" "$RECOVERY/control-plane.env"; chmod 0600 "$RECOVERY/control-plane.env"; sync_path "$RECOVERY/control-plane.env"; fi
+  if [ -e "$RECOVERY/control-plane.json" ]; then cmp "$MAIN_RECEIPT" "$RECOVERY/control-plane.json" >/dev/null || die "pre-receipt ownership backup differs"; else cp -- "$MAIN_RECEIPT" "$RECOVERY/control-plane.json"; chmod 0600 "$RECOVERY/control-plane.json"; sync_path "$RECOVERY/control-plane.json"; fi
   inventory_tmp=$inventory.tmp.$$
-  jq -cn --arg source "$SOURCE_DIGEST" --arg key "$RECOVERY/issuer-hmac-v1" --arg env "$RECOVERY/control-plane.env" --arg envDigest "sha256:$(sha "$ENV_FILE")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-recovery/v1",prior:{config:"absent",binary:"absent",unit:"absent",tmpfiles:"absent",environment:{backupPath:$env,digest:$envDigest}},sourceDigest:$source,secretRecoveryPath:$key}' >"$inventory_tmp"
+  jq -cn --arg source "$SOURCE_DIGEST" --arg key "$RECOVERY/issuer-hmac-v1" --arg env "$RECOVERY/control-plane.env" --arg envDigest "sha256:$(sha "$ENV_FILE")" --arg ownership "$RECOVERY/control-plane.json" --arg ownershipDigest "sha256:$(sha "$MAIN_RECEIPT")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-recovery/v1",prior:{config:"absent",binary:"absent",unit:"absent",tmpfiles:"absent",environment:{backupPath:$env,digest:$envDigest},ownership:{backupPath:$ownership,digest:$ownershipDigest}},sourceDigest:$source,secretRecoveryPath:$key}' >"$inventory_tmp"
   chmod 0600 "$inventory_tmp"; sync_path "$inventory_tmp"; mv -- "$inventory_tmp" "$inventory"
   chmod 0600 "$inventory"; sync_path "$inventory"
   fault recovery-created
   tmp=$RECEIPT.tmp.$$
   jq -cn --arg host "$(hostname)" --arg createdAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg binary "$BINARY" --arg config "$ROOT/config.json" --arg secret "$ROOT/issuer-hmac-v1" --argjson brokerUid "$BROKER_UID" --argjson brokerGid "$BROKER_GID" --argjson microGid "$MICROK8S_GID" --argjson revision "$MICROK8S_REVISION" --arg recovery "$RECOVERY" --arg inventoryDigest "sha256:$(sha "$inventory")" --argjson groupCreated "$group_created" \
-    --arg unit "$UNIT" --arg tmpfiles "$TMPFILES" --arg env "$ENV_FILE" --arg envBackup "$RECOVERY/control-plane.env" --arg envPrior "sha256:$(sha "$ENV_FILE")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-infra/v1",owner:"blazn-poc",host:$host,phase:"initialized",createdAt:$createdAt,binary:{path:$binary,digest:("sha256:"+("0"*64)),uid:0,mode:"0755"},config:{path:$config,digest:("sha256:"+("0"*64)),uid:0,mode:"0400"},unit:{path:$unit,digest:("sha256:"+("0"*64)),uid:0,mode:"0644"},tmpfiles:{path:$tmpfiles,digest:("sha256:"+("0"*64)),uid:0,mode:"0644"},environment:{path:$env,backupPath:$envBackup,priorDigest:$envPrior,digest:("sha256:"+("0"*64))},secret:{path:$secret,digest:("sha256:"+("0"*64)),encoding:"base64url-unpadded",decodedBytes:32},socket:{path:"/run/blazn/microk8s-worker-issuer.sock",uid:0,gid:$brokerGid,mode:"0660",brokerGroup:"blazn-node-broker"},microk8s:{version:"v1.35.6",revision:$revision,gid:$microGid,tokenFile:"/var/snap/microk8s/current/credentials/cluster-tokens.txt"},recovery:{root:$recovery,inventoryDigest:$inventoryDigest},brokerUid:$brokerUid,brokerGroupCreated:$groupCreated,liveJoinBlocked:true}' >"$tmp"
+    --arg unit "$UNIT" --arg tmpfiles "$TMPFILES" --arg env "$ENV_FILE" --arg envBackup "$RECOVERY/control-plane.env" --arg envPrior "sha256:$(sha "$ENV_FILE")" --arg ownership "$MAIN_RECEIPT" --arg ownershipBackup "$RECOVERY/control-plane.json" --arg ownershipPrior "sha256:$(sha "$MAIN_RECEIPT")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-infra/v1",owner:"blazn-poc",host:$host,phase:"initialized",createdAt:$createdAt,binary:{path:$binary,digest:("sha256:"+("0"*64)),uid:0,mode:"0755"},config:{path:$config,digest:("sha256:"+("0"*64)),uid:0,mode:"0400"},unit:{path:$unit,digest:("sha256:"+("0"*64)),uid:0,mode:"0644"},tmpfiles:{path:$tmpfiles,digest:("sha256:"+("0"*64)),uid:0,mode:"0644"},environment:{path:$env,backupPath:$envBackup,priorDigest:$envPrior,digest:("sha256:"+("0"*64))},ownership:{path:$ownership,backupPath:$ownershipBackup,priorDigest:$ownershipPrior},secret:{path:$secret,digest:("sha256:"+("0"*64)),encoding:"base64url-unpadded",decodedBytes:32},socket:{path:"/run/blazn/microk8s-worker-issuer.sock",uid:0,gid:$brokerGid,mode:"0660",brokerGroup:"blazn-node-broker"},microk8s:{version:"v1.35.6",revision:$revision,gid:$microGid,tokenFile:"/var/snap/microk8s/current/credentials/cluster-tokens.txt"},recovery:{root:$recovery,inventoryDigest:$inventoryDigest},brokerUid:$brokerUid,brokerGroupCreated:$groupCreated,liveJoinBlocked:true}' >"$tmp"
   chmod 0600 "$tmp"; sync_path "$tmp"; ln -- "$tmp" "$RECEIPT" || { rm -f -- "$tmp"; die "receipt appeared concurrently"; }; rm -f -- "$tmp"; sync_path "$(dirname -- "$RECEIPT")"; fault initialized
 fi
-[ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] && [ "$(stat -c '%u:%a' "$RECEIPT")" = 0:600 ] || die "issuer receipt is unsafe"
+[ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] && [ "$(stat -c '%u:%a:%h' "$RECEIPT")" = 0:600:1 ] || die "issuer receipt is unsafe"
 jq -e --arg host "$(hostname)" --argjson uid "$BROKER_UID" --argjson gid "$BROKER_GID" --argjson mgid "$MICROK8S_GID" '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .owner=="blazn-poc" and .host==$host and .brokerUid==$uid and .socket.gid==$gid and .microk8s.gid==$mgid' "$RECEIPT" >/dev/null || die "issuer receipt binding differs"
 
 current=$(jq -er .phase "$RECEIPT")
 case "$current" in initialized|secret-created|config-bound|files-installed|service-started|complete) ;; *) die "issuer receipt is not install-resumable" ;; esac
 mkdir -p -- "$ROOT" "$(dirname -- "$BINARY")" "$(dirname -- "$UNIT")" "$(dirname -- "$TMPFILES")"
 chmod 0700 "$ROOT"
+if [ "$(stat -c '%u:%a' "$ROOT")" != 0:700 ] || [ "$(stat -c '%u:%a' "$RECOVERY")" != 0:700 ]; then die "issuer root or recovery directory is unsafe"; fi
 if [ "$current" = initialized ]; then
   active_key=$ROOT/issuer-hmac-v1; keytmp=$ROOT/.issuer-key.pending
   if [ -e "$active_key" ]; then validate_key "$active_key"; else
@@ -148,6 +158,7 @@ if [ "$current" = files-installed ]; then
 fi
 if [ "$current" = service-started ]; then phase complete; current=complete; fault complete; fi
 [ "$current" = complete ] || die "issuer installation did not complete"
+bind_main_receipt
 [ "sha256:$(sha "$BINARY")" = "$SOURCE_DIGEST" ] || die "installed helper differs from reviewed source digest"
 [ "sha256:$(sha "$BINARY")" = "$(jq -er .binary.digest "$RECEIPT")" ] || die "helper binary differs from receipt"
 [ "sha256:$(sha "$ROOT/config.json")" = "$(jq -er .config.digest "$RECEIPT")" ] || die "helper config differs from receipt"
@@ -157,6 +168,7 @@ if [ "$current" = service-started ]; then phase complete; current=complete; faul
 [ "sha256:$(sha "$ENV_FILE")" = "$(jq -er .environment.digest "$RECEIPT")" ] || die "control-plane environment differs from receipt"
 [ "sha256:$(sha "$RECOVERY/inventory.json")" = "$(jq -er .recovery.inventoryDigest "$RECEIPT")" ] || die "recovery inventory differs from receipt"
 [ "sha256:$(sha "$RECOVERY/control-plane.env")" = "$(jq -er .environment.priorDigest "$RECEIPT")" ] || die "environment recovery copy differs from receipt"
+[ "sha256:$(sha "$RECOVERY/control-plane.json")" = "$(jq -er .ownership.priorDigest "$RECEIPT")" ] || die "ownership recovery copy differs from receipt"
 validate_key "$ROOT/issuer-hmac-v1"
 recovery_key=$(jq -er .secretRecoveryPath "$RECOVERY/inventory.json"); [ "$recovery_key" = "$RECOVERY/issuer-hmac-v1" ] || die "recovery key path differs from inventory"; validate_key "$recovery_key"; cmp "$ROOT/issuer-hmac-v1" "$recovery_key" >/dev/null || die "recovery key differs from active generation"
 printf 'MicroK8s worker issuer infrastructure is receipt-bound; live join remains blocked\n'

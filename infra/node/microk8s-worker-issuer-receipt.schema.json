@@ -3,7 +3,7 @@
   "$id": "https://blazn.dev/schemas/poc/microk8s-worker-issuer-infra-v1.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "binary", "config", "unit", "tmpfiles", "environment", "secret", "socket", "microk8s", "recovery", "brokerUid", "brokerGroupCreated", "liveJoinBlocked"],
+  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "binary", "config", "unit", "tmpfiles", "environment", "ownership", "secret", "socket", "microk8s", "recovery", "brokerUid", "brokerGroupCreated", "liveJoinBlocked"],
   "properties": {
     "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer-infra/v1"},
     "owner": {"const": "blazn-poc"},
@@ -16,6 +16,7 @@
     "unit": {"$ref": "#/$defs/artifact"},
     "tmpfiles": {"$ref": "#/$defs/artifact"},
     "environment": {"type": "object", "additionalProperties": false, "required": ["path", "backupPath", "priorDigest", "digest"], "properties": {"path": {"const": "/etc/blazn/control-plane/control-plane.env"}, "backupPath": {"const": "/var/lib/blazn/ownership/microk8s-worker-issuer-recovery/control-plane.env"}, "priorDigest": {"$ref": "#/$defs/digest"}, "digest": {"$ref": "#/$defs/digest"}}},
+    "ownership": {"type": "object", "additionalProperties": false, "required": ["path", "backupPath", "priorDigest"], "properties": {"path": {"const": "/var/lib/blazn/ownership/control-plane.json"}, "backupPath": {"const": "/var/lib/blazn/ownership/microk8s-worker-issuer-recovery/control-plane.json"}, "priorDigest": {"$ref": "#/$defs/digest"}}},
     "secret": {"type": "object", "additionalProperties": false, "required": ["path", "digest", "encoding", "decodedBytes"], "properties": {"path": {"const": "/etc/blazn/microk8s-worker-issuer/issuer-hmac-v1"}, "digest": {"$ref": "#/$defs/digest"}, "encoding": {"const": "base64url-unpadded"}, "decodedBytes": {"const": 32}}},
     "socket": {"type": "object", "additionalProperties": false, "required": ["path", "uid", "gid", "mode", "brokerGroup"], "properties": {"path": {"const": "/run/blazn/microk8s-worker-issuer.sock"}, "uid": {"const": 0}, "gid": {"type": "integer", "minimum": 1}, "mode": {"const": "0660"}, "brokerGroup": {"const": "blazn-node-broker"}}},
     "microk8s": {"type": "object", "additionalProperties": false, "required": ["version", "revision", "gid", "tokenFile"], "properties": {"version": {"const": "v1.35.6"}, "revision": {"enum": [9072, 9075]}, "gid": {"type": "integer", "minimum": 1}, "tokenFile": {"const": "/var/snap/microk8s/current/credentials/cluster-tokens.txt"}}},

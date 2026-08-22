@@ -5,7 +5,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "correlationId", "fencingToken", "createdAt", "database", "bucket", "configDigest", "controlApi", "secretDigests", "nodeBrokerReceiptDigest"],
   "properties": {
-    "schemaVersion": { "enum": ["blazn.dev/control-plane-backup/v2", "blazn.dev/control-plane-backup/v3"] },
+    "schemaVersion": { "enum": ["blazn.dev/control-plane-backup/v2", "blazn.dev/control-plane-backup/v3", "blazn.dev/control-plane-backup/v4"] },
     "correlationId": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
     "fencingToken": { "type": "integer", "minimum": 1 },
     "createdAt": { "type": "string", "minLength": 1 },
@@ -31,7 +31,11 @@
       }
     },
     "nodeBrokerReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
-    "nodePlanReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+    "nodePlanReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "microk8sIssuerMaterialDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
   },
-  "allOf": [{"if":{"properties":{"schemaVersion":{"const":"blazn.dev/control-plane-backup/v3"}},"required":["schemaVersion"]},"then":{"required":["nodePlanReceiptDigest"]},"else":{"not":{"required":["nodePlanReceiptDigest"]}}}]
+  "allOf": [
+    {"if":{"properties":{"schemaVersion":{"enum":["blazn.dev/control-plane-backup/v3","blazn.dev/control-plane-backup/v4"]}},"required":["schemaVersion"]},"then":{"required":["nodePlanReceiptDigest"]},"else":{"not":{"required":["nodePlanReceiptDigest"]}}},
+    {"if":{"properties":{"schemaVersion":{"const":"blazn.dev/control-plane-backup/v4"}},"required":["schemaVersion"]},"then":{"required":["microk8sIssuerMaterialDigest"]},"else":{"not":{"required":["microk8sIssuerMaterialDigest"]}}}
+  ]
 }

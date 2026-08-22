@@ -213,6 +213,18 @@ if [ "$MODE" != plan ]; then
     --arg nodeCreationJournalDigest "sha256:$(sha256_file "$node_creation_journal")" \
     '.nodeBroker == {schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:"/etc/blazn/node-broker/secrets",databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}}' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not bind the Node broker prerequisites"
+  broker_mode=$(sed -n 's/^BLAZN_NODE_BROKER_LOOPBACK=//p' "$ENV_FILE"); [ -n "$broker_mode" ] || broker_mode=disabled
+  if [ "$broker_mode" = enabled ]; then
+    issuer_receipt=/var/lib/blazn/ownership/microk8s-worker-issuer.json
+    assert_regular_file_owned_mode "$issuer_receipt" 0 600
+    jq -e '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .phase=="complete" and .liveJoinBlocked==true' "$issuer_receipt" >/dev/null || die "issuer receipt is not complete and blocked"
+    issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$issuer_receipt")
+    issuer_digest=sha256:$(printf '%s' "$issuer_material" | sha256sum | awk '{print $1}')
+    jq -e --arg digest "$issuer_digest" '.microk8sIssuer=={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$RECEIPT_PATH" >/dev/null || die "main ownership receipt does not bind issuer material"
+    assert_regular_file_owned_mode /usr/libexec/blazn/blazn-microk8s-worker-issuer 0 755
+    [ "sha256:$(sha256_file /usr/libexec/blazn/blazn-microk8s-worker-issuer)" = "$(jq -er .binary.digest "$issuer_receipt")" ] || die "issuer binary differs from receipt"
+    if [ ! -S /run/blazn/microk8s-worker-issuer.sock ] || [ -L /run/blazn/microk8s-worker-issuer.sock ]; then die "issuer socket is unavailable"; fi
+  elif [ "$broker_mode" != disabled ]; then die "Node broker loopback mode is invalid or duplicated"; fi
 fi
 
 printf '{"status":"ok","mode":"%s","bindAddress":"%s","ports":[%s,%s,%s,%s],"dataBytesFree":%s,"backupBytesFree":%s,"dataInodesFree":%s,"backupInodesFree":%s,"separateFilesystem":true}\n' \

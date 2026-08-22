@@ -33,6 +33,18 @@ BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/metadata.json" "$tmp/receipt.json"
 jq '.schemaVersion="blazn.dev/control-plane-backup/v2" | del(.nodePlanReceiptDigest)' "$tmp/metadata.json" >"$tmp/legacy-metadata.json"
 BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/legacy-metadata.json" "$tmp/receipt.json" "$tmp/keys" >/dev/null
 
+printf '%s' AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA >"$tmp/keys/microk8s-issuer-hmac-v1"
+issuer_secret=sha256:$(sha256sum "$tmp/keys/microk8s-issuer-hmac-v1"|awk '{print $1}')
+jq -cn --arg secret "$issuer_secret" '{binary:{},config:{},unit:{},tmpfiles:{},environment:{},secret:{digest:$secret},socket:{},microk8s:{},recovery:{},brokerUid:65532,liveJoinBlocked:true}' >"$tmp/keys/microk8s-worker-issuer.json"
+issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$tmp/keys/microk8s-worker-issuer.json")
+issuer_digest=sha256:$(printf '%s' "$issuer_material"|sha256sum|awk '{print $1}')
+jq --arg digest "$issuer_digest" '.microk8sIssuer={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$tmp/receipt.json" >"$tmp/v4-receipt.json"
+jq --arg digest "$issuer_digest" '.schemaVersion="blazn.dev/control-plane-backup/v4"|.microk8sIssuerMaterialDigest=$digest' "$tmp/metadata.json" >"$tmp/v4-metadata.json"
+BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/v4-metadata.json" "$tmp/v4-receipt.json" "$tmp/keys" >/dev/null
+jq '.microk8sIssuerMaterialDigest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$tmp/v4-metadata.json" >"$tmp/bad-v4.json"
+if BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/bad-v4.json" "$tmp/v4-receipt.json" "$tmp/keys" >"$tmp/out" 2>"$tmp/err"; then printf 'issuer material mismatch unexpectedly passed\n' >&2; exit 1; fi
+grep -F 'issuer material digest mismatch' "$tmp/err" >/dev/null
+
 jq '.nodeBrokerReceiptDigest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$tmp/metadata.json" >"$tmp/bad-metadata.json"
 if BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/bad-metadata.json" "$tmp/receipt.json" "$tmp/keys" >"$tmp/out" 2>"$tmp/err"; then printf 'metadata digest mismatch unexpectedly passed\n' >&2; exit 1; fi
 grep -F 'receipt digest mismatch' "$tmp/err" >/dev/null
