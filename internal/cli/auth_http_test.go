@@ -37,7 +37,7 @@ func TestAuthCLIEndToEndAgainstManagementAPIContract(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Fatal(err)
 			}
-			decoded, err := base64.RawStdEncoding.DecodeString(request.DevicePublicKey)
+			decoded, err := base64.RawURLEncoding.DecodeString(request.DevicePublicKey)
 			if err != nil || len(decoded) != ed25519.PublicKeySize || request.DeviceName == "" || request.Platform == "" {
 				t.Fatalf("authorization request=%#v key-size=%d err=%v", request, len(decoded), err)
 			}
@@ -47,7 +47,7 @@ func TestAuthCLIEndToEndAgainstManagementAPIContract(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/auth/device/sessions":
 			var request client.DeviceSessionRequest
 			_ = json.NewDecoder(r.Body).Decode(&request)
-			proof, err := base64.RawStdEncoding.DecodeString(request.Proof)
+			proof, err := base64.RawURLEncoding.DecodeString(request.Proof)
 			if err != nil || !ed25519.Verify(publicKey, []byte("blazn-device-session-v1\ndevice-secret\nchallenge-1"), proof) {
 				t.Fatal("device proof did not verify end to end")
 			}

@@ -24,6 +24,8 @@ jobs:
           cache: true
       - name: Check formatting
         run: make fmt-check
+      - name: Check generated API client
+        run: make check-generated
       - name: Run unit tests
         run: make test
       - name: Verify release packaging

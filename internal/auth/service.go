@@ -126,7 +126,7 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 		deviceName = "blazn-cli"
 	}
 	authorization, err := s.api.CreateDeviceAuthorization(ctx, client.DeviceAuthorizationRequest{
-		DevicePublicKey: base64.RawStdEncoding.EncodeToString(publicKey),
+		DevicePublicKey: base64.RawURLEncoding.EncodeToString(publicKey),
 		DeviceName:      deviceName,
 		Platform:        runtime.GOOS + "/" + runtime.GOARCH,
 	})
@@ -151,7 +151,7 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 	if len(s.pendingPrivateKey) != ed25519.PrivateKeySize || s.pendingChallenge == "" {
 		return LoginResult{}, errors.New("device authorization state is missing; restart login")
 	}
-	proof := base64.RawStdEncoding.EncodeToString(ed25519.Sign(s.pendingPrivateKey, []byte(deviceProofPayload(deviceCode, s.pendingChallenge))))
+	proof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(s.pendingPrivateKey, []byte(deviceProofPayload(deviceCode, s.pendingChallenge))))
 	defer func() {
 		for i := range s.pendingPrivateKey {
 			s.pendingPrivateKey[i] = 0
@@ -198,7 +198,7 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 	}
 	current, err := s.api.GetCurrentUser(ctx, credentials.AccessToken)
 	if err != nil {
-		if client.IsCode(err, "session_revoked") || client.IsCode(err, "device_revoked") {
+		if isTerminalSessionError(err) {
 			_ = s.store.Delete()
 			return StatusResult{Authenticated: false, Store: s.store.Description()}, nil
 		}
@@ -208,7 +208,7 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 }
 
 func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
-	credentials, err := s.load()
+	credentials, err := s.credentials(ctx)
 	if errors.Is(err, ErrNotFound) {
 		return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
 	}
@@ -219,7 +219,7 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 	if err := s.store.Delete(); err != nil {
 		return LogoutResult{}, fmt.Errorf("remove local session: %w", err)
 	}
-	if remoteErr != nil && !client.IsCode(remoteErr, "session_revoked") {
+	if remoteErr != nil && !isTerminalSessionError(remoteErr) {
 		return LogoutResult{Status: "local_session_removed", RemoteRevoked: false}, remoteErr
 	}
 	return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
@@ -262,10 +262,10 @@ func (s *Service) credentials(ctx context.Context) (Credentials, error) {
 	}
 	digest := sha256.Sum256([]byte(credentials.RefreshToken))
 	proofPayload := fmt.Sprintf("blazn-refresh-v1\n%s\n%x", credentials.DeviceID, digest)
-	proof := base64.RawStdEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(proofPayload)))
+	proof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(proofPayload)))
 	session, err := s.api.RefreshSession(ctx, client.RefreshSessionRequest{RefreshToken: credentials.RefreshToken, DeviceID: credentials.DeviceID, Proof: proof})
 	if err != nil {
-		if client.IsCode(err, "session_revoked") || client.IsCode(err, "device_revoked") {
+		if isTerminalSessionError(err) {
 			_ = s.store.Delete()
 			return Credentials{}, ErrNotFound
 		}
@@ -274,7 +274,7 @@ func (s *Service) credentials(ctx context.Context) (Credentials, error) {
 	if err := s.save(session, privateKey); err != nil {
 		return Credentials{}, err
 	}
-	return Credentials{AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now().Add(time.Duration(session.ExpiresIn) * time.Second), DevicePrivateKey: base64.RawStdEncoding.EncodeToString(privateKey)}, nil
+	return Credentials{AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now().Add(time.Duration(session.ExpiresIn) * time.Second), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}, nil
 }
 
 func (s *Service) load() (Credentials, error) {
@@ -304,7 +304,7 @@ func (s *Service) save(session client.Session, privateKey ed25519.PrivateKey) er
 		RefreshToken:     session.RefreshToken,
 		DeviceID:         session.DeviceID,
 		ExpiresAt:        s.now().Add(time.Duration(session.ExpiresIn) * time.Second),
-		DevicePrivateKey: base64.RawStdEncoding.EncodeToString(privateKey),
+		DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey),
 	}
 	encoded, err := json.Marshal(credentials)
 	if err != nil {
@@ -318,11 +318,20 @@ func deviceProofPayload(deviceCode, challenge string) string {
 }
 
 func decodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
-	decoded, err := base64.RawStdEncoding.DecodeString(encoded)
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil || len(decoded) != ed25519.PrivateKeySize {
 		return nil, errors.New("stored Blazn device key is invalid; run 'blazn auth logout'")
 	}
 	return ed25519.PrivateKey(decoded), nil
+}
+
+func isTerminalSessionError(err error) bool {
+	for _, code := range []string{"session_invalid", "refresh_invalid", "session_revoked", "device_revoked"} {
+		if client.IsCode(err, code) {
+			return true
+		}
+	}
+	return false
 }
 
 func OpenBrowser(uri string) error {

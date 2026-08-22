@@ -45,6 +45,7 @@ type fakeAPI struct {
 	exchangeErrs         []error
 	refreshes            int
 	deleted              int
+	deletedToken         string
 	revoked              string
 	authorizationRequest client.DeviceAuthorizationRequest
 	sessionRequest       client.DeviceSessionRequest
@@ -69,7 +70,11 @@ func (a *fakeAPI) RefreshSession(_ context.Context, request client.RefreshSessio
 	a.refreshRequest = request
 	return a.session, nil
 }
-func (a *fakeAPI) DeleteCurrentSession(context.Context, string) error { a.deleted++; return nil }
+func (a *fakeAPI) DeleteCurrentSession(_ context.Context, token string) error {
+	a.deleted++
+	a.deletedToken = token
+	return nil
+}
 func (a *fakeAPI) GetCurrentUser(context.Context, string) (client.CurrentUser, error) {
 	return a.current, nil
 }
@@ -90,7 +95,7 @@ func testService(api *fakeAPI, store *memoryStore) *Service {
 
 func storedCredentials(t *testing.T, expiresAt string) []byte {
 	t.Helper()
-	encoded, err := json.Marshal(Credentials{AccessToken: "old", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresAt: mustTime(t, expiresAt), DevicePrivateKey: base64.RawStdEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize))})
+	encoded, err := json.Marshal(Credentials{AccessToken: "old", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresAt: mustTime(t, expiresAt), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +128,11 @@ func TestDeviceLoginPollsPendingStoresAndVerifies(t *testing.T) {
 	if err != nil || result.User.ID != "user-1" || store.put != 1 {
 		t.Fatalf("CompleteLogin = %#v store=%#v err=%v", result, store, err)
 	}
-	publicKey, err := base64.RawStdEncoding.DecodeString(api.authorizationRequest.DevicePublicKey)
+	publicKey, err := base64.RawURLEncoding.DecodeString(api.authorizationRequest.DevicePublicKey)
 	if err != nil || len(publicKey) != ed25519.PublicKeySize || api.sessionRequest.DeviceCode != "device-secret" {
 		t.Fatalf("device proof request = %#v public-key-size=%d err=%v", api.sessionRequest, len(publicKey), err)
 	}
-	proof, err := base64.RawStdEncoding.DecodeString(api.sessionRequest.Proof)
+	proof, err := base64.RawURLEncoding.DecodeString(api.sessionRequest.Proof)
 	if err != nil || !ed25519.Verify(ed25519.PublicKey(publicKey), []byte(deviceProofPayload("device-secret", "server-challenge")), proof) {
 		t.Fatal("device proof did not verify")
 	}
@@ -165,6 +170,15 @@ func TestLogoutRevokesThenDeletes(t *testing.T) {
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
 	if err != nil || result.Status != "logged_out" || api.deleted != 1 || store.deleted != 1 {
+		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
+	}
+}
+
+func TestLogoutRefreshesExpiredAccessBeforeRemoteRevocation(t *testing.T) {
+	api := &fakeAPI{session: client.Session{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 300, DeviceID: "dev-1"}}
+	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z")}
+	result, err := testService(api, store).Logout(context.Background())
+	if err != nil || result.Status != "logged_out" || api.refreshes != 1 || api.deletedToken != "fresh-access" || store.deleted != 1 {
 		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
 	}
 }
