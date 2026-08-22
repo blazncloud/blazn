@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "${script_dir}/.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "${script_dir}/.." && pwd)
 fixture_root="${repo_root}/tests/fixtures/release-module"
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/blazn-release-test.XXXXXX")
 
@@ -32,6 +32,11 @@ actual_archives=$(find "$output_dir" -type f -name 'blazn_*.tar.gz' -exec basena
 [ "$actual_archives" = "$expected_archives" ] || {
   echo "unexpected archives:" >&2
   printf '%s\n' "$actual_archives" >&2
+  exit 1
+}
+
+[ "$(cat "${output_dir}/version.txt")" = v1.2.3 ] || {
+  echo "unexpected version.txt content" >&2
   exit 1
 }
 
