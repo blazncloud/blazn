@@ -1,0 +1,8 @@
+version: "3"
+agent:
+  authtoken: REPLACE_WITH_DEDICATED_BLAZN_NGROK_TOKEN
+
+# Install as /etc/blazn/ngrok/ngrok.yml, root:blazn-ngrok mode 0640. The system
+# units pass the API-only upstream and URL explicitly. The authenticated traffic
+# policy is generated separately from a root-only secret and is never stored in
+# this template or passed in argv.

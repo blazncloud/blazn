@@ -24,9 +24,25 @@ jobs:
           cache: true
       - name: Check formatting
         run: make fmt-check
+      - name: Check generated API client
+        run: make check-generated
       - name: Run unit tests
         run: make test
       - name: Verify release packaging
         run: make test-release
       - name: Verify signed installer behavior
         run: make test-install
+
+  control-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Verify pinned Node control API
+        run: make test-control-api
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Verify Milestone 2 deployment contracts
+        run: make test-infra

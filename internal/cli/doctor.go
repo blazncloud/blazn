@@ -207,10 +207,14 @@ func credentialStoreCheck(goos string) DoctorCheck {
 		return check
 	}
 	if _, err := exec.LookPath(command); err != nil {
+		if goos == "linux" {
+			check.Message = "Secret Service is unavailable; authentication will use the built-in protected credential file"
+			return check
+		}
 		check.Severity = "warning"
 		check.Status = "warn"
 		check.Message = "supported credential-store command is unavailable"
-		check.Remediation = "install or unlock the supported credential store; later auth can use an in-memory session"
+		check.Remediation = "install or unlock the supported credential store"
 	}
 	return check
 }

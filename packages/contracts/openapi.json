@@ -1,0 +1,222 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Blazn Management API", "version": "v1alpha1"},
+  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "paths": {
+    "/v1/auth/device/authorizations": {"post": {
+      "operationId": "createDeviceAuthorization",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceAuthorizationRequest"}}}},
+      "responses": {
+        "201": {"description": "Device authorization created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceAuthorization"}}}},
+        "400": {"$ref": "#/components/responses/BadRequest"},
+        "403": {"$ref": "#/components/responses/Forbidden"},
+        "413": {"$ref": "#/components/responses/RequestTooLarge"},
+        "429": {"$ref": "#/components/responses/RateLimited"},
+        "503": {"$ref": "#/components/responses/ServiceUnavailable"},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }},
+    "/v1/auth/device/sessions": {"post": {
+      "operationId": "exchangeDeviceAuthorization",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceSessionRequest"}}}},
+      "responses": {
+        "200": {"description": "Device authorization approved", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Session"}}}},
+        "400": {"$ref": "#/components/responses/BadRequest"},
+        "403": {"$ref": "#/components/responses/Forbidden"},
+        "413": {"$ref": "#/components/responses/RequestTooLarge"},
+        "428": {"description": "Authorization pending", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+        "429": {"$ref": "#/components/responses/RateLimited"},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }},
+    "/v1/auth/sessions/refresh": {"post": {
+      "operationId": "refreshSession",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RefreshSessionRequest"}}}},
+      "responses": {
+        "200": {"description": "Session refreshed and refresh token rotated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Session"}}}},
+        "400": {"$ref": "#/components/responses/BadRequest"},
+        "401": {"$ref": "#/components/responses/Unauthorized"},
+        "403": {"$ref": "#/components/responses/Forbidden"},
+        "413": {"$ref": "#/components/responses/RequestTooLarge"},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }},
+    "/v1/auth/sessions/revoke": {"post": {
+      "operationId": "revokeSessionWithProof",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeSessionRequest"}}}},
+      "responses": {
+        "204": {"description": "Session revoked"},
+        "400": {"$ref": "#/components/responses/BadRequest"},
+        "401": {"$ref": "#/components/responses/Unauthorized"},
+        "403": {"$ref": "#/components/responses/Forbidden"},
+        "404": {"description": "Device not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+        "413": {"$ref": "#/components/responses/RequestTooLarge"},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }},
+    "/v1/auth/session": {"delete": {
+      "operationId": "deleteCurrentSession", "security": [{"bearerAuth": []}],
+      "responses": {"204": {"description": "Session revoked"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "default": {"$ref": "#/components/responses/UnexpectedError"}}
+    }},
+    "/v1/auth/me": {"get": {
+      "operationId": "getCurrentUser", "security": [{"bearerAuth": []}],
+      "responses": {
+        "200": {"description": "Current user and device", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CurrentUser"}}}},
+        "401": {"$ref": "#/components/responses/Unauthorized"},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }},
+    "/v1/auth/devices": {"get": {
+      "operationId": "listDevices", "security": [{"bearerAuth": []}],
+      "responses": {
+        "200": {"description": "Devices for current user", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeviceList"}}}},
+        "401": {"$ref": "#/components/responses/Unauthorized"},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }},
+    "/v1/auth/devices/{deviceId}": {"delete": {
+      "operationId": "revokeDevice", "security": [{"bearerAuth": []}],
+      "parameters": [{"name": "deviceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "responses": {
+        "204": {"description": "Device revoked"},
+        "401": {"$ref": "#/components/responses/Unauthorized"},
+        "404": {"description": "Device not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+        "default": {"$ref": "#/components/responses/UnexpectedError"}
+      }
+    }}
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"}},
+    "responses": {
+      "BadRequest": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "Missing, expired, or revoked session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Forbidden": {"description": "Identity or device proof rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "RequestTooLarge": {"description": "Request body exceeds the accepted bound", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "RateLimited": {"description": "Request or poll limit exceeded", "headers": {"Retry-After": {"schema": {"type": "integer", "minimum": 1}}}, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "ServiceUnavailable": {"description": "A required bounded service is unavailable", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "UnexpectedError": {"description": "Documented error response for statuses not listed explicitly", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "DeviceAuthorizationRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["devicePublicKey", "deviceName", "platform"],
+        "properties": {
+		  "devicePublicKey": {"type": "string", "description": "Unpadded base64url Ed25519 public key", "pattern": "^[A-Za-z0-9_-]{43}$"},
+          "deviceName": {"type": "string", "minLength": 1, "maxLength": 128},
+          "platform": {"type": "string", "pattern": "^(darwin|linux)/(amd64|arm64)$"}
+        }
+      },
+      "DeviceAuthorization": {
+        "type": "object", "additionalProperties": false,
+        "required": ["deviceCode", "userCode", "verificationUri", "challenge", "expiresIn", "interval"],
+        "properties": {
+          "deviceCode": {"type": "string", "minLength": 32, "maxLength": 256},
+          "userCode": {"type": "string", "minLength": 6, "maxLength": 32},
+          "verificationUri": {"type": "string", "format": "uri", "pattern": "^https://"},
+          "verificationUriComplete": {"type": "string", "format": "uri", "pattern": "^https://"},
+		  "challenge": {"type": "string", "description": "One-time server challenge bound to this device authorization", "minLength": 32, "maxLength": 256},
+          "expiresIn": {"type": "integer", "minimum": 60, "maximum": 900},
+          "interval": {"type": "integer", "minimum": 1, "maximum": 30}
+        }
+      },
+      "DeviceSessionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["deviceCode", "proof"],
+        "properties": {
+          "deviceCode": {"type": "string", "minLength": 32, "maxLength": 256},
+		  "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature over blazn-device-session-v1, deviceCode, and challenge separated by newlines", "pattern": "^[A-Za-z0-9_-]{86}$"}
+        }
+      },
+      "RefreshSessionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["refreshToken", "deviceId", "proof"],
+        "properties": {
+          "refreshToken": {"type": "string", "minLength": 32, "maxLength": 512},
+          "deviceId": {"type": "string", "format": "uuid"},
+		  "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature over blazn-refresh-v1, deviceId, and lowercase SHA-256 hex of refreshToken separated by newlines", "pattern": "^[A-Za-z0-9_-]{86}$"}
+        }
+      },
+      "RevokeSessionRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["deviceId", "proof"],
+        "properties": {
+          "deviceId": {"type": "string", "format": "uuid"},
+          "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature over blazn-session-revoke-v1 and deviceId separated by a newline", "pattern": "^[A-Za-z0-9_-]{86}$"}
+        }
+      },
+      "Session": {
+        "type": "object", "additionalProperties": false,
+        "required": ["accessToken", "refreshToken", "expiresIn", "deviceId"],
+        "properties": {
+          "accessToken": {"type": "string", "minLength": 32, "maxLength": 512},
+          "refreshToken": {"type": "string", "minLength": 32, "maxLength": 512},
+          "expiresIn": {"type": "integer", "minimum": 60, "maximum": 86400},
+          "deviceId": {"type": "string", "format": "uuid"}
+        }
+      },
+      "User": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "displayName", "status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+          "email": {"type": "string", "format": "email", "maxLength": 320},
+          "status": {"type": "string", "enum": ["active", "disabled"]}
+        }
+      },
+      "CurrentUser": {
+        "type": "object", "additionalProperties": false, "required": ["user", "device"],
+        "properties": {"user": {"$ref": "#/components/schemas/User"}, "device": {"$ref": "#/components/schemas/Device"}}
+      },
+      "Device": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "platform", "status", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 128},
+          "name": {"type": "string", "minLength": 1, "maxLength": 128},
+          "platform": {"type": "string", "maxLength": 64},
+          "status": {"type": "string", "enum": ["active", "revoked"]},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "lastUsedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "DeviceList": {
+        "type": "object", "additionalProperties": false, "required": ["items"],
+        "properties": {"items": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/components/schemas/Device"}}}
+      },
+      "Error": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"],
+        "x-blazn-error-status": {
+          "access_expired": 401,
+          "authorization_capacity": 503,
+          "authorization_not_found": 404,
+          "authorization_pending": 428,
+          "device_not_found": 404,
+          "device_proof_invalid": 403,
+          "device_revoked": 401,
+          "expired_token": 400,
+          "forwarded_identity_invalid": 400,
+          "identity_rejected": 403,
+          "internal_error": 500,
+          "invalid_json": 400,
+          "invalid_public_key": 400,
+          "invalid_request": 400,
+          "method_not_allowed": 405,
+          "not_found": 404,
+          "object_storage_unavailable": 503,
+          "proxy_auth_invalid": 403,
+          "rate_limited": 429,
+          "request_too_large": 413,
+          "session_revoked": 401,
+          "slow_down": 429,
+          "unauthorized": 401
+        },
+        "properties": {
+		  "code": {"type": "string", "enum": ["access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending", "device_not_found", "device_proof_invalid", "device_revoked", "expired_token", "forwarded_identity_invalid", "identity_rejected", "internal_error", "invalid_json", "invalid_public_key", "invalid_request", "method_not_allowed", "not_found", "object_storage_unavailable", "proxy_auth_invalid", "rate_limited", "request_too_large", "session_revoked", "slow_down", "unauthorized"]},
+          "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "requestId": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    }
+  }
+}

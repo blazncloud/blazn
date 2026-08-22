@@ -1,0 +1,15 @@
+[Unit]
+Description=Blazn POC backup volume on ben4
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Mount]
+What=192.168.0.120:/srv/blazn-poc-backup
+Where=/mnt/blazn-poc-backup
+Type=nfs
+Options=nfsvers=4.2,_netdev,nosuid,nodev,noexec
+TimeoutSec=30
+
+[Install]
+WantedBy=remote-fs.target

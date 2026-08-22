@@ -1,0 +1,235 @@
+// Code generated from packages/contracts/openapi.json; DO NOT EDIT.
+// Contract SHA256: cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34
+
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+type DeviceAuthorization struct {
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
+	Challenge               string `json:"challenge"`
+	ExpiresIn               int    `json:"expiresIn"`
+	Interval                int    `json:"interval"`
+}
+
+type DeviceAuthorizationRequest struct {
+	DevicePublicKey string `json:"devicePublicKey"`
+	DeviceName      string `json:"deviceName"`
+	Platform        string `json:"platform"`
+}
+
+type DeviceSessionRequest struct {
+	DeviceCode string `json:"deviceCode"`
+	Proof      string `json:"proof"`
+}
+
+type RefreshSessionRequest struct {
+	RefreshToken string `json:"refreshToken"`
+	DeviceID     string `json:"deviceId"`
+	Proof        string `json:"proof"`
+}
+
+type RevokeSessionRequest struct {
+	DeviceID string `json:"deviceId"`
+	Proof    string `json:"proof"`
+}
+
+type Session struct {
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	ExpiresIn    int    `json:"expiresIn"`
+	DeviceID     string `json:"deviceId"`
+}
+
+type User struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	Email       string `json:"email,omitempty"`
+	Status      string `json:"status"`
+}
+
+type Device struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Platform   string `json:"platform"`
+	Status     string `json:"status"`
+	CreatedAt  string `json:"createdAt"`
+	LastUsedAt string `json:"lastUsedAt,omitempty"`
+}
+
+type CurrentUser struct {
+	User   User   `json:"user"`
+	Device Device `json:"device"`
+}
+
+type DeviceList struct {
+	Items []Device `json:"items"`
+}
+
+type ErrorBody struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	RequestID string `json:"requestId"`
+}
+
+type APIError struct {
+	StatusCode int
+	RetryAfter int
+	Body       ErrorBody
+}
+
+func (e *APIError) Error() string {
+	if e.Body.Message != "" {
+		return e.Body.Message
+	}
+	return fmt.Sprintf("Blazn API returned HTTP %d", e.StatusCode)
+}
+
+func IsCode(err error, code string) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Body.Code == code
+}
+
+type Client struct {
+	baseURL *url.URL
+	http    *http.Client
+}
+
+func New(baseURL string, httpClient *http.Client) (*Client, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse API URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("API URL must use http or https")
+	}
+	if parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("API URL must contain only scheme, host, and optional base path")
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	clientCopy := *httpClient
+	previousRedirect := clientCopy.CheckRedirect
+	clientCopy.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if !strings.EqualFold(request.URL.Scheme, parsed.Scheme) || !strings.EqualFold(request.URL.Host, parsed.Host) {
+			return errors.New("refusing cross-origin API redirect")
+		}
+		if previousRedirect != nil {
+			return previousRedirect(request, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &Client{baseURL: parsed, http: &clientCopy}, nil
+}
+
+func (c *Client) CreateDeviceAuthorization(ctx context.Context, request DeviceAuthorizationRequest) (DeviceAuthorization, error) {
+	var output DeviceAuthorization
+	err := c.do(ctx, http.MethodPost, "/v1/auth/device/authorizations", "", request, &output, http.StatusCreated)
+	return output, err
+}
+
+func (c *Client) ExchangeDeviceAuthorization(ctx context.Context, request DeviceSessionRequest) (Session, error) {
+	var output Session
+	err := c.do(ctx, http.MethodPost, "/v1/auth/device/sessions", "", request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RefreshSession(ctx context.Context, request RefreshSessionRequest) (Session, error) {
+	var output Session
+	err := c.do(ctx, http.MethodPost, "/v1/auth/sessions/refresh", "", request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RevokeSession(ctx context.Context, request RevokeSessionRequest) error {
+	return c.do(ctx, http.MethodPost, "/v1/auth/sessions/revoke", "", request, nil, http.StatusNoContent)
+}
+
+func (c *Client) DeleteCurrentSession(ctx context.Context, accessToken string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/auth/session", accessToken, nil, nil, http.StatusNoContent)
+}
+
+func (c *Client) GetCurrentUser(ctx context.Context, accessToken string) (CurrentUser, error) {
+	var output CurrentUser
+	err := c.do(ctx, http.MethodGet, "/v1/auth/me", accessToken, nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) ListDevices(ctx context.Context, accessToken string) (DeviceList, error) {
+	var output DeviceList
+	err := c.do(ctx, http.MethodGet, "/v1/auth/devices", accessToken, nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RevokeDevice(ctx context.Context, accessToken, deviceID string) error {
+	if deviceID == "" {
+		return fmt.Errorf("device ID is required")
+	}
+	return c.do(ctx, http.MethodDelete, "/v1/auth/devices/"+url.PathEscape(deviceID), accessToken, nil, nil, http.StatusNoContent)
+}
+
+func (c *Client) do(ctx context.Context, method, path, token string, input, output any, success int) error {
+	var body io.Reader
+	if input != nil {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return fmt.Errorf("encode request: %w", err)
+		}
+		body = bytes.NewReader(encoded)
+	}
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
+	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("call Blazn API: %w", err)
+	}
+	defer response.Body.Close()
+	limited := io.LimitReader(response.Body, 1<<20)
+	if response.StatusCode != success {
+		var apiError ErrorBody
+		if err := json.NewDecoder(limited).Decode(&apiError); err != nil && err != io.EOF {
+			apiError.Message = http.StatusText(response.StatusCode)
+		}
+		retryAfter := 0
+		if value, parseErr := strconv.Atoi(response.Header.Get("Retry-After")); parseErr == nil && value > 0 && value <= 300 {
+			retryAfter = value
+		}
+		return &APIError{StatusCode: response.StatusCode, RetryAfter: retryAfter, Body: apiError}
+	}
+	if output == nil || success == http.StatusNoContent {
+		_, err = io.Copy(io.Discard, limited)
+		return err
+	}
+	if err := json.NewDecoder(limited).Decode(output); err != nil {
+		return fmt.Errorf("decode API response: %w", err)
+	}
+	return nil
+}

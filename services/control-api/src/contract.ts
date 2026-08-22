@@ -1,0 +1,27 @@
+export const API_ERROR_STATUS = {
+  access_expired: 401,
+  authorization_capacity: 503,
+  authorization_not_found: 404,
+  authorization_pending: 428,
+  device_not_found: 404,
+  device_proof_invalid: 403,
+  device_revoked: 401,
+  expired_token: 400,
+  forwarded_identity_invalid: 400,
+  identity_rejected: 403,
+  internal_error: 500,
+  invalid_json: 400,
+  invalid_public_key: 400,
+  invalid_request: 400,
+  method_not_allowed: 405,
+  not_found: 404,
+  object_storage_unavailable: 503,
+  proxy_auth_invalid: 403,
+  rate_limited: 429,
+  request_too_large: 413,
+  session_revoked: 401,
+  slow_down: 429,
+  unauthorized: 401,
+} as const;
+
+export type ApiErrorCode = keyof typeof API_ERROR_STATUS;

@@ -1,0 +1,283 @@
+name: blazn-m2
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    restart: "no"
+    user: "999:999"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-blazn}
+      POSTGRES_USER: ${POSTGRES_USER:-blazn_admin}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+      - migration_database_url
+      - bootstrap_database_url
+      - runtime_database_url
+    ports:
+      - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - type: bind
+        source: ${BLAZN_DATA_ROOT:?set BLAZN_DATA_ROOT}/postgres
+        target: /var/lib/postgresql/data
+      - type: bind
+        source: ./postgres-init/01-roles.sh
+        target: /docker-entrypoint-initdb.d/01-roles.sh
+        read_only: true
+    tmpfs:
+      - /run/postgresql:mode=0770,uid=999,gid=999
+      - /tmp:mode=1777
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1536M
+          pids: 256
+    networks:
+      - control
+
+  object:
+    image: ${MINIO_IMAGE:?set MINIO_IMAGE to the reviewed immutable digest}
+    restart: "no"
+    user: "1000:1000"
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/s3_root_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/s3_root_secret_key
+    secrets:
+      - s3_root_access_key
+      - s3_root_secret_key
+    ports:
+      - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${S3_PORT:-59000}:9000"
+      - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${S3_CONSOLE_PORT:-59001}:9001"
+    volumes:
+      - type: bind
+        source: ${BLAZN_DATA_ROOT:?set BLAZN_DATA_ROOT}/objects
+        target: /data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1536M
+          pids: 256
+    networks:
+      - control
+
+  object-client:
+    image: ${MINIO_MC_IMAGE:?set MINIO_MC_IMAGE to the reviewed immutable digest}
+    profiles: ["tools"]
+    entrypoint: ["/bin/sh", "-euc"]
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
+    secrets:
+      - s3_runtime_access_key
+      - s3_runtime_secret_key
+    networks:
+      - control
+
+  object-init:
+    image: ${MINIO_MC_IMAGE:?set MINIO_MC_IMAGE to the reviewed immutable digest}
+    entrypoint: ["/bin/sh", "-euc"]
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
+    command:
+      - |
+        root_access=$$(cat /run/secrets/s3_root_access_key)
+        root_secret=$$(cat /run/secrets/s3_root_secret_key)
+        runtime_access=$$(cat /run/secrets/s3_runtime_access_key)
+        runtime_secret=$$(cat /run/secrets/s3_runtime_secret_key)
+        mc alias set blazn http://object:9000 "$$root_access" "$$root_secret" >/dev/null
+        mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}" >/dev/null
+        printf '%s\n' \
+          '{"Version":"2012-10-17","Statement":[' \
+          '{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::${S3_BUCKET:-blazn-poc}"]},' \
+          '{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::${S3_BUCKET:-blazn-poc}/*"]}' \
+          ']}' > /tmp/runtime-policy.json
+        mc admin policy create blazn blazn-runtime /tmp/runtime-policy.json >/dev/null
+        mc admin user add blazn "$$runtime_access" "$$runtime_secret" >/dev/null
+        mc admin policy attach blazn blazn-runtime --user "$$runtime_access" >/dev/null
+        mc stat "blazn/${S3_BUCKET:-blazn-poc}" >/dev/null
+    secrets:
+      - s3_root_access_key
+      - s3_root_secret_key
+      - s3_runtime_access_key
+      - s3_runtime_secret_key
+    depends_on:
+      object:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+          pids: 64
+    networks:
+      - control
+
+  api-migrate:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    build:
+      context: ../../services/control-api
+    command: ["node", "dist/migrate.js"]
+    environment:
+      MIGRATION_DATABASE_URL_FILE: /run/secrets/migration_database_url
+    secrets:
+      - migration_database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+          pids: 128
+    networks:
+      - control
+
+  api-bootstrap:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    build:
+      context: ../../services/control-api
+    command: ["node", "dist/bootstrap.js"]
+    environment:
+      BOOTSTRAP_DATABASE_URL_FILE: /run/secrets/bootstrap_database_url
+      BLAZN_INITIAL_PASSWORD_FILE: /run/secrets/initial_password
+      BLAZN_INITIAL_LOGIN: ${BLAZN_INITIAL_LOGIN:?set BLAZN_INITIAL_LOGIN}
+      BLAZN_INITIAL_DISPLAY_NAME: ${BLAZN_INITIAL_DISPLAY_NAME:?set BLAZN_INITIAL_DISPLAY_NAME}
+    secrets:
+      - source: bootstrap_database_url
+        target: bootstrap_database_url
+      - source: initial_password
+        target: initial_password
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    labels:
+      blazn.dev/operation: bootstrap
+      blazn.dev/restart-idempotent: "true"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+          pids: 128
+    networks:
+      - control
+
+  api:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    build:
+      context: ../../services/control-api
+    restart: "no"
+    environment:
+      PORT: "8080"
+      BIND_ADDRESS: 0.0.0.0
+      DATABASE_URL_FILE: /run/secrets/runtime_database_url
+      PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}
+      TRUSTED_PROXY_CIDRS: 172.18.0.1/32
+      TRUSTED_PROXY_HOPS: "1"
+      TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret
+      S3_ENDPOINT: http://object:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-blazn-poc}
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key
+    secrets:
+      - runtime_database_url
+      - s3_runtime_access_key
+      - s3_runtime_secret_key
+      - proxy_auth_secret
+    ports:
+      - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-58080}:8080"
+    depends_on:
+      api-bootstrap:
+        condition: service_completed_successfully
+      object-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1024M
+          pids: 256
+    networks:
+      - control
+
+networks:
+  control:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
+
+secrets:
+  postgres_password:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/postgres-password
+  migration_database_url:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/migration-database-url
+  bootstrap_database_url:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/bootstrap-database-url
+  runtime_database_url:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/runtime-database-url
+  initial_password:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/initial-password
+  s3_root_access_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-root-access-key
+  s3_root_secret_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-root-secret-key
+  s3_runtime_access_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-access-key
+  s3_runtime_secret_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-secret-key
+  proxy_auth_secret:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/proxy-auth-secret
