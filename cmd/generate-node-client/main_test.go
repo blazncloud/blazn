@@ -61,8 +61,8 @@ func TestNodeValidatorRejectsMisnestedCapabilityModels(t *testing.T) {
 	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
 	changed := cloneDocument(t, sources[key].doc)
 	properties := at(changed, "components", "schemas", "NodeCapability", "properties").(map[string]any)
-	healthProperties := at(properties, "health", "properties").(map[string]any)
-	healthProperties["localModels"] = properties["localModels"]
+	workerProperties := at(changed, "components", "schemas", "WorkerCapacity", "properties").(map[string]any)
+	workerProperties["localModels"] = properties["localModels"]
 	delete(properties, "localModels")
 	if err := validateOpenAPI(changed); err == nil || !strings.Contains(err.Error(), "mis-nested") {
 		t.Fatalf("capability nesting drift error=%v", err)

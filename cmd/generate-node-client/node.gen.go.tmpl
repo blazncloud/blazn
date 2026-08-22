@@ -27,7 +27,10 @@ import (
 	"github.com/gowebpki/jcs"
 )
 
-const NodeSchemaVersion = "nodes/v1alpha1"
+const (
+	NodeSchemaVersion = "nodes/v1alpha1"
+	nodeMaxJSONBytes  = 8 << 20
+)
 
 type NodePlatform string
 type NodeArchitecture string
@@ -897,12 +900,12 @@ func DecodeNodeOperationReceipt(reader io.Reader) (NodeOperationReceipt, error) 
 }
 
 func decodeStrictNodeObject(reader io.Reader, output any) (map[string]json.RawMessage, error) {
-	encoded, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+	encoded, err := io.ReadAll(io.LimitReader(reader, nodeMaxJSONBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(encoded) > 1<<20 {
-		return nil, fmt.Errorf("node JSON exceeds 1 MiB")
+	if len(encoded) > nodeMaxJSONBytes {
+		return nil, fmt.Errorf("node JSON exceeds 8 MiB")
 	}
 	if err := decodeClosedNodeResponse(bytes.NewReader(encoded), output); err != nil {
 		return nil, err
@@ -912,6 +915,50 @@ func decodeStrictNodeObject(reader io.Reader, output any) (map[string]json.RawMe
 		return nil, fmt.Errorf("node JSON must be an object")
 	}
 	return raw, nil
+}
+
+func decodeTypedNodeAPIResponse(reader io.Reader, output any) error {
+	raw, err := decodeStrictNodeObject(reader, output)
+	if err != nil {
+		return err
+	}
+	switch value := output.(type) {
+	case *NodeEnrollmentSecret:
+		if err := requireNodeFields(raw, "id", "token", "tokenKeyId", "expiresAt", "replayed"); err != nil {
+			return err
+		}
+		return ValidateNodeEnrollmentSecret(*value)
+	case *Node:
+		if err := requireNodeFields(raw, "id", "workspaceId", "name", "kind", "platform", "architecture", "lifecycleState", "trustState", "agentEligible", "version", "capabilityVersion", "identity", "createdAt", "updatedAt"); err != nil {
+			return err
+		}
+		return ValidateNode(*value)
+	case *NodeList:
+		if err := requireNodeFields(raw, "items"); err != nil {
+			return err
+		}
+		if value.Items == nil {
+			return fmt.Errorf("node list items must be an array")
+		}
+		for index, node := range value.Items {
+			if err := ValidateNode(node); err != nil {
+				return fmt.Errorf("items[%d]: %w", index, err)
+			}
+		}
+		return nil
+	case *NodeOperation:
+		if err := requireNodeFields(raw, "id", "nodeId", "type", "status", "expectedNodeVersion", "result", "error", "receipt", "createdAt"); err != nil {
+			return err
+		}
+		return ValidateNodeOperation(*value)
+	case *JoinCredential:
+		if err := requireNodeFields(raw, "issuanceId", "credential", "expiresAt", "clusterId", "workerOnly", "replayed"); err != nil {
+			return err
+		}
+		return ValidateJoinCredential(*value)
+	default:
+		return nil
+	}
 }
 
 func requireNodeFields(raw map[string]json.RawMessage, fields ...string) error {
@@ -1143,6 +1190,75 @@ func validNodeOperationType(value NodeOperationType) bool {
 	return oneOf(string(value), "pause", "resume", "label", "cordon", "uncordon", "rotate_identity", "repair", "update", "drain", "remove")
 }
 
+func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {
+	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != "node-enrollment/v1" {
+		return fmt.Errorf("node enrollment response is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, secret.ExpiresAt); err != nil {
+		return fmt.Errorf("node enrollment expiresAt is invalid")
+	}
+	return nil
+}
+
+func ValidateNode(node Node) error {
+	if !nodeUUIDPattern.MatchString(node.ID) || !nodeUUIDPattern.MatchString(node.WorkspaceID) || node.Name == "" || !oneOf(node.Kind, "personal", "shared", "managed") || !validPlatform(node.Platform) || !validArchitecture(node.Architecture) || !oneOf(string(node.LifecycleState), "pending", "installing", "verifying", "active", "paused", "draining", "offline", "quarantined", "removed") || !oneOf(string(node.TrustState), "unverified", "verifying", "verified", "rotating", "revoked") || node.Version < 1 || (node.CapabilityVersion != nil && *node.CapabilityVersion < 1) {
+		return fmt.Errorf("node response is invalid")
+	}
+	if node.KubernetesBinding != nil && !validKubernetesBinding(*node.KubernetesBinding) {
+		return fmt.Errorf("node Kubernetes binding is invalid")
+	}
+	if node.AgentEligible && (node.LifecycleState != "active" || node.TrustState != "verified" || node.KubernetesBinding == nil) {
+		return fmt.Errorf("agent-eligible node state is invalid")
+	}
+	if node.Identity != nil {
+		if node.Identity.Generation < 1 || !nodeDigestPattern.MatchString(node.Identity.PublicKeyFingerprint) || !oneOf(node.Identity.Status, "active", "rotating", "revoked", "expired") {
+			return fmt.Errorf("node identity is invalid")
+		}
+		if err := validateTimeWindow(node.Identity.IssuedAt, node.Identity.ExpiresAt); err != nil {
+			return fmt.Errorf("node identity time window is invalid")
+		}
+	}
+	if _, err := time.Parse(time.RFC3339, node.CreatedAt); err != nil {
+		return fmt.Errorf("node createdAt is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, node.UpdatedAt); err != nil {
+		return fmt.Errorf("node updatedAt is invalid")
+	}
+	return nil
+}
+
+func ValidateNodeOperation(operation NodeOperation) error {
+	if !nodeUUIDPattern.MatchString(operation.ID) || !nodeUUIDPattern.MatchString(operation.NodeID) || !validNodeOperationType(operation.Type) || !oneOf(string(operation.Status), "pending", "running", "succeeded", "failed", "cancelled", "partial", "recovery_required") || operation.ExpectedNodeVersion < 1 {
+		return fmt.Errorf("node operation response is invalid")
+	}
+	terminal := oneOf(string(operation.Status), "succeeded", "failed", "cancelled", "partial", "recovery_required")
+	if terminal != (operation.Receipt != nil) {
+		return fmt.Errorf("node operation terminal receipt state is invalid")
+	}
+	if operation.Receipt != nil {
+		if err := ValidateNodeOperationReceipt(*operation.Receipt); err != nil {
+			return err
+		}
+		if operation.Receipt.OperationID != operation.ID || operation.Receipt.NodeID != operation.NodeID || operation.Receipt.OperationType != operation.Type || operation.Receipt.ExpectedNodeVersion != operation.ExpectedNodeVersion || operation.Receipt.Outcome != string(operation.Status) {
+			return fmt.Errorf("node operation receipt does not bind its response")
+		}
+	}
+	if _, err := time.Parse(time.RFC3339, operation.CreatedAt); err != nil {
+		return fmt.Errorf("node operation createdAt is invalid")
+	}
+	return nil
+}
+
+func ValidateJoinCredential(credential JoinCredential) error {
+	if !nodeUUIDPattern.MatchString(credential.IssuanceID) || len(credential.Credential) < 43 || len(credential.Credential) > 4096 || len(credential.ClusterID) < 1 || len(credential.ClusterID) > 128 || !credential.WorkerOnly {
+		return fmt.Errorf("join credential response is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, credential.ExpiresAt); err != nil {
+		return fmt.Errorf("join credential expiresAt is invalid")
+	}
+	return nil
+}
+
 func validHTTPSURL(value string) bool {
 	parsed, err := url.Parse(value)
 	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil
@@ -1227,15 +1343,28 @@ func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, hear
 	if err := ValidateNodeCapability(heartbeat.Capability); err != nil {
 		return fmt.Errorf("node heartbeat capability: %w", err)
 	}
+	digest, err := NodeCapabilityDigest(heartbeat.Capability)
+	if err != nil || !nodeSecureEqual(heartbeat.CapabilityDigest, digest) {
+		return fmt.Errorf("node heartbeat capability digest mismatch")
+	}
 	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
 }
 
 func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof string, request JoinCredentialRequest) (JoinCredential, error) {
 	var output JoinCredential
-	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.EnrollmentID) || !nodeUUIDPattern.MatchString(request.PlanID) || !nodeUUIDPattern.MatchString(request.NodeID) || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeHashPattern.MatchString(request.NodePublicKeyFingerprint) {
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.EnrollmentID) || !nodeUUIDPattern.MatchString(request.PlanID) || !nodeUUIDPattern.MatchString(request.NodeID) || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeDigestPattern.MatchString(request.NodePublicKeyFingerprint) {
 		return output, fmt.Errorf("join credential request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/join-credentials", "", nodeProof, "", request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) ConsumeNodeJoinCredential(ctx context.Context, nodeProof, issuanceID, idempotencyKey string, request ConsumeJoinCredentialRequest) (Node, error) {
+	var output Node
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(issuanceID) || !validNodeIdempotencyKey(idempotencyKey) || !nodeUUIDPattern.MatchString(request.NodeID) || !nodeUUIDPattern.MatchString(request.EnrollmentID) || !nodeUUIDPattern.MatchString(request.PlanID) || len(request.JoinedNodeUID) < 1 || len(request.JoinedNodeUID) > 128 || len(request.JoinedNodeName) < 1 || len(request.JoinedNodeName) > 253 || len(request.ResourceVersion) < 1 || len(request.ResourceVersion) > 128 || len(request.ClusterID) < 1 || len(request.ClusterID) > 128 {
+		return output, fmt.Errorf("consume join credential request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/join-credentials/"+url.PathEscape(issuanceID)+"/consume", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
 	return output, err
 }
 
@@ -1319,7 +1448,7 @@ func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProo
 		return decodeNodeAPIError(response)
 	}
 	if output == nil || success == http.StatusNoContent {
-		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, nodeMaxJSONBytes))
 		return err
 	}
 	if plan, ok := output.(*NodeInstallPlan); ok {
@@ -1330,7 +1459,7 @@ func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProo
 		*plan = decoded
 		return nil
 	}
-	if err := decodeClosedNodeResponse(io.LimitReader(response.Body, 1<<20), output); err != nil {
+	if err := decodeTypedNodeAPIResponse(io.LimitReader(response.Body, nodeMaxJSONBytes), output); err != nil {
 		return fmt.Errorf("decode node response: %w", err)
 	}
 	return nil
