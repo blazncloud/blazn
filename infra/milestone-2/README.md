@@ -66,7 +66,7 @@ that architecture is used for this service.
 
 For the current POC fleet, `backup-nfs/ben4.exports` and the matching mount
 unit provide the reviewed separate backup failure domain: ben4 exports only the
-dedicated backup directory to ben1's Tailscale address, and ben1 mounts it with
+dedicated backup directory to ben1's private-LAN address, and ben1 mounts it with
 `nosuid,nodev,noexec`. These files are host-specific evidence, not portable
 defaults; a production deployment must provision independent durable storage.
 

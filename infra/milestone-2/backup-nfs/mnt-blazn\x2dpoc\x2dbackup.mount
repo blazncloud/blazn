@@ -5,7 +5,7 @@ Wants=network-online.target
 Requires=tailscaled.service
 
 [Mount]
-What=100.126.237.37:/srv/blazn-poc-backup
+What=192.168.0.120:/srv/blazn-poc-backup
 Where=/mnt/blazn-poc-backup
 Type=nfs
 Options=nfsvers=4.2,_netdev,nosuid,nodev,noexec
