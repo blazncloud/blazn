@@ -25,6 +25,13 @@ The broker profile must expose no Docker socket, kubeconfig, MicroK8s directory,
 host network, added capability, or issuer HMAC key. Do not call issuance until
 the post-join enforcement milestone is complete.
 
+Before accepting backup v4, copy the receipt-bound recovery key and issuer
+receipt into the separately protected Node recovery inventory as
+`microk8s-issuer-hmac-v1` and `microk8s-worker-issuer.json`. Run
+`verify-backup-metadata.sh`; it recomputes the stable issuer material digest,
+checks the main ownership and backup metadata bindings, and matches the HMAC
+digest without placing key material in ordinary backup evidence.
+
 Rollback first removes the broker sidecar, then runs
 `rollback-worker-issuer.sh` under the same lock. It refuses changed artifacts,
 removes only receipt-owned active files, and retains the root-only recovery
