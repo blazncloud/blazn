@@ -5,6 +5,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -30,7 +31,7 @@ func bytesPointer(value []byte) uintptr {
 	return uintptr(unsafe.Pointer(unsafe.SliceData(value)))
 }
 
-func storeDarwinCredential(secret []byte) error {
+func storeDarwinCredential(account string, secret []byte) error {
 	if len(secret) == 0 {
 		return errors.New("refusing to store an empty Keychain credential")
 	}
@@ -57,7 +58,6 @@ func storeDarwinCredential(secret []byte) error {
 	purego.RegisterLibFunc(&release, coreFoundation, "CFRelease")
 
 	service := credentialService
-	account := credentialAccount
 	var keychain uintptr
 	path, err := selectedDarwinKeychainPath()
 	if err != nil {
@@ -66,6 +66,7 @@ func storeDarwinCredential(secret []byte) error {
 	if path != "" {
 		pathBytes := append([]byte(path), 0)
 		status := open(bytesPointer(pathBytes), &keychain)
+		runtime.KeepAlive(pathBytes)
 		if status != errSecSuccess || keychain == 0 {
 			return fmt.Errorf("open test Keychain failed with OSStatus %d", status)
 		}
@@ -73,6 +74,9 @@ func storeDarwinCredential(secret []byte) error {
 	}
 	var item uintptr
 	status := add(keychain, uint32(len(service)), stringPointer(service), uint32(len(account)), stringPointer(account), uint32(len(secret)), bytesPointer(secret), &item)
+	runtime.KeepAlive(service)
+	runtime.KeepAlive(account)
+	runtime.KeepAlive(secret)
 	if item != 0 {
 		release(item)
 	}
@@ -85,18 +89,21 @@ func storeDarwinCredential(secret []byte) error {
 
 	item = 0
 	status = find(keychain, uint32(len(service)), stringPointer(service), uint32(len(account)), stringPointer(account), 0, 0, &item)
+	runtime.KeepAlive(service)
+	runtime.KeepAlive(account)
 	if status != errSecSuccess || item == 0 {
 		return fmt.Errorf("Keychain lookup for update failed with OSStatus %d", status)
 	}
 	defer release(item)
 	status = modify(item, 0, uint32(len(secret)), bytesPointer(secret))
+	runtime.KeepAlive(secret)
 	if status != errSecSuccess {
 		return fmt.Errorf("Keychain update failed with OSStatus %d", status)
 	}
 	return nil
 }
 
-func loadDarwinCredential() ([]byte, error) {
+func loadDarwinCredential(account string) ([]byte, error) {
 	security, err := purego.Dlopen("/System/Library/Frameworks/Security.framework/Security", purego.RTLD_NOW|purego.RTLD_LOCAL)
 	if err != nil {
 		return nil, fmt.Errorf("open Security framework: %w", err)
@@ -125,7 +132,10 @@ func loadDarwinCredential() ([]byte, error) {
 	var length uint32
 	var data uintptr
 	var item uintptr
-	status := find(keychain, uint32(len(credentialService)), stringPointer(credentialService), uint32(len(credentialAccount)), stringPointer(credentialAccount), &length, &data, &item)
+	service := credentialService
+	status := find(keychain, uint32(len(service)), stringPointer(service), uint32(len(account)), stringPointer(account), &length, &data, &item)
+	runtime.KeepAlive(service)
+	runtime.KeepAlive(account)
 	if status == errSecItemNotFound {
 		return nil, ErrNotFound
 	}
@@ -146,7 +156,7 @@ func loadDarwinCredential() ([]byte, error) {
 	return value, nil
 }
 
-func deleteDarwinCredential() error {
+func deleteDarwinCredential(account string) error {
 	security, err := purego.Dlopen("/System/Library/Frameworks/Security.framework/Security", purego.RTLD_NOW|purego.RTLD_LOCAL)
 	if err != nil {
 		return fmt.Errorf("open Security framework: %w", err)
@@ -173,7 +183,10 @@ func deleteDarwinCredential() error {
 		defer release(keychain)
 	}
 	var item uintptr
-	status := find(keychain, uint32(len(credentialService)), stringPointer(credentialService), uint32(len(credentialAccount)), stringPointer(credentialAccount), 0, 0, &item)
+	service := credentialService
+	status := find(keychain, uint32(len(service)), stringPointer(service), uint32(len(account)), stringPointer(account), 0, 0, &item)
+	runtime.KeepAlive(service)
+	runtime.KeepAlive(account)
 	if status == errSecItemNotFound {
 		return nil
 	}
@@ -195,6 +208,7 @@ func openSelectedKeychain(open func(uintptr, *uintptr) int32) (uintptr, error) {
 	pathBytes := append([]byte(path), 0)
 	var keychain uintptr
 	status := open(bytesPointer(pathBytes), &keychain)
+	runtime.KeepAlive(pathBytes)
 	if status != errSecSuccess || keychain == 0 {
 		return 0, fmt.Errorf("open test Keychain failed with OSStatus %d", status)
 	}

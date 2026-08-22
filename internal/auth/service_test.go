@@ -14,10 +14,12 @@ import (
 )
 
 type memoryStore struct {
-	value   []byte
-	put     int
-	deleted int
-	err     error
+	value     []byte
+	put       int
+	deleted   int
+	err       error
+	putErrs   []error
+	deleteErr error
 }
 
 func (s *memoryStore) Get() ([]byte, error) {
@@ -31,10 +33,24 @@ func (s *memoryStore) Get() ([]byte, error) {
 }
 func (s *memoryStore) Put(value []byte) error {
 	s.put++
+	if len(s.putErrs) > 0 {
+		err := s.putErrs[0]
+		s.putErrs = s.putErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
 	s.value = append([]byte(nil), value...)
 	return nil
 }
-func (s *memoryStore) Delete() error       { s.deleted++; s.value = nil; return nil }
+func (s *memoryStore) Delete() error {
+	s.deleted++
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	s.value = nil
+	return nil
+}
 func (s *memoryStore) Description() string { return "test store" }
 
 type fakeAPI struct {
@@ -52,6 +68,11 @@ type fakeAPI struct {
 	sessionRequest       client.DeviceSessionRequest
 	refreshRequest       client.RefreshSessionRequest
 	refreshErr           error
+	currentErr           error
+	currentCalls         int
+	revokeSessionRequest client.RefreshSessionRequest
+	revokeSessionErr     error
+	revokeSessions       int
 }
 
 func (a *fakeAPI) CreateDeviceAuthorization(_ context.Context, request client.DeviceAuthorizationRequest) (client.DeviceAuthorization, error) {
@@ -81,7 +102,13 @@ func (a *fakeAPI) DeleteCurrentSession(_ context.Context, token string) error {
 	return a.deleteErr
 }
 func (a *fakeAPI) GetCurrentUser(context.Context, string) (client.CurrentUser, error) {
-	return a.current, nil
+	a.currentCalls++
+	return a.current, a.currentErr
+}
+func (a *fakeAPI) RevokeSession(_ context.Context, request client.RefreshSessionRequest) error {
+	a.revokeSessions++
+	a.revokeSessionRequest = request
+	return a.revokeSessionErr
 }
 func (a *fakeAPI) ListDevices(context.Context, string) (client.DeviceList, error) {
 	return a.devices, nil
@@ -100,7 +127,7 @@ func testService(api *fakeAPI, store *memoryStore) *Service {
 
 func storedCredentials(t *testing.T, expiresAt string) []byte {
 	t.Helper()
-	encoded, err := json.Marshal(Credentials{AccessToken: "old", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresAt: mustTime(t, expiresAt), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize))})
+	encoded, err := json.Marshal(Credentials{APIOrigin: defaultAPIURL, AccessToken: "old", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresAt: mustTime(t, expiresAt), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PrivateKeySize))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,6 +242,58 @@ func TestLogoutPreservesLocalCredentialWhenRemoteRevocationFails(t *testing.T) {
 	}
 }
 
+func TestLogoutUsesProofBoundRevocationWhenAccessRevocationIsAmbiguous(t *testing.T) {
+	api := &fakeAPI{deleteErr: &client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}}}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	result, err := testService(api, store).Logout(context.Background())
+	if err != nil || !result.RemoteRevoked || api.revokeSessions != 1 || api.revokeSessionRequest.RefreshToken != "refresh" || store.deleted != 1 {
+		t.Fatalf("Logout=%#v api=%#v store=%#v err=%v", result, api, store, err)
+	}
+}
+
+func TestOriginMismatchRefusesBeforeAnyAPIUse(t *testing.T) {
+	api := &fakeAPI{}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	service := newService(api, store, "https://different.example", noopCredentialLocker{})
+	_, err := service.Status(context.Background())
+	if !errors.Is(err, ErrOriginMismatch) || api.currentCalls != 0 || api.refreshes != 0 || api.deleted != 0 {
+		t.Fatalf("err=%v api=%#v", err, api)
+	}
+}
+
+func TestPostExchangeVerificationFailureRevokesAndDeletes(t *testing.T) {
+	api := &fakeAPI{currentErr: errors.New("verification unavailable")}
+	store := &memoryStore{}
+	service := testService(api, store)
+	privateKey := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	_, err := service.finishLogin(context.Background(), client.Session{AccessToken: "access", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresIn: 300}, privateKey)
+	if err == nil || api.deleted != 1 || store.deleted != 1 || len(store.value) != 0 {
+		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
+	}
+}
+
+func TestPostExchangeCleanupFailureRetainsCredential(t *testing.T) {
+	api := &fakeAPI{currentErr: errors.New("verification unavailable"), deleteErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
+	store := &memoryStore{}
+	service := testService(api, store)
+	privateKey := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	_, err := service.finishLogin(context.Background(), client.Session{AccessToken: "access", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresIn: 300}, privateKey)
+	if err == nil || len(store.value) == 0 || store.deleted != 0 {
+		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
+	}
+}
+
+func TestPostExchangeStoreFailureAttemptsCleanupAndRetainsOnCleanupFailure(t *testing.T) {
+	api := &fakeAPI{deleteErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
+	store := &memoryStore{putErrs: []error{errors.New("keyring unavailable"), nil}}
+	service := testService(api, store)
+	privateKey := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	_, err := service.finishLogin(context.Background(), client.Session{AccessToken: "access", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresIn: 300}, privateKey)
+	if err == nil || store.put != 2 || len(store.value) == 0 || api.deleted != 1 || api.revokeSessions != 1 {
+		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
+	}
+}
+
 func TestRevokeCurrentDeviceDeletesLocalSession(t *testing.T) {
 	api := &fakeAPI{}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
@@ -257,5 +336,28 @@ func TestAuthAPIRequiresTLSExceptExplicitLoopback(t *testing.T) {
 	t.Setenv("BLAZN_ALLOW_INSECURE_LOCALHOST", "1")
 	if err := validateAuthAPIURL("http://127.0.0.1:8080"); err != nil {
 		t.Fatalf("explicit loopback API rejected: %v", err)
+	}
+}
+
+func TestCanonicalAuthOriginNormalizesCaseAndDefaultPort(t *testing.T) {
+	got, err := canonicalAuthOrigin("https://BLAZN.Example:443/base/path")
+	if err != nil || got != "https://blazn.example" {
+		t.Fatalf("origin=%q err=%v", got, err)
+	}
+}
+
+func TestPollingRejectsMismatchedStatusAndCode(t *testing.T) {
+	for _, apiErr := range []*client.APIError{
+		{StatusCode: http.StatusInternalServerError, Body: client.ErrorBody{Code: "authorization_pending"}},
+		{StatusCode: http.StatusPreconditionRequired, Body: client.ErrorBody{Code: "internal_error"}},
+		{StatusCode: http.StatusTooManyRequests, Body: client.ErrorBody{Code: "authorization_pending"}},
+	} {
+		api := &fakeAPI{exchangeErrs: []error{apiErr}}
+		service := testService(api, &memoryStore{})
+		service.pendingPrivateKey = make([]byte, ed25519.PrivateKeySize)
+		service.pendingChallenge = "challenge"
+		if _, err := service.CompleteLogin(context.Background(), "code", time.Second); !errors.Is(err, apiErr) {
+			t.Fatalf("error=%v want=%v", err, apiErr)
+		}
 	}
 }
