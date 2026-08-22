@@ -1,0 +1,316 @@
+// Code generated from packages/contracts/workspaces.openapi.json; DO NOT EDIT.
+
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+)
+
+type Role string
+
+const (
+	RoleOwner         Role = "owner"
+	RoleAdministrator Role = "administrator"
+	RoleOperator      Role = "operator"
+	RoleMember        Role = "member"
+	RoleViewer        Role = "viewer"
+)
+
+type Workspace struct {
+	ID              string `json:"id"`
+	Slug            string `json:"slug"`
+	Name            string `json:"name"`
+	Status          string `json:"status"`
+	Version         int    `json:"version"`
+	CurrentUserRole Role   `json:"currentUserRole"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
+}
+
+type WorkspaceEnvelope struct {
+	Workspace Workspace `json:"workspace"`
+}
+
+type WorkspaceList struct {
+	Items      []Workspace `json:"items"`
+	NextCursor *string     `json:"nextCursor"`
+}
+
+type CreateWorkspaceRequest struct {
+	Name string `json:"name"`
+	Slug string `json:"slug,omitempty"`
+}
+
+type UpdateWorkspaceRequest struct {
+	Name            string `json:"name"`
+	ExpectedVersion int    `json:"expectedVersion"`
+}
+
+type Invitation struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspaceId"`
+	Role        Role   `json:"role"`
+	Status      string `json:"status"`
+	Version     int    `json:"version"`
+	CreatedAt   string `json:"createdAt"`
+	ExpiresAt   string `json:"expiresAt"`
+}
+
+type InvitationCreated struct {
+	Invitation Invitation `json:"invitation"`
+	InviteToken string     `json:"inviteToken"`
+}
+
+type InvitationList struct {
+	Items      []Invitation `json:"items"`
+	NextCursor *string      `json:"nextCursor"`
+}
+
+type CreateInvitationRequest struct {
+	Role      Role `json:"role"`
+	ExpiresIn int  `json:"expiresIn"`
+}
+
+type AcceptInvitationRequest struct {
+	InviteToken string `json:"inviteToken"`
+}
+
+type Membership struct {
+	WorkspaceID string `json:"workspaceId"`
+	User        User   `json:"user"`
+	Role        Role   `json:"role"`
+	Status      string `json:"status"`
+	Version     int    `json:"version"`
+	JoinedAt    string `json:"joinedAt"`
+	RemovedAt   string `json:"removedAt,omitempty"`
+}
+
+type MembershipList struct {
+	Items      []Membership `json:"items"`
+	NextCursor *string      `json:"nextCursor"`
+}
+
+type UpdateMembershipRequest struct {
+	Role            Role `json:"role"`
+	ExpectedVersion int  `json:"expectedVersion"`
+}
+
+type MutationResult struct {
+	Status       string `json:"status"`
+	WorkspaceID  string `json:"workspaceId"`
+	UserID       string `json:"userId,omitempty"`
+	InvitationID string `json:"invitationId,omitempty"`
+	Version      int    `json:"version"`
+}
+
+type WorkspaceError = ErrorBody
+
+type WorkspaceEventStream struct {
+	Body        io.ReadCloser
+	ContentType string
+}
+
+func (c *Client) CreateWorkspace(ctx context.Context, accessToken, idempotencyKey string, request CreateWorkspaceRequest) (WorkspaceEnvelope, error) {
+	var output WorkspaceEnvelope
+	err := c.workspaceDo(ctx, http.MethodPost, "/v1/workspaces", accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)
+	return output, err
+}
+
+func (c *Client) ListWorkspaces(ctx context.Context, accessToken, cursor string) (WorkspaceList, error) {
+	var output WorkspaceList
+	err := c.workspaceDo(ctx, http.MethodGet, "/v1/workspaces", accessToken, "", workspaceQuery("cursor", cursor), nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) GetWorkspace(ctx context.Context, accessToken, workspaceID string) (WorkspaceEnvelope, error) {
+	var output WorkspaceEnvelope
+	err := c.workspaceDo(ctx, http.MethodGet, workspaceResourcePath(workspaceID), accessToken, "", nil, nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) UpdateWorkspace(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request UpdateWorkspaceRequest) (WorkspaceEnvelope, error) {
+	var output WorkspaceEnvelope
+	err := c.workspaceDo(ctx, http.MethodPatch, workspaceResourcePath(workspaceID), accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) CreateWorkspaceInvitation(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request CreateInvitationRequest) (InvitationCreated, error) {
+	var output InvitationCreated
+	err := c.workspaceDo(ctx, http.MethodPost, workspaceResourcePath(workspaceID)+"/invitations", accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)
+	return output, err
+}
+
+func (c *Client) ListWorkspaceInvitations(ctx context.Context, accessToken, workspaceID, cursor string) (InvitationList, error) {
+	var output InvitationList
+	err := c.workspaceDo(ctx, http.MethodGet, workspaceResourcePath(workspaceID)+"/invitations", accessToken, "", workspaceQuery("cursor", cursor), nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RevokeWorkspaceInvitation(ctx context.Context, accessToken, workspaceID, invitationID string, expectedVersion int, idempotencyKey string) (MutationResult, error) {
+	var output MutationResult
+	path := workspaceResourcePath(workspaceID) + "/invitations/" + url.PathEscape(invitationID)
+	err := c.workspaceDo(ctx, http.MethodDelete, path, accessToken, idempotencyKey, workspaceVersionQuery(expectedVersion), nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) AcceptWorkspaceInvitation(ctx context.Context, accessToken, idempotencyKey string, request AcceptInvitationRequest) (WorkspaceEnvelope, error) {
+	var output WorkspaceEnvelope
+	if len(request.InviteToken) < 32 || len(request.InviteToken) > 512 {
+		return output, fmt.Errorf("invitation token must contain between 32 and 512 characters")
+	}
+	err := c.workspaceDo(ctx, http.MethodPost, "/v1/workspace-invitations/accept", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) ListWorkspaceMembers(ctx context.Context, accessToken, workspaceID, cursor string) (MembershipList, error) {
+	var output MembershipList
+	err := c.workspaceDo(ctx, http.MethodGet, workspaceResourcePath(workspaceID)+"/members", accessToken, "", workspaceQuery("cursor", cursor), nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) UpdateWorkspaceMember(ctx context.Context, accessToken, workspaceID, userID, idempotencyKey string, request UpdateMembershipRequest) (Membership, error) {
+	var output Membership
+	path := workspaceResourcePath(workspaceID) + "/members/" + url.PathEscape(userID)
+	err := c.workspaceDo(ctx, http.MethodPatch, path, accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RemoveWorkspaceMember(ctx context.Context, accessToken, workspaceID, userID string, expectedVersion int, idempotencyKey string) (MutationResult, error) {
+	var output MutationResult
+	path := workspaceResourcePath(workspaceID) + "/members/" + url.PathEscape(userID)
+	err := c.workspaceDo(ctx, http.MethodDelete, path, accessToken, idempotencyKey, workspaceVersionQuery(expectedVersion), nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) LeaveWorkspace(ctx context.Context, accessToken, workspaceID string, expectedVersion int, idempotencyKey string) (MutationResult, error) {
+	var output MutationResult
+	err := c.workspaceDo(ctx, http.MethodDelete, workspaceResourcePath(workspaceID)+"/membership", accessToken, idempotencyKey, workspaceVersionQuery(expectedVersion), nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) StreamWorkspaceEvents(ctx context.Context, accessToken, workspaceID, lastEventID string) (*WorkspaceEventStream, error) {
+	endpoint := c.workspaceEndpoint(workspaceResourcePath(workspaceID)+"/events", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create workspace event request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if lastEventID != "" {
+		if len(lastEventID) > 128 {
+			return nil, fmt.Errorf("Last-Event-ID exceeds 128 characters")
+		}
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	response, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call workspace event API: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		defer response.Body.Close()
+		return nil, decodeWorkspaceAPIError(response)
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		response.Body.Close()
+		return nil, fmt.Errorf("workspace event API returned unsupported content type")
+	}
+	return &WorkspaceEventStream{Body: response.Body, ContentType: mediaType}, nil
+}
+
+func workspaceResourcePath(workspaceID string) string {
+	return "/v1/workspaces/" + url.PathEscape(workspaceID)
+}
+
+func workspaceQuery(name, value string) url.Values {
+	if value == "" {
+		return nil
+	}
+	query := make(url.Values)
+	query.Set(name, value)
+	return query
+}
+
+func workspaceVersionQuery(expectedVersion int) url.Values {
+	query := make(url.Values)
+	query.Set("expectedVersion", strconv.Itoa(expectedVersion))
+	return query
+}
+
+func (c *Client) workspaceEndpoint(path string, query url.Values) string {
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
+	if len(query) > 0 {
+		endpoint.RawQuery = query.Encode()
+	}
+	return endpoint.String()
+}
+
+func (c *Client) workspaceDo(ctx context.Context, method, path, accessToken, idempotencyKey string, query url.Values, input, output any, success int) error {
+	if accessToken == "" {
+		return fmt.Errorf("access token is required")
+	}
+	if idempotencyKey != "" && (len(idempotencyKey) < 8 || len(idempotencyKey) > 128) {
+		return fmt.Errorf("idempotency key must contain between 8 and 128 characters")
+	}
+	if expected := query.Get("expectedVersion"); expected != "" {
+		version, err := strconv.Atoi(expected)
+		if err != nil || version < 1 {
+			return fmt.Errorf("expected version must be at least 1")
+		}
+	}
+	var body io.Reader
+	if input != nil {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return fmt.Errorf("encode workspace request: %w", err)
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.workspaceEndpoint(path, query), body)
+	if err != nil {
+		return fmt.Errorf("create workspace request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	response, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("call workspace API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != success {
+		return decodeWorkspaceAPIError(response)
+	}
+	if output == nil {
+		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		return err
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output); err != nil {
+		return fmt.Errorf("decode workspace response: %w", err)
+	}
+	return nil
+}
+
+func decodeWorkspaceAPIError(response *http.Response) error {
+	var apiError WorkspaceError
+	limited := io.LimitReader(response.Body, 1<<20)
+	if err := json.NewDecoder(limited).Decode(&apiError); err != nil && err != io.EOF {
+		apiError.Message = http.StatusText(response.StatusCode)
+	}
+	return &APIError{StatusCode: response.StatusCode, Body: ErrorBody(apiError)}
+}
