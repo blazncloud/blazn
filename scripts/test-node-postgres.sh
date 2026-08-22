@@ -3,20 +3,25 @@ set -eu
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 postgres_image=postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+node_image=node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
 admin_password=node-ci-admin
 suffix=$$
 network=blazn-node-pg-$suffix
 postgres=blazn-node-pg-$suffix
+node_runner=blazn-node-test-$suffix
 
 command -v docker >/dev/null 2>&1 || {
   printf 'docker is required for the disposable Node PostgreSQL test\n' >&2
   exit 1
 }
-case "$network:$postgres" in
+case "$network:$postgres:$node_runner" in
   *[!a-z0-9:-]*) printf 'unsafe disposable PostgreSQL resource name\n' >&2; exit 1 ;;
 esac
 
 cleanup() {
+	if [ "$created_node_runner" = true ]; then
+		docker rm -f "$node_runner" >/dev/null 2>&1 || true
+	fi
 	if [ "$created_postgres" = true ]; then
 		docker rm -f "$postgres" >/dev/null 2>&1 || true
 	fi
@@ -26,16 +31,16 @@ cleanup() {
 }
 created_network=false
 created_postgres=false
+created_node_runner=false
 trap cleanup EXIT HUP INT TERM
 
-if docker network inspect "$network" >/dev/null 2>&1 || docker container inspect "$postgres" >/dev/null 2>&1; then
+if docker network inspect "$network" >/dev/null 2>&1 || docker container inspect "$postgres" >/dev/null 2>&1 || docker container inspect "$node_runner" >/dev/null 2>&1; then
 	printf 'refusing to reuse pre-existing disposable PostgreSQL resources\n' >&2
 	exit 1
 fi
 docker network create "$network" >/dev/null
 created_network=true
 docker run -d --name "$postgres" --network "$network" \
-  -p 127.0.0.1::5432 \
   -e POSTGRES_DB=blazn -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$admin_password" \
   "$postgres_image" >/dev/null
 created_postgres=true
@@ -330,18 +335,13 @@ runtime_password=node-runtime-ci
 psql_admin <<SQL
 ALTER ROLE blazn_runtime LOGIN PASSWORD '$runtime_password';
 SQL
-postgres_endpoint=$(docker port "$postgres" 5432/tcp)
-case "$postgres_endpoint" in 127.0.0.1:[0-9]*) ;; *) printf 'disposable PostgreSQL published an unsafe endpoint\n' >&2; exit 1 ;; esac
-postgres_port=${postgres_endpoint##*:}
-case "$postgres_port" in ''|*[!0-9]*) printf 'disposable PostgreSQL port is invalid\n' >&2; exit 1 ;; esac
-
-(
-  cd "$repo_root/services/control-api"
-  npm ci >/dev/null
-  npm run build >/dev/null
-  NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@127.0.0.1:$postgres_port/blazn" \
-    NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@127.0.0.1:$postgres_port/blazn" \
-    node --test dist/node-store.integration.test.js
-)
+created_node_runner=true
+docker create --name "$node_runner" --network "$network" --read-only \
+  --tmpfs /work:rw,nosuid,nodev,size=256m,mode=0700,uid=1000,gid=1000 \
+  -v "$repo_root/services/control-api:/source:ro" -w /work \
+  -e NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
+  -e NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
+  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; npm run build >/dev/null; node --test dist/node-store.integration.test.js' >/dev/null
+docker start -a "$node_runner"
 
 printf 'Node PostgreSQL 17.6 qualification passed\n'
