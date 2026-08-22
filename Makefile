@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check test release test-release test-install ci
+.PHONY: fmt fmt-check test test-control-api test-infra release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -14,6 +14,14 @@ fmt-check:
 
 test:
 	go test ./...
+
+test-control-api:
+	./scripts/test-control-api.sh
+
+test-infra:
+	./infra/milestone-2/tests/test-preflight.sh
+	./infra/milestone-2/tests/test-contract.sh
+	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
 
 release:
 	./scripts/release.sh
