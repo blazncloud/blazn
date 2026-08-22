@@ -1,0 +1,118 @@
+name: Release candidate and publication
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      artifact-name: ${{ steps.metadata.outputs.artifact-name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check and test
+        run: make ci
+      - name: Derive immutable candidate metadata
+        id: metadata
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            version="$GITHUB_REF_NAME"
+          else
+            version="0.0.0-${GITHUB_SHA:0:12}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=blazn-candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - name: Materialize protected signing key
+        shell: bash
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.BLAZN_RELEASE_SIGNING_KEY }}
+        run: |
+          if [[ -z "$RELEASE_SIGNING_KEY" ]]; then
+            echo "BLAZN_RELEASE_SIGNING_KEY is required" >&2
+            exit 1
+          fi
+          install -m 700 -d "$RUNNER_TEMP/blazn-release"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/blazn-release/signing-key"
+          chmod 600 "$RUNNER_TEMP/blazn-release/signing-key"
+          derived_key=$(ssh-keygen -y -f "$RUNNER_TEMP/blazn-release/signing-key" | awk '{print $1 " " $2}')
+          pinned_key=$(awk '{print $1 " " $2}' release/blazn-release.pub)
+          if [[ "$derived_key" != "$pinned_key" ]]; then
+            echo "release signing secret does not match the pinned public key" >&2
+            exit 1
+          fi
+      - name: Build and sign candidate
+        run: |
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA") \
+            ./scripts/release.sh \
+              --version "${{ steps.metadata.outputs.version }}" \
+              --commit "$GITHUB_SHA" \
+              --signing-key "$RUNNER_TEMP/blazn-release/signing-key"
+      - name: Verify candidate signature and checksums
+        run: |
+          ssh-keygen -Y verify \
+            -f release/blazn-release.allowed_signers \
+            -I blazn-release \
+            -n blazn-release \
+            -s dist/SHA256SUMS.sig \
+            < dist/SHA256SUMS
+          cd dist
+          sha256sum -c SHA256SUMS
+      - name: Upload commit-addressed candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.metadata.outputs.artifact-name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download exact candidate
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: dist
+      - name: Verify promoted bytes
+        run: |
+          ssh-keygen -Y verify \
+            -f release/blazn-release.allowed_signers \
+            -I blazn-release \
+            -n blazn-release \
+            -s dist/SHA256SUMS.sig \
+            < dist/SHA256SUMS
+          cd dist
+          sha256sum -c SHA256SUMS
+      - name: Publish GitHub release without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag \
+            --title "Blazn $GITHUB_REF_NAME" \
+            --generate-notes
