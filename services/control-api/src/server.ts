@@ -21,6 +21,9 @@ import { PgWorkspaceStore } from "./workspace-store.js";
 import { ProjectHttpRouter } from "./project-http.js";
 import { ProjectService } from "./project-service.js";
 import { PgProjectStore } from "./project-store.js";
+import { RunHttpRouter } from "./run-http.js";
+import { RunService } from "./run-service.js";
+import { PgRunStore } from "./run-store.js";
 import { SandboxHttpRouter } from "./sandbox-http.js";
 import { SandboxService } from "./sandbox-service.js";
 import { PgSandboxStore } from "./sandbox-store.js";
@@ -34,6 +37,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
+const runRouter = new RunHttpRouter(new RunService(new PgRunStore(database)));
 const sandboxRouter = new SandboxHttpRouter(new SandboxService(new PgSandboxStore(database)));
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
@@ -378,6 +382,10 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     });
   }
   if (await routeSandboxRequest(sandboxRouter, request, response, url, () => authenticate(request))) return;
+  if (runRouter.matches(url.pathname)) {
+    const session = await authenticate(request);
+    return runRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+  }
   if (projectRouter.matches(url.pathname)) {
     const session = await authenticate(request);
     return projectRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });

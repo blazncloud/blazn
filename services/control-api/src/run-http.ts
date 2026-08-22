@@ -1,0 +1,27 @@
+import type { IncomingMessage,ServerResponse } from "node:http";
+import { jsonBody,sendJson } from "./http.js";
+import type { CreateRunInput,RunService } from "./run-service.js";
+import { RunHttpError,type ArtifactStatus,type ProofClass,type RunPrincipal,type RunStatus } from "./run-types.js";
+
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export class RunHttpRouter {
+  constructor(private readonly service:RunService){}
+  matches(pathname:string){return /^\/v1\/workspaces\/[^/]+\/projects\/[^/]+\/(?:runs|artifacts)(?:\/[^/]+(?:\/cancel)?)?$/.test(pathname);}
+  async handle(request:IncomingMessage,response:ServerResponse,url:URL,principal:RunPrincipal){
+    const collection=url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)\/(runs|artifacts)$/);if(collection){const workspaceId=uuid(collection[1]!,"workspaceId"),projectId=uuid(collection[2]!,"projectId"),resource=collection[3];if(resource==="runs"){if(request.method==="GET")return sendJson(response,200,await this.service.listRuns(principal,workspaceId,projectId,runStatus(url),cursor(url)));if(request.method==="POST"){const body=await jsonBody(request);exact(body,["kind","proofClass","planDigest","inputArtifactIds","outputNames"]);const input:CreateRunInput={kind:string(body.kind,"kind",96),proofClass:proof(body.proofClass),planDigest:string(body.planDigest,"planDigest",71),inputArtifactIds:stringArray(body.inputArtifactIds,"inputArtifactIds",1000,36),outputNames:stringArray(body.outputNames,"outputNames",1000,128)};return sendJson(response,202,await this.service.createRun(principal,workspaceId,projectId,idempotency(request),input));}}else if(request.method==="GET")return sendJson(response,200,await this.service.listArtifacts(principal,workspaceId,projectId,artifactStatus(url),cursor(url)));throw methodNotAllowed();}
+    const cancel=url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)\/runs\/([^/]+)\/cancel$/);if(cancel){if(request.method!=="POST")throw methodNotAllowed();const body=await jsonBody(request);exact(body,["expectedVersion"]);return sendJson(response,200,await this.service.cancelRun(principal,uuid(cancel[1]!,"workspaceId"),uuid(cancel[2]!,"projectId"),uuid(cancel[3]!,"runId"),idempotency(request),integer(body.expectedVersion,"expectedVersion")));}
+    const resource=url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)\/(runs|artifacts)\/([^/]+)$/);if(!resource)throw new RunHttpError("run_not_found","Run route was not found");if(request.method!=="GET")throw methodNotAllowed();const w=uuid(resource[1]!,"workspaceId"),p=uuid(resource[2]!,"projectId"),id=uuid(resource[4]!,resource[3]==="runs"?"runId":"artifactId");return resource[3]==="runs"?sendJson(response,200,await this.service.getRun(principal,w,p,id)):sendJson(response,200,await this.service.getArtifact(principal,w,p,id));
+  }
+}
+function uuid(value:string,field:string){if(!UUID.test(value))throw new RunHttpError("invalid_request",`${field} must be a UUID`);return value;}
+function idempotency(request:IncomingMessage){const values=request.headersDistinct["idempotency-key"]??[];if(values.length!==1||values[0]!.length<8||values[0]!.length>128)throw new RunHttpError("invalid_request","Idempotency-Key is required and must be unique");return values[0]!;}
+function cursor(url:URL){const values=url.searchParams.getAll("cursor");if(values.length>1||(values[0]?.length??0)>512)throw new RunHttpError("invalid_request","cursor is invalid");return values[0]??"";}
+function runStatus(url:URL):RunStatus|"all"{const value=singleStatus(url,"all");if(!["queued","running","succeeded","failed","cancelled","all"].includes(value))throw new RunHttpError("invalid_request","status is invalid");return value as RunStatus|"all";}
+function artifactStatus(url:URL):ArtifactStatus|"all"{const value=singleStatus(url,"ready");if(!["pending","ready","failed","deleted","all"].includes(value))throw new RunHttpError("invalid_request","status is invalid");return value as ArtifactStatus|"all";}
+function singleStatus(url:URL,fallback:string){const values=url.searchParams.getAll("status");if(values.length>1)throw new RunHttpError("invalid_request","status must not be repeated");return values[0]??fallback;}
+function exact(body:Record<string,unknown>,required:string[]){if(required.some(key=>!(key in body))||Object.keys(body).some(key=>!required.includes(key)))throw new RunHttpError("invalid_request",`request body fields are invalid; required: ${required.join(", ")}`);}
+function string(value:unknown,field:string,max:number){if(typeof value!=="string"||!value||value.length>max)throw new RunHttpError("invalid_request",`${field} is invalid`);return value;}
+function stringArray(value:unknown,field:string,maxItems:number,maxLength:number){if(!Array.isArray(value)||value.length>maxItems||value.some(item=>typeof item!=="string"||item.length<1||item.length>maxLength))throw new RunHttpError("invalid_request",`${field} is invalid`);return value as string[];}
+function integer(value:unknown,field:string){if(!Number.isSafeInteger(value))throw new RunHttpError("invalid_request",`${field} is invalid`);return value as number;}
+function proof(value:unknown):ProofClass{if(typeof value!=="string"||!["synthetic","local","sandbox","provider"].includes(value))throw new RunHttpError("invalid_request","proofClass is invalid");return value as ProofClass;}
+function methodNotAllowed(){return new RunHttpError("method_not_allowed","method is not allowed for this route");}
