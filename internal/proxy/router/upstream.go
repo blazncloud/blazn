@@ -253,9 +253,6 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		if err := decodeUpstreamJSON(limited, &source); err != nil {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid Chat response", 502, false)
 		}
-		if source.Status != "completed" && source.Status != "incomplete" {
-			return response, safeError("upstream_invalid_response", "upstream Responses request did not complete", 502, false)
-		}
 		if len(source.Choices) != 1 {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid choice count", 502, false)
 		}
@@ -273,6 +270,9 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		var source responsesResponse
 		if err := decodeUpstreamJSON(limited, &source); err != nil {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid Responses payload", 502, false)
+		}
+		if source.Status != "completed" && source.Status != "incomplete" {
+			return response, safeError("upstream_invalid_response", "upstream Responses request did not complete", 502, false)
 		}
 		for _, item := range source.Output {
 			switch item.Type {
