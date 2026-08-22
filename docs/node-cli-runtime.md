@@ -24,8 +24,10 @@ to root-owned state. That authority includes the exact plan-signing public-key
 tuple, Node public key, and the replay-authenticated nullable Kubernetes binding
 so every later privileged operation can recompute both fingerprints, verify the
 stored plan signature and current expiry against the root-owned profile, re-prove
-the adopted Node UID/resourceVersion, and avoid the service-owned enrollment pin
-entirely.
+the adopted Node name and UID, and avoid the service-owned enrollment pin
+entirely. Kubernetes resourceVersion is short-lived concurrency evidence: it is
+checked for each cluster mutation and refreshed after that mutation, never used
+as long-lived node identity.
 
 Privileged mutation is exposed through the narrow `node.Platform` interface.
 Before each mutation, prior state and rollback material are durably written to
@@ -48,4 +50,6 @@ Linux privileged state is rooted at `/var/lib/blazn-node-root`; macOS privileged
 state is rooted at `/Library/Application Support/BlaznNodeRoot`. Both are
 root-owned mode `0700` and contain authority, install WAL/receipts, and rollback
 backups. Daemon identity/runtime state remains in the separate service-owned
-platform path.
+platform path. The privileged helper is the hidden `node-root-helper` subcommand
+of the receipt-owned `/usr/local/bin/blazn` executable, so the supported path
+does not depend on a second undistributed binary.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,54 @@ func TestProductionNodePathsSeparateServiceAndPrivilegedState(t *testing.T) {
 	}
 	if mac.InstallAuthorityPath() != "/Library/Application Support/BlaznNodeRoot/install-authority.json" || mac.InstallWALPath() != "/Library/Application Support/BlaznNodeRoot/install-wal.json" || mac.InstallReceiptPath() != "/Library/Application Support/BlaznNodeRoot/install-receipt.json" || mac.InstallBackupRoot() != "/Library/Application Support/BlaznNodeRoot/install-backups" {
 		t.Fatalf("mac privileged paths=%#v", mac)
+	}
+}
+
+func TestProductionRuntimeSeparatesServiceAndInstallerState(t *testing.T) {
+	paths := ProductionNodePaths{ServiceStateRoot: "/service-state", RootStateRoot: "/root-state", ProfileRoot: "/root-profiles"}
+	runtime, err := newProductionCommandRuntime(&mockAPI{}, "access", "v1", &countingJoinCoordinator{}, fixedCapability{}, nil, paths, defaultRootBinaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceState, serviceOK := runtime.State.(FileStateStore)
+	installerState, installerOK := runtime.InstallerState.(FileStateStore)
+	identityStore, identityOK := runtime.Identities.(FileIdentityStore)
+	if !serviceOK || !installerOK || !identityOK || serviceState.Root != paths.ServiceStateRoot || installerState.Root != paths.RootStateRoot || identityStore.Path != filepath.Join(paths.ServiceStateRoot, "identity.json") || runtime.TrustedProfileRoot != paths.ProfileRoot {
+		t.Fatalf("runtime paths: service=%#v installer=%#v identity=%#v profile=%q", runtime.State, runtime.InstallerState, runtime.Identities, runtime.TrustedProfileRoot)
+	}
+	_, err = newProductionCommandRuntime(&mockAPI{}, "access", "v1", &countingJoinCoordinator{}, fixedCapability{}, nil, ProductionNodePaths{ServiceStateRoot: "/same", RootStateRoot: "/same", ProfileRoot: "/profiles"}, defaultRootBinaryPath)
+	if err == nil {
+		t.Fatal("overlapping service and privileged roots were accepted")
+	}
+}
+
+func TestProductionCapabilityUsesPersistedVerifiedBinding(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
+	capability, err := (ProductionCapabilityProvider{State: state}).Capability(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability.Worker.KubernetesBinding != *authorization.KubernetesBinding || capability.Host.Platform != plan.Target.Platform || capability.Host.Architecture != plan.Target.Architecture || capability.Worker.AllocatableCPUMillis != plan.Target.MinCPU*1000-plan.ResourceBounds.ReservedCPUMillis {
+		t.Fatalf("capability=%#v", capability)
+	}
+	state.runtime.KubernetesBinding = nil
+	if _, err := (ProductionCapabilityProvider{State: state}).Capability(context.Background()); err == nil {
+		t.Fatal("capability accepted missing verified binding")
+	}
+}
+
+func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
+	materials := ProductionEmbeddedMaterials()
+	for name, want := range map[string]string{"blazn-node-systemd": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea", "blazn-node-launchd": "f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18"} {
+		sum := sha256.Sum256(materials[name])
+		if fmt.Sprintf("%x", sum) != want {
+			t.Fatalf("material %s digest=%x", name, sum)
+		}
+	}
+	if DefaultRootHelperPath != defaultRootBinaryPath || RootHelperSubcommand != "node-root-helper" {
+		t.Fatalf("helper path=%q subcommand=%q", DefaultRootHelperPath, RootHelperSubcommand)
 	}
 }
 

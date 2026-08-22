@@ -179,6 +179,9 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 	if err := validateWALOwner(wal.Owner); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
+	if err := i.platform.Preflight(ctx, plan); err != nil {
+		return client.NodeInstallReceipt{}, fmt.Errorf("recovery platform preflight: %w", err)
+	}
 	servicePrior := wal.ServicePrior
 	if wal.Stage == "complete" {
 		receipt, err := i.receipt(plan, identityMeta, identity, servicePrior, wal, "active", nil)

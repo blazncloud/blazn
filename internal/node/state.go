@@ -24,10 +24,11 @@ type EnrollmentPin struct {
 }
 
 type RuntimeState struct {
-	SchemaVersion int                                   `json:"schemaVersion"`
-	Pin           EnrollmentPin                         `json:"pin"`
-	Exchange      client.ExchangeNodeEnrollmentResponse `json:"exchange"`
-	UpdatedAt     string                                `json:"updatedAt"`
+	SchemaVersion     int                                   `json:"schemaVersion"`
+	Pin               EnrollmentPin                         `json:"pin"`
+	Exchange          client.ExchangeNodeEnrollmentResponse `json:"exchange"`
+	KubernetesBinding *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
+	UpdatedAt         string                                `json:"updatedAt"`
 }
 
 type InstallWAL struct {

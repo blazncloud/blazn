@@ -93,7 +93,7 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 			return EnrollResult{}, err
 		}
 	}
-	state := RuntimeState{SchemaVersion: 1, Pin: pin, Exchange: response, UpdatedAt: nowString(s.now())}
+	state := RuntimeState{SchemaVersion: 1, Pin: pin, Exchange: response, KubernetesBinding: options.KubernetesBinding, UpdatedAt: nowString(s.now())}
 	if err := s.state.SaveRuntime(state); err != nil {
 		return EnrollResult{}, fmt.Errorf("persist verified node plan: %w", err)
 	}
@@ -105,6 +105,19 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 		}
 		result.Installed = true
 		result.Receipt = &receipt
+		if provider, ok := s.installer.platform.(interface {
+			KubernetesBinding() *client.KubernetesBinding
+		}); ok {
+			state.KubernetesBinding = provider.KubernetesBinding()
+			state.UpdatedAt = nowString(s.now())
+			if state.KubernetesBinding == nil {
+				return result, errors.New("installed node did not return a verified Kubernetes binding")
+			}
+			if err := s.state.SaveRuntime(state); err != nil {
+				return result, fmt.Errorf("persist verified Kubernetes binding: %w", err)
+			}
+			result.State = state
+		}
 	}
 	return result, nil
 }

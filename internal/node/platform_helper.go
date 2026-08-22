@@ -219,6 +219,13 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 			return RootResponse{}, errors.New("root helper OS mismatch")
 		}
 		binding, err := e.rootKubernetesBinding()
+		if err == nil && binding != nil {
+			observed, observeErr := e.observeNode(ctx, request.Plan, binding.NodeName)
+			if observeErr != nil || observed.UID != binding.NodeUID {
+				return RootResponse{}, errors.New("root probe Kubernetes binding differs from authority")
+			}
+			binding, err = e.updateRootKubernetesBinding(request.Plan, observed)
+		}
 		return RootResponse{KubernetesBinding: binding}, err
 	case RootServiceState:
 		return e.serviceState(ctx, request.Plan.NodeService)
@@ -445,8 +452,11 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		}
 		return os.Chmod(m.Target, os.FileMode(m.Mode))
 	case "file", "certificate":
-		if component := planComponent(plan, material); component != nil && component.SourceClass == "current_binary" {
-			if material.ContentBase64 != "" || m.Action != "adopt_exact" || component.ArtifactType != "binary" {
+		if component := planComponent(plan, material); component != nil && material.ContentBase64 == "" {
+			if m.Action != "adopt_exact" || (component.SourceClass != "current_binary" && component.SourceClass != "embedded") {
+				return errors.New("digest-only adopted material binding is invalid")
+			}
+			if component.SourceClass == "current_binary" && component.ArtifactType != "binary" {
 				return errors.New("current binary mutation binding is invalid")
 			}
 			return verifyFileDigestAndMetadata(m.Target, component.SHA256, os.FileMode(m.Mode), m.UID, m.GID)
@@ -858,6 +868,9 @@ func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.
 	observed, err := e.observeNode(ctx, plan, join.ExpectedNodeName)
 	if err != nil || observed.UID != join.ExpectedNodeUID {
 		return errors.New("cluster mutation node UID differs from binding")
+	}
+	if join.ExpectedResourceVersion == "" || observed.ResourceVersion != join.ExpectedResourceVersion {
+		return errors.New("cluster mutation resourceVersion differs from its precondition")
 	}
 	var args []string
 	if m.Kind == "label" {

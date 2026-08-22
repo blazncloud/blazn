@@ -12,6 +12,7 @@ import (
 
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
+	nodepkg "github.com/blazncloud/blazn/internal/node"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
@@ -53,6 +54,8 @@ type App struct {
 	stdinTTY    func() bool
 }
 
+var defaultNodeCommandFactory = newDefaultNodeCommands
+
 type authCommands interface {
 	BeginLogin(context.Context) (auth.LoginStart, string, time.Duration, error)
 	CompleteLogin(context.Context, string, time.Duration) (auth.LoginResult, error)
@@ -80,11 +83,9 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		},
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
-		node: func() (nodeCommands, error) {
-			return nil, fmt.Errorf("node runtime requires an injected trusted local profile and privileged platform adapter")
-		},
-		stdin:    os.Stdin,
-		stdinTTY: func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		node:        func() (nodeCommands, error) { return defaultNodeCommandFactory(build) },
+		stdin:       os.Stdin,
+		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
 	}
 }
 
@@ -101,6 +102,15 @@ func (a *App) Run(args []string) int {
 	command := positional[0]
 	rest := positional[1:]
 	switch command {
+	case nodepkg.RootHelperSubcommand:
+		if format != OutputHuman || len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "node root helper accepts no options")
+		}
+		if err := nodepkg.RunProductionRootHelper(context.Background(), a.stdin, a.stdout); err != nil {
+			fmt.Fprintln(a.stderr, "node root helper failed")
+			return ExitFailure
+		}
+		return ExitSuccess
 	case "help":
 		if len(rest) > 1 {
 			return a.writeError(format, ExitUsage, "usage", "help accepts at most one command name")

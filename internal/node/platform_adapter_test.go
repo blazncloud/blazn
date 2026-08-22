@@ -463,8 +463,9 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 	}
 	authorization.ProfilePath = profilePath
 	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
+	liveResourceVersion := authorization.KubernetesBinding.ResourceVersion
 	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
-		return []byte(fmt.Sprintf(`{"metadata":{"name":%q,"uid":%q,"resourceVersion":%q},"spec":{"taints":[]}}`, plan.Hostname, authorization.KubernetesBinding.NodeUID, authorization.KubernetesBinding.ResourceVersion)), nil
+		return []byte(fmt.Sprintf(`{"metadata":{"name":%q,"uid":%q,"resourceVersion":%q},"spec":{"taints":[]}}`, plan.Hostname, authorization.KubernetesBinding.NodeUID, liveResourceVersion)), nil
 	}}
 	engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: filepath.Join(root, "authority", "install-authority.json"), ProfileRoot: profileRoot, CurrentBinaryPath: binaryPath, AuthorityHTTPClient: server.Client(), Now: func() time.Time { return when }}
 	bootstrap := RootBootstrapRequest{EnrollmentID: authorization.EnrollmentID, Token: authorization.Token, MachineFingerprint: authorization.MachineFingerprint, NodePublicKey: authorization.NodePublicKey, Platform: authorization.Platform, Architecture: authorization.Architecture, KubernetesBinding: authorization.KubernetesBinding, PlanSigningKey: authorization.PlanSigningKey, Expected: authorization.Expected, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath}
@@ -490,8 +491,36 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 	if err := engine.AuthorizeRootRequest(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: RootVerify, Platform: "linux", Plan: plan}); err != nil {
 		t.Fatal(err)
 	}
+	liveResourceVersion = "99"
+	if err := engine.AuthorizeRootRequest(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: RootVerify, Platform: "linux", Plan: plan}); err != nil {
+		t.Fatalf("long-lived authority incorrectly pinned resourceVersion: %v", err)
+	}
 	if requests != 2 {
 		t.Fatalf("exchange replay requests=%d", requests)
+	}
+}
+
+func TestDefaultRootAuthorityPathsFollowPlatformContract(t *testing.T) {
+	linux := NativeRootEngine{Platform: "linux"}
+	profile, binary, authority, err := linux.authorityPaths()
+	if err != nil || profile != LinuxNodeProfileRoot || binary != defaultRootBinaryPath || authority != "/var/lib/blazn-node-root/install-authority.json" {
+		t.Fatalf("linux paths profile=%q binary=%q authority=%q err=%v", profile, binary, authority, err)
+	}
+	mac := NativeRootEngine{Platform: "macos"}
+	profile, binary, authority, err = mac.authorityPaths()
+	if err != nil || profile != MacOSNodeProfileRoot || binary != defaultRootBinaryPath || authority != "/Library/Application Support/BlaznNodeRoot/install-authority.json" {
+		t.Fatalf("mac paths profile=%q binary=%q authority=%q err=%v", profile, binary, authority, err)
+	}
+}
+
+func TestClusterMutationUsesResourceVersionAsOperationPrecondition(t *testing.T) {
+	plan := testJoinPlan("linux")
+	commands := &recordingExecutor{}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands}
+	mutation := client.NodeInstallMutation{Kind: "label", Target: "blazn.dev/node", Desired: map[string]any{"value": "true"}}
+	binding := &RootJoinBinding{ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "6"}
+	if err := engine.applyClusterMutation(context.Background(), plan, mutation, binding, false); err == nil || len(commands.calls) != 1 {
+		t.Fatalf("stale resourceVersion err=%v calls=%#v", err, commands.calls)
 	}
 }
 
@@ -541,6 +570,28 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 	}
 }
 
+func TestPreflightRestoresRootAuthorizedBindingForRecovery(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	binding := *authorization.KubernetesBinding
+	binding.ResourceVersion = "42"
+	privileged := functionPrivilegedClient(func(_ context.Context, request RootRequest) (RootResponse, error) {
+		if request.Operation != RootProbe {
+			return RootResponse{}, errors.New("unexpected operation")
+		}
+		return RootResponse{OK: true, KubernetesBinding: &binding}, nil
+	})
+	adapter, err := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, &countingJoinCoordinator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Preflight(context.Background(), authorization.Expected.Plan); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.joined == nil || adapter.joined.ExpectedNodeUID != binding.NodeUID || adapter.joined.ExpectedResourceVersion != "42" {
+		t.Fatalf("joined=%#v", adapter.joined)
+	}
+}
+
 func TestDirectoryRollbackRestoresMetadataWithoutReplacingDirectory(t *testing.T) {
 	root := testRoot(t)
 	directory := filepath.Join(root, "managed")
@@ -585,12 +636,12 @@ func TestPackageCaptureDistinguishesAbsentFromProbeFailure(t *testing.T) {
 }
 
 func TestLargeHTTPSAndCurrentBinaryMaterialsStayOutOfRootPipe(t *testing.T) {
-	plan := client.NodeInstallPlan{Components: []client.NodeInstallComponent{{Name: "microk8s", ArtifactType: "package", SourceClass: "https", SHA256: strings.Repeat("a", 64)}, {Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: strings.Repeat("b", 64)}}}
+	plan := client.NodeInstallPlan{Components: []client.NodeInstallComponent{{Name: "microk8s", ArtifactType: "package", SourceClass: "https", SHA256: strings.Repeat("a", 64)}, {Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: strings.Repeat("b", 64)}, {Name: "lima-worker-binding", ArtifactType: "configuration", SourceClass: "embedded", SHA256: strings.Repeat("c", 64)}}}
 	resolver := functionMaterialResolver(func(context.Context, client.NodeInstallComponent) ([]byte, error) {
 		return nil, errors.New("large material must not be resolved outside root")
 	})
 	adapter := &PlatformAdapter{Materials: resolver, plan: plan}
-	for _, mutation := range []client.NodeInstallMutation{{Desired: map[string]any{"componentName": "microk8s"}}, {Desired: map[string]any{"sourceComponent": "blazn"}}} {
+	for _, mutation := range []client.NodeInstallMutation{{Desired: map[string]any{"componentName": "microk8s"}}, {Desired: map[string]any{"sourceComponent": "blazn"}}, {Action: "adopt_exact", Desired: map[string]any{"sourceComponent": "lima-worker-binding"}}} {
 		material, err := adapter.material(context.Background(), mutation)
 		if err != nil || material == nil || material.ContentBase64 != "" {
 			t.Fatalf("material=%#v err=%v", material, err)

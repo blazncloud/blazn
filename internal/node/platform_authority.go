@@ -18,11 +18,7 @@ import (
 	"github.com/KingJammin/blazn/internal/client"
 )
 
-const (
-	defaultRootAuthorityPath = "/var/lib/blazn-node-root/install-authority.json"
-	defaultRootProfileRoot   = "/etc/blazn/node/profiles"
-	defaultRootBinaryPath    = "/usr/local/bin/blazn"
-)
+const defaultRootBinaryPath = "/usr/local/bin/blazn"
 
 func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRequest) error {
 	bootstrap := request.Bootstrap
@@ -36,7 +32,10 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	if request.Plan.Digest != authorization.Expected.Plan.Digest || !sameJSON(request.Plan, authorization.Expected.Plan) {
 		return errors.New("root bootstrap plan differs from expected exchange")
 	}
-	profileRoot, binaryPath, authorityPath := e.authorityPaths()
+	profileRoot, binaryPath, authorityPath, err := e.authorityPaths()
+	if err != nil {
+		return err
+	}
 	if filepath.Dir(authorization.ProfilePath) != profileRoot {
 		return errors.New("root bootstrap profile is outside the fixed trust root")
 	}
@@ -126,7 +125,10 @@ func (e NativeRootEngine) stageHTTPSPackage(ctx context.Context, plan client.Nod
 	if component == nil || component.SourceClass != "https" || component.ArtifactType != "package" || component.SHA256 != material.SHA256 {
 		return "", nil, errors.New("HTTPS package component is invalid")
 	}
-	profileRoot, binaryPath, authorityPath := e.authorityPaths()
+	profileRoot, binaryPath, authorityPath, err := e.authorityPaths()
+	if err != nil {
+		return "", nil, err
+	}
 	authority, err := loadRootAuthority(authorityPath)
 	if err != nil {
 		return "", nil, err
@@ -208,7 +210,10 @@ func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request Root
 	if request.Bootstrap != nil {
 		return errors.New("bootstrap secret is not accepted for privileged mutations")
 	}
-	profileRoot, binaryPath, authorityPath := e.authorityPaths()
+	profileRoot, binaryPath, authorityPath, err := e.authorityPaths()
+	if err != nil {
+		return err
+	}
 	authority, err := loadRootAuthority(authorityPath)
 	if err != nil {
 		return err
@@ -232,28 +237,43 @@ func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request Root
 			e.Commands = FixedCommandExecutor{}
 		}
 		observed, observeErr := e.observeNode(ctx, authority.Plan, authority.KubernetesBinding.NodeName)
-		if observeErr != nil || observed.UID != authority.KubernetesBinding.NodeUID || observed.ResourceVersion != authority.KubernetesBinding.ResourceVersion {
+		if observeErr != nil || observed.Name != authority.KubernetesBinding.NodeName || observed.UID != authority.KubernetesBinding.NodeUID {
 			return errors.New("live Kubernetes binding differs from root install authority")
 		}
-		if request.Join != nil && (request.Join.ClusterID != authority.KubernetesBinding.ClusterID || request.Join.ExpectedNodeName != authority.KubernetesBinding.NodeName || (request.Join.ExpectedNodeUID != "" && request.Join.ExpectedNodeUID != authority.KubernetesBinding.NodeUID) || (request.Join.ExpectedResourceVersion != "" && request.Join.ExpectedResourceVersion != authority.KubernetesBinding.ResourceVersion)) {
+		if request.Join != nil && (request.Join.ClusterID != authority.KubernetesBinding.ClusterID || request.Join.ExpectedNodeName != authority.KubernetesBinding.NodeName || (request.Join.ExpectedNodeUID != "" && request.Join.ExpectedNodeUID != authority.KubernetesBinding.NodeUID)) {
 			return errors.New("privileged request Kubernetes binding differs from root install authority")
 		}
 	}
 	return nil
 }
 
-func (e NativeRootEngine) authorityPaths() (string, string, string) {
+func (e NativeRootEngine) authorityPaths() (string, string, string, error) {
 	profileRoot, binaryPath, authorityPath := e.ProfileRoot, e.CurrentBinaryPath, e.AuthorityPath
-	if profileRoot == "" {
-		profileRoot = defaultRootProfileRoot
+	if profileRoot == "" || authorityPath == "" {
+		var platform client.NodePlatform
+		switch e.Platform {
+		case "linux":
+			platform = client.NodePlatformLinux
+		case "macos":
+			platform = client.NodePlatformMacOS
+		default:
+			return "", "", "", errors.New("root authority platform is unsupported")
+		}
+		paths, err := NodeProductionPaths(platform)
+		if err != nil {
+			return "", "", "", err
+		}
+		if profileRoot == "" {
+			profileRoot = paths.ProfileRoot
+		}
+		if authorityPath == "" {
+			authorityPath = paths.InstallAuthorityPath()
+		}
 	}
 	if binaryPath == "" {
 		binaryPath = defaultRootBinaryPath
 	}
-	if authorityPath == "" {
-		authorityPath = defaultRootAuthorityPath
-	}
-	return profileRoot, binaryPath, authorityPath
+	return profileRoot, binaryPath, authorityPath, nil
 }
 
 func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority) (client.NodeTrustedInstallProfile, string, error) {
@@ -332,7 +352,10 @@ func loadRootAuthority(path string) (RootInstallAuthority, error) {
 }
 
 func (e NativeRootEngine) rootKubernetesBinding() (*client.KubernetesBinding, error) {
-	_, _, path := e.authorityPaths()
+	_, _, path, pathErr := e.authorityPaths()
+	if pathErr != nil {
+		return nil, pathErr
+	}
 	authority, err := loadRootAuthority(path)
 	if err != nil || authority.KubernetesBinding == nil {
 		return nil, err
@@ -342,7 +365,10 @@ func (e NativeRootEngine) rootKubernetesBinding() (*client.KubernetesBinding, er
 }
 
 func (e NativeRootEngine) updateRootKubernetesBinding(plan client.NodeInstallPlan, joined JoinedNode) (*client.KubernetesBinding, error) {
-	_, _, path := e.authorityPaths()
+	_, _, path, pathErr := e.authorityPaths()
+	if pathErr != nil {
+		return nil, pathErr
+	}
 	authority, err := loadRootAuthority(path)
 	if err != nil || authority.Plan.Digest != plan.Digest || !sameJSON(authority.Plan, plan) {
 		return nil, errors.New("cannot bind joined Node to different root authority")

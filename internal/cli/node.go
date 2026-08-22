@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
 	nodepkg "github.com/blazncloud/blazn/internal/node"
+	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
 type NodeEnrollOptions = nodepkg.CommandEnrollOptions
@@ -14,6 +18,26 @@ type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
 	Recover(context.Context) (client.NodeInstallReceipt, error)
 	Heartbeat(context.Context) (nodepkg.HeartbeatResult, error)
+}
+
+func newDefaultNodeCommands(build BuildInfo) (nodeCommands, error) {
+	sessions, err := workspacepkg.NewDefaultSessionProvider()
+	if err != nil {
+		return nil, err
+	}
+	session, err := sessions.Session(context.Background(), false)
+	if err != nil {
+		return nil, err
+	}
+	apiURL := os.Getenv("BLAZN_API_URL")
+	if apiURL == "" {
+		apiURL = sessions.Origin()
+	}
+	api, err := client.New(apiURL, &http.Client{Timeout: 30 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	return nodepkg.NewProductionCommandRuntime(api, session.AccessToken, build.Version, nil, nil, nodepkg.ProductionEmbeddedMaterials())
 }
 
 func (a *App) runNode(format OutputFormat, args []string) int {
@@ -27,7 +51,7 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 	ctx := context.Background()
 	switch args[0] {
 	case "enroll":
-		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true, "request-id": true, "name": true, "mode": true, "machine-fingerprint": true, "profile": true})
+		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true, "request-id": true, "name": true, "mode": true, "machine-fingerprint": true, "profile": true, "cluster-id": true, "node-name": true, "node-uid": true, "resource-version": true})
 		if err != nil || len(pos) != 0 {
 			return a.nodeUsage(format, err)
 		}
@@ -38,7 +62,23 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 		if mode != client.NodeModeFresh && mode != client.NodeModeAdopt {
 			return a.nodeUsage(format, errors.New("--mode must be fresh or adopt"))
 		}
-		result, err := commands.Enroll(ctx, NodeEnrollOptions{WorkspaceID: flags["workspace"], RequestID: flags["request-id"], Name: flags["name"], Mode: mode, MachineFingerprint: flags["machine-fingerprint"], ProfileFile: flags["profile"]})
+		var binding *client.KubernetesBinding
+		bindingValues := []string{flags["cluster-id"], flags["node-name"], flags["node-uid"], flags["resource-version"]}
+		present := 0
+		for _, value := range bindingValues {
+			if value != "" {
+				present++
+			}
+		}
+		if mode == client.NodeModeAdopt {
+			if present != len(bindingValues) || flags["node-name"] != flags["name"] {
+				return a.nodeUsage(format, errors.New("adopt requires --cluster-id, --node-name matching --name, --node-uid, and --resource-version"))
+			}
+			binding = &client.KubernetesBinding{ClusterID: flags["cluster-id"], NodeName: flags["node-name"], NodeUID: flags["node-uid"], ResourceVersion: flags["resource-version"]}
+		} else if present != 0 {
+			return a.nodeUsage(format, errors.New("fresh enrollment does not accept an existing Kubernetes binding"))
+		}
+		result, err := commands.Enroll(ctx, NodeEnrollOptions{WorkspaceID: flags["workspace"], RequestID: flags["request-id"], Name: flags["name"], Mode: mode, MachineFingerprint: flags["machine-fingerprint"], ProfileFile: flags["profile"], KubernetesBinding: binding})
 		return a.writeNodeValue(format, result, err, "node enrolled and installed")
 	case "recover":
 		if len(args) != 1 {

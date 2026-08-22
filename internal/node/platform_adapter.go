@@ -24,7 +24,8 @@ import (
 
 const (
 	RootHelperSchema      = "blazn.dev/node-root-helper/v1"
-	DefaultRootHelperPath = "/usr/local/libexec/blazn-node-helper"
+	DefaultRootHelperPath = "/usr/local/bin/blazn"
+	RootHelperSubcommand  = "node-root-helper"
 )
 
 type RootOperation string
@@ -127,9 +128,9 @@ func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (Ro
 	}
 	runCtx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
-	path, args := c.HelperPath, []string{}
+	path, args := c.HelperPath, []string{RootHelperSubcommand}
 	if c.UseSudo {
-		path, args = "/usr/bin/sudo", []string{"-n", DefaultRootHelperPath}
+		path, args = "/usr/bin/sudo", []string{"-n", DefaultRootHelperPath, RootHelperSubcommand}
 	}
 	command := exec.CommandContext(runCtx, path, args...)
 	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
@@ -172,6 +173,13 @@ type PlatformAdapter struct {
 	bootstrapBinding *client.KubernetesBinding
 }
 
+func (a *PlatformAdapter) KubernetesBinding() *client.KubernetesBinding {
+	if a.joined == nil || a.joined.ExpectedNodeUID == "" || a.joined.ExpectedResourceVersion == "" {
+		return nil
+	}
+	return &client.KubernetesBinding{ClusterID: a.joined.ClusterID, NodeName: a.joined.ExpectedNodeName, NodeUID: a.joined.ExpectedNodeUID, ResourceVersion: a.joined.ExpectedResourceVersion}
+}
+
 func NewPlatformAdapter(platform string, privileged PrivilegedClient, materials MaterialResolver, join JoinCoordinator) (*PlatformAdapter, error) {
 	if (platform != "linux" && platform != "macos") || privileged == nil || materials == nil || join == nil {
 		return nil, errors.New("platform adapter configuration is incomplete")
@@ -207,6 +215,7 @@ func (a *PlatformAdapter) Preflight(ctx context.Context, plan client.NodeInstall
 	if response.KubernetesBinding != nil {
 		binding := *response.KubernetesBinding
 		a.bootstrapBinding = &binding
+		a.joined = &RootJoinBinding{ClusterID: binding.ClusterID, ExpectedNodeName: binding.NodeName, ExpectedNodeUID: binding.NodeUID, ExpectedResourceVersion: binding.ResourceVersion, BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
 	}
 	return nil
 }
@@ -318,7 +327,7 @@ func (a *PlatformAdapter) material(ctx context.Context, mutation client.NodeInst
 	}
 	for _, component := range a.plan.Components {
 		if component.Name == name {
-			if component.SourceClass == "https" || component.SourceClass == "current_binary" {
+			if component.SourceClass == "https" || component.SourceClass == "current_binary" || (component.SourceClass == "embedded" && mutation.Action == "adopt_exact") {
 				return &RootMaterial{ComponentName: name, SHA256: component.SHA256}, nil
 			}
 			content, err := a.Materials.Resolve(ctx, component)
