@@ -97,6 +97,8 @@ type sourceMetadata struct {
 }
 
 type responsesMetadata struct {
+	instructions      string
+	originalInput     json.RawMessage
 	parallelToolCalls *bool
 	store             *bool
 	include           []string
@@ -154,8 +156,18 @@ func normalizeChat(body io.Reader, policy proxycontract.Policy, now time.Time) (
 	blocks := make([]proxycontract.RequestBlock, 0, len(source.Messages))
 	for _, message := range source.Messages {
 		if len(message.ToolCalls) > 0 {
-			if message.Role != "assistant" || len(message.Content) != 0 && string(message.Content) != "null" {
-				return proxycontract.NormalizedRequest{}, unsupported("mixed or invalid assistant tool message")
+			if message.Role != "assistant" {
+				return proxycontract.NormalizedRequest{}, unsupported("tool calls require an assistant message")
+			}
+			if len(message.Content) > 0 && string(message.Content) != "null" {
+				texts, contentErr := rawTexts(message.Content, "text")
+				if contentErr != nil {
+					return proxycontract.NormalizedRequest{}, unsupported("multimodal assistant tool content is unsupported")
+				}
+				for _, text := range texts {
+					textCopy := text
+					blocks = append(blocks, proxycontract.RequestBlock{Role: "assistant", Type: "text", Text: &textCopy})
+				}
 			}
 			for _, call := range message.ToolCalls {
 				if call.Type != "function" {
@@ -362,7 +374,7 @@ func normalizeResponsesIncoming(body io.Reader, policy proxycontract.Policy, now
 }
 
 func inspectResponsesMetadata(source responsesRequest) (responsesMetadata, error) {
-	metadata := responsesMetadata{parallelToolCalls: source.ParallelToolCalls, store: source.Store, include: append([]string(nil), source.Include...), reasoning: append(json.RawMessage(nil), source.Reasoning...), streamOptions: append(json.RawMessage(nil), source.StreamOptions...), serviceTier: source.ServiceTier, promptCacheKey: source.PromptCacheKey, clientMetadata: append(json.RawMessage(nil), source.ClientMetadata...)}
+	metadata := responsesMetadata{instructions: source.Instructions, originalInput: append(json.RawMessage(nil), source.Input...), parallelToolCalls: source.ParallelToolCalls, store: source.Store, include: append([]string(nil), source.Include...), reasoning: append(json.RawMessage(nil), source.Reasoning...), streamOptions: append(json.RawMessage(nil), source.StreamOptions...), serviceTier: source.ServiceTier, promptCacheKey: source.PromptCacheKey, clientMetadata: append(json.RawMessage(nil), source.ClientMetadata...)}
 	if source.Store != nil && *source.Store {
 		return metadata, unsupported("store=true is forbidden by the proxy data-retention policy")
 	}
@@ -651,7 +663,7 @@ func estimateInputTokens(request proxycontract.NormalizedRequest) int {
 func ensureContextLimit(request routedRequest, policy proxycontract.Policy) error {
 	metadataBytes := len(request.source.responseSchemaName)
 	if metadata := request.source.responses; metadata != nil {
-		metadataBytes += len(metadata.reasoning) + len(metadata.streamOptions) + len(metadata.clientMetadata) + len(metadata.promptCacheKey)
+		metadataBytes += len(metadata.instructions) + len(metadata.originalInput) + len(metadata.reasoning) + len(metadata.streamOptions) + len(metadata.clientMetadata) + len(metadata.promptCacheKey)
 		for _, value := range metadata.include {
 			metadataBytes += len(value)
 		}

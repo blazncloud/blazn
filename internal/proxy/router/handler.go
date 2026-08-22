@@ -123,14 +123,15 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		}
 		return
 	}
-	response, err := decodeUpstreamResponse(result, normalized)
+	var responseMeta responseMetadata
+	response, err := decodeUpstreamResponseDetailed(result, normalized, &responseMeta)
 	if err != nil {
 		h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(result.attemptStarted), nil)
 		h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
 		writeError(writer, err)
 		return
 	}
-	if err = writeSourceResponse(writer, normalized.Protocol, response); err != nil {
+	if err = writeSourceResponseDetailed(writer, normalized.Protocol, response, responseMeta); err != nil {
 		return
 	}
 	latency := h.config.Now().Sub(started)
@@ -141,17 +142,39 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 func (h *Handler) ready(parent context.Context) bool {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
-	for _, route := range h.config.Policy.Routes {
-		resolved, err := h.config.Resolver.Resolve(ctx, route)
-		if err != nil || len(resolved.Addresses) == 0 {
-			continue
-		}
-		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
-		if err == nil && credential != "" {
-			return true
+	return h.Preflight(ctx) == nil
+}
+
+// Preflight is the activation gate: every route referenced by a frozen alias
+// must resolve and have a destination credential before listener publication.
+func (h *Handler) Preflight(ctx context.Context) error {
+	required := map[string]bool{}
+	for _, alias := range h.config.Policy.Aliases {
+		for _, id := range alias.RouteIDs {
+			required[id] = true
 		}
 	}
-	return false
+	if len(required) == 0 {
+		return errors.New("no policy routes are required")
+	}
+	for _, route := range h.config.Policy.Routes {
+		if !required[route.ID] {
+			continue
+		}
+		resolved, err := h.config.Resolver.Resolve(ctx, route)
+		if err != nil || len(resolved.Addresses) == 0 {
+			return fmt.Errorf("route %s is not resolvable", route.ID)
+		}
+		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
+		if err != nil || credential == "" {
+			return fmt.Errorf("route %s credential is unavailable", route.ID)
+		}
+		delete(required, route.ID)
+	}
+	if len(required) != 0 {
+		return errors.New("one or more required policy routes are missing")
+	}
+	return nil
 }
 
 func reasonForError(err error) proxycontract.EventReasonCode {

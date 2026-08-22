@@ -48,6 +48,15 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
+type blockingBody struct {
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newBlockingBody() *blockingBody             { return &blockingBody{closed: make(chan struct{})} }
+func (b *blockingBody) Read([]byte) (int, error) { <-b.closed; return 0, errors.New("body closed") }
+func (b *blockingBody) Close() error             { b.once.Do(func() { close(b.closed) }); return nil }
+
 func fixturePolicy(t *testing.T) proxycontract.Policy {
 	t.Helper()
 	file, err := os.Open(filepath.Join("..", "..", "..", "packages", "contracts", "proxy", "fixtures", "poc-policy.json"))
@@ -139,6 +148,75 @@ func TestResponsesTranslatesToLocalChatAndReturnsResponsesShape(t *testing.T) {
 	}
 }
 
+func TestHermesMixedAssistantTextAndToolHistory(t *testing.T) {
+	var forwarded struct {
+		Messages []struct {
+			Role      string            `json:"role"`
+			Content   *string           `json:"content"`
+			ToolCalls []json.RawMessage `json:"tool_calls"`
+		} `json:"messages"`
+	}
+	handler, _ := testHandler(t, func(_ proxycontract.Route, incoming *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(incoming.Body)
+		if err := json.Unmarshal(body, &forwarded); err != nil {
+			t.Fatal(err)
+		}
+		return response(200, "application/json", `{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1}}`), nil
+	}, nil)
+	body := `{"model":"company-assistant-restricted","messages":[{"role":"user","content":"check"},{"role":"assistant","content":"I will inspect.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\\\"path\\\":\\\"README.md\\\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"contents"}],"tools":[{"type":"function","function":{"name":"read_file","parameters":{"type":"object"}}}]}`
+	record := request(handler, "/v1/chat/completions", body)
+	if record.Code != 200 {
+		t.Fatalf("status=%d %s", record.Code, record.Body.String())
+	}
+	found := false
+	for _, message := range forwarded.Messages {
+		if message.Role == "assistant" && message.Content != nil && *message.Content == "I will inspect." && len(message.ToolCalls) == 1 {
+			found = true
+		}
+	}
+	if !found {
+		encoded, _ := json.Marshal(forwarded)
+		t.Fatalf("mixed assistant message was split or lost: %s", encoded)
+	}
+}
+
+func TestResponsesToolCallsSetChatFinishReason(t *testing.T) {
+	handler, _ := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		if route.Model == "qwen3.8" {
+			return response(503, "application/json", `{"error":"down"}`), nil
+		}
+		return response(200, "application/json", `{"status":"completed","output":[{"type":"function_call","call_id":"call_9","name":"lookup","arguments":"{\"q\":\"x\"}"}],"usage":{"input_tokens":3,"output_tokens":2}}`), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"lookup"}]}`)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("nonstream tool finish: %d %s", record.Code, record.Body.String())
+	}
+	handler, _ = testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		if route.Model == "qwen3.8" {
+			return response(200, "text/event-stream", "data: {\"error\":{\"code\":\"model_unavailable\"}}\n\n"), nil
+		}
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_9\",\"type\":\"function_call\",\"call_id\":\"call_9\",\"name\":\"lookup\",\"arguments\":\"\"}}\n\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_9\",\"output_index\":0,\"delta\":\"{\\\"q\\\":\\\"x\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n"
+		return response(200, "text/event-stream", stream), nil
+	}, nil)
+	record = request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"lookup"}],"stream":true}`)
+	if !strings.Contains(record.Body.String(), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("stream tool finish: %s", record.Body.String())
+	}
+}
+
+func TestNonstreamResponsesPreservesIncompleteDetails(t *testing.T) {
+	handler, _ := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		if route.DestinationProtocol != proxycontract.ProtocolOpenAIResponses {
+			t.Fatalf("selected incompatible route %s", route.ID)
+		}
+		return response(200, "application/json", `{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}],"usage":{"input_tokens":2,"output_tokens":4}}`), nil
+	}, nil)
+	record := request(handler, "/v1/responses", `{"model":"company-assistant","input":"x","client_metadata":{"harness":"codex"}}`)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), `"status":"incomplete"`) || !strings.Contains(record.Body.String(), `"incomplete_details":{"reason":"max_output_tokens"}`) {
+		t.Fatalf("incomplete response: %d %s", record.Code, record.Body.String())
+	}
+}
+
 func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("testdata", "codex-0.147-responses.json"))
 	if err != nil {
@@ -148,7 +226,7 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 	handler, _ := testHandler(t, func(route proxycontract.Route, incoming *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(incoming.Body)
 		calls = append(calls, upstreamCall{RouteID: route.ID, Path: incoming.URL.Path, Body: string(body)})
-		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"rs_out\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque-next-turn\"}}\n\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_out\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque-next-turn\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"summary\\\":\\\"ok\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}}\n\ndata: [DONE]\n\n"
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"rs_out\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque-next-turn\"}}\n\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"rs_out\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque-next-turn\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_upstream\",\"output_index\":1,\"content_index\":0,\"delta\":\"{\\\"summary\\\":\\\"ok\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}}\n\ndata: [DONE]\n\n"
 		return response(200, "text/event-stream", stream), nil
 	}, nil)
 	record := request(handler, "/v1/responses", string(raw))
@@ -163,6 +241,23 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 			t.Fatalf("outgoing request omitted %s: %s", want, calls[0].Body)
 		}
 	}
+	var forwarded struct {
+		Input []struct {
+			Type string `json:"type"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(calls[0].Body), &forwarded); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []string{"reasoning", "message", "function_call", "function_call_output"}
+	if len(forwarded.Input) != len(wantTypes) {
+		t.Fatalf("forwarded input count=%d", len(forwarded.Input))
+	}
+	for index, want := range wantTypes {
+		if forwarded.Input[index].Type != want {
+			t.Fatalf("input[%d]=%s want %s", index, forwarded.Input[index].Type, want)
+		}
+	}
 	stream := record.Body.String()
 	ordered := []string{`"type":"response.created"`, `"type":"response.in_progress"`, `"type":"response.output_item.added"`, `"type":"response.content_part.added"`, `"type":"response.output_text.delta"`, `"type":"response.output_text.done"`, `"type":"response.content_part.done"`, `"type":"response.completed"`, `data: [DONE]`}
 	last := -1
@@ -173,8 +268,24 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 		}
 		last = next
 	}
-	if !strings.Contains(stream, `"input_tokens":40`) || !strings.Contains(stream, `"status":"completed"`) || !strings.Contains(stream, `"encrypted_content":"opaque-next-turn"`) {
+	if !strings.Contains(stream, `"input_tokens":40`) || !strings.Contains(stream, `"status":"completed"`) || !strings.Contains(stream, `"encrypted_content":"opaque-next-turn"`) || !strings.Contains(stream, `"output":[{"encrypted_content":"opaque-next-turn"`) || !strings.Contains(stream, `"output_index":1`) {
 		t.Fatalf("completed response missing usage: %s", stream)
+	}
+	doneIndexes := []int{}
+	for _, line := range strings.Split(stream, "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		var event map[string]any
+		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) != nil {
+			continue
+		}
+		if event["type"] == "response.output_item.done" {
+			doneIndexes = append(doneIndexes, int(event["output_index"].(float64)))
+		}
+	}
+	if len(doneIndexes) < 2 || doneIndexes[0] != 0 || doneIndexes[len(doneIndexes)-1] != 1 {
+		t.Fatalf("done event indexes lost upstream order: %v", doneIndexes)
 	}
 }
 
@@ -265,6 +376,30 @@ func TestPreFirstEventErrorFallsBackButEOFPostCommitFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRouteFirstEventTimeoutFallsBackWithinOverallDeadline(t *testing.T) {
+	var calls atomic.Int32
+	handler, policy := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if route.Model == "qwen3.8" {
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: newBlockingBody()}, nil
+		}
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"fallback\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+		return response(200, "text/event-stream", stream), nil
+	}, nil)
+	primaryID := policy.Routes[0].ID
+	primary := handler.routes.byID[primaryID]
+	primary.HealthTimeoutMS = 100
+	handler.routes.byID[primaryID] = primary
+	started := time.Now()
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"x"}],"stream":true}`)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("route-scoped timeout took %v", elapsed)
+	}
+	if calls.Load() != 2 || !strings.Contains(record.Body.String(), "fallback") {
+		t.Fatalf("calls=%d body=%s", calls.Load(), record.Body.String())
+	}
+}
+
 func TestChatStreamingPreservesToolCalls(t *testing.T) {
 	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
 		body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"
@@ -318,6 +453,19 @@ func TestHealthRequiresResolvableCredentialedRoute(t *testing.T) {
 	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if record.Code != 503 || !strings.Contains(record.Body.String(), "not_ready") {
 		t.Fatalf("health=%d %s", record.Code, record.Body.String())
+	}
+}
+
+func TestHealthRequiresLocalAndCloudRoutes(t *testing.T) {
+	policy := fixturePolicy(t)
+	handler, err := NewHandler(Config{Policy: policy, ActivationID: activationID, ListenerToken: "listener", Credentials: credentialMap{"workspace-vault://poc/model-providers/openai": "cloud"}, Resolver: EndpointResolver{DNS: staticDNS{"127.0.0.1": {netip.MustParseAddr("127.0.0.1")}, "api.openai.com": {netip.MustParseAddr("93.184.216.34")}}}, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if record.Code != 503 {
+		t.Fatalf("health accepted missing local route credential: %d %s", record.Code, record.Body.String())
 	}
 }
 

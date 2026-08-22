@@ -113,7 +113,17 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		}
 		result := upstreamResult{response: response, route: route, attempt: attempt + 1, attemptStarted: started}
 		if request.Stream {
+			firstEventTimeout := time.Duration(route.HealthTimeoutMS) * time.Millisecond
+			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < firstEventTimeout {
+				firstEventTimeout = time.Until(deadline)
+			}
+			timerFired := make(chan struct{})
+			timer := time.AfterFunc(firstEventTimeout, func() { _ = response.Body.Close(); close(timerFired) })
 			prepared, prepareErr := prepareStream(result, request)
+			if !timer.Stop() {
+				<-timerFired
+				prepareErr = &APIError{Code: "timeout_before_first_byte", Message: "upstream did not produce an event before the route deadline", Status: 504, Retryable: true, Reason: proxycontract.ReasonTimeoutBeforeFirstByte}
+			}
 			if prepareErr != nil {
 				_ = response.Body.Close()
 				last = prepareErr
@@ -176,7 +186,35 @@ func encodeDestinationRequest(routed routedRequest, route proxycontract.Route) (
 	switch route.DestinationProtocol {
 	case proxycontract.ProtocolOpenAIChat:
 		messages := make([]map[string]any, 0, len(request.Blocks))
-		for _, block := range request.Blocks {
+		for index := 0; index < len(request.Blocks); {
+			block := request.Blocks[index]
+			if block.Role == "assistant" && (block.Type == "text" || block.Type == "tool_call") {
+				parts := []string{}
+				calls := []any{}
+				next := index
+				for next < len(request.Blocks) {
+					candidate := request.Blocks[next]
+					if candidate.Role != "assistant" || (candidate.Type != "text" && candidate.Type != "tool_call") {
+						break
+					}
+					if candidate.Type == "text" {
+						parts = append(parts, *candidate.Text)
+					} else {
+						calls = append(calls, map[string]any{"id": *candidate.CallID, "type": "function", "function": map[string]any{"name": *candidate.ToolName, "arguments": string(candidate.Arguments)}})
+					}
+					next++
+				}
+				message := map[string]any{"role": "assistant", "content": nil}
+				if len(parts) > 0 {
+					message["content"] = strings.Join(parts, "")
+				}
+				if len(calls) > 0 {
+					message["tool_calls"] = calls
+				}
+				messages = append(messages, message)
+				index = next
+				continue
+			}
 			switch block.Type {
 			case "text":
 				messages = append(messages, map[string]any{"role": block.Role, "content": *block.Text})
@@ -185,6 +223,7 @@ func encodeDestinationRequest(routed routedRequest, route proxycontract.Route) (
 			case "tool_result":
 				messages = append(messages, map[string]any{"role": "tool", "tool_call_id": *block.CallID, "content": jsonContent(block.Result)})
 			}
+			index++
 		}
 		tools := make([]any, 0, len(request.Tools))
 		for _, tool := range request.Tools {
@@ -221,14 +260,6 @@ func encodeDestinationRequest(routed routedRequest, route proxycontract.Route) (
 		return encoded, "chat/completions", err
 	case proxycontract.ProtocolOpenAIResponses:
 		input := make([]any, 0, len(request.Blocks))
-		if metadata := routed.source.responses; metadata != nil {
-			for _, item := range metadata.reasoningItems {
-				var decoded any
-				if json.Unmarshal(item, &decoded) == nil {
-					input = append(input, decoded)
-				}
-			}
-		}
 		for _, block := range request.Blocks {
 			switch block.Type {
 			case "text":
@@ -251,6 +282,16 @@ func encodeDestinationRequest(routed routedRequest, route proxycontract.Route) (
 			body["top_p"] = *request.Limits.TopP
 		}
 		if metadata := routed.source.responses; metadata != nil {
+			if len(metadata.originalInput) > 0 {
+				var original any
+				if json.Unmarshal(metadata.originalInput, &original) != nil {
+					return nil, "", safeError("invalid_request", "Responses input could not be preserved", 400, false)
+				}
+				body["input"] = original
+			}
+			if metadata.instructions != "" {
+				body["instructions"] = metadata.instructions
+			}
 			if metadata.parallelToolCalls != nil {
 				body["parallel_tool_calls"] = *metadata.parallelToolCalls
 			}
@@ -335,9 +376,18 @@ type responsesResponse struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
+	IncompleteDetails json.RawMessage `json:"incomplete_details"`
+}
+
+type responseMetadata struct {
+	status            string
+	incompleteDetails json.RawMessage
 }
 
 func decodeUpstreamResponse(result upstreamResult, request proxycontract.NormalizedRequest) (proxycontract.NormalizedResponse, error) {
+	return decodeUpstreamResponseDetailed(result, request, nil)
+}
+func decodeUpstreamResponseDetailed(result upstreamResult, request proxycontract.NormalizedRequest, metadata *responseMetadata) (proxycontract.NormalizedResponse, error) {
 	defer result.response.Body.Close()
 	limited := io.LimitReader(result.response.Body, maxRequestBytes+1)
 	response := proxycontract.NormalizedResponse{LogicalRequestID: request.LogicalRequestID, ModelAlias: request.ModelAlias, RouteID: result.route.ID, Blocks: []proxycontract.ResponseBlock{}, FinishReason: "stop"}
@@ -371,9 +421,14 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		if source.Status != "completed" && source.Status != "incomplete" {
 			return response, safeError("upstream_invalid_response", "upstream Responses request did not complete", 502, false)
 		}
+		if metadata != nil {
+			metadata.status = source.Status
+			metadata.incompleteDetails = append(json.RawMessage(nil), source.IncompleteDetails...)
+		}
 		if source.Usage == nil {
 			return response, safeError("upstream_invalid_response", "upstream Responses payload omitted usage", 502, false)
 		}
+		sawToolCall := false
 		for _, item := range source.Output {
 			switch item.Type {
 			case "message":
@@ -385,6 +440,7 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 					response.Blocks = append(response.Blocks, proxycontract.ResponseBlock{Type: "text", Text: &text})
 				}
 			case "function_call":
+				sawToolCall = true
 				args := normalizeJSONValue(item.Arguments)
 				response.Blocks = append(response.Blocks, proxycontract.ResponseBlock{Type: "tool_call", CallID: stringPtr(item.CallID), ToolName: stringPtr(item.Name), Arguments: args})
 			default:
@@ -393,6 +449,8 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		}
 		if source.Status == "incomplete" {
 			response.FinishReason = "length"
+		} else if sawToolCall {
+			response.FinishReason = "tool_call"
 		}
 		response.Usage = proxycontract.Usage{InputTokens: source.Usage.InputTokens, OutputTokens: source.Usage.OutputTokens}
 	}
@@ -428,6 +486,9 @@ func mapFinish(value string) proxycontract.FinishReason {
 }
 
 func writeSourceResponse(writer http.ResponseWriter, protocol proxycontract.Protocol, response proxycontract.NormalizedResponse) error {
+	return writeSourceResponseDetailed(writer, protocol, response, responseMetadata{})
+}
+func writeSourceResponseDetailed(writer http.ResponseWriter, protocol proxycontract.Protocol, response proxycontract.NormalizedResponse, metadata responseMetadata) error {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.Header().Set("Cache-Control", "no-store")
 	switch protocol {
@@ -462,7 +523,15 @@ func writeSourceResponse(writer http.ResponseWriter, protocol proxycontract.Prot
 				output = append(output, map[string]any{"id": fmt.Sprintf("fc_%d", index), "type": "function_call", "call_id": *block.CallID, "name": *block.ToolName, "arguments": string(block.Arguments)})
 			}
 		}
-		return json.NewEncoder(writer).Encode(map[string]any{"id": "resp_" + response.LogicalRequestID, "object": "response", "status": "completed", "model": response.ModelAlias, "output": output, "usage": map[string]any{"input_tokens": response.Usage.InputTokens, "output_tokens": response.Usage.OutputTokens, "total_tokens": response.Usage.InputTokens + response.Usage.OutputTokens}})
+		status := metadata.status
+		if status == "" {
+			status = "completed"
+		}
+		body := map[string]any{"id": "resp_" + response.LogicalRequestID, "object": "response", "status": status, "model": response.ModelAlias, "output": output, "usage": map[string]any{"input_tokens": response.Usage.InputTokens, "output_tokens": response.Usage.OutputTokens, "total_tokens": response.Usage.InputTokens + response.Usage.OutputTokens}}
+		if status == "incomplete" && len(metadata.incompleteDetails) > 0 {
+			body["incomplete_details"] = json.RawMessage(metadata.incompleteDetails)
+		}
+		return json.NewEncoder(writer).Encode(body)
 	default:
 		return unsupported("source protocol is unsupported")
 	}
@@ -471,7 +540,7 @@ func writeSourceResponse(writer http.ResponseWriter, protocol proxycontract.Prot
 func prepareStream(result upstreamResult, request proxycontract.NormalizedRequest) (upstreamResult, error) {
 	scanner := bufio.NewScanner(result.response.Body)
 	scanner.Buffer(make([]byte, 4096), maxRequestBytes)
-	normalizer := &streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}, reasoningItems: map[string]json.RawMessage{}}
+	normalizer := &streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}, reasoningItems: map[string]reasoningOutput{}, toolOutputIndexes: map[string]int{}, textOutputIndex: -1}
 	for {
 		events, done, err := nextStreamEvents(scanner, normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
 		if err != nil {
@@ -552,6 +621,7 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Accel-Buffering", "no")
 	encoder := sourceStreamEncoder{writer: writer, protocol: request.Protocol, alias: request.ModelAlias, requestID: request.LogicalRequestID, toolIndexes: map[string]int{}, toolNames: map[string]string{}, toolArguments: map[string]string{}, textIndex: -1}
+	encoder.applyIndexHints(result.normalizer)
 	if err := encoder.start(); err != nil {
 		return nil, err
 	}
@@ -590,6 +660,7 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 			sawDone = true
 			break
 		}
+		encoder.applyIndexHints(result.normalizer)
 		if err = consume(events); err != nil {
 			_ = encoder.fail(err)
 			flusher.Flush()
@@ -611,15 +682,23 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 }
 
 type streamNormalizer struct {
-	toolIDs         map[int]string
-	toolNames       map[int]string
-	toolStarted     map[int]bool
-	responseCallIDs map[string]string
-	sequence        int
-	started         bool
-	terminal        bool
-	reasoningItems  map[string]json.RawMessage
-	reasoningOrder  []string
+	toolIDs           map[int]string
+	toolNames         map[int]string
+	toolStarted       map[int]bool
+	responseCallIDs   map[string]string
+	sequence          int
+	started           bool
+	terminal          bool
+	sawFunctionCall   bool
+	reasoningItems    map[string]reasoningOutput
+	reasoningOrder    []string
+	toolOutputIndexes map[string]int
+	textOutputIndex   int
+}
+
+type reasoningOutput struct {
+	raw   json.RawMessage
+	index int
 }
 
 func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID string, sequence int, payload []byte) ([]proxycontract.NormalizedStreamEvent, error) {
@@ -701,12 +780,13 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		return out, nil
 	}
 	var event struct {
-		Type     string          `json:"type"`
-		Delta    string          `json:"delta"`
-		Text     string          `json:"text"`
-		ItemID   string          `json:"item_id"`
-		Item     json.RawMessage `json:"item"`
-		Response *struct {
+		Type        string          `json:"type"`
+		Delta       string          `json:"delta"`
+		Text        string          `json:"text"`
+		ItemID      string          `json:"item_id"`
+		Item        json.RawMessage `json:"item"`
+		OutputIndex *int            `json:"output_index"`
+		Response    *struct {
 			Usage *struct {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
@@ -733,6 +813,9 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		n.started = true
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "response_start"}}, nil
 	case "response.output_text.delta":
+		if event.OutputIndex != nil {
+			n.textOutputIndex = *event.OutputIndex
+		}
 		text := event.Delta
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "text_delta", Text: &text}}, nil
 	case "response.output_item.added":
@@ -752,12 +835,17 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 			if _, ok := n.reasoningItems[item.ID]; !ok {
 				n.reasoningOrder = append(n.reasoningOrder, item.ID)
 			}
-			n.reasoningItems[item.ID] = append(json.RawMessage(nil), event.Item...)
+			index := len(n.reasoningOrder) - 1
+			if event.OutputIndex != nil {
+				index = *event.OutputIndex
+			}
+			n.reasoningItems[item.ID] = reasoningOutput{raw: append(json.RawMessage(nil), event.Item...), index: index}
 			return nil, nil
 		}
 		if item.Type != "function_call" {
 			return nil, nil
 		}
+		n.sawFunctionCall = true
 		callID := item.CallID
 		if callID == "" {
 			callID = item.ID
@@ -765,6 +853,9 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		name := item.Name
 		if callID == "" || name == "" {
 			return nil, errors.New("invalid Responses function-call start")
+		}
+		if event.OutputIndex != nil {
+			n.toolOutputIndexes[callID] = *event.OutputIndex
 		}
 		if item.ID != "" {
 			n.responseCallIDs[item.ID] = callID
@@ -789,7 +880,11 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 			if _, ok := n.reasoningItems[item.ID]; !ok {
 				n.reasoningOrder = append(n.reasoningOrder, item.ID)
 			}
-			n.reasoningItems[item.ID] = append(json.RawMessage(nil), event.Item...)
+			index := len(n.reasoningOrder) - 1
+			if event.OutputIndex != nil {
+				index = *event.OutputIndex
+			}
+			n.reasoningItems[item.ID] = reasoningOutput{raw: append(json.RawMessage(nil), event.Item...), index: index}
 		}
 		return nil, nil
 	case "response.completed":
@@ -802,6 +897,9 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		n.terminal = true
 		usage := proxycontract.Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens}
 		finish := proxycontract.FinishReason("stop")
+		if n.sawFunctionCall {
+			finish = "tool_call"
+		}
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "usage", Usage: &usage}, {LogicalRequestID: requestID, Sequence: sequence + 1, Type: "response_end", FinishReason: &finish}}, nil
 	case "response.incomplete":
 		if event.Response == nil {
@@ -829,10 +927,12 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 	}
 }
 
-func (n *streamNormalizer) orderedReasoningItems() []json.RawMessage {
-	out := make([]json.RawMessage, 0, len(n.reasoningOrder))
+func (n *streamNormalizer) orderedReasoningItems() []reasoningOutput {
+	out := make([]reasoningOutput, 0, len(n.reasoningOrder))
 	for _, id := range n.reasoningOrder {
-		out = append(out, append(json.RawMessage(nil), n.reasoningItems[id]...))
+		item := n.reasoningItems[id]
+		item.raw = append(json.RawMessage(nil), item.raw...)
+		out = append(out, item)
 	}
 	return out
 }
@@ -875,7 +975,25 @@ type sourceStreamEncoder struct {
 	textStarted     bool
 	textIndex       int
 	nextOutputIndex int
-	reasoningItems  []json.RawMessage
+	reasoningItems  []reasoningOutput
+}
+
+func (s *sourceStreamEncoder) applyIndexHints(normalizer *streamNormalizer) {
+	if normalizer == nil {
+		return
+	}
+	if normalizer.textOutputIndex >= 0 {
+		s.textIndex = normalizer.textOutputIndex
+		if s.nextOutputIndex <= s.textIndex {
+			s.nextOutputIndex = s.textIndex + 1
+		}
+	}
+	for id, index := range normalizer.toolOutputIndexes {
+		s.toolIndexes[id] = index
+		if s.nextOutputIndex <= index {
+			s.nextOutputIndex = index + 1
+		}
+	}
 }
 
 func (s *sourceStreamEncoder) emit(payload any) error {
@@ -957,8 +1075,10 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 		}
 		if event.Type == "text_delta" && !s.textStarted {
 			s.textStarted = true
-			s.textIndex = s.nextOutputIndex
-			s.nextOutputIndex++
+			if s.textIndex < 0 {
+				s.textIndex = s.nextOutputIndex
+				s.nextOutputIndex++
+			}
 			messageID := "msg_" + s.requestID
 			if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": s.textIndex, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}}); err != nil {
 				return err
@@ -984,8 +1104,10 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 		}
 		if event.Type == "tool_call_start" {
 			s.toolNames[*event.CallID] = *event.ToolName
-			s.toolIndexes[*event.CallID] = s.nextOutputIndex
-			s.nextOutputIndex++
+			if _, ok := s.toolIndexes[*event.CallID]; !ok {
+				s.toolIndexes[*event.CallID] = s.nextOutputIndex
+				s.nextOutputIndex++
+			}
 			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID]
 			payload.(map[string]any)["item"] = map[string]any{"id": "fc_" + *event.CallID, "type": "function_call", "call_id": *event.CallID, "name": *event.ToolName, "arguments": ""}
 		}
@@ -1028,53 +1150,68 @@ func (s *sourceStreamEncoder) finish() error {
 		if status == "incomplete" {
 			eventType = "response.incomplete"
 		}
-		for offset, raw := range s.reasoningItems {
-			var item map[string]any
-			if json.Unmarshal(raw, &item) != nil {
-				continue
+		actions := map[int]func() error{}
+		for _, reasoning := range s.reasoningItems {
+			reasoning := reasoning
+			actions[reasoning.index] = func() error {
+				var item map[string]any
+				if json.Unmarshal(reasoning.raw, &item) != nil {
+					return nil
+				}
+				if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": reasoning.index, "item": item}); err != nil {
+					return err
+				}
+				s.sequence++
+				if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": reasoning.index, "item": item}); err != nil {
+					return err
+				}
+				s.sequence++
+				return nil
 			}
-			index := s.nextOutputIndex + offset
-			if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
-				return err
-			}
-			s.sequence++
-			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
-				return err
-			}
-			s.sequence++
 		}
 		if s.textStarted {
-			messageID := "msg_" + s.requestID
-			if err := s.emit(map[string]any{"type": "response.output_text.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "text": s.text.String()}); err != nil {
-				return err
+			actions[s.textIndex] = func() error {
+				messageID := "msg_" + s.requestID
+				if err := s.emit(map[string]any{"type": "response.output_text.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "text": s.text.String()}); err != nil {
+					return err
+				}
+				s.sequence++
+				part := map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}
+				if err := s.emit(map[string]any{"type": "response.content_part.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "part": part}); err != nil {
+					return err
+				}
+				s.sequence++
+				if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": s.textIndex, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "completed", "content": []any{part}}}); err != nil {
+					return err
+				}
+				s.sequence++
+				return nil
 			}
-			s.sequence++
-			part := map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}
-			if err := s.emit(map[string]any{"type": "response.content_part.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "part": part}); err != nil {
-				return err
-			}
-			s.sequence++
-			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": s.textIndex, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "completed", "content": []any{part}}}); err != nil {
-				return err
-			}
-			s.sequence++
 		}
-		ids := make([]string, 0, len(s.toolIndexes))
-		for id := range s.toolIndexes {
-			ids = append(ids, id)
+		for id, index := range s.toolIndexes {
+			id, index := id, index
+			actions[index] = func() error {
+				if err := s.emit(map[string]any{"type": "response.function_call_arguments.done", "sequence_number": s.sequence, "item_id": "fc_" + id, "output_index": index, "arguments": s.toolArguments[id]}); err != nil {
+					return err
+				}
+				s.sequence++
+				item := map[string]any{"id": "fc_" + id, "type": "function_call", "call_id": id, "name": s.toolNames[id], "arguments": s.toolArguments[id]}
+				if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
+					return err
+				}
+				s.sequence++
+				return nil
+			}
 		}
-		sort.Slice(ids, func(i, j int) bool { return s.toolIndexes[ids[i]] < s.toolIndexes[ids[j]] })
-		for _, id := range ids {
-			index := s.toolIndexes[id]
-			if err := s.emit(map[string]any{"type": "response.function_call_arguments.done", "sequence_number": s.sequence, "item_id": "fc_" + id, "output_index": index, "arguments": s.toolArguments[id]}); err != nil {
+		indexes := make([]int, 0, len(actions))
+		for index := range actions {
+			indexes = append(indexes, index)
+		}
+		sort.Ints(indexes)
+		for _, index := range indexes {
+			if err := actions[index](); err != nil {
 				return err
 			}
-			s.sequence++
-			item := map[string]any{"id": "fc_" + id, "type": "function_call", "call_id": id, "name": s.toolNames[id], "arguments": s.toolArguments[id]}
-			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
-				return err
-			}
-			s.sequence++
 		}
 		if err := s.emit(map[string]any{"type": eventType, "sequence_number": s.sequence, "response": s.responseObject(status)}); err != nil {
 			return err
@@ -1111,10 +1248,10 @@ func (s *sourceStreamEncoder) fail(err error) error {
 
 func (s *sourceStreamEncoder) responseObject(status string) map[string]any {
 	items := map[int]any{}
-	for offset, raw := range s.reasoningItems {
+	for _, reasoning := range s.reasoningItems {
 		var item any
-		if json.Unmarshal(raw, &item) == nil {
-			items[s.nextOutputIndex+offset] = item
+		if json.Unmarshal(reasoning.raw, &item) == nil {
+			items[reasoning.index] = item
 		}
 	}
 	if s.text.Len() > 0 {
