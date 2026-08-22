@@ -7,6 +7,9 @@ on Kubernetes v1.36.1 in a single-node kind cluster on ben4. The existing ben4
 MicroK8s installation was not used or changed.
 
 - All four Agent Sandbox v1beta1 CRDs and eleven Kueue CRDs established.
+- Checksum-verified upstream manifests were rewritten from their single expected
+  version tags to the locked controller digests, and both running Pod image IDs
+  matched those digests.
 - Both controllers became Available; Agent Sandbox webhook and leader election
   started without errors.
 - A direct synthetic Sandbox reached `Ready=True` with reason

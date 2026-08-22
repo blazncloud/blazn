@@ -26,7 +26,9 @@ RuntimeClass is separately installed and qualified.
 
 The release manifests reference one controller image each. Their resolved
 multi-platform digest inventory is recorded in `versions.env`; tests also
-verify the original manifest checksums before use.
+verify the original manifest checksums, require exactly one expected source-tag
+occurrence, rewrite it to the recorded digest reference before apply, and prove
+the running Pod `imageID` resolves to that digest.
 
 ## Static trust findings
 
