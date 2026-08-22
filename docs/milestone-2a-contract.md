@@ -36,8 +36,12 @@ public API and must be idempotent for an exact login/display name.
 | Change non-owner roles | yes | yes | no | no | no |
 | Future node/run operations | yes | yes | yes | bounded | no |
 
-The last active owner cannot leave or be removed. Ownership transfer is
-deferred. Roles are stored as constrained text rather than a PostgreSQL enum.
+The initial owner role is immutable for this POC and that owner cannot leave or
+be removed. Ownership transfer is deferred. Workspace creation and initial
+owner membership insertion are one transaction. Every leave, remove, or role
+mutation locks the workspace row, then rechecks membership version and policy
+before mutation/audit; concurrent tests must prove exactly one outcome and at
+least one active owner. Roles are constrained text rather than a PostgreSQL enum.
 
 ## API contract
 

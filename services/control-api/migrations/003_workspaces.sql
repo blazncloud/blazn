@@ -36,17 +36,18 @@ CREATE TABLE workspace_invitations (
   accepted_by uuid REFERENCES users(id),
   accepted_at timestamptz,
   CHECK (expires_at > created_at),
-  CHECK ((status = 'accepted') = (accepted_by IS NOT NULL AND accepted_at IS NOT NULL))
+  CHECK ((status = 'accepted') = (accepted_by IS NOT NULL AND accepted_at IS NOT NULL)),
+  CHECK (accepted_at IS NULL OR accepted_at <= expires_at)
 );
 
-CREATE FUNCTION workspace_json_contains_secret_key(value jsonb) RETURNS boolean
+CREATE FUNCTION workspace_json_contains_secret_key(input_value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
 DECLARE
   entry record;
   normalized_key text;
 BEGIN
-  IF jsonb_typeof(value) = 'object' THEN
-    FOR entry IN SELECT key, value AS child FROM jsonb_each(value) LOOP
+  IF jsonb_typeof(input_value) = 'object' THEN
+    FOR entry IN SELECT pair.key, pair.value AS child FROM jsonb_each(input_value) AS pair LOOP
       normalized_key := regexp_replace(lower(entry.key), '[^a-z0-9]', '', 'g');
       IF normalized_key IN ('token', 'invitetoken', 'accesstoken', 'refreshtoken', 'authorization', 'password', 'secret', 'credential') THEN
         RETURN true;
@@ -55,8 +56,8 @@ BEGIN
         RETURN true;
       END IF;
     END LOOP;
-  ELSIF jsonb_typeof(value) = 'array' THEN
-    FOR entry IN SELECT value AS child FROM jsonb_array_elements(value) LOOP
+  ELSIF jsonb_typeof(input_value) = 'array' THEN
+    FOR entry IN SELECT item.value AS child FROM jsonb_array_elements(input_value) AS item LOOP
       IF workspace_json_contains_secret_key(entry.child) THEN
         RETURN true;
       END IF;
