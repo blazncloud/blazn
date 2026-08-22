@@ -24,7 +24,8 @@ The initial CLI includes:
 Install the current public release with:
 
 ```bash
-curl -fsSL https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
+curl -fL --progress-bar --show-error \
+  https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
   BLAZN_VERSION=v0.1.0-poc.3 sh
 ```
 

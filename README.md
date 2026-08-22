@@ -36,7 +36,7 @@ The visual identity carries forward the flame, Blaze orange, and dark ground est
 The installer requires an immutable version and verifies the signed checksum manifest before installing:
 
 ```bash
-curl -fsSL \
+curl -fL --progress-bar --show-error \
   https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
   BLAZN_VERSION=v0.1.0-poc.3 sh
 ```
