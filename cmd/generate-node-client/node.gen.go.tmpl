@@ -488,6 +488,7 @@ type NodeTrustedInstallProfile struct {
 	ID                       string
 	AllowedClusterOrigins    []string
 	AllowedDownloadOrigins   []string
+	AllowedDownloadHostSuffixes []string
 	AllowedRegistryOrigins   []string
 	AllowedMutationRoots     []string
 	CurrentBinaryVersion     string
@@ -1376,6 +1377,9 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 	if err := validateNodeTrustedOrigins(profile.AllowedDownloadOrigins); err != nil {
 		return fmt.Errorf("download origins: %w", err)
 	}
+	if err := validateNodeTrustedHostSuffixes(profile.AllowedDownloadHostSuffixes); err != nil {
+		return fmt.Errorf("download redirect host suffixes: %w", err)
+	}
 	if err := validateNodeTrustedOrigins(profile.AllowedRegistryOrigins); err != nil {
 		return fmt.Errorf("registry origins: %w", err)
 	}
@@ -1439,10 +1443,37 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 
 func ValidateNodeComponentRedirect(profile NodeTrustedInstallProfile, component NodeInstallComponent, candidateURL string) error {
 	parsed, err := url.Parse(candidateURL)
-	if err != nil || !validHTTPSURL(candidateURL) || parsed.Hostname() != component.SourceHost || !nodeOriginAllowed(candidateURL, profile.AllowedDownloadOrigins) {
+	if err != nil || !validHTTPSURL(candidateURL) {
+		return fmt.Errorf("component %q source or redirect is not trusted", component.Name)
+	}
+	initial := candidateURL == component.Source
+	trustedHost := nodeOriginAllowed(candidateURL, profile.AllowedDownloadOrigins) || nodeHostSuffixAllowed(parsed.Hostname(), profile.AllowedDownloadHostSuffixes)
+	if !trustedHost || (initial && parsed.Hostname() != component.SourceHost) {
 		return fmt.Errorf("component %q source or redirect is not trusted", component.Name)
 	}
 	return nil
+}
+
+func validateNodeTrustedHostSuffixes(suffixes []string) error {
+	if duplicateNodeStrings(suffixes) {
+		return fmt.Errorf("trusted host suffixes must be unique")
+	}
+	for _, suffix := range suffixes {
+		if len(suffix) < 2 || suffix[0] != '.' || suffix != strings.ToLower(suffix) || !nodeHostnamePattern.MatchString(suffix[1:]) {
+			return fmt.Errorf("trusted host suffix %q is invalid", suffix)
+		}
+	}
+	return nil
+}
+
+func nodeHostSuffixAllowed(hostname string, suffixes []string) bool {
+	hostname = strings.ToLower(hostname)
+	for _, suffix := range suffixes {
+		if len(hostname) > len(suffix) && strings.HasSuffix(hostname, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func validNodeProfileTarget(profileID string, mode NodeEnrollmentMode, platform NodePlatform, architecture NodeArchitecture) bool {

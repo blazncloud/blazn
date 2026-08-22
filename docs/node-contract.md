@@ -156,7 +156,12 @@ Verification also takes a locally configured trusted install profile. The
 profile—not the signed plan—defines exact allowed download/registry hosts and
 mutation roots for `ubuntu-26.04-amd64-worker/v1`,
 `existing-linux-worker-adopt/v1`, or `macos-lima-worker-adopt/v1`. URL host must
-equal the component `sourceHost`; redirects are revalidated. Targets may never
+equal the component `sourceHost`. Redirects are revalidated as credential-free
+HTTPS and must match either an exact trusted origin or a lowercase,
+label-boundary suffix explicitly pinned by the local profile (for example,
+`.cdn.snapcraftcontent.com`, which does not match the suffix apex or a
+lookalike). The downloader remains responsible for resolving every hop and
+reapplying the profile's trusted-IP policy before connecting. Targets may never
 be `/`, contain `..`, escape the profile roots, or traverse a symlink. Mutation
 kind/action/payload must match the schema's discriminated rules. Package and
 image mutations name a signed component; repository/registry origin, version,
