@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -119,7 +120,7 @@ func TestDoctorJSONAndExitCodes(t *testing.T) {
 	if (report.Status != "ok" && report.Status != "warning") || len(report.Checks) != 7 {
 		t.Fatalf("doctor report = %#v", report)
 	}
-	wantNames := []string{"runtime.os", "runtime.architecture", "build.metadata", "install.path", "config.permissions", "installer.tools", "credential_store"}
+	wantNames := []string{"runtime.os", "runtime.architecture", "build.metadata", "install.path", "config.permissions", "installer.tools", "credential_store.command"}
 	for i, name := range wantNames {
 		if report.Checks[i].Name != name || report.Checks[i].Severity == "" || report.Checks[i].Status == "" || report.Checks[i].Remediation == "" {
 			t.Fatalf("doctor check %d = %#v", i, report.Checks[i])
@@ -163,6 +164,21 @@ func TestUninstallCommandJSON(t *testing.T) {
 	const want = "{\"command\":\"uninstall\",\"status\":\"removed\",\"path\":\"/tmp/bin/blazn\",\"configPreserved\":true}\n"
 	if stdout.String() != want {
 		t.Fatalf("uninstall JSON=%q want=%q", stdout.String(), want)
+	}
+}
+
+func TestUninstallCommandReportsRemovedWithResidue(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := New(&stdout, &stderr, testBuild)
+	app.uninstall = func() (UninstallResult, error) {
+		return UninstallResult{Command: "uninstall", Status: "removed_with_residue", Path: "/tmp/bin/blazn", ConfigPreserved: true, Residue: "/tmp/bin/.receipt.removing"}, nil
+	}
+	if code := app.Run([]string{"uninstall", "--yes", "--output=json"}); code != ExitFailure {
+		t.Fatalf("partial uninstall code=%d want=%d", code, ExitFailure)
+	}
+	if !strings.Contains(stdout.String(), `"status":"removed_with_residue"`) || !strings.Contains(stdout.String(), `"residue":"/tmp/bin/.receipt.removing"`) {
+		t.Fatalf("partial uninstall JSON=%q", stdout.String())
 	}
 }
 
@@ -220,5 +236,76 @@ func TestRunUninstallAtRefusesModifiedBinary(t *testing.T) {
 	}
 	if _, err := os.Stat(receipt); err != nil {
 		t.Fatalf("receipt was removed: %v", err)
+	}
+}
+
+func TestRunUninstallAtReportsReceiptResidueAfterBinaryRemoval(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "blazn")
+	content := []byte("standalone-binary")
+	if err := os.WriteFile(executable, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	receipt := filepath.Join(dir, installReceiptName)
+	if err := os.WriteFile(receipt, []byte(fmt.Sprintf("version=v1.2.3\nbinary_sha256=%x\n", digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultUninstallOps
+	ops.remove = func(path string) error {
+		if strings.Contains(path, ".removing-") {
+			return errors.New("injected receipt cleanup failure")
+		}
+		return os.Remove(path)
+	}
+	result, err := runUninstallAtWithOps(executable, ops)
+	if err != nil {
+		t.Fatalf("unexpected error after material uninstall: %v", err)
+	}
+	if result.Status != "removed_with_residue" || result.Residue == "" {
+		t.Fatalf("result=%#v", result)
+	}
+	if _, err := os.Stat(executable); !os.IsNotExist(err) {
+		t.Fatalf("binary should be removed, err=%v", err)
+	}
+	if _, err := os.Stat(result.Residue); err != nil {
+		t.Fatalf("expected staged receipt residue: %v", err)
+	}
+}
+
+func TestRunUninstallAtHonorsLifecycleLock(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "blazn")
+	content := []byte("standalone-binary")
+	if err := os.WriteFile(executable, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	if err := os.WriteFile(filepath.Join(dir, installReceiptName), []byte(fmt.Sprintf("version=v1.2.3\nbinary_sha256=%x\n", digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".blazn-install.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runUninstallAt(executable); err == nil || !strings.Contains(err.Error(), "another Blazn install or uninstall") {
+		t.Fatalf("expected lifecycle lock refusal, got %v", err)
+	}
+	if _, err := os.Stat(executable); err != nil {
+		t.Fatalf("locked binary changed: %v", err)
+	}
+}
+
+func TestInstallPathCheckDetectsShadowingBinary(t *testing.T) {
+	dir := t.TempDir()
+	shadow := filepath.Join(dir, "blazn")
+	if err := os.WriteFile(shadow, []byte("shadow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	check := installPathCheck()
+	if check.Status != "warn" || !strings.Contains(check.Message, "instead of the running executable") {
+		t.Fatalf("check=%#v", check)
 	}
 }

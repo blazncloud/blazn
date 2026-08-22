@@ -9,7 +9,10 @@ tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/blazn-release-test.XXXXXX")
 cleanup() {
   rm -rf -- "$tmp_root"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 key_file="${tmp_root}/release-key"
 allowed_signers="${tmp_root}/allowed_signers"
@@ -68,5 +71,28 @@ metadata=$("${tmp_root}/extract/blazn")
   echo "unexpected embedded metadata: $metadata" >&2
   exit 1
 }
+
+if tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  real_one="${tmp_root}/real-one"
+  real_two="${tmp_root}/real-two"
+  for destination in "$real_one" "$real_two"; do
+    BLAZN_RELEASE_MODE=publish SOURCE_DATE_EPOCH=1724198400 "${repo_root}/scripts/release.sh" \
+      --source-root "$repo_root" \
+      --version v9.9.9-test \
+      --commit 0123456789abcdef0123456789abcdef01234567 \
+      --output "$destination" \
+      --signing-key "$key_file"
+  done
+  cmp "$real_one/SHA256SUMS" "$real_two/SHA256SUMS"
+  for archive in "$real_one"/blazn_*.tar.gz; do
+    name=$(basename "$archive")
+    cmp "$archive" "$real_two/$name"
+  done
+  mkdir -p "${tmp_root}/real-extract"
+  tar -C "${tmp_root}/real-extract" -xzf "$real_one/blazn_9.9.9-test_linux_amd64.tar.gz"
+  "${tmp_root}/real-extract/blazn" version --output=json | grep -F '"version":"v9.9.9-test"' >/dev/null
+else
+  echo "real reproducibility check is reserved for the pinned GNU-tar release builder" >&2
+fi
 
 echo "release packaging tests passed"

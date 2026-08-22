@@ -70,17 +70,31 @@ func installPathCheck() DoctorCheck {
 		check.Remediation = "reinstall Blazn into an absolute user-owned path"
 		return check
 	}
-	directory := filepath.Dir(executable)
-	for _, candidate := range filepath.SplitList(os.Getenv("PATH")) {
-		absolute, err := filepath.Abs(candidate)
-		if err == nil && absolute == directory {
+	runningInfo, err := os.Stat(executable)
+	if err != nil {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "could not inspect the running executable"
+		check.Remediation = "reinstall Blazn from the signed curl installer"
+		return check
+	}
+	resolved, err := exec.LookPath("blazn")
+	if err == nil {
+		resolvedInfo, statErr := os.Stat(resolved)
+		if statErr == nil && os.SameFile(runningInfo, resolvedInfo) {
 			return check
 		}
 	}
+	directory := filepath.Dir(executable)
 	check.Severity = "warning"
 	check.Status = "warn"
-	check.Message = fmt.Sprintf("executable directory %s is not on PATH", directory)
-	check.Remediation = fmt.Sprintf("add %s to PATH; Blazn will not edit shell configuration", directory)
+	if resolved != "" {
+		check.Message = fmt.Sprintf("PATH resolves blazn to %s instead of the running executable", resolved)
+		check.Remediation = fmt.Sprintf("place %s before the shadowing directory on PATH; Blazn will not edit shell configuration", directory)
+	} else {
+		check.Message = fmt.Sprintf("running executable %s is not resolvable as blazn on PATH", executable)
+		check.Remediation = fmt.Sprintf("add %s to PATH; Blazn will not edit shell configuration", directory)
+	}
 	return check
 }
 
@@ -125,7 +139,7 @@ func configPermissionsCheck() DoctorCheck {
 func installerToolsCheck() DoctorCheck {
 	check := DoctorCheck{Name: "installer.tools", Severity: "info", Status: "pass", Message: "installer verification tools are available", Remediation: "none"}
 	missing := make([]string, 0)
-	for _, command := range []string{"curl", "tar", "ssh-keygen", "awk", "mktemp"} {
+	for _, command := range []string{"curl", "tar", "ssh-keygen", "awk", "grep", "mktemp"} {
 		if _, err := exec.LookPath(command); err != nil {
 			missing = append(missing, command)
 		}
@@ -140,12 +154,20 @@ func installerToolsCheck() DoctorCheck {
 		check.Status = "warn"
 		check.Message = "installer tools unavailable: " + strings.Join(missing, ", ")
 		check.Remediation = "install the missing OS baseline tools before the next Blazn upgrade"
+		return check
+	}
+	output, err := exec.Command("ssh-keygen", "-Y", "verify").CombinedOutput()
+	if err != nil && (strings.Contains(string(output), "illegal option -- Y") || strings.Contains(string(output), "unknown option -- Y")) {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "ssh-keygen is installed but does not support signed-manifest verification"
+		check.Remediation = "install an OpenSSH release with ssh-keygen -Y verify support before the next Blazn upgrade"
 	}
 	return check
 }
 
 func credentialStoreCheck(goos string) DoctorCheck {
-	check := DoctorCheck{Name: "credential_store", Severity: "info", Status: "pass", Message: "supported OS credential store is available", Remediation: "none"}
+	check := DoctorCheck{Name: "credential_store.command", Severity: "info", Status: "pass", Message: "supported credential-store command is installed; unlock and service availability are checked during authentication", Remediation: "none"}
 	var command string
 	switch goos {
 	case "darwin":
@@ -155,14 +177,14 @@ func credentialStoreCheck(goos string) DoctorCheck {
 	default:
 		check.Severity = "warning"
 		check.Status = "warn"
-		check.Message = "credential-store capability is unknown on this platform"
+		check.Message = "credential-store command is unknown on this platform"
 		check.Remediation = "use a supported macOS or Linux platform"
 		return check
 	}
 	if _, err := exec.LookPath(command); err != nil {
 		check.Severity = "warning"
 		check.Status = "warn"
-		check.Message = "persistent OS credential storage is unavailable"
+		check.Message = "supported credential-store command is unavailable"
 		check.Remediation = "install or unlock the supported credential store; later auth can use an in-memory session"
 	}
 	return check

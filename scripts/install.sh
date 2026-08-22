@@ -19,8 +19,8 @@ BLAZN_DEFAULT_DIST_URL="https://github.com/KingJammin/blazn/releases"
 
 # Public half of the release key held by the release workflow. Rotation requires
 # shipping a reviewed installer that contains the new trust root.
-BLAZN_EMBEDDED_ALLOWED_SIGNERS='blazn-release namespaces="blazn-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOAAOSVVKmi6rjId2kH7hm06Tlew2O+S+CL6II9Xe/Yu blazn-poc-release'
-BLAZN_EMBEDDED_SIGNING_FINGERPRINT='SHA256:7YNVtjsrLjtanzQluFUPQly75P2sNarToYIy4r7+Szs'
+BLAZN_EMBEDDED_ALLOWED_SIGNERS='blazn-release namespaces="blazn-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIItePt9Lyq9CrhFeJ8VUdmH559u1x3sSxEUnVk0zbGp blazn-poc-release-v2'
+BLAZN_EMBEDDED_SIGNING_FINGERPRINT='SHA256:/B552TYf50sxCpMS4R6hLAXoHI7vouJ39yM9BQjr5Dk'
 
 blazn_err() {
   printf 'blazn installer: %s\n' "$*" >&2
@@ -32,6 +32,9 @@ blazn_die() {
 }
 
 blazn_command_required() {
+  if [ "${BLAZN_ALLOW_INSECURE_TEST_ORIGIN:-}" = "1" ] && [ "${BLAZN_TEST_MISSING_COMMAND:-}" = "$1" ]; then
+    blazn_die "required command not found: $1"
+  fi
   command -v "$1" >/dev/null 2>&1 || blazn_die "required command not found: $1"
 }
 
@@ -66,7 +69,27 @@ blazn_sha256() {
   fi
 }
 
+blazn_receipt_value() {
+  blazn_receipt_file=$1
+  blazn_receipt_key=$2
+  awk -F= -v wanted="$blazn_receipt_key" '
+    $1 == wanted { count++; value = substr($0, index($0, "=") + 1) }
+    END { if (count != 1 || value == "") exit 1; print value }
+  ' "$blazn_receipt_file"
+}
+
+blazn_test_checkpoint() {
+  blazn_checkpoint=$1
+  [ "${BLAZN_ALLOW_INSECURE_TEST_ORIGIN:-}" = "1" ] || return 0
+  case "${BLAZN_TEST_FAIL_STEP:-}" in
+    "$blazn_checkpoint") blazn_die "injected failure at $blazn_checkpoint" ;;
+    "signal-$blazn_checkpoint") kill -TERM "$$" ;;
+  esac
+}
+
 blazn_cleanup() {
+  [ "${blazn_cleanup_done:-0}" = "0" ] || return 0
+  blazn_cleanup_done=1
   if [ "${blazn_install_in_progress:-0}" = "1" ]; then
     if [ "${blazn_new_binary_installed:-0}" = "1" ] && [ -n "${blazn_destination:-}" ]; then
       rm -f "$blazn_destination" 2>/dev/null || true
@@ -75,10 +98,12 @@ blazn_cleanup() {
       rm -f "$blazn_receipt" 2>/dev/null || true
     fi
     if [ -n "${blazn_backup_binary:-}" ] && [ -f "$blazn_backup_binary" ]; then
-      mv "$blazn_backup_binary" "$blazn_destination" 2>/dev/null || true
+      mv "$blazn_backup_binary" "$blazn_destination" 2>/dev/null || \
+        blazn_err "could not restore prior binary from $blazn_backup_binary"
     fi
     if [ -n "${blazn_backup_receipt:-}" ] && [ -f "$blazn_backup_receipt" ]; then
-      mv "$blazn_backup_receipt" "$blazn_receipt" 2>/dev/null || true
+      mv "$blazn_backup_receipt" "$blazn_receipt" 2>/dev/null || \
+        blazn_err "could not restore prior receipt from $blazn_backup_receipt"
     fi
   fi
   if [ -n "${blazn_stage_binary:-}" ]; then
@@ -99,6 +124,11 @@ blazn_cleanup() {
       "$blazn_tmp_dir/extract/blazn" 2>/dev/null || true
     rmdir "$blazn_tmp_dir/extract" 2>/dev/null || true
     rmdir "$blazn_tmp_dir" 2>/dev/null || true
+  fi
+  if [ "${blazn_lock_owned:-0}" = "1" ] && [ -n "${blazn_lock_dir:-}" ]; then
+    rmdir "$blazn_lock_dir" 2>/dev/null || \
+      blazn_err "could not remove lifecycle lock $blazn_lock_dir"
+    blazn_lock_owned=0
   fi
 }
 
@@ -130,7 +160,10 @@ esac
 
 blazn_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/blazn-install.XXXXXX") || \
   blazn_die "could not create temporary directory"
-trap blazn_cleanup EXIT HUP INT TERM
+trap blazn_cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mkdir "$blazn_tmp_dir/extract"
 
 blazn_version=${BLAZN_VERSION:-}
@@ -260,20 +293,33 @@ mkdir -p "$blazn_install_dir" || blazn_die "could not create $blazn_install_dir"
 
 blazn_destination="$blazn_install_dir/blazn"
 blazn_receipt="$blazn_install_dir/.blazn-install-receipt"
+blazn_lock_dir="$blazn_install_dir/.blazn-install.lock"
+if ! mkdir "$blazn_lock_dir" 2>/dev/null; then
+  blazn_die "another Blazn install or uninstall operation owns $blazn_lock_dir"
+fi
+blazn_lock_owned=1
 [ ! -L "$blazn_destination" ] || blazn_die "refusing to replace a symbolic-link destination"
 [ ! -L "$blazn_receipt" ] || blazn_die "refusing to replace a symbolic-link receipt"
 
-if [ -f "$blazn_destination" ] && [ ! -L "$blazn_destination" ]; then
+if [ -e "$blazn_destination" ]; then
+  [ -f "$blazn_destination" ] && [ ! -L "$blazn_destination" ] || \
+    blazn_die "existing installation path is not a regular file"
+  [ -f "$blazn_receipt" ] && [ ! -L "$blazn_receipt" ] || \
+    blazn_die "existing blazn is not owned by a valid direct-install receipt; use its package manager or choose another install directory"
   blazn_installed_checksum=$(blazn_sha256 "$blazn_destination")
-  blazn_receipt_version=""
-  if [ -f "$blazn_receipt" ] && [ ! -L "$blazn_receipt" ]; then
-    blazn_receipt_version=$(awk -F= '$1 == "version" { print substr($0, index($0, "=") + 1); exit }' "$blazn_receipt")
-  fi
+  blazn_receipt_version=$(blazn_receipt_value "$blazn_receipt" version) || \
+    blazn_die "existing installation receipt has an invalid or duplicate version"
+  blazn_receipt_checksum=$(blazn_receipt_value "$blazn_receipt" binary_sha256) || \
+    blazn_die "existing installation receipt has an invalid or duplicate binary checksum"
+  [ "$blazn_installed_checksum" = "$blazn_receipt_checksum" ] || \
+    blazn_die "existing blazn differs from its receipt; refusing to replace an unowned or modified binary"
   if [ "$blazn_installed_checksum" = "$blazn_binary_checksum" ] && \
      [ "$blazn_receipt_version" = "$blazn_version" ]; then
     printf 'blazn %s is already installed at %s\n' "$blazn_version" "$blazn_destination"
     exit 0
   fi
+elif [ -e "$blazn_receipt" ]; then
+  blazn_die "installation receipt exists without its owned binary; reconcile it before installing"
 fi
 
 blazn_stage_binary="$blazn_install_dir/.blazn.new.$$"
@@ -301,35 +347,45 @@ if [ -e "$blazn_destination" ]; then
   [ -f "$blazn_destination" ] && [ ! -L "$blazn_destination" ] || \
     blazn_die "existing installation path is not a regular file"
   blazn_backup_binary="$blazn_install_dir/.blazn.backup.$$"
+  [ ! -e "$blazn_backup_binary" ] || blazn_die "stale binary backup exists at $blazn_backup_binary"
   mv "$blazn_destination" "$blazn_backup_binary" || blazn_die "could not stage the existing blazn binary"
 fi
 if [ -e "$blazn_receipt" ]; then
   [ -f "$blazn_receipt" ] && [ ! -L "$blazn_receipt" ] || \
     blazn_die "existing receipt path is not a regular file"
   blazn_backup_receipt="$blazn_install_dir/.blazn-receipt.backup.$$"
+  [ ! -e "$blazn_backup_receipt" ] || blazn_die "stale receipt backup exists at $blazn_backup_receipt"
   mv "$blazn_receipt" "$blazn_backup_receipt" || blazn_die "could not stage the existing receipt"
 fi
+blazn_test_checkpoint after-backup
 
 if ! mv "$blazn_stage_binary" "$blazn_destination"; then
   blazn_die "could not atomically install blazn"
 fi
 blazn_new_binary_installed=1
 blazn_stage_binary=""
+blazn_test_checkpoint after-binary-install
 if ! mv "$blazn_stage_receipt" "$blazn_receipt"; then
   blazn_die "blazn was installed, but its receipt could not be written"
 fi
 blazn_new_receipt_installed=1
 blazn_stage_receipt=""
+blazn_test_checkpoint after-receipt-install
+
+# The new binary/receipt pair is now the committed installation. Cleanup of
+# rollback copies must never make a committed install roll back.
+blazn_install_in_progress=0
+blazn_new_binary_installed=0
+blazn_new_receipt_installed=0
 
 if [ -n "$blazn_backup_binary" ]; then
-  rm -f "$blazn_backup_binary"
+  rm -f "$blazn_backup_binary" || blazn_err "could not remove old binary backup $blazn_backup_binary"
   blazn_backup_binary=""
 fi
 if [ -n "$blazn_backup_receipt" ]; then
-  rm -f "$blazn_backup_receipt"
+  rm -f "$blazn_backup_receipt" || blazn_err "could not remove old receipt backup $blazn_backup_receipt"
   blazn_backup_receipt=""
 fi
-blazn_install_in_progress=0
 
 printf 'Installed blazn %s to %s\n' "$blazn_version" "$blazn_destination"
 case ":${PATH:-}:" in

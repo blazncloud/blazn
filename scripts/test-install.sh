@@ -11,7 +11,10 @@ cleanup() {
     *) printf 'refusing to remove unexpected test path: %s\n' "$test_root" >&2 ;;
   esac
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() {
   printf 'not ok - %s\n' "$1" >&2
@@ -93,6 +96,28 @@ run_installer_bad_fingerprint() {
     sh "$test_repo_root/scripts/install.sh"
 }
 
+run_installer_fault() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
+  BLAZN_TEST_FAIL_STEP=$1 \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
+run_installer_missing_command() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
+  BLAZN_TEST_MISSING_COMMAND=$1 \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
 inode_of() {
   if [ "$test_os" = "darwin" ]; then
     stat -f '%i' "$1"
@@ -168,4 +193,87 @@ grep -q 'must contain only the blazn binary' "$test_root/unsafe-archive.out" || 
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "unsafe archive replaced prior binary"
 pass "unexpected archive paths are rejected"
 
-printf '1..8\n'
+cp "$test_install/.blazn-install-receipt" "$test_root/owned-receipt"
+rm "$test_install/.blazn-install-receipt"
+if run_installer >"$test_root/unowned.out" 2>&1; then
+  fail "unreceipted existing binary was replaced"
+fi
+grep -q 'not owned by a valid direct-install receipt' "$test_root/unowned.out" || fail "unowned binary failure is explicit"
+[ "$($test_install/blazn)" = "blazn test v1.2.3" ] || fail "unowned binary changed"
+cp "$test_root/owned-receipt" "$test_install/.blazn-install-receipt"
+pass "unreceipted existing binary is refused"
+
+cp "$test_install/blazn" "$test_root/owned-binary"
+printf '# modified\n' >> "$test_install/blazn"
+if run_installer >"$test_root/modified-existing.out" 2>&1; then
+  fail "modified existing binary was replaced"
+fi
+grep -q 'differs from its receipt' "$test_root/modified-existing.out" || fail "modified binary failure is explicit"
+cp "$test_root/owned-binary" "$test_install/blazn"
+chmod 0755 "$test_install/blazn"
+pass "receipt checksum mismatch is refused"
+
+prepare_upgrade_state() {
+  awk -F= '$1 == "version" { print "version=v1.2.2"; next } { print }' \
+    "$test_root/owned-receipt" > "$test_install/.blazn-install-receipt"
+}
+
+assert_upgrade_rolled_back() {
+  [ "$($test_install/blazn)" = "blazn test v1.2.3" ] || fail "$1 changed the prior binary"
+  grep -q '^version=v1.2.2$' "$test_install/.blazn-install-receipt" || fail "$1 did not restore the prior receipt"
+}
+
+for fault in after-backup after-binary-install after-receipt-install signal-after-backup signal-after-binary-install; do
+  prepare_upgrade_state
+  if run_installer_fault "$fault" >"$test_root/fault-$fault.out" 2>&1; then
+    fail "fault $fault unexpectedly succeeded"
+  fi
+  assert_upgrade_rolled_back "$fault"
+done
+cp "$test_root/owned-receipt" "$test_install/.blazn-install-receipt"
+pass "post-backup failures and signals restore the prior installation"
+
+cp "$test_release/SHA256SUMS.sig" "$test_root/good-signature"
+rm "$test_release/SHA256SUMS.sig"
+if run_installer >"$test_root/missing-signature.out" 2>&1; then
+  fail "missing signature was accepted"
+fi
+cp "$test_root/good-signature" "$test_release/SHA256SUMS.sig"
+pass "missing signature is rejected"
+
+(cd "$test_root/payload" && tar -czf "$test_release/$test_asset" blazn)
+write_manifest
+
+if run_installer_missing_command ssh-keygen >"$test_root/missing-verifier.out" 2>&1; then
+  fail "missing signature verifier was accepted"
+fi
+grep -q 'required command not found: ssh-keygen' "$test_root/missing-verifier.out" || fail "missing verifier failure is explicit"
+pass "missing signature verifier is rejected"
+
+mkdir "$test_install/.blazn-install.lock"
+if run_installer >"$test_root/lifecycle-lock.out" 2>&1; then
+  fail "concurrent lifecycle lock was ignored"
+fi
+grep -q 'another Blazn install or uninstall' "$test_root/lifecycle-lock.out" || fail "lifecycle lock failure is explicit"
+rmdir "$test_install/.blazn-install.lock"
+pass "concurrent lifecycle operation is rejected"
+
+cat > "$test_root/payload/blazn" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = "version" ]; then
+  printf '{"version":"v9.9.9","commit":"test","buildTime":"test","goos":"test","goarch":"test","contractVersion":"v1alpha1"}\n'
+  exit 0
+fi
+printf 'wrong version\n'
+EOF
+chmod 0755 "$test_root/payload/blazn"
+(cd "$test_root/payload" && tar -czf "$test_release/$test_asset" blazn)
+write_manifest
+if run_installer >"$test_root/version-mismatch.out" 2>&1; then
+  fail "downloaded version mismatch was accepted"
+fi
+grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fail "version mismatch failure is explicit"
+[ "$($test_install/blazn)" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
+pass "downloaded binary version mismatch is rejected"
+
+printf '1..15\n'

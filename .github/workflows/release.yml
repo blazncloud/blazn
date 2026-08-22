@@ -2,117 +2,221 @@ name: Release candidate and publication
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
+    inputs:
+      mode:
+        description: Build a candidate or publish a separately qualified candidate
+        required: true
+        default: candidate
+        type: choice
+        options:
+          - candidate
+          - publish
+      version:
+        description: Immutable release tag, for example v0.1.0-poc.1
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful candidate workflow run ID, required for publish
+        required: false
+        type: string
+      source_sha:
+        description: Qualified main commit SHA, required for publish
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-version-${{ inputs.version }}-${{ inputs.mode }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  candidate:
+    if: inputs.mode == 'candidate' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.metadata.outputs.version }}
-      artifact-name: ${{ steps.metadata.outputs.artifact-name }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
-      - name: Check and test
-        run: make ci
-      - name: Derive immutable candidate metadata
-        id: metadata
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            version="$GITHUB_REF_NAME"
-          else
-            version="0.0.0-${GITHUB_SHA:0:12}"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "artifact-name=blazn-candidate-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-      - name: Materialize protected signing key
+      - name: Validate final version
         shell: bash
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.BLAZN_RELEASE_SIGNING_KEY }}
+          VERSION: ${{ inputs.version }}
         run: |
-          if [[ -z "$RELEASE_SIGNING_KEY" ]]; then
-            echo "BLAZN_RELEASE_SIGNING_KEY is required" >&2
-            exit 1
-          fi
-          install -m 700 -d "$RUNNER_TEMP/blazn-release"
-          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/blazn-release/signing-key"
-          chmod 600 "$RUNNER_TEMP/blazn-release/signing-key"
-          derived_key=$(ssh-keygen -y -f "$RUNNER_TEMP/blazn-release/signing-key" | awk '{print $1 " " $2}')
-          pinned_key=$(awk '{print $1 " " $2}' release/blazn-release.pub)
-          if [[ "$derived_key" != "$pinned_key" ]]; then
-            echo "release signing secret does not match the pinned public key" >&2
-            exit 1
-          fi
-      - name: Build and sign candidate
+          set -euo pipefail
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || {
+            echo "invalid release version: $VERSION" >&2
+            exit 2
+          }
+      - name: Run complete candidate tests
+        run: make ci
+      - name: Build final-version candidate without signing credentials
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
           SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA") \
+          BLAZN_RELEASE_MODE=publish \
             ./scripts/release.sh \
-              --version "${{ steps.metadata.outputs.version }}" \
-              --commit "$GITHUB_SHA" \
-              --signing-key "$RUNNER_TEMP/blazn-release/signing-key"
-      - name: Verify candidate signature and checksums
+              --version "$VERSION" \
+              --commit "$GITHUB_SHA"
+          cp scripts/install.sh dist/install.sh
+          asset_version=${VERSION#v}
+          (cd dist && sha256sum \
+            "blazn_${asset_version}_darwin_arm64.tar.gz" \
+            "blazn_${asset_version}_linux_amd64.tar.gz" \
+            "blazn_${asset_version}_linux_arm64.tar.gz" \
+            install.sh version.txt > SHA256SUMS)
+      - name: Verify expected candidate files
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          ssh-keygen -Y verify \
-            -f release/blazn-release.allowed_signers \
-            -I blazn-release \
-            -n blazn-release \
-            -s dist/SHA256SUMS.sig \
-            < dist/SHA256SUMS
-          cd dist
-          sha256sum -c SHA256SUMS
-      - name: Upload commit-addressed candidate
-        uses: actions/upload-artifact@v7
+          set -euo pipefail
+          asset_version=${VERSION#v}
+          expected=$(printf '%s\n' \
+            "SHA256SUMS" \
+            "blazn_${asset_version}_darwin_arm64.tar.gz" \
+            "blazn_${asset_version}_linux_amd64.tar.gz" \
+            "blazn_${asset_version}_linux_arm64.tar.gz" \
+            "install.sh" \
+            "version.txt")
+          actual=$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          [[ "$actual" == "$expected" ]] || {
+            echo "unexpected candidate files" >&2
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") || true
+            exit 1
+          }
+          (cd dist && sha256sum -c SHA256SUMS)
+          printf 'Candidate run: %s\nSource SHA: %s\nVersion: %s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_SHA" "$VERSION" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload immutable final-version candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ steps.metadata.outputs.artifact-name }}
+          name: blazn-candidate-${{ github.sha }}-${{ inputs.version }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
 
-  publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+  sign-and-publish:
+    if: inputs.mode == 'publish' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: blazn-release
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/checkout@v6
-      - name: Download exact candidate
-        uses: actions/download-artifact@v7
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: dist
-      - name: Verify promoted bytes
-        run: |
-          ssh-keygen -Y verify \
-            -f release/blazn-release.allowed_signers \
-            -I blazn-release \
-            -n blazn-release \
-            -s dist/SHA256SUMS.sig \
-            < dist/SHA256SUMS
-          cd dist
-          sha256sum -c SHA256SUMS
-      - name: Publish GitHub release without rebuilding
+      - name: Validate qualified candidate reference
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --verify-tag \
-            --title "Blazn $GITHUB_REF_NAME" \
+          set -euo pipefail
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
+          [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          metadata=$(gh run view "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --json conclusion,event,headBranch,headSha,name)
+          [[ $(jq -r .conclusion <<<"$metadata") == success ]]
+          [[ $(jq -r .event <<<"$metadata") == workflow_dispatch ]]
+          [[ $(jq -r .headBranch <<<"$metadata") == main ]]
+          [[ $(jq -r .headSha <<<"$metadata") == "$SOURCE_SHA" ]]
+          [[ $(jq -r .name <<<"$metadata") == 'Release candidate and publication' ]]
+      - name: Download exact separately qualified candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh run download "$CANDIDATE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "blazn-candidate-${SOURCE_SHA}-${VERSION}" \
+            --dir dist
+      - name: Validate and recompute manifest without executing candidate code
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          asset_version=${VERSION#v}
+          expected=$(printf '%s\n' \
+            "SHA256SUMS" \
+            "blazn_${asset_version}_darwin_arm64.tar.gz" \
+            "blazn_${asset_version}_linux_amd64.tar.gz" \
+            "blazn_${asset_version}_linux_arm64.tar.gz" \
+            "install.sh" \
+            "version.txt")
+          actual=$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)
+          [[ "$actual" == "$expected" ]] || exit 1
+          (cd dist && sha256sum \
+            "blazn_${asset_version}_darwin_arm64.tar.gz" \
+            "blazn_${asset_version}_linux_amd64.tar.gz" \
+            "blazn_${asset_version}_linux_arm64.tar.gz" \
+            install.sh version.txt > SHA256SUMS.recomputed)
+          cmp dist/SHA256SUMS dist/SHA256SUMS.recomputed
+          mv dist/SHA256SUMS.recomputed dist/SHA256SUMS
+      - name: Materialize protected release key
+        shell: bash
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.BLAZN_RELEASE_SIGNING_KEY }}
+          EXPECTED_PUBLIC_KEY: ${{ vars.BLAZN_RELEASE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_SIGNING_KEY" && -n "$EXPECTED_PUBLIC_KEY" ]]
+          install -m 700 -d "$RUNNER_TEMP/blazn-release"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/blazn-release/signing-key"
+          chmod 600 "$RUNNER_TEMP/blazn-release/signing-key"
+          derived=$(ssh-keygen -y -f "$RUNNER_TEMP/blazn-release/signing-key" | awk '{print $1 " " $2}')
+          expected=$(printf '%s\n' "$EXPECTED_PUBLIC_KEY" | awk '{print $1 " " $2}')
+          [[ "$derived" == "$expected" ]]
+      - name: Sign recomputed candidate manifest
+        run: |
+          set -euo pipefail
+          ssh-keygen -q -Y sign \
+            -f "$RUNNER_TEMP/blazn-release/signing-key" \
+            -n blazn-release \
+            dist/SHA256SUMS
+          unlink "$RUNNER_TEMP/blazn-release/signing-key"
+      - name: Publish exact signed candidate without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          gh release view "$VERSION" >/dev/null 2>&1 && exit 1
+          gh release create "$VERSION" dist/* \
+            --target "$SOURCE_SHA" \
+            --title "Blazn $VERSION" \
             --generate-notes
+      - name: Post-promotion authenticated installer smoke
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          EXPECTED_PUBLIC_KEY: ${{ vars.BLAZN_RELEASE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          smoke="$RUNNER_TEMP/blazn-release-smoke"
+          mkdir -p "$smoke/download/$VERSION" "$smoke/bin"
+          gh release download "$VERSION" --dir "$smoke/download/$VERSION"
+          printf 'blazn-release namespaces="blazn-release" %s\n' "$EXPECTED_PUBLIC_KEY" > "$smoke/allowed_signers"
+          fingerprint=$(printf '%s\n' "$EXPECTED_PUBLIC_KEY" | ssh-keygen -lf - -E sha256 | awk '{print $2}')
+          BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+          BLAZN_DIST_URL="file://$smoke" \
+          BLAZN_VERSION="$VERSION" \
+          BLAZN_INSTALL_DIR="$smoke/bin" \
+          BLAZN_ALLOWED_SIGNERS="$smoke/allowed_signers" \
+          BLAZN_SIGNING_FINGERPRINT="$fingerprint" \
+            sh "$smoke/download/$VERSION/install.sh"

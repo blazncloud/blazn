@@ -18,7 +18,16 @@ type UninstallResult struct {
 	Status          string `json:"status"`
 	Path            string `json:"path"`
 	ConfigPreserved bool   `json:"configPreserved"`
+	Residue         string `json:"residue,omitempty"`
 }
+
+type uninstallOps struct {
+	mkdir  func(string, os.FileMode) error
+	rename func(string, string) error
+	remove func(string) error
+}
+
+var defaultUninstallOps = uninstallOps{mkdir: os.Mkdir, rename: os.Rename, remove: os.Remove}
 
 func RunUninstall() (UninstallResult, error) {
 	executable, err := os.Executable()
@@ -29,6 +38,10 @@ func RunUninstall() (UninstallResult, error) {
 }
 
 func runUninstallAt(executable string) (UninstallResult, error) {
+	return runUninstallAtWithOps(executable, defaultUninstallOps)
+}
+
+func runUninstallAtWithOps(executable string, ops uninstallOps) (result UninstallResult, resultErr error) {
 	executable, err := filepath.Abs(executable)
 	if err != nil {
 		return UninstallResult{}, fmt.Errorf("resolve executable path: %w", err)
@@ -41,7 +54,29 @@ func runUninstallAt(executable string) (UninstallResult, error) {
 		return UninstallResult{}, fmt.Errorf("refusing to uninstall a non-regular executable")
 	}
 
-	receipt := filepath.Join(filepath.Dir(executable), installReceiptName)
+	directory := filepath.Dir(executable)
+	lockDir := filepath.Join(directory, ".blazn-install.lock")
+	if err := ops.mkdir(lockDir, 0o700); err != nil {
+		return UninstallResult{}, fmt.Errorf("another Blazn install or uninstall operation owns %s", lockDir)
+	}
+	lockOwned := true
+	defer func() {
+		if !lockOwned {
+			return
+		}
+		if err := ops.remove(lockDir); err != nil {
+			if result.Status == "removed" {
+				result.Status = "removed_with_residue"
+				result.Residue = lockDir
+				return
+			}
+			if resultErr == nil {
+				resultErr = fmt.Errorf("remove lifecycle lock: %w", err)
+			}
+		}
+	}()
+
+	receipt := filepath.Join(directory, installReceiptName)
 	receiptInfo, err := os.Lstat(receipt)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -79,18 +114,21 @@ func runUninstallAt(executable string) (UninstallResult, error) {
 	}
 
 	stagedReceipt := fmt.Sprintf("%s.removing-%d", receipt, os.Getpid())
-	if err := os.Rename(receipt, stagedReceipt); err != nil {
+	if err := ops.rename(receipt, stagedReceipt); err != nil {
 		return UninstallResult{}, fmt.Errorf("stage installation receipt: %w", err)
 	}
-	if err := os.Remove(executable); err != nil {
-		_ = os.Rename(stagedReceipt, receipt)
+	if err := ops.remove(executable); err != nil {
+		_ = ops.rename(stagedReceipt, receipt)
 		return UninstallResult{}, fmt.Errorf("remove executable: %w", err)
 	}
-	if err := os.Remove(stagedReceipt); err != nil {
-		return UninstallResult{}, fmt.Errorf("remove staged installation receipt: %w", err)
+	result = UninstallResult{Command: "uninstall", Status: "removed", Path: executable, ConfigPreserved: true}
+	if err := ops.remove(stagedReceipt); err != nil {
+		result.Status = "removed_with_residue"
+		result.Residue = stagedReceipt
+		return result, nil
 	}
 
-	return UninstallResult{Command: "uninstall", Status: "removed", Path: executable, ConfigPreserved: true}, nil
+	return result, nil
 }
 
 func parseReceipt(reader io.Reader) (map[string]string, error) {
@@ -136,9 +174,19 @@ func (a *App) writeUninstall(format OutputFormat) int {
 		return a.writeError(format, ExitFailure, "uninstall_failed", err.Error())
 	}
 	if format == OutputJSON {
-		return a.writeJSON(result)
+		if code := a.writeJSON(result); code != ExitSuccess {
+			return code
+		}
+		if result.Status != "removed" {
+			return ExitFailure
+		}
+		return ExitSuccess
 	}
 	fmt.Fprintf(a.stdout, "Removed %s\n", result.Path)
 	fmt.Fprintln(a.stdout, "Blazn configuration and cache were preserved.")
+	if result.Status != "removed" {
+		fmt.Fprintf(a.stderr, "blazn: uninstall completed with residue at %s\n", result.Residue)
+		return ExitFailure
+	}
 	return ExitSuccess
 }

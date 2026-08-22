@@ -29,7 +29,10 @@ cleanup() {
     esac
   fi
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 install_dir="$test_root/bin"
 config_dir="$test_root/config"

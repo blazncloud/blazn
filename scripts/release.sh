@@ -105,6 +105,10 @@ esac
 
 command -v go >/dev/null 2>&1 || { echo "go is required" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
+if [ "${BLAZN_RELEASE_MODE:-development}" = "publish" ] && ! tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  echo "publish-mode releases require GNU tar for normalized archive metadata" >&2
+  exit 1
+fi
 
 archive_version=${version#v}
 build_date_epoch=${SOURCE_DATE_EPOCH:-}
@@ -123,7 +127,10 @@ tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/blazn-release.XXXXXX")
 cleanup() {
   rm -rf -- "$tmp_root"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ -e "$output_dir" ]; then
   [ -d "$output_dir" ] || { echo "output path is not a directory: $output_dir" >&2; exit 1; }

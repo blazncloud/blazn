@@ -37,7 +37,7 @@ The installer defaults to `$HOME/.local/bin` and does not edit shell or applicat
 The installer pins the Blazn POC Ed25519 release key:
 
 ```text
-SHA256:7YNVtjsrLjtanzQluFUPQly75P2sNarToYIy4r7+Szs
+SHA256:/B552TYf50sxCpMS4R6hLAXoHI7vouJ39yM9BQjr5Dk
 ```
 
 It verifies the OpenSSH signature on `SHA256SUMS`, requires exactly one checksum entry for the selected archive, validates the archive before extraction, verifies the archive checksum, runs the downloaded binary's version command, and installs the binary and receipt transactionally.
@@ -79,7 +79,7 @@ The CI target runs:
 - Cross-platform release packaging and signature tests.
 - Installer security and rollback tests.
 
-The release workflow creates one commit-addressed candidate containing:
+The release workflow first creates one final-version, commit-addressed candidate containing:
 
 ```text
 blazn_<version>_darwin_arm64.tar.gz
@@ -90,7 +90,7 @@ SHA256SUMS.sig
 version.txt
 ```
 
-Tag publication downloads and promotes the exact tested candidate bytes without rebuilding them.
+Native qualification records the candidate workflow run ID, source SHA, version, and artifact digests. A separate `publish` dispatch on `main` references that exact successful candidate run. Its protected signing job performs no checkout and executes no candidate repository scripts: it recomputes the manifest over the downloaded candidate, signs it with the environment-scoped release key, publishes those exact bytes without rebuilding, and performs an authenticated post-promotion installer smoke.
 
 ## End-to-end qualification
 
