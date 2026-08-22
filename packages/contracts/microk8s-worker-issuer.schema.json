@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/microk8s-worker-issuer-v1.json",
+  "title": "Blazn MicroK8s Worker Issuer Protocol",
+  "oneOf": [
+    {"$ref": "#/$defs/issueRequest"},
+    {"$ref": "#/$defs/revokeRequest"},
+    {"$ref": "#/$defs/issueResponse"},
+    {"$ref": "#/$defs/revokeResponse"},
+    {"$ref": "#/$defs/error"}
+  ],
+  "$defs": {
+    "uuid": {"type": "string", "format": "uuid"},
+    "issueRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operation", "issuanceId", "clusterId", "expectedNodeName", "bootstrapTaint", "ttlSeconds", "workerOnly"],
+      "properties": {
+        "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer/v1"},
+        "operation": {"const": "issue"},
+        "issuanceId": {"$ref": "#/$defs/uuid"},
+        "clusterId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "expectedNodeName": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$"},
+        "bootstrapTaint": {"const": "blazn.dev/bootstrap=pending:NoSchedule"},
+        "ttlSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
+        "workerOnly": {"const": true}
+      }
+    },
+    "revokeRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operation", "providerHandle"],
+      "properties": {
+        "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer/v1"},
+        "operation": {"const": "revoke"},
+        "providerHandle": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "issueResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operation", "providerHandle", "credential", "clusterId", "clusterHealthy", "workerOnly", "expiresAt"],
+      "properties": {
+        "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer/v1"},
+        "operation": {"const": "issue"},
+        "providerHandle": {"$ref": "#/$defs/uuid"},
+        "credential": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43,4096}$"},
+        "clusterId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "clusterHealthy": {"const": true},
+        "workerOnly": {"const": true},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "revokeResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operation", "providerHandle", "revoked"],
+      "properties": {
+        "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer/v1"},
+        "operation": {"const": "revoke"},
+        "providerHandle": {"$ref": "#/$defs/uuid"},
+        "revoked": {"const": true}
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "operation", "code", "message"],
+      "properties": {
+        "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer/v1"},
+        "operation": {"const": "error"},
+        "code": {"enum": ["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "deadline_exceeded", "internal_error"]},
+        "message": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    }
+  }
+}

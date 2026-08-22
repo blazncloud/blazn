@@ -1,0 +1,40 @@
+package microk8sissuer
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestDecodeRequestClosedAndTTLBounded(t *testing.T) {
+	base := requestFixture()
+	data, _ := json.Marshal(base)
+	if _, err := DecodeRequest(data); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(map[string]any){func(v map[string]any) { v["extra"] = true }, func(v map[string]any) { v["ttlSeconds"] = 301 }, func(v map[string]any) { delete(v, "workerOnly") }, func(v map[string]any) { v["bootstrapTaint"] = "other" }} {
+		var value map[string]any
+		_ = json.Unmarshal(data, &value)
+		mutate(value)
+		bad, _ := json.Marshal(value)
+		if _, err := DecodeRequest(bad); err == nil {
+			t.Fatalf("invalid request accepted: %s", bad)
+		}
+	}
+}
+func TestDeterministicTokenBindsEveryDomainField(t *testing.T) {
+	service, _ := NewService(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), &fakeBackend{})
+	base := requestFixture()
+	token := service.token(base)
+	if len(token) != 32 {
+		t.Fatalf("token length %d", len(token))
+	}
+	variants := []Request{base, base, base}
+	variants[0].ClusterID = "cluster-b"
+	variants[1].ExpectedNodeName = "worker-b"
+	variants[2].IssuanceID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	for _, variant := range variants {
+		if service.token(variant) == token {
+			t.Fatal("binding did not change deterministic token")
+		}
+	}
+}
