@@ -27,6 +27,9 @@ key_id=$(printf '%s' "$metadata" | jq -er .keyId)
 fingerprint=$(printf '%s' "$metadata" | jq -er .publicKeyFingerprint)
 [ "$key_id" = control-plane-node-plan/v1 ] || { printf 'Node plan key ID mismatch\n' >&2; exit 1; }
 case "$fingerprint" in sha256:????????????????????????????????????????????????????????????????) ;; *) printf 'Node plan fingerprint is invalid\n' >&2; exit 1 ;; esac
+public_padded=$(printf '%s' "$public" | tr '_-' '/+'); case $((${#public} % 4)) in 2) public_padded=${public_padded}== ;; 3) public_padded=${public_padded}= ;; esac
+derived_fingerprint=sha256:$(printf '%s' "$public_padded" | openssl base64 -d -A | sha256sum | awk '{print $1}')
+[ "$fingerprint" = "$derived_fingerprint" ] || { printf 'Node plan public fingerprint does not match key material\n' >&2; exit 1; }
 template_id=$(jq -er .templateId "$ROOT/node-install-plan-template-v1.json")
 [ "$template_id" = frontro-poc-worker/v1 ] || { printf 'Node plan template ID mismatch\n' >&2; exit 1; }
 journal_path=$JOURNAL

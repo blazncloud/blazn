@@ -39,7 +39,7 @@ jq -e \
   --arg imageId "$image_id" \
   --arg configDigest "$config_digest" \
   --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
-  '.schemaVersion == "blazn.dev/control-plane-backup/v2" and
+  '.schemaVersion == "blazn.dev/control-plane-backup/v3" and
    .configDigest == $configDigest and
    .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and
    .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest} and

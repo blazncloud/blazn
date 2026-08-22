@@ -41,7 +41,7 @@ require_command jq
   sha256sum -c SHA256SUMS
 )
 jq -e '
-  .schemaVersion == "blazn.dev/control-plane-backup/v2" and
+  .schemaVersion == "blazn.dev/control-plane-backup/v3" and
   (.fencingToken | type == "number" and . >= 1) and
   (.configDigest | test("^sha256:[a-f0-9]{64}$")) and
   (.controlApi.sourceDigest | test("^sha256:[a-f0-9]{64}$")) and

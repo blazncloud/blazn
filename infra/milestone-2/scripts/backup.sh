@@ -114,7 +114,7 @@ jq -cn \
   --arg secretDigest "$workspace_invitation_hmac_digest" \
   --arg nodeBrokerReceiptDigest "$node_broker_receipt_digest" \
   --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
-  '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest,nodePlanReceiptDigest:$nodePlanReceiptDigest}' \
+  '{schemaVersion:"blazn.dev/control-plane-backup/v3",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest,nodePlanReceiptDigest:$nodePlanReceiptDigest}' \
   >"$staging/metadata.json"
 (
   cd "$staging"

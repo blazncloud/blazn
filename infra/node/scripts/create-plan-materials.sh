@@ -15,7 +15,7 @@ if [ "${BLAZN_NODE_PLAN_TEST_MODE:-0}" != 1 ]; then
   case "$JOURNAL" in /var/lib/blazn/ownership/node-plan-material-create.json|/var/lib/blazn/ownership/node-plan-material-upgrade-create.json) ;; *) die "plan material journal is outside the reviewed path" ;; esac
 fi
 case "$ROOT:$JOURNAL:$SOURCE_TEMPLATE" in /*:/*:/*) ;; *) die "plan material paths must be absolute" ;; esac
-[ -f "$SOURCE_TEMPLATE" ] && [ ! -L "$SOURCE_TEMPLATE" ] || die "source template must be a regular non-symlink file"
+if [ ! -f "$SOURCE_TEMPLATE" ] || [ -L "$SOURCE_TEMPLATE" ]; then die "source template must be a regular non-symlink file"; fi
 
 no_links() { candidate=$1; while [ "$candidate" != / ]; do [ ! -L "$candidate" ] || die "path contains a symbolic link: $candidate"; candidate=$(dirname -- "$candidate"); done; }
 no_links "$ROOT"; no_links "$JOURNAL"; no_links "$SOURCE_TEMPLATE"
@@ -29,18 +29,18 @@ write_phase() {
 }
 validate_b64() {
   file=$1; mode=$2
-  [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c '%u:%a' "$file")" = "0:$mode" ] || die "key material has unsafe ownership or mode"
+  if [ ! -f "$file" ] || [ -L "$file" ] || [ "$(stat -c '%u:%a' "$file")" != "0:$mode" ]; then die "key material has unsafe ownership or mode"; fi
   [ "$(wc -c <"$file" | tr -d ' ')" = 44 ] || die "key material must contain 43 characters and one newline"
   [ "$(wc -l <"$file" | tr -d ' ')" = 1 ] || die "key material must contain one line"
   LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$file" || die "key material is not unpadded base64url"
 }
 validate_tree() {
   base=$1
-  [ -d "$base" ] && [ ! -L "$base" ] && [ "$(stat -c '%u:%a' "$base")" = 0:700 ] || die "plan material root is unsafe"
+  if [ ! -d "$base" ] || [ -L "$base" ] || [ "$(stat -c '%u:%a' "$base")" != 0:700 ]; then die "plan material root is unsafe"; fi
   validate_b64 "$base/signing-private-v1.b64url" 444
   validate_b64 "$base/signing-public-v1.b64url" 444
   for file in signing-public-v1.json node-install-plan-template-v1.json; do
-    [ -f "$base/$file" ] && [ ! -L "$base/$file" ] && [ "$(stat -c '%u:%a' "$base/$file")" = 0:444 ] || die "plan material file is unsafe: $file"
+    if [ ! -f "$base/$file" ] || [ -L "$base/$file" ] || [ "$(stat -c '%u:%a' "$base/$file")" != 0:444 ]; then die "plan material file is unsafe: $file"; fi
   done
   jq -e '.schemaVersion=="blazn.dev/node-plan-signing-key/v1" and .keyId=="control-plane-node-plan/v1" and (.publicKey|test("^[A-Za-z0-9_-]{43}$")) and (.publicKeyFingerprint|test("^sha256:[a-f0-9]{64}$"))' "$base/signing-public-v1.json" >/dev/null || die "public signing metadata is invalid"
   [ "$(sed -n '1p' "$base/signing-public-v1.b64url")" = "$(jq -er .publicKey "$base/signing-public-v1.json")" ] || die "public signing metadata does not match public key"
@@ -61,7 +61,7 @@ if [ ! -e "$JOURNAL" ]; then
   jq -cn --arg target "$ROOT" --arg stage "$stage" --arg source "$SOURCE_TEMPLATE" --arg sourceDigest "sha256:$(sha256sum "$SOURCE_TEMPLATE"|awk '{print $1}')" --arg createdAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '{schemaVersion:"blazn.dev/node-plan-material-create/v1",owner:"blazn-poc",phase:"initialized",target:$target,stage:$stage,source:$source,sourceDigest:$sourceDigest,createdAt:$createdAt}' >"$tmp"
   chmod 0600 "$tmp"; sync_path "$tmp"; ln -- "$tmp" "$JOURNAL" || { rm -f -- "$tmp"; die "plan material journal target appeared"; }; rm -f -- "$tmp"; sync_path "$(dirname -- "$JOURNAL")"; fault initialized
 fi
-[ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] && [ "$(stat -c '%u:%a' "$JOURNAL")" = 0:600 ] || die "plan material journal is unsafe"
+if [ ! -f "$JOURNAL" ] || [ -L "$JOURNAL" ] || [ "$(stat -c '%u:%a' "$JOURNAL")" != 0:600 ]; then die "plan material journal is unsafe"; fi
 journal_source=$(jq -er .source "$JOURNAL"); [ "$journal_source" = "$SOURCE_TEMPLATE" ] || die "plan template source changed during recovery"
 [ "$(jq -er .sourceDigest "$JOURNAL")" = "sha256:$(sha256sum "$SOURCE_TEMPLATE"|awk '{print $1}')" ] || die "plan template source digest changed during recovery"
 stage=$(jq -er .stage "$JOURNAL"); case "$stage" in "$(dirname -- "$ROOT")"/.node-plan-create-*) ;; *) die "plan material staging path escaped" ;; esac
@@ -78,7 +78,7 @@ if [ "$phase" = tree-created ]; then
   openssl genpkey -algorithm ED25519 -out "$pem"
   openssl pkey -in "$pem" -outform DER -out "$stage/.private.der"
   openssl pkey -in "$pem" -pubout -outform DER -out "$stage/.public.der"
-  [ "$(wc -c <"$stage/.private.der"|tr -d ' ')" = 48 ] && [ "$(wc -c <"$stage/.public.der"|tr -d ' ')" = 44 ] || die "OpenSSL emitted an unexpected Ed25519 encoding"
+  if [ "$(wc -c <"$stage/.private.der"|tr -d ' ')" != 48 ] || [ "$(wc -c <"$stage/.public.der"|tr -d ' ')" != 44 ]; then die "OpenSSL emitted an unexpected Ed25519 encoding"; fi
   tail -c 32 "$stage/.private.der" | openssl base64 -A | tr '+/' '-_' | tr -d '=' >"$private"; printf '\n' >>"$private"
   tail -c 32 "$stage/.public.der" | openssl base64 -A | tr '+/' '-_' | tr -d '=' >"$public"; printf '\n' >>"$public"
   chmod 0444 "$private" "$public"; sync_path "$private"; sync_path "$public"; rm -f -- "$pem" "$stage/.private.der" "$stage/.public.der"; sync_path "$stage"

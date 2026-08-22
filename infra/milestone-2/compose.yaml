@@ -303,8 +303,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    networks:
-      - control
+    network_mode: none
 
   api:
     image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
