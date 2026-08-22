@@ -42,9 +42,13 @@ const microk8sSHA256 = "36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4
 exact(template.profiles, profileIds, "template profiles");
 const profileKeys = ["cluster", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback"];
 const validation = ["binary_digest", "service_active", "node_identity", "cluster_ca", "worker_only", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility"];
+const profileArchitectures = {"ubuntu-26.04-amd64-worker/v1": ["amd64"], "existing-linux-worker-adopt/v1": ["amd64", "arm64"], "macos-lima-worker-adopt/v1": ["arm64"]};
 for (const id of profileIds) {
-  const profile = template.profiles[id];
-  exact(profile, profileKeys, `profile ${id}`);
+  const variants = template.profiles[id];
+  exact(variants, profileArchitectures[id], `profile ${id} architecture variants`);
+  for (const architecture of profileArchitectures[id]) {
+  const profile = variants[architecture];
+  exact(profile, profileKeys, `profile ${id}/${architecture}`);
   if (profile.cluster.workerOnly !== true || profile.cluster.joinCredentialEndpoint !== "/v1/node-service/join-credentials" || profile.cluster.bootstrapTaint !== "blazn.dev/bootstrap=pending:NoSchedule") fail(`${id} is not worker-only`);
   const wantedValidation = id === "ubuntu-26.04-amd64-worker/v1"
     ? ["binary_digest", "service_account", ...validation.slice(1)]
@@ -81,6 +85,7 @@ for (const id of profileIds) {
     const microk8s = profile.components.find((component) => component.name === "microk8s");
     if (!microk8s || microk8s.artifactType !== "package" || microk8s.sourceClass !== "https" || microk8s.sourceHost !== "api.snapcraft.io" || microk8s.source !== microk8sSource || microk8s.repositoryOrigin !== "https://api.snapcraft.io" || microk8s.version !== "v1.35.6-rev9072" || microk8s.sha256 !== microk8sSHA256) fail(`${id} MicroK8s source is not frozen`);
   }
+  }
 }
 
 const [systemd, launchd, limaText, binaryDigestsText] = await Promise.all([
@@ -89,22 +94,22 @@ const [systemd, launchd, limaText, binaryDigestsText] = await Promise.all([
   readFile(`${sourceTemplates}/lima-worker-binding.json`, "utf8"),
   readFile(`${sourceTemplates}/current-binary-digests.json`, "utf8"),
 ]);
-if (sha256(systemd) !== template.profiles["ubuntu-26.04-amd64-worker/v1"].nodeService.definitionSha256 || sha256(systemd) !== template.profiles["existing-linux-worker-adopt/v1"].nodeService.definitionSha256) fail("systemd definition digest drifted");
-if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].nodeService.definitionSha256) fail("launchd definition digest drifted");
+if (sha256(systemd) !== template.profiles["ubuntu-26.04-amd64-worker/v1"].amd64.nodeService.definitionSha256 || Object.values(template.profiles["existing-linux-worker-adopt/v1"]).some((profile) => sha256(systemd) !== profile.nodeService.definitionSha256)) fail("systemd definition digest drifted");
+if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].arm64.nodeService.definitionSha256) fail("launchd definition digest drifted");
 const binaryDigests = JSON.parse(binaryDigestsText);
 exact(binaryDigests, ["schemaVersion", "releaseTag", "binaries"], "current binary digest manifest");
 exact(binaryDigests.binaries, ["darwin-arm64", "linux-amd64", "linux-arm64"], "current binary platforms");
 if (binaryDigests.schemaVersion !== "blazn.dev/current-binary-digests/v1" || binaryDigests.releaseTag !== "v0.1.0-poc.1") fail("current binary release identity drifted");
-for (const [profileId, platform] of [["ubuntu-26.04-amd64-worker/v1", "linux-amd64"], ["existing-linux-worker-adopt/v1", "linux-amd64"], ["macos-lima-worker-adopt/v1", "darwin-arm64"]]) {
-  const component = template.profiles[profileId].components.find((candidate) => candidate.sourceClass === "current_binary");
-  if (!component || component.version !== binaryDigests.releaseTag || component.sha256 !== binaryDigests.binaries[platform]) fail(`${profileId} current binary is not bound to the reviewed executable digest`);
+for (const [profileId, architecture, platform] of [["ubuntu-26.04-amd64-worker/v1", "amd64", "linux-amd64"], ["existing-linux-worker-adopt/v1", "amd64", "linux-amd64"], ["existing-linux-worker-adopt/v1", "arm64", "linux-arm64"], ["macos-lima-worker-adopt/v1", "arm64", "darwin-arm64"]]) {
+  const component = template.profiles[profileId][architecture].components.find((candidate) => candidate.sourceClass === "current_binary");
+  if (!component || component.version !== binaryDigests.releaseTag || component.sha256 !== binaryDigests.binaries[platform]) fail(`${profileId}/${architecture} current binary is not bound to the reviewed executable digest`);
 }
 const lima = JSON.parse(limaText);
 exact(lima, ["schemaVersion", "clusterId", "vmName", "workerName"], "Lima worker binding");
-if (lima.schemaVersion !== "blazn.dev/lima-worker-binding/v1" || lima.clusterId !== template.profiles["macos-lima-worker-adopt/v1"].cluster.id || typeof lima.vmName !== "string" || lima.vmName.length === 0 || typeof lima.workerName !== "string" || lima.workerName.length === 0) fail("Lima worker identity drifted");
+if (lima.schemaVersion !== "blazn.dev/lima-worker-binding/v1" || lima.clusterId !== template.profiles["macos-lima-worker-adopt/v1"].arm64.cluster.id || typeof lima.vmName !== "string" || lima.vmName.length === 0 || typeof lima.workerName !== "string" || lima.workerName.length === 0) fail("Lima worker identity drifted");
 const canonicalLima = canonical(lima);
 const limaSha256 = sha256(canonicalLima);
-const macProfile = template.profiles["macos-lima-worker-adopt/v1"];
+const macProfile = template.profiles["macos-lima-worker-adopt/v1"].arm64;
 const limaComponents = macProfile.components.filter((component) => component.name === "lima-worker-binding");
 const limaMutations = macProfile.mutations.filter((mutation) => mutation.kind === "file" && mutation.target === "/Library/Application Support/Blazn/lima-worker-binding.json");
 if (limaComponents.length !== 1 || limaComponents[0].artifactType !== "configuration" || limaComponents[0].sourceClass !== "embedded" || limaComponents[0].sha256 !== limaSha256) fail("Lima worker component is not bound to its canonical asset");

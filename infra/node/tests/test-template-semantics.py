@@ -47,10 +47,10 @@ def assert_template_rejected(value, label):
 
 
 not_closed = copy.deepcopy(bundle)
-not_closed["profiles"]["ubuntu-26.04-amd64-worker/v1"]["cluster"]["unexpected"] = True
+not_closed["profiles"]["ubuntu-26.04-amd64-worker/v1"]["amd64"]["cluster"]["unexpected"] = True
 assert_template_rejected(not_closed, "an unknown nested cluster field")
 missing_source_class = copy.deepcopy(bundle)
-del missing_source_class["profiles"]["ubuntu-26.04-amd64-worker/v1"]["components"][0]["sourceClass"]
+del missing_source_class["profiles"]["ubuntu-26.04-amd64-worker/v1"]["amd64"]["components"][0]["sourceClass"]
 assert_template_rejected(missing_source_class, "a component without sourceClass")
 extra_profile = copy.deepcopy(bundle)
 extra_profile["profiles"]["unexpected/v1"] = copy.deepcopy(
@@ -74,14 +74,15 @@ dynamic = {
     "digest": "sha256:" + "a" * 64,
     "signature": "A" * 86,
 }
-cases = {
-    "ubuntu-26.04-amd64-worker/v1": ("fresh", "linux", "amd64"),
-    "existing-linux-worker-adopt/v1": ("adopt", "linux", "amd64"),
-    "macos-lima-worker-adopt/v1": ("adopt", "macos", "arm64"),
-}
+cases = [
+    ("ubuntu-26.04-amd64-worker/v1", "fresh", "linux", "amd64"),
+    ("existing-linux-worker-adopt/v1", "adopt", "linux", "amd64"),
+    ("existing-linux-worker-adopt/v1", "adopt", "linux", "arm64"),
+    ("macos-lima-worker-adopt/v1", "adopt", "macos", "arm64"),
+]
 rendered_plans = []
-for profile_id, (mode, platform, architecture) in cases.items():
-    rendered = copy.deepcopy(bundle["profiles"][profile_id])
+for profile_id, mode, platform, architecture in cases:
+    rendered = copy.deepcopy(bundle["profiles"][profile_id][architecture])
     rendered.update(dynamic)
     rendered.update({
         "mode": mode,

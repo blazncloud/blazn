@@ -25,13 +25,13 @@
       ],
       "properties": {
         "ubuntu-26.04-amd64-worker/v1": {
-          "$ref": "#/$defs/freshProfile"
+          "$ref": "#/$defs/freshVariants"
         },
         "existing-linux-worker-adopt/v1": {
-          "$ref": "#/$defs/existingLinuxProfile"
+          "$ref": "#/$defs/existingLinuxVariants"
         },
         "macos-lima-worker-adopt/v1": {
-          "$ref": "#/$defs/macosLimaProfile"
+          "$ref": "#/$defs/macosLimaVariants"
         }
       }
     }
@@ -1878,6 +1878,46 @@
           }
         }
       ]
+    },
+    "freshVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amd64"
+      ],
+      "properties": {
+        "amd64": {
+          "$ref": "#/$defs/freshProfile"
+        }
+      }
+    },
+    "existingLinuxVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amd64",
+        "arm64"
+      ],
+      "properties": {
+        "amd64": {
+          "$ref": "#/$defs/existingLinuxProfile"
+        },
+        "arm64": {
+          "$ref": "#/$defs/existingLinuxProfile"
+        }
+      }
+    },
+    "macosLimaVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arm64"
+      ],
+      "properties": {
+        "arm64": {
+          "$ref": "#/$defs/macosLimaProfile"
+        }
+      }
     }
   }
 }
