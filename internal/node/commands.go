@@ -31,6 +31,9 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	if c.Service == nil {
 		return EnrollResult{}, errors.New("node enrollment service is unavailable")
 	}
+	if currentUID() != 0 {
+		return EnrollResult{}, errors.New("node install requires a privileged root execution boundary")
+	}
 	platform, architecture, err := DefaultPlatform()
 	if err != nil {
 		return EnrollResult{}, err

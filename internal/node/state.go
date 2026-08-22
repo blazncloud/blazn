@@ -31,6 +31,8 @@ type RuntimeState struct {
 
 type InstallWAL struct {
 	SchemaVersion int                          `json:"schemaVersion"`
+	ReceiptID     string                       `json:"receiptId"`
+	Generation    int64                        `json:"generation"`
 	PlanID        string                       `json:"planId"`
 	PlanDigest    string                       `json:"planDigest"`
 	NodeID        string                       `json:"nodeId"`

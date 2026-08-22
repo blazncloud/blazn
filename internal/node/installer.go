@@ -49,6 +49,10 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 	if i.platform == nil || i.state == nil {
 		return client.NodeInstallReceipt{}, errors.New("installer dependencies are incomplete")
 	}
+	fingerprint, err := identity.Fingerprint()
+	if err != nil || meta.Generation < 1 || meta.SigningKeyID == "" || meta.PublicKeyFingerprint != fingerprint {
+		return client.NodeInstallReceipt{}, errors.New("installer identity does not match the enrolled identity")
+	}
 	if err := i.platform.Preflight(ctx, plan); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
@@ -60,8 +64,12 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
+	receiptID, err := newUUID()
+	if err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
 	created := i.now().UTC()
-	wal := InstallWAL{SchemaVersion: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
+	wal := InstallWAL{SchemaVersion: 1, ReceiptID: receiptID, Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
 	if err := i.state.CreateWAL(wal); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
@@ -71,6 +79,9 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 		prior, err := i.platform.Capture(ctx, mutation, plan.Rollback.BackupRoot)
 		if err != nil {
 			return i.failAndRollback(ctx, plan, identityMeta, identity, servicePrior, &wal, fmt.Errorf("capture mutation %d: %w", mutation.Ordinal, err))
+		}
+		if err := validatePriorState(prior); err != nil {
+			return i.failAndRollback(ctx, plan, identityMeta, identity, servicePrior, &wal, fmt.Errorf("capture mutation %d returned unsafe rollback state: %w", mutation.Ordinal, err))
 		}
 		entry := client.NodeReceiptMutation{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: prior.State, RollbackMaterial: prior.Material, DesiredDigest: mutation.DesiredDigest, Status: "pending"}
 		wal.Stage = "install"
@@ -215,11 +226,10 @@ func (i *Installer) receipt(plan client.NodeInstallPlan, meta client.NodeEnrollm
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
-	receiptID, err := newUUID()
-	if err != nil {
-		return client.NodeInstallReceipt{}, err
+	if wal.ReceiptID == "" || wal.Generation < 1 {
+		return client.NodeInstallReceipt{}, errors.New("install WAL receipt identity is invalid")
 	}
-	receipt := client.NodeInstallReceipt{SchemaVersion: client.NodeSchemaVersion, ReceiptID: receiptID, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Generation: 1, NodeIdentityGeneration: meta.Generation, SignerKind: "node_identity", SignerFingerprint: fingerprint, State: state, CurrentStage: "complete", Owner: wal.Owner, Binary: client.NodeReceiptBinary{Path: plan.NodeService.BinaryPath, Digest: binaryDigest(plan)}, Service: client.NodeReceiptService{Manager: plan.NodeService.Manager, Name: plan.NodeService.UnitName, DefinitionDigest: "sha256:" + plan.NodeService.DefinitionSHA256, PriorEnabled: servicePrior.Enabled, PriorActive: servicePrior.Active}, Mutations: wal.Mutations, Residues: residues, CreatedAt: wal.CreatedAt, UpdatedAt: nowString(i.now()), SigningKeyID: meta.SigningKeyID}
+	receipt := client.NodeInstallReceipt{SchemaVersion: client.NodeSchemaVersion, ReceiptID: wal.ReceiptID, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Generation: wal.Generation, NodeIdentityGeneration: meta.Generation, SignerKind: "node_identity", SignerFingerprint: fingerprint, State: state, CurrentStage: "complete", Owner: wal.Owner, Binary: client.NodeReceiptBinary{Path: plan.NodeService.BinaryPath, Digest: binaryDigest(plan)}, Service: client.NodeReceiptService{Manager: plan.NodeService.Manager, Name: plan.NodeService.UnitName, DefinitionDigest: "sha256:" + plan.NodeService.DefinitionSHA256, PriorEnabled: servicePrior.Enabled, PriorActive: servicePrior.Active}, Mutations: wal.Mutations, Residues: residues, CreatedAt: wal.CreatedAt, UpdatedAt: nowString(i.now()), SigningKeyID: meta.SigningKeyID}
 	digest, err := client.NodeInstallReceiptDigest(receipt)
 	if err != nil {
 		return receipt, err
@@ -246,6 +256,21 @@ func binaryDigest(plan client.NodeInstallPlan) string {
 		}
 	}
 	return ""
+}
+func validatePriorState(prior PriorState) error {
+	switch prior.State {
+	case "absent":
+		if prior.Material.Kind != "absent" || prior.Material.Locator != "" || prior.Material.Digest != "" || prior.Material.Mode != nil || prior.Material.UID != nil || prior.Material.GID != nil {
+			return errors.New("absent prior state contains rollback material")
+		}
+	case "owned", "preexisting_exact":
+		if prior.Material.Kind == "" || prior.Material.Kind == "absent" || prior.Material.Locator == "" || prior.Material.Digest == "" || prior.Material.Mode == nil || prior.Material.UID == nil || prior.Material.GID == nil {
+			return errors.New("pre-existing prior state lacks complete rollback material")
+		}
+	default:
+		return errors.New("prior state is invalid")
+	}
+	return nil
 }
 func newUUID() (string, error) {
 	value := make([]byte, 16)

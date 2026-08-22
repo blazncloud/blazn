@@ -105,6 +105,8 @@ func TestCompletedWALRecoveryNeverRollsBackActiveInstall(t *testing.T) {
 	plan := installPlan()
 	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
 	state := &memoryState{hasWAL: true, wal: InstallWAL{SchemaVersion: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "complete", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "start", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: 1, Kind: "group", Target: "blazn-node", PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}, {Ordinal: 2, Kind: "user", Target: "blazn-node", PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}, CreatedAt: "2026-08-22T12:00:00Z", UpdatedAt: "2026-08-22T12:01:00Z"}}
+	state.wal.ReceiptID = "55555555-5555-4555-8555-555555555555"
+	state.wal.Generation = 1
 	platform := &mockPlatform{failAt: -1}
 	installer := NewInstaller(platform, state)
 	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 2, 0, 0, time.UTC) }
