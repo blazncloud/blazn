@@ -115,8 +115,10 @@ phase4c_stop_uid_proxy() {
 phase4c_delete_uid() {
   api_path=$1
   expected_uid=$2
+  propagation=${3:-Foreground}
   case "$expected_uid" in ????????-????-????-????-????????????) ;; *) printf 'invalid deletion UID\n' >&2; return 1 ;; esac
-  payload=$(printf '{"apiVersion":"v1","kind":"DeleteOptions","propagationPolicy":"Foreground","preconditions":{"uid":"%s"}}' "$expected_uid")
+  case "$propagation" in Foreground|Background) ;; *) printf 'invalid deletion propagation policy\n' >&2; return 1 ;; esac
+  payload=$(printf '{"apiVersion":"v1","kind":"DeleteOptions","propagationPolicy":"%s","preconditions":{"uid":"%s"}}' "$propagation" "$expected_uid")
   curl --fail-with-body --silent --show-error --unix-socket "$phase4c_proxy_socket" \
     -X DELETE -H 'content-type: application/json' --data-binary "$payload" "http://localhost$api_path" >/dev/null
 }

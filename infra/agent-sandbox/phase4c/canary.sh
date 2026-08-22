@@ -138,7 +138,7 @@ while :; do
       phase4c_write_phase "$transaction" canary-ready; phase=canary-ready ;;
     canary-ready)
       phase4c_start_uid_proxy "$transaction"; trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
-      [ -z "$(kubectl get sandbox phase4c-canary -n blazn-poc --ignore-not-found -o name)" ] || phase4c_delete_uid '/apis/agents.x-k8s.io/v1beta1/namespaces/blazn-poc/sandboxes/phase4c-canary' "$(cat "$transaction/uids/canary-sandbox")"
+      [ -z "$(kubectl get sandbox phase4c-canary -n blazn-poc --ignore-not-found -o name)" ] || phase4c_delete_uid '/apis/agents.x-k8s.io/v1beta1/namespaces/blazn-poc/sandboxes/phase4c-canary' "$(cat "$transaction/uids/canary-sandbox")" Background
       phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
       kubectl wait --for=delete sandbox/phase4c-canary -n blazn-poc --timeout=120s
       kubectl wait --for=delete pod/phase4c-canary -n blazn-poc --timeout=120s
