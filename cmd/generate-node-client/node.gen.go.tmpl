@@ -1928,9 +1928,12 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 	if plan.NodeService.Manager == "launchd" {
 		wantedKind, wantedTarget = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist"
 	}
-	definitionCount, enableCount, definitionOrdinal := 0, 0, int64(0)
+	definitionCount, enableCount, managerMutationCount, definitionOrdinal, enableOrdinal := 0, 0, 0, int64(0), int64(0)
 	for _, mutation := range plan.Mutations {
 		component := components[nodeMutationSourceComponent(mutation)]
+		if mutation.Kind == wantedKind {
+			managerMutationCount++
+		}
 		managerIdentity := mutation.Desired["unitName"] == plan.NodeService.UnitName
 		if plan.NodeService.Manager == "launchd" {
 			managerIdentity = mutation.Desired["label"] == plan.NodeService.UnitName
@@ -1944,19 +1947,15 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 			definitionCount++
 			definitionOrdinal = mutation.Ordinal
 		}
-		if materialBound && mutation.Action == "enable" && mutation.Rollback == "restore_prior" {
+		if materialBound && mutation.Action == "enable" && mutation.Rollback == "restore_prior" && mutation.Mode == 0 {
 			enableCount++
+			enableOrdinal = mutation.Ordinal
 		}
 	}
-	if definitionCount != 1 || enableCount != 1 {
+	if definitionCount != 1 || enableCount != 1 || managerMutationCount != 2 {
 		return false
 	}
-	for _, mutation := range plan.Mutations {
-		if mutation.Kind == wantedKind && mutation.Action == "enable" {
-			return mutation.Ordinal > definitionOrdinal
-		}
-	}
-	return false
+	return enableOrdinal > definitionOrdinal
 }
 
 func nodeHasValidation(values []string, wanted string) bool {

@@ -111,6 +111,11 @@ func TestValidateNodeInstallPlanSafetyAndMutationUniqueness(t *testing.T) {
 	if err := ValidateNodeInstallPlan(plan); err == nil || !strings.Contains(err.Error(), "repeats ordinal") {
 		t.Fatalf("duplicate mutation error=%v", err)
 	}
+	plan = validNodeInstallPlan()
+	plan.Mutations[1].Ordinal, plan.Mutations[2].Ordinal = 3, 2
+	if err := ValidateNodeInstallPlan(plan); err == nil {
+		t.Fatal("service enable preceding definition passed")
+	}
 }
 
 func TestNodeInstallComponentSourceClassesAreClosed(t *testing.T) {

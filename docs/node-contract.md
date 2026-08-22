@@ -172,7 +172,11 @@ the locally trusted version and SHA-256 to plan verification. The plan must
 contain exactly one root-owned `0755` `adopt_exact` mutation from that component
 to the service binary path and require `binary_digest` evidence. It must also
 contain exactly one manager-matching embedded service definition and require
-`service_active` evidence.
+`service_active` evidence. Unit material and activation are separately
+receipted: a manager-matching `write` or `adopt_exact` mutation is followed by
+an ordered `enable` mutation whose rollback restores the prior activation
+state. Fresh hosts must install/write owned unit material; adopt profiles may
+also install an absent Blazn unit or adopt a preexisting exact one.
 Ubuntu/existing-Linux profiles require systemd, Linux image platform, the
 profile architecture, `blazn-node:blazn-node`, and approved apt/snap inputs;
 they reject launchd/brew. The macOS/Lima profile requires launchd, ARM64 Linux
