@@ -243,9 +243,14 @@ fingerprint, and public key to exactly match the receipt; a generic keyring
 lookup is insufficient.
 Rollback locators are opaque single-segment `receipt-backup://<id>` values and
 are resolved beneath the signed platform-specific backup root only after
-no-symlink path validation. Linux uses `/var/lib/blazn/install-backups/<id>`;
-macOS uses `/Library/Application Support/Blazn/install-backups/<id>` and never
-relies on the `/var` symlink.
+no-symlink path validation. Linux uses the root-owned mode-`0700`
+`/var/lib/blazn-node-root/install-backups/<id>` tree; macOS uses the root-owned
+mode-`0700` `/Library/Application Support/BlaznNodeRoot/install-backups/<id>`
+tree. Privileged authority, WAL, receipts, and rollback evidence stay under
+those platform root-state trees. They never share a parent controlled by the
+Node daemon account. Service-owned identity/runtime state remains separately at
+`/var/lib/blazn/node` on Linux and `/Library/Application Support/Blazn/Node` on
+macOS; macOS never relies on the `/var` symlink.
 Account mutations are first-class receipt entries. A newly created `group` or
 `user` has prior state `absent`, absent rollback material, and is marked
 `removed` when rolled back. An adopted or previously receipt-owned account has

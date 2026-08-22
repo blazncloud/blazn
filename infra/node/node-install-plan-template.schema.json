@@ -1128,8 +1128,8 @@
         },
         "backupRootClass": {
           "enum": [
-            "linux_var_lib",
-            "macos_library_application_support"
+            "linux_node_root",
+            "macos_node_root"
           ]
         },
         "backupRoot": {
@@ -1144,7 +1144,7 @@
           "if": {
             "properties": {
               "backupRootClass": {
-                "const": "linux_var_lib"
+                "const": "linux_node_root"
               }
             },
             "required": [
@@ -1154,7 +1154,7 @@
           "then": {
             "properties": {
               "backupRoot": {
-                "pattern": "^/var/lib/blazn/install-backups/[A-Za-z0-9_-]{1,128}$"
+                "pattern": "^/var/lib/blazn-node-root/install-backups/[A-Za-z0-9_-]{1,128}$"
               }
             }
           }
@@ -1163,7 +1163,7 @@
           "if": {
             "properties": {
               "backupRootClass": {
-                "const": "macos_library_application_support"
+                "const": "macos_node_root"
               }
             },
             "required": [
@@ -1173,7 +1173,7 @@
           "then": {
             "properties": {
               "backupRoot": {
-                "pattern": "^/Library/Application Support/Blazn/install-backups/[A-Za-z0-9_-]{1,128}$"
+                "pattern": "^/Library/Application Support/BlaznNodeRoot/install-backups/[A-Za-z0-9_-]{1,128}$"
               }
             }
           }

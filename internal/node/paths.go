@@ -1,0 +1,45 @@
+package node
+
+import (
+	"errors"
+	"runtime"
+
+	"github.com/KingJammin/blazn/internal/client"
+)
+
+const (
+	LinuxNodeServiceStateRoot = "/var/lib/blazn/node"
+	LinuxNodeRootStateRoot    = "/var/lib/blazn-node-root"
+	LinuxNodeProfileRoot      = "/etc/blazn/node/profiles"
+
+	MacOSNodeServiceStateRoot = "/Library/Application Support/Blazn/Node"
+	MacOSNodeRootStateRoot    = "/Library/Application Support/BlaznNodeRoot"
+	MacOSNodeProfileRoot      = "/Library/Application Support/BlaznNodeRoot/profiles"
+)
+
+type ProductionNodePaths struct {
+	ServiceStateRoot string
+	RootStateRoot    string
+	ProfileRoot      string
+}
+
+func NodeProductionPaths(platform client.NodePlatform) (ProductionNodePaths, error) {
+	switch platform {
+	case client.NodePlatformLinux:
+		return ProductionNodePaths{ServiceStateRoot: LinuxNodeServiceStateRoot, RootStateRoot: LinuxNodeRootStateRoot, ProfileRoot: LinuxNodeProfileRoot}, nil
+	case client.NodePlatformMacOS:
+		return ProductionNodePaths{ServiceStateRoot: MacOSNodeServiceStateRoot, RootStateRoot: MacOSNodeRootStateRoot, ProfileRoot: MacOSNodeProfileRoot}, nil
+	default:
+		return ProductionNodePaths{}, errors.New("production Node platform is unsupported")
+	}
+}
+
+func HostProductionNodePaths() (ProductionNodePaths, error) {
+	if runtime.GOOS == "linux" {
+		return NodeProductionPaths(client.NodePlatformLinux)
+	}
+	if runtime.GOOS == "darwin" {
+		return NodeProductionPaths(client.NodePlatformMacOS)
+	}
+	return ProductionNodePaths{}, errors.New("production Node host platform is unsupported")
+}

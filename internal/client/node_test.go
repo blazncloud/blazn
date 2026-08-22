@@ -44,7 +44,7 @@ func validNodeInstallPlan() NodeInstallPlan {
 		NodeService:   NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash},
 		Labels:        map[string]string{"blazn.dev/pool": "default"}, Taints: []NodeTaint{}, ResourceBounds: NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
 		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 2, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 3, Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, UID: 0, GID: 0, Rollback: "restore_prior"}},
-		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
+		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_node_root", BackupRoot: "/var/lib/blazn-node-root/install-backups/receipt-1"},
 		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
 	}
 }
@@ -115,6 +115,12 @@ func TestValidateNodeInstallPlanSafetyAndMutationUniqueness(t *testing.T) {
 	plan.Rollback.PreserveUserData = false
 	if err := ValidateNodeInstallPlan(plan); err == nil {
 		t.Fatal("unsafe rollback plan passed validation")
+	}
+	plan = validNodeInstallPlan()
+	plan.Rollback.BackupRootClass = "linux_var_lib"
+	plan.Rollback.BackupRoot = "/var/lib/blazn/install-backups/legacy"
+	if err := ValidateNodeInstallPlan(plan); err == nil {
+		t.Fatal("legacy service-owned rollback root passed validation")
 	}
 	plan = validNodeInstallPlan()
 	plan.Mutations = append(plan.Mutations, plan.Mutations[0])
@@ -225,7 +231,7 @@ func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 	plan := validNodeInstallPlan()
 	plan.InstallProfile, plan.Target.Platform, plan.Target.Architecture = "macos-lima-worker-adopt/v1", NodePlatformMacOS, NodeArchARM64
 	plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "wheel", DefinitionSHA256: testHash}
-	plan.Rollback.BackupRootClass, plan.Rollback.BackupRoot = "macos_library_application_support", "/Library/Application Support/Blazn/install-backups/receipt-1"
+	plan.Rollback.BackupRootClass, plan.Rollback.BackupRoot = "macos_node_root", "/Library/Application Support/BlaznNodeRoot/install-backups/receipt-1"
 	binding := NodeTrustedLimaBinding{ComponentName: "lima-worker-binding", Target: "/Library/Application Support/Blazn/lima-worker-binding.json", ClusterID: plan.Cluster.ID, VMName: "blazn-worker", WorkerName: "worker-1"}
 	binding.SHA256, _ = NodeLimaBindingSHA256(binding)
 	plan.Components = []NodeInstallComponent{{Name: "lima-worker-binding", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: binding.SHA256, Ownership: "adopt_exact"}}
@@ -311,8 +317,8 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 			plan.Target.Platform = NodePlatformMacOS
 			plan.Target.Architecture = NodeArchARM64
 			plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "wheel", DefinitionSHA256: testHash}
-			plan.Rollback.BackupRootClass = "macos_library_application_support"
-			plan.Rollback.BackupRoot = "/Library/Application Support/Blazn/install-backups/receipt-1"
+			plan.Rollback.BackupRootClass = "macos_node_root"
+			plan.Rollback.BackupRoot = "/Library/Application Support/BlaznNodeRoot/install-backups/receipt-1"
 			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "lima-worker-binding", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}}
 			plan.ValidationTests = append(plan.ValidationTests, "lima_worker_binding")
 			plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: 2, Kind: "file", Action: "adopt_exact", Target: "/Library/Application Support/Blazn/lima-worker-binding.json", Desired: map[string]any{"sourceComponent": "lima-worker-binding", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "leave_and_report"})
@@ -492,7 +498,7 @@ func signedNodeInstallPlan(t *testing.T) (NodeInstallPlan, NodeInstallPlanTrust)
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/etc/systemd/system", "/var/lib/blazn-node-root/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodePublicKey, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey, Profile: profile}
 	return plan, trust
 }
@@ -618,7 +624,7 @@ func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testi
 	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "package", Action: "install", Target: "containerd", Desired: map[string]any{"manager": "apt", "version": "1.2.3", "componentName": "containerd"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}}
 	addAuthenticatedServiceBinary(&plan)
 	addEmbeddedServiceDefinition(&plan)
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn-node-root/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err == nil {
 		t.Fatal("untrusted package repository passed")
 	}
@@ -693,7 +699,7 @@ func TestVerifySignedInstallAndOperationReceipts(t *testing.T) {
 	}
 	install.Digest = digest
 	install.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-receipt-v1\n"+digest)))
-	if err := VerifyNodeInstallReceipt(install, NodeInstallReceiptTrust{PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID, Signer: NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: install.SigningKeyID, Generation: install.NodeIdentityGeneration, Fingerprint: fingerprint, PublicKey: publicKey}, BackupRoot: "/var/lib/blazn/install-backups/receipt-1", VerifyNoSymlinkTraversal: func(string) error { return nil }}); err != nil {
+	if err := VerifyNodeInstallReceipt(install, NodeInstallReceiptTrust{PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID, Signer: NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: install.SigningKeyID, Generation: install.NodeIdentityGeneration, Fingerprint: fingerprint, PublicKey: publicKey}, BackupRoot: "/var/lib/blazn-node-root/install-backups/receipt-1", VerifyNoSymlinkTraversal: func(string) error { return nil }}); err != nil {
 		t.Fatal(err)
 	}
 	operation := validOperationReceipt()
@@ -722,7 +728,7 @@ func TestReceiptSignerAndStateCoherence(t *testing.T) {
 	digest, _ := NodeInstallReceiptDigest(install)
 	install.Digest = digest
 	install.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-receipt-v1\n"+digest)))
-	wrongGeneration := NodeInstallReceiptTrust{PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID, Signer: NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: install.SigningKeyID, Generation: install.NodeIdentityGeneration + 1, Fingerprint: fingerprint, PublicKey: publicKey}, BackupRoot: "/var/lib/blazn/install-backups/receipt-1", VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	wrongGeneration := NodeInstallReceiptTrust{PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID, Signer: NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: install.SigningKeyID, Generation: install.NodeIdentityGeneration + 1, Fingerprint: fingerprint, PublicKey: publicKey}, BackupRoot: "/var/lib/blazn-node-root/install-backups/receipt-1", VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := VerifyNodeInstallReceipt(install, wrongGeneration); err == nil {
 		t.Fatal("wrong active identity generation passed")
 	}
@@ -761,12 +767,12 @@ func TestReceiptSignerAndStateCoherence(t *testing.T) {
 }
 
 func TestOpaqueRollbackLocatorResolvesOnlyBelowPlatformRoot(t *testing.T) {
-	linuxRoot := "/var/lib/blazn/install-backups/receipt-1"
+	linuxRoot := "/var/lib/blazn-node-root/install-backups/receipt-1"
 	resolved, err := ResolveNodeRollbackLocator(linuxRoot, "receipt-backup://prior_state_1")
 	if err != nil || resolved != linuxRoot+"/prior_state_1" {
 		t.Fatalf("resolved=%q err=%v", resolved, err)
 	}
-	macRoot := "/Library/Application Support/Blazn/install-backups/receipt-1"
+	macRoot := "/Library/Application Support/BlaznNodeRoot/install-backups/receipt-1"
 	resolved, err = ResolveNodeRollbackLocator(macRoot, "receipt-backup://prior_state_1")
 	if err != nil || resolved != macRoot+"/prior_state_1" {
 		t.Fatalf("mac resolved=%q err=%v", resolved, err)
