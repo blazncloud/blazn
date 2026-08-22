@@ -12,6 +12,7 @@ require_command docker
 require_command jq
 require_command sha256sum
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
+export COMPOSE_BAKE=false
 ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
 assert_regular_file_owned_mode "$ENV_FILE" 0 600
 

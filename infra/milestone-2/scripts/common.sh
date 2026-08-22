@@ -130,6 +130,18 @@ sha256_file() {
 control_api_source_digest() {
   infra_root=$1
   repo_root=$(CDPATH='' cd -- "$infra_root/../.." && pwd)
+  for required_input in \
+    services/control-api/Dockerfile \
+    services/control-api/package.json \
+    services/control-api/package-lock.json \
+    services/control-api/tsconfig.json; do
+    if [ ! -f "$repo_root/$required_input" ] || [ -L "$repo_root/$required_input" ]; then
+      die "control API build input is missing or symlinked: $required_input"
+    fi
+  done
+  if find "$repo_root/services/control-api/src" "$repo_root/services/control-api/migrations" "$repo_root/packages/contracts" -type l -print | grep . >/dev/null; then
+    die "control API build tree contains a symbolic link"
+  fi
   (
     cd "$repo_root"
     {
