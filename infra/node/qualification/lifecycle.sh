@@ -225,10 +225,12 @@ do_action() {
       ;;
     expired-repair-denied)
       verify_plan_expired
-      if target_exec "$binary" --output=json node repair; then
+      repair_output=''
+      if repair_output=$(target_exec "$binary" --output=json node repair); then
         qual_die 'repair unexpectedly accepted an expired plan'
       fi
-      jq -n '{schemaVersion:1,status:"passed",expiredRepairDenied:true}'
+      qual_require_expired_repair_denial "$repair_output"
+      jq -n --argjson denial "$repair_output" '{schemaVersion:1,status:"passed",expiredRepairDenied:true,denial:$denial}'
       ;;
     expired-uninstall|uninstall)
       if [ "$action" = expired-uninstall ]; then verify_plan_expired; fi

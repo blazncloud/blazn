@@ -49,11 +49,89 @@ qual_require_approval() {
   action=$1
   qual_require_target
   qual_is_mutation || qual_die "${action} requires BLAZN_QUALIFICATION_MODE=mutate"
-  expected="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:${action}"
+  input_digest=$(qual_approval_input_digest "$action")
+  expected="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:${action}:${input_digest}"
   [ "${BLAZN_QUALIFICATION_APPROVAL:-}" = "$expected" ] || qual_die "approval must equal ${expected}"
   [ "${BLAZN_QUALIFICATION_APPROVED_HEAD:-}" = "$(git -C "$repo_root" rev-parse HEAD)" ] || qual_die 'approval is not bound to the current source HEAD'
   [ "$(git -C "$repo_root" remote get-url origin)" = 'https://github.com/blazncloud/blazn.git' ] || qual_die 'origin is not the canonical blazncloud repository'
   [ -z "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ] || qual_die 'source is dirty; mutation evidence would not be reproducible'
+}
+
+qual_approval_input_digest() {
+  approval_action=$1
+  qual_require_command python3
+  approval_head=$(git -C "$repo_root" rev-parse HEAD)
+  python3 - "$approval_action" "$approval_head" <<'PY'
+import hashlib, json, os, sys
+
+# These are the complete non-secret inputs which can change the target or the
+# meaning/scope of a qualification mutation. Missing values are bound as empty
+# strings so setting one after approval always invalidates the approval.
+names = (
+    "BLAZN_QUALIFICATION_BINARY_SHA256",
+    "BLAZN_QUALIFICATION_CLUSTER_ID",
+    "BLAZN_QUALIFICATION_CLUSTER_ORIGIN",
+    "BLAZN_QUALIFICATION_EXPECTED_NODE_UID",
+    "BLAZN_QUALIFICATION_EXPECTED_RESOURCE_VERSION",
+    "BLAZN_QUALIFICATION_INSTALL_PROFILE",
+    "BLAZN_QUALIFICATION_KUBE_CONTEXT",
+    "BLAZN_QUALIFICATION_KUBE_NODE",
+    "BLAZN_QUALIFICATION_KUBE_SYSTEM_UID",
+    "BLAZN_QUALIFICATION_LIMA_VM",
+    "BLAZN_QUALIFICATION_LXD_CPU",
+    "BLAZN_QUALIFICATION_LXD_IMAGE_FINGERPRINT",
+    "BLAZN_QUALIFICATION_LXD_MEMORY",
+    "BLAZN_QUALIFICATION_MACHINE_FINGERPRINT",
+    "BLAZN_QUALIFICATION_OPERATOR_GID",
+    "BLAZN_QUALIFICATION_OPERATOR_UID",
+    "BLAZN_QUALIFICATION_PLAN_EXPIRES_AT",
+    "BLAZN_QUALIFICATION_PROFILE",
+    "BLAZN_QUALIFICATION_REINSTALL_REQUEST_ID",
+    "BLAZN_QUALIFICATION_REQUEST_ID",
+    "BLAZN_QUALIFICATION_SNAPSHOT",
+    "BLAZN_QUALIFICATION_TARGET",
+    "BLAZN_QUALIFICATION_WORKSPACE",
+)
+document = {
+    "action": sys.argv[1],
+    "sourceHead": sys.argv[2],
+    "inputs": {name: os.environ.get(name, "") for name in names},
+}
+payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+print("sha256:" + hashlib.sha256(payload).hexdigest())
+PY
+}
+
+qual_validate_lxd_limits() {
+  lxd_cpu=${BLAZN_QUALIFICATION_LXD_CPU:-4}
+  lxd_memory=${BLAZN_QUALIFICATION_LXD_MEMORY:-8GiB}
+  case "$lxd_cpu" in ''|*[!0-9]*) qual_die 'LXD CPU limit must be an integer from 1 through 8' ;; esac
+  [ "$lxd_cpu" -ge 1 ] && [ "$lxd_cpu" -le 8 ] || qual_die 'LXD CPU limit must be an integer from 1 through 8'
+  [[ "$lxd_memory" =~ ^([1-9]|1[0-6])GiB$ ]] || qual_die 'LXD memory limit must be an integer GiB value from 1GiB through 16GiB'
+  BLAZN_QUALIFICATION_LXD_CPU=$lxd_cpu
+  BLAZN_QUALIFICATION_LXD_MEMORY=$lxd_memory
+  export BLAZN_QUALIFICATION_LXD_CPU BLAZN_QUALIFICATION_LXD_MEMORY
+}
+
+qual_require_expired_repair_denial() {
+  denial=$1
+  jq -e '.exitCode == 1 and .error.code == "node_failed" and (.error.message | startswith("repair requires an authorized fresh, unexpired plan:"))' <<<"$denial" >/dev/null ||
+    qual_die 'repair failed, but not with the exact expired-plan denial envelope'
+}
+
+qual_require_stale_cas_rejection() {
+  rejection=$1
+  if jq -e '(.kind == "Status") and (.status == "Failure") and (.reason == "Invalid") and (.code == 422) and (.message | test("(?i)(jsonpatch|test).*(resourceVersion|test|apply)|resourceVersion.*test"))' <<<"$rejection" >/dev/null 2>&1; then
+    jq -n --argjson status "$rejection" '{classification:"kubernetes-status-invalid-422-jsonpatch-test",reason:"Invalid",code:422,status:$status}'
+    return
+  fi
+  if [[ "$rejection" =~ ^Error\ from\ server\ \(Invalid\): ]] &&
+      [[ "$rejection" =~ ([Jj][Ss][Oo][Nn][Pp]atch|[Tt]est) ]] &&
+      [[ "$rejection" =~ (resourceVersion|test|apply) ]]; then
+    jq -n --arg message "$rejection" '{classification:"kubectl-invalid-jsonpatch-test",reason:"Invalid",message:$message}'
+    return
+  fi
+  qual_die 'stale CAS failed, but not with the exact JSON Patch test rejection'
 }
 
 qual_validate_lock() {

@@ -38,13 +38,15 @@ case "$action" in
       stale="${expected_rv}-stale"
       current_unschedulable=$(jq -r '.spec.unschedulable // false' <<<"$node_json")
       patch=$(jq -nc --arg stale "$stale" --argjson value "$current_unschedulable" '[{"op":"test","path":"/metadata/resourceVersion","value":$stale},{"op":"add","path":"/spec/unschedulable","value":$value}]')
-      if kubectl --context "$BLAZN_QUALIFICATION_KUBE_CONTEXT" patch node "$node" --type=json --patch "$patch" >/dev/null 2>&1; then
+      patch_error=''
+      if patch_error=$(kubectl --context "$BLAZN_QUALIFICATION_KUBE_CONTEXT" patch node "$node" --type=json --patch "$patch" --output=json 2>&1); then
         qual_die 'stale resourceVersion CAS unexpectedly succeeded'
       fi
+      rejection=$(qual_require_stale_cas_rejection "$patch_error")
       after=$(kubectl --context "$BLAZN_QUALIFICATION_KUBE_CONTEXT" get node "$node" -o json)
       [ "$(jq -r '.metadata.uid' <<<"$after")" = "$uid" ] || qual_die 'Node UID changed during stale CAS check'
       [ "$(jq -r '.metadata.resourceVersion' <<<"$after")" = "$rv" ] || qual_die 'failed stale CAS changed Node resourceVersion'
-      jq -n --arg node "$node" --arg uid "$uid" --arg rv "$rv" '{schemaVersion:1,status:"passed",node:$node,uid:$uid,resourceVersion:$rv,staleCASDenied:true,stateUnchanged:true}'
+      jq -n --arg node "$node" --arg uid "$uid" --arg rv "$rv" --argjson rejection "$rejection" '{schemaVersion:1,status:"passed",node:$node,uid:$uid,resourceVersion:$rv,staleCASDenied:true,stateUnchanged:true,rejection:$rejection}'
     }
     qual_with_lock do_stale_cas
     ;;

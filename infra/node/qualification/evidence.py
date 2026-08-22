@@ -74,6 +74,47 @@ def artifact_has_forbidden_marker(path: pathlib.Path) -> bytes | None:
     return None
 
 
+def artifact_json(path: pathlib.Path, step: str) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        die(f"step {step} stdout is not one machine-readable JSON document: {exc}")
+
+
+def gate_semantics(step: str, value: Any) -> bool:
+    """Validate the minimum machine-produced assertion for each pass gate."""
+    if not isinstance(value, dict):
+        return False
+    receipt = value.get("receipt") if isinstance(value.get("receipt"), dict) else value
+    observation = value.get("observation") if isinstance(value.get("observation"), dict) else {}
+    checks = {
+        "source-provenance": lambda: value.get("status") == "passed" and isinstance(value.get("source"), dict),
+        "baseline-invariants": lambda: value.get("phase") == "before" and isinstance(value.get("protected"), dict),
+        "post-invariants": lambda: value.get("phase") == "after" and isinstance(value.get("protected"), dict),
+        "target-baseline": lambda: value.get("phase") == "before" and isinstance(value.get("state"), dict),
+        "target-post-uninstall": lambda: value.get("phase") == "after" and isinstance(value.get("state"), dict),
+        "ubuntu-preflight": lambda: value.get("os") == "ubuntu" and value.get("osVersion") == "26.04",
+        "native-mac-preflight": lambda: value.get("status") == "passed" and value.get("host") in ("mac-mini-3", "mac-mini-3.local") and value.get("architecture") == "arm64",
+        "service-identity": lambda: isinstance(value.get("service"), dict) and value["service"].get("accountUid") not in (None, "", "0", "absent") and value["service"].get("processUid") == value["service"].get("accountUid"),
+        "no-input-sudo-observe": lambda: value.get("noInputRootObservation") == "allowed",
+        "install": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
+        "idempotent-install": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
+        "repair": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
+        "reinstall": lambda: receipt.get("state") == "active" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
+        "expired-observe": lambda: value.get("schemaVersion") == "blazn.dev/node-root-helper/v1" and value.get("ok") is True and bool(observation),
+        "expired-repair-denied": lambda: value.get("status") == "passed" and value.get("expiredRepairDenied") is True and isinstance(value.get("denial"), dict) and value["denial"].get("exitCode") == 1 and value["denial"].get("error", {}).get("code") == "node_failed",
+        "expired-uninstall": lambda: receipt.get("state") == "removed" and receipt.get("currentStage") == "complete" and receipt.get("residues") == [],
+        "install-crash-resume": lambda: value.get("status") == "passed" and value.get("crash", {}).get("lifecycle") == "install" and value.get("recovery", {}).get("state") == "active" and value.get("recovery", {}).get("residues") == [],
+        "cleanup-crash-resume": lambda: value.get("status") == "passed" and value.get("crash", {}).get("lifecycle") == "cleanup" and value.get("recovery", {}).get("state") == "removed" and value.get("recovery", {}).get("residues") == [],
+        "kubernetes-uid-rv": lambda: isinstance(value.get("node"), dict) and bool(value["node"].get("uid")) and bool(value["node"].get("resourceVersion")),
+        "kubernetes-stale-cas-denied": lambda: value.get("status") == "passed" and value.get("staleCASDenied") is True and value.get("stateUnchanged") is True and value.get("rejection", {}).get("classification") in ("kubernetes-status-invalid-422-jsonpatch-test", "kubectl-invalid-jsonpatch-test") and value.get("rejection", {}).get("reason") == "Invalid",
+        "kubernetes-quarantine-noschedule": lambda: value.get("status") == "passed" and value.get("quarantineNoSchedule") is True and value.get("ordinaryWorkloads") == 0,
+        "zero-residue": lambda: value.get("status") == "passed" and value.get("guestResidue") == 0 and value.get("kubernetesResidue") == 0 and value.get("protectedInvariants") is True,
+    }
+    check = checks.get(step)
+    return check is not None and bool(check())
+
+
 def valid_timestamp(value: Any) -> bool:
     try:
         parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -196,6 +237,9 @@ def record(args: argparse.Namespace) -> None:
     metadata = json.loads(args.metadata)
     if not isinstance(metadata, dict):
         die("metadata must be a JSON object")
+    semantic = artifact_json(stdout, args.step)
+    if not gate_semantics(args.step, semantic):
+        die(f"step {args.step} stdout does not satisfy its gate-specific semantic contract")
     lowered_metadata = json.dumps(metadata, sort_keys=True).lower()
     if any(marker in lowered_metadata for marker in (
         "accesstoken", "refreshtoken", "enrollmenttoken", "joincredential",
@@ -297,6 +341,17 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
                 errors.append(f"step {sid} {stream} artifact digest/size differs")
             elif (forbidden := artifact_has_forbidden_marker(candidate)) is not None:
                 errors.append(f"step {sid} {stream} contains prohibited credential marker {forbidden.decode(errors='replace')}")
+        stdout_descriptor = item.get("stdout", {})
+        relative_stdout = stdout_descriptor.get("path", "") if isinstance(stdout_descriptor, dict) else ""
+        raw_stdout = root / relative_stdout
+        if raw_stdout.is_file():
+            try:
+                semantic = json.loads(raw_stdout.read_text())
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                errors.append(f"step {sid} stdout is not one machine-readable JSON document")
+            else:
+                if not gate_semantics(str(sid), semantic):
+                    errors.append(f"step {sid} stdout fails its gate-specific semantic contract")
     if len(ids) != len(set(ids)):
         errors.append("duplicate step IDs")
     if require_complete:

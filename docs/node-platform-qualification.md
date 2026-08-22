@@ -69,7 +69,8 @@ export BLAZN_QUALIFICATION_PROFILE=lxd-ubuntu-26.04
 export BLAZN_QUALIFICATION_MODE=mutate
 export BLAZN_QUALIFICATION_APPROVED_HEAD="$(git rev-parse HEAD)"
 export BLAZN_QUALIFICATION_LOCK_FILE=/var/lock/blazn-qualification/node-lifecycle-blazn-q-20260822-a1.lock
-export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:ACTION"
+input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_approval_input_digest "$1"' _ ACTION)
+export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:ACTION:${input_digest}"
 ```
 
 `ACTION` is not reusable. Examples are `lxd-create`,
@@ -85,6 +86,11 @@ An approval is invalid after a source HEAD, target, correlation, action,
 released binary digest, LXD image fingerprint, cluster identity, Node UID, or
 Node resourceVersion change. Never put credentials in these variables, shell
 arguments, approval strings, evidence metadata, or command logs.
+The digest is canonical JSON over the action, source HEAD, target/profile,
+binary and image digests, guest CPU/memory, snapshot, cluster/context identity,
+Node UID/resourceVersion, trusted profile, workspace, request IDs, machine
+fingerprint, operator identity, Lima VM, and plan expiry. Set every applicable
+input before calculating it; changing any bound value requires a new approval.
 
 ## Safe local checks
 
@@ -165,7 +171,11 @@ infra/node/qualification/evidence.py record \
 ```
 
 The recorder creates immutable, unique step IDs, hashes both streams, binds
-the current correlation, and rejects common credential markers. Redact at the
+the current correlation, and parses stdout as one JSON document against the
+gate-specific semantic contract. A successful exit or a generic
+`{"status":"passed"}` assertion is insufficient. The verifier repeats semantic
+validation so replacing an artifact and updating only its descriptor cannot
+manufacture a passed gate. It also rejects common credential markers. Redact at the
 producer before writing an artifact; never edit an artifact after recording.
 The verifier detects changed size or digest.
 
@@ -221,18 +231,24 @@ one action:
 
 ```bash
 export BLAZN_QUALIFICATION_LXD_IMAGE_FINGERPRINT=<64-lowercase-hex>
-export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:lxd-create"
+export BLAZN_QUALIFICATION_LXD_CPU=4
+export BLAZN_QUALIFICATION_LXD_MEMORY=8GiB
+input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_validate_lxd_limits; qual_approval_input_digest lxd-create')
+export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:lxd-create:${input_digest}"
 infra/node/qualification/lxd-disposable.sh create
 ```
 
 The script refuses an existing instance, launches an unprivileged guest with
-bounded CPU/memory, and writes correlation/purpose instance properties.
+an integer CPU limit from 1 through 8 and an integer memory limit from 1GiB
+through 16GiB, and writes correlation/purpose instance properties. Both limits
+and the immutable image fingerprint are approval-bound.
 `inspect` is read-only. Snapshot, restore, and delete each need a distinct
 approval, for example:
 
 ```bash
 export BLAZN_QUALIFICATION_SNAPSHOT=checkpoint-clean-ubuntu
-export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:lxd-snapshot"
+input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_approval_input_digest lxd-snapshot')
+export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:lxd-snapshot:${input_digest}"
 infra/node/qualification/lxd-disposable.sh snapshot
 ```
 
@@ -312,7 +328,8 @@ approval, and bounded poll timeout, then invoke the action name itself:
 ```bash
 export BLAZN_QUALIFICATION_SNAPSHOT=checkpoint-clean-ubuntu
 export BLAZN_QUALIFICATION_CRASH_TIMEOUT_SECONDS=300
-export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:crash-install-binding"
+input_digest=$(bash -c 'source infra/node/qualification/lib/common.sh; qual_approval_input_digest crash-install-binding')
+export BLAZN_QUALIFICATION_APPROVAL="APPROVE:${BLAZN_QUALIFICATION_CORRELATION_ID}:${BLAZN_QUALIFICATION_TARGET}:crash-install-binding:${input_digest}"
 infra/node/qualification/lifecycle.sh crash-install-binding
 ```
 
@@ -360,8 +377,13 @@ infra/node/qualification/kubernetes-checks.sh quarantine
 resourceVersion before every mutation. `stale-cas` deliberately sends a JSON
 Patch with a false resourceVersion `test` followed by a same-value write. It is
 still an API write attempt and therefore requires the
-`kubernetes-stale-cas` approval and cluster lock. Passing means the API rejects
-it and a reread proves both UID and resourceVersion unchanged.
+`kubernetes-stale-cas` approval and cluster lock. Passing requires either a
+structured Kubernetes `Status` rejection with reason `Invalid`, status code
+`422`, and a message identifying the JSON Patch test/resourceVersion failure,
+or kubectl's exact `Error from server (Invalid):` rendering of that same test
+failure. The harness normalizes either form into structured evidence. RBAC,
+authentication, transport, admission, or unrelated validation failures do not
+pass. A reread must also prove both UID and resourceVersion unchanged.
 
 The quarantine check requires `spec.unschedulable=true`, an exact
 `blazn.dev/bootstrap` or `blazn.dev/quarantine` taint with effect `NoSchedule`,

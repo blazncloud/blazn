@@ -17,6 +17,7 @@ guest=$BLAZN_QUALIFICATION_TARGET
 image_fingerprint=${BLAZN_QUALIFICATION_LXD_IMAGE_FINGERPRINT:-}
 [[ "$image_fingerprint" =~ ^[0-9a-f]{64}$ ]] || qual_die 'BLAZN_QUALIFICATION_LXD_IMAGE_FINGERPRINT must pin the reviewed Ubuntu 26.04 image'
 image="images:${image_fingerprint}"
+case "$action" in plan|create) qual_validate_lxd_limits ;; esac
 
 if [ "$action" = plan ]; then
   printf '%s\n' "target=${guest}" "imageFingerprint=${image_fingerprint}" 'mutations=create|snapshot|restore|delete (one explicit action per approval)'
@@ -33,8 +34,8 @@ guest_owned() {
 do_create() {
   guest_exists && qual_die 'refusing to replace an existing LXD instance'
   lxc launch "$image" "$guest" \
-    -c limits.cpu="${BLAZN_QUALIFICATION_LXD_CPU:-4}" \
-    -c limits.memory="${BLAZN_QUALIFICATION_LXD_MEMORY:-8GiB}" \
+    -c limits.cpu="$BLAZN_QUALIFICATION_LXD_CPU" \
+    -c limits.memory="$BLAZN_QUALIFICATION_LXD_MEMORY" \
     -c security.privileged=false \
     -c user.blazn.qualification="$BLAZN_QUALIFICATION_CORRELATION_ID" \
     -c user.blazn.purpose=node-platform-qualification

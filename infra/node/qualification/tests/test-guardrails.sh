@@ -43,6 +43,39 @@ fi
 "${base_env[@]}" "$qual_dir/lxd-disposable.sh" plan >/dev/null
 [ ! -s "$calls" ] || { printf 'LXD plan executed a command\n' >&2; exit 1; }
 
+if "${base_env[@]}" BLAZN_QUALIFICATION_LXD_CPU=9 "$qual_dir/lxd-disposable.sh" plan >/dev/null 2>&1; then
+  printf 'LXD plan accepted an excessive CPU limit\n' >&2
+  exit 1
+fi
+if "${base_env[@]}" BLAZN_QUALIFICATION_LXD_MEMORY=17GiB "$qual_dir/lxd-disposable.sh" plan >/dev/null 2>&1; then
+  printf 'LXD plan accepted an excessive memory limit\n' >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2016
+digest_one=$("${base_env[@]}" bash -c 'source "$1/lib/common.sh"; qual_validate_lxd_limits; qual_approval_input_digest lxd-create' _ "$qual_dir")
+# shellcheck disable=SC2016
+digest_two=$("${base_env[@]}" BLAZN_QUALIFICATION_LXD_CPU=5 bash -c 'source "$1/lib/common.sh"; qual_validate_lxd_limits; qual_approval_input_digest lxd-create' _ "$qual_dir")
+[[ "$digest_one" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'approval digest is malformed\n' >&2; exit 1; }
+[ "$digest_one" != "$digest_two" ] || { printf 'approval digest did not bind LXD CPU\n' >&2; exit 1; }
+
+bash -c 'source "$1/lib/common.sh"; qual_require_expired_repair_denial "$2"' _ "$qual_dir" \
+  '{"error":{"code":"node_failed","message":"repair requires an authorized fresh, unexpired plan: expired"},"exitCode":1}'
+if bash -c 'source "$1/lib/common.sh"; qual_require_expired_repair_denial "$2"' _ "$qual_dir" \
+  '{"error":{"code":"node_failed","message":"network unavailable"},"exitCode":1}' >/dev/null 2>&1; then
+  printf 'unrelated repair failure passed expired-plan gate\n' >&2
+  exit 1
+fi
+bash -c 'source "$1/lib/common.sh"; qual_require_stale_cas_rejection "$2"' _ "$qual_dir" \
+  '{"kind":"Status","status":"Failure","reason":"Invalid","code":422,"message":"jsonpatch test operation does not apply to resourceVersion"}' >/dev/null
+bash -c 'source "$1/lib/common.sh"; qual_require_stale_cas_rejection "$2"' _ "$qual_dir" \
+  'Error from server (Invalid): jsonpatch test operation does not apply to resourceVersion' >/dev/null
+if bash -c 'source "$1/lib/common.sh"; qual_require_stale_cas_rejection "$2"' _ "$qual_dir" \
+  '{"kind":"Status","status":"Failure","reason":"Forbidden","code":403,"message":"forbidden"}' >/dev/null 2>&1; then
+  printf 'RBAC denial passed stale-CAS gate\n' >&2
+  exit 1
+fi
+
 if "${base_env[@]}" BLAZN_QUALIFICATION_MODE=mutate "$qual_dir/lxd-disposable.sh" create >/dev/null 2>&1; then
   printf 'LXD create accepted missing approval\n' >&2
   exit 1
