@@ -109,6 +109,8 @@ validate_upgrade_receipt() {
     expected=$(jq -er --arg name "$installed" '.digests[$name]' "$UPGRADE_RECEIPT")
     [ "$expected" = "sha256:$(sha "$SECRETS_ROOT/$installed")" ] || die "installed secret does not match the v2 upgrade receipt: $installed"
   done
+  [ "$(sha "$SECRETS_ROOT/s3-access-key")" = "$(sha "$SECRETS_ROOT/s3-root-access-key")" ] || die "v2 MinIO root access key does not preserve the v1 value"
+  [ "$(sha "$SECRETS_ROOT/s3-secret-key")" = "$(sha "$SECRETS_ROOT/s3-root-secret-key")" ] || die "v2 MinIO root secret does not preserve the v1 value"
 }
 
 if [ -e "$UPGRADE_RECEIPT" ]; then
