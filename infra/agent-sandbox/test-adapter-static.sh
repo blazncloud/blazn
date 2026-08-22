@@ -11,7 +11,12 @@ jq -e '
   .properties.queueName.const == "blazn-poc" and
   .properties.operation.enum == ["create","delete","finalize"] and
   (.properties.state.enum | sort) == (["pending","queued","starting","ready","failed","stopping","deleted"] | sort) and
-  (."x-blazn-error-status" | keys | length) == 10' "$SCHEMA" >/dev/null
+  ."x-blazn-error-status" == {
+    "sandbox_invalid_request":400,"sandbox_identity_boundary":404,"sandbox_queue_required":502,
+    "sandbox_runtime_untrusted":403,"sandbox_conflict":409,"sandbox_not_found":404,
+    "sandbox_backend_failure":502,"sandbox_artifact_export_failed":502,
+    "sandbox_cleanup_incomplete":409,"sandbox_resource_version_stale":409
+  }' "$SCHEMA" >/dev/null
 
 for marker in \
   'APIVersion          = "agents.x-k8s.io/v1beta1"' \

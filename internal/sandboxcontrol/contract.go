@@ -126,6 +126,7 @@ type SandboxStatus struct {
 	State              SandboxState `json:"state"`
 	Reason             string       `json:"reason,omitempty"`
 	Message            string       `json:"message,omitempty"`
+	IsolationNotice    string       `json:"isolationNotice,omitempty"`
 	Ready              bool         `json:"ready"`
 	ResourceVersion    string       `json:"resourceVersion"`
 	ObservedGeneration int64        `json:"observedGeneration"`
@@ -213,15 +214,8 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	if request.ExpiresAt.IsZero() || !request.ExpiresAt.After(time.Now().Add(-time.Minute)) {
 		return adapterError(ErrInvalidRequest, 400, "expiry is invalid", nil)
 	}
-	if len(request.Artifacts) > 32 {
-		return adapterError(ErrInvalidRequest, 400, "artifact export limit exceeded", nil)
-	}
-	seen := map[string]bool{}
-	for _, artifact := range request.Artifacts {
-		if !dnsLabelPattern.MatchString(artifact.Name) || seen[artifact.Name] || !strings.HasPrefix(artifact.Path, "/workspace/artifacts/") || path.Clean(artifact.Path) != artifact.Path || strings.Contains(artifact.Path, "..") || !mediaPattern.MatchString(artifact.MediaType) {
-			return adapterError(ErrInvalidRequest, 400, "artifact export is invalid", nil)
-		}
-		seen[artifact.Name] = true
+	if err := validateArtifactExports(request.Artifacts); err != nil {
+		return err
 	}
 	switch request.TrustLevel {
 	case TrustApprovedPOC:
@@ -243,9 +237,23 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	return nil
 }
 
+func validateArtifactExports(artifacts []ArtifactExport) error {
+	if len(artifacts) > 32 {
+		return adapterError(ErrInvalidRequest, 400, "artifact export limit exceeded", nil)
+	}
+	seen := map[string]bool{}
+	for _, artifact := range artifacts {
+		if !dnsLabelPattern.MatchString(artifact.Name) || seen[artifact.Name] || !strings.HasPrefix(artifact.Path, "/workspace/artifacts/") || path.Clean(artifact.Path) != artifact.Path || strings.Contains(artifact.Path, "..") || !mediaPattern.MatchString(artifact.MediaType) {
+			return adapterError(ErrInvalidRequest, 400, "artifact export is invalid", nil)
+		}
+		seen[artifact.Name] = true
+	}
+	return nil
+}
+
 func validateRuntime(request CreateRequest, runtimes map[string]RuntimeCapability, hardened bool) error {
 	capability, exists := runtimes[request.RuntimeClassName]
-	if request.RuntimeClassName == "" || !exists || capability.Name != request.RuntimeClassName || capability.Handler == "" || !capability.Qualified || (hardened && !capability.Hardened) {
+	if request.RuntimeClassName == "" || !dnsLabelPattern.MatchString(request.RuntimeClassName) || !exists || capability.Name != request.RuntimeClassName || !dnsLabelPattern.MatchString(capability.Handler) || !capability.Qualified || (hardened && !capability.Hardened) {
 		return adapterError(ErrRuntimeUntrusted, 403, "runtime capability is not qualified for requested trust", nil)
 	}
 	for _, architecture := range capability.Architectures {
@@ -270,9 +278,9 @@ func ValidateReceipt(receipt OperationReceipt) error {
 		return fmt.Errorf("sandbox adapter receipt timestamp is invalid")
 	}
 	seenArtifacts := map[string]bool{}
-	artifactPrefix := "workspaces/" + receipt.WorkspaceID + "/sandboxes/" + receipt.Name + "/"
+	artifactPrefix := "workspaces/" + receipt.WorkspaceID + "/sandboxes/" + receipt.Name + "/artifacts/"
 	for _, artifact := range receipt.Artifacts {
-		if artifact.SchemaVersion != ArtifactSchema || !dnsLabelPattern.MatchString(artifact.Name) || seenArtifacts[artifact.Name] || !strings.HasPrefix(artifact.ObjectKey, artifactPrefix) || path.Clean(artifact.ObjectKey) != artifact.ObjectKey || strings.Contains(artifact.ObjectKey, "..") || !digestPattern.MatchString(artifact.SHA256) || artifact.Size < 0 {
+		if artifact.SchemaVersion != ArtifactSchema || !dnsLabelPattern.MatchString(artifact.Name) || seenArtifacts[artifact.Name] || artifact.ObjectKey != artifactPrefix+artifact.Name || path.Clean(artifact.ObjectKey) != artifact.ObjectKey || strings.Contains(artifact.ObjectKey, "..") || !digestPattern.MatchString(artifact.SHA256) || artifact.Size < 0 {
 			return fmt.Errorf("sandbox artifact receipt is invalid")
 		}
 		seenArtifacts[artifact.Name] = true
@@ -316,5 +324,23 @@ func receiptDigest(receipt OperationReceipt) (string, error) {
 }
 
 func adapterError(code ErrorCode, status int, detail string, cause error) error {
-	return &AdapterError{Code: code, Status: status, SafeDetail: detail, Cause: cause}
+	_ = status
+	return &AdapterError{Code: code, Status: errorStatus(code), SafeDetail: detail, Cause: cause}
+}
+
+func errorStatus(code ErrorCode) int {
+	switch code {
+	case ErrInvalidRequest:
+		return 400
+	case ErrIdentityBoundary, ErrNotFound:
+		return 404
+	case ErrRuntimeUntrusted:
+		return 403
+	case ErrConflict, ErrCleanupIncomplete, ErrResourceVersionStale:
+		return 409
+	case ErrQueueRequired, ErrBackend, ErrArtifactExport:
+		return 502
+	default:
+		return 500
+	}
 }

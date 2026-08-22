@@ -291,7 +291,11 @@ func (a *Adapter) Status(ctx context.Context, workspaceID, ownerID, name string)
 		return SandboxStatus{}, err
 	}
 	state, reason, message, ready := stateFrom(object)
-	return SandboxStatus{State: state, Reason: reason, Message: message, Ready: ready, ResourceVersion: object.Metadata.ResourceVersion, ObservedGeneration: object.Status.ObservedGeneration}, nil
+	notice := ""
+	if record.TrustLevel == TrustApprovedPOC {
+		notice = OrchestrationNotice
+	}
+	return SandboxStatus{State: state, Reason: reason, Message: message, IsolationNotice: notice, Ready: ready, ResourceVersion: object.Metadata.ResourceVersion, ObservedGeneration: object.Status.ObservedGeneration}, nil
 }
 
 func (a *Adapter) List(ctx context.Context, workspaceID, ownerID, continueToken string, limit int) (ListResult, error) {
@@ -439,6 +443,9 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	if err := verifyManaged(updatedRecord, workspaceID, ownerID); err != nil {
 		return OperationReceipt{}, err
 	}
+	if updatedRecord.UID != uid || !updatedRecord.Deleting || contains(updatedRecord.Finalizers, CleanupFinalizer) {
+		return OperationReceipt{}, adapterError(ErrCleanupIncomplete, 409, "backend did not complete cleanup finalizer transition", nil)
+	}
 	updatedRecord.State = StateDeleted
 	return NewReceipt(requestID, OperationFinalize, updatedRecord, artifacts, a.now())
 }
@@ -477,12 +484,19 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 			return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract is invalid", nil)
 		}
 	}
+	if err := validateArtifactExports(artifacts); err != nil {
+		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract violates the frozen export boundary", err)
+	}
+	trustLevel := TrustLevel(object.Metadata.Annotations["sandboxes.blazn.dev/trust-level"])
+	if trustLevel != TrustApprovedPOC && trustLevel != TrustUntrusted {
+		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend trust level is invalid", nil)
+	}
 	state, _, _, _ := stateFrom(object)
 	return SandboxRecord{
 		Name: object.Metadata.Name, Namespace: object.Metadata.Namespace, UID: object.Metadata.UID, ResourceVersion: object.Metadata.ResourceVersion,
 		Generation: object.Metadata.Generation, WorkspaceID: object.Metadata.Labels[WorkspaceLabel], OwnerID: object.Metadata.Labels[OwnerLabel],
 		QueueName: object.Spec.PodTemplate.Metadata.Labels[QueueLabel], RuntimeClassName: object.Spec.PodTemplate.Spec.RuntimeClassName,
-		TrustLevel: TrustLevel(object.Metadata.Annotations["sandboxes.blazn.dev/trust-level"]), State: state,
+		TrustLevel: trustLevel, State: state,
 		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: artifacts, Labels: cloneMap(object.Metadata.Labels),
 	}, nil
 }
@@ -609,11 +623,11 @@ func validateArtifactCompletion(sandbox SandboxRecord, receipts []ArtifactReceip
 	for _, spec := range specs {
 		requested[spec.Name] = spec
 	}
-	prefix := "workspaces/" + sandbox.WorkspaceID + "/sandboxes/" + sandbox.Name + "/"
+	prefix := "workspaces/" + sandbox.WorkspaceID + "/sandboxes/" + sandbox.Name + "/artifacts/"
 	byName := map[string]ArtifactReceipt{}
 	for _, receipt := range receipts {
 		_, wasRequested := requested[receipt.Name]
-		if _, exists := byName[receipt.Name]; exists || !wasRequested || receipt.SchemaVersion != ArtifactSchema || !digestPattern.MatchString(receipt.SHA256) || !strings.HasPrefix(receipt.ObjectKey, prefix) || path.Clean(receipt.ObjectKey) != receipt.ObjectKey || strings.Contains(receipt.ObjectKey, "..") || receipt.Size < 0 {
+		if _, exists := byName[receipt.Name]; exists || !wasRequested || receipt.SchemaVersion != ArtifactSchema || !digestPattern.MatchString(receipt.SHA256) || receipt.ObjectKey != prefix+receipt.Name || path.Clean(receipt.ObjectKey) != receipt.ObjectKey || strings.Contains(receipt.ObjectKey, "..") || receipt.Size < 0 {
 			return adapterError(ErrArtifactExport, 502, "artifact receipt is invalid", nil)
 		}
 		if _, err := time.Parse(time.RFC3339Nano, receipt.ExportedAt); err != nil {

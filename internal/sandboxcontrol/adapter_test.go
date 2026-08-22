@@ -35,14 +35,16 @@ func (e *fakeExporter) Export(_ context.Context, sandbox SandboxRecord, specs []
 }
 
 type fakeAPI struct {
-	t              *testing.T
-	server         *httptest.Server
-	mu             sync.Mutex
-	object         kubeSandbox
-	lastMethod     string
-	lastQuery      url.Values
-	stripQueue     bool
-	runtimeMissing bool
+	t                     *testing.T
+	server                *httptest.Server
+	mu                    sync.Mutex
+	object                kubeSandbox
+	lastMethod            string
+	lastQuery             url.Values
+	stripQueue            bool
+	runtimeMissing        bool
+	patchRetainsFinalizer bool
+	patchChangesUID       bool
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -122,6 +124,12 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		}
 		f.object.Metadata.Finalizers = finalizers
 		f.object.Metadata.ResourceVersion = "3"
+		if f.patchRetainsFinalizer {
+			f.object.Metadata.Finalizers = append(f.object.Metadata.Finalizers, CleanupFinalizer)
+		}
+		if f.patchChangesUID {
+			f.object.Metadata.UID = "uid-other"
+		}
 		writeJSON(response, http.StatusOK, f.object)
 	default:
 		writeJSON(response, http.StatusNotFound, map[string]any{"reason": "NotFound", "code": 404})
@@ -242,7 +250,7 @@ func TestListStatusWatchEnforceOwnerBoundary(t *testing.T) {
 func TestDeleteFinalizeExportsBeforeRemovingFinalizer(t *testing.T) {
 	fake := newFakeAPI(t)
 	exportedAt := "2026-08-22T12:00:01Z"
-	exporter := &fakeExporter{receipts: []ArtifactReceipt{{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/workspace-a/sandboxes/sandbox-a/result", SHA256: "sha256:" + strings.Repeat("b", 64), Size: 12, ExportedAt: exportedAt}}}
+	exporter := &fakeExporter{receipts: []ArtifactReceipt{{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/workspace-a/sandboxes/sandbox-a/artifacts/result", SHA256: "sha256:" + strings.Repeat("b", 64), Size: 12, ExportedAt: exportedAt}}}
 	adapter := testAdapter(t, fake, exporter)
 	record, _, err := adapter.Create(context.Background(), testCreate())
 	if err != nil {
@@ -291,6 +299,83 @@ func TestFinalizeRetainsFinalizerOnArtifactFailure(t *testing.T) {
 	}
 }
 
+func TestFinalizeRejectsAdmissionFinalizerOrUIDRewrite(t *testing.T) {
+	for _, testCase := range []struct {
+		name            string
+		retainFinalizer bool
+		changeUID       bool
+	}{{name: "finalizer re-added", retainFinalizer: true}, {name: "uid changed", changeUID: true}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			fake.patchRetainsFinalizer, fake.patchChangesUID = testCase.retainFinalizer, testCase.changeUID
+			exporter := &fakeExporter{receipts: []ArtifactReceipt{{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/workspace-a/sandboxes/sandbox-a/artifacts/result", SHA256: "sha256:" + strings.Repeat("b", 64), Size: 1, ExportedAt: "2026-08-22T12:00:01Z"}}}
+			adapter := testAdapter(t, fake, exporter)
+			record, _, err := adapter.Create(context.Background(), testCreate())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion); err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			deleting := fake.object
+			fake.mu.Unlock()
+			_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion)
+			assertCode(t, err, ErrCleanupIncomplete)
+		})
+	}
+}
+
+func TestMutatedArtifactAnnotationNeverReachesExporter(t *testing.T) {
+	fake := newFakeAPI(t)
+	exporter := &fakeExporter{}
+	adapter := testAdapter(t, fake, exporter)
+	_, _, err := adapter.Create(context.Background(), testCreate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.object.Metadata.DeletionTimestamp = "2026-08-22T12:00:00Z"
+	fake.object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"] = `[{"name":"result","path":"/etc/passwd","mediaType":"text/plain","required":false}]`
+	deleting := fake.object
+	fake.mu.Unlock()
+	_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion)
+	assertCode(t, err, ErrBackend)
+	if exporter.calls != 0 {
+		t.Fatalf("mutated artifact contract reached exporter calls=%d", exporter.calls)
+	}
+}
+
+func TestFrozenErrorStatusesAndOrchestrationNotice(t *testing.T) {
+	for code, status := range map[ErrorCode]int{
+		ErrInvalidRequest: 400, ErrIdentityBoundary: 404, ErrQueueRequired: 502, ErrRuntimeUntrusted: 403,
+		ErrConflict: 409, ErrNotFound: 404, ErrBackend: 502, ErrArtifactExport: 502, ErrCleanupIncomplete: 409, ErrResourceVersionStale: 409,
+	} {
+		err := adapterError(code, 599, "safe", nil).(*AdapterError)
+		if err.Status != status {
+			t.Fatalf("code=%s status=%d want=%d", code, err.Status, status)
+		}
+	}
+	response := &http.Response{StatusCode: http.StatusUnprocessableEntity, Body: io.NopCloser(strings.NewReader(`{"reason":"Invalid"}`))}
+	var invalid *AdapterError
+	if err := decodeStatus(response); !errors.As(err, &invalid) || invalid.Code != ErrInvalidRequest || invalid.Status != 400 {
+		t.Fatalf("422 mapping=%v", err)
+	}
+	fake := newFakeAPI(t)
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	_, _, err := adapter.Create(context.Background(), testCreate())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.object.Metadata.Annotations["sandboxes.blazn.dev/trust-level"] = string(TrustApprovedPOC)
+	fake.mu.Unlock()
+	status, err := adapter.Status(context.Background(), "workspace-a", "owner-a", "sandbox-a")
+	if err != nil || status.IsolationNotice != OrchestrationNotice {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+}
+
 func TestReceiptTamperAndArtifactContract(t *testing.T) {
 	fake := newFakeAPI(t)
 	adapter := testAdapter(t, fake, &fakeExporter{})
@@ -308,7 +393,7 @@ func TestReceiptTamperAndArtifactContract(t *testing.T) {
 	sandbox := SandboxRecord{Name: "sandbox-a", WorkspaceID: "workspace-a", Artifacts: []ArtifactExport{{Name: "result", Required: true}}}
 	badArtifact := ArtifactReceipt{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/other/sandboxes/sandbox-a/result", SHA256: "sha256:" + strings.Repeat("c", 64), ExportedAt: "2026-08-22T12:00:00Z"}
 	assertCode(t, validateArtifactCompletion(sandbox, []ArtifactReceipt{badArtifact}), ErrArtifactExport)
-	badArtifact.Name, badArtifact.ObjectKey = "unrequested", "workspaces/workspace-a/sandboxes/sandbox-a/unrequested"
+	badArtifact.Name, badArtifact.ObjectKey = "unrequested", "workspaces/workspace-a/sandboxes/sandbox-a/artifacts/unrequested"
 	assertCode(t, validateArtifactCompletion(sandbox, []ArtifactReceipt{badArtifact}), ErrArtifactExport)
 }
 
