@@ -8,8 +8,8 @@ const maxBytes = 16 * 1024;
 const statuses = new Set([200, 400, 401, 403, 404, 405, 409, 410, 413, 429, 500, 502, 503, 504]);
 
 export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
-  constructor(origin = brokerOrigin, private readonly timeoutMs = 5_000) {
-    if (origin !== brokerOrigin || timeoutMs < 1 || timeoutMs > 10_000) throw new Error("Node broker proxy configuration is invalid");
+  constructor(private readonly timeoutMs = 5_000) {
+    if (timeoutMs < 1 || timeoutMs > 10_000) throw new Error("Node broker proxy configuration is invalid");
   }
 
   async issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply> {
