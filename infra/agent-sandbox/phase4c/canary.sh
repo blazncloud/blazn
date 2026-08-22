@@ -43,27 +43,49 @@ chmod 0700 "$transaction/uids" "$transaction/evidence"
 while :; do
   case "$phase" in
     sealed)
-      for target in namespace/agent-sandbox-system namespace/blazn-poc crd/sandboxes.agents.x-k8s.io clusterrole/blazn-agent-sandbox-observer validatingadmissionpolicy/blazn-agent-sandbox-boundary; do verify_absent "${target%%/*}" "${target#*/}"; done
+      while IFS= read -r target; do [ -z "$target" ] || verify_absent "${target%%/*}" "${target#*/}"; done <"$pre/phase4c-targets"
       phase4c_write_phase "$transaction" foundation-intent; phase=foundation-intent ;;
     foundation-intent)
       assert_absent_or_owned namespace agent-sandbox-system ''
       assert_absent_or_owned namespace blazn-poc ''
+      assert_absent_or_owned serviceaccount blazn-sandbox-runner blazn-poc
+      assert_absent_or_owned localqueue.kueue.x-k8s.io blazn-poc blazn-poc
       assert_absent_or_owned clusterrole blazn-agent-sandbox-observer ''
+      assert_absent_or_owned clusterrolebinding blazn-agent-sandbox-observer ''
+      assert_absent_or_owned role blazn-agent-sandbox-system agent-sandbox-system
+      assert_absent_or_owned rolebinding blazn-agent-sandbox-system agent-sandbox-system
+      assert_absent_or_owned role blazn-agent-sandbox-controller blazn-poc
+      assert_absent_or_owned rolebinding blazn-agent-sandbox-controller blazn-poc
       assert_absent_or_owned validatingadmissionpolicy blazn-agent-sandbox-boundary ''
+      assert_absent_or_owned validatingadmissionpolicybinding blazn-agent-sandbox-boundary ''
       kubectl apply --server-side --field-manager="blazn-phase4c-$transaction_id" -f "$fixtures/blazn-poc.yaml" >"$transaction/evidence/apply-namespace.txt"
       kubectl apply --server-side --field-manager="blazn-phase4c-$transaction_id" -f "$fixtures/controller-boundary.yaml" >"$transaction/evidence/apply-boundary.txt"
       record_uid namespace-agent-sandbox-system namespace agent-sandbox-system ''
       record_uid namespace-blazn-poc namespace blazn-poc ''
+      record_uid sandbox-runner-sa serviceaccount blazn-sandbox-runner blazn-poc
+      record_uid localqueue localqueue.kueue.x-k8s.io blazn-poc blazn-poc
       record_uid observer-role clusterrole blazn-agent-sandbox-observer ''
       record_uid observer-binding clusterrolebinding blazn-agent-sandbox-observer ''
+      record_uid system-role role blazn-agent-sandbox-system agent-sandbox-system
+      record_uid system-binding rolebinding blazn-agent-sandbox-system agent-sandbox-system
+      record_uid controller-role role blazn-agent-sandbox-controller blazn-poc
+      record_uid controller-binding rolebinding blazn-agent-sandbox-controller blazn-poc
       record_uid admission-policy validatingadmissionpolicy blazn-agent-sandbox-boundary ''
       record_uid admission-binding validatingadmissionpolicybinding blazn-agent-sandbox-boundary ''
       phase4c_write_phase "$transaction" foundation-applied; phase=foundation-applied ;;
     foundation-applied) phase4c_write_phase "$transaction" controller-intent; phase=controller-intent ;;
     controller-intent)
       for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do assert_absent_or_owned crd "$crd" ''; done
+      assert_absent_or_owned serviceaccount agent-sandbox-controller agent-sandbox-system
+      assert_absent_or_owned service agent-sandbox-controller agent-sandbox-system
+      assert_absent_or_owned service agent-sandbox-webhook-service agent-sandbox-system
+      assert_absent_or_owned deployment agent-sandbox-controller agent-sandbox-system
       kubectl apply --server-side --field-manager="blazn-phase4c-$transaction_id" -f "$install_bundle" >"$transaction/evidence/apply-controller.txt"
       for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do record_uid "crd-$crd" crd "$crd" ''; done
+      record_uid controller-sa serviceaccount agent-sandbox-controller agent-sandbox-system
+      record_uid controller-service service agent-sandbox-controller agent-sandbox-system
+      record_uid webhook-service service agent-sandbox-webhook-service agent-sandbox-system
+      record_uid controller-deployment deployment agent-sandbox-controller agent-sandbox-system
       phase4c_write_phase "$transaction" controller-applied; phase=controller-applied ;;
     controller-applied) phase4c_write_phase "$transaction" bootstrap-intent; phase=bootstrap-intent ;;
     bootstrap-intent)
@@ -71,11 +93,13 @@ while :; do
       assert_absent_or_owned clusterrolebinding blazn-agent-sandbox-ca-bootstrap ''
       assert_absent_or_owned job blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
       assert_absent_or_owned secret agent-sandbox-webhook-certs agent-sandbox-system
+      assert_absent_or_owned serviceaccount blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
       kubectl apply --server-side --field-manager="blazn-phase4c-$transaction_id" -f "$fixtures/bootstrap.yaml" >"$transaction/evidence/apply-bootstrap.txt"
       record_uid bootstrap-role clusterrole blazn-agent-sandbox-ca-bootstrap ''
       record_uid bootstrap-binding clusterrolebinding blazn-agent-sandbox-ca-bootstrap ''
       record_uid bootstrap-job job blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
       record_uid webhook-secret secret agent-sandbox-webhook-certs agent-sandbox-system
+      record_uid bootstrap-sa serviceaccount blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
       kubectl wait --for=condition=Complete job/blazn-agent-sandbox-ca-bootstrap -n agent-sandbox-system --timeout=120s
       expected_ca=$(kubectl get secret agent-sandbox-webhook-certs -n agent-sandbox-system -o jsonpath='{.data.tls\.crt}')
       for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do [ "$(kubectl get crd "$crd" -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}')" = "$expected_ca" ]; done

@@ -40,13 +40,13 @@ chmod 0600 "$tmp/transaction/install.yaml"
 printf 'sealed changed\n' >>"$tmp/transaction/install.yaml"
 if BLAZN_REVIEWED_INPUT_DIGEST=$digest phase4c_verify_transaction "$tmp/transaction" 2>/dev/null; then printf 'tampered sealed input was accepted\n' >&2; exit 1; fi
 
-# Prove a failpoint persists the completed phase for deterministic resume.
-printf 'sealed\n' >"$tmp/transaction/phase"
-BLAZN_PHASE4C_FAIL_AFTER=foundation-intent BLAZN_PHASE4C_DISPOSABLE_TEST=true phase4c_write_phase "$tmp/transaction" foundation-intent && exit 1 || code=$?
-[ "$code" -eq 86 ]
-[ "$(cat "$tmp/transaction/phase")" = foundation-intent ]
-phase4c_write_phase "$tmp/transaction" foundation-applied
-[ "$(cat "$tmp/transaction/phase")" = foundation-applied ]
+# Prove every mutating boundary persists its phase before a disposable crash,
+# so a fresh process can resume from the recorded value.
+for journal_phase in foundation-intent foundation-applied controller-intent controller-applied bootstrap-intent bootstrap-ready bootstrap-complete controller-ready canary-intent canary-ready canary-clean rollback-intent rollback-complete; do
+  BLAZN_PHASE4C_FAIL_AFTER=$journal_phase BLAZN_PHASE4C_DISPOSABLE_TEST=true phase4c_write_phase "$tmp/transaction" "$journal_phase" && exit 1 || code=$?
+  [ "$code" -eq 86 ]
+  [ "$(cat "$tmp/transaction/phase")" = "$journal_phase" ]
+done
 
 # Exercise the production UID-precondition JSON against a disposable private
 # Unix socket and inspect the exact DeleteOptions body.

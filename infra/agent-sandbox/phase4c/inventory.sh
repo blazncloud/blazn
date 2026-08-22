@@ -25,6 +25,8 @@ namespace/agent-sandbox-system
 namespace/blazn-poc
 clusterrole/blazn-agent-sandbox-observer
 clusterrolebinding/blazn-agent-sandbox-observer
+clusterrole/blazn-agent-sandbox-ca-bootstrap
+clusterrolebinding/blazn-agent-sandbox-ca-bootstrap
 validatingadmissionpolicy/blazn-agent-sandbox-boundary
 validatingadmissionpolicybinding/blazn-agent-sandbox-boundary'
 printf '%s\n' "$targets" >"$evidence/phase4c-targets"

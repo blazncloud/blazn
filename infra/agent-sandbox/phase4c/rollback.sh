@@ -15,8 +15,8 @@ transaction_id=$(sed -n 's/^    blazn.dev\/phase4c-transaction: //p' "$transacti
 
 uid_for_delete() {
   key=$1 resource=$2 name=$3 namespace=$4
-  if [ -n "$namespace" ]; then object=$(kubectl get "$resource" "$name" -n "$namespace" --ignore-not-found -o json)
-  else object=$(kubectl get "$resource" "$name" --ignore-not-found -o json); fi
+  if [ -n "$namespace" ]; then object=$(kubectl get "$resource" "$name" -n "$namespace" --ignore-not-found -o json 2>/dev/null || true)
+  else object=$(kubectl get "$resource" "$name" --ignore-not-found -o json 2>/dev/null || true); fi
   [ -n "$object" ] || return 1
   uid=$(printf '%s' "$object" | jq -er --arg tx "$transaction_id" 'select(.metadata.annotations["blazn.dev/phase4c-transaction"] == $tx) | .metadata.uid') || {
     printf 'refusing rollback of an unowned replacement: %s/%s\n' "$resource" "$name" >&2; exit 1
@@ -31,7 +31,7 @@ check_namespace_contents() {
   namespace=$1
   unexpected=''
   for resource in $(kubectl api-resources --verbs=list --namespaced -o name | LC_ALL=C sort -u); do
-    case "$resource" in events|events.events.k8s.io|leases.coordination.k8s.io) continue ;; esac
+    case "$resource" in events|events.events.k8s.io|pods.metrics.k8s.io) continue ;; esac
     objects=$(kubectl get "$resource" -n "$namespace" --ignore-not-found -o json)
     [ -n "$objects" ] || continue
     printf '%s' "$objects" | jq -e --arg tx "$transaction_id" --arg ns "$namespace" '
@@ -41,6 +41,7 @@ check_namespace_contents() {
         !(($ns == "blazn-poc") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt")) and
         !(($ns == "agent-sandbox-system") and (.kind == "ServiceAccount") and (.metadata.name == "default")) and
         !(($ns == "agent-sandbox-system") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt"))
+        and !(($ns == "agent-sandbox-system") and (.kind == "Lease") and (.metadata.name == "a3317529.agent-sandbox.x-k8s.io"))
       )] | length == 0' >/dev/null || unexpected="$unexpected $resource"
   done
   [ -z "$unexpected" ] || { printf 'refusing namespace deletion with unexpected objects:%s\n' "$unexpected" >&2; exit 1; }
@@ -55,8 +56,24 @@ esac
 
 mkdir -p "$transaction/uids"
 chmod 0700 "$transaction/uids"
-check_namespace_contents blazn-poc
-check_namespace_contents agent-sandbox-system
+for entry in \
+  'sandbox-runner-sa serviceaccount blazn-sandbox-runner blazn-poc' \
+  'localqueue localqueue.kueue.x-k8s.io blazn-poc blazn-poc' \
+  'controller-role role blazn-agent-sandbox-controller blazn-poc' \
+  'controller-binding rolebinding blazn-agent-sandbox-controller blazn-poc' \
+  'system-role role blazn-agent-sandbox-system agent-sandbox-system' \
+  'system-binding rolebinding blazn-agent-sandbox-system agent-sandbox-system' \
+  'controller-sa serviceaccount agent-sandbox-controller agent-sandbox-system' \
+  'controller-service service agent-sandbox-controller agent-sandbox-system' \
+  'webhook-service service agent-sandbox-webhook-service agent-sandbox-system' \
+  'controller-deployment deployment agent-sandbox-controller agent-sandbox-system' \
+  'webhook-secret secret agent-sandbox-webhook-certs agent-sandbox-system' \
+  'bootstrap-sa serviceaccount blazn-agent-sandbox-ca-bootstrap agent-sandbox-system'; do
+  # shellcheck disable=SC2086
+  if uid_for_delete $entry >/dev/null; then :; fi
+done
+[ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] || check_namespace_contents blazn-poc
+[ -z "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ] || check_namespace_contents agent-sandbox-system
 phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
 
@@ -68,9 +85,9 @@ delete_if_owned() {
 
 # Stop reconciliation first, then remove the uniquely owned workload namespace.
 delete_if_owned namespace-agent-sandbox-system namespace agent-sandbox-system '' '/api/v1/namespaces/agent-sandbox-system'
-kubectl wait --for=delete namespace/agent-sandbox-system --timeout=180s
+if [ -n "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ]; then kubectl wait --for=delete namespace/agent-sandbox-system --timeout=180s; fi
 delete_if_owned namespace-blazn-poc namespace blazn-poc '' '/api/v1/namespaces/blazn-poc'
-kubectl wait --for=delete namespace/blazn-poc --timeout=180s
+if [ -n "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ]; then kubectl wait --for=delete namespace/blazn-poc --timeout=180s; fi
 for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do
   delete_if_owned "crd-$crd" crd "$crd" '' "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$crd"
 done

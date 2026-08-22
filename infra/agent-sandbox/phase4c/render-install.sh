@@ -68,7 +68,6 @@ $0 == "---" { emit_doc(); reset_doc(); next }
     doc = doc "      annotations:\n        blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] "\n"
   }
   if (kind == "Deployment" && name == "agent-sandbox-controller" && in_template && $0 == "    spec:") {
-    doc = doc "      automountServiceAccountToken: false\n"
     doc = doc "      securityContext:\n        runAsNonRoot: true\n        runAsUser: 65532\n        runAsGroup: 65532\n        fsGroup: 65532\n        seccompProfile:\n          type: RuntimeDefault\n"
   }
   if (kind == "Deployment" && name == "agent-sandbox-controller" && $0 == "        name: agent-sandbox-controller") {
