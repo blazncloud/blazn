@@ -160,6 +160,7 @@ func releaseViewArgs(definition Definition, requestedTag string) ([]string, erro
 
 func smokeTestCandidate(ctx context.Context, binary string, expected Manifest) error {
 	command := exec.CommandContext(ctx, binary, "__plugin", "describe", "--json")
+	command.Env = pluginEnvironment(os.Environ())
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = io.Discard
