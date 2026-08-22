@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 die(){ printf 'blazn-worker-issuer-infra: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
@@ -60,7 +61,7 @@ mkdir -p -- "$(dirname -- "$RECEIPT")"
 chmod 0700 "$(dirname -- "$RECEIPT")"
 if [ ! -e "$RECEIPT" ]; then
   for managed in "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECOVERY"; do [ ! -e "$managed" ] || die "managed issuer path exists without its receipt: $managed"; done
-  mkdir -p -- "$ROOT" "$(dirname -- "$BINARY")" "$RECOVERY"
+  mkdir -p -- "$ROOT" "$(dirname -- "$BINARY")" "$(dirname -- "$UNIT")" "$(dirname -- "$TMPFILES")" "$RECOVERY"
   chmod 0700 "$ROOT" "$RECOVERY"
   inventory=$RECOVERY/inventory.json
   jq -cn --arg source "sha256:$(sha "$SOURCE")" --arg key "$RECOVERY/issuer-hmac-v1" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-recovery/v1",prior:{config:"absent",binary:"absent",unit:"absent",tmpfiles:"absent"},sourceDigest:$source,secretRecoveryPath:$key}' >"$inventory"
