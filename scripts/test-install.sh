@@ -193,6 +193,9 @@ grep -q 'must contain only the blazn binary' "$test_root/unsafe-archive.out" || 
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "unsafe archive replaced prior binary"
 pass "unexpected archive paths are rejected"
 
+(cd "$test_root/payload" && tar -czf "$test_release/$test_asset" blazn)
+write_manifest
+
 cp "$test_install/.blazn-install-receipt" "$test_root/owned-receipt"
 rm "$test_install/.blazn-install-receipt"
 if run_installer >"$test_root/unowned.out" 2>&1; then
@@ -240,9 +243,6 @@ if run_installer >"$test_root/missing-signature.out" 2>&1; then
 fi
 cp "$test_root/good-signature" "$test_release/SHA256SUMS.sig"
 pass "missing signature is rejected"
-
-(cd "$test_root/payload" && tar -czf "$test_release/$test_asset" blazn)
-write_manifest
 
 if run_installer_missing_command ssh-keygen >"$test_root/missing-verifier.out" 2>&1; then
   fail "missing signature verifier was accepted"
