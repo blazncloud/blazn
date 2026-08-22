@@ -25,12 +25,26 @@ type ServicePriorState struct {
 }
 
 type Platform interface {
+	AuthorizeBootstrap(context.Context, BootstrapAuthorization) error
 	Preflight(context.Context, client.NodeInstallPlan) error
 	ServiceState(context.Context, client.NodeInstallService) (ServicePriorState, error)
 	Capture(context.Context, client.NodeInstallMutation, string) (PriorState, error)
 	Apply(context.Context, client.NodeInstallMutation) error
 	Rollback(context.Context, client.NodeInstallMutation, PriorState) error
 	Verify(context.Context, client.NodeInstallPlan) error
+}
+
+func (i *Installer) AuthorizeBootstrap(ctx context.Context, authorization BootstrapAuthorization) error {
+	if i.platform == nil {
+		return errors.New("privileged platform is unavailable")
+	}
+	if err := authorization.Validate(); err != nil {
+		return err
+	}
+	if err := i.platform.AuthorizeBootstrap(ctx, authorization); err != nil {
+		return fmt.Errorf("authorize privileged bootstrap: %w", err)
+	}
+	return nil
 }
 
 type Installer struct {

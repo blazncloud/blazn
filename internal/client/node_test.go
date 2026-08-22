@@ -236,7 +236,7 @@ func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatal(err)
 	}
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"lima-worker-binding": binding.SHA256, "service-definition": testHash}, LimaBinding: &binding, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"lima-worker-binding": binding.SHA256, "service-definition": testHash}, LimaBinding: &binding, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +492,7 @@ func signedNodeInstallPlan(t *testing.T) (NodeInstallPlan, NodeInstallPlanTrust)
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodePublicKey, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey, Profile: profile}
 	return plan, trust
 }
@@ -611,7 +611,7 @@ func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testi
 	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "package", Action: "install", Target: "containerd", Desired: map[string]any{"manager": "apt", "version": "1.2.3", "componentName": "containerd"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}}
 	addAuthenticatedServiceBinary(&plan)
 	addEmbeddedServiceDefinition(&plan)
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err == nil {
 		t.Fatal("untrusted package repository passed")
 	}

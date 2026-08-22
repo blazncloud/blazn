@@ -78,7 +78,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 			},
 		}
 	case "node":
-		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|heartbeat [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}}}
+		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|heartbeat [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll, root-authorize, and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}}}
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown help topic %q", topic))
 	}

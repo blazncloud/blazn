@@ -84,15 +84,21 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if err := verifyExchange(response, pin, identity, options, s.now()); err != nil {
 		return EnrollResult{}, err
 	}
+	if install {
+		if s.installer == nil {
+			return EnrollResult{}, errors.New("privileged installer is unavailable")
+		}
+		authorization := BootstrapAuthorization{EnrollmentID: secret.ID, Token: secret.Token, MachineFingerprint: options.MachineFingerprint, NodePublicKey: identity.PublicBase64(), Platform: options.Platform, Architecture: options.Architecture, KubernetesBinding: options.KubernetesBinding, PlanSigningKey: secret.PlanSigningKey, Expected: response, ProfileID: options.Profile.ID, ProfilePath: options.ProfilePath}
+		if err := s.installer.AuthorizeBootstrap(ctx, authorization); err != nil {
+			return EnrollResult{}, err
+		}
+	}
 	state := RuntimeState{SchemaVersion: 1, Pin: pin, Exchange: response, UpdatedAt: nowString(s.now())}
 	if err := s.state.SaveRuntime(state); err != nil {
 		return EnrollResult{}, fmt.Errorf("persist verified node plan: %w", err)
 	}
 	result := EnrollResult{State: state}
 	if install {
-		if s.installer == nil {
-			return result, errors.New("privileged installer is unavailable")
-		}
 		receipt, err := s.installer.Install(ctx, response.Plan, response.Identity, identity)
 		if err != nil {
 			return result, err

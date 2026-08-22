@@ -5,7 +5,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,57 @@ import (
 )
 
 const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func TestBootstrapAuthorizationNeverSerializesOrFormatsToken(t *testing.T) {
+	token := strings.Repeat("s", 43)
+	authorization := BootstrapAuthorization{EnrollmentID: "enrollment", Token: token, MachineFingerprint: testHash, NodePublicKey: strings.Repeat("A", 43)}
+	encoded, err := json.Marshal(authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, output := range []string{string(encoded), fmt.Sprint(authorization), fmt.Sprintf("%#v", authorization)} {
+		if strings.Contains(output, token) {
+			t.Fatalf("bootstrap token leaked: %s", output)
+		}
+	}
+}
+
+func TestControlPlaneOriginIsExactHTTPSOrigin(t *testing.T) {
+	if !validControlPlaneOrigin("https://control.example.test:8443") {
+		t.Fatal("exact HTTPS control-plane origin was rejected")
+	}
+	for _, value := range []string{"http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment"} {
+		if validControlPlaneOrigin(value) {
+			t.Fatalf("unsafe control-plane origin %q was accepted", value)
+		}
+	}
+}
+
+func TestInstallerBootstrapAuthorizationFailsClosedBeforePlatform(t *testing.T) {
+	platform := &mockPlatform{}
+	installer := NewInstaller(platform, &memoryState{})
+	err := installer.AuthorizeBootstrap(context.Background(), BootstrapAuthorization{Token: strings.Repeat("s", 43)})
+	if err == nil || platform.authorization != nil {
+		t.Fatalf("authorization=%#v err=%v", platform.authorization, err)
+	}
+}
+
+func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, ProfileID: "profile/v1", ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: "2026-08-22T12:00:00Z"}
+	first, err := RootInstallAuthorityDigest(authority)
+	if err != nil || !bootstrapDigestPattern.MatchString(first) {
+		t.Fatalf("digest=%q err=%v", first, err)
+	}
+	authority.ControlPlaneOrigin = "https://other.example.test"
+	second, err := RootInstallAuthorityDigest(authority)
+	if err != nil || second == first {
+		t.Fatalf("first=%q second=%q err=%v", first, second, err)
+	}
+	encoded, _ := json.Marshal(authority)
+	if strings.Contains(string(encoded), "token") {
+		t.Fatalf("root authority unexpectedly contains token material: %s", encoded)
+	}
+}
 
 func TestFileIdentityStoreCreatesPrivateStableKey(t *testing.T) {
 	path := filepath.Join(testRoot(t), "private", "identity.json")
@@ -48,7 +101,7 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("binary"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	profile := `{"schemaVersion":1,"id":"ubuntu-26.04-amd64-worker/v1","allowedClusterOrigins":["https://cluster.example.test"],"allowedDownloadOrigins":[],"allowedDownloadHostSuffixes":[],"allowedRegistryOrigins":[],"allowedMutationRoots":["/var/lib/blazn"],"embeddedComponentSha256":{}}`
+	profile := `{"schemaVersion":1,"id":"ubuntu-26.04-amd64-worker/v1","controlPlaneOrigin":"https://control.example.test","allowedClusterOrigins":["https://cluster.example.test"],"allowedDownloadOrigins":[],"allowedDownloadHostSuffixes":[],"allowedRegistryOrigins":[],"allowedMutationRoots":["/var/lib/blazn"],"embeddedComponentSha256":{}}`
 	if err := os.WriteFile(profilePath, []byte(profile), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -389,13 +442,19 @@ func (m *memoryState) LoadReceipt() (client.NodeInstallReceipt, error) {
 }
 
 type mockPlatform struct {
-	failAt     int
-	applyCalls int
-	rolledBack []int64
-	prior      *PriorState
-	verifyErr  error
+	failAt        int
+	applyCalls    int
+	rolledBack    []int64
+	prior         *PriorState
+	verifyErr     error
+	authorizeErr  error
+	authorization *BootstrapAuthorization
 }
 
+func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
+	m.authorization = &authorization
+	return m.authorizeErr
+}
 func (*mockPlatform) Preflight(context.Context, client.NodeInstallPlan) error { return nil }
 func (*mockPlatform) ServiceState(context.Context, client.NodeInstallService) (ServicePriorState, error) {
 	return ServicePriorState{}, nil

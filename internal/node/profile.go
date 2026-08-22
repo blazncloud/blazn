@@ -17,6 +17,7 @@ import (
 type TrustedProfileFile struct {
 	SchemaVersion               int                            `json:"schemaVersion"`
 	ID                          string                         `json:"id"`
+	ControlPlaneOrigin          string                         `json:"controlPlaneOrigin"`
 	AllowedClusterOrigins       []string                       `json:"allowedClusterOrigins"`
 	AllowedDownloadOrigins      []string                       `json:"allowedDownloadOrigins"`
 	AllowedDownloadHostSuffixes []string                       `json:"allowedDownloadHostSuffixes"`
@@ -67,7 +68,7 @@ func LoadTrustedProfile(path, currentBinaryPath, currentVersion string) (client.
 	if _, err := io.Copy(hash, file); err != nil {
 		return client.NodeTrustedInstallProfile{}, err
 	}
-	profile := client.NodeTrustedInstallProfile{ID: stored.ID, AllowedClusterOrigins: stored.AllowedClusterOrigins, AllowedDownloadOrigins: stored.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: stored.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: stored.AllowedRegistryOrigins, AllowedMutationRoots: stored.AllowedMutationRoots, CurrentBinaryVersion: currentVersion, CurrentBinarySHA256: hex.EncodeToString(hash.Sum(nil)), EmbeddedComponentSHA256: stored.EmbeddedComponentSHA256, LimaBinding: stored.LimaBinding, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
+	profile := client.NodeTrustedInstallProfile{ID: stored.ID, ControlPlaneOrigin: stored.ControlPlaneOrigin, AllowedClusterOrigins: stored.AllowedClusterOrigins, AllowedDownloadOrigins: stored.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: stored.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: stored.AllowedRegistryOrigins, AllowedMutationRoots: stored.AllowedMutationRoots, CurrentBinaryVersion: currentVersion, CurrentBinarySHA256: hex.EncodeToString(hash.Sum(nil)), EmbeddedComponentSHA256: stored.EmbeddedComponentSHA256, LimaBinding: stored.LimaBinding, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
 	return profile, nil
 }
 
