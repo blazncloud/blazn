@@ -456,17 +456,17 @@ type NodeReceiptAction struct {
 type NodeSigningKeyring map[string]ed25519.PublicKey
 
 type NodeInstallPlanTrust struct {
-	Now                      time.Time
-	Keyring                  NodeSigningKeyring
-	WorkspaceID              string
-	EnrollmentID             string
-	NodeID                   string
-	Hostname                 string
-	MachineFingerprint       string
-	NodePublicKeyFingerprint string
-	Platform                 NodePlatform
-	Architecture             NodeArchitecture
-	IdempotencyKey           string
+	Now                time.Time
+	Keyring            NodeSigningKeyring
+	WorkspaceID        string
+	EnrollmentID       string
+	NodeID             string
+	Hostname           string
+	MachineFingerprint string
+	NodePublicKey      ed25519.PublicKey
+	Platform           NodePlatform
+	Architecture       NodeArchitecture
+	IdempotencyKey     string
 }
 
 type NodeInstallReceiptTrust struct {
@@ -1034,6 +1034,14 @@ func NodeCapabilityDigest(capability NodeCapability) (string, error) {
 	return "sha256:" + hex.EncodeToString(digest.Sum(nil)), nil
 }
 
+func NodePublicKeyFingerprint(publicKey ed25519.PublicKey) (string, error) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return "", fmt.Errorf("node Ed25519 public key must contain 32 bytes")
+	}
+	digest := sha256.Sum256(publicKey)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
 func VerifyNodeInstallPlan(plan NodeInstallPlan, trust NodeInstallPlanTrust) error {
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		return err
@@ -1056,13 +1064,17 @@ func VerifyNodeInstallPlan(plan NodeInstallPlan, trust NodeInstallPlanTrust) err
 	if trust.Now.Before(issued) || !trust.Now.Before(expires) {
 		return fmt.Errorf("install plan is not active at trusted current time")
 	}
+	publicKeyFingerprint, err := NodePublicKeyFingerprint(trust.NodePublicKey)
+	if err != nil {
+		return err
+	}
 	bindings := [][3]string{
 		{"workspaceId", plan.WorkspaceID, trust.WorkspaceID},
 		{"enrollmentId", plan.EnrollmentID, trust.EnrollmentID},
 		{"nodeId", plan.NodeID, trust.NodeID},
 		{"hostname", plan.Hostname, trust.Hostname},
 		{"machineFingerprint", plan.Target.MachineFingerprint, trust.MachineFingerprint},
-		{"nodePublicKeyFingerprint", plan.Target.NodePublicKeyFingerprint, trust.NodePublicKeyFingerprint},
+		{"nodePublicKeyFingerprint", plan.Target.NodePublicKeyFingerprint, publicKeyFingerprint},
 		{"platform", string(plan.Target.Platform), string(trust.Platform)},
 		{"architecture", string(plan.Target.Architecture), string(trust.Architecture)},
 		{"idempotencyKey", plan.IdempotencyKey, trust.IdempotencyKey},
