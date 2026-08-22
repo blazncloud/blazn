@@ -45,6 +45,26 @@ CREATE ROLE blazn_node_broker
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
   PASSWORD :'node_broker_password';
 
+DO $preserve$
+DECLARE database_row record;
+DECLARE role_row record;
+BEGIN
+  FOR database_row IN SELECT oid, datname FROM pg_database WHERE datallowconn LOOP
+    FOR role_row IN
+      SELECT oid, rolname FROM pg_roles
+      WHERE rolcanlogin AND rolname <> 'blazn_node_broker'
+        AND has_database_privilege(oid, database_row.oid, 'CONNECT')
+    LOOP
+      EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', database_row.datname, role_row.rolname);
+      IF has_database_privilege(role_row.oid, database_row.oid, 'TEMP') THEN
+        EXECUTE format('GRANT TEMPORARY ON DATABASE %I TO %I', database_row.datname, role_row.rolname);
+      END IF;
+    END LOOP;
+    EXECUTE format('REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC', database_row.datname);
+  END LOOP;
+END
+$preserve$;
+
 ALTER DATABASE :"database_name" OWNER TO blazn_migration;
 REVOKE ALL ON DATABASE :"database_name" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_runtime;

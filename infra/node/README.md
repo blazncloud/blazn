@@ -37,3 +37,9 @@ Rollback is a crash-resumable journal: database grants and owned dependencies
 are cleared transactionally before the role is dropped, secrets are moved to a
 recoverable receipt-bound location, and the prior environment/build/ownership
 inputs are atomically restored.
+The final rollback phase is deliberately `source-restore-required`: the
+operator must restore the release tree whose source and configuration digests
+are recorded in the upgrade receipt, then rerun the rollback command with that
+restored `infra/milestone-2` path. The journal refuses `rolled-back` until both
+digests match, ensuring the restored build and ownership receipts can actually
+pass startup preflight rather than pointing at the newer source tree.

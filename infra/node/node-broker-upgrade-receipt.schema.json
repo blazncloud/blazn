@@ -8,7 +8,7 @@
     "schemaVersion": { "const": "blazn.dev/node-broker-upgrade/v2" },
     "owner": { "const": "blazn-poc" },
     "host": { "type": "string", "minLength": 1 },
-    "phase": { "enum": ["inputs-backed-up", "role-ready", "environment-bound", "build-ready", "complete", "rollback-started", "role-removed", "secrets-retained", "environment-restored", "build-restored", "main-restored", "rolled-back"] },
+    "phase": { "enum": ["inputs-backed-up", "role-ready", "environment-bound", "build-ready", "complete", "rollback-started", "role-removed", "secrets-retained", "environment-restored", "build-restored", "main-restored", "source-restore-required", "rolled-back"] },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
     "inputs": {

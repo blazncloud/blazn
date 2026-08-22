@@ -17,7 +17,11 @@ run_create() {
     BLAZN_NODE_BROKER_CREATE_JOURNAL="$root/ownership/secret-create.json" "$CREATE"
 }
 
-for fault in initialized tree-created database-written hmac-written join-written published; do
+for fault in \
+  initialized tree-created \
+  database-temp-created database-temp-written database-temp-chmod database-temp-fsynced database-before-mv database-after-mv database-written \
+  hmac-temp-created hmac-temp-written hmac-temp-chmod hmac-temp-fsynced hmac-before-mv hmac-after-mv hmac-written \
+  join-temp-created join-temp-written join-temp-chmod join-temp-fsynced join-before-mv join-after-mv join-written published; do
   root=$top/$fault
   mkdir -p "$root/etc" "$root/ownership"
   sudo chown -R 0:0 "$root"
@@ -32,6 +36,17 @@ for fault in initialized tree-created database-written hmac-written join-written
   [ "$before" = "$after" ] || { printf 'secret retry changed generation: %s\n' "$fault" >&2; exit 1; }
   [ "$(sudo find "$root/etc" -maxdepth 1 -name '.node-broker-create-*' -print | wc -l)" -eq 0 ] || { printf 'secret staging residue remained\n' >&2; exit 1; }
 done
+
+extra=$top/extra-entry
+mkdir -p "$extra/etc" "$extra/ownership"
+sudo chown -R 0:0 "$extra"
+sudo chmod 0700 "$extra" "$extra/etc" "$extra/ownership"
+if run_create "$extra" join-written >"$top/extra-first.out" 2>"$top/extra-first.err"; then printf 'join-written fault unexpectedly completed\n' >&2; exit 1; fi
+stage=$(sudo jq -er .stage "$extra/ownership/secret-create.json")
+sudo sh -c ': >"$1/secrets/unreviewed"' sh "$stage"
+if run_create "$extra" >"$top/extra-retry.out" 2>"$top/extra-retry.err"; then printf 'secret tree with extra entry unexpectedly published\n' >&2; exit 1; fi
+grep -F 'unreviewed entry' "$top/extra-retry.err" >/dev/null
+sudo test ! -e "$extra/etc/node-broker" || { printf 'secret tree with extra entry crossed publish boundary\n' >&2; exit 1; }
 trap - EXIT HUP INT TERM
 cleanup
 printf 'fresh and upgrade secret creation intra-generation fault matrix passed\n'

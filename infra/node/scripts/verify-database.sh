@@ -68,8 +68,9 @@ identity=$(query "select current_user, rolcanlogin, rolsuper, rolcreatedb, rolcr
   exit 1
 }
 
-assert_empty "select datname from pg_database where datname not in ('template0','template1','postgres','blazn') and datallowconn and
-  (has_database_privilege(current_user, oid, 'CONNECT') or has_database_privilege(current_user, oid, 'CREATE') or has_database_privilege(current_user, oid, 'TEMP')) order by datname" database
+assert_empty "select datname from pg_database where datallowconn and
+  ((datname=current_database() and (not has_database_privilege(current_user,oid,'CONNECT') or has_database_privilege(current_user,oid,'CREATE') or has_database_privilege(current_user,oid,'TEMP')))
+   or (datname<>current_database() and (has_database_privilege(current_user,oid,'CONNECT') or has_database_privilege(current_user,oid,'CREATE') or has_database_privilege(current_user,oid,'TEMP')))) order by datname" database
 assert_empty "select nspname from pg_namespace where nspname !~ '^pg_' and nspname <> 'information_schema' and nspname <> 'public' and
   (has_schema_privilege(current_user, oid, 'USAGE') or has_schema_privilege(current_user, oid, 'CREATE')) order by nspname" schema
 assert_empty "select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace

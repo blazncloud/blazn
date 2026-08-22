@@ -38,7 +38,7 @@ fixture() {
   root=$top/$name
   mkdir -p "$root/ownership" "$root/etc" "$root/bin"
   cp "$top/docker" "$root/bin/docker"
-  jq -cn --arg host "$(hostname)" '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host}' >"$root/ownership/control-plane.json"
+  jq -cn --arg host "$(hostname)" '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,controlApi:{sourceDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},configDigest:"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' >"$root/ownership/control-plane.json"
   : >"$root/control-plane.env"
   chmod 0600 "$root/ownership/control-plane.json" "$root/control-plane.env"
   sudo chown -R 0:0 "$root/ownership" "$root/control-plane.env" "$root/etc"
@@ -49,9 +49,12 @@ fixture() {
 run_rollback() {
   root=$1
   fail_after=${2:-}
+  observed=${3:-match}
+  if [ "$observed" = match ]; then source_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; config_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; else source_digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; config_digest=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd; fi
   sudo env \
     PATH="$root/bin:$PATH" FAKE_ROLE_STATE="$root/role-ready" BLAZN_FENCING_TOKEN=12 BLAZN_CORRELATION_ID=rollback \
     BLAZN_NODE_INFRA_TEST_MODE=1 BLAZN_NODE_ROLLBACK_TEST_FAIL_AFTER="$fail_after" \
+    BLAZN_NODE_INFRA_TEST_OBSERVED_SOURCE_DIGEST="$source_digest" BLAZN_NODE_INFRA_TEST_OBSERVED_CONFIG_DIGEST="$config_digest" \
     BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
     BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL="$root/ownership/secret-create.json" \
     BLAZN_NODE_INFRA_TEST_RETAIN_PARENT="$root/ownership" \
@@ -114,7 +117,7 @@ for fault in secrets-published input-root-created main-backed-up environment-bac
   fi
 done
 
-for fault in rollback-started role-removed secrets-retained environment-restored build-restored main-restored rolled-back; do
+for fault in rollback-started role-removed secrets-retained environment-restored build-restored main-restored source-restore-required rolled-back; do
   root=$(fixture "rollback-$fault")
   run_upgrade "$root" >"$root/upgrade.out"
   if run_rollback "$root" "$fault" >"$root/rollback-first.out" 2>"$root/rollback-first.err"; then printf 'rollback fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
@@ -126,6 +129,15 @@ for fault in rollback-started role-removed secrets-retained environment-restored
   [ ! -e "$root/role-ready" ] || { printf 'rollback retry left database role\n' >&2; exit 1; }
   sudo test ! -s "$root/control-plane.env" || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
 done
+
+source_root=$(fixture source-mismatch)
+run_upgrade "$source_root" >"$source_root/upgrade.out"
+if run_rollback "$source_root" source-restore-required >"$source_root/source-first.out" 2>"$source_root/source-first.err"; then printf 'source-restore fault unexpectedly completed\n' >&2; exit 1; fi
+if run_rollback "$source_root" '' mismatch >"$source_root/source-bad.out" 2>"$source_root/source-bad.err"; then printf 'mismatched source restore unexpectedly completed\n' >&2; exit 1; fi
+grep -F 'prior source restore is required' "$source_root/source-bad.err" >/dev/null
+sudo jq -e '.phase=="source-restore-required"' "$source_root/ownership/node-broker-upgrade.json" >/dev/null
+run_rollback "$source_root" >"$source_root/source-good.out"
+sudo jq -e '.phase=="rolled-back"' "$source_root/ownership/node-broker-upgrade.json" >/dev/null
 
 trap - EXIT HUP INT TERM
 cleanup

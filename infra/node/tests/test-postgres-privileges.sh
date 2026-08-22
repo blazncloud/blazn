@@ -34,6 +34,7 @@ docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >
 CREATE ROLE blazn_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '1111111111111111111111111111111111111111111111111111111111111111';
 CREATE ROLE blazn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '2222222222222222222222222222222222222222222222222222222222222222';
 CREATE ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '3333333333333333333333333333333333333333333333333333333333333333';
+CREATE ROLE unrelated_login LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '5555555555555555555555555555555555555555555555555555555555555555';
 ALTER DATABASE blazn OWNER TO blazn_migration;
 REVOKE ALL ON DATABASE blazn FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
@@ -66,6 +67,7 @@ setup_broker() {
   docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >/dev/null <<'SQL'
 BEGIN;
 DO $block$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='blazn_node_broker') THEN EXECUTE 'CREATE ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'; END IF; END $block$;
+DO $preserve$ DECLARE database_row record; role_row record; BEGIN FOR database_row IN SELECT oid,datname FROM pg_database WHERE datallowconn LOOP FOR role_row IN SELECT oid,rolname FROM pg_roles WHERE rolcanlogin AND rolname <> 'blazn_node_broker' AND has_database_privilege(oid,database_row.oid,'CONNECT') LOOP EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I',database_row.datname,role_row.rolname); IF has_database_privilege(role_row.oid,database_row.oid,'TEMP') THEN EXECUTE format('GRANT TEMPORARY ON DATABASE %I TO %I',database_row.datname,role_row.rolname); END IF; END LOOP; EXECUTE format('REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC',database_row.datname); END LOOP; END $preserve$;
 REVOKE ALL PRIVILEGES ON DATABASE blazn FROM blazn_node_broker;
 REVOKE ALL PRIVILEGES ON SCHEMA public FROM blazn_node_broker;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM blazn_node_broker;
@@ -94,6 +96,7 @@ verify() {
     "$image" /bin/sh /verify-database.sh "$mode"
 }
 verify pre-migration >/dev/null
+[ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_database_privilege('unrelated_login','postgres','CONNECT'),has_database_privilege('unrelated_login','template1','CONNECT'),has_database_privilege('unrelated_login','postgres','TEMP'),has_database_privilege('blazn_node_broker','postgres','CONNECT'),has_database_privilege('blazn_node_broker','template1','CONNECT'),has_database_privilege('blazn_node_broker','postgres','TEMP')")" = 't|t|t|f|f|f' ] || { printf 'database PUBLIC conversion changed unrelated access or retained broker access\n' >&2; exit 1; }
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'GRANT SELECT ON users TO blazn_node_broker' >/dev/null
 setup_broker
 verify pre-migration >/dev/null
@@ -109,6 +112,7 @@ REVOKE ALL PRIVILEGES ON DATABASE blazn FROM blazn_node_broker;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON TABLES FROM blazn_node_broker;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON SEQUENCES FROM blazn_node_broker;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_node_broker;
+DO $revoke$ DECLARE database_row record; BEGIN FOR database_row IN SELECT datname FROM pg_database LOOP EXECUTE format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM blazn_node_broker',database_row.datname); END LOOP; END $revoke$;
 DROP ROLE blazn_node_broker;'
 if { printf '%s\nSELECT 1/0;\nCOMMIT;\n' "$rollback_sql"; } | docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >"$tmp/out" 2>"$tmp/err"; then printf 'failing rollback transaction unexpectedly passed\n' >&2; exit 1; fi
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")" = 1 ] || { printf 'interrupted rollback did not roll back DROP ROLE\n' >&2; exit 1; }
@@ -120,6 +124,11 @@ for migration in 004_nodes.sql 005_node_broker_security.sql; do
   docker exec -i "$container" env PGPASSWORD=1111111111111111111111111111111111111111111111111111111111111111 psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_migration -d blazn <"$REPO_ROOT/services/control-api/migrations/$migration" >/dev/null
 done
 verify post-migration >/dev/null
+
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'GRANT CONNECT ON DATABASE postgres TO blazn_node_broker' >/dev/null
+if verify post-migration >"$tmp/out" 2>"$tmp/err"; then printf 'unexpected postgres database grant passed\n' >&2; exit 1; fi
+grep -F 'effective database privileges' "$tmp/err" >/dev/null
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'REVOKE CONNECT ON DATABASE postgres FROM blazn_node_broker' >/dev/null
 
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'CREATE DATABASE broker_extra' >/dev/null
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'GRANT CONNECT ON DATABASE broker_extra TO blazn_node_broker' >/dev/null
