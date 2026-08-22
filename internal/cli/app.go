@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/KingJammin/blazn/internal/auth"
+	"github.com/KingJammin/blazn/internal/client"
 )
 
 const (
@@ -32,11 +37,22 @@ type BuildInfo struct {
 }
 
 type App struct {
-	stdout    io.Writer
-	stderr    io.Writer
-	build     BuildInfo
-	doctor    func() DoctorReport
-	uninstall func() (UninstallResult, error)
+	stdout      io.Writer
+	stderr      io.Writer
+	build       BuildInfo
+	doctor      func() DoctorReport
+	uninstall   func() (UninstallResult, error)
+	auth        func() (authCommands, error)
+	openBrowser func(string) error
+}
+
+type authCommands interface {
+	BeginLogin(context.Context) (auth.LoginStart, string, time.Duration, error)
+	CompleteLogin(context.Context, string, time.Duration) (auth.LoginResult, error)
+	Status(context.Context) (auth.StatusResult, error)
+	Logout(context.Context) (auth.LogoutResult, error)
+	Devices(context.Context) ([]client.Device, error)
+	RevokeDevice(context.Context, string) error
 }
 
 func New(stdout, stderr io.Writer, build BuildInfo) *App {
@@ -52,6 +68,10 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		build:     build,
 		doctor:    func() DoctorReport { return RunDoctor(build) },
 		uninstall: RunUninstall,
+		auth: func() (authCommands, error) {
+			return auth.NewDefaultService()
+		},
+		openBrowser: auth.OpenBrowser,
 	}
 }
 
@@ -106,6 +126,8 @@ func (a *App) Run(args []string) int {
 			return a.writeError(format, ExitUsage, "confirmation_required", "uninstall requires --yes")
 		}
 		return a.writeUninstall(format)
+	case "auth":
+		return a.runAuth(format, rest)
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
 	}

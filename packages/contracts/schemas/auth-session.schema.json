@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/v1alpha1/auth-session.schema.json",
+  "title": "Blazn device session",
+  "type": "object",
+  "required": ["accessToken", "refreshToken", "expiresIn", "deviceId", "devicePrivateKey"],
+  "properties": {
+    "accessToken": {"type": "string", "minLength": 1},
+    "refreshToken": {"type": "string", "minLength": 1},
+    "expiresIn": {"type": "integer", "minimum": 1},
+	"deviceId": {"type": "string", "minLength": 1},
+	"devicePrivateKey": {"type": "string", "minLength": 1, "contentEncoding": "base64"}
+  },
+  "additionalProperties": false
+}
