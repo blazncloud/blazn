@@ -134,11 +134,11 @@ if [ "$MODE" = deploy ]; then
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password postgres-url s3-access-key s3-secret-key; do
+  for secret in postgres-password postgres-url s3-access-key s3-secret-key bootstrap-secret; do
     [ -f "$SECRETS_ROOT/$secret" ] || die "required secret file is missing: $secret"
     [ "$(stat -c '%u' "$SECRETS_ROOT/$secret")" -eq 0 ] || die "secret file must be owned by root: $secret"
     mode=$(stat -c '%a' "$SECRETS_ROOT/$secret")
-    [ "$mode" = 600 ] || die "secret file must have mode 0600: $secret"
+    [ "$mode" = 444 ] || die "secret file must have mode 0444 inside the root-only secrets directory: $secret"
   done
 fi
 

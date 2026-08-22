@@ -31,12 +31,16 @@ chown 1000:1000 -- "$DATA_ROOT/objects"
 postgres_password=$(openssl rand -hex 32)
 s3_access_key=blazn$(openssl rand -hex 8)
 s3_secret_key=$(openssl rand -hex 32)
+bootstrap_secret=$(openssl rand -hex 32)
 printf '%s\n' "$postgres_password" >"$SECRETS_ROOT/postgres-password"
 printf 'postgresql://%s:%s@postgres:5432/%s\n' \
   "${POSTGRES_USER:-blazn}" "$postgres_password" "${POSTGRES_DB:-blazn}" >"$SECRETS_ROOT/postgres-url"
 printf '%s\n' "$s3_access_key" >"$SECRETS_ROOT/s3-access-key"
 printf '%s\n' "$s3_secret_key" >"$SECRETS_ROOT/s3-secret-key"
-chmod 0600 -- "$SECRETS_ROOT"/*
+printf '%s\n' "$bootstrap_secret" >"$SECRETS_ROOT/bootstrap-secret"
+# The parent directory is root-only. Compose bind-mounts only the named files;
+# mode 0444 lets explicitly configured non-root container users read them.
+chmod 0444 -- "$SECRETS_ROOT"/*
 
 config_digest=$(sha256_file "$ROOT_DIR/compose.yaml")
 host=$(hostname)

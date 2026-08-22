@@ -14,14 +14,16 @@ environment, and a successful preflight. `preflight.sh --plan` is read-only.
 - The S3 API and administration console bind only to `127.0.0.1:59000` and
   `127.0.0.1:59001`.
 - The API binds only to `127.0.0.1:58080` and is the sole ngrok target.
-- Containers share a private Compose bridge. Secret values are root-owned files
-  mounted through Compose secrets, not ordinary resource metadata.
+- Containers share a private Compose bridge. Secret values are named files
+  inside a root-only directory and only those files are mounted into their
+  declared containers through Compose secrets; they are not ordinary resource
+  metadata.
 - PostgreSQL and MinIO images are versioned and pinned to reviewed manifest-list
   digests. The API build is sourced from `services/control-api` and uses that
   service's own Node 22 Dockerfile and `CMD`.
 
-The TypeScript API contract is `GET /healthz` plus `PORT`,
-`DATABASE_URL_FILE`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
+The TypeScript API contract is `GET /healthz` plus `PORT`, `PUBLIC_URL`,
+`BLAZN_BOOTSTRAP_SECRET_FILE`, `DATABASE_URL_FILE`, `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`,
 `S3_ACCESS_KEY_FILE`, and `S3_SECRET_KEY_FILE`.
 
 ## Required decisions before a ben1 deployment
@@ -38,12 +40,18 @@ The TypeScript API contract is `GET /healthz` plus `PORT`,
    database or object-store endpoint.
 5. Review the image digests and MinIO's AGPLv3 obligations before deployment.
 
+The exact pinned MinIO image was inspected for Linux AMD64 and contains
+`/usr/bin/curl`; its health check uses the unauthenticated local
+`/minio/health/live` endpoint. Image qualification must repeat for ARM64 before
+that architecture is used for this service.
+
 ## Controlled lifecycle
 
 The intended installer-owned sequence is:
 
 ```text
 preflight.sh --plan
+with-control-plane-lock.sh dependency <correlation-id> auto install-compose-plugin.sh
 with-control-plane-lock.sh prepare <correlation-id> auto prepare-host.sh
 install reviewed files and systemd unit
 systemctl enable --now blazn-control-plane.service
