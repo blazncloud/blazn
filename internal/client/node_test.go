@@ -546,6 +546,12 @@ func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing
 	if err := ValidateNodeComponentRedirect(redirectProfile, download, "https://canonical-bos01.cdn.snapcraftcontent.com/download-origin/canonical-lgw01/file"); err != nil {
 		t.Fatalf("approved Snapcraft CDN redirect failed: %v", err)
 	}
+	suffixOnlyInitial := download
+	suffixOnlyInitial.SourceHost = "canonical-bos01.cdn.snapcraftcontent.com"
+	suffixOnlyInitial.Source = "https://canonical-bos01.cdn.snapcraftcontent.com/file"
+	if err := ValidateNodeComponentRedirect(redirectProfile, suffixOnlyInitial, suffixOnlyInitial.Source); err == nil {
+		t.Fatal("initial component source bypassed exact-origin trust through redirect suffix")
+	}
 	for _, candidate := range []string{
 		"http://canonical-bos01.cdn.snapcraftcontent.com/file",
 		"https://user:secret@canonical-bos01.cdn.snapcraftcontent.com/file",

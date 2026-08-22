@@ -1447,7 +1447,8 @@ func ValidateNodeComponentRedirect(profile NodeTrustedInstallProfile, component 
 		return fmt.Errorf("component %q source or redirect is not trusted", component.Name)
 	}
 	initial := candidateURL == component.Source
-	trustedHost := nodeOriginAllowed(candidateURL, profile.AllowedDownloadOrigins) || nodeHostSuffixAllowed(parsed.Hostname(), profile.AllowedDownloadHostSuffixes)
+	exactOrigin := nodeOriginAllowed(candidateURL, profile.AllowedDownloadOrigins)
+	trustedHost := exactOrigin || (!initial && nodeHostSuffixAllowed(parsed.Hostname(), profile.AllowedDownloadHostSuffixes))
 	if !trustedHost || (initial && parsed.Hostname() != component.SourceHost) {
 		return fmt.Errorf("component %q source or redirect is not trusted", component.Name)
 	}
