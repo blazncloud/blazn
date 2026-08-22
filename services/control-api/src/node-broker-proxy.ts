@@ -1,4 +1,5 @@
 import { request } from "node:http";
+import { NODE_ERROR_STATUS, type NodeErrorCode } from "./node-types.js";
 
 export interface BrokerProxyReply { status: number; body: Buffer; retryAfter?: string }
 export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply>; health(signal: AbortSignal): Promise<void> }
@@ -31,7 +32,8 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
           const contentType = response.headers["content-type"];
           const retry = response.headers["retry-after"];
           if (!statuses.has(response.statusCode ?? 0) || contentType !== "application/json" || (Array.isArray(retry) ? retry.length !== 1 : false)) return reject(new Error("Node broker response contract is invalid"));
-          const body = Buffer.concat(chunks); try { const parsed: unknown = JSON.parse(body.toString("utf8")); if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(); } catch { return reject(new Error("Node broker response JSON is invalid")); }
+          const body = Buffer.concat(chunks); try { validateBrokerBody(response.statusCode!, JSON.parse(body.toString("utf8"))); } catch { return reject(new Error("Node broker response JSON is invalid")); }
+          if (retry !== undefined && (response.statusCode !== 429 || typeof retry !== "string" || !/^[1-9][0-9]{0,2}$/.test(retry))) return reject(new Error("Node broker retry contract is invalid"));
           resolve({ status: response.statusCode!, body, ...(typeof retry === "string" ? { retryAfter: retry } : {}) });
         });
       });
@@ -40,3 +42,10 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
     });
   }
 }
+
+function validateBrokerBody(status:number,value:unknown):void{
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error();const body=value as Record<string,unknown>;
+  if(status===200){exact(body,["issuanceId","credential","expiresAt","clusterId","workerOnly","replayed"]);if(typeof body.issuanceId!=="string"||!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(body.issuanceId)||typeof body.credential!=="string"||!/^[A-Za-z0-9_-]{43,4096}$/.test(body.credential)||typeof body.expiresAt!=="string"||!Number.isFinite(Date.parse(body.expiresAt))||typeof body.clusterId!=="string"||!body.clusterId||body.clusterId.length>128||body.workerOnly!==true||typeof body.replayed!=="boolean")throw new Error();return;}
+  exact(body,["code","message","requestId"]);if(typeof body.code!=="string"||!(body.code in NODE_ERROR_STATUS)||NODE_ERROR_STATUS[body.code as NodeErrorCode]!==status||typeof body.message!=="string"||!body.message||body.message.length>512||typeof body.requestId!=="string"||!/^[0-9a-f-]{36}$/.test(body.requestId))throw new Error();
+}
+function exact(value:Record<string,unknown>,keys:string[]):void{if(Object.keys(value).length!==keys.length||keys.some(key=>!(key in value))||Object.keys(value).some(key=>!keys.includes(key)))throw new Error();}
