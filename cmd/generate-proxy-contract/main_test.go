@@ -33,6 +33,32 @@ func TestPinnedProxySchemasAndValidator(t *testing.T) {
 	if err := validate(documents, string(contractTemplate)); err != nil {
 		t.Fatal(err)
 	}
+	fixture, err := os.ReadFile(filepath.Join(root, "packages", "contracts", "proxy", "fixtures", "poc-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(fixture)
+	if got := hex.EncodeToString(sum[:]); got != pinnedPOCPolicyDigest {
+		t.Fatalf("fixture=%s want=%s", got, pinnedPOCPolicyDigest)
+	}
+	if err := validatePOCPolicyFixture(fixture); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPOCPolicyFixtureRejectsRouteSemanticDrift(t *testing.T) {
+	root, _ := repositoryRoot()
+	fixture, _ := os.ReadFile(filepath.Join(root, "packages", "contracts", "proxy", "fixtures", "poc-policy.json"))
+	var policy map[string]any
+	if err := json.Unmarshal(fixture, &policy); err != nil {
+		t.Fatal(err)
+	}
+	routes := policy["routes"].([]any)
+	routes[0].(map[string]any)["sourceProtocols"] = []any{"openai-chat"}
+	mutated, _ := json.Marshal(policy)
+	if err := validatePOCPolicyFixture(mutated); err == nil {
+		t.Fatal("route source protocol drift accepted")
+	}
 }
 
 func TestValidatorRejectsContentCaptureAndEventContent(t *testing.T) {

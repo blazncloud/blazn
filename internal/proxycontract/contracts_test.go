@@ -12,7 +12,7 @@ const id2 = "123e4567-e89b-42d3-a456-426614174001"
 const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func validPolicy() Policy {
-	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocol: ProtocolOpenAIChat, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "local/qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1}, ContentCapture: false}
+	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: []Protocol{ProtocolOpenAIChat}, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "local/qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1}, ContentCapture: false}
 }
 
 func journalEnvironment(prior *string) []EnvironmentMutation {
@@ -195,8 +195,31 @@ func TestJournalReceiptBindingAndChecksum(t *testing.T) {
 	}
 	journalDigest, _ := ContractDigest(journal)
 	receipt := ActivationReceipt{SchemaVersion: "proxy/v1alpha1", ActivationID: id1, Nonce: journal.Nonce, Generation: 1, OwnerUID: 1, JournalDigest: journalDigest, PolicyDigest: digest, Platform: PlatformLinux, Mode: ModeScopedRun, SessionIdentity: "uid:1", Binary: journal.Binary, Listener: ReceiptListener{PID: 10, ProcessStartIdentity: "start", ExecutableIdentity: "exe", Address: "127.0.0.1:8080", ListenerKeyFingerprint: digest}, PublicationMechanism: "process_environment", Environment: receiptEnvironment(), RollbackSummary: journal.RollbackActions, ActivatedAt: "2026-01-01T00:00:00Z", State: "active", Checksum: digest}
+	receiptChecksum, err := ContractChecksum(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Checksum = receiptChecksum
 	if err := ValidateJournalReceipt(journal, receipt); err != nil {
 		t.Fatal(err)
+	}
+	if !receipt.AllowsVerifiedListenerStop() {
+		t.Fatal("verified receipt did not authorize listener stop")
+	}
+	tamperedJournal := journal
+	tamperedJournal.Listener.PID++
+	if err := ValidateJournalReceipt(tamperedJournal, receipt); err == nil {
+		t.Fatal("journal with stale checksum authorized recovery")
+	}
+	tamperedReceipt := receipt
+	tamperedReceipt.Listener.PID++
+	if tamperedReceipt.AllowsVerifiedListenerStop() {
+		t.Fatal("receipt with stale checksum authorized listener stop")
+	}
+	fakeChecksum := receipt
+	fakeChecksum.Checksum = digest
+	if fakeChecksum.AllowsVerifiedListenerStop() {
+		t.Fatal("receipt with syntactically valid fake checksum authorized listener stop")
 	}
 	receipt.Environment[0].ActivationMarker = "different-marker-xx"
 	if err := ValidateJournalReceipt(journal, receipt); err == nil {
@@ -204,6 +227,38 @@ func TestJournalReceiptBindingAndChecksum(t *testing.T) {
 	}
 	if receipt.AllowsEnvironmentRestore() {
 		t.Fatal("receipt incorrectly grants environment restore")
+	}
+}
+
+func TestDecoderMatchesSchemaEnumsNullsAndUnions(t *testing.T) {
+	validRequest := `{"logicalRequestId":"` + id1 + `","protocol":"openai-chat","modelAlias":"local","dataClass":"company","stream":false,"blocks":[{"role":"user","type":"text","text":"x"}],"tools":[],"toolChoice":"auto","limits":{"maxOutputTokens":1,"deadlineAt":"2026-01-01T00:00:00Z"},"capabilitiesRequired":[]}`
+	for name, encoded := range map[string]string{
+		"tool choice enum":     strings.Replace(validRequest, `"toolChoice":"auto"`, `"toolChoice":"sometimes"`, 1),
+		"tool choice null":     strings.Replace(validRequest, `"toolChoice":"auto"`, `"toolChoice":null`, 1),
+		"stream null":          strings.Replace(validRequest, `"stream":false`, `"stream":null`, 1),
+		"forbidden null union": strings.Replace(validRequest, `"text":"x"`, `"text":"x","callId":null`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeNormalizedRequest(strings.NewReader(encoded)); err == nil {
+				t.Fatal("schema-invalid request accepted")
+			}
+		})
+	}
+	validStream := `{"logicalRequestId":"` + id1 + `","sequence":0,"type":"tool_call_start","callId":"call","toolName":"tool"}`
+	for name, encoded := range map[string]string{
+		"empty call id":         strings.Replace(validStream, `"callId":"call"`, `"callId":""`, 1),
+		"empty tool name":       strings.Replace(validStream, `"toolName":"tool"`, `"toolName":""`, 1),
+		"required call id null": strings.Replace(validStream, `"callId":"call"`, `"callId":null`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeNormalizedStreamEvent(strings.NewReader(encoded)); err == nil {
+				t.Fatal("schema-invalid stream event accepted")
+			}
+		})
+	}
+	event := `{"eventId":"` + id1 + `","cursor":"1","timestamp":"2026-01-01T00:00:00Z","type":"request_started","activationId":"` + id2 + `","logicalRequestId":"` + id1 + `","attempt":1,"protocol":"openai-chat","modelAlias":"local","policy":{"id":"` + id1 + `","version":1,"digest":"` + digest + `"},"routeId":"` + id2 + `","destinationClass":"local_node","outcome":"success","reasonCode":"invented","latencyMs":0}`
+	if _, err := DecodeEvent(strings.NewReader(event)); err == nil {
+		t.Fatal("unknown reasonCode accepted")
 	}
 }
 
@@ -215,5 +270,17 @@ func TestCanonicalDigestVector(t *testing.T) {
 	const want = "sha256:4ad7cdde6a20d82804d6653117fcc8e99692008e7464fb732969740847efc601"
 	if got != want {
 		t.Fatalf("canonical digest=%s want=%s", got, want)
+	}
+}
+
+func TestCanonicalJSONUsesRFC8785UTF16PropertyOrder(t *testing.T) {
+	value := map[string]any{"\u20ac": "Euro Sign", "\r": "Carriage Return", "\ufb33": "Hebrew Letter Dalet With Dagesh", "1": "One", "😀": "Emoji: Grinning Face", "\u0080": "Control", "ö": "Latin Small Letter O With Diaeresis"}
+	got, err := canonicalJSON(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\u0080\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}"
+	if string(got) != want {
+		t.Fatalf("canonical JSON=%s want=%s", got, want)
 	}
 }

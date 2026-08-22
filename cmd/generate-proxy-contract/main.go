@@ -19,6 +19,8 @@ import (
 //go:embed contracts.gen.go.tmpl
 var contractTemplate []byte
 
+const pinnedPOCPolicyDigest = "4fe4ef2e0ea038d9c989731ca83f6846fa0e5a64949f9df42d0935903076a275"
+
 var pinnedDigests = map[string]string{
 	"activation-journal.schema.json":      "995bb08935ae5d100ff186623fbd43042b438a09687d2049ebd956735fbfff48",
 	"activation-receipt.schema.json":      "b1e215804f849a48c9c148b163c715f375cc9ae3799859f00ff31056d7bcd0ba",
@@ -74,6 +76,13 @@ func main() {
 		documents[name] = document
 	}
 	fatalIf(validate(documents, string(contractTemplate)))
+	fixture, err := os.ReadFile(filepath.Join(contractDir, "fixtures", "poc-policy.json"))
+	fatalIf(err)
+	fixtureSum := sha256.Sum256(fixture)
+	if actual := hex.EncodeToString(fixtureSum[:]); actual != pinnedPOCPolicyDigest {
+		fatalIf(fmt.Errorf("fixtures/poc-policy.json digest=%s pinned=%s", actual, pinnedPOCPolicyDigest))
+	}
+	fatalIf(validatePOCPolicyFixture(fixture))
 	generated, err := format.Source(render(digests))
 	fatalIf(err)
 	output := filepath.Join(root, "internal", "proxycontract", "contracts.gen.go")
@@ -151,7 +160,7 @@ func validatePolicy(document map[string]any) error {
 	if got := sortedStrings(at(document, "properties", "protocols", "items", "enum")); strings.Join(got, ",") != "anthropic-messages,openai-chat,openai-responses" {
 		return fmt.Errorf("policy protocols changed: %v", got)
 	}
-	if got := sortedStrings(at(document, "properties", "routes", "items", "required")); strings.Join(got, ",") != "acceptedDataClasses,capabilities,costClass,credentialRef,dataBoundary,destinationClass,destinationProtocol,endpoint,healthTimeoutMs,id,model,sourceProtocol" {
+	if got := sortedStrings(at(document, "properties", "routes", "items", "required")); strings.Join(got, ",") != "acceptedDataClasses,capabilities,costClass,credentialRef,dataBoundary,destinationClass,destinationProtocol,endpoint,healthTimeoutMs,id,model,sourceProtocols" {
 		return fmt.Errorf("policy route fields changed: %v", got)
 	}
 	if atNumber(document, "properties", "routes", "items", "properties", "endpoint", "properties", "port", "maximum") != 65535 || lenArray(at(document, "properties", "routes", "items", "allOf")) != 4 {
@@ -159,6 +168,60 @@ func validatePolicy(document map[string]any) error {
 	}
 	if atNumber(document, "properties", "fallback", "properties", "maxAttempts", "maximum") != 2 || atNumber(document, "properties", "fallback", "properties", "allowedBoundaryTransitions", "maxItems") != 3 {
 		return errorsNew("policy fallback bounds changed")
+	}
+	return nil
+}
+
+func validatePOCPolicyFixture(encoded []byte) error {
+	var policy map[string]any
+	if err := json.Unmarshal(encoded, &policy); err != nil {
+		return err
+	}
+	if got := strings.Join(sortedObjectKeys(policy), ","); got != "aliases,contentCapture,fallback,id,protocols,requestLimits,routes,version,workspaceId" {
+		return fmt.Errorf("POC policy fields=%s", got)
+	}
+	if atString(policy, "id") != "11111111-1111-4111-8111-111111111111" || atNumber(policy, "version") != 1 || atString(policy, "workspaceId") != "22222222-2222-4222-8222-222222222222" || at(policy, "contentCapture") != false {
+		return errorsNew("POC policy identity or capture semantics changed")
+	}
+	protocols := stringSlice(at(policy, "protocols"))
+	wantProtocols := []string{"openai-responses", "openai-chat", "anthropic-messages"}
+	if strings.Join(protocols, ",") != strings.Join(wantProtocols, ",") {
+		return fmt.Errorf("POC source protocols=%v want=%v", protocols, wantProtocols)
+	}
+	routes, ok := at(policy, "routes").([]any)
+	if !ok || len(routes) != 2 {
+		return errorsNew("POC policy must have exactly local and cloud routes")
+	}
+	local, localOK := routes[0].(map[string]any)
+	cloud, cloudOK := routes[1].(map[string]any)
+	if !localOK || !cloudOK {
+		return errorsNew("POC policy routes must be objects")
+	}
+	wantRouteFields := "acceptedDataClasses,capabilities,costClass,credentialRef,dataBoundary,destinationClass,destinationProtocol,endpoint,healthTimeoutMs,id,model,sourceProtocols"
+	if strings.Join(sortedObjectKeys(local), ",") != wantRouteFields || strings.Join(sortedObjectKeys(cloud), ",") != wantRouteFields {
+		return errorsNew("POC route fields changed")
+	}
+	for index, route := range []map[string]any{local, cloud} {
+		if strings.Join(stringSlice(route["sourceProtocols"]), ",") != strings.Join(wantProtocols, ",") {
+			return fmt.Errorf("POC route %d sourceProtocols changed", index)
+		}
+	}
+	if atString(local, "id") != "33333333-3333-4333-8333-333333333333" || atString(local, "destinationClass") != "local_node" || atString(local, "destinationProtocol") != "openai-chat" || atString(local, "model") != "qwen3.8" || atString(local, "dataBoundary") != "local" || atString(local, "costClass") != "local" || atString(local, "endpoint", "resolvedAddressPolicy") != "loopback_only" {
+		return errorsNew("POC local Qwen route semantics changed")
+	}
+	if atString(cloud, "id") != "44444444-4444-4444-8444-444444444444" || atString(cloud, "destinationClass") != "provider" || atString(cloud, "destinationProtocol") != "openai-responses" || atString(cloud, "model") != "gpt-5.4" || atString(cloud, "dataBoundary") != "external" || atString(cloud, "costClass") != "metered_high" || atString(cloud, "endpoint", "scheme") != "https" || atString(cloud, "endpoint", "resolvedAddressPolicy") != "public_unicast_only" {
+		return errorsNew("POC cloud fallback route semantics changed")
+	}
+	aliases, ok := at(policy, "aliases").(map[string]any)
+	if !ok || len(aliases) != 4 {
+		return errorsNew("POC alias matrix changed")
+	}
+	company, ok := aliases["company-assistant"].(map[string]any)
+	if !ok || strings.Join(stringSlice(company["routeIds"]), ",") != "33333333-3333-4333-8333-333333333333,44444444-4444-4444-8444-444444444444" || atString(company, "dataClass") != "company" {
+		return errorsNew("POC local-first company route order changed")
+	}
+	if atNumber(policy, "fallback", "maxAttempts") != 2 || strings.Join(stringSlice(at(policy, "fallback", "allowedBoundaryTransitions")), ",") != "local_to_external" {
+		return errorsNew("POC fallback semantics changed")
 	}
 	return nil
 }
@@ -281,6 +344,18 @@ func sortedStrings(value any) []string {
 		}
 	}
 	sort.Strings(result)
+	return result
+}
+func stringSlice(value any) []string {
+	values, _ := value.([]any)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			return nil
+		}
+		result = append(result, text)
+	}
 	return result
 }
 func lenArray(value any) int                   { values, _ := value.([]any); return len(values) }
