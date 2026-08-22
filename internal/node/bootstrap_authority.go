@@ -84,11 +84,19 @@ type RootInstallAuthority struct {
 	SchemaVersion      string                        `json:"schemaVersion"`
 	Plan               client.NodeInstallPlan        `json:"plan"`
 	Identity           client.NodeEnrollmentIdentity `json:"identity"`
+	PlanSigningKey     client.NodePlanSigningKey     `json:"planSigningKey"`
+	NodePublicKey      string                        `json:"nodePublicKey"`
 	ProfileID          string                        `json:"profileId"`
 	ProfileSHA256      string                        `json:"profileSha256"`
 	ControlPlaneOrigin string                        `json:"controlPlaneOrigin"`
 	AuthorizedAt       string                        `json:"authorizedAt"`
 	Digest             string                        `json:"digest"`
+}
+
+type RootInstallAuthorityTrust struct {
+	Now           time.Time
+	Profile       client.NodeTrustedInstallProfile
+	ProfileSHA256 string
 }
 
 func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
@@ -101,9 +109,49 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 	if err := client.ValidateExchangeNodeEnrollmentResponse(client.ExchangeNodeEnrollmentResponse{Plan: authority.Plan, Identity: authority.Identity}); err != nil {
 		return err
 	}
+	if authority.Plan.SigningKeyID != authority.PlanSigningKey.KeyID {
+		return errors.New("root install authority plan signer key ID is invalid")
+	}
+	planKey, err := base64.RawURLEncoding.DecodeString(authority.PlanSigningKey.PublicKey)
+	if err != nil || len(planKey) != ed25519.PublicKeySize {
+		return errors.New("root install authority plan signer is invalid")
+	}
+	planFingerprint, err := client.NodePublicKeyFingerprint(ed25519.PublicKey(planKey))
+	if err != nil || planFingerprint != authority.PlanSigningKey.Fingerprint {
+		return errors.New("root install authority plan signer fingerprint is invalid")
+	}
+	nodeKey, err := base64.RawURLEncoding.DecodeString(authority.NodePublicKey)
+	if err != nil || len(nodeKey) != ed25519.PublicKeySize {
+		return errors.New("root install authority node public key is invalid")
+	}
+	nodeFingerprint, err := client.NodePublicKeyFingerprint(ed25519.PublicKey(nodeKey))
+	if err != nil || nodeFingerprint != authority.Identity.PublicKeyFingerprint || nodeFingerprint != authority.Plan.Target.NodePublicKeyFingerprint {
+		return errors.New("root install authority node public key fingerprint is invalid")
+	}
 	digest, err := RootInstallAuthorityDigest(authority)
 	if err != nil || authority.Digest != digest {
 		return errors.New("root install authority digest is invalid")
+	}
+	return nil
+}
+
+func VerifyRootInstallAuthority(authority RootInstallAuthority, trust RootInstallAuthorityTrust) error {
+	if err := ValidateRootInstallAuthority(authority); err != nil {
+		return err
+	}
+	if trust.Now.IsZero() || trust.ProfileSHA256 != authority.ProfileSHA256 || trust.Profile.ID != authority.ProfileID || trust.Profile.ControlPlaneOrigin != authority.ControlPlaneOrigin {
+		return errors.New("root install authority trust input is invalid")
+	}
+	identityExpiry, err := time.Parse(time.RFC3339, authority.Identity.ExpiresAt)
+	if err != nil || !trust.Now.Before(identityExpiry) {
+		return errors.New("root install authority identity is expired")
+	}
+	planKey, _ := base64.RawURLEncoding.DecodeString(authority.PlanSigningKey.PublicKey)
+	nodeKey, _ := base64.RawURLEncoding.DecodeString(authority.NodePublicKey)
+	plan := authority.Plan
+	verification := client.NodeInstallPlanTrust{Now: trust.Now, Keyring: client.NodeSigningKeyring{authority.PlanSigningKey.KeyID: ed25519.PublicKey(planKey)}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: ed25519.PublicKey(nodeKey), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey, Profile: trust.Profile}
+	if err := client.VerifyNodeInstallPlan(plan, verification); err != nil {
+		return fmt.Errorf("verify root-authorized install plan: %w", err)
 	}
 	return nil
 }

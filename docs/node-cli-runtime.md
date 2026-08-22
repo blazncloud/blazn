@@ -20,7 +20,10 @@ string formatting; it is never added to runtime state, the install WAL, a
 receipt, CLI output, arguments, environment variables, or logs. A platform that
 cannot authorize this bootstrap fails closed. Successful implementations write
 only the token-free, digested `blazn.dev/node-root-install-authority/v1` record
-to root-owned state.
+to root-owned state. That authority includes the exact plan-signing public-key
+tuple and Node public key so every later privileged operation can recompute both
+fingerprints, verify the stored plan signature and current expiry against the
+root-owned profile, and avoid the service-owned enrollment pin entirely.
 
 Privileged mutation is exposed through the narrow `node.Platform` interface.
 Before each mutation, prior state and rollback material are durably written to
