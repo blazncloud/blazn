@@ -87,6 +87,19 @@ if run_upgrade "$corrupt" >"$corrupt/out" 2>"$corrupt/err"; then
 fi
 grep -F 'unexpected mode' "$corrupt/err" >/dev/null
 
+receipt_mismatch=$(fixture receipt-mismatch)
+run_upgrade "$receipt_mismatch" >"$receipt_mismatch/first.out"
+sudo jq '.secretDigests={"workspace-invitation-hmac-v1":("sha256:" + ("0" * 64))}' \
+  "$receipt_mismatch/ownership/control-plane.json" >"$receipt_mismatch/main.tmp"
+sudo mv "$receipt_mismatch/main.tmp" "$receipt_mismatch/ownership/control-plane.json"
+sudo chown 0:0 "$receipt_mismatch/ownership/control-plane.json"
+sudo chmod 0600 "$receipt_mismatch/ownership/control-plane.json"
+if run_upgrade "$receipt_mismatch" >"$receipt_mismatch/out" 2>"$receipt_mismatch/err"; then
+  printf 'main receipt with a mismatched key digest unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'main receipt binds a different' "$receipt_mismatch/err" >/dev/null
+
 trap - EXIT HUP INT TERM
 cleanup
 printf 'workspace-secret clean, retry, partial-resume, and fail-closed tests passed\n'

@@ -173,7 +173,14 @@ grep -F 'assert_directory_owned_mode "$SECRETS_ROOT" 0 700' "$ROOT_DIR/scripts/p
 grep -F 'assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
 grep -F 'objects.before.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'objects.after.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'control-plane-backup/v2' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'controlApi' "$ROOT_DIR/backup-metadata.schema.json" >/dev/null
+grep -F 'secretDigests' "$ROOT_DIR/backup-metadata.schema.json" >/dev/null
+grep -F 'backup rollback inventory is invalid' "$ROOT_DIR/scripts/restore-test.sh" >/dev/null
+grep -F 'backup inventory does not match' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
 grep -F 'configUpdatedAt' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
+grep -F 'secretDigests' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
 grep -F 'control-plane-v2-upgrade/v1' "$ROOT_DIR/upgrade-receipt.schema.json" >/dev/null
 grep -F 'reconcile the main ownership receipt separately' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'with-public-origin-lock.sh qualification' "$ROOT_DIR/systemd/blazn-ngrok-qualification.service" >/dev/null
