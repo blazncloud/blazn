@@ -68,7 +68,7 @@ func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 
 func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error) {
 	var response IssueResponse
-	err := s.locked(func() error {
+	err := s.locked(ctx, func() error {
 		digest := requestDigest(req)
 		token := s.token(req)
 		path := s.statePath(req.IssuanceID)
@@ -78,6 +78,9 @@ func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error)
 		}
 		if exists && !hmac.Equal([]byte(state.RequestDigest), []byte(digest)) {
 			return &ProtocolError{Code: "binding_conflict", Message: "issuance binding conflicts with durable state"}
+		}
+		if err := s.ensureUniqueToken(req.IssuanceID, hash(token)); err != nil {
+			return err
 		}
 		if exists && state.Status == "issued" && s.now().Before(state.ExpiresAt) {
 			response = s.response(state)
@@ -124,7 +127,7 @@ func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error)
 }
 
 func (s *Service) revoke(ctx context.Context, id string) (RevokeResponse, error) {
-	err := s.locked(func() error {
+	err := s.locked(ctx, func() error {
 		path := s.statePath(id)
 		state, exists, err := s.readState(path)
 		if err != nil {
@@ -158,7 +161,7 @@ func subtleTokenCheck(check, token string) bool {
 	return len(parts) == 2 && hmac.Equal([]byte(parts[0]), []byte(token)) && len(parts[1]) >= 16
 }
 func (s *Service) statePath(id string) string { return filepath.Join(s.stateRoot, id+".json") }
-func (s *Service) locked(fn func() error) error {
+func (s *Service) locked(ctx context.Context, fn func() error) error {
 	if err := os.MkdirAll(s.stateRoot, 0700); err != nil {
 		return err
 	}
@@ -171,11 +174,42 @@ func (s *Service) locked(fn func() error) error {
 		return err
 	}
 	defer lock.Close()
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return err
+	for {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if err != syscall.EWOULDBLOCK {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 	return fn()
+}
+
+func (s *Service) ensureUniqueToken(issuanceID, tokenHash string) error {
+	entries, err := os.ReadDir(s.stateRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" || entry.Name() == issuanceID+".json" {
+			continue
+		}
+		state, exists, readErr := s.readState(filepath.Join(s.stateRoot, entry.Name()))
+		if readErr != nil {
+			return readErr
+		}
+		if exists && hmac.Equal([]byte(state.TokenHash), []byte(tokenHash)) {
+			return &ProtocolError{Code: "token_collision", Message: "deterministic token collides with durable state"}
+		}
+	}
+	return nil
 }
 func (s *Service) readState(path string) (durableState, bool, error) {
 	var st durableState

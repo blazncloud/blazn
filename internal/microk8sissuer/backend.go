@@ -99,6 +99,13 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 			return BackendIssue{}, fmt.Errorf("unexpected MicroK8s URL")
 		}
 	}
+	seen := make(map[string]bool, len(parsed.URLs))
+	for _, candidate := range parsed.URLs {
+		if seen[candidate] {
+			return BackendIssue{}, fmt.Errorf("duplicate MicroK8s URL")
+		}
+		seen[candidate] = true
+	}
 	if tokenLineCount(b.TokenFile, token) != 1 {
 		return BackendIssue{}, fmt.Errorf("MicroK8s token persistence is ambiguous")
 	}

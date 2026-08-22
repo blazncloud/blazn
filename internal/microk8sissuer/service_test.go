@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -117,5 +119,42 @@ func TestBackendFailureDoesNotLeakSecret(t *testing.T) {
 	_, err := service.Handle(context.Background(), requestFixture())
 	if err == nil || err.Error() == "secret output" {
 		t.Fatal("secret backend error leaked")
+	}
+}
+
+func TestDurableTokenCollisionFailsBeforeBackend(t *testing.T) {
+	root := secureTempDir(t)
+	backend := &fakeBackend{now: time.Now()}
+	service, _ := NewService(root, []byte("0123456789abcdef0123456789abcdef"), backend)
+	req := requestFixture()
+	collision := durableState{SchemaVersion: SchemaVersion, Status: "revoked", Request: req, RequestDigest: "other", TokenHash: hash(service.token(req))}
+	data, _ := json.Marshal(collision)
+	if err := os.WriteFile(filepath.Join(root, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), req); err == nil {
+		t.Fatal("durable collision accepted")
+	}
+	if backend.issues != 0 {
+		t.Fatal("backend called for collision")
+	}
+}
+
+func TestLockWaitHonorsDeadline(t *testing.T) {
+	root := secureTempDir(t)
+	lock, err := os.OpenFile(filepath.Join(root, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	service, _ := NewService(root, []byte("0123456789abcdef0123456789abcdef"), &fakeBackend{})
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if _, err := service.Handle(ctx, requestFixture()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error = %v", err)
 	}
 }

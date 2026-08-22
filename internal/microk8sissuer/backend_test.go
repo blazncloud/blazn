@@ -59,6 +59,16 @@ func TestBackendRejectsUnexpectedJSONAndURL(t *testing.T) {
 		}
 	}
 }
+
+func TestBackendRejectsDuplicateURLs(t *testing.T) {
+	backend, runner, _ := backendFixture(t, "")
+	token := "0123456789abcdef0123456789abcdef"
+	join := "10.0.0.1:25000/" + token + "/check-value-123456"
+	runner.output = []byte(fmt.Sprintf(`{"token":%q,"urls":[%q,%q]}`, token+"/check-value-123456", join, join))
+	if _, err := backend.Issue(context.Background(), token, 60); err == nil {
+		t.Fatal("duplicate URL accepted")
+	}
+}
 func TestRevokeRemovesOnlyExactTokenAndIsIdempotent(t *testing.T) {
 	token := "0123456789abcdef0123456789abcdef"
 	backend, _, path := backendFixture(t, token+"|123\nother|456\n")
