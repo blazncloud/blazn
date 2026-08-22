@@ -39,6 +39,7 @@ s3_root_secret_key=$(openssl rand -hex 32)
 s3_runtime_access_key=blaznruntime$(openssl rand -hex 8)
 s3_runtime_secret_key=$(openssl rand -hex 32)
 proxy_auth_secret=$(openssl rand -hex 32)
+workspace_invitation_hmac_v1=$(openssl rand -hex 32)
 initial_password=$(openssl rand -hex 24)
 printf '%s\n' "$postgres_password" >"$SECRETS_ROOT/postgres-password"
 printf 'postgresql://%s:%s@postgres:5432/%s\n' \
@@ -52,6 +53,7 @@ printf '%s\n' "$s3_root_secret_key" >"$SECRETS_ROOT/s3-root-secret-key"
 printf '%s\n' "$s3_runtime_access_key" >"$SECRETS_ROOT/s3-runtime-access-key"
 printf '%s\n' "$s3_runtime_secret_key" >"$SECRETS_ROOT/s3-runtime-secret-key"
 printf '%s\n' "$proxy_auth_secret" >"$SECRETS_ROOT/proxy-auth-secret"
+printf '%s\n' "$workspace_invitation_hmac_v1" >"$SECRETS_ROOT/workspace-invitation-hmac-v1"
 printf '%s\n' "$initial_password" >"$SECRETS_ROOT/initial-password"
 # The parent directory is root-only. Compose bind-mounts only the named files;
 # mode 0444 lets explicitly configured non-root container users read them.
@@ -65,6 +67,8 @@ CONTROL_API_BUILD_RECEIPT=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/owne
 control_api_source=$(jq -er .sourceDigest "$CONTROL_API_BUILD_RECEIPT")
 control_api_image=$(jq -er .image "$CONTROL_API_BUILD_RECEIPT")
 control_api_image_id=$(jq -er .imageId "$CONTROL_API_BUILD_RECEIPT")
+validate_workspace_invitation_secret "$SECRETS_ROOT/workspace-invitation-hmac-v1"
+workspace_invitation_hmac_digest=sha256:$(sha256_file "$SECRETS_ROOT/workspace-invitation-hmac-v1")
 node_database_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/database-url")
 node_enrollment_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/enrollment-hmac-v1")
 node_join_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/join-credential-v1")
@@ -91,6 +95,7 @@ jq -cn \
   --arg controlApiSource "$control_api_source" \
   --arg controlApiImage "$control_api_image" \
   --arg controlApiImageId "$control_api_image_id" \
+  --arg workspaceInvitationHmacDigest "$workspace_invitation_hmac_digest" \
   --arg nodeSecrets "$NODE_SECRETS_ROOT" \
   --arg nodeDatabaseDigest "$node_database_digest" \
   --arg nodeEnrollmentDigest "$node_enrollment_digest" \
@@ -101,7 +106,7 @@ jq -cn \
   --argjson s3Port "${S3_PORT:-59000}" \
   --argjson s3ConsolePort "${S3_CONSOLE_PORT:-59001}" \
   --argjson apiPort "${API_PORT:-58080}" \
-  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},nodeBroker:{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:$nodeSecrets,databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
+  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},secretDigests:{"workspace-invitation-hmac-v1":$workspaceInvitationHmacDigest},nodeBroker:{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:$nodeSecrets,databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
   >"$receipt_tmp"
 chmod 0600 "$receipt_tmp"
 mv -- "$receipt_tmp" "$RECEIPT_PATH"

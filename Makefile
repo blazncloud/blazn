@@ -46,6 +46,10 @@ test-infra:
 	./infra/milestone-2/tests/test-preflight.sh
 	./infra/milestone-2/tests/test-contract.sh
 	./infra/milestone-2/tests/test-live-upgrade.sh
+	./infra/milestone-2/tests/test-workspace-secret-upgrade.sh
+	./infra/milestone-2/tests/test-poc-identity.sh
+	./infra/milestone-2/tests/test-release-promotion.sh
+	./infra/milestone-2/tests/test-control-plane-env.sh
 	./infra/milestone-2/tests/test-api-build.sh
 	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
 	./infra/node/tests/test-contract.sh

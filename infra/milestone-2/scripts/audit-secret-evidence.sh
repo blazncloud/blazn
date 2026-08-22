@@ -58,6 +58,16 @@ for secret_file in /etc/blazn/control-plane/secrets/*; do
   esac
 done
 
+poc_identity_root=${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}
+if [ -d "$poc_identity_root" ]; then
+  assert_directory_owned_mode "$poc_identity_root" 0 700
+  for identity_file in password profile.json; do
+    assert_regular_file_owned_mode "$poc_identity_root/$identity_file" 0 444
+  done
+  assert_absent "$(sed -n '1p' "$poc_identity_root/password")" "POC second identity password"
+  assert_absent "$(jq -er .login "$poc_identity_root/profile.json")" "POC second identity login"
+  assert_absent "$(jq -er .displayName "$poc_identity_root/profile.json")" "POC second identity display name"
+fi
 node_secrets=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
 assert_directory_owned_mode "$node_secrets" 0 700
 assert_regular_file_owned_mode "$node_secrets/database-url" 0 444

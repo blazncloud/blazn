@@ -14,7 +14,7 @@ m2 = root.parent / "milestone-2"
 node = json.loads((root / "node-broker-receipt.schema.json").read_text())
 upgrade = json.loads((root / "node-broker-upgrade-receipt.schema.json").read_text())
 ownership = json.loads((m2 / "ownership-receipt.schema.json").read_text())
-metadata = json.loads((root / "backup-metadata.schema.json").read_text())
+metadata = json.loads((m2 / "backup-metadata.schema.json").read_text())
 for schema in (node, upgrade, ownership, metadata):
     jsonschema.Draft202012Validator.check_schema(schema)
 
@@ -43,5 +43,21 @@ jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
         "configDigest": digest,
     },
     "nodeBroker": node_value,
+})
+jsonschema.Draft202012Validator(metadata).validate({
+    "schemaVersion": "blazn.dev/control-plane-backup/v2",
+    "correlationId": "test",
+    "fencingToken": 1,
+    "createdAt": "20260822T080000Z",
+    "database": "blazn",
+    "bucket": "blazn-poc",
+    "configDigest": digest,
+    "controlApi": {
+        "sourceDigest": digest,
+        "image": "blazn-control-api:source-" + "a" * 64,
+        "imageId": digest,
+    },
+    "secretDigests": {"workspace-invitation-hmac-v1": digest},
+    "nodeBrokerReceiptDigest": digest,
 })
 print("Node JSON Schemas and external references validated")

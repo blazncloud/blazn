@@ -9,11 +9,17 @@ for file in "$metadata" "$receipt"; do if [ ! -f "$file" ] || [ -L "$file" ]; th
 if [ ! -d "$inventory" ] || [ -L "$inventory" ]; then die "Node broker key inventory is unavailable or symlinked"; fi
 
 jq -e '
-  type=="object" and (keys|sort)==["bucket","correlationId","createdAt","database","fencingToken","nodeBrokerReceiptDigest","schemaVersion"] and
-  .schemaVersion=="blazn.dev/control-plane-backup/v1" and .database=="blazn" and
+  type=="object" and (keys|sort)==["bucket","configDigest","controlApi","correlationId","createdAt","database","fencingToken","nodeBrokerReceiptDigest","schemaVersion","secretDigests"] and
+  .schemaVersion=="blazn.dev/control-plane-backup/v2" and .database=="blazn" and
   (.correlationId|test("^[A-Za-z0-9._-]+$")) and (.fencingToken|type=="number" and floor==. and .>=1) and
   (.createdAt|test("^[0-9]{8}T[0-9]{6}Z$")) and (.bucket|type=="string" and length>0) and
-  (.nodeBrokerReceiptDigest|test("^sha256:[a-f0-9]{64}$"))' "$metadata" >/dev/null || die "backup metadata does not match the closed v1 schema"
+  (.configDigest|test("^sha256:[a-f0-9]{64}$")) and
+  (.controlApi.sourceDigest|test("^sha256:[a-f0-9]{64}$")) and
+  (.controlApi.image|test("^blazn-control-api:source-[a-f0-9]{64}$")) and
+  (.controlApi.imageId|test("^sha256:[a-f0-9]{64}$")) and
+  (.secretDigests|keys==["workspace-invitation-hmac-v1"]) and
+  (.secretDigests["workspace-invitation-hmac-v1"]|test("^sha256:[a-f0-9]{64}$")) and
+  (.nodeBrokerReceiptDigest|test("^sha256:[a-f0-9]{64}$"))' "$metadata" >/dev/null || die "backup metadata does not match the closed v2 schema"
 jq -e '.nodeBroker.schemaVersion=="blazn.dev/node-broker-infra/v1" and .nodeBroker.secretsRoot=="/etc/blazn/node-broker/secrets" and .nodeBroker.databaseRole=="blazn_node_broker"' "$receipt" >/dev/null || die "ownership receipt has no valid Node broker inventory"
 
 receipt_digest=sha256:$(jq -cS .nodeBroker "$receipt" | sha256sum | awk '{print $1}')

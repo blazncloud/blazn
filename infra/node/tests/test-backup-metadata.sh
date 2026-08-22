@@ -19,7 +19,7 @@ node=$(jq -cnS \
   '{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:"/etc/blazn/node-broker/secrets",databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$database,"enrollment-hmac-v1":$enrollment,"join-credential-v1":$join},creationJournal:{path:"/var/lib/blazn/ownership/node-broker-secret-create.json",digest:$journal}}')
 jq -cn --argjson node "$node" '{nodeBroker:$node}' >"$tmp/receipt.json"
 digest=sha256:$(jq -cS .nodeBroker "$tmp/receipt.json" | sha256sum | awk '{print $1}')
-jq -cn --arg digest "$digest" '{schemaVersion:"blazn.dev/control-plane-backup/v1",correlationId:"test",fencingToken:1,createdAt:"20260822T080000Z",database:"blazn",bucket:"blazn-poc",nodeBrokerReceiptDigest:$digest}' >"$tmp/metadata.json"
+jq -cn --arg digest "$digest" '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:"test",fencingToken:1,createdAt:"20260822T080000Z",database:"blazn",bucket:"blazn-poc",configDigest:("sha256:"+("1"*64)),controlApi:{sourceDigest:("sha256:"+("2"*64)),image:("blazn-control-api:source-"+("2"*64)),imageId:("sha256:"+("3"*64))},secretDigests:{"workspace-invitation-hmac-v1":("sha256:"+("4"*64))},nodeBrokerReceiptDigest:$digest}' >"$tmp/metadata.json"
 "$VERIFY" "$tmp/metadata.json" "$tmp/receipt.json" "$tmp/keys" >/dev/null
 
 jq '.nodeBrokerReceiptDigest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$tmp/metadata.json" >"$tmp/bad-metadata.json"

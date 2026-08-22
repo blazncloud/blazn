@@ -11,7 +11,8 @@ case ${1:-} in
   '') ;;
   --plan) MODE=plan ;;
   --deploy) MODE=deploy ;;
-  *) die "usage: preflight.sh [--plan|--deploy]" ;;
+  --existing-deploy) MODE=existing-deploy ;;
+  *) die "usage: preflight.sh [--plan|--deploy|--existing-deploy]" ;;
 esac
 
 DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
@@ -87,10 +88,10 @@ if command -v ss >/dev/null 2>&1; then
   listeners=$(ss -H -ltn 2>/dev/null || true)
   for port in $ports; do
     if printf '%s\n' "$listeners" | awk -v port="$port" '$4 ~ (":" port "$") { found=1 } END { exit !found }'; then
-      die "TCP port is already in use: $port"
+      [ "$MODE" = existing-deploy ] || die "TCP port is already in use: $port"
     fi
   done
-elif [ "$MODE" = deploy ]; then
+elif [ "$MODE" != plan ]; then
   die "required command is unavailable: ss"
 fi
 
@@ -105,16 +106,19 @@ for image in "${POSTGRES_IMAGE:-}" "${MINIO_IMAGE:-}" "${MINIO_MC_IMAGE:-}"; do
   esac
 done
 
-if [ "$MODE" = deploy ]; then
+if [ "$MODE" != plan ]; then
   [ "$(id -u)" -eq 0 ] || die "deploy preflight must run as root"
   require_command docker
   require_command jq
   require_command sha256sum
+  require_command cmp
   load_control_api_image "$ROOT_DIR"
   control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
   control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
   control_api_image=$(jq -er .image "$control_api_build_receipt")
   control_api_image_id=$(jq -er .imageId "$control_api_build_receipt")
+  validate_workspace_invitation_secret "$SECRETS_ROOT/workspace-invitation-hmac-v1"
+  workspace_invitation_hmac_digest=sha256:$(sha256_file "$SECRETS_ROOT/workspace-invitation-hmac-v1")
   [ "${PUBLIC_URL:-}" = https://blazn.benpelo.com ] || die "PUBLIC_URL must be https://blazn.benpelo.com for the live POC deployment"
   [ -n "${BLAZN_INITIAL_LOGIN:-}" ] || die "BLAZN_INITIAL_LOGIN is required"
   [ "${BLAZN_INITIAL_LOGIN:-}" != admin@example.invalid ] || die "the placeholder BLAZN_INITIAL_LOGIN is forbidden for deployment"
@@ -139,6 +143,7 @@ if [ "$MODE" = deploy ]; then
     --arg controlApiSource "$control_api_source" \
     --arg controlApiImage "$control_api_image" \
     --arg controlApiImageId "$control_api_image_id" \
+    --arg workspaceInvitationHmacDigest "$workspace_invitation_hmac_digest" \
     --arg postgresImage "$POSTGRES_IMAGE" \
     --arg minioImage "$MINIO_IMAGE" \
     --arg minioMcImage "$MINIO_MC_IMAGE" \
@@ -151,13 +156,38 @@ if [ "$MODE" = deploy ]; then
      .paths == {data:$data,backup:$backup,secrets:$secrets} and
      .backupMount == {target:$backupMount,source:$backupSource,fstype:$backupFstype} and
      .controlApi == {sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId} and
+     .secretDigests == {"workspace-invitation-hmac-v1":$workspaceInvitationHmacDigest} and
      .ports == [$postgresPort,$s3Port,$s3ConsolePort,$apiPort] and
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
+  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret workspace-invitation-hmac-v1; do
     assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444
   done
+  installed_unit=${BLAZN_SYSTEMD_UNIT_PATH:-/etc/systemd/system/blazn-control-plane.service}
+  assert_regular_file_owned_mode "$installed_unit" 0 644
+  cmp -s "$ROOT_DIR/systemd/blazn-control-plane.service" "$installed_unit" || die "installed control-plane systemd unit differs from the active release"
+  if [ "$MODE" = existing-deploy ]; then
+    ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
+    assert_regular_file_owned_mode "$ENV_FILE" 0 600
+    verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
+    for service in postgres object api; do
+      container=$(docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" ps -q "$service")
+      [ -n "$container" ] || die "live service has no running container: $service"
+      identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}' "$container")
+      [ "$identity" = "blazn-m2/$service" ] || die "live container identity is not receipt-scoped: $service"
+      state=$(docker inspect --format '{{.State.Status}}/{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")
+      [ "$state" = running/healthy ] || die "live service is not healthy: $service ($state)"
+    done
+    for binding in "postgres:5432:${POSTGRES_PORT:-55432}" "object:9000:${S3_PORT:-59000}" "object:9001:${S3_CONSOLE_PORT:-59001}" "api:8080:${API_PORT:-58080}"; do
+      service=${binding%%:*}
+      remainder=${binding#*:}
+      container_port=${remainder%%:*}
+      host_port=${remainder##*:}
+      actual=$(docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" port "$service" "$container_port")
+      [ "$actual" = "127.0.0.1:$host_port" ] || die "live service has an unexpected published binding: $service ($actual)"
+    done
+  fi
   [ "$NODE_SECRETS_ROOT" = /etc/blazn/node-broker/secrets ] || die "node broker secrets root differs from the reviewed path"
   assert_directory_owned_mode /etc/blazn/node-broker 0 700
   assert_directory_owned_mode "$NODE_SECRETS_ROOT" 0 700

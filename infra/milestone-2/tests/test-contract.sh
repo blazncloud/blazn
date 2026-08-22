@@ -27,6 +27,7 @@ for expected in \
   'TRUSTED_PROXY_CIDRS: 172.18.0.1/32' \
   'TRUSTED_PROXY_HOPS: "1"' \
   'TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret' \
+  'WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1' \
   'S3_ENDPOINT: http://object:9000' \
   'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
   'S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key'; do
@@ -61,7 +62,7 @@ done
 
 runtime_api=$(awk '
   /^  api:$/ { in_api=1; next }
-  in_api && /^[^ ]/ { exit }
+  in_api && /^  [a-zA-Z0-9_-]+:$/ { exit }
   in_api { print }
 ' "$compose")
 printf '%s\n' "$runtime_api" | grep -F 'object-init:' >/dev/null
@@ -72,6 +73,18 @@ for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_I
     exit 1
   fi
 done
+printf '%s\n' "$runtime_api" | grep -F -- '- workspace_invitation_hmac_v1' >/dev/null
+for privileged_service in api-migrate api-bootstrap postgres object object-init object-client; do
+  service_block=$(awk -v service="$privileged_service" '
+    $0 == "  " service ":" { in_service=1; next }
+    in_service && /^  [a-zA-Z0-9_-]+:$/ { exit }
+    in_service { print }
+  ' "$compose")
+  if printf '%s\n' "$service_block" | grep -F 'workspace_invitation_hmac_v1' >/dev/null; then
+    printf 'workspace invitation HMAC key reaches non-runtime service: %s\n' "$privileged_service" >&2
+    exit 1
+  fi
+done
 
 grep -F 'CREATE ROLE blazn_migration' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'CREATE ROLE blazn_runtime' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
@@ -79,6 +92,42 @@ grep -F 'CREATE ROLE blazn_bootstrap' "$ROOT_DIR/postgres-init/01-roles.sh" >/de
 grep -F 'NOBYPASSRLS' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'NOBYPASSRLS' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'pg_auth_members' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
+grep -F 'openssl rand -hex 32' "$ROOT_DIR/scripts/upgrade-live-v2-to-workspace.sh" >/dev/null
+grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
+grep -F 'POC_IDENTITY_ACTION: provision' "$compose" >/dev/null
+grep -F 'POC_IDENTITY_ACTION: cleanup' "$compose" >/dev/null
+grep -F 'passwordRecord' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
+grep -F 'workspace reference outside the exact cleanup inventory' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
+if grep -F "LIKE 'device-approve-account" "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null; then
+  printf 'POC cleanup incorrectly treats hashed rate-limit keys as plaintext\n' >&2
+  exit 1
+fi
+grep -F 'setpriv --reuid=' "$ROOT_DIR/scripts/verify-live-workspace.sh" >/dev/null
+grep -F -- '--clear-groups --reset-env' "$ROOT_DIR/scripts/verify-live-workspace.sh" >/dev/null
+grep -F 'second CLI authenticated as a user other than the receipted POC identity' "$ROOT_DIR/scripts/verify-live-workspace.sh" >/dev/null
+grep -F 'POC CLI users share a UID' "$ROOT_DIR/scripts/manage-poc-cli-users.sh" >/dev/null
+grep -F 'POC CLI user has supplementary groups' "$ROOT_DIR/scripts/manage-poc-cli-users.sh" >/dev/null
+grep -F 'must be exactly inactive' "$ROOT_DIR/scripts/promote-release.sh" >/dev/null
+grep -F 'preflight.sh --existing-deploy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'verify-live-workspace.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+printf '%s\n' '{"error":{"code":"workspace_not_found","message":"not found"},"exitCode":1}' \
+  | jq -e '.error.code=="workspace_not_found" or .error.code=="forbidden"' >/dev/null
+printf '%s\n' '{"error":{"code":"permission_denied","message":"denied"},"exitCode":1}' \
+  | jq -e '(.error.code=="workspace_not_found" or .error.code=="forbidden")|not' >/dev/null
+grep -F 'with-control-plane-env.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'stage-release.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'infra/node/scripts/upgrade-control-plane.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'BLAZN_NODE_UPGRADE_DEFER_CONFIG=1' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'The old main/build receipts remain byte-identical' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'longer needs PostgreSQL' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'while the current receipt-bound PostgreSQL container is still healthy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'Hold point B0' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+# This intentionally asserts the literal Markdown code span.
+# shellcheck disable=SC2016
+grep -F '`inputs-backed-up`' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+# This intentionally asserts literal shell variables in the promotion script.
+# shellcheck disable=SC2016
+grep -F 'cmp -s "$unit_source" "$installed_unit"' "$ROOT_DIR/scripts/promote-release.sh" >/dev/null
 if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" | grep -F 'GRANT' >/dev/null; then
   printf 'database initialization grants broad future-table privileges\n' >&2
   exit 1
@@ -158,7 +207,14 @@ grep -F 'assert_directory_owned_mode "$SECRETS_ROOT" 0 700' "$ROOT_DIR/scripts/p
 grep -F 'assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
 grep -F 'objects.before.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'objects.after.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'control-plane-backup/v2' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'controlApi' "$ROOT_DIR/backup-metadata.schema.json" >/dev/null
+grep -F 'secretDigests' "$ROOT_DIR/backup-metadata.schema.json" >/dev/null
+grep -F 'backup rollback inventory is invalid' "$ROOT_DIR/scripts/restore-test.sh" >/dev/null
+grep -F 'backup inventory does not match' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
 grep -F 'configUpdatedAt' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
+grep -F 'secretDigests' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
 grep -F 'control-plane-v2-upgrade/v1' "$ROOT_DIR/upgrade-receipt.schema.json" >/dev/null
 grep -F 'reconcile the main ownership receipt separately' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'with-public-origin-lock.sh qualification' "$ROOT_DIR/systemd/blazn-ngrok-qualification.service" >/dev/null

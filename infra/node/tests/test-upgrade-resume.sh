@@ -21,7 +21,7 @@ cat >"$top/docker" <<'EOF'
 #!/bin/sh
 set -eu
 case "$*" in
-  "compose "*" ps -q postgres") printf 'synthetic-postgres\n' ;;
+  "compose "*" ps -q postgres") [ "${FAKE_POSTGRES_UNAVAILABLE:-0}" != 1 ] || exit 89; printf 'synthetic-postgres\n' ;;
   "inspect --format "*) printf 'blazn-m2/postgres/running\n' ;;
   *"select count(*) from pg_roles where rolname='blazn_node_broker'"*) if [ -f "$FAKE_ROLE_STATE" ]; then printf '1\n'; else printf '0\n'; fi ;;
   *"select count(*) from schema_migrations where version in"*) printf '0\n' ;;
@@ -71,13 +71,17 @@ run_upgrade() {
   root=$1
   fail_after=${2:-}
   sql_fail=${3:-0}
+  defer_config=${4:-0}
+  postgres_unavailable=${5:-0}
   sudo env \
     PATH="$root/bin:$PATH" \
     FAKE_ROLE_STATE="$root/role-ready" \
     FAKE_SQL_FAIL="$sql_fail" \
+    FAKE_POSTGRES_UNAVAILABLE="$postgres_unavailable" \
     BLAZN_FENCING_TOKEN=11 \
     BLAZN_NODE_INFRA_TEST_MODE=1 \
     BLAZN_NODE_INFRA_TEST_FAIL_AFTER="$fail_after" \
+    BLAZN_NODE_UPGRADE_DEFER_CONFIG="$defer_config" \
     BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
     BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL="$root/ownership/secret-create.json" \
     BLAZN_NODE_BROKER_SECRETS_ROOT="$root/etc/node-broker/secrets" \
@@ -95,6 +99,30 @@ if run_upgrade "$sql_root" '' 1 >"$sql_root/sql-first.out" 2>"$sql_root/sql-firs
 sudo jq -e '.phase=="inputs-backed-up"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
 run_upgrade "$sql_root" >"$sql_root/sql-retry.out"
 sudo jq -e '.phase=="complete"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
+
+partial_sql_root=$(fixture partial-inputs-backed-up)
+if run_upgrade "$partial_sql_root" '' 1 >"$partial_sql_root/upgrade.out" 2>"$partial_sql_root/upgrade.err"; then printf 'partial SQL failure unexpectedly passed\n' >&2; exit 1; fi
+run_rollback "$partial_sql_root" >"$partial_sql_root/rollback.out"
+sudo jq -e '.phase=="rolled-back"' "$partial_sql_root/ownership/node-broker-upgrade.json" >/dev/null
+[ ! -e "$partial_sql_root/role-ready" ]
+
+for partial_phase in role-ready environment-bound; do
+  partial_root=$(fixture "partial-$partial_phase")
+  if run_upgrade "$partial_root" "$partial_phase" >"$partial_root/upgrade.out" 2>"$partial_root/upgrade.err"; then printf 'partial phase fault unexpectedly passed: %s\n' "$partial_phase" >&2; exit 1; fi
+  run_rollback "$partial_root" >"$partial_root/rollback.out"
+  sudo jq -e '.phase=="rolled-back"' "$partial_root/ownership/node-broker-upgrade.json" >/dev/null
+  [ ! -e "$partial_root/role-ready" ]
+  sudo test ! -e "$partial_root/etc/node-broker"
+done
+
+deferred_root=$(fixture deferred-config)
+run_upgrade "$deferred_root" '' 0 1 >"$deferred_root/deferred.out"
+sudo jq -e '.phase=="environment-bound"' "$deferred_root/ownership/node-broker-upgrade.json" >/dev/null
+sudo jq -e '(.nodeBroker|not)' "$deferred_root/ownership/control-plane.json" >/dev/null
+grep -F 'config publication is deferred' "$deferred_root/deferred.out" >/dev/null
+run_upgrade "$deferred_root" '' 0 0 1 >"$deferred_root/resumed-with-postgres-stopped.out"
+sudo jq -e '.phase=="complete"' "$deferred_root/ownership/node-broker-upgrade.json" >/dev/null
+sudo jq -e '.nodeBroker.schemaVersion=="blazn.dev/node-broker-infra/v1"' "$deferred_root/ownership/control-plane.json" >/dev/null
 
 for fault in secrets-published input-root-created main-backed-up environment-backed-up build-backed-up role-ready environment-bound build-ready complete; do
   root=$(fixture "$fault")

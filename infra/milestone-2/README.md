@@ -29,11 +29,20 @@ environment, and a successful preflight. `preflight.sh --plan` is read-only.
 
 The long-running TypeScript API contract is `GET /healthz` plus `PORT`,
 `BIND_ADDRESS`, `PUBLIC_URL`, `DATABASE_URL_FILE`, `S3_ENDPOINT`, `S3_REGION`,
-`S3_BUCKET`, `S3_ACCESS_KEY_FILE`, and `S3_SECRET_KEY_FILE`. It receives only
+`S3_BUCKET`, `S3_ACCESS_KEY_FILE`, `S3_SECRET_KEY_FILE`, and
+`WORKSPACE_INVITATION_HMAC_KEY_FILE`. It receives only
 the DML-only runtime database URL. A one-shot migration service receives the
 non-superuser schema-owner URL, then a one-shot bootstrap service receives the
 dedicated bootstrap URL and initial-login password. Neither elevated secret reaches the
 runtime API.
+
+Workspace invitation tokens use a dedicated 32-byte HMAC key encoded as exactly
+64 lowercase hexadecimal characters in the root-controlled
+`workspace-invitation-hmac-v1` named file. Only the long-running runtime API
+receives that file. Fresh preparation generates it; an existing v2 installation
+uses the retryable `upgrade-live-v2-to-workspace.sh` and then separately
+reconciles the main ownership receipt. Receipts and backups store only its
+SHA-256 digest, never the key.
 
 Fresh PostgreSQL initialization creates four distinct identities: the
 container-only administrative user, `blazn_migration` as the non-superuser
@@ -102,11 +111,45 @@ with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-i
 restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id> <ownership-receipt> <node-key-inventory>  # isolated host only
 ```
 
+The serialized Workspace migration and two-user acceptance procedure is
+[`workspace-live-integration-runbook.md`](workspace-live-integration-runbook.md).
+
+Existing deployments never copy a mutable checkout over `/opt/blazn`.
+`stage-release.sh` archives an exact commit into a checksummed, immutable direct
+child of `/opt/blazn-releases`. With the service stopped, `promote-release.sh`
+uses a retryable intent, preserves and receipts the prior release, atomically
+swaps the active symlink, installs the matching systemd unit, and records the
+promotion. `rollback-release.sh` performs the same verification and atomic swap
+in reverse. All three operations require the control-plane fencing lock.
+
 For an existing installation or reviewed source update, run
 `build-control-api.sh` under the control-plane lock, review its source/image
 receipt, then run `update-receipt-config.sh` in a separate lock operation before
 starting the service. Startup rebuilds and verifies but never silently
 reconciles a changed image into the main receipt.
+
+`preflight.sh --existing-deploy` is the live-service check: occupied ports are
+expected, but each must resolve to its exact receipt-bound Compose service,
+loopback binding, health state, API image ID, and source-matching systemd unit.
+`--plan` remains for an unoccupied proposed installation.
+
+The second Workspace qualification identity is created only by
+`manage-poc-identity.sh`. It reuses the API's scrypt implementation through the
+receipt-bound API image, keeps its password/profile root-controlled,
+records exact qualification workspace IDs, and performs transactional cleanup
+of those workspaces plus the identity's authorizations, devices, and sessions.
+Two separate receipt-owned, non-login OS users provide the actual CLI boundary:
+each has a distinct passwd home/UID and zero supplementary groups, and CLI
+commands run through `setpriv --clear-groups --reset-env`. Cleanup deletes only
+accounts and homes that exactly match the root receipt. Hashed IP/account
+rate-limit rows remain subject to normal bounded expiry rather than unsafe
+plaintext matching or deletion of potentially shared IP state.
+Both OS-account cleanup and database-identity cleanup use root-owned progress
+intents. User, group, home, database, local-file, and final-receipt boundaries
+are recorded atomically; retries validate either the exact receipted object or
+the exact intended absent state before continuing.
+`verify-live-workspace.sh` proves cross-tenant denial through authenticated API
+calls; database-role SQL is not treated as tenant-isolation evidence.
 
 The dependency installer places the pinned Compose plugin under the dedicated
 `/etc/blazn/docker-cli` configuration root. The systemd unit sets that exact
@@ -185,6 +228,11 @@ operator reconciles the main receipt in a separate reviewed lock operation.
   Milestone 2 has no database object-metadata table, so this proves bucket
   stability rather than cross-store referential consistency. The first such
   schema must introduce an application-level snapshot barrier.
+- Backup v2 metadata binds the full configuration, API image and source
+  (including migrations), and invitation-key digest. The key itself remains in
+  the separate root-controlled configuration recovery boundary.
+- `verify-rollback-inventory.sh` proves a backup matches the staged release,
+  image, config, main receipt, and installed invitation key before rollback.
 - `restore-test.sh` refuses ben1 and any non-disposable target path, verifies all
   backup checksums, requires a canonical direct child of the restore directory,
   restores to an isolated database, and retains evidence.

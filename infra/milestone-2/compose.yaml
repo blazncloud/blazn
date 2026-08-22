@@ -280,6 +280,7 @@ services:
       TRUSTED_PROXY_CIDRS: 172.18.0.1/32
       TRUSTED_PROXY_HOPS: "1"
       TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret
+      WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
@@ -290,6 +291,7 @@ services:
       - s3_runtime_access_key
       - s3_runtime_secret_key
       - proxy_auth_secret
+      - workspace_invitation_hmac_v1
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-58080}:8080"
     depends_on:
@@ -318,6 +320,57 @@ services:
           cpus: "1.00"
           memory: 1024M
           pids: 256
+    networks:
+      - control
+
+  poc-identity-provision:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    profiles: ["poc-identity"]
+    command: ["node", "dist/poc-identity.js"]
+    environment:
+      POC_IDENTITY_ACTION: provision
+      POC_IDENTITY_DATABASE_URL_FILE: /run/secrets/bootstrap_database_url
+      POC_IDENTITY_PASSWORD_FILE: /run/secrets/poc_identity_password
+      POC_IDENTITY_PROFILE_FILE: /run/secrets/poc_identity_profile
+    secrets:
+      - bootstrap_database_url
+      - poc_identity_password
+      - poc_identity_profile
+    networks:
+      - control
+
+  poc-identity-cleanup:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    profiles: ["poc-identity"]
+    command: ["node", "dist/poc-identity.js"]
+    environment:
+      POC_IDENTITY_ACTION: cleanup
+      POC_IDENTITY_DATABASE_URL_FILE: /run/secrets/migration_database_url
+      POC_IDENTITY_PASSWORD_FILE: /run/secrets/poc_identity_password
+      POC_IDENTITY_PROFILE_FILE: /run/secrets/poc_identity_profile
+      POC_IDENTITY_USER_ID_FILE: /run/secrets/poc_identity_user_id
+      POC_IDENTITY_WORKSPACES_FILE: /run/secrets/poc_identity_workspaces
+      POC_IDENTITY_CLEANUP_INTENT_FILE: /run/secrets/poc_identity_cleanup_intent
+    secrets:
+      - migration_database_url
+      - poc_identity_password
+      - poc_identity_profile
+      - poc_identity_user_id
+      - poc_identity_workspaces
+      - poc_identity_cleanup_intent
+    networks:
+      - control
+
+  poc-identity-verify-cleanup:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    profiles: ["poc-identity"]
+    command: ["node", "dist/poc-identity-verify-cleanup.js"]
+    environment:
+      POC_IDENTITY_DATABASE_URL_FILE: /run/secrets/migration_database_url
+      POC_IDENTITY_CLEANUP_INTENT_FILE: /run/secrets/poc_identity_cleanup_intent
+    secrets:
+      - migration_database_url
+      - poc_identity_cleanup_intent
     networks:
       - control
 
@@ -352,3 +405,15 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-secret-key
   proxy_auth_secret:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/proxy-auth-secret
+  workspace_invitation_hmac_v1:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/workspace-invitation-hmac-v1
+  poc_identity_password:
+    file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/password
+  poc_identity_profile:
+    file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/profile.json
+  poc_identity_user_id:
+    file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/user-id
+  poc_identity_workspaces:
+    file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/workspaces.json
+  poc_identity_cleanup_intent:
+    file: ${BLAZN_POC_IDENTITY_CLEANUP_RUNTIME:-/var/lib/blazn/ownership/poc-second-identity-cleanup.runtime.json}
