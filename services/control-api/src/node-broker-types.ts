@@ -1,0 +1,77 @@
+export interface JoinCredentialRequest {
+  enrollmentId: string;
+  planId: string;
+  planDigest: string;
+  nodeId: string;
+  machineFingerprint: string;
+  nodePublicKeyFingerprint: string;
+}
+
+export interface JoinCredentialResponse {
+  issuanceId: string;
+  credential: string;
+  expiresAt: string;
+  clusterId: string;
+  workerOnly: true;
+  replayed: boolean;
+}
+
+export interface WorkerCredentialIssueRequest {
+  clusterId: string;
+  expectedNodeName: string;
+  bootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule";
+  ttlSeconds: number;
+  workerOnly: true;
+}
+
+export interface IssuedWorkerCredential {
+  credential: string;
+  clusterId: string;
+  clusterHealthy: true;
+  workerOnly: true;
+  expiresAt: Date;
+  revoke(): Promise<void>;
+}
+
+export interface WorkerCredentialIssuer {
+  issue(request: WorkerCredentialIssueRequest): Promise<IssuedWorkerCredential>;
+}
+
+export interface BrokerBinding {
+  workspaceId: string;
+  enrollmentId: string;
+  enrollmentStatus: string;
+  enrollmentExpiresAt: Date;
+  nodePublicKey: string;
+  nodePublicKeyFingerprint: string;
+  machineFingerprint: string;
+  nodeId: string;
+  nodeLifecycleState: string;
+  nodeTrustState: string;
+  planId: string;
+  planDigest: string;
+  planStatus: string;
+  planExpiresAt: Date;
+  canonicalPlan: Record<string, unknown>;
+  planSigningKeyId: string;
+  planSigningPublicKey: string;
+}
+
+export interface StoredJoinIssuance {
+  id: string;
+  workspaceId: string;
+  enrollmentId: string;
+  planId: string;
+  nodeId: string;
+  clusterId: string;
+  machineFingerprint: string;
+  nodePublicKeyFingerprint: string;
+  credentialCiphertext: Buffer;
+  credentialKeyId: "node-join-credential/v1";
+  idempotencyKey: string;
+  requestDigest: string;
+  issuedAt: Date;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+}
