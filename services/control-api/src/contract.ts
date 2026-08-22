@@ -1,9 +1,11 @@
 export const API_ERROR_STATUS = {
+  access_expired: 401,
   authorization_capacity: 503,
   authorization_not_found: 404,
   authorization_pending: 428,
   device_not_found: 404,
   device_proof_invalid: 403,
+  device_revoked: 401,
   expired_token: 400,
   identity_rejected: 403,
   internal_error: 500,

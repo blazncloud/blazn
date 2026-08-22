@@ -30,6 +30,19 @@ export interface Config {
   s3Bucket: string;
   s3AccessKey: string;
   s3SecretKey: string;
+  trustedProxyCidrs: string[];
+  trustedProxyHops: number;
+}
+
+function cidrList(name: string): string[] {
+  const raw = process.env[name];
+  if (!raw) {
+    if (process.env.NODE_ENV === "production") throw new Error(`${name} is required in production`);
+    return ["127.0.0.0/8", "::1/128"];
+  }
+  const values = raw.split(",").map((value) => value.trim());
+  if (values.length === 0 || values.some((value) => value === "")) throw new Error(`${name} must be a comma-separated list of CIDRs`);
+  return values;
 }
 
 export function loadConfig(): Config {
@@ -50,5 +63,7 @@ export function loadConfig(): Config {
     s3Bucket: process.env.S3_BUCKET ?? "blazn-poc",
     s3AccessKey: valueOrFile("S3_ACCESS_KEY"),
     s3SecretKey: valueOrFile("S3_SECRET_KEY"),
+    trustedProxyCidrs: cidrList("TRUSTED_PROXY_CIDRS"),
+    trustedProxyHops: boundedInteger("TRUSTED_PROXY_HOPS", 1, 1, 8),
   };
 }

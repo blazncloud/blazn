@@ -3,14 +3,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db.js";
 import { HttpError, jsonBody, requireExactKeys, requiredSecret, requiredString, sendJson } from "./http.js";
-import { enforceLimit, remoteIdentity } from "./limits.js";
-import { randomToken, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
+import { enforceLimit, remoteIdentity, TrustedProxyPolicy } from "./limits.js";
+import { randomToken, sessionRevokePayload, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
+import { sessionAccessError } from "./session-state.js";
 import { verifyBucket } from "./s3.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
 const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
 
 function closeStream(sessionId: string): void {
   const streams = activeStreams.get(sessionId);
@@ -46,11 +48,15 @@ async function authenticate(request: IncomingMessage): Promise<AuthenticatedSess
   if (!header?.startsWith("Bearer ")) throw new HttpError("unauthorized", "a bearer session is required");
   const result = await database.query<{
     session_id: string; user_id: string; device_id: string; email: string; display_name: string;
-  }>(`SELECT s.id AS session_id, s.user_id, s.device_id, u.email, u.display_name
+    session_revoked_at: Date | null; device_revoked_at: Date | null; access_expires_at: Date;
+  }>(`SELECT s.id AS session_id, s.user_id, s.device_id, u.email, u.display_name,
+      s.revoked_at AS session_revoked_at, d.revoked_at AS device_revoked_at, s.access_expires_at
       FROM sessions s JOIN users u ON u.id = s.user_id JOIN devices d ON d.id = s.device_id
-      WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.access_expires_at > now() AND d.revoked_at IS NULL AND d.user_id = s.user_id`, [tokenHash(header.slice(7))]);
+      WHERE s.token_hash = $1 AND d.user_id = s.user_id`, [tokenHash(header.slice(7))]);
   const row = result.rows[0];
-  if (!row) throw new HttpError("session_revoked", "the session is expired or revoked");
+  if (!row) throw new HttpError("session_revoked", "the session is unavailable or has been superseded");
+  const accessError = sessionAccessError({ sessionRevokedAt: row.session_revoked_at, deviceRevokedAt: row.device_revoked_at, accessExpiresAt: row.access_expires_at });
+  if (accessError) throw new HttpError(accessError, accessError === "access_expired" ? "the access credential is expired" : "the session or device is revoked");
   await database.query("UPDATE devices SET last_seen_at = now() WHERE id = $1", [row.device_id]);
   return { sessionId: row.session_id, userId: row.user_id, deviceId: row.device_id, email: row.email, displayName: row.display_name };
 }
@@ -68,7 +74,7 @@ async function health(response: ServerResponse): Promise<void> {
 }
 
 async function startDeviceAuthorization(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  await enforceLimit(database, "device-start", remoteIdentity(request), 20, 60);
+  await enforceLimit(database, "device-start", remoteIdentity(request, trustedProxies), 20, 60);
   const body = await jsonBody(request);
   requireExactKeys(body, ["devicePublicKey", "deviceName", "platform"]);
   const deviceName = requiredString(body, "deviceName", 128);
@@ -130,11 +136,12 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
   const code = requiredString(body, "user_code", 16).toUpperCase();
   const email = requiredString(body, "email", 254).toLowerCase();
   const password = requiredSecret(body, "password", 1024);
-  await enforceLimit(database, "device-approve-ip", remoteIdentity(request), 20, 15 * 60);
+  const callerIdentity = remoteIdentity(request, trustedProxies);
+  await enforceLimit(database, "device-approve-ip", callerIdentity, 20, 15 * 60);
   const liveAuthorization = await database.query<{ id: string }>("SELECT id FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL", [code]);
   const live = liveAuthorization.rows[0];
   if (!live) throw new HttpError("authorization_not_found", "authorization code is invalid, expired, or already used");
-  const accountLimitIdentity = `${live.id}:${remoteIdentity(request)}:${email}`;
+  const accountLimitIdentity = `${live.id}:${callerIdentity}:${email}`;
   await enforceLimit(database, "device-approve-account", accountLimitIdentity, 10, 15 * 60);
   const client = await database.connect();
   try {
@@ -234,31 +241,29 @@ async function refreshSession(request: IncomingMessage, response: ServerResponse
 
 async function revokeSessionWithProof(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const body = await jsonBody(request);
-  requireExactKeys(body, ["refreshToken", "deviceId", "proof"]);
+  requireExactKeys(body, ["deviceId", "proof"]);
   const deviceId = requiredString(body, "deviceId", 64);
   if (!UUID_PATTERN.test(deviceId)) throw new HttpError("invalid_request", "deviceId must be a UUID");
-  const refreshToken = requiredString(body, "refreshToken", 512);
   const signature = requiredString(body, "proof", 256);
   const client = await database.connect();
-  let revokedSessionId: string | undefined;
+  let revokedSessionIds: string[] = [];
   try {
     await client.query("BEGIN");
-    const result = await client.query<{ session_id: string; public_key: string }>(`SELECT s.id AS session_id, d.public_key FROM sessions s JOIN devices d ON d.id=s.device_id
-      WHERE s.device_id=$1 AND s.refresh_token_hash=$2 AND s.revoked_at IS NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id FOR UPDATE`, [deviceId, tokenHash(refreshToken)]);
-    const session = result.rows[0];
-    if (!session) throw new HttpError("session_revoked", "the session or device is already revoked");
-    const canonical = `blazn-refresh-v1\n${deviceId}\n${tokenHash(refreshToken)}`;
-    if (!verifyDeviceProof(session.public_key, canonical, signature)) throw new HttpError("device_proof_invalid", "device proof could not be verified");
-    await client.query("UPDATE sessions SET revoked_at=now() WHERE id=$1", [session.session_id]);
+    const result = await client.query<{ public_key: string }>("SELECT public_key FROM devices WHERE id=$1 FOR UPDATE", [deviceId]);
+    const device = result.rows[0];
+    if (!device) throw new HttpError("device_not_found", "the device was not found");
+    const canonical = sessionRevokePayload(deviceId);
+    if (!verifyDeviceProof(device.public_key, canonical, signature)) throw new HttpError("device_proof_invalid", "device proof could not be verified");
+    const revoked = await client.query<{ id: string }>("UPDATE sessions SET revoked_at=COALESCE(revoked_at, now()) WHERE device_id=$1 RETURNING id", [deviceId]);
+    revokedSessionIds = revoked.rows.map((session) => session.id);
     await client.query("COMMIT");
-    revokedSessionId = session.session_id;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
   }
-  if (revokedSessionId) closeStream(revokedSessionId);
+  for (const sessionId of revokedSessionIds) closeStream(sessionId);
   response.writeHead(204, { "cache-control": "no-store" });
   response.end();
 }
