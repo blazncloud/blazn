@@ -38,8 +38,9 @@ function emit_doc(    skip) {
           (kind == "ClusterRole" && (name == "agent-sandbox-controller" || name == "agent-sandbox-controller-extensions")) ||
           (kind == "ClusterRoleBinding" && (name == "agent-sandbox-controller" || name == "agent-sandbox-controller-extensions")))
   if (skip) { removed++; return }
+  if (emitted > 0) print "---"
   printf "%s", doc
-  print "---"
+  emitted++
 }
 BEGIN { reset_doc() }
 $0 == "---" { emit_doc(); reset_doc(); next }
