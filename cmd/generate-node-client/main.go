@@ -20,9 +20,10 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256 = "bfe79594daa71b4be9a6ec7555fe92de495304943f4ca130bcffc360e4c89158"
-	planSHA256    = "663d02a35bd912f713e7139a7ebe452525a7baa8a3a24a1da250a28b75496eb7"
-	receiptSHA256 = "5618b6ddfec05f8c9e0b84b76774a24abc4be3b145de7707aa0ab675f1ee082c"
+	openAPISHA256          = "bfe79594daa71b4be9a6ec7555fe92de495304943f4ca130bcffc360e4c89158"
+	planSHA256             = "3013566a4ee672ad43b72429c23e677219f3782c3b69d9cec973b7126999fddd"
+	receiptSHA256          = "7a0791874671dc82222d7abf80f4cedf00bbdb0d40cbeaa7ed268496414e1c85"
+	operationReceiptSHA256 = "6ae34cba3202a8be488bb3b38db36b87c456d3fef5c0cc64f23caf521dd4d925"
 )
 
 type source struct {
@@ -45,6 +46,7 @@ var operations = []operation{
 	{"/v1/nodes/{nodeId}/events", "get", "streamNodeEvents", "200", "", "sse", "bearer"},
 	{"/v1/node-service/heartbeats", "post", "submitNodeHeartbeat", "204", "NodeHeartbeat", "", "nodeProof"},
 	{"/v1/node-service/join-credentials", "post", "issueNodeJoinCredential", "200", "JoinCredentialRequest", "JoinCredential", "nodeProof"},
+	{"/v1/node-service/join-credentials/{issuanceId}/consume", "post", "consumeNodeJoinCredential", "200", "ConsumeJoinCredentialRequest", "Node", "nodeProof"},
 }
 
 func main() {
@@ -58,6 +60,7 @@ func main() {
 	generated := bytes.ReplaceAll(nodeTemplate, []byte("OPENAPI_SHA256"), []byte(openAPISHA256))
 	generated = bytes.ReplaceAll(generated, []byte("PLAN_SHA256"), []byte(planSHA256))
 	generated = bytes.ReplaceAll(generated, []byte("RECEIPT_SHA256"), []byte(receiptSHA256))
+	generated = bytes.ReplaceAll(generated, []byte("OPERATION_RECEIPT_SHA256"), []byte(operationReceiptSHA256))
 	generated, err = format.Source(generated)
 	fatalIf(err)
 	output := filepath.Join(root, "internal", "client", "node.gen.go")
@@ -89,6 +92,7 @@ func loadSources(root string) (map[string]source, error) {
 		{path: filepath.Join("packages", "contracts", "nodes.openapi.json"), digest: openAPISHA256},
 		{path: filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json"), digest: planSHA256},
 		{path: filepath.Join("packages", "contracts", "nodes", "node-install-receipt.schema.json"), digest: receiptSHA256},
+		{path: filepath.Join("packages", "contracts", "nodes", "node-operation-receipt.schema.json"), digest: operationReceiptSHA256},
 	}
 	result := make(map[string]source, len(definitions))
 	for _, definition := range definitions {
@@ -116,14 +120,19 @@ func validateSources(sources map[string]source, template string) error {
 	}
 	plan := sources[filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json")].doc
 	receipt := sources[filepath.Join("packages", "contracts", "nodes", "node-install-receipt.schema.json")].doc
-	if err := validateInstallSchema(plan, "Blazn NodeInstallPlan", []string{"schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "mode", "cluster", "target", "components", "mutations", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"}); err != nil {
+	if err := validateInstallSchema(plan, "Blazn NodeInstallPlan", []string{"schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "cluster", "target", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install plan: %w", err)
 	}
-	if err := validateInstallSchema(receipt, "Blazn NodeInstallReceipt", []string{"schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "owner", "binary", "service", "mutations", "createdAt", "updatedAt", "checksum"}); err != nil {
+	if err := validateInstallSchema(receipt, "Blazn NodeInstallReceipt", []string{"schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install receipt: %w", err)
 	}
+	operationReceipt := sources[filepath.Join("packages", "contracts", "nodes", "node-operation-receipt.schema.json")].doc
+	if err := validateOperationReceiptSchema(operationReceipt); err != nil {
+		return fmt.Errorf("operation receipt: %w", err)
+	}
 	for _, marker := range []string{
-		"func ValidateNodeInstallPlan(", "func ValidateNodeInstallReceipt(",
+		"func ValidateNodeInstallPlan(", "func ValidateNodeInstallReceipt(", "func ValidateNodeOperationReceipt(",
+		"func VerifyNodeInstallPlan(", "func VerifyNodeInstallReceipt(", "func VerifyNodeOperationReceipt(", "func NodeCapabilityDigest(",
 		`Header.Set("Authorization", "Bearer "+accessToken)`,
 		`Header.Set("X-Blazn-Node-Proof", nodeProof)`,
 		`Header.Set("Idempotency-Key", idempotencyKey)`,
@@ -210,7 +219,7 @@ func validateOpenAPI(document map[string]any) error {
 	if !ok || capability["additionalProperties"] != false {
 		return fmt.Errorf("NodeCapability must remain a closed object")
 	}
-	for _, field := range []string{"version", "platform", "architecture", "cpu", "memoryBytes", "diskBytes", "accelerators", "labels", "limits", "health", "sandboxBackends", "runtimeClasses", "localModels"} {
+	for _, field := range []string{"version", "host", "worker", "sandboxBackends", "runtimeClasses", "localModels"} {
 		if at(capability, "properties", field) == nil {
 			return fmt.Errorf("NodeCapability.%s is missing or mis-nested", field)
 		}
@@ -221,6 +230,16 @@ func validateOpenAPI(document map[string]any) error {
 	discriminators, ok := at(document, "components", "schemas", "CreateNodeOperationRequest", "allOf").([]any)
 	if !ok || len(discriminators) != 6 {
 		return fmt.Errorf("node operation discriminators changed")
+	}
+	return nil
+}
+
+func validateOperationReceiptSchema(document map[string]any) error {
+	if atString(document, "$schema") != "https://json-schema.org/draft/2020-12/schema" || atString(document, "title") != "Blazn NodeOperationReceipt" || atString(document, "type") != "object" || at(document, "additionalProperties") != false {
+		return fmt.Errorf("must remain a closed JSON Schema 2020-12 operation receipt")
+	}
+	if atString(document, "properties", "schemaVersion", "const") != "nodes/v1alpha1" || atNumber(document, "properties", "actions", "maxItems") != 4096 || atNumber(document, "properties", "residues", "maxItems") != 4096 {
+		return fmt.Errorf("operation receipt bounds changed")
 	}
 	return nil
 }
