@@ -1193,7 +1193,8 @@ Use a public tap, such as a separately approved `KingJammin/homebrew-blazn`, or 
 Acceptance requires:
 
 ```bash
-brew tap blazncloud/blazn <approved-tap-url>
+# Tap alias for the separately approved KingJammin/homebrew-blazn repository.
+brew tap kingjammin/blazn <approved-tap-url>
 brew install blazn
 blazn version
 brew upgrade blazn
