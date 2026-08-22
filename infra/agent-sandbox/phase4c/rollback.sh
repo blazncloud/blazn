@@ -4,13 +4,31 @@ set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$ROOT/lib.sh"
-[ "$#" -eq 3 ] || { printf 'usage: %s INSTALL_BUNDLE FIXTURE_DIRECTORY PREINSTALL_INVENTORY\n' "$0" >&2; exit 64; }
+[ "$#" -eq 3 ] || { printf 'usage: %s INSTALL_BUNDLE PREINSTALL_INVENTORY CANARY_EVIDENCE\n' "$0" >&2; exit 64; }
 install_bundle=$1
-fixtures=$2
-pre=$3
+pre=$2
+canary_evidence=$3
 phase4c_require_mutation_authority
 [ "$(cat "$pre/context")" = "$BLAZN_EXPECTED_CONTEXT" ]
 [ "$(cat "$pre/kube-system.uid")" = "$BLAZN_EXPECTED_KUBE_SYSTEM_UID" ]
+[ "$(kubectl get namespace blazn-poc -o jsonpath='{.metadata.uid}')" = "$(cat "$canary_evidence/blazn-poc.uid")" ]
+[ "$(kubectl get namespace agent-sandbox-system -o jsonpath='{.metadata.uid}')" = "$(cat "$canary_evidence/agent-sandbox-system.uid")" ]
+
+# Refuse to erase an object that appeared in the uniquely owned workload
+# namespace after the canary. Events are evidence, not durable caller data.
+unexpected=''
+for resource in $(kubectl api-resources --verbs=list --namespaced -o name | LC_ALL=C sort -u); do
+  [ "$resource" = events ] || [ "$resource" = events.events.k8s.io ] || {
+    objects=$(kubectl get "$resource" -n blazn-poc --ignore-not-found -o name)
+    for object in $objects; do
+      case "$object" in
+        serviceaccount/default|serviceaccount/blazn-sandbox-runner|configmap/kube-root-ca.crt|localqueue.kueue.x-k8s.io/blazn-poc) ;;
+        *) unexpected="$unexpected $object" ;;
+      esac
+    done
+  }
+done
+[ -z "$unexpected" ] || { printf 'refusing rollback with unexpected blazn-poc objects:%s\n' "$unexpected" >&2; exit 1; }
 
 # The namespace was proven absent before install, so deleting this exact owned
 # namespace cannot erase preexisting workloads. Stop the controller first.

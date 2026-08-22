@@ -26,6 +26,9 @@ done
 kubectl apply --server-side -f "$fixtures/blazn-poc.yaml" >"$evidence/apply-namespace.txt"
 kubectl apply --server-side -f "$ROOT/controller-boundary.yaml" >"$evidence/apply-boundary.txt"
 kubectl apply --server-side -f "$install_bundle" >"$evidence/apply-controller.txt"
+kubectl get namespace blazn-poc -o jsonpath='{.metadata.uid}' >"$evidence/blazn-poc.uid"
+kubectl get namespace agent-sandbox-system -o jsonpath='{.metadata.uid}' >"$evidence/agent-sandbox-system.uid"
+[ -s "$evidence/blazn-poc.uid" ] && [ -s "$evidence/agent-sandbox-system.uid" ]
 kubectl wait --for=condition=Established crd/sandboxes.agents.x-k8s.io --timeout=120s
 kubectl wait --for=condition=Available deployment/agent-sandbox-controller -n agent-sandbox-system --timeout=180s
 

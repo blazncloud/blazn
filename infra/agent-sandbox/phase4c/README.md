@@ -62,7 +62,9 @@ untrusted or cross-tenant work.
    run, Ready/Running state, Kueue admission, exact 100m/64Mi reservation, and
    canary deletion. Stop on any mismatch; do not broaden RBAC or fall back to an
    unmanaged Pod.
-6. In the same serialized window, run `rollback.sh` through a fresh lock token.
+6. In the same serialized window, run
+   `rollback.sh INSTALL PREINSTALL_INVENTORY CANARY_EVIDENCE` through a fresh
+   lock token.
    It stops the controller, removes the uniquely owned namespace and Phase 4C
    objects, proves every exact target absent, and byte-compares normalized
    CRD/admission/RuntimeClass/Kueue inventories to the preinstall snapshot.

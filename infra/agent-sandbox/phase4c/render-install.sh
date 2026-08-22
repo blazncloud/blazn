@@ -67,9 +67,9 @@ END {
 printf 'image: %s\n' "${KUEUE_IMAGE%%@*}" >"$tmp/kueue-placeholder.yaml"
 pin_controller_images "$tmp/scoped-upstream.yaml" "$tmp/kueue-placeholder.yaml"
 
-! grep -F -- '- --extensions' "$tmp/scoped-upstream.yaml" >/dev/null
-! grep -F 'kind: ClusterRoleBinding' "$tmp/scoped-upstream.yaml" >/dev/null
-! grep -F 'kind: ClusterRole' "$tmp/scoped-upstream.yaml" >/dev/null
+if grep -F -- '- --extensions' "$tmp/scoped-upstream.yaml" >/dev/null; then printf 'extensions argument survived rewrite\n' >&2; exit 1; fi
+if grep -F 'kind: ClusterRoleBinding' "$tmp/scoped-upstream.yaml" >/dev/null; then printf 'upstream ClusterRoleBinding survived rewrite\n' >&2; exit 1; fi
+if grep -F 'kind: ClusterRole' "$tmp/scoped-upstream.yaml" >/dev/null; then printf 'upstream ClusterRole survived rewrite\n' >&2; exit 1; fi
 grep -F -- '- --leader-election-namespace=agent-sandbox-system' "$tmp/scoped-upstream.yaml" >/dev/null
 grep -F -- '- --cache-label-selectors=true' "$tmp/scoped-upstream.yaml" >/dev/null
 
