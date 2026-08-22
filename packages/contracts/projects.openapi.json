@@ -1,0 +1,97 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Blazn Project API", "version": "v1alpha1"},
+  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "security": [{"bearerAuth": []}],
+  "paths": {
+    "/v1/workspaces/{workspaceId}/projects": {
+      "post": {
+        "operationId": "createProject",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateProjectRequest"}}}},
+        "responses": {"201": {"description": "Project created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectEnvelope"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
+      },
+      "get": {
+        "operationId": "listProjects",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/Status"}, {"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Projects visible to the Workspace member", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectList"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}": {
+      "get": {
+        "operationId": "getProject",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}],
+        "responses": {"200": {"description": "Project", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectEnvelope"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
+      },
+      "patch": {
+        "operationId": "updateProject",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateProjectRequest"}}}},
+        "responses": {"200": {"description": "Project updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectEnvelope"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"}},
+    "parameters": {
+      "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 128}},
+      "Status": {"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["active", "archived", "all"], "default": "active"}},
+      "Cursor": {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "maxLength": 512}}
+    },
+    "responses": {
+      "ProjectError": {"description": "Documented Project or common error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectError"}}}}
+    },
+    "schemas": {
+      "ProjectStatus": {"type": "string", "enum": ["active", "archived"]},
+      "Project": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "workspaceId", "slug", "kind", "name", "description", "status", "version", "createdBy", "createdAt", "updatedAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "workspaceId": {"type": "string", "format": "uuid"},
+          "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"},
+          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 160},
+          "description": {"type": "string", "maxLength": 4000},
+          "status": {"$ref": "#/components/schemas/ProjectStatus"},
+          "version": {"type": "integer", "minimum": 1},
+          "createdBy": {"type": "string", "format": "uuid"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ProjectEnvelope": {"type": "object", "additionalProperties": false, "required": ["project"], "properties": {"project": {"$ref": "#/components/schemas/Project"}}},
+      "ProjectList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Project"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
+      "CreateProjectRequest": {
+        "type": "object", "additionalProperties": false, "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 160},
+          "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"},
+          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$", "default": "general"},
+          "description": {"type": "string", "maxLength": 4000, "default": ""}
+        }
+      },
+      "UpdateProjectRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedVersion"], "minProperties": 2,
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 160},
+          "description": {"type": "string", "maxLength": 4000},
+          "status": {"$ref": "#/components/schemas/ProjectStatus"},
+          "expectedVersion": {"type": "integer", "minimum": 1}
+        }
+      },
+      "ProjectError": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"],
+        "properties": {
+          "code": {"type": "string", "enum": ["project_not_found", "project_slug_conflict", "workspace_not_found", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invalid_request", "method_not_allowed", "rate_limited", "access_expired", "session_revoked", "unauthorized", "internal_error"]},
+          "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "requestId": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "x-blazn-error-status": {"project_not_found": 404, "project_slug_conflict": 409, "workspace_not_found": 404, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invalid_request": 400, "method_not_allowed": 405, "rate_limited": 429, "access_expired": 401, "session_revoked": 401, "unauthorized": 401, "internal_error": 500}
+      }
+    }
+  }
+}
