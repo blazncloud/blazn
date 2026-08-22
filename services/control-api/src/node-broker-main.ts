@@ -27,11 +27,11 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
     const service = new NodeBrokerService(new PgNodeBrokerStore(database), () => readJoinCredentialKey(`${root}/join-credential-v1`), resolvedIssuer);
     const server = createNodeBrokerServer(service);
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
-    server.once("close", () => { database.off("error",onDatabaseError);void database.end(); });
+    server.once("close", () => { void database.end().finally(()=>database.off("error",onDatabaseError)); });
     return server;
   } catch (error) {
-    database.off("error",onDatabaseError);
     await database.end();
+    database.off("error",onDatabaseError);
     throw error;
   }
 }
