@@ -43,3 +43,33 @@ are recorded in the upgrade receipt, then rerun the rollback command with that
 restored `infra/milestone-2` path. The journal refuses `rolled-back` until both
 digests match, ensuring the restored build and ownership receipts can actually
 pass startup preflight rather than pointing at the newer source tree.
+
+## Install-plan signing material
+
+The same prerequisite step atomically creates `/etc/blazn/node-plan`. Its
+private signing key is a raw 32-byte Ed25519 seed encoded as one 43-character,
+unpadded base64url line. The stable key ID is
+`control-plane-node-plan/v1`; `signing-public-v1.json` records the matching raw
+public key and its lowercase SHA-256 fingerprint. Ownership, upgrade, backup,
+restore, and rollback evidence binds the public fingerprint and template digest,
+never a digest or copy of the private seed.
+
+`node-install-plan-template-v1.json` is a closed bundle with exactly the fresh
+Ubuntu 26.04 AMD64, existing Linux adoption, and macOS/Lima adoption profiles.
+It freezes the current Frontro MicroK8s identity and CA, worker-only boundary,
+release artifacts and checksums, registry trust, platform service definitions,
+resource bounds, ordered mutations, validation gates, and rollback roots.
+
+Only the long-running API and one-shot `node-plan-verify` gate receive the
+private seed. The migrator, bootstrap, broker checks, object services, and
+identity tools do not. Before API startup, the gate reconstructs the Ed25519
+key, proves the public fingerprint, validates all three profiles, and checks the
+checked-in systemd and launchd definition digests.
+
+The raw seed is recovered separately from ordinary database/object evidence.
+The root-only recovery inventory supplied to restore qualification contains
+`signing-private-v1.b64url`, `signing-public-v1.json`, and the exact template in
+addition to the broker inventory. Restore derives the fingerprint from the seed
+and rejects fingerprint or template drift. Upgrade rollback retains the raw
+seed beneath its root-only, receipt-named recovery directory instead of deleting
+it.

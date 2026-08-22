@@ -267,6 +267,43 @@ services:
     networks:
       - control
 
+  node-plan-verify:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    command: ["node", "/opt/blazn-node/verify-plan-materials.mjs"]
+    environment:
+      BLAZN_NODE_PLAN_ROOT: /run/node-plan
+      BLAZN_NODE_PLAN_SOURCE_TEMPLATES: /opt/blazn-node/templates
+      NODE_PLAN_SIGNING_PRIVATE_KEY_FILE: /run/secrets/node_plan_signing_private_key_v1
+    secrets:
+      - node_plan_signing_private_key_v1
+    volumes:
+      - type: bind
+        source: ${BLAZN_NODE_PLAN_ROOT:?set BLAZN_NODE_PLAN_ROOT}/signing-public-v1.json
+        target: /run/node-plan/signing-public-v1.json
+        read_only: true
+      - type: bind
+        source: ${BLAZN_NODE_PLAN_ROOT:?set BLAZN_NODE_PLAN_ROOT}/node-install-plan-template-v1.json
+        target: /run/node-plan/node-install-plan-template-v1.json
+        read_only: true
+      - type: bind
+        source: ../node/scripts/verify-plan-materials.mjs
+        target: /opt/blazn-node/verify-plan-materials.mjs
+        read_only: true
+      - type: bind
+        source: ../node/templates
+        target: /opt/blazn-node/templates
+        read_only: true
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - control
+
   api:
     image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
     build:
@@ -281,6 +318,9 @@ services:
       TRUSTED_PROXY_HOPS: "1"
       TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret
       WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1
+      NODE_PLAN_SIGNING_PRIVATE_KEY_FILE: /run/secrets/node_plan_signing_private_key_v1
+      NODE_PLAN_SIGNING_KEY_ID: control-plane-node-plan/v1
+      NODE_INSTALL_PLAN_TEMPLATE_FILE: /opt/blazn-node/node-install-plan-template-v1.json
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
@@ -292,12 +332,20 @@ services:
       - s3_runtime_secret_key
       - proxy_auth_secret
       - workspace_invitation_hmac_v1
+      - node_plan_signing_private_key_v1
+    volumes:
+      - type: bind
+        source: ${BLAZN_NODE_PLAN_ROOT:?set BLAZN_NODE_PLAN_ROOT}/node-install-plan-template-v1.json
+        target: /opt/blazn-node/node-install-plan-template-v1.json
+        read_only: true
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-58080}:8080"
     depends_on:
       api-bootstrap:
         condition: service_completed_successfully
       object-init:
+        condition: service_completed_successfully
+      node-plan-verify:
         condition: service_completed_successfully
     healthcheck:
       test:
@@ -407,6 +455,8 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/proxy-auth-secret
   workspace_invitation_hmac_v1:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/workspace-invitation-hmac-v1
+  node_plan_signing_private_key_v1:
+    file: ${BLAZN_NODE_PLAN_ROOT:?set BLAZN_NODE_PLAN_ROOT}/signing-private-v1.b64url
   poc_identity_password:
     file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/password
   poc_identity_profile:

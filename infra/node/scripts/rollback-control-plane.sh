@@ -17,9 +17,13 @@ BUILD_RECEIPT=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/contro
 UPGRADE_RECEIPT=${BLAZN_NODE_BROKER_UPGRADE_RECEIPT:-/var/lib/blazn/ownership/node-broker-upgrade.json}
 CREATE_JOURNAL=${BLAZN_NODE_BROKER_CREATE_JOURNAL:-/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json}
 NODE_ROOT=/etc/blazn/node-broker
+PLAN_ROOT=/etc/blazn/node-plan
+PLAN_CREATE_JOURNAL=/var/lib/blazn/ownership/node-plan-material-upgrade-create.json
 RETAIN_PARENT=/var/lib/blazn/ownership
 if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ]; then
   NODE_ROOT=${BLAZN_NODE_INFRA_TEST_NODE_ROOT:?test Node root is required}
+  PLAN_ROOT=${BLAZN_NODE_INFRA_TEST_PLAN_ROOT:?test plan root is required}
+  PLAN_CREATE_JOURNAL=${BLAZN_NODE_INFRA_TEST_PLAN_CREATE_JOURNAL:?test plan create journal is required}
   CREATE_JOURNAL=${BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL:?test create journal is required}
   RETAIN_PARENT=${BLAZN_NODE_INFRA_TEST_RETAIN_PARENT:?test retention parent is required}
 fi
@@ -108,6 +112,16 @@ if [ "$phase" = role-removed ]; then
   done
   if [ -d "$NODE_ROOT" ] && [ ! -e "$retained" ]; then mv -- "$NODE_ROOT" "$retained"; sync_path "$RETAIN_PARENT"; elif [ -d "$retained" ] && [ ! -e "$NODE_ROOT" ]; then :; else die "secret retention transition is ambiguous"; fi
   if [ -f "$CREATE_JOURNAL" ]; then mv -- "$CREATE_JOURNAL" "$retained/secret-create-journal.json"; sync_path "$(dirname -- "$CREATE_JOURNAL")"; fi
+  plan_retained=$retained/node-plan
+  if [ -d "$PLAN_ROOT" ]; then
+    [ "$(jq -er .nodePlan.publicKeyFingerprint "$UPGRADE_RECEIPT")" = "$(jq -er .publicKeyFingerprint "$PLAN_ROOT/signing-public-v1.json")" ] || die "installed Node plan fingerprint differs from rollback receipt"
+    [ "$(jq -er .nodePlan.templateDigest "$UPGRADE_RECEIPT")" = "sha256:$(sha256_file "$PLAN_ROOT/node-install-plan-template-v1.json")" ] || die "installed Node plan template differs from rollback receipt"
+    [ ! -e "$plan_retained" ] || die "Node plan retention target already exists"
+    mv -- "$PLAN_ROOT" "$plan_retained"; sync_path "$(dirname -- "$PLAN_ROOT")"
+  elif [ ! -d "$plan_retained" ]; then
+    die "Node plan retention transition is ambiguous"
+  fi
+  if [ -f "$PLAN_CREATE_JOURNAL" ]; then mv -- "$PLAN_CREATE_JOURNAL" "$retained/plan-material-create-journal.json"; sync_path "$(dirname -- "$PLAN_CREATE_JOURNAL")"; fi
   write_phase secrets-retained "$retained"; phase=secrets-retained; test_fault secrets-retained
 fi
 

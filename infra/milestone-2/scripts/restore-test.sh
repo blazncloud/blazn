@@ -47,7 +47,8 @@ jq -e '
   (.controlApi.sourceDigest | test("^sha256:[a-f0-9]{64}$")) and
   (.controlApi.image | test("^blazn-control-api:source-[a-f0-9]{64}$")) and
   (.controlApi.imageId | test("^sha256:[a-f0-9]{64}$")) and
-  (.secretDigests["workspace-invitation-hmac-v1"] | test("^sha256:[a-f0-9]{64}$"))' \
+  (.secretDigests["workspace-invitation-hmac-v1"] | test("^sha256:[a-f0-9]{64}$")) and
+  (.nodePlanReceiptDigest | test("^sha256:[a-f0-9]{64}$"))' \
   "$backup/metadata.json" >/dev/null || die "backup rollback inventory is invalid"
 "$SCRIPT_DIR/../../node/scripts/verify-backup-metadata.sh" "$backup/metadata.json" "$node_receipt" "$node_inventory" >/dev/null
 

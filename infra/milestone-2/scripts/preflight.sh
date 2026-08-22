@@ -19,6 +19,7 @@ DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 SECRETS_ROOT=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}
 NODE_SECRETS_ROOT=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
+NODE_PLAN_ROOT=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
 RECEIPT_PATH=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 BIND_ADDRESS=${BLAZN_BIND_ADDRESS:-127.0.0.1}
 MIN_DATA_BYTES=${BLAZN_MIN_DATA_BYTES:-42949672960}
@@ -33,6 +34,7 @@ for named_path in \
   "BLAZN_BACKUP_ROOT:$BACKUP_ROOT" \
   "BLAZN_SECRETS_ROOT:$SECRETS_ROOT" \
   "BLAZN_NODE_BROKER_SECRETS_ROOT:$NODE_SECRETS_ROOT" \
+  "BLAZN_NODE_PLAN_ROOT:$NODE_PLAN_ROOT" \
   "BLAZN_RECEIPT_PATH:$RECEIPT_PATH"; do
   name=${named_path%%:*}
   value=${named_path#*:}
@@ -194,6 +196,12 @@ if [ "$MODE" != plan ]; then
   assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/database-url" 0 444
   assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/enrollment-hmac-v1" 0 400
   assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/join-credential-v1" 0 400
+  [ "$NODE_PLAN_ROOT" = /etc/blazn/node-plan ] || die "node plan material root differs from the reviewed path"
+  node_plan_journal=$(jq -er .nodePlan.creationJournal.path "$RECEIPT_PATH")
+  case "$node_plan_journal" in /var/lib/blazn/ownership/node-plan-material-create.json|/var/lib/blazn/ownership/node-plan-material-upgrade-create.json) ;; *) die "ownership receipt has an unreviewed Node plan journal" ;; esac
+  assert_regular_file_owned_mode "$node_plan_journal" 0 600
+  node_plan_json=$(BLAZN_NODE_PLAN_ROOT="$NODE_PLAN_ROOT" BLAZN_NODE_PLAN_CREATE_JOURNAL="$node_plan_journal" "$ROOT_DIR/../node/scripts/plan-material-object.sh")
+  [ "$(printf '%s' "$node_plan_json" | jq -cS .)" = "$(jq -cS .nodePlan "$RECEIPT_PATH")" ] || die "ownership receipt does not bind the Node plan material"
   node_creation_journal=$(jq -er .nodeBroker.creationJournal.path "$RECEIPT_PATH")
   case "$node_creation_journal" in /var/lib/blazn/ownership/node-broker-secret-create.json|/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json) ;; *) die "ownership receipt has an unreviewed Node secret-creation journal" ;; esac
   assert_regular_file_owned_mode "$node_creation_journal" 0 600

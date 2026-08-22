@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-plan-material-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "root", "keyId", "publicKeyFingerprint", "templateId", "templateDigest", "creationJournal"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.dev/node-plan-material/v1"},
+    "root": {"const": "/etc/blazn/node-plan"},
+    "keyId": {"const": "control-plane-node-plan/v1"},
+    "publicKeyFingerprint": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "templateId": {"const": "frontro-poc-worker/v1"},
+    "templateDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "creationJournal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest"],
+      "properties": {
+        "path": {"enum": ["/var/lib/blazn/ownership/node-plan-material-create.json", "/var/lib/blazn/ownership/node-plan-material-upgrade-create.json"]},
+        "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@
   "$id": "https://blazn.dev/schemas/poc/control-plane-backup-v2.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "correlationId", "fencingToken", "createdAt", "database", "bucket", "configDigest", "controlApi", "secretDigests", "nodeBrokerReceiptDigest"],
+  "required": ["schemaVersion", "correlationId", "fencingToken", "createdAt", "database", "bucket", "configDigest", "controlApi", "secretDigests", "nodeBrokerReceiptDigest", "nodePlanReceiptDigest"],
   "properties": {
     "schemaVersion": { "const": "blazn.dev/control-plane-backup/v2" },
     "correlationId": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
@@ -30,6 +30,7 @@
         "workspace-invitation-hmac-v1": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
     },
-    "nodeBrokerReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+    "nodeBrokerReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "nodePlanReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
   }
 }

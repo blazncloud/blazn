@@ -38,6 +38,9 @@ jq -e \
   --arg secretDigest "$workspace_invitation_hmac_digest" \
   '.configDigest == $configDigest and .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest}' \
   "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not bind the current API, migration, config, and workspace invitation key"
+node_plan_journal=$(jq -er .nodePlan.creationJournal.path "$RECEIPT_PATH")
+node_plan_live=$(BLAZN_NODE_PLAN_CREATE_JOURNAL="$node_plan_journal" "$ROOT_DIR/../node/scripts/plan-material-object.sh")
+[ "$(printf '%s' "$node_plan_live" | jq -cS .)" = "$(jq -cS .nodePlan "$RECEIPT_PATH")" ] || die "ownership receipt does not bind the active Node plan fingerprint and template"
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 [ -n "$BACKUP_ROOT" ] || die "BLAZN_BACKUP_ROOT is required"
@@ -97,6 +100,7 @@ mv -- "$manifest_tmp" "$staging/SHA256SUMS"
 receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 assert_regular_file_owned_mode "$receipt" 0 600
 node_broker_receipt_digest=sha256:$(jq -cS .nodeBroker "$receipt" | sha256sum | awk '{print $1}')
+node_plan_receipt_digest=sha256:$(jq -cS .nodePlan "$receipt" | sha256sum | awk '{print $1}')
 jq -cn \
   --arg correlationId "$correlation" \
   --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
@@ -109,7 +113,8 @@ jq -cn \
   --arg imageId "$control_api_image_id" \
   --arg secretDigest "$workspace_invitation_hmac_digest" \
   --arg nodeBrokerReceiptDigest "$node_broker_receipt_digest" \
-  '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest}' \
+  --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
+  '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest,nodePlanReceiptDigest:$nodePlanReceiptDigest}' \
   >"$staging/metadata.json"
 (
   cd "$staging"

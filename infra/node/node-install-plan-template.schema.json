@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-install-plan-template-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "templateId", "profiles"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.dev/node-install-plan-templates/v1"},
+    "templateId": {"const": "frontro-poc-worker/v1"},
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ubuntu-26.04-amd64-worker/v1", "existing-linux-worker-adopt/v1", "macos-lima-worker-adopt/v1"],
+      "properties": {
+        "ubuntu-26.04-amd64-worker/v1": {"$ref": "#/$defs/profile"},
+        "existing-linux-worker-adopt/v1": {"$ref": "#/$defs/profile"},
+        "macos-lima-worker-adopt/v1": {"$ref": "#/$defs/profile"}
+      }
+    }
+  },
+  "$defs": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cluster", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback"],
+      "properties": {
+        "cluster": {"type": "object"},
+        "registryTrust": {"type": "array"},
+        "components": {"type": "array", "minItems": 1},
+        "nodeService": {"type": "object"},
+        "labels": {"type": "object"},
+        "taints": {"type": "array"},
+        "resourceBounds": {"type": "object"},
+        "mutations": {"type": "array", "minItems": 1},
+        "validationTests": {"type": "array", "minItems": 1, "uniqueItems": true},
+        "rollback": {"type": "object"}
+      }
+    }
+  }
+}

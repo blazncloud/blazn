@@ -13,6 +13,7 @@
     "controlApi",
     "secretDigests",
     "nodeBroker",
+    "nodePlan",
     "ports",
     "units",
     "images",
@@ -67,6 +68,7 @@
       }
     },
     "nodeBroker": { "$ref": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json" },
+    "nodePlan": { "$ref": "https://blazn.dev/schemas/poc/node-plan-material-v1.json" },
     "units": {
       "type": "array",
       "uniqueItems": true,

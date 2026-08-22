@@ -15,8 +15,25 @@ for expected in \
   'entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "post-migration"]' \
   'NODE_BROKER_DATABASE_URL_FILE: /run/secrets/node_broker_database_url' \
   'condition: service_completed_successfully' \
-  'file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/database-url'; do
+  'file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/database-url' \
+  'node-plan-verify:' \
+  'NODE_PLAN_SIGNING_PRIVATE_KEY_FILE: /run/secrets/node_plan_signing_private_key_v1' \
+  'NODE_PLAN_SIGNING_KEY_ID: control-plane-node-plan/v1' \
+  'NODE_INSTALL_PLAN_TEMPLATE_FILE: /opt/blazn-node/node-install-plan-template-v1.json' \
+  'file: ${BLAZN_NODE_PLAN_ROOT:?set BLAZN_NODE_PLAN_ROOT}/signing-private-v1.b64url'; do
   grep -F "$expected" "$compose" >/dev/null || { printf 'Node Compose prerequisite is missing: %s\n' "$expected" >&2; exit 1; }
+done
+
+for service in postgres object object-client object-init api-migrate node-migration-preflight node-broker-verify api-bootstrap poc-identity-provision poc-identity-cleanup poc-identity-verify-cleanup; do
+  body=$(awk -v marker="  $service:" '$0==marker {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
+  if printf '%s\n' "$body" | grep -E 'node_plan_signing_private_key_v1|signing-private-v1' >/dev/null; then
+    printf 'Node plan signing key reaches unapproved service: %s\n' "$service" >&2
+    exit 1
+  fi
+done
+for service in api node-plan-verify; do
+  body=$(awk -v marker="  $service:" '$0==marker {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
+  printf '%s\n' "$body" | grep -F 'node_plan_signing_private_key_v1' >/dev/null || { printf 'approved plan-signing service lacks key: %s\n' "$service" >&2; exit 1; }
 done
 
 api_migrate=$(awk '/^  api-migrate:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
@@ -51,9 +68,12 @@ for service in node-migration-preflight node-broker-verify; do
 done
 
 for script in "$NODE_ROOT"/scripts/*.sh "$NODE_ROOT"/tests/*.sh; do sh -n "$script"; done
-jq empty "$NODE_ROOT"/*.schema.json "$M2_ROOT/ownership-receipt.schema.json"
+jq empty "$NODE_ROOT"/*.schema.json "$NODE_ROOT"/templates/*.json "$M2_ROOT/ownership-receipt.schema.json"
 node_schema_id=$(jq -er '."$id"' "$NODE_ROOT/node-broker-receipt.schema.json")
 [ "$(jq -er '.properties.nodeBroker."$ref"' "$M2_ROOT/ownership-receipt.schema.json")" = "$node_schema_id" ]
 [ "$(jq -er '.properties.nodeBroker."$ref"' "$NODE_ROOT/node-broker-upgrade-receipt.schema.json")" = "$node_schema_id" ]
+plan_schema_id=$(jq -er '."$id"' "$NODE_ROOT/node-plan-material-receipt.schema.json")
+[ "$(jq -er '.properties.nodePlan."$ref"' "$M2_ROOT/ownership-receipt.schema.json")" = "$plan_schema_id" ]
+[ "$(jq -er '.properties.nodePlan."$ref"' "$NODE_ROOT/node-broker-upgrade-receipt.schema.json")" = "$plan_schema_id" ]
 python3 "$TEST_DIR/test-schemas.py"
 printf 'Node infrastructure contract tests passed\n'
