@@ -25,7 +25,7 @@ func LoadPolicy(path string) (proxycontract.Policy, string, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return zero, "", fmt.Errorf("POLICY_INVALID: policy must be a regular file")
 	}
-	f, err := os.Open(clean)
+	f, err := openPolicyFile(clean)
 	if err != nil {
 		return zero, "", fmt.Errorf("POLICY_INVALID: open: %w", err)
 	}

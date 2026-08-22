@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -266,7 +267,7 @@ func TestPreFirstEventErrorFallsBackButEOFPostCommitFailsClosed(t *testing.T) {
 
 func TestChatStreamingPreservesToolCalls(t *testing.T) {
 	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
-		body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+		body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n"
 		return response(200, "text/event-stream", body), nil
 	}, nil)
 	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"use tool"}],"stream":true,"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
@@ -331,6 +332,60 @@ func TestPolicyAndRequestEnforcement(t *testing.T) {
 		if record.Code < 400 {
 			t.Fatalf("accepted %s: %s", body, record.Body.String())
 		}
+	}
+}
+
+func TestRouteSelectionBoundaryAndCapabilityMatrix(t *testing.T) {
+	policy := fixturePolicy(t)
+	index, err := newRouteIndex(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		alias string
+		data  proxycontract.DataClass
+		want  int
+	}{{"company-assistant", proxycontract.DataCompany, 2}, {"company-assistant-public", proxycontract.DataPublic, 2}, {"company-assistant-restricted", proxycontract.DataRestricted, 1}, {"company-assistant-local", proxycontract.DataLocalOnly, 1}}
+	for _, tc := range cases {
+		request := proxycontract.NormalizedRequest{LogicalRequestID: newUUID(), Protocol: proxycontract.ProtocolOpenAIChat, ModelAlias: tc.alias, DataClass: tc.data, Stream: false, Blocks: []proxycontract.RequestBlock{{Role: "user", Type: "text", Text: stringPtr("x")}}, Tools: []proxycontract.Tool{}, Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 1, DeadlineAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339)}, CapabilitiesRequired: []proxycontract.Capability{proxycontract.CapabilityText}}
+		routes, selectErr := index.selectRoutesFor(routedRequest{normalized: request})
+		if selectErr != nil || len(routes) != tc.want {
+			t.Fatalf("%s routes=%d err=%v", tc.alias, len(routes), selectErr)
+		}
+	}
+	request := proxycontract.NormalizedRequest{LogicalRequestID: newUUID(), Protocol: proxycontract.ProtocolOpenAIChat, ModelAlias: "company-assistant", DataClass: proxycontract.DataCompany, Blocks: []proxycontract.RequestBlock{{Role: "user", Type: "text", Text: stringPtr("x")}}, Tools: []proxycontract.Tool{}, Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 1, DeadlineAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339)}, CapabilitiesRequired: []proxycontract.Capability{proxycontract.Capability("unsupported")}}
+	if _, err = index.selectRoutesFor(routedRequest{normalized: request}); err == nil {
+		t.Fatal("accepted unsupported route capability")
+	}
+}
+
+func TestFallbackStatusMatrix(t *testing.T) {
+	for _, tc := range []struct{ status, wantCalls int }{{429, 2}, {500, 2}, {503, 2}, {404, 2}, {413, 2}, {400, 1}, {401, 1}, {403, 1}} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
+			var calls atomic.Int32
+			handler, _ := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				if route.Model == "qwen3.8" {
+					return response(tc.status, "application/json", `{"error":"fixture"}`), nil
+				}
+				return response(200, "application/json", `{"id":"resp","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`), nil
+			}, nil)
+			_ = request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"x"}]}`)
+			if int(calls.Load()) != tc.wantCalls {
+				t.Fatalf("status %d calls=%d want=%d", tc.status, calls.Load(), tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestContextLimitCountsToolsSchemasAndMetadata(t *testing.T) {
+	policy := fixturePolicy(t)
+	policy.RequestLimits.MaxContextTokens = 512
+	huge := strings.Repeat("x", 600)
+	request := proxycontract.NormalizedRequest{LogicalRequestID: newUUID(), Protocol: proxycontract.ProtocolOpenAIResponses, ModelAlias: "company-assistant", DataClass: proxycontract.DataCompany, Blocks: []proxycontract.RequestBlock{{Role: "user", Type: "text", Text: stringPtr("x")}}, Tools: []proxycontract.Tool{{Name: "tool", Description: huge, InputSchema: map[string]any{"type": "object", "description": huge}}}, ResponseSchema: map[string]any{"type": "object", "description": huge}, Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 1, DeadlineAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339)}, CapabilitiesRequired: []proxycontract.Capability{proxycontract.CapabilityText, proxycontract.CapabilityTools, proxycontract.CapabilityStructuredOutput}}
+	metadata := &responsesMetadata{clientMetadata: json.RawMessage(`{"cache":"` + huge + `"}`)}
+	if err := ensureContextLimit(routedRequest{normalized: request, source: sourceMetadata{responses: metadata}}, policy); err == nil {
+		t.Fatal("full tool/schema/metadata context was not counted")
 	}
 }
 

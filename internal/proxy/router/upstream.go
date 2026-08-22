@@ -12,17 +12,19 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/KingJammin/blazn/internal/proxycontract"
 )
 
 type upstreamResult struct {
-	response   *http.Response
-	route      proxycontract.Route
-	attempt    int
-	scanner    *bufio.Scanner
-	normalizer *streamNormalizer
-	buffered   []proxycontract.NormalizedStreamEvent
+	response       *http.Response
+	route          proxycontract.Route
+	attempt        int
+	scanner        *bufio.Scanner
+	normalizer     *streamNormalizer
+	buffered       []proxycontract.NormalizedStreamEvent
+	attemptStarted time.Time
 }
 
 func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []proxycontract.Route) (upstreamResult, error) {
@@ -31,6 +33,7 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 	var failed upstreamResult
 	for attempt, route := range routes {
 		failed = upstreamResult{route: route, attempt: attempt + 1}
+		started := h.config.Now()
 		if attempt > 0 && !h.fallbackAllowed(last) {
 			break
 		}
@@ -44,13 +47,13 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		resolved, err := h.config.Resolver.Resolve(ctx, route)
 		if err != nil {
 			last = &APIError{Code: "connection_failure", Message: "upstream route is unavailable", Status: 502, Retryable: true, Reason: proxycontract.ReasonConnectionFailure, Cause: err}
-			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonConnectionFailure, 0, nil)
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonConnectionFailure, h.config.Now().Sub(started), nil)
 			continue
 		}
 		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
 		if err != nil {
 			failure := &APIError{Code: "credential_unavailable", Message: "destination credential is unavailable", Status: 503, Cause: err}
-			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonAuthenticationFailed, 0, nil)
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonAuthenticationFailed, h.config.Now().Sub(started), nil)
 			return failed, failure
 		}
 		body, path, err := encodeDestinationRequest(routed, route)
@@ -61,7 +64,7 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		endpoint.Path = joinPath(endpoint.Path, path)
 		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 		if err != nil {
-			return upstreamResult{}, err
+			return failed, err
 		}
 		httpRequest.Header.Set("Content-Type", "application/json")
 		httpRequest.Header.Set("Accept", "application/json")
@@ -70,14 +73,15 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		}
 		stripCredentialHeaders(httpRequest.Header)
 		if err := h.config.CredentialApply.Apply(httpRequest, route, credential); err != nil {
-			return upstreamResult{}, &APIError{Code: "credential_unavailable", Message: "destination credential is unavailable", Status: 503, Cause: err}
+			failure := &APIError{Code: "credential_unavailable", Message: "destination credential is unavailable", Status: 503, Cause: err}
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonAuthenticationFailed, h.config.Now().Sub(started), nil)
+			return failed, failure
 		}
 		transport := http.RoundTripper(resolved.Transport)
 		if h.transportFactory != nil {
 			transport = h.transportFactory(route, resolved)
 		}
 		client := &http.Client{Transport: transport, CheckRedirect: redirectPolicy(route)}
-		started := h.config.Now()
 		response, err := client.Do(httpRequest)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -107,7 +111,7 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonCode, h.config.Now().Sub(started), nil)
 			continue
 		}
-		result := upstreamResult{response: response, route: route, attempt: attempt + 1}
+		result := upstreamResult{response: response, route: route, attempt: attempt + 1, attemptStarted: started}
 		if request.Stream {
 			prepared, prepareErr := prepareStream(result, request)
 			if prepareErr != nil {
@@ -309,7 +313,7 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage struct {
+	Usage *struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 	} `json:"usage"`
@@ -327,7 +331,7 @@ type responsesResponse struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"output"`
-	Usage struct {
+	Usage *struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 	} `json:"usage"`
@@ -346,6 +350,9 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		if len(source.Choices) != 1 {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid choice count", 502, false)
 		}
+		if source.Usage == nil {
+			return response, safeError("upstream_invalid_response", "upstream Chat response omitted usage", 502, false)
+		}
 		choice := source.Choices[0]
 		if choice.Message.Content != nil {
 			response.Blocks = append(response.Blocks, proxycontract.ResponseBlock{Type: "text", Text: choice.Message.Content})
@@ -363,6 +370,9 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		}
 		if source.Status != "completed" && source.Status != "incomplete" {
 			return response, safeError("upstream_invalid_response", "upstream Responses request did not complete", 502, false)
+		}
+		if source.Usage == nil {
+			return response, safeError("upstream_invalid_response", "upstream Responses payload omitted usage", 502, false)
 		}
 		for _, item := range source.Output {
 			switch item.Type {
@@ -693,7 +703,7 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 			Name   string `json:"name"`
 		} `json:"item"`
 		Response *struct {
-			Usage struct {
+			Usage *struct {
 				InputTokens  int `json:"input_tokens"`
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
@@ -747,6 +757,9 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		if event.Response == nil {
 			return nil, errors.New("completed Responses event omitted response")
 		}
+		if event.Response.Usage == nil {
+			return nil, errors.New("completed Responses event omitted usage")
+		}
 		n.terminal = true
 		usage := proxycontract.Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens}
 		finish := proxycontract.FinishReason("stop")
@@ -754,6 +767,9 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 	case "response.incomplete":
 		if event.Response == nil {
 			return nil, errors.New("incomplete Responses event omitted response")
+		}
+		if event.Response.Usage == nil {
+			return nil, errors.New("incomplete Responses event omitted usage")
 		}
 		n.terminal = true
 		usage := proxycontract.Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens}
@@ -906,6 +922,9 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 func (s *sourceStreamEncoder) finish() error {
 	if s.finishReason == "" {
 		return errors.New("stream omitted finish reason")
+	}
+	if s.usage == nil {
+		return errors.New("stream omitted required usage")
 	}
 	if s.protocol == proxycontract.ProtocolOpenAIChat {
 		finish := string(s.finishReason)

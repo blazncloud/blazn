@@ -115,16 +115,18 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		if errors.Is(err, ctx.Err()) {
 			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, latency, nil)
 		} else if err == nil {
-			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, usage)
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, h.config.Now().Sub(result.attemptStarted), usage)
 			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, usage)
 		} else {
-			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(err), latency, usage)
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(result.attemptStarted), usage)
 			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), latency, usage)
 		}
 		return
 	}
 	response, err := decodeUpstreamResponse(result, normalized)
 	if err != nil {
+		h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(result.attemptStarted), nil)
+		h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
 		writeError(writer, err)
 		return
 	}
@@ -132,7 +134,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	latency := h.config.Now().Sub(started)
-	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, &response.Usage)
+	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, h.config.Now().Sub(result.attemptStarted), &response.Usage)
 	h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, &response.Usage)
 }
 
