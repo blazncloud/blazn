@@ -221,6 +221,11 @@ Every lifecycle operation ends with a signed
 containing before/after Kubernetes binding, ordered exact actions, terminal
 outcome, and residues. Ambiguous cleanup is `partial` or `recovery_required`,
 never ordinary success.
+Its digest is `sha256:` plus lowercase SHA-256 over RFC 8785 canonical JSON with
+`digest` and `signature` omitted. The active node identity signs the UTF-8 bytes
+`blazn-node-operation-receipt-v1\n<digest>` with Ed25519; verification binds the
+signing key ID, node ID, workspace, operation ID/type, and expected Node version
+before the receipt may authorize any state or audit conclusion.
 
 ## Acceptance evidence
 
