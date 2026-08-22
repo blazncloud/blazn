@@ -4,10 +4,11 @@ set -eu
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$ROOT/lib.sh"
-[ "$#" -eq 3 ] || { printf 'usage: %s INSTALL_BUNDLE PREINSTALL_INVENTORY CANARY_EVIDENCE\n' "$0" >&2; exit 64; }
+[ "$#" -eq 4 ] || { printf 'usage: %s INSTALL_BUNDLE FIXTURE_DIRECTORY PREINSTALL_INVENTORY CANARY_EVIDENCE\n' "$0" >&2; exit 64; }
 install_bundle=$1
-pre=$2
-canary_evidence=$3
+fixtures=$2
+pre=$3
+canary_evidence=$4
 phase4c_require_mutation_authority
 [ "$(cat "$pre/context")" = "$BLAZN_EXPECTED_CONTEXT" ]
 [ "$(cat "$pre/kube-system.uid")" = "$BLAZN_EXPECTED_KUBE_SYSTEM_UID" ]
@@ -36,7 +37,7 @@ kubectl scale deployment/agent-sandbox-controller -n agent-sandbox-system --repl
 kubectl wait --for=delete pod -l app=agent-sandbox-controller -n agent-sandbox-system --timeout=120s || :
 kubectl delete namespace blazn-poc --wait=true --timeout=180s
 kubectl delete -f "$install_bundle" --ignore-not-found --wait=true --timeout=180s
-kubectl delete -f "$ROOT/controller-boundary.yaml" --ignore-not-found --wait=true --timeout=120s
+kubectl delete -f "$fixtures/controller-boundary.yaml" --ignore-not-found --wait=true --timeout=120s
 
 targets=$(cat "$pre/phase4c-targets")
 while IFS= read -r target; do

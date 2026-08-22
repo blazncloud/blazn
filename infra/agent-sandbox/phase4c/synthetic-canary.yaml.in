@@ -20,6 +20,14 @@ BLAZN_RUNTIME_CLASS_LINE
       serviceAccountName: blazn-sandbox-runner
       automountServiceAccountToken: false
       restartPolicy: Never
+      nodeSelector:
+        blazn.dev/sandbox-eligible: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
       containers:
       - name: main
         image: BLAZN_SYNTHETIC_IMAGE
@@ -30,6 +38,7 @@ BLAZN_RUNTIME_CLASS_LINE
         securityContext:
           allowPrivilegeEscalation: false
           capabilities: {drop: ["ALL"]}
+          privileged: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
           seccompProfile: {type: RuntimeDefault}

@@ -131,10 +131,18 @@ spec:
     message: "Phase 4C Sandbox shutdownPolicy must be Delete"
   - expression: "object.spec.podTemplate.spec.serviceAccountName == 'blazn-sandbox-runner' && object.spec.podTemplate.spec.automountServiceAccountToken == false"
     message: "Sandbox Pods must use the tokenless blazn-sandbox-runner identity"
-  - expression: "object.metadata.labels['blazn.dev/runtime-trust'] in ['qualified-runtime', 'orchestration-only']"
-    message: "Sandbox must declare its reviewed runtime trust mode"
-  - expression: "object.metadata.labels['blazn.dev/runtime-trust'] == 'qualified-runtime' ? has(object.spec.podTemplate.spec.runtimeClassName) : (!has(object.spec.podTemplate.spec.runtimeClassName) && object.metadata.annotations['blazn.dev/non-sensitive-poc'] == 'approved')"
-    message: "A qualified runtime is required unless the canary is explicitly approved as non-sensitive orchestration-only input"
+  - expression: "object.spec.podTemplate.spec.nodeSelector['blazn.dev/sandbox-eligible'] == 'true'"
+    message: "Sandbox Pods must target reviewed sandbox-eligible nodes"
+  - expression: "(!has(object.spec.podTemplate.spec.hostNetwork) || object.spec.podTemplate.spec.hostNetwork == false) && (!has(object.spec.podTemplate.spec.hostPID) || object.spec.podTemplate.spec.hostPID == false) && (!has(object.spec.podTemplate.spec.hostIPC) || object.spec.podTemplate.spec.hostIPC == false)"
+    message: "Sandbox Pods may not share host namespaces"
+  - expression: "(!has(object.spec.podTemplate.spec.volumes) || size(object.spec.podTemplate.spec.volumes) == 0) && (!has(object.spec.podTemplate.spec.initContainers) || size(object.spec.podTemplate.spec.initContainers) == 0)"
+    message: "The Phase 4C canary may not inject volumes or init containers"
+  - expression: "object.spec.podTemplate.spec.securityContext.runAsNonRoot == true && object.spec.podTemplate.spec.securityContext.runAsUser == 65532 && object.spec.podTemplate.spec.securityContext.runAsGroup == 65532 && object.spec.podTemplate.spec.securityContext.fsGroup == 65532 && object.spec.podTemplate.spec.securityContext.seccompProfile.type == 'RuntimeDefault'"
+    message: "Sandbox Pods must use the reviewed non-root pod security context"
+  - expression: "size(object.spec.podTemplate.spec.containers) > 0 && object.spec.podTemplate.spec.containers.all(c, c.image.matches('^.+@sha256:[0-9a-f]{64}$') && (!has(c.env) || size(c.env) == 0) && (!has(c.envFrom) || size(c.envFrom) == 0) && (!has(c.volumeMounts) || size(c.volumeMounts) == 0) && c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
+    message: "Every Sandbox container must use a pinned image and the reviewed restricted security context"
+  - expression: "BLAZN_RUNTIME_ADMISSION_EXPRESSION"
+    message: "Sandbox runtime selection must equal the capability reviewed for this change"
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -16,7 +16,7 @@ namespace-scoped**:
   RBAC documents, removes `--extensions`, pins the controller image digest,
   fixes leader election to `agent-sandbox-system`, and enables tracking-label
   Pod/Service caches.
-- `controller-boundary.yaml` grants create/update/delete only through Roles in
+- the rendered `controller-boundary.yaml` grants create/update/delete only through Roles in
   `blazn-poc` (plus webhook certificate and Lease access in the controller
   namespace). The only cluster mutation is an exact four-CRD CA-bundle update.
 - A fail-closed ValidatingAdmissionPolicy denies Sandbox creation or update
@@ -63,7 +63,7 @@ untrusted or cross-tenant work.
    canary deletion. Stop on any mismatch; do not broaden RBAC or fall back to an
    unmanaged Pod.
 6. In the same serialized window, run
-   `rollback.sh INSTALL PREINSTALL_INVENTORY CANARY_EVIDENCE` through a fresh
+   `rollback.sh INSTALL FIXTURES PREINSTALL_INVENTORY CANARY_EVIDENCE` through a fresh
    lock token.
    It stops the controller, removes the uniquely owned namespace and Phase 4C
    objects, proves every exact target absent, and byte-compares normalized

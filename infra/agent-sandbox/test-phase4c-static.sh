@@ -26,6 +26,7 @@ cat >"$tmp/bin/kubectl" <<'EOF'
 case "$*" in
   *'get runtimeclass blazn-qualified'*) printf 'runsc' ;;
   *'get clusterqueue.kueue.x-k8s.io'*) printf 'True' ;;
+  *'get nodes -l blazn.dev/sandbox-eligible=true'*) printf 'node/node-a' ;;
   *) printf 'unexpected fake kubectl invocation: %s\n' "$*" >&2; exit 1 ;;
 esac
 EOF
@@ -37,6 +38,7 @@ PATH="$tmp/bin:$PATH" \
   "$PHASE4C/render-fixtures.sh" "$tmp/orchestration-only" >/dev/null
 grep -F 'blazn.dev/runtime-trust: orchestration-only' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null
 if grep -F 'runtimeClassName:' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null; then exit 1; fi
+grep -F "object.metadata.labels['blazn.dev/runtime-trust'] == 'orchestration-only'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
 PATH="$tmp/bin:$PATH" \
   BLAZN_EXISTING_CLUSTER_QUEUE=shared-capacity \
   BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
@@ -45,10 +47,13 @@ PATH="$tmp/bin:$PATH" \
   "$PHASE4C/render-fixtures.sh" "$tmp/qualified-runtime" >/dev/null
 grep -F 'blazn.dev/runtime-trust: qualified-runtime' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
 grep -F 'runtimeClassName: blazn-qualified' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
+grep -F "object.spec.podTemplate.spec.runtimeClassName == 'blazn-qualified'" "$tmp/qualified-runtime/controller-boundary.yaml" >/dev/null
 
-grep -F 'namespace: blazn-poc' "$PHASE4C/controller-boundary.yaml" >/dev/null
-grep -F 'object.metadata.namespace == '\''blazn-poc'\''' "$PHASE4C/controller-boundary.yaml" >/dev/null
-grep -F 'validationActions: [Deny]' "$PHASE4C/controller-boundary.yaml" >/dev/null
+grep -F 'namespace: blazn-poc' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'object.metadata.namespace == '\''blazn-poc'\''' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'validationActions: [Deny]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "c.image.matches('^.+@sha256:[0-9a-f]{64}$')" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "size(object.spec.podTemplate.spec.volumes) == 0" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F 'clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE' "$PHASE4C/blazn-poc.yaml.in" >/dev/null
 grep -F "approved-non-sensitive-phase4c-canary" "$PHASE4C/render-fixtures.sh" >/dev/null
 grep -F 'readlink "/proc/$$/fd/9"' "$PHASE4C/lib.sh" >/dev/null

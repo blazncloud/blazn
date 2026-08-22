@@ -9,7 +9,7 @@ install_bundle=$1
 fixtures=$2
 evidence=$3
 phase4c_require_mutation_authority
-[ -f "$install_bundle" ] && [ -f "$fixtures/blazn-poc.yaml" ] && [ -f "$fixtures/synthetic-canary.yaml" ]
+[ -f "$install_bundle" ] && [ -f "$fixtures/blazn-poc.yaml" ] && [ -f "$fixtures/controller-boundary.yaml" ] && [ -f "$fixtures/synthetic-canary.yaml" ]
 [ ! -e "$evidence" ] || { printf 'refusing to overwrite evidence directory: %s\n' "$evidence" >&2; exit 1; }
 mkdir -m 0700 "$evidence"
 
@@ -24,7 +24,7 @@ done
 # Admission and mutation RBAC precede controller startup. The rewritten
 # upstream bundle contains no ClusterRole or ClusterRoleBinding.
 kubectl apply --server-side -f "$fixtures/blazn-poc.yaml" >"$evidence/apply-namespace.txt"
-kubectl apply --server-side -f "$ROOT/controller-boundary.yaml" >"$evidence/apply-boundary.txt"
+kubectl apply --server-side -f "$fixtures/controller-boundary.yaml" >"$evidence/apply-boundary.txt"
 kubectl apply --server-side -f "$install_bundle" >"$evidence/apply-controller.txt"
 kubectl get namespace blazn-poc -o jsonpath='{.metadata.uid}' >"$evidence/blazn-poc.uid"
 kubectl get namespace agent-sandbox-system -o jsonpath='{.metadata.uid}' >"$evidence/agent-sandbox-system.uid"
