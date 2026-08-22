@@ -92,6 +92,9 @@ func TestRequiredCollectionsAndZeroUsageRoundTrip(t *testing.T) {
 
 	for name, roundTrip := range map[string]func() error{
 		"policy": func() error {
+			if err := policy.Validate(); err != nil {
+				return err
+			}
 			encoded, err := json.Marshal(policy)
 			if err != nil {
 				return err
@@ -100,6 +103,9 @@ func TestRequiredCollectionsAndZeroUsageRoundTrip(t *testing.T) {
 			return err
 		},
 		"request": func() error {
+			if err := request.Validate(); err != nil {
+				return err
+			}
 			encoded, err := json.Marshal(request)
 			if err != nil {
 				return err
@@ -108,6 +114,9 @@ func TestRequiredCollectionsAndZeroUsageRoundTrip(t *testing.T) {
 			return err
 		},
 		"response": func() error {
+			if err := response.Validate(); err != nil {
+				return err
+			}
 			encoded, err := json.Marshal(response)
 			if err != nil {
 				return err
@@ -119,6 +128,9 @@ func TestRequiredCollectionsAndZeroUsageRoundTrip(t *testing.T) {
 			return err
 		},
 		"journal": func() error {
+			if err := journal.Validate(); err != nil {
+				return err
+			}
 			encoded, err := json.Marshal(journal)
 			if err != nil {
 				return err
@@ -127,6 +139,9 @@ func TestRequiredCollectionsAndZeroUsageRoundTrip(t *testing.T) {
 			return err
 		},
 		"receipt": func() error {
+			if err := receipt.Validate(); err != nil {
+				return err
+			}
 			encoded, err := json.Marshal(receipt)
 			if err != nil {
 				return err
