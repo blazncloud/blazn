@@ -137,7 +137,11 @@ func authorizeRootRequest(request RootRequest) error {
 	if err != nil {
 		return err
 	}
-	identity, err := (FileIdentityStore{Path: filepath.Join(stateRoot, "identity.json")}).LoadOrCreate()
+	identityBytes, err := readPrivateFile(filepath.Join(stateRoot, "identity.json"), 4096)
+	if err != nil {
+		return err
+	}
+	identity, err := decodeIdentity(identityBytes)
 	if err != nil {
 		return err
 	}
@@ -330,6 +334,9 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		if err := verifyNoSymlinkTraversal(m.Target); err != nil {
 			return err
 		}
+		if m.Action == "adopt_exact" {
+			return verifyExactDirectory(m.Target, os.FileMode(m.Mode), m.UID, m.GID)
+		}
 		if err := os.MkdirAll(m.Target, os.FileMode(m.Mode)); err != nil {
 			return err
 		}
@@ -477,6 +484,18 @@ func verifyExactFile(path string, content []byte, mode os.FileMode, uid, gid int
 	}
 	if !bytes.Equal(value, content) {
 		return errors.New("adopted file content differs from signed plan")
+	}
+	return nil
+}
+func verifyExactDirectory(path string, mode os.FileMode, uid, gid int64) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != mode.Perm() {
+		return errors.New("adopted directory metadata differs from signed plan")
+	}
+	owner, _, ok := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	if !ok || !groupOK || owner != uid || group != gid {
+		return errors.New("adopted directory ownership differs from signed plan")
 	}
 	return nil
 }
