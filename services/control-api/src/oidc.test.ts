@@ -25,6 +25,8 @@ test("verified OIDC identity requires signature, issuer, audience, nonce, email,
 });
 
 test("OIDC identity rejects an altered signature", () => {
-  const encoded = token();
-  assert.throws(() => verifyOidcIdToken(`${encoded.slice(0, -1)}${encoded.endsWith("A") ? "B" : "A"}`, verification), /signature/);
+  const segments = token().split(".");
+  const signature = Buffer.from(segments[2]!, "base64url");
+  signature[0] = signature[0]! ^ 1;
+  assert.throws(() => verifyOidcIdToken(`${segments[0]}.${segments[1]}.${signature.toString("base64url")}`, verification), /signature/);
 });
