@@ -218,7 +218,7 @@ if [ "$MODE" != plan ]; then
     issuer_receipt=/var/lib/blazn/ownership/microk8s-worker-issuer.json
     assert_regular_file_owned_mode "$issuer_receipt" 0 600
     jq -e '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .phase=="complete" and .liveJoinBlocked==true' "$issuer_receipt" >/dev/null || die "issuer receipt is not complete and blocked"
-    issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$issuer_receipt")
+    issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$issuer_receipt")
     issuer_digest=sha256:$(printf '%s' "$issuer_material" | sha256sum | awk '{print $1}')
     jq -e --arg digest "$issuer_digest" '.microk8sIssuer=={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$RECEIPT_PATH" >/dev/null || die "main ownership receipt does not bind issuer material"
     assert_regular_file_owned_mode /usr/libexec/blazn/blazn-microk8s-worker-issuer 0 755

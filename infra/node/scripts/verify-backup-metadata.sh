@@ -4,7 +4,7 @@ set -eu
 die() { printf 'blazn-node-backup: %s\n' "$*" >&2; exit 1; }
 [ "$#" -eq 3 ] || die "usage: verify-backup-metadata.sh METADATA OWNERSHIP_RECEIPT KEY_INVENTORY"
 metadata=$1; receipt=$2; inventory=$3
-for command_name in jq node sha256sum wc; do command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"; done
+for command_name in grep jq node sha256sum stat tr wc; do command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"; done
 for file in "$metadata" "$receipt"; do if [ ! -f "$file" ] || [ -L "$file" ]; then die "required metadata input is unavailable or symlinked: $file"; fi; done
 if [ ! -d "$inventory" ] || [ -L "$inventory" ]; then die "Node broker key inventory is unavailable or symlinked"; fi
 schema_version=$(jq -er .schemaVersion "$metadata")
@@ -66,7 +66,7 @@ if [ "$schema_version" != blazn.dev/control-plane-backup/v2 ]; then
 fi
 if [ "$schema_version" = blazn.dev/control-plane-backup/v4 ]; then
   issuer_receipt=$inventory/microk8s-worker-issuer.json; issuer_key=$inventory/microk8s-issuer-hmac-v1
-  issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$issuer_receipt")
+  issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$issuer_receipt")
   issuer_digest=sha256:$(printf '%s' "$issuer_material" | sha256sum | awk '{print $1}')
   [ "$issuer_digest" = "$(jq -er .microk8sIssuer.materialDigest "$receipt")" ] || die "ownership receipt issuer material digest mismatch"
   [ "$issuer_digest" = "$(jq -er .microk8sIssuerMaterialDigest "$metadata")" ] || die "backup metadata issuer material digest mismatch"

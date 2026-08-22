@@ -30,6 +30,6 @@ while :; do
   verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
   verify_node_prerequisite_containers "$ROOT_DIR" "$ENV_FILE"
   verify_node_plan_container "$ROOT_DIR" "$ENV_FILE"
-  if [ "$broker_mode" = enabled ]; then container=$(compose ps -q node-broker); if [ -z "$container" ]; then die "Node broker sidecar has no container"; fi; if [ "$(docker inspect --format '{{.State.Status}}' "$container")" != running ]; then die "Node broker sidecar is not running"; fi; fi
+  if [ "$broker_mode" = enabled ]; then container=$(compose ps -q node-broker); if [ -z "$container" ]; then die "Node broker sidecar has no container"; fi; if [ "$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")" != "running healthy" ]; then die "Node broker sidecar is not running and healthy"; fi; fi
   sleep 5
 done

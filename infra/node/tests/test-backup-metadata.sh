@@ -35,8 +35,8 @@ BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/legacy-metadata.json" "$tmp/receip
 
 printf '%s' AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA >"$tmp/keys/microk8s-issuer-hmac-v1"
 issuer_secret=sha256:$(sha256sum "$tmp/keys/microk8s-issuer-hmac-v1"|awk '{print $1}')
-jq -cn --arg secret "$issuer_secret" '{binary:{},config:{},unit:{},tmpfiles:{},environment:{},secret:{digest:$secret},socket:{},microk8s:{},recovery:{},brokerUid:65532,liveJoinBlocked:true}' >"$tmp/keys/microk8s-worker-issuer.json"
-issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$tmp/keys/microk8s-worker-issuer.json")
+jq -cn --arg secret "$issuer_secret" '{binary:{},config:{},unit:{},tmpfiles:{},state:{path:"/var/lib/blazn-node-root/microk8s-worker-issuer",uid:0,mode:"0700"},environment:{},secret:{digest:$secret},socket:{},microk8s:{},recovery:{},brokerUid:65532,liveJoinBlocked:true}' >"$tmp/keys/microk8s-worker-issuer.json"
+issuer_material=$(jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$tmp/keys/microk8s-worker-issuer.json")
 issuer_digest=sha256:$(printf '%s' "$issuer_material"|sha256sum|awk '{print $1}')
 jq --arg digest "$issuer_digest" '.microk8sIssuer={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$tmp/receipt.json" >"$tmp/v4-receipt.json"
 jq --arg digest "$issuer_digest" '.schemaVersion="blazn.dev/control-plane-backup/v4"|.microk8sIssuerMaterialDigest=$digest' "$tmp/metadata.json" >"$tmp/v4-metadata.json"
