@@ -44,6 +44,7 @@ type fakeAPI struct {
 	status          string
 	update          client.UpdateProjectRequest
 	getAccessTokens []string
+	pages           map[string]client.ProjectList
 }
 
 func (f *fakeAPI) CreateProject(_ context.Context, _ string, workspaceID, key string, request client.CreateProjectRequest) (client.ProjectEnvelope, error) {
@@ -52,9 +53,22 @@ func (f *fakeAPI) CreateProject(_ context.Context, _ string, workspaceID, key st
 	project.Name, project.Slug, project.Kind, project.Description = request.Name, request.Slug, request.Kind, request.Description
 	return client.ProjectEnvelope{Project: project}, nil
 }
-func (f *fakeAPI) ListProjects(_ context.Context, _ string, workspaceID, status, _ string) (client.ProjectList, error) {
+func (f *fakeAPI) ListProjects(_ context.Context, _ string, workspaceID, status, cursor string) (client.ProjectList, error) {
 	f.workspaceID, f.status = workspaceID, status
+	if f.pages != nil {
+		return f.pages[cursor], nil
+	}
 	return client.ProjectList{Items: append([]client.Project(nil), f.projects...)}, nil
+}
+
+func TestProjectUsePagesUntilSlugIsFound(t *testing.T) {
+	next := "page-2"
+	api := &fakeAPI{pages: map[string]client.ProjectList{"": {Items: []client.Project{}, NextCursor: &next}, "page-2": {Items: []client.Project{fixtureProject()}}}}
+	contexts := &memoryContexts{selection: workspacepkg.Selection{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: testWorkspaceID, SelectedAt: time.Now().UTC()}}
+	selected, err := NewService(api, &fakeSessions{}, contexts).Use(context.Background(), "launch-video")
+	if err != nil || selected.Project.ID != testProjectID || contexts.saved.ProjectID != testProjectID {
+		t.Fatalf("selected=%#v saved=%#v err=%v", selected, contexts.saved, err)
+	}
 }
 func (f *fakeAPI) GetProject(_ context.Context, accessToken, workspaceID, projectID string) (client.ProjectEnvelope, error) {
 	f.workspaceID = workspaceID
@@ -110,7 +124,7 @@ func TestProjectGetRefreshesAccessAndRequiresSelections(t *testing.T) {
 		t.Fatalf("project=%#v tokens=%v forced=%d err=%v", project, api.getAccessTokens, sessions.forced, err)
 	}
 	contexts.selection.ProjectID = ""
-	if _, err := service.Get(context.Background(), ""); err == nil || err.Error() != "no Project is selected" {
+	if _, err := service.Get(context.Background(), ""); !errors.Is(err, ErrNoProject) {
 		t.Fatalf("missing Project err=%v", err)
 	}
 	contexts.selection = workspacepkg.Selection{}

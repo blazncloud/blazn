@@ -50,7 +50,7 @@ func (a *App) runProject(format OutputFormat, args []string) int {
 		result, err := commands.List(ctx, status)
 		return a.writeProjectList(format, result, err)
 	case "get":
-		if len(args) > 2 {
+		if len(args) > 2 || (len(args) == 2 && strings.HasPrefix(args[1], "--")) {
 			return a.projectUsage(format, errors.New("project get accepts optional PROJECT"))
 		}
 		value := ""
@@ -60,7 +60,7 @@ func (a *App) runProject(format OutputFormat, args []string) int {
 		result, err := commands.Get(ctx, value)
 		return a.writeProjectEnvelope(format, result, err, "found")
 	case "use":
-		if len(args) != 2 {
+		if len(args) != 2 || strings.HasPrefix(args[1], "--") {
 			return a.projectUsage(format, errors.New("project use requires PROJECT"))
 		}
 		result, err := commands.Use(ctx, args[1])
@@ -144,7 +144,7 @@ func (a *App) writeProjectError(format OutputFormat, err error) int {
 	if errors.Is(err, auth.ErrNotFound) {
 		return a.writeError(format, ExitUnavailable, "not_authenticated", "run 'blazn auth login'")
 	}
-	if err.Error() == "no Project is selected" {
+	if errors.Is(err, projectpkg.ErrNoProject) {
 		return a.writeError(format, ExitUsage, "project_context_required", "select a Project with 'blazn project use'")
 	}
 	var apiErr *client.APIError

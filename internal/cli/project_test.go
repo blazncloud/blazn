@@ -85,6 +85,16 @@ func TestProjectListUseGetAndEdit(t *testing.T) {
 	}
 }
 
+func TestProjectGetAndUseRejectFlagShapedProjectValues(t *testing.T) {
+	for _, args := range [][]string{{"project", "get", "--status"}, {"project", "use", "--status"}} {
+		fake := &fakeProjectCommands{}
+		app, _, stderr := projectApp(fake)
+		if code := app.Run(args); code != ExitUsage || fake.value != "" || stderr.Len() == 0 {
+			t.Fatalf("args=%v code=%d fake=%#v stderr=%q", args, code, fake, stderr.String())
+		}
+	}
+}
+
 func TestPluginContextIncludesSelectedProject(t *testing.T) {
 	fake := &fakeWorkspaceCommands{selection: workspacepkg.Selection{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: cliProjectTestWorkspaceID, ProjectID: cliProjectTestProjectID}}
 	app, _, _ := workspaceApp(fake)

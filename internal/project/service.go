@@ -26,6 +26,8 @@ type Service struct {
 	now      func() time.Time
 }
 
+var ErrNoProject = errors.New("no Project is selected")
+
 type Update struct {
 	Name        *string
 	Description *string
@@ -119,7 +121,7 @@ func (s *Service) resolve(ctx context.Context, value string) (client.ProjectEnve
 	}
 	if value == "" {
 		if selection.ProjectID == "" {
-			return client.ProjectEnvelope{}, errors.New("no Project is selected")
+			return client.ProjectEnvelope{}, ErrNoProject
 		}
 		value = selection.ProjectID
 	}
@@ -128,16 +130,26 @@ func (s *Service) resolve(ctx context.Context, value string) (client.ProjectEnve
 			return s.api.GetProject(ctx, current.AccessToken, selection.WorkspaceID, value)
 		})
 	}
-	projects, err := withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ProjectList, error) {
-		return s.api.ListProjects(ctx, current.AccessToken, selection.WorkspaceID, "all", "")
-	})
-	if err != nil {
-		return client.ProjectEnvelope{}, err
-	}
-	for _, project := range projects.Items {
-		if project.Slug == value {
-			return client.ProjectEnvelope{Project: project}, nil
+	cursor := ""
+	for page := 0; page < 1000; page++ {
+		projects, err := withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ProjectList, error) {
+			return s.api.ListProjects(ctx, current.AccessToken, selection.WorkspaceID, "all", cursor)
+		})
+		if err != nil {
+			return client.ProjectEnvelope{}, err
 		}
+		for _, project := range projects.Items {
+			if project.Slug == value {
+				return client.ProjectEnvelope{Project: project}, nil
+			}
+		}
+		if projects.NextCursor == nil || *projects.NextCursor == "" {
+			break
+		}
+		if *projects.NextCursor == cursor {
+			return client.ProjectEnvelope{}, errors.New("Project pagination returned a repeated cursor")
+		}
+		cursor = *projects.NextCursor
 	}
 	return client.ProjectEnvelope{}, &client.APIError{StatusCode: http.StatusNotFound, Body: client.ErrorBody{Code: "project_not_found", Message: "project was not found"}}
 }
