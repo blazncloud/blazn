@@ -3,16 +3,26 @@ set -eu
 
 ROOT=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
 JOURNAL=${BLAZN_NODE_PLAN_CREATE_JOURNAL:-/var/lib/blazn/ownership/node-plan-material-create.json}
+for command_name in jq openssl sha256sum stat wc; do command -v "$command_name" >/dev/null 2>&1 || { printf 'Node plan verifier requires %s\n' "$command_name" >&2; exit 1; }; done
 [ -d "$ROOT" ] && [ ! -L "$ROOT" ] && [ "$(stat -c '%u:%a' "$ROOT")" = 0:700 ] || { printf 'Node plan material root is unsafe\n' >&2; exit 1; }
 for file in signing-private-v1.b64url signing-public-v1.b64url signing-public-v1.json node-install-plan-template-v1.json; do
   [ -f "$ROOT/$file" ] && [ ! -L "$ROOT/$file" ] && [ "$(stat -c '%u:%a' "$ROOT/$file")" = 0:444 ] || { printf 'Node plan material is unsafe: %s\n' "$file" >&2; exit 1; }
 done
 [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] && [ "$(stat -c '%u:%a' "$JOURNAL")" = 0:600 ] || { printf 'Node plan journal is unsafe\n' >&2; exit 1; }
 private=$(sed -n '1p' "$ROOT/signing-private-v1.b64url")
-case "$private" in ???????????????????????????????????????????) ;; *) printf 'Node plan private seed has invalid length\n' >&2; exit 1 ;; esac
+if [ "$(wc -c <"$ROOT/signing-private-v1.b64url" | tr -d ' ')" != 44 ] || ! LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$ROOT/signing-private-v1.b64url"; then
+  printf 'Node plan private seed is not a raw base64url Ed25519 seed\n' >&2
+  exit 1
+fi
 metadata=$(jq -cS . "$ROOT/signing-public-v1.json")
 public=$(printf '%s' "$metadata" | jq -er .publicKey)
 [ "$public" = "$(sed -n '1p' "$ROOT/signing-public-v1.b64url")" ] || { printf 'Node plan public metadata mismatch\n' >&2; exit 1; }
+private_padded=$(printf '%s' "$private" | tr '_-' '/+'); case $((${#private} % 4)) in 2) private_padded=${private_padded}== ;; 3) private_padded=${private_padded}= ;; esac
+derived_public=$(
+  { printf '\060\056\002\001\000\060\005\006\003\053\145\160\004\042\004\040'; printf '%s' "$private_padded" | openssl base64 -d -A; } |
+    openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | openssl base64 -A | tr '+/' '-_' | tr -d '='
+)
+[ "$derived_public" = "$public" ] || { printf 'Node plan private seed does not match public metadata\n' >&2; exit 1; }
 key_id=$(printf '%s' "$metadata" | jq -er .keyId)
 fingerprint=$(printf '%s' "$metadata" | jq -er .publicKeyFingerprint)
 [ "$key_id" = control-plane-node-plan/v1 ] || { printf 'Node plan key ID mismatch\n' >&2; exit 1; }
