@@ -160,8 +160,8 @@ for gate in "${fresh_gates[@]}"; do
     expired-observe) gate_json=$node_identity_json ;;
     expired-repair-denied) gate_json=$(jq -nc --arg digest "$approval_digest" --arg signature "$signature" '{status:"passed",qualificationApprovalInputDigest:$digest,expiredRepairDenied:true,denial:{exitCode:1,error:{code:"node_failed",message:"repair requires an authorized fresh, unexpired plan: install plan is not active at trusted current time"}},signedPlan:{expiresAt:"2026-08-22T00:00:00Z",planId:"22222222-2222-4222-8222-222222222222",digest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",signature:$signature}}') ;;
     expired-uninstall) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson result "$removed_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,result:$result}') ;;
-    install-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$active_receipt" --argjson snapshotIdentity "$snapshot_identity" '{status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity+{instance:"blazn-q-static001",restoredUnderLifecycleLock:true}),crash:{lifecycle:"install"},recovery:$recovery}') ;;
-    cleanup-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$removed_receipt" --argjson snapshotIdentity "$snapshot_identity" '{status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity+{instance:"blazn-q-static001",restoredUnderLifecycleLock:true}),crash:{lifecycle:"cleanup"},recovery:$recovery}') ;;
+    install-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$active_receipt" --argjson snapshotIdentity "$snapshot_identity" '{status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity+{instance:"blazn-q-static001",restoredUnderLifecycleLock:true,restoredTargetStateDigest:$snapshotIdentity.cleanTargetStateDigest}),crash:{lifecycle:"install"},recovery:$recovery}') ;;
+    cleanup-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$removed_receipt" --argjson snapshotIdentity "$snapshot_identity" '{status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity+{instance:"blazn-q-static001",restoredUnderLifecycleLock:true,restoredTargetStateDigest:$snapshotIdentity.cleanTargetStateDigest}),crash:{lifecycle:"cleanup"},recovery:$recovery}') ;;
     kubernetes-uid-rv) gate_json='{"node":{"uid":"uid-1","resourceVersion":"1"}}' ;;
     kubernetes-stale-cas-denied) gate_json=$(jq -nc --arg digest "$approval_digest" '{status:"passed",qualificationApprovalInputDigest:$digest,staleCASDenied:true,stateUnchanged:true,rejection:{classification:"kubernetes-status-invalid-422-jsonpatch-test",reason:"Invalid",code:422}}') ;;
     kubernetes-quarantine-noschedule) gate_json='{"status":"passed","quarantineNoSchedule":true,"ordinaryWorkloads":0}' ;;
@@ -183,6 +183,15 @@ printf '%s\n' "$(jq -nc --arg digest "$approval_digest" --argjson result "$activ
 "$qual_dir/evidence.py" record --output "$complete" --step adopt-install \
   --stdout "$complete/artifacts/adopt-install.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0 \
   --receipt-public-key "$receipt_public_key"
+printf '%s\n' "$(jq -nc --arg digest "$approval_digest" --argjson snapshotIdentity "$snapshot_identity" '{status:"passed",qualificationApprovalInputDigest:$digest,action:"restore",target:"blazn-q-static001",snapshotIdentity:$snapshotIdentity,restoredTargetStateDigest:"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}')" >"$complete/artifacts/lxd-restore.stdout"
+if "$qual_dir/evidence.py" record --output "$complete" --step lxd-restore \
+  --stdout "$complete/artifacts/lxd-restore.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0 >/dev/null 2>&1; then
+  printf 'snapshot drift between observation and creation passed post-restore content verification\n' >&2
+  exit 1
+fi
+printf '%s\n' "$(jq -nc --arg digest "$approval_digest" --argjson snapshotIdentity "$snapshot_identity" '{status:"passed",qualificationApprovalInputDigest:$digest,action:"restore",target:"blazn-q-static001",snapshotIdentity:$snapshotIdentity,restoredTargetStateDigest:$snapshotIdentity.cleanTargetStateDigest}')" >"$complete/artifacts/lxd-restore.stdout"
+"$qual_dir/evidence.py" record --output "$complete" --step lxd-restore \
+  --stdout "$complete/artifacts/lxd-restore.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0
 "$qual_dir/evidence.py" finalize --output "$complete" >/dev/null
 "$qual_dir/evidence.py" verify --output "$complete" >/dev/null
 cp "$complete/run.json" "$complete/run.before-tamper.json"

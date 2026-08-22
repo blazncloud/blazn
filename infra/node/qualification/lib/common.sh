@@ -200,6 +200,15 @@ qual_lxd_snapshot_identity() {
     '{instanceUuid:$instanceUuid,snapshot:$snapshot,snapshotCreatedAt:$snapshotCreatedAt,configDigest:$configDigest,cleanTargetStateDigest:$cleanTargetStateDigest,identityDigest:$identityDigest}'
 }
 
+qual_verify_restored_clean_target_state() {
+  expected_clean=${BLAZN_QUALIFICATION_CLEAN_TARGET_STATE_SHA256:-}
+  [[ "$expected_clean" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'approval-bound clean target-state digest is required after restore'
+  restored_target=$("$qual_dir/capture-target-state.sh" after)
+  restored_digest="sha256:$(jq -cS '.state' <<<"$restored_target" | sha256sum | awk '{print $1}')"
+  [ "$restored_digest" = "$expected_clean" ] || qual_die 'restored target content differs from the approval-bound clean snapshot baseline'
+  printf '%s\n' "$restored_digest"
+}
+
 qual_validate_lock() {
   lock_file=${BLAZN_QUALIFICATION_LOCK_FILE:-}
   [ -n "$lock_file" ] || qual_die 'BLAZN_QUALIFICATION_LOCK_FILE is required for mutation'

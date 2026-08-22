@@ -159,6 +159,7 @@ run_crash_case() {
   [ "$identity_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256" ] || qual_die 'clean snapshot identity differs from crash approval'
   lxc restore "$BLAZN_QUALIFICATION_TARGET" "$snapshot"
   [ "$(lxc config get "$BLAZN_QUALIFICATION_TARGET" user.blazn.qualification 2>/dev/null || true)" = "$BLAZN_QUALIFICATION_CORRELATION_ID" ] || qual_die 'restored guest correlation marker differs'
+  restored_target_digest=$(qual_verify_restored_clean_target_state)
   verify_binary
   if [ "$crash_lifecycle" = install ]; then
     validate_install_inputs
@@ -218,8 +219,8 @@ run_crash_case() {
   else
     recovery=$(target_exec "$binary" --output=json node uninstall --yes --remove-managed-runtime)
   fi
-  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$BLAZN_QUALIFICATION_TARGET" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" --argjson snapshotIdentity "$snapshot_identity" \
-    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity + {instance:$target,restoredUnderLifecycleLock:true}),crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$BLAZN_QUALIFICATION_TARGET" --arg restoredTargetStateDigest "$restored_target_digest" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" --argjson snapshotIdentity "$snapshot_identity" \
+    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity + {instance:$target,restoredUnderLifecycleLock:true,restoredTargetStateDigest:$restoredTargetStateDigest}),crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
 }
 
 do_action() {

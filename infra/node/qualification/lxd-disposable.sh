@@ -79,7 +79,8 @@ do_restore() {
   [ "$identity_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256" ] || qual_die 'snapshot identity differs from restore approval'
   lxc restore "$guest" "$snapshot" >/dev/null
   guest_owned
-  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --argjson snapshotIdentity "$snapshot_identity" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,action:"restore",target:$target,snapshotIdentity:$snapshotIdentity}'
+  restored_target_digest=$(qual_verify_restored_clean_target_state)
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --arg restoredTargetStateDigest "$restored_target_digest" --argjson snapshotIdentity "$snapshot_identity" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,action:"restore",target:$target,snapshotIdentity:$snapshotIdentity,restoredTargetStateDigest:$restoredTargetStateDigest}'
 }
 
 case "$action" in

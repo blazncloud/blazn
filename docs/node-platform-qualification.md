@@ -297,6 +297,11 @@ UUID, snapshot creation time/name, expanded config digest, and clean target
 content digest. Use the returned `identityDigest` as
 `BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256` for restore/crash approvals.
 Deleting and recreating an instance with the same name/config cannot reuse it.
+After every standalone or integrated crash restore, the harness re-runs the
+complete target-state capture, canonicalizes `.state`, and requires its digest
+to equal the approval-bound clean content digest before any binary verification
+or lifecycle command. This also detects filesystem drift that occurred in the
+small interval between the pre-snapshot observation and snapshot creation.
 
 After cloud-init/network readiness, record `/etc/os-release`, `uname`, disks,
 interfaces, routes, package/runtime absence, accounts, units, and Kubernetes
@@ -372,7 +377,8 @@ The actual fault and recovery run is integrated so one process holds the
 lifecycle lock throughout snapshot restore, mutation, kill, and recovery. It
 recomputes the approval-bound immutable snapshot identity, restores that exact
 snapshot while holding the lock, rechecks the instance correlation marker, and
-persists the instance UUID, snapshot creation/name, config and clean-content
+re-captures and verifies clean target content before starting the crash command.
+It persists the instance UUID, snapshot creation/name, config and clean-content
 digests, identity digest, and `restoredUnderLifecycleLock=true`
 in the crash evidence. A separate kill
 process cannot acquire or bypass that lock. Set the exact snapshot, one-use
