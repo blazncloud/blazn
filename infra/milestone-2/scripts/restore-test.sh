@@ -19,7 +19,9 @@ assert_not_symlink_chain "$target"
 live_host=${BLAZN_LIVE_HOST:-ben1}
 [ "$(hostname -s)" != "$live_host" ] || die "restore tests are forbidden on the live control-plane host"
 restore_parent=/var/tmp/blazn-restore
-[ -d "$restore_parent" ] && [ ! -L "$restore_parent" ] || die "restore parent must be a real directory: $restore_parent"
+if [ ! -d "$restore_parent" ] || [ -L "$restore_parent" ]; then
+  die "restore parent must be a real directory: $restore_parent"
+fi
 canonical_parent=$(realpath -e "$restore_parent")
 target_parent=$(realpath -e "$(dirname -- "$target")")
 [ "$target_parent" = "$canonical_parent" ] || die "restore root must be a direct child of $canonical_parent"

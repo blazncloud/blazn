@@ -27,6 +27,7 @@ test-control-api:
 test-infra:
 	./infra/milestone-2/tests/test-preflight.sh
 	./infra/milestone-2/tests/test-contract.sh
+	./infra/milestone-2/tests/test-live-upgrade.sh
 	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
 
 release:

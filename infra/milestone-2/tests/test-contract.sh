@@ -24,6 +24,8 @@ for expected in \
   'BIND_ADDRESS: 0.0.0.0' \
   'DATABASE_URL_FILE: /run/secrets/runtime_database_url' \
   'PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}' \
+  'TRUSTED_PROXY_CIDRS: 172.18.0.1/32' \
+  'TRUSTED_PROXY_HOPS: "1"' \
   'S3_ENDPOINT: http://object:9000' \
   'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
   'S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key'; do
@@ -32,6 +34,8 @@ for expected in \
     exit 1
   }
 done
+grep -F 'subnet: 172.18.0.0/16' "$compose" >/dev/null
+grep -F 'gateway: 172.18.0.1' "$compose" >/dev/null
 
 # These strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
@@ -68,6 +72,9 @@ done
 grep -F 'CREATE ROLE blazn_migration' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'CREATE ROLE blazn_runtime' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'CREATE ROLE blazn_bootstrap' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
+grep -F 'NOBYPASSRLS' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
+grep -F 'NOBYPASSRLS' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
+grep -F 'pg_auth_members' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null; then
   printf 'database initialization grants broad future-table privileges\n' >&2
   exit 1
@@ -91,7 +98,15 @@ if grep -E '^[[:space:]]+addr:' "$ngrok" | grep -Ev 'http://127\.0\.0\.1:58080$'
 fi
 grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
 grep -F 'Environment=COMPOSE_BAKE=false' "$unit" >/dev/null
+grep -F 'ExecStartPre=/opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh systemd-start systemd auto /opt/blazn/infra/milestone-2/scripts/start-control-plane.sh' "$unit" >/dev/null
 grep -F 'ExecStart=/opt/blazn/infra/milestone-2/scripts/run-control-plane.sh' "$unit" >/dev/null
+grep -F 'ExecStopPost=/opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh systemd-stop systemd auto' "$unit" >/dev/null
+grep -F -- '-/run/lock/blazn-poc' "$unit" >/dev/null
+if grep -F 'compose up' "$ROOT_DIR/scripts/run-control-plane.sh" >/dev/null; then
+  printf 'monitor-only control-plane supervisor still mutates startup state\n' >&2
+  exit 1
+fi
+grep -F 'up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 grep -F 'Restart=on-failure' "$unit" >/dev/null
 if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
   printf 'Docker still owns a control-plane restart policy\n' >&2

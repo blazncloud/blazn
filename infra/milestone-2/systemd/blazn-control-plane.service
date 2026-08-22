@@ -11,9 +11,9 @@ EnvironmentFile=/etc/blazn/control-plane/control-plane.env
 Environment=DOCKER_CONFIG=/etc/blazn/docker-cli
 Environment=COMPOSE_BAKE=false
 WorkingDirectory=/opt/blazn/infra/milestone-2
-ExecStartPre=/opt/blazn/infra/milestone-2/scripts/preflight.sh --deploy
+ExecStartPre=/opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh systemd-start systemd auto /opt/blazn/infra/milestone-2/scripts/start-control-plane.sh
 ExecStart=/opt/blazn/infra/milestone-2/scripts/run-control-plane.sh
-ExecStopPost=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env stop
+ExecStopPost=/opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh systemd-stop systemd auto /usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env stop
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=300
@@ -22,7 +22,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/srv/frontro/blazn-poc /var/lib/blazn /etc/blazn/docker-cli
+ReadWritePaths=/srv/frontro/blazn-poc /var/lib/blazn /etc/blazn/docker-cli -/run/lock/blazn-poc
 
 [Install]
 WantedBy=multi-user.target

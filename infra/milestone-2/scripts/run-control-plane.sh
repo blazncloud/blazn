@@ -16,19 +16,7 @@ compose() {
   docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" "$@"
 }
 
-stop_project() {
-  trap - EXIT HUP INT TERM
-  compose stop >/dev/null 2>&1 || true
-}
-
-shutdown() {
-  stop_project
-  exit 0
-}
-
-trap stop_project EXIT
-trap shutdown HUP INT TERM
-compose up --detach --wait --remove-orphans
+trap 'exit 0' HUP INT TERM
 
 while :; do
   for service in postgres object api; do

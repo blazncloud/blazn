@@ -14,6 +14,9 @@ environment, and a successful preflight. `preflight.sh --plan` is read-only.
 - The S3 API and administration console bind only to `127.0.0.1:59000` and
   `127.0.0.1:59001`.
 - The API binds only to `127.0.0.1:58080` and is the sole ngrok target.
+- The Compose bridge is pinned to the existing `172.18.0.0/16` topology. The
+  API trusts forwarded identity only from gateway `172.18.0.1/32` with exactly
+  one proxy hop; all other peers are direct clients.
 - Containers share a private Compose bridge. Secret values are named files
   inside a root-only directory and only those files are mounted into their
   declared containers through Compose secrets; they are not ordinary resource
@@ -94,8 +97,10 @@ The dependency installer places the pinned Compose plugin under the dedicated
 user's Docker CLI configuration and plugins.
 
 Systemd is the sole restart owner. Compose containers never restart themselves;
-the foreground supervisor checks the three long-running containers and their
-health, stops the exact project on failure, and lets systemd restart it.
+the unit acquires the authoritative control-plane lock while preflight,
+migration, bootstrap, bucket initialization, and health complete. Its
+foreground process is monitor-only; systemd reacquires the same lock before
+stopping the exact project and restarting it after a failure.
 
 Every API deploy/restart, schema migration, PostgreSQL/object-store restart,
 backup promotion, and production-like restore must use the same

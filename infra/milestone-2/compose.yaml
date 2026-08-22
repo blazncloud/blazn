@@ -205,6 +205,8 @@ services:
       BIND_ADDRESS: 0.0.0.0
       DATABASE_URL_FILE: /run/secrets/runtime_database_url
       PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}
+      TRUSTED_PROXY_CIDRS: 172.18.0.1/32
+      TRUSTED_PROXY_HOPS: "1"
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
@@ -248,6 +250,10 @@ services:
 networks:
   control:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
+          gateway: 172.18.0.1
 
 secrets:
   postgres_password:

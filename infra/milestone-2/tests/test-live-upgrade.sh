@@ -25,10 +25,15 @@ set -eu
 case "$*" in
   "inspect --format "*) printf 'blazn-m2/postgres/running\n' ;;
   *" ps -q postgres") printf 'synthetic-postgres-container\n' ;;
-  *"select count(*) from pg_roles"*)
-    [ ! -f "$FAKE_DOCKER_STATE" ] && printf '0\n' || printf '1\n'
+  *"select count(*) from pg_roles where rolname='blazn_bootstrap'"*)
+    if [ ! -f "$FAKE_DOCKER_STATE" ]; then printf '0\n'; else printf '1\n'; fi
     ;;
-  *"select rolname,rolcanlogin"*) printf 'blazn_bootstrap|t|f|f|f|f\n' ;;
+  *"select count(*) from pg_roles where rolname='blazn_migration'"*|*"select count(*) from pg_roles where rolname='blazn_runtime'"*) printf '1\n' ;;
+  *"select count(*) from pg_auth_members"*"blazn_bootstrap"*) printf '%s\n' "${FAKE_DOCKER_BOOTSTRAP_MEMBERSHIPS:-0}" ;;
+  *"select count(*) from pg_auth_members"*) printf '0\n' ;;
+  *"select rolname,rolcanlogin"*"blazn_bootstrap"*) printf 'blazn_bootstrap|t|f|f|f|f|f\n' ;;
+  *"select rolname,rolcanlogin"*"blazn_migration"*) printf 'blazn_migration|t|f|f|f|f|f\n' ;;
+  *"select rolname,rolcanlogin"*"blazn_runtime"*) printf 'blazn_runtime|t|f|f|f|f|f\n' ;;
   *" /bin/sh -euc "*)
     while IFS= read -r ignored; do :; done
     printf 'blazn_bootstrap\n'
@@ -69,6 +74,7 @@ run_upgrade() {
   sudo env \
     PATH="$top:$PATH" \
     FAKE_DOCKER_STATE="$root/docker-role-ready" \
+    FAKE_DOCKER_BOOTSTRAP_MEMBERSHIPS="${FAKE_DOCKER_BOOTSTRAP_MEMBERSHIPS:-0}" \
     BLAZN_FENCING_TOKEN=7 \
     BLAZN_SECRETS_ROOT="$root/secrets" \
     BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
@@ -92,6 +98,11 @@ if grep -E 'oldroot|postgresql://|[a-f0-9]{48,}' "$normal"/*.out >/dev/null; the
   printf 'live upgrade emitted secret material\n' >&2
   exit 1
 fi
+if FAKE_DOCKER_BOOTSTRAP_MEMBERSHIPS=1 run_upgrade "$normal" >"$normal/membership.out" 2>"$normal/membership.err"; then
+  printf 'bootstrap role with inherited membership unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'unreviewed inherited role memberships' "$normal/membership.err" >/dev/null
 
 partial=$(fixture partial)
 sudo mkdir "$partial/secrets/.m2-v2-upgrade-staging"
