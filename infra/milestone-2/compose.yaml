@@ -91,6 +91,8 @@ services:
     environment:
       PORT: "8080"
       DATABASE_URL_FILE: /run/secrets/postgres_url
+      BLAZN_BOOTSTRAP_SECRET_FILE: /run/secrets/bootstrap_secret
+      PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
@@ -98,6 +100,7 @@ services:
       S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
     secrets:
       - postgres_url
+      - bootstrap_secret
       - s3_access_key
       - s3_secret_key
     ports:
@@ -140,6 +143,8 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/postgres-password
   postgres_url:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/postgres-url
+  bootstrap_secret:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/bootstrap-secret
   s3_access_key:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-access-key
   s3_secret_key:
