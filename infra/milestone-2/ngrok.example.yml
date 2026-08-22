@@ -1,6 +1,4 @@
 version: "3"
-agent:
-  authtoken: ${NGROK_AUTHTOKEN}
 tunnels:
   blazn-api:
     proto: http
@@ -10,3 +8,5 @@ tunnels:
 
 # This file deliberately exposes only the loopback API listener. PostgreSQL,
 # the S3 API, and the S3 administration console have no ngrok tunnel.
+# The ngrok service receives NGROK_AUTHTOKEN from its separate root-owned
+# service environment; ngrok config files do not perform shell interpolation.
