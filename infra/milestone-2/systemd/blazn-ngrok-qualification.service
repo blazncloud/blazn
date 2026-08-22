@@ -7,9 +7,10 @@ ConditionPathExists=/etc/blazn/control-plane/secrets/proxy-auth-secret
 
 [Service]
 Type=simple
+Environment=BLAZN_NGROK_POLICY_FILE=/etc/blazn/ngrok/traffic-policy.yml
 ExecStartPre=/opt/blazn/infra/milestone-2/scripts/install-ngrok-user.sh --validate-only
 ExecStartPre=/opt/blazn/infra/milestone-2/scripts/prepare-ngrok-policy.sh
-ExecStart=/opt/blazn/infra/milestone-2/scripts/with-public-origin-lock.sh qualification /usr/bin/setpriv --reuid=blazn-ngrok --regid=blazn-ngrok --clear-groups /usr/local/bin/ngrok http 127.0.0.1:58080 --config /etc/blazn/ngrok/ngrok.yml --traffic-policy-file /run/blazn-ngrok/traffic-policy.yml --inspect=false --log stdout --log-format json
+ExecStart=/opt/blazn/infra/milestone-2/scripts/with-public-origin-lock.sh qualification /usr/bin/setpriv --reuid=blazn-ngrok --regid=blazn-ngrok --clear-groups /usr/local/bin/ngrok http 127.0.0.1:58080 --config /etc/blazn/ngrok/ngrok.yml --traffic-policy-file /etc/blazn/ngrok/traffic-policy.yml --inspect=false --log stdout --log-format json
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
@@ -18,4 +19,4 @@ ProtectHome=read-only
 RuntimeDirectory=blazn-ngrok
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
-ReadWritePaths=-/run/lock/blazn-poc -/run/blazn-ngrok
+ReadWritePaths=-/run/lock/blazn-poc /etc/blazn/ngrok
