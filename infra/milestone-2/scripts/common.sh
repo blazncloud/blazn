@@ -132,7 +132,6 @@ control_api_source_digest() {
   repo_root=$(CDPATH='' cd -- "$infra_root/../.." && pwd)
   (
     cd "$repo_root"
-    export LC_ALL=C
     {
       printf '%s\0' \
         services/control-api/Dockerfile \
@@ -140,7 +139,7 @@ control_api_source_digest() {
         services/control-api/package-lock.json \
         services/control-api/tsconfig.json
       find services/control-api/src services/control-api/migrations packages/contracts -type f -print0
-    } | sort -z | xargs -0 sha256sum
+    } | LC_ALL=C sort -z | xargs -0 sha256sum
   ) | sha256sum | awk '{ print $1 }'
 }
 
@@ -159,16 +158,17 @@ control_plane_config_digest() {
   root=$1
   (
     cd "$root"
-    export LC_ALL=C
-    sha256sum \
-      compose.yaml \
-      ./*.schema.json \
-      postgres-init/01-roles.sh \
-      scripts/*.sh \
-      ngrok.example.yml \
-      systemd/blazn-control-plane.service \
-      systemd/blazn-ngrok.service \
-      systemd/blazn-ngrok-qualification.service
+    {
+      printf '%s\0' \
+        compose.yaml \
+        postgres-init/01-roles.sh \
+        ngrok.example.yml \
+        systemd/blazn-control-plane.service \
+        systemd/blazn-ngrok.service \
+        systemd/blazn-ngrok-qualification.service
+      find . -maxdepth 1 -type f -name '*.schema.json' -print0
+      find scripts -maxdepth 1 -type f -name '*.sh' -print0
+    } | LC_ALL=C sort -z | xargs -0 sha256sum
     printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"
   ) | sha256sum | awk '{ print $1 }'
 }
