@@ -76,6 +76,9 @@ func decodeIdentity(value []byte) (Identity, error) {
 	if err := decoder.Decode(&stored); err != nil {
 		return Identity{}, errors.New("node identity file is invalid")
 	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Identity{}, errors.New("node identity file has trailing data")
+	}
 	privateKey, err := base64.RawURLEncoding.DecodeString(stored.PrivateKey)
 	if err != nil || len(privateKey) != ed25519.PrivateKeySize {
 		return Identity{}, errors.New("node identity private key is invalid")

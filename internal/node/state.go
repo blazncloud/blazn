@@ -3,6 +3,7 @@ package node
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,25 +25,43 @@ type EnrollmentPin struct {
 }
 
 type RuntimeState struct {
-	SchemaVersion int                                   `json:"schemaVersion"`
-	Pin           EnrollmentPin                         `json:"pin"`
-	Exchange      client.ExchangeNodeEnrollmentResponse `json:"exchange"`
-	UpdatedAt     string                                `json:"updatedAt"`
+	SchemaVersion      int                                   `json:"schemaVersion"`
+	ControlPlaneOrigin string                                `json:"controlPlaneOrigin"`
+	Pin                EnrollmentPin                         `json:"pin"`
+	Exchange           client.ExchangeNodeEnrollmentResponse `json:"exchange"`
+	KubernetesBinding  *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
+	PendingJoin        *PendingJoinState                     `json:"pendingJoin,omitempty"`
+	UpdatedAt          string                                `json:"updatedAt"`
+}
+type PendingJoinState struct {
+	PlanID     string `json:"planId"`
+	IssuanceID string `json:"issuanceId"`
 }
 
 type InstallWAL struct {
-	SchemaVersion int                          `json:"schemaVersion"`
-	ReceiptID     string                       `json:"receiptId"`
-	Generation    int64                        `json:"generation"`
-	PlanID        string                       `json:"planId"`
-	PlanDigest    string                       `json:"planDigest"`
-	NodeID        string                       `json:"nodeId"`
-	Stage         string                       `json:"stage"`
-	Owner         client.NodeReceiptOwner      `json:"owner"`
-	ServicePrior  ServicePriorState            `json:"servicePrior"`
-	Mutations     []client.NodeReceiptMutation `json:"mutations"`
-	CreatedAt     string                       `json:"createdAt"`
-	UpdatedAt     string                       `json:"updatedAt"`
+	SchemaVersion   int                          `json:"schemaVersion"`
+	Lifecycle       string                       `json:"lifecycle"`
+	ReceiptID       string                       `json:"receiptId"`
+	Generation      int64                        `json:"generation"`
+	PlanID          string                       `json:"planId"`
+	PlanDigest      string                       `json:"planDigest"`
+	NodeID          string                       `json:"nodeId"`
+	Stage           string                       `json:"stage"`
+	Checkpoint      string                       `json:"checkpoint"`
+	OriginalReceipt *client.NodeInstallReceipt   `json:"originalReceipt,omitempty"`
+	TerminalReceipt *client.NodeInstallReceipt   `json:"terminalReceipt,omitempty"`
+	Owner           client.NodeReceiptOwner      `json:"owner"`
+	ServicePrior    ServicePriorState            `json:"servicePrior"`
+	Mutations       []client.NodeReceiptMutation `json:"mutations"`
+	Residues        []client.NodeReceiptResidue  `json:"residues,omitempty"`
+	CreatedAt       string                       `json:"createdAt"`
+	UpdatedAt       string                       `json:"updatedAt"`
+}
+type UninstallCleanupJournal struct {
+	SchemaVersion int                       `json:"schemaVersion"`
+	Plan          client.NodeInstallPlan    `json:"plan"`
+	Receipt       client.NodeInstallReceipt `json:"receipt"`
+	CreatedAt     string                    `json:"createdAt"`
 }
 
 type StateStore interface {
@@ -106,7 +125,7 @@ func (s FileStateStore) SaveRuntime(v RuntimeState) error { return s.write("runt
 func (s FileStateStore) LoadRuntime() (RuntimeState, error) {
 	var v RuntimeState
 	err := s.read("runtime.json", 64<<10, &v)
-	if err == nil && (v.SchemaVersion != 1 || v.Pin.SchemaVersion != 1) {
+	if err == nil && (v.SchemaVersion != 1 || v.Pin.SchemaVersion != 1 || !validControlPlaneOrigin(v.ControlPlaneOrigin) || (v.PendingJoin != nil && (v.PendingJoin.PlanID == "" || v.PendingJoin.IssuanceID == ""))) {
 		err = errors.New("node runtime state schema is unsupported")
 	}
 	return v, err
@@ -124,8 +143,8 @@ func (s FileStateStore) CreateWAL(v InstallWAL) error {
 }
 func (s FileStateStore) LoadWAL() (InstallWAL, error) {
 	var v InstallWAL
-	err := s.read("install-wal.json", 256<<10, &v)
-	if err == nil && v.SchemaVersion != 1 {
+	err := s.read("install-wal.json", 1<<20, &v)
+	if err == nil && (v.SchemaVersion != 1 || (v.Lifecycle != "" && v.Lifecycle != "install" && v.Lifecycle != "repair" && v.Lifecycle != "uninstall") || (v.Lifecycle == "repair" && v.OriginalReceipt == nil)) {
 		err = errors.New("install WAL schema is unsupported")
 	}
 	return v, err
@@ -148,6 +167,39 @@ func (s FileStateStore) LoadReceipt() (client.NodeInstallReceipt, error) {
 	}
 	return v, err
 }
+func (s FileStateStore) SaveUninstallCleanup(v UninstallCleanupJournal) error {
+	return s.write("uninstall-cleanup.json", v)
+}
+func (s FileStateStore) CreateUninstallCleanup(v UninstallCleanupJournal) error {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	err = writePrivateCreate(filepath.Join(s.Root, "uninstall-cleanup.json"), encoded)
+	if errors.Is(err, os.ErrExist) {
+		existing, loadErr := s.LoadUninstallCleanup()
+		if loadErr == nil && sameJSON(existing, v) {
+			return nil
+		}
+	}
+	return err
+}
+func (s FileStateStore) LoadUninstallCleanup() (UninstallCleanupJournal, error) {
+	var v UninstallCleanupJournal
+	err := s.read("uninstall-cleanup.json", 1<<20, &v)
+	validPlatform := v.Plan.Target.Platform == client.NodePlatformLinux || v.Plan.Target.Platform == client.NodePlatformMacOS
+	if err == nil && (v.SchemaVersion != 1 || !validPlatform || client.ValidateNodeInstallReceipt(v.Receipt) != nil || v.Receipt.State != "removed" || v.Receipt.PlanID != v.Plan.PlanID || v.Receipt.PlanDigest != v.Plan.Digest) {
+		err = errors.New("uninstall cleanup journal is invalid")
+	}
+	return v, err
+}
+func (s FileStateStore) RemoveUninstallCleanup() error {
+	err := os.Remove(filepath.Join(s.Root, "uninstall-cleanup.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
 
 func (s FileStateStore) write(name string, v any) error {
 	if !filepath.IsAbs(s.Root) {
@@ -166,7 +218,13 @@ func (s FileStateStore) read(name string, limit int64, v any) error {
 	}
 	decoder := json.NewDecoder(bytesReader(encoded))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(v)
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("node state contains trailing JSON")
+	}
+	return nil
 }
 
 func nowString(now time.Time) string { return now.UTC().Format(time.RFC3339Nano) }

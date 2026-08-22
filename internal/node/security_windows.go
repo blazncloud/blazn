@@ -7,7 +7,12 @@ import (
 	"os"
 )
 
+func writeRootAtomicNative(string, []byte, os.FileMode, int, int) error {
+	return errors.New("privileged node platform writes are unsupported on Windows")
+}
+
 func fileOwner(os.FileInfo) (int64, uint64, bool) { return 0, 1, true }
+func fileGroup(os.FileInfo) (int64, bool)         { return 0, true }
 func ensurePrivateDirectory(string, int64) error {
 	return errors.New("privileged Node state is unsupported on Windows")
 }

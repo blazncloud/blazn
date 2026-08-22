@@ -12,6 +12,7 @@ import (
 
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
+	nodepkg "github.com/blazncloud/blazn/internal/node"
 	pluginpkg "github.com/blazncloud/blazn/internal/plugin"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
@@ -51,7 +52,7 @@ type App struct {
 	auth        func() (authCommands, error)
 	openBrowser func(string) error
 	workspace   func() (workspaceCommands, error)
-	node        func() (nodeCommands, error)
+	node        func(bool) (nodeCommands, error)
 	stdin       io.Reader
 	stdinTTY    func() bool
 	plugins     pluginCommands
@@ -66,6 +67,8 @@ type pluginCommands interface {
 	Remove(string) error
 	Run(context.Context, pluginpkg.Definition, []string, string, pluginpkg.Stdio) (int, error)
 }
+
+var defaultNodeCommandFactory = newDefaultNodeCommands
 
 type authCommands interface {
 	BeginLogin(context.Context) (auth.LoginStart, string, time.Duration, error)
@@ -99,12 +102,10 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		},
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
-		node: func() (nodeCommands, error) {
-			return nil, fmt.Errorf("node runtime requires an injected trusted local profile and privileged platform adapter")
-		},
-		stdin:    os.Stdin,
-		stdinTTY: func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
-		plugins:  plugins,
+		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
+		stdin:       os.Stdin,
+		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		plugins:     plugins,
 	}
 }
 
@@ -133,6 +134,33 @@ func (a *App) Run(args []string) int {
 		return a.writeError(OutputHuman, ExitUsage, "usage", fmt.Sprintf("--output %s is supported only by plugin commands", format))
 	}
 	switch command {
+	case nodepkg.RootObserveSubcommand:
+		if format != OutputHuman || len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "node root observer accepts no options")
+		}
+		if err := nodepkg.RunProductionObservationHelper(context.Background(), a.stdout); err != nil {
+			fmt.Fprintln(a.stderr, "node root observation failed")
+			return ExitFailure
+		}
+		return ExitSuccess
+	case nodepkg.RootPrepareStateSubcommand:
+		if format != OutputHuman || len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "node root state initializer accepts no options")
+		}
+		if err := nodepkg.PrepareProductionServiceState(); err != nil {
+			fmt.Fprintln(a.stderr, "node root state initialization failed")
+			return ExitFailure
+		}
+		return ExitSuccess
+	case nodepkg.RootHelperSubcommand:
+		if format != OutputHuman || len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "node root helper accepts no options")
+		}
+		if err := nodepkg.RunProductionRootHelper(context.Background(), a.stdin, a.stdout); err != nil {
+			fmt.Fprintln(a.stderr, "node root helper failed")
+			return ExitFailure
+		}
+		return ExitSuccess
 	case "help":
 		if len(rest) > 1 {
 			return a.writeError(format, ExitUsage, "usage", "help accepts at most one command name")

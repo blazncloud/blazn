@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/contracts/sandbox-cli-contract.json",
+  "title": "Blazn sandbox CLI frozen contract",
+  "contractVersion": "sandbox-cli/v1alpha1",
+  "security": {
+    "forbiddenArgv": ["accessToken", "grantToken", "bearerToken"],
+    "forbiddenOutput": ["accessToken", "grantToken", "bearerToken"],
+    "protectedGrantTransport": "in-memory only",
+    "isolationNotice": "POC orchestration isolation only; approved non-sensitive workloads only"
+  },
+  "errorEnvelope": {
+    "type": "object", "additionalProperties": false, "required": ["error", "exitCode"],
+    "properties": {
+      "error": {"type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"], "properties": {"code": {"type": "string", "minLength": 1}, "message": {"type": "string", "minLength": 1}, "requestId": {"type": "string", "minLength": 1, "maxLength": 128}}},
+      "exitCode": {"enum": [1, 2, 7, 9]}
+    }
+  },
+  "commands": {
+    "template validate": {"mutation": false, "arguments": {"required": ["-f"]}, "outputSchema": {"$ref": "#/$defs/templateValidation"}, "exitCodes": {"valid": 0, "invalid": 1, "usage": 2}},
+    "template publish": {"mutation": true, "arguments": {"required": ["-f", "--workspace", "--request-id"]}, "outputSchema": {"$ref": "#/$defs/templatePublish"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox create": {"mutation": true, "arguments": {"required": ["--template", "--arch", "--mode", "--expires", "--approved-non-sensitive", "--workspace", "--request-id"]}, "outputSchema": {"$ref": "#/$defs/sandboxMutation"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox list": {"mutation": false, "arguments": {"required": ["--workspace"]}, "outputSchema": {"$ref": "#/$defs/sandboxList"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox get": {"mutation": false, "arguments": {"required": ["SANDBOX_ID"]}, "outputSchema": {"$ref": "#/$defs/sandbox"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox watch": {"mutation": false, "arguments": {"required": ["SANDBOX_ID"]}, "stream": "application/x-ndjson", "outputSchema": {"$ref": "#/$defs/event"}, "terminalStates": {"ready": 0, "failed": 1, "deleted": 1, "unavailable": 7}},
+    "sandbox exec": {"mutation": true, "arguments": {"required": ["SANDBOX_ID", "--"]}, "outputSchema": {"$ref": "#/$defs/execResult"}, "exitPrecedence": ["usage", "unavailable", "truncated_or_partial_evidence", "remote_or_api_failure", "success"], "exitCodes": {"remote_zero_complete": 0, "remote_nonzero_or_api_failure": 1, "unavailable": 7, "truncated_or_partial_evidence_even_if_remote_nonzero": 9, "usage": 2}},
+    "sandbox upload": {"mutation": true, "arguments": {"required": ["SANDBOX_ID", "SOURCE", "DESTINATION"]}, "outputSchema": {"$ref": "#/$defs/transferResult"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox download": {"mutation": true, "arguments": {"required": ["SANDBOX_ID", "SOURCE", "DESTINATION"]}, "outputSchema": {"$ref": "#/$defs/transferResult"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox stop": {"mutation": true, "arguments": {"required": ["SANDBOX_ID", "--request-id"]}, "outputSchema": {"$ref": "#/$defs/sandboxMutation"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}},
+    "sandbox delete": {"mutation": true, "arguments": {"required": ["SANDBOX_ID", "--request-id"]}, "outputSchema": {"$ref": "#/$defs/sandboxMutation"}, "exitCodes": {"success": 0, "api_failure": 1, "unavailable": 7, "usage": 2}}
+  },
+  "$defs": {
+    "id": {"type": "string", "format": "uuid"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "templateValidation": {"type": "object", "additionalProperties": false, "required": ["valid", "manifestDigest", "errors", "warnings"], "properties": {"valid": {"type": "boolean"}, "manifestDigest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]}, "errors": {"type": "array", "items": {"type": "string"}}, "warnings": {"type": "array", "items": {"type": "string"}}}},
+    "template": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/SandboxTemplate"},
+    "templateVersion": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/SandboxTemplateVersion"},
+    "templatePublish": {"type": "object", "additionalProperties": false, "required": ["template", "version"], "properties": {"template": {"$ref": "#/$defs/template"}, "version": {"$ref": "#/$defs/templateVersion"}}},
+    "sourceBinding": {"type": "object", "additionalProperties": false, "required": ["repository", "url", "destination", "writable", "commit"], "properties": {"repository": {"type": "string"}, "url": {"type": "string"}, "destination": {"type": "string"}, "writable": {"type": "boolean"}, "commit": {"type": "string"}}},
+    "artifactContractEntry": {"type": "object", "additionalProperties": false, "required": ["name", "path", "mediaType", "required"], "properties": {"name": {"type": "string"}, "path": {"type": "string"}, "mediaType": {"type": "string"}, "required": {"type": "boolean"}}},
+    "artifactContract": {"type": "object", "additionalProperties": false, "required": ["digest", "items"], "properties": {"digest": {"$ref": "#/$defs/digest"}, "items": {"type": "array", "items": {"$ref": "#/$defs/artifactContractEntry"}}}},
+    "condition": {"type": "object", "additionalProperties": false, "required": ["type", "status", "reason", "observedAt"], "properties": {"type": {"type": "string"}, "status": {"enum": ["true", "false", "unknown"]}, "reason": {"type": "string"}, "message": {"type": "string"}, "observedAt": {"type": "string", "format": "date-time"}}},
+    "sandbox": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/Sandbox"},
+    "apiError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"], "properties": {"code": {"type": "string"}, "message": {"type": "string"}, "requestId": {"type": "string"}}},
+    "cleanupResult": {"type": "object", "additionalProperties": false, "required": ["artifactIds", "warnings"], "properties": {"artifactIds": {"type": "array", "items": {"$ref": "#/$defs/id"}}, "warnings": {"type": "array", "items": {"type": "string"}}}},
+    "receipt": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/SandboxOperationReceipt"},
+    "operation": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/SandboxOperation"},
+    "sandboxMutation": {"type": "object", "additionalProperties": false, "required": ["sandbox", "operation"], "properties": {"sandbox": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/Sandbox"}, "operation": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/SandboxOperation"}}},
+    "sandboxList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "items": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/Sandbox"}}, "nextCursor": {"type": ["string", "null"]}}},
+    "event": {"$ref": "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/SandboxEvent"},
+    "execResult": {"type": "object", "additionalProperties": false, "required": ["sandboxId", "grantId", "remoteExitCode", "stdoutBase64", "stderrBase64", "truncated"], "properties": {"sandboxId": {"$ref": "#/$defs/id"}, "grantId": {"$ref": "#/$defs/id"}, "remoteExitCode": {"type": "integer", "minimum": 0, "maximum": 255}, "stdoutBase64": {"type": "string", "contentEncoding": "base64"}, "stderrBase64": {"type": "string", "contentEncoding": "base64"}, "truncated": {"type": "boolean"}}},
+    "transferResult": {"type": "object", "additionalProperties": false, "required": ["sandboxId", "grantId", "source", "destination", "size", "sha256"], "properties": {"sandboxId": {"$ref": "#/$defs/id"}, "grantId": {"$ref": "#/$defs/id"}, "source": {"type": "string"}, "destination": {"type": "string"}, "size": {"type": "integer", "minimum": 0, "maximum": 8388608}, "sha256": {"$ref": "#/$defs/digest"}}}
+  }
+}
