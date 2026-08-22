@@ -79,9 +79,10 @@ phase4c_verify_transaction() {
 phase4c_start_uid_proxy() {
   transaction=$1
   command -v curl >/dev/null 2>&1 || { printf 'curl is required for UID-precondition deletes\n' >&2; return 1; }
-  phase4c_proxy_socket=$transaction/kubernetes-api.sock
-  [ ! -e "$phase4c_proxy_socket" ] || { printf 'stale transaction API socket requires reconciliation\n' >&2; return 1; }
-  kubectl proxy --unix-socket="$phase4c_proxy_socket" --api-prefix=/ --accept-hosts='^localhost$' >"$transaction/kubectl-proxy.log" 2>&1 &
+  phase4c_proxy_dir=$(mktemp -d "$transaction/.api-proxy.XXXXXX")
+  chmod 0700 "$phase4c_proxy_dir"
+  phase4c_proxy_socket=$phase4c_proxy_dir/kubernetes-api.sock
+  kubectl proxy --unix-socket="$phase4c_proxy_socket" --api-prefix=/ --accept-hosts='^localhost$' >"$phase4c_proxy_dir/kubectl-proxy.log" 2>&1 &
   phase4c_proxy_pid=$!
   attempt=0
   while [ ! -S "$phase4c_proxy_socket" ]; do
