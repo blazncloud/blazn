@@ -513,12 +513,18 @@ func nextStreamEvents(scanner *bufio.Scanner, normalizer *streamNormalizer, prot
 	if err := scanner.Err(); err != nil {
 		return nil, false, err
 	}
+	if normalizer.terminal {
+		return nil, true, nil
+	}
 	return nil, false, io.ErrUnexpectedEOF
 }
 
 func streamAPIError(value any) error {
 	if normalized, ok := value.(*proxycontract.NormalizedError); ok && normalized != nil {
 		reason := proxycontract.RetryableReason(normalized.Code)
+		if normalized.Code == "context_overflow" {
+			reason = proxycontract.ReasonCompatibleContextOverflow
+		}
 		retry := normalized.RetryClass == "before_first_byte_only"
 		return &APIError{Code: string(normalized.Code), Message: normalized.SafeMessage, Status: safeUpstreamStatus(normalized.UpstreamStatus), Retryable: retry, Reason: reason}
 	}
@@ -545,7 +551,7 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Accel-Buffering", "no")
-	encoder := sourceStreamEncoder{writer: writer, protocol: request.Protocol, alias: request.ModelAlias, requestID: request.LogicalRequestID, toolIndexes: map[string]int{}, toolNames: map[string]string{}, toolArguments: map[string]string{}}
+	encoder := sourceStreamEncoder{writer: writer, protocol: request.Protocol, alias: request.ModelAlias, requestID: request.LogicalRequestID, toolIndexes: map[string]int{}, toolNames: map[string]string{}, toolArguments: map[string]string{}, textIndex: -1}
 	if err := encoder.start(); err != nil {
 		return nil, err
 	}
@@ -646,7 +652,7 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		}
 		out := []proxycontract.NormalizedStreamEvent{}
 		if chunk.Error != nil {
-			normalized := proxycontract.NormalizedError{Code: "upstream_5xx", RetryClass: "before_first_byte_only", SafeMessage: "upstream stream returned an error", UpstreamStatus: 502}
+			normalized := normalizeStreamFailure(chunk.Error.Code)
 			return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "error", Error: &normalized}}, nil
 		}
 		for _, choice := range chunk.Choices {
@@ -708,6 +714,10 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 				OutputTokens int `json:"output_tokens"`
 			} `json:"usage"`
 			Status string `json:"status"`
+			Error  *struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
 		} `json:"response"`
 		Error *struct {
 			Message string `json:"message"`
@@ -776,28 +786,58 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		finish := proxycontract.FinishReason("length")
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "usage", Usage: &usage}, {LogicalRequestID: requestID, Sequence: sequence + 1, Type: "response_end", FinishReason: &finish}}, nil
 	case "response.failed", "error":
-		normalized := proxycontract.NormalizedError{Code: "upstream_5xx", RetryClass: "before_first_byte_only", SafeMessage: "upstream stream returned an error", UpstreamStatus: 502}
+		code := ""
+		if event.Error != nil {
+			code = event.Error.Code
+		}
+		if code == "" && event.Response != nil && event.Response.Error != nil {
+			code = event.Response.Error.Code
+		}
+		normalized := normalizeStreamFailure(code)
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "error", Error: &normalized}}, nil
 	default:
 		return nil, nil
 	}
 }
 
+func normalizeStreamFailure(code string) proxycontract.NormalizedError {
+	lower := strings.ToLower(code)
+	normalized := proxycontract.NormalizedError{Code: "upstream_5xx", RetryClass: "before_first_byte_only", SafeMessage: "upstream stream returned an error", UpstreamStatus: 502}
+	switch {
+	case strings.Contains(lower, "rate") && strings.Contains(lower, "limit"):
+		normalized.Code = "rate_limited"
+		normalized.UpstreamStatus = 429
+	case strings.Contains(lower, "context") && strings.Contains(lower, "length"):
+		normalized.Code = "context_overflow"
+		normalized.UpstreamStatus = 413
+	case strings.Contains(lower, "model") && (strings.Contains(lower, "not_found") || strings.Contains(lower, "unavailable")):
+		normalized.Code = "model_unavailable"
+		normalized.UpstreamStatus = 404
+	case strings.Contains(lower, "invalid") || strings.Contains(lower, "authentication") || strings.Contains(lower, "permission"):
+		normalized.Code = "invalid_request"
+		normalized.RetryClass = "never"
+		normalized.UpstreamStatus = 400
+	}
+	return normalized
+}
+
 type sourceStreamEncoder struct {
-	writer        io.Writer
-	protocol      proxycontract.Protocol
-	alias         string
-	toolIndexes   map[string]int
-	nextToolIndex int
-	requestID     string
-	toolNames     map[string]string
-	toolArguments map[string]string
-	text          strings.Builder
-	usage         *proxycontract.Usage
-	finishReason  proxycontract.FinishReason
-	sequence      int
-	started       bool
-	textStarted   bool
+	writer          io.Writer
+	protocol        proxycontract.Protocol
+	alias           string
+	toolIndexes     map[string]int
+	nextToolIndex   int
+	requestID       string
+	toolNames       map[string]string
+	toolArguments   map[string]string
+	text            strings.Builder
+	usage           *proxycontract.Usage
+	finishReason    proxycontract.FinishReason
+	sequence        int
+	started         bool
+	textStarted     bool
+	textIndex       int
+	nextOutputIndex int
 }
 
 func (s *sourceStreamEncoder) emit(payload any) error {
@@ -879,12 +919,14 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 		}
 		if event.Type == "text_delta" && !s.textStarted {
 			s.textStarted = true
+			s.textIndex = s.nextOutputIndex
+			s.nextOutputIndex++
 			messageID := "msg_" + s.requestID
-			if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": 0, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}}); err != nil {
+			if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": s.textIndex, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}}); err != nil {
 				return err
 			}
 			s.sequence++
-			if err := s.emit(map[string]any{"type": "response.content_part.added", "sequence_number": s.sequence, "item_id": messageID, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}); err != nil {
+			if err := s.emit(map[string]any{"type": "response.content_part.added", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}); err != nil {
 				return err
 			}
 			s.sequence++
@@ -894,7 +936,7 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 		s.sequence++
 		if event.Text != nil {
 			payload.(map[string]any)["item_id"] = "msg_" + s.requestID
-			payload.(map[string]any)["output_index"] = 0
+			payload.(map[string]any)["output_index"] = s.textIndex
 			payload.(map[string]any)["content_index"] = 0
 			payload.(map[string]any)["delta"] = *event.Text
 			s.text.WriteString(*event.Text)
@@ -904,15 +946,15 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 		}
 		if event.Type == "tool_call_start" {
 			s.toolNames[*event.CallID] = *event.ToolName
-			s.toolIndexes[*event.CallID] = s.nextToolIndex
-			s.nextToolIndex++
-			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID] + boolInt(s.textStarted)
+			s.toolIndexes[*event.CallID] = s.nextOutputIndex
+			s.nextOutputIndex++
+			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID]
 			payload.(map[string]any)["item"] = map[string]any{"id": "fc_" + *event.CallID, "type": "function_call", "call_id": *event.CallID, "name": *event.ToolName, "arguments": ""}
 		}
 		if event.Type == "tool_arguments_delta" {
 			s.toolArguments[*event.CallID] += *event.ArgumentsDelta
 			payload.(map[string]any)["item_id"] = "fc_" + *event.CallID
-			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID] + boolInt(s.textStarted)
+			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID]
 			payload.(map[string]any)["delta"] = *event.ArgumentsDelta
 		}
 	}
@@ -950,16 +992,16 @@ func (s *sourceStreamEncoder) finish() error {
 		}
 		if s.textStarted {
 			messageID := "msg_" + s.requestID
-			if err := s.emit(map[string]any{"type": "response.output_text.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": 0, "content_index": 0, "text": s.text.String()}); err != nil {
+			if err := s.emit(map[string]any{"type": "response.output_text.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "text": s.text.String()}); err != nil {
 				return err
 			}
 			s.sequence++
 			part := map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}
-			if err := s.emit(map[string]any{"type": "response.content_part.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": 0, "content_index": 0, "part": part}); err != nil {
+			if err := s.emit(map[string]any{"type": "response.content_part.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "part": part}); err != nil {
 				return err
 			}
 			s.sequence++
-			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": 0, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "completed", "content": []any{part}}}); err != nil {
+			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": s.textIndex, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "completed", "content": []any{part}}}); err != nil {
 				return err
 			}
 			s.sequence++
@@ -970,7 +1012,7 @@ func (s *sourceStreamEncoder) finish() error {
 		}
 		sort.Slice(ids, func(i, j int) bool { return s.toolIndexes[ids[i]] < s.toolIndexes[ids[j]] })
 		for _, id := range ids {
-			index := s.toolIndexes[id] + boolInt(s.textStarted)
+			index := s.toolIndexes[id]
 			if err := s.emit(map[string]any{"type": "response.function_call_arguments.done", "sequence_number": s.sequence, "item_id": "fc_" + id, "output_index": index, "arguments": s.toolArguments[id]}); err != nil {
 				return err
 			}
@@ -1014,18 +1056,11 @@ func (s *sourceStreamEncoder) fail(err error) error {
 	return writeErr
 }
 
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
 func (s *sourceStreamEncoder) responseObject(status string) map[string]any {
-	output := []any{}
+	items := map[int]any{}
 	if s.text.Len() > 0 {
 		content := []any{map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}
-		output = append(output, map[string]any{"id": "msg_" + s.requestID, "type": "message", "role": "assistant", "status": "completed", "content": content})
+		items[s.textIndex] = map[string]any{"id": "msg_" + s.requestID, "type": "message", "role": "assistant", "status": "completed", "content": content}
 	}
 	ids := make([]string, 0, len(s.toolIndexes))
 	for id := range s.toolIndexes {
@@ -1033,7 +1068,16 @@ func (s *sourceStreamEncoder) responseObject(status string) map[string]any {
 	}
 	sort.Slice(ids, func(i, j int) bool { return s.toolIndexes[ids[i]] < s.toolIndexes[ids[j]] })
 	for _, id := range ids {
-		output = append(output, map[string]any{"id": "fc_" + id, "type": "function_call", "call_id": id, "name": s.toolNames[id], "arguments": s.toolArguments[id]})
+		items[s.toolIndexes[id]] = map[string]any{"id": "fc_" + id, "type": "function_call", "call_id": id, "name": s.toolNames[id], "arguments": s.toolArguments[id]}
+	}
+	indexes := make([]int, 0, len(items))
+	for index := range items {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	output := make([]any, 0, len(indexes))
+	for _, index := range indexes {
+		output = append(output, items[index])
 	}
 	usage := map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 	if s.usage != nil {
