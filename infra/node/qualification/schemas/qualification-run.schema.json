@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/node-platform-qualification-run-v1.json",
+  "title": "Blazn node platform qualification run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "correlationId", "scope", "profile", "target", "source", "startedAt", "status", "steps"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "correlationId": {"type": "string", "pattern": "^nodequal-[a-z0-9][a-z0-9.-]{6,63}$", "maxLength": 72},
+    "scope": {"enum": ["fresh-linux", "native-mac"]},
+    "profile": {"enum": ["lxd-ubuntu-26.04", "native-mac"]},
+    "target": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote", "head", "tree", "statusDigest"],
+      "properties": {
+        "remote": {"const": "https://github.com/blazncloud/blazn.git"},
+        "head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "statusDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "binaryDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "binaryVersion": {"type": "string", "minLength": 1}
+      }
+    },
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["running", "passed", "failed"]},
+    "steps": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/step"}
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "observedAt", "exitCode", "stdout", "stderr", "metadata"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,63}$"},
+        "status": {"enum": ["passed", "failed"]},
+        "observedAt": {"type": "string", "format": "date-time"},
+        "exitCode": {"type": "integer", "minimum": 0, "maximum": 255},
+        "stdout": {"$ref": "#/$defs/artifact"},
+        "stderr": {"$ref": "#/$defs/artifact"},
+        "metadata": {"type": "object"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest", "bytes"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^artifacts/[a-zA-Z0-9._/-]+$"},
+        "digest": {"$ref": "#/$defs/digest"},
+        "bytes": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "passed"}}, "required": ["status"]}, "then": {"required": ["completedAt"]}},
+    {"if": {"properties": {"scope": {"const": "fresh-linux"}}, "required": ["scope"]}, "then": {"properties": {"profile": {"const": "lxd-ubuntu-26.04"}, "target": {"pattern": "^blazn-q-"}}}},
+    {"if": {"properties": {"scope": {"const": "native-mac"}}, "required": ["scope"]}, "then": {"properties": {"profile": {"const": "native-mac"}, "target": {"pattern": "^mac-mini-3(?:\\.|$)"}}}}
+  ]
+}
