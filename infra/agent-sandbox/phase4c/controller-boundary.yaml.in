@@ -1,0 +1,157 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: blazn-agent-sandbox-observer
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: blazn-agent-sandbox-observer
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: blazn-agent-sandbox-observer
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-agent-sandbox-system
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-agent-sandbox-system
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-agent-sandbox-system
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-agent-sandbox-controller
+  namespace: blazn-poc
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods", "services"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["", "events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes/finalizers", "sandboxes/status"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-agent-sandbox-controller
+  namespace: blazn-poc
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-agent-sandbox-controller
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: blazn-agent-sandbox-boundary
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    resourceRules:
+    - apiGroups: ["agents.x-k8s.io"]
+      apiVersions: ["v1alpha1", "v1beta1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["sandboxes"]
+      scope: Namespaced
+  validations:
+  - expression: "object.metadata.namespace == 'blazn-poc'"
+    message: "Phase 4C permits Sandbox objects only in blazn-poc"
+  - expression: "object.metadata.name == 'phase4c-canary' && object.metadata.labels['app.kubernetes.io/part-of'] == 'blazn-phase4c'"
+    message: "Phase 4C permits only the exact named synthetic canary"
+  - expression: "has(object.spec.podTemplate.metadata.labels) && object.spec.podTemplate.metadata.labels['kueue.x-k8s.io/queue-name'] == 'blazn-poc'"
+    message: "Sandbox podTemplate must target the blazn-poc LocalQueue"
+  - expression: "object.spec.shutdownPolicy == 'Delete'"
+    message: "Phase 4C Sandbox shutdownPolicy must be Delete"
+  - expression: "object.spec.podTemplate.spec.serviceAccountName == 'blazn-sandbox-runner' && object.spec.podTemplate.spec.automountServiceAccountToken == false"
+    message: "Sandbox Pods must use the tokenless blazn-sandbox-runner identity"
+  - expression: "object.spec.podTemplate.spec.nodeSelector['blazn.dev/sandbox-eligible'] == 'true'"
+    message: "Sandbox Pods must target reviewed sandbox-eligible nodes"
+  - expression: "size(object.spec.podTemplate.spec.nodeSelector) == 1 && (!has(object.spec.podTemplate.spec.nodeName) || object.spec.podTemplate.spec.nodeName == '') && (!has(object.spec.podTemplate.spec.tolerations) || size(object.spec.podTemplate.spec.tolerations) == 0) && (!has(object.spec.podTemplate.spec.affinity)) && (!has(object.spec.podTemplate.spec.priorityClassName) || object.spec.podTemplate.spec.priorityClassName == '') && (!has(object.spec.podTemplate.spec.schedulerName) || object.spec.podTemplate.spec.schedulerName == '')"
+    message: "Sandbox scheduling must use only the reviewed eligibility selector"
+  - expression: "(!has(object.spec.podTemplate.spec.hostNetwork) || object.spec.podTemplate.spec.hostNetwork == false) && (!has(object.spec.podTemplate.spec.hostPID) || object.spec.podTemplate.spec.hostPID == false) && (!has(object.spec.podTemplate.spec.hostIPC) || object.spec.podTemplate.spec.hostIPC == false)"
+    message: "Sandbox Pods may not share host namespaces"
+  - expression: "(!has(object.spec.podTemplate.spec.shareProcessNamespace) || object.spec.podTemplate.spec.shareProcessNamespace == false) && (!has(object.spec.podTemplate.spec.hostAliases) || size(object.spec.podTemplate.spec.hostAliases) == 0) && (!has(object.spec.podTemplate.spec.volumes) || size(object.spec.podTemplate.spec.volumes) == 0) && (!has(object.spec.podTemplate.spec.initContainers) || size(object.spec.podTemplate.spec.initContainers) == 0) && (!has(object.spec.podTemplate.spec.ephemeralContainers) || size(object.spec.podTemplate.spec.ephemeralContainers) == 0)"
+    message: "The Phase 4C canary may not inject host aliases, volumes, init containers, or ephemeral containers"
+  - expression: "object.spec.podTemplate.spec.securityContext.runAsNonRoot == true && object.spec.podTemplate.spec.securityContext.runAsUser == 65532 && object.spec.podTemplate.spec.securityContext.runAsGroup == 65532 && object.spec.podTemplate.spec.securityContext.fsGroup == 65532 && object.spec.podTemplate.spec.securityContext.seccompProfile.type == 'RuntimeDefault' && (!has(object.spec.podTemplate.spec.securityContext.sysctls) || size(object.spec.podTemplate.spec.securityContext.sysctls) == 0)"
+    message: "Sandbox Pods must use the reviewed non-root pod security context"
+  - expression: "size(object.spec.podTemplate.spec.containers) == 1 && object.spec.podTemplate.spec.containers[0].name == 'main' && object.spec.podTemplate.spec.containers[0].image == 'BLAZN_SYNTHETIC_IMAGE'"
+    message: "Phase 4C permits only the sealed synthetic container identity"
+  - expression: "object.spec.podTemplate.spec.containers.all(c, c.command == ['sh', '-c', 'trap : TERM INT; sleep 3600 & wait'] && (!has(c.args) || size(c.args) == 0) && (!has(c.env) || size(c.env) == 0) && (!has(c.envFrom) || size(c.envFrom) == 0) && (!has(c.workingDir) || c.workingDir == '') && (!has(c.lifecycle)) && (!has(c.livenessProbe)) && (!has(c.readinessProbe)) && (!has(c.startupProbe)) && (!has(c.stdin) || c.stdin == false) && (!has(c.stdinOnce) || c.stdinOnce == false) && (!has(c.tty) || c.tty == false) && (!has(c.volumeMounts) || size(c.volumeMounts) == 0) && (!has(c.volumeDevices) || size(c.volumeDevices) == 0) && (!has(c.ports) || size(c.ports) == 0))"
+    message: "Phase 4C permits only the sealed synthetic command and execution surface"
+  - expression: "object.spec.podTemplate.spec.containers.all(c, size(c.resources.requests) == 2 && size(c.resources.limits) == 2 && c.resources.requests.cpu == '100m' && c.resources.requests.memory == '64Mi' && c.resources.limits.cpu == '200m' && c.resources.limits.memory == '128Mi')"
+    message: "Phase 4C permits only the sealed synthetic resource request and limit"
+  - expression: "object.spec.podTemplate.spec.containers.all(c, c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && c.securityContext.runAsNonRoot == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
+    message: "Phase 4C permits only the reviewed restricted container security context"
+  - expression: "BLAZN_RUNTIME_ADMISSION_EXPRESSION"
+    message: "Sandbox runtime selection must equal the capability reviewed for this change"
+  - expression: "request.operation != 'CREATE' || request.userInfo.username == 'BLAZN_CREATE_PRINCIPAL'"
+    message: "Only the authenticated Phase 4C creator may create the synthetic Sandbox"
+  - expression: "object.metadata.annotations['blazn.dev/phase4c-transaction'] == 'BLAZN_TRANSACTION_ID'"
+    message: "Sandbox must carry the sealed Phase 4C transaction identity"
+  - expression: "request.operation != 'UPDATE' || (request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller' && object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && object.metadata.annotations['blazn.dev/phase4c-transaction'] == oldObject.metadata.annotations['blazn.dev/phase4c-transaction'] && object.metadata.annotations['blazn.dev/non-sensitive-poc'] == oldObject.metadata.annotations['blazn.dev/non-sensitive-poc'])"
+    message: "Callers may not mutate the canary after admission"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: blazn-agent-sandbox-boundary
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+spec:
+  policyName: blazn-agent-sandbox-boundary
+  validationActions: [Deny]

@@ -43,5 +43,13 @@ MicroK8s installation was not used or changed.
 2. Phase 4C: serialized shared-cluster CRD/controller/RBAC installation, one
    synthetic canary, admission/orphan evidence, and exact rollback comparison.
 
+Phase 4C live-canary preparation is now specified in
+[`infra/agent-sandbox/phase4c/README.md`](../infra/agent-sandbox/phase4c/README.md).
+It is intentionally non-mutating until a separately approved serialized live
+window. The upstream v0.5.6 manager has no namespace-watch flag, so the reviewed
+boundary scopes all writes (rather than all reads), globally denies Sandbox
+admission outside `blazn-poc`, and refuses installation when any Sandbox already
+exists.
+
 The executable source of truth is
 [`infra/agent-sandbox/test-disposable.sh`](../infra/agent-sandbox/test-disposable.sh).

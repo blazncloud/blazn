@@ -1,0 +1,51 @@
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: phase4c-canary
+  namespace: blazn-poc
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+    blazn.dev/runtime-trust: BLAZN_RUNTIME_TRUST
+  annotations:
+    blazn.dev/non-sensitive-poc: BLAZN_NON_SENSITIVE_APPROVAL
+spec:
+  shutdownPolicy: Delete
+  podTemplate:
+    metadata:
+      annotations:
+        blazn.dev/phase4c-transaction: BLAZN_TRANSACTION_ID
+      labels:
+        app.kubernetes.io/part-of: blazn-phase4c
+        kueue.x-k8s.io/queue-name: blazn-poc
+    spec:
+BLAZN_RUNTIME_CLASS_LINE
+      serviceAccountName: blazn-sandbox-runner
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      shareProcessNamespace: false
+      nodeSelector:
+        blazn.dev/sandbox-eligible: "true"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+        sysctls: []
+      containers:
+      - name: main
+        image: BLAZN_SYNTHETIC_IMAGE
+        command: ["sh", "-c", "trap : TERM INT; sleep 3600 & wait"]
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile: {type: RuntimeDefault}
