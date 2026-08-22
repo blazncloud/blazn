@@ -33,6 +33,11 @@ func (f *fakeRunner) Run(name string, args []string, stdin []byte) ([]byte, erro
 	return f.out, f.err
 }
 
+func (f *fakeRunner) RunPasswordPrompt(name string, args []string, secret []byte) error {
+	f.calls = append(f.calls, runnerCall{name: name, args: append([]string(nil), args...), stdin: append([]byte(nil), secret...)})
+	return f.err
+}
+
 func TestLinuxStoreUsesNamespacedSecretServiceEntry(t *testing.T) {
 	runner := &fakeRunner{paths: map[string]bool{"secret-tool": true}}
 	store, err := newSystemStore("linux", runner)
@@ -58,7 +63,7 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccount, "-w"}
-	if got := runner.calls[0]; got.name != "security" || !reflect.DeepEqual(got.args, want) || string(got.stdin) != "session\n" {
+	if got := runner.calls[0]; got.name != "security" || !reflect.DeepEqual(got.args, want) || string(got.stdin) != "session" {
 		t.Fatalf("call = %#v", got)
 	}
 }

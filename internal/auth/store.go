@@ -30,6 +30,7 @@ type CredentialStore interface {
 type commandRunner interface {
 	LookPath(string) (string, error)
 	Run(name string, args []string, stdin []byte) ([]byte, error)
+	RunPasswordPrompt(name string, args []string, secret []byte) error
 }
 
 type execRunner struct{}
@@ -50,6 +51,10 @@ func (execRunner) Run(name string, args []string, stdin []byte) ([]byte, error) 
 		return nil, errors.New(message)
 	}
 	return output, nil
+}
+
+func (execRunner) RunPasswordPrompt(name string, args []string, secret []byte) error {
+	return runPasswordPrompt(name, args, secret)
 }
 
 type systemStore struct {
@@ -249,10 +254,9 @@ func (s *systemStore) Put(secret []byte) error {
 		return errors.New("refusing to store an empty session")
 	}
 	if s.goos == "darwin" {
-		// A trailing -w prompts on stdin. Supplying its value as an argument is
-		// explicitly unsafe because other processes can inspect argv.
-		_, err := s.runner.Run("security", []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccount, "-w"}, append(secret, '\n'))
-		return err
+		// A trailing -w asks on the controlling terminal. The runner provides a
+		// private PTY so the value never appears in argv, environment, or logs.
+		return s.runner.RunPasswordPrompt("security", []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccount, "-w"}, secret)
 	}
 	_, err := s.runner.Run("secret-tool", []string{"store", "--label", "Blazn CLI session", "service", credentialService, "account", credentialAccount}, append(secret, '\n'))
 	return err
