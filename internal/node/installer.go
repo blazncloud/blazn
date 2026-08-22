@@ -50,7 +50,7 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 		return client.NodeInstallReceipt{}, errors.New("installer dependencies are incomplete")
 	}
 	fingerprint, err := identity.Fingerprint()
-	if err != nil || meta.Generation < 1 || meta.SigningKeyID == "" || meta.PublicKeyFingerprint != fingerprint {
+	if err != nil || identityMeta.Generation < 1 || identityMeta.SigningKeyID == "" || identityMeta.PublicKeyFingerprint != fingerprint {
 		return client.NodeInstallReceipt{}, errors.New("installer identity does not match the enrolled identity")
 	}
 	if err := i.platform.Preflight(ctx, plan); err != nil {
