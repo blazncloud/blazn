@@ -28,7 +28,7 @@
       "type": "array", "minItems": 1, "maxItems": 32,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "destinationClass", "endpoint", "sourceProtocol", "destinationProtocol", "model", "capabilities", "acceptedDataClasses", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass"],
+        "required": ["id", "destinationClass", "endpoint", "sourceProtocols", "destinationProtocol", "model", "capabilities", "acceptedDataClasses", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "destinationClass": {"enum": ["local_node", "company", "provider", "blazn_cloud"]},
@@ -44,7 +44,7 @@
               "resolvedAddressPolicy": {"enum": ["loopback_only", "authenticated_node_tunnel", "public_unicast_only"]}
             }
           },
-          "sourceProtocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
+          "sourceProtocols": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]}},
           "destinationProtocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
           "model": {"type": "string", "minLength": 1, "maxLength": 160},
           "capabilities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["text", "tools", "structured_output", "streaming"]}},

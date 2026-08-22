@@ -217,6 +217,9 @@ fallback `gpt-5.4` over OpenAI Responses at
 enabled only for `public` and `company` data. `restricted` and `local_only`
 remain local. Qualification fails rather than substituting another model,
 endpoint, protocol, or credential.
+The complete executable fixture, including capabilities, data classes, health
+timeouts, credential references, cost ceiling, request limits, and retry codes,
+is [`poc-policy.json`](../packages/contracts/proxy/fixtures/poc-policy.json).
 
 ## Required tests
 
