@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version text PRIMARY KEY,
+  checksum text NOT NULL,
   applied_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS devices (
   created_at timestamptz NOT NULL DEFAULT now(),
   last_seen_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
+  ,UNIQUE (id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS device_authorizations (
@@ -42,13 +44,15 @@ CREATE TABLE IF NOT EXISTS device_authorizations (
 CREATE TABLE IF NOT EXISTS sessions (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  device_id uuid NOT NULL,
   token_hash text NOT NULL UNIQUE,
   refresh_token_hash text NOT NULL UNIQUE,
   refresh_version integer NOT NULL DEFAULT 1,
-  expires_at timestamptz NOT NULL,
+  access_expires_at timestamptz NOT NULL,
+  refresh_expires_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   revoked_at timestamptz
+  ,FOREIGN KEY (device_id, user_id) REFERENCES devices(id, user_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS sessions_user_device_idx ON sessions(user_id, device_id);
