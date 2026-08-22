@@ -134,7 +134,9 @@ control_api_source_digest() {
     services/control-api/Dockerfile \
     services/control-api/package.json \
     services/control-api/package-lock.json \
-    services/control-api/tsconfig.json; do
+    services/control-api/tsconfig.json \
+    infra/milestone-2/scripts/build-control-api.sh \
+    infra/milestone-2/scripts/common.sh; do
     if [ ! -f "$repo_root/$required_input" ] || [ -L "$repo_root/$required_input" ]; then
       die "control API build input is missing or symlinked: $required_input"
     fi
@@ -154,7 +156,9 @@ control_api_source_digest() {
         services/control-api/Dockerfile \
         services/control-api/package.json \
         services/control-api/package-lock.json \
-        services/control-api/tsconfig.json
+        services/control-api/tsconfig.json \
+        infra/milestone-2/scripts/build-control-api.sh \
+        infra/milestone-2/scripts/common.sh
       find services/control-api/src services/control-api/migrations packages/contracts -type f -print0
     } | LC_ALL=C sort -z | xargs -0 sha256sum
   ) | sha256sum | awk '{ print $1 }'
