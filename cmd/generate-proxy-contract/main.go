@@ -20,19 +20,19 @@ import (
 var contractTemplate []byte
 
 var pinnedDigests = map[string]string{
-	"activation-journal.schema.json":      "2f58611a5be80c932374bedeafc765018e629c2d106259d8b4776a321f0ddb67",
-	"activation-receipt.schema.json":      "fd41f579f30433ab2c0c57ac364bcf4fc603ef293ac3b39cf71e310e7c99e6ee",
+	"activation-journal.schema.json":      "995bb08935ae5d100ff186623fbd43042b438a09687d2049ebd956735fbfff48",
+	"activation-receipt.schema.json":      "b1e215804f849a48c9c148b163c715f375cc9ae3799859f00ff31056d7bcd0ba",
 	"event.schema.json":                   "e61f1a558c744122c36427d692bbb9b7c7b620e84d75612b2e60e9c17d0310d3",
 	"normalized-error.schema.json":        "3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c",
-	"normalized-request.schema.json":      "40999c0f9f2109515dd4784d79ba92a2474c22d9cc9a8bee8b60b57699104778",
-	"normalized-response.schema.json":     "16b383d0a61bd87d3d0983dd813d2940badb095cac6660642c4e8f5114d02285",
-	"normalized-stream-event.schema.json": "a8e30211bd54861dfbb04568802da8f6f476e4ad7eff21dbbb9ba11809a85e4b",
-	"policy.schema.json":                  "36c42efd44aca0de01280fb190001aac2bf06dac83d870ba7a3f211b12c84bc9",
+	"normalized-request.schema.json":      "98923667ba46cd8d3207cfcb3cd62d757e41b8f8d71bf78d5eec1b5dda284df1",
+	"normalized-response.schema.json":     "90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87",
+	"normalized-stream-event.schema.json": "0e81faa5cac68535a8201e82feb999b942f8ab01559870a3b25919d0dd1b65be",
+	"policy.schema.json":                  "176b6b24bb6066e7cb05d7efcc9c02c76242501b5ae3947250cb1fe0804015b5",
 }
 
 var requiredFields = map[string][]string{
 	"activation-journal.schema.json":      {"activationId", "binary", "checksum", "createdAt", "environment", "generation", "listener", "mode", "nonce", "ownerUid", "platform", "policy", "rollbackActions", "schemaVersion", "sessionIdentity", "state", "updatedAt"},
-	"activation-receipt.schema.json":      {"activatedAt", "activationId", "checksum", "environment", "generation", "journalDigest", "listener", "mode", "platform", "policyDigest", "publicationMechanism", "schemaVersion", "sessionIdentity", "state"},
+	"activation-receipt.schema.json":      {"activatedAt", "activationId", "binary", "checksum", "environment", "generation", "journalDigest", "listener", "mode", "nonce", "ownerUid", "platform", "policyDigest", "publicationMechanism", "rollbackSummary", "schemaVersion", "sessionIdentity", "state"},
 	"event.schema.json":                   {"activationId", "attempt", "cursor", "destinationClass", "eventId", "latencyMs", "logicalRequestId", "modelAlias", "outcome", "policy", "protocol", "reasonCode", "routeId", "timestamp", "type"},
 	"normalized-error.schema.json":        {"code", "retryClass", "safeMessage"},
 	"normalized-request.schema.json":      {"blocks", "capabilitiesRequired", "dataClass", "limits", "logicalRequestId", "modelAlias", "protocol", "stream", "tools"},
@@ -43,7 +43,7 @@ var requiredFields = map[string][]string{
 
 var propertyFields = map[string][]string{
 	"activation-journal.schema.json":      {"activationId", "binary", "ca", "checksum", "createdAt", "environment", "generation", "listener", "mode", "nonce", "ownerUid", "platform", "policy", "rollbackActions", "schemaVersion", "sessionIdentity", "state", "updatedAt"},
-	"activation-receipt.schema.json":      {"activatedAt", "activationId", "checksum", "environment", "generation", "journalDigest", "listener", "mode", "platform", "policyDigest", "publicationMechanism", "schemaVersion", "sessionIdentity", "state"},
+	"activation-receipt.schema.json":      {"activatedAt", "activationId", "binary", "checksum", "environment", "generation", "journalDigest", "listener", "mode", "nonce", "ownerUid", "platform", "policyDigest", "publicationMechanism", "rollbackSummary", "schemaVersion", "sessionIdentity", "state"},
 	"event.schema.json":                   {"activationId", "attempt", "cursor", "destinationClass", "eventId", "latencyMs", "logicalRequestId", "modelAlias", "outcome", "policy", "protocol", "reasonCode", "routeId", "timestamp", "type", "usage"},
 	"normalized-error.schema.json":        {"code", "retryClass", "safeMessage", "upstreamStatus"},
 	"normalized-request.schema.json":      {"blocks", "capabilitiesRequired", "dataClass", "limits", "logicalRequestId", "modelAlias", "protocol", "responseSchema", "stream", "toolChoice", "tools"},
@@ -129,7 +129,7 @@ func validate(documents map[string]map[string]any, template string) error {
 	if err := validateNormalized(documents); err != nil {
 		return err
 	}
-	for _, tag := range []string{"workspaceId", "contentCapture", "rollbackActions", "listenerKeyFingerprint", "publicationMechanism", "logicalRequestId", "destinationClass", "inputTokens", "outputTokens", "safeMessage", "argumentsDelta"} {
+	for _, tag := range []string{"workspaceId", "contentCapture", "rollbackActions", "rollbackSummary", "listenerKeyFingerprint", "publicationMechanism", "logicalRequestId", "destinationClass", "inputTokens", "outputTokens", "safeMessage", "argumentsDelta", "activationMarker", "ownerUid", "nonce"} {
 		if !strings.Contains(template, `json:"`+tag) {
 			return fmt.Errorf("generated template lacks JSON field %s", tag)
 		}
@@ -154,7 +154,7 @@ func validatePolicy(document map[string]any) error {
 	if got := sortedStrings(at(document, "properties", "routes", "items", "required")); strings.Join(got, ",") != "acceptedDataClasses,capabilities,costClass,credentialRef,dataBoundary,destinationClass,destinationProtocol,endpoint,healthTimeoutMs,id,model,sourceProtocol" {
 		return fmt.Errorf("policy route fields changed: %v", got)
 	}
-	if atNumber(document, "properties", "routes", "items", "properties", "endpoint", "properties", "port", "maximum") != 65535 || lenArray(at(document, "properties", "routes", "items", "allOf")) != 2 {
+	if atNumber(document, "properties", "routes", "items", "properties", "endpoint", "properties", "port", "maximum") != 65535 || lenArray(at(document, "properties", "routes", "items", "allOf")) != 4 {
 		return errorsNew("policy endpoint/class constraints changed")
 	}
 	if atNumber(document, "properties", "fallback", "properties", "maxAttempts", "maximum") != 2 || atNumber(document, "properties", "fallback", "properties", "allowedBoundaryTransitions", "maxItems") != 3 {
@@ -173,7 +173,7 @@ func validateJournal(document map[string]any) error {
 	if got := sortedStrings(at(document, "properties", "environment", "items", "properties", "name", "enum")); strings.Join(got, ",") != "ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,OPENAI_API_KEY,OPENAI_BASE_URL" {
 		return fmt.Errorf("journal environment names changed: %v", got)
 	}
-	if atNumber(document, "properties", "environment", "maxItems") != 16 || atNumber(document, "properties", "listener", "properties", "pid", "minimum") != 1 {
+	if atNumber(document, "properties", "environment", "minItems") != 5 || atNumber(document, "properties", "environment", "maxItems") != 5 || lenArray(at(document, "properties", "environment", "allOf")) != 5 || atNumber(document, "properties", "listener", "properties", "pid", "minimum") != 1 {
 		return errorsNew("journal environment/listener bounds changed")
 	}
 	if got := sortedStrings(at(document, "properties", "environment", "items", "properties", "rollbackAction", "enum")); strings.Join(got, ",") != "remove_blazn_value,restore_prior_value" {
@@ -197,6 +197,9 @@ func validateReceipt(document map[string]any) error {
 	}
 	if got := sortedStrings(at(document, "properties", "mode", "enum")); strings.Join(got, ",") != "scoped_run,session" {
 		return fmt.Errorf("receipt modes changed: %v", got)
+	}
+	if atNumber(document, "properties", "environment", "minItems") != 5 || atNumber(document, "properties", "environment", "maxItems") != 5 || lenArray(at(document, "properties", "environment", "allOf")) != 5 || atString(document, "properties", "listener", "properties", "listenerKeyFingerprint", "pattern") != "^sha256:[0-9a-f]{64}$" {
+		return errorsNew("receipt environment/listener binding changed")
 	}
 	return nil
 }
@@ -224,9 +227,18 @@ func validateNormalized(documents map[string]map[string]any) error {
 	if got := sortedStrings(at(request, "properties", "dataClass", "enum")); strings.Join(got, ",") != "company,local_only,public,restricted" {
 		return fmt.Errorf("normalized data classes changed: %v", got)
 	}
+	if lenArray(at(request, "$defs", "block", "oneOf")) != 3 {
+		return errorsNew("normalized request block union changed")
+	}
+	if lenArray(at(documents["normalized-response.schema.json"], "properties", "blocks", "items", "oneOf")) != 2 {
+		return errorsNew("normalized response block union changed")
+	}
 	stream := documents["normalized-stream-event.schema.json"]
 	if atString(stream, "properties", "error", "$ref") != "normalized-error.schema.json" {
 		return errorsNew("normalized stream error ref changed")
+	}
+	if lenArray(at(stream, "oneOf")) != 7 {
+		return errorsNew("normalized stream discriminated union changed")
 	}
 	if at(documents["normalized-response.schema.json"], "additionalProperties") != false || at(documents["normalized-error.schema.json"], "additionalProperties") != false {
 		return errorsNew("normalized schemas must remain closed")
