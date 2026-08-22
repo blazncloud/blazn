@@ -8,7 +8,7 @@ export interface ProjectTransaction {
   getIdempotency(principalId: string, operation: string, key: string): Promise<IdempotencyReceipt | undefined>;
   putIdempotency(principalId: string, operation: string, key: string, receipt: IdempotencyReceipt): Promise<void>;
   getWorkspaceAccess(workspaceId: string, userId: string, lock?: boolean): Promise<ProjectAccess | undefined>;
-  createProject(project: Project): Promise<Project>;
+  createProject(project: Omit<Project, "createdAt" | "updatedAt">): Promise<Project>;
   getProject(workspaceId: string, projectId: string, lock?: boolean): Promise<Project | undefined>;
   listProjects(workspaceId: string, status: ProjectStatus | "all", cursor?: string): Promise<{ items: Project[]; nextCursor: string | null }>;
   updateProject(workspaceId: string, projectId: string, expectedVersion: number, changes: { name?: string; description?: string; status?: ProjectStatus }): Promise<Project | undefined>;
@@ -62,7 +62,7 @@ class PgProjectTransaction implements ProjectTransaction {
     return row ? { workspaceStatus: row.workspace_status, role: row.role } : undefined;
   }
 
-  async createProject(project: Project): Promise<Project> {
+  async createProject(project: Omit<Project, "createdAt" | "updatedAt">): Promise<Project> {
     const result = await this.client.query(`INSERT INTO projects(id,workspace_id,slug,kind,name,description,status,version,created_by)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [project.id, project.workspaceId, project.slug, project.kind, project.name, project.description, project.status, project.version, project.createdBy]);
     return projectRow(result.rows[0]!);

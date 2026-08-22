@@ -33,7 +33,6 @@ export class ProjectService {
         const project = await transaction.createProject({
           id: randomUUID(), workspaceId, slug, kind, name, description,
           status: "active", version: 1, createdBy: principal.userId,
-          createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
         });
         await transaction.insertAudit(randomUUID(), workspaceId, principal.userId, "project.created", { projectId: project.id, slug, kind, version: project.version });
         return { project };
@@ -48,14 +47,14 @@ export class ProjectService {
     if (!(["active", "archived", "all"] as const).includes(status)) throw new ProjectHttpError("invalid_request", "project status filter is invalid");
     if (cursor.length > 512) throw new ProjectHttpError("invalid_request", "project cursor is invalid");
     return this.store.transaction(async (transaction) => {
-      await this.authorize(transaction, principal, workspaceId, "read", false);
+      await this.authorize(transaction, principal, workspaceId, "read", true);
       return transaction.listProjects(workspaceId, status, cursor);
     });
   }
 
   async getProject(principal: ProjectPrincipal, workspaceId: string, projectId: string): Promise<{ project: Project }> {
     return this.store.transaction(async (transaction) => {
-      await this.authorize(transaction, principal, workspaceId, "read", false);
+      await this.authorize(transaction, principal, workspaceId, "read", true);
       const project = await transaction.getProject(workspaceId, projectId);
       if (!project) throw new ProjectHttpError("project_not_found", "project was not found");
       return { project };
@@ -97,7 +96,7 @@ export class ProjectService {
       const receipt = await transaction.getIdempotency(principal.userId, operation, key);
       if (receipt) {
         this.verifyReceipt(receipt, workspaceId, targetKey, digest);
-        await this.authorize(transaction, principal, workspaceId, capability, false);
+        await this.authorize(transaction, principal, workspaceId, capability, true);
         return receipt.responseBody as T;
       }
       await this.authorize(transaction, principal, workspaceId, capability, true);

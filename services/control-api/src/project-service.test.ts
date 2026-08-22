@@ -23,7 +23,7 @@ class MemoryProjectStore implements ProjectStore, ProjectTransaction {
   async getIdempotency(principalId: string, operation: string, key: string): Promise<IdempotencyReceipt | undefined> { return this.receipts.get(`${principalId}:${operation}:${key}`); }
   async putIdempotency(principalId: string, operation: string, key: string, receipt: IdempotencyReceipt): Promise<void> { this.receipts.set(`${principalId}:${operation}:${key}`, structuredClone(receipt)); }
   async getWorkspaceAccess(workspace: string, user: string): Promise<ProjectAccess | undefined> { return this.access.get(`${workspace}:${user}`); }
-  async createProject(project: Project): Promise<Project> {
+  async createProject(project: Omit<Project, "createdAt" | "updatedAt">): Promise<Project> {
     if ([...this.projects.values()].some((value) => value.workspaceId === project.workspaceId && value.slug === project.slug)) throw Object.assign(new Error("unique"), { code: "23505" });
     const now = "2026-08-22T00:00:00.000Z";
     const stored = { ...project, createdAt: now, updatedAt: now };
