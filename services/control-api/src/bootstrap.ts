@@ -17,9 +17,9 @@ try {
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock(hashtext('blazn-initial-identity'))");
-    const existing = await client.query<{ display_name: string; password_salt: string; password_hash: string }>("SELECT display_name,password_salt,password_hash FROM users WHERE email=$1", [login]);
+    const existing = await client.query<{ display_name: string; password_salt: string | null; password_hash: string | null }>("SELECT display_name,password_salt,password_hash FROM users WHERE email=$1", [login]);
     if (existing.rows[0]) {
-      const matches = existing.rows[0].display_name === displayName && await verifyPassword(password, existing.rows[0].password_salt, existing.rows[0].password_hash);
+      const matches = existing.rows[0].display_name === displayName && Boolean(existing.rows[0].password_salt && existing.rows[0].password_hash) && await verifyPassword(password, existing.rows[0].password_salt!, existing.rows[0].password_hash!);
       if (!matches) throw new Error("existing initial identity does not match the configured bootstrap identity");
       await client.query("COMMIT");
     } else {

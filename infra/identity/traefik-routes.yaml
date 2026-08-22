@@ -1,0 +1,31 @@
+http:
+  routers:
+    login:
+      entryPoints: [web]
+      rule: PathPrefix(`/ui/v2/login`)
+      priority: 200
+      service: login
+    root:
+      entryPoints: [web]
+      rule: Path(`/`)
+      priority: 300
+      middlewares: [login-root]
+      service: login
+    api:
+      entryPoints: [web]
+      rule: PathPrefix(`/`)
+      priority: 100
+      service: api
+  middlewares:
+    login-root:
+      replacePath:
+        path: /ui/v2/login/
+  services:
+    login:
+      loadBalancer:
+        servers:
+          - url: http://zitadel-login:3000
+    api:
+      loadBalancer:
+        servers:
+          - url: h2c://zitadel-api:8080

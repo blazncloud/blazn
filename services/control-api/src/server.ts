@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { renderActivationPage, renderAuthResult, sendHtml, type AuthMode } from "./auth-page.js";
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db.js";
 import { HttpError, jsonBody, requireExactKeys, requiredSecret, requiredString, sendJson } from "./http.js";
@@ -19,12 +20,16 @@ import { WorkspaceHttpRouter } from "./workspace-http.js";
 import { WorkspaceService } from "./workspace-service.js";
 import { PgWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceHttpError } from "./workspace-types.js";
+import { OidcClient, type OidcIdentity } from "./oidc.js";
+import { oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, stateMatches } from "./oidc-state.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
 const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
+const oidcClient = config.zitadel ? new OidcClient({ issuerUrl: config.zitadel.issuerUrl, clientId: config.zitadel.clientId, clientSecret: config.zitadel.clientSecret, callbackUrl: `${config.publicUrl}/v1/auth/oidc/callback`, requireMfa: config.zitadel.requireMfa }) : undefined;
+const oidcKey = config.zitadel ? oidcCookieKey(config.zitadel.cookieKey) : undefined;
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
@@ -129,18 +134,68 @@ async function startDeviceAuthorization(request: IncomingMessage, response: Serv
   });
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
-}
-
-async function activationPage(response: ServerResponse, code: string): Promise<void> {
+async function activationPage(response: ServerResponse, code: string, mode: AuthMode): Promise<void> {
   const escaped = code.replace(/[^A-Z0-9-]/g, "");
   const authorization = await database.query<{ device_name: string; platform: string }>("SELECT device_name, platform FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [escaped]);
   const device = authorization.rows[0];
   if (!device) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Authorize Blazn</title></head><body><main><h1>Authorize Blazn CLI</h1><p>Device: <strong>${escapeHtml(device.device_name)}</strong></p><p>Platform: ${escapeHtml(device.platform)}</p><p>Confirm that this code matches the CLI before continuing.</p><form method="post" action="/v1/auth/device/approve"><label>Code <input name="user_code" value="${escaped}" readonly required></label><label>Account login <input name="email" type="email" autocomplete="username" required></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button>Authorize this device</button></form></main></body></html>`;
-  response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
-  response.end(html);
+  sendHtml(response, 200, renderActivationPage({ code: escaped, deviceName: device.device_name, platform: device.platform, mode, oidcEnabled: Boolean(oidcClient) }));
+}
+
+async function startOidc(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  if (!oidcClient || !oidcKey || !config.zitadel) throw new HttpError("not_found", "ZITADEL identity is not configured");
+  await enforceLimit(database, "oidc-start", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 20, 60);
+  const code = (url.searchParams.get("user_code") ?? "").replace(/[^A-Z0-9-]/g, "");
+  const mode = url.searchParams.get("mode") === "signup" ? "signup" : "signin";
+  const authorization = await database.query("SELECT 1 FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [code]);
+  if (!authorization.rowCount) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
+  const transaction = oidcClient.createTransaction(code, mode);
+  const destination = await oidcClient.authorizationUrl(transaction);
+  response.writeHead(303, { location: destination.href, "set-cookie": oidcTransactionCookie(oidcKey, transaction), "cache-control": "no-store", "referrer-policy": "no-referrer" });
+  response.end();
+}
+
+async function approveOidcIdentity(transaction: { userCode: string; mode: AuthMode }, identity: OidcIdentity): Promise<void> {
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    const authorization = await client.query<{ id: string }>("SELECT id FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL FOR UPDATE", [transaction.userCode]);
+    const pending = authorization.rows[0];
+    if (!pending) throw new Error("The device authorization expired or was already used.");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`oidc:${identity.email}`]);
+    const existingIdentity = await client.query<{ user_id: string }>("SELECT user_id FROM user_identities WHERE issuer=$1 AND subject=$2 FOR UPDATE", [identity.issuer, identity.subject]);
+    let userId = existingIdentity.rows[0]?.user_id;
+    if (userId) {
+      await client.query("UPDATE user_identities SET email=$1,last_login_at=now() WHERE issuer=$2 AND subject=$3", [identity.email, identity.issuer, identity.subject]);
+    } else {
+      if (transaction.mode !== "signup") throw new Error("No Blazn account is linked to this identity. Choose Sign up first.");
+      const existingUser = await client.query("SELECT id FROM users WHERE email=$1 FOR UPDATE", [identity.email]);
+      if (existingUser.rowCount) throw new Error("An account already exists for this email. Sign in with the existing method; social linking requires separate approval.");
+      userId = randomUUID();
+      await client.query("INSERT INTO users(id,email,display_name,email_verified_at) VALUES($1,$2,$3,now())", [userId, identity.email, identity.displayName]);
+      await client.query("INSERT INTO user_identities(issuer,subject,user_id,email) VALUES($1,$2,$3,$4)", [identity.issuer, identity.subject, userId, identity.email]);
+    }
+    await client.query("UPDATE device_authorizations SET approved_user_id=$1 WHERE id=$2", [userId, pending.id]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
+
+async function oidcCallback(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+  if (!oidcClient || !oidcKey) throw new HttpError("not_found", "ZITADEL identity is not configured");
+  try {
+    const transaction = oidcTransactionFromRequest(request, oidcKey);
+    if (!stateMatches(transaction.state, url.searchParams.get("state") ?? "")) throw new Error("identity callback state is invalid");
+    const identity = await oidcClient.callback(url, transaction);
+    await enforceLimit(database, "oidc-callback", `${identity.issuer}:${identity.subject}`, 20, 15 * 60);
+    await approveOidcIdentity(transaction, identity);
+    sendHtml(response, 200, renderAuthResult("Device authorized", "Your verified Blazn identity is now linked to this CLI.", true), true);
+  } catch (error) {
+    const message = error instanceof Error && /^(No Blazn account|An account already exists|The device authorization|multi-factor authentication|a verified email)/.test(error.message) ? error.message : "Blazn could not verify this identity transaction. No account or device was changed.";
+    sendHtml(response, 400, renderAuthResult("Sign-in could not be completed", message, false), true);
+  }
 }
 
 async function formBody(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
@@ -176,9 +231,9 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
     const authorization = await client.query<{ id: string }>("SELECT id FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL FOR UPDATE", [code]);
     const pending = authorization.rows[0];
     if (!pending) throw new HttpError("authorization_not_found", "authorization code is invalid, expired, or already used");
-    const user = await client.query<{ id: string; password_salt: string; password_hash: string }>("SELECT id, password_salt, password_hash FROM users WHERE email = $1", [email]);
+    const user = await client.query<{ id: string; password_salt: string | null; password_hash: string | null }>("SELECT id, password_salt, password_hash FROM users WHERE email = $1", [email]);
     let userId: string;
-    if (user.rows[0]) {
+    if (user.rows[0]?.password_salt && user.rows[0].password_hash) {
       if (!(await verifyPassword(password, user.rows[0].password_salt, user.rows[0].password_hash))) throw new HttpError("identity_rejected", "identity verification failed");
       userId = user.rows[0].id;
     } else throw new HttpError("identity_rejected", "identity verification failed");
@@ -186,14 +241,16 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
+    if (contentType.startsWith("application/x-www-form-urlencoded")) {
+      sendHtml(response, 403, renderAuthResult("Sign-in was rejected", "The email or password could not be verified. No device was authorized.", false));
+      return;
+    }
     throw error;
   } finally {
     client.release();
   }
   if (contentType.startsWith("application/x-www-form-urlencoded")) {
-    const html = "<!doctype html><html><body><h1>Device authorized</h1><p>You may return to the CLI.</p></body></html>";
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store" });
-    response.end(html);
+    sendHtml(response, 200, renderAuthResult("Device authorized", "Your existing Blazn account approved this CLI.", true));
   } else {
     sendJson(response, 200, { status: "approved" });
   }
@@ -298,7 +355,9 @@ async function revokeSessionWithProof(request: IncomingMessage, response: Server
 async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", config.publicUrl);
   if (request.method === "GET" && url.pathname === "/healthz") return health(response);
-  if (request.method === "GET" && url.pathname === "/activate") return activationPage(response, url.searchParams.get("user_code") ?? "");
+  if (request.method === "GET" && url.pathname === "/activate") return activationPage(response, url.searchParams.get("user_code") ?? "", url.searchParams.get("mode") === "signup" ? "signup" : "signin");
+  if (request.method === "GET" && url.pathname === "/v1/auth/oidc/start") return startOidc(request, response, url);
+  if (request.method === "GET" && url.pathname === "/v1/auth/oidc/callback") return oidcCallback(request, response, url);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/authorizations") return startDeviceAuthorization(request, response);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/approve") return approveDevice(request, response);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/sessions") return exchangeDeviceCode(request, response);
@@ -376,7 +435,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return { userId: current.userId, email: current.email, displayName: current.displayName };
     });
   }
-  const known = new Set(["/healthz", "/activate", "/v1/auth/device/authorizations", "/v1/auth/device/approve", "/v1/auth/device/sessions", "/v1/auth/sessions/refresh", "/v1/auth/sessions/revoke", "/v1/auth/me", "/v1/auth/session", "/v1/auth/devices", "/v1/events"]);
+  const known = new Set(["/healthz", "/activate", "/v1/auth/oidc/start", "/v1/auth/oidc/callback", "/v1/auth/device/authorizations", "/v1/auth/device/approve", "/v1/auth/device/sessions", "/v1/auth/sessions/refresh", "/v1/auth/sessions/revoke", "/v1/auth/me", "/v1/auth/session", "/v1/auth/devices", "/v1/events"]);
   if (known.has(url.pathname) || deviceMatch) throw new HttpError("method_not_allowed", "method is not allowed for this route");
   throw new HttpError("not_found", "route not found");
 }

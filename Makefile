@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-infra test-sandbox-contract test-sandbox-postgres release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-infra test-sandbox-contract test-sandbox-postgres release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -48,6 +48,9 @@ test:
 test-control-api:
 	./scripts/test-control-api.sh
 
+test-identity:
+	./infra/identity/test-static.sh
+
 test-infra:
 	./infra/milestone-2/tests/test-preflight.sh
 	./infra/milestone-2/tests/test-contract.sh
@@ -85,4 +88,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-proxy-generated check-node-generated check-sandbox-generated test test-sandbox-contract test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-proxy-generated check-node-generated check-sandbox-generated test test-identity test-sandbox-contract test-release test-install
