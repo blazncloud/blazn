@@ -28,7 +28,7 @@ The POC will add:
 - Machine-readable commands that Codex, Claude Code, and other harnesses can invoke.
 - End-to-end evidence proving installation, authentication, workspace collaboration, node management, sandbox lifecycle, agent execution, cleanup, and cross-architecture behavior.
 
-The POC must run in dedicated Blazn namespaces and use the existing Kueue capacity envelope. It must not interrupt current Frontro agent work, widen existing credentials, or claim production-grade untrusted-code isolation before a hardened RuntimeClass is qualified.
+Kubernetes POC resources must run in dedicated Blazn namespaces and use the existing Kueue capacity envelope. The ben1 PostgreSQL, object-storage, API, and ngrok host services must be installed under a separate Blazn ownership receipt with explicit services, ports, credentials, data paths, backup paths, resource bounds, and rollback. The POC must not interrupt current Frontro agent work, widen existing credentials, or claim production-grade untrusted-code isolation before a hardened RuntimeClass is qualified.
 
 ## POC outcome
 
@@ -61,6 +61,7 @@ The read-only inspection on 2026-08-21 confirmed:
 | --- | --- |
 | Kubernetes | MicroK8s `v1.35.6`, HA enabled |
 | Linux control and worker nodes | `ben1`, `ben2`, and `ben3`, all Ready, AMD64, and agent-eligible |
+| Additional Linux lane | `ben4`, Ubuntu 26.04 LTS AMD64 with a standalone single-node MicroK8s 1.35.6 installation; it is not a shared-cluster worker and remains an isolated/adoption lane unless a separate reset-and-restoration plan is explicitly approved |
 | Mac workers | `mac-mini-1-agent` through `mac-mini-6-agent`, all Ready, ARM64, and agent-eligible |
 | Mac isolation boundary | One Ubuntu ARM64 Lima VM per Mac mini; macOS is not joined directly to Kubernetes |
 | Kueue | Installed and active with `m1-light` ClusterQueue |
@@ -84,7 +85,7 @@ The current `blaze-internal` main branch already contains reusable patterns for:
 - AMD64 Linux and ARM64 Mac mini Kubernetes execution.
 - Mac worker installation through Lima, bridged networking, MicroK8s worker join, taints, labels, and serial qualification.
 - A TypeScript agent-control API and generated client package.
-- Durable SQLite-backed agent and Operation state.
+- Durable SQLite-backed Agent Control state as an implementation reference; the Blazn POC itself uses PostgreSQL on ben1.
 - Authentication with bearer principals, authorization checks, confirmation, idempotency, optimistic concurrency, and audit evidence.
 - Agent launch, status, logs, events, follow-up messages, cancellation, results, nodes, capacity, and queues.
 - Scheduled and persistent workload lifecycle executors.
@@ -198,7 +199,8 @@ flowchart LR
     Auth[Device login and web callback]
     API[Blazn Management API]
     Broker[Node bootstrap broker]
-    DB[(POC SQLite state)]
+    DB[(PostgreSQL on ben1)]
+    Objects[(S3-compatible storage on ben1)]
     Events[Operation and event stream]
     NodeSvc[blazn node service]
     Adapter[Kubernetes and Agent Sandbox adapter]
@@ -225,6 +227,7 @@ flowchart LR
     CLI --> LocalProxy
     API --> Broker
     API --> DB
+    API --> Objects
     API --> Events
     API --> Adapter
     API --> NodeSvc
@@ -269,13 +272,15 @@ Use TypeScript on Node 22 for the POC Management API so the implementation can a
 
 The API remains contract-first. Store the OpenAPI and JSON schemas under source control and generate the Go client used by the CLI. The CLI must not carry hand-written request/response copies that drift from the API.
 
-#### Persistence
+#### Persistence and object storage
 
-Use a single-replica SQLite database on an explicit retained POC volume for the first proof. This matches the proven Agent Control pattern and keeps the POC small. It is not an HA claim.
+Run a local PostgreSQL service on `ben1` for the POC. Store its data under a dedicated reviewed path on the intended `/srv/frontro` data mount, never the root filesystem. PostgreSQL stores users, device sessions, workspaces, memberships, invitations, Nodes, node identities, Agents, AgentVersions, HarnessProfiles, SandboxTemplates, Sandboxes, Runs, Operations, messages, events, and audit metadata. Secret values are not stored in ordinary resource tables.
 
-The database stores users, device sessions, workspaces, memberships, invitations, Nodes, node identities, Agents, AgentVersions, SandboxTemplates, Sandboxes, Runs, Operations, events, and audit metadata. Secret values are not stored in ordinary resource tables.
+Run a private S3-compatible object-storage service on `ben1` under a separate reviewed `/srv/frontro` path. It stores artifacts, patches, build evidence, template packages, conversation attachments, Sandbox transfers, and retained logs. PostgreSQL stores object identity, digest, classification, ownership, workspace, and retention metadata rather than large binary payloads.
 
-PostgreSQL migration is a post-POC architecture decision and should be tested before adding API replicas that can mutate state concurrently.
+PostgreSQL and the object store are reachable only from approved Blazn services and administrative paths. Ngrok exposes `https://blazn.benpelo.com` for the Blazn API and authentication UI; it does not expose PostgreSQL or the object-storage administrative endpoint directly.
+
+This single-host arrangement is acceptable only for the POC and is not an HA claim. Phase 2 must prove schema migration, logical backup, restore into an isolated target, object checksum verification, and API behavior after service restart. A backup stored only on the same ben1 filesystem is not described as disaster recovery.
 
 #### Kubernetes adapter
 
@@ -396,7 +401,8 @@ blazn/
 
 - `ProxyPolicy`: workspace-approved model routes, destination capabilities, allowed provider hostnames, fallback, and capture policy.
 - `ProxyRoute`: model match, source protocol, destination, authentication capability, status, and exact policy version.
-- `ProxyActivationReceipt`: local previous state, listener and process identity, platform mechanism, environment keys, CA fingerprint, route version, activation time, and recovery state.
+- `ProxyActivationJournal`: fsynced write-ahead prior environment values, activation marker, listener and process-start identity, executable identity, platform mechanism, CA fingerprint, rollback actions, and state.
+- `ProxyActivationReceipt`: completed local activation identity, journal digest, route version, activation time, and recovery state.
 - `ProxyEvent`: ROUTED, DIRECT, BYPASS, failure, activation, deactivation, and recovery metadata without prompt or credential content.
 
 ## CLI contract
@@ -619,7 +625,7 @@ The only host prerequisites are:
 
 Everything else is a Blazn-owned dependency. The installer must either provision it automatically or fail before mutation with one clear incompatibility report.
 
-For the first proof, qualify at least one clean Ubuntu LTS AMD64 host profile. Add Linux ARM64 when the available test hardware supports it. Other distributions fail closed until their install, service, package, networking, and rollback behavior is explicitly qualified.
+For the first proof, Phase 0 names one `FreshNodeHost` running clean Ubuntu 26.04 LTS AMD64. `ben4` is not that host by default because it already has a standalone MicroK8s installation. It can become `FreshNodeHost` only under a separate approved reset plan that captures and later restores or deliberately retires its standalone state. Otherwise use an equivalent disposable VM or new host and retain ben4 as an isolated adoption/test lane. Add Linux ARM64 when available test hardware supports it. Other distributions fail closed until their install, service, package, networking, and rollback behavior is explicitly qualified.
 
 ### Installation stages
 
@@ -791,6 +797,8 @@ Create two variants under one logical template:
 - `coding-small/linux-arm64`
 
 Both use the same OCI manifest digest, where possible, and the same semantic configuration:
+
+Phase 5 lifecycle qualification uses a small, prebuilt, pinned, reviewed multi-architecture bootstrap fixture image prepared during Phase 0. It does not depend on the Phase 6 development build. Phase 6 later builds and publishes the real coding-agent development image, then reruns the relevant template gates before promotion.
 
 - 1 CPU, 2 GiB memory, 6 GiB ephemeral-storage budget.
 - Non-root user.
@@ -1012,9 +1020,11 @@ The proxy may use documented process or user-session environment variables, a lo
 4. Create or verify a Blazn-owned local CA when TLS interception is required; keep its private key local, mode-restricted, and outside synchronization.
 5. Start the proxy listener on loopback using the same signed `blazn` binary.
 6. Verify health, target connectivity, certificate use, HTTP streaming, failure events, and direct pass-through.
-7. Publish the proxy and CA environment only to the supported user-session mechanism.
-8. Record an ActivationReceipt containing previous Blazn-owned environment state, listener identity, process identity, CA fingerprint, routes, activation time, and recovery instructions.
-9. Detect already running supported applications that predate activation and tell the user which must be restarted.
+7. Refuse activation when a touched standard proxy or CA environment variable has ambiguous non-Blazn ownership that cannot be restored safely.
+8. Write a mode-restricted, checksummed write-ahead ActivationJournal containing every touched variable and its exact prior value, listener identity, executable identity, process start identity, CA fingerprint, route version, activation ID, and rollback action; fsync the file and parent directory before mutation.
+9. Publish the proxy, activation marker, and CA environment only to the supported user-session mechanism using compare-and-set against the journaled prior state.
+10. Atomically mark the journal active and write the redundant ActivationReceipt after the environment mutation succeeds.
+11. Detect already running supported applications that predate activation and tell the user which must be restarted.
 
 Environment state is not published until the listener passes health checks. A failed activation leaves applications on their previous direct path.
 
@@ -1022,24 +1032,25 @@ Environment state is not published until the listener passes health checks. A fa
 
 `blazn proxy off` is a panic-safe operation implemented directly by the CLI:
 
-1. Load and validate the Blazn ActivationReceipt without calling the proxy daemon.
-2. Remove only the environment and session state installed by that activation.
+1. Load and validate the Blazn ActivationJournal and ActivationReceipt without calling the proxy daemon.
+2. Restore every touched environment variable to its exact prior value using the activation marker and compare-and-set; do not erase a value another process changed after activation.
 3. Verify that newly launched processes no longer receive Blazn proxy or CA variables.
 4. Stop the exact recorded proxy process if it is still running.
 5. Verify the listener is closed and direct provider connectivity is restored.
 6. Retain the local CA by default for a later activation or remove it only with `--remove-ca`.
 7. Record a DeactivationReceipt and report any stale supported applications that must be restarted.
 
-The command must succeed when the daemon is unresponsive, its control API is unavailable, configuration is malformed, or the prior process was killed. It must not depend on model-provider or Blazn-cloud availability to restore direct application networking.
+The command must reach a deterministic safe result when the daemon is unresponsive, its control API is unavailable, configuration is malformed, or the prior process was killed. If the receipt is damaged, recovery uses the write-ahead journal. If both records are damaged, Blazn may clear a standard variable only when the surviving activation marker and value prove that it points to the Blazn-owned listener or CA; otherwise it stops the verified listener, leaves ambiguous user-owned state untouched, and returns `RECOVERY_REQUIRED` with a non-success exit category and exact manual remediation. It must not claim successful restoration in ambiguous state or depend on model-provider or Blazn-cloud availability.
 
 ### Crash and stale-state recovery
 
 - Normal exit and handled signals trigger deactivation.
 - A small supervised lease or watchdog clears published session state if the proxy exits unexpectedly.
-- Startup detects an ActivationReceipt whose process or listener no longer exists and repairs the stale environment before accepting another activation.
+- Startup detects a pending or active ActivationJournal whose verified process or listener no longer exists and repairs the stale environment before accepting another activation.
 - `blazn proxy reset` enumerates and removes only Blazn-owned listener, environment, receipt, process, and optional CA state.
 - Repeated `on` and `off` commands are idempotent.
-- Two concurrent CLI invocations use a local lock and cannot create competing listeners or overwrite one another's receipt.
+- Two concurrent CLI invocations use a local lock and cannot create competing listeners or overwrite one another's journal or receipt.
+- Process cleanup verifies executable identity, activation nonce, and process start identity; a reused PID alone is never sufficient authority to terminate a process.
 
 ### Platform behavior
 
@@ -1120,9 +1131,19 @@ Run at least twenty complete cycles on each supported platform:
 9. Verify direct connectivity and no stale listener or environment.
 10. Verify application config snapshots are unchanged.
 
-Also test concurrent activation, repeated `on`, repeated `off`, corrupt receipt, stale PID reuse protection, missing CA, expired destination credential, network loss, API outage, and host reboot.
+Also test concurrent activation, repeated `on`, repeated `off`, corrupt receipt, corrupt journal, both records corrupt, stale PID reuse protection, missing CA, expired destination credential, network loss, API outage, and host reboot. A single valid ownership record must restore automatically; irrecoverably ambiguous ownership must return `RECOVERY_REQUIRED` without changing user-owned state.
 
 ## Installation and release
+
+### Release authenticity and candidate promotion
+
+The POC uses one pinned Ed25519 OpenSSH release public key and the `ssh-keygen -Y verify` signature format with namespace `blazn-release`. The public key and expected fingerprint are embedded in the reviewed installer. The release signer signs the exact checksum manifest; the installer verifies the signer and signature before trusting any archive checksum. Supported installer environments must provide the baseline OS tools `curl`, `tar`, a SHA-256 utility, and an OpenSSH `ssh-keygen` with signature verification. These are installer prerequisites, not CLI runtime dependencies; a missing verifier fails closed before installation.
+
+CI builds one immutable candidate set per reviewed commit. Candidate archives, signed checksum manifest, provenance, and metadata are published under a private commit-and-digest-addressed prefix. Every Linux and Mac lane downloads and tests those exact bytes; lanes do not build independent candidates.
+
+After the native matrix passes, the release owner acquires the release lock and conditionally promotes the same artifact digests to the approved public version URL. A serialized post-promotion smoke downloads through the public curl command and verifies that the public archives and signed manifest have the same candidate digests. Promotion never rebuilds the binaries.
+
+Qualification includes wrong signer, invalid signature, missing signature, modified checksum manifest, archive digest substitution, duplicate or missing checksum entry, and unavailable verifier cases.
 
 ### Release artifacts
 
@@ -1235,12 +1256,108 @@ Publish the OpenAPI document and generate the CLI client in CI. Contract drift b
 ### POC limitations that must remain visible
 
 - Standard container runtime is not hardened multi-tenant isolation.
-- SQLite single-replica persistence is not HA.
+- Single-host PostgreSQL and S3-compatible storage on ben1 are not HA or disaster recovery.
 - Ephemeral sandbox storage is not restart-persistent.
 - The existing cluster is shared with active workloads.
 - The initial identity provider and public distribution origin are POC choices, not permanent architecture.
 
 ## Execution phases
+
+### Concurrency model and host lanes
+
+Concurrency applies to implementation and isolated verification, not to every mutation. Each work package uses a distinct branch and worktree, publishes commits through Git, and has one integration owner. No two machines edit the same mutable checkout or publish the same release version.
+
+Default host lanes are preferred assignments, not reservations. The integration owner rechecks reachability, load, free memory, swap, and disk immediately before dispatch and reroutes work when a host is unhealthy or busy.
+
+| Host lane | Default responsibility |
+| --- | --- |
+| `ben1` | Integration and control-plane owner; PostgreSQL/object-storage/API work; read-only cluster baseline; serialized migrations and qualification coordination; no repository build/test matrix while storage migration or qualification is active |
+| `ben2` | Go CLI, Linux runtime, installer, and API client implementation |
+| `ben3` | Kubernetes adapters, contracts, security, release workflow, and AMD64 integration tests |
+| `ben4` | Ubuntu 26.04 AMD64 adoption and CLI installer fault injection; disposable-cluster work runs inside a separate isolated guest, and destructive-host use requires explicit reset authorization |
+| `mac-mini-1` | macOS CLI behavior, Keychain, proxy session activation, and Codex external-client proof |
+| `mac-mini-2` | macOS curl install, PATH, proxy crash/recovery, and Claude external-client proof |
+| `mac-mini-3` | First Mac node canary, Lima adapter, upgrade/uninstall, and Mac worker lifecycle |
+| `mac-mini-4` | Darwin ARM64 archive/install security plus Linux ARM64 tests inside a separate disposable guest, never the shared-cluster worker VM |
+| `mac-mini-5` | ARM64 image and Sandbox/Harness verification, signature/quarantine verification without signing credentials, and failed-upgrade rollback |
+| `mac-mini-6` | Independent ARM64 end-to-end qualification, cleanup, and review-fix verification |
+
+At most two bounded implementation or verification tasks run concurrently on any Mac mini. A machine running proxy session mutation, node lifecycle, or qualification is not also used for an unrelated build or release task.
+
+### Cross-cutting serialization gates
+
+The following always have one named owner and run serially:
+
+- OpenAPI and shared schema publication, generated-client regeneration, and contract version changes.
+- PostgreSQL schema migrations, restore tests against production-like POC data, and object-store retention migrations.
+- Release version allocation, signing, checksum/provenance publication, public installer promotion, and Homebrew formula update.
+- Live cluster-scoped CRD, ClusterRole, webhook, Agent Sandbox controller, and Kueue resource changes.
+- Registry multi-architecture manifest publication and mutable release-channel movement.
+- Node reset, join, adoption, cordon, drain, runtime update, identity rotation, and removal.
+- Proxy activation or deactivation on one user session.
+- Full clean-namespace acceptance runs, fault injection, queue overflow, and rollback.
+
+Each serialized shared-system operation also acquires an authoritative operational lock with an owner, purpose, correlation ID, and monotonic fencing token. Required shared locks include `schema-migration`, `ben1-control-plane-mutation`, `public-origin/blazn.benpelo.com`, `release-version`, `live-cluster-mutation`, `registry-manifest`, and `node-lifecycle/<node>`.
+
+Before Phase 2, GitHub Actions concurrency groups serialize dispatch, but the authoritative host/cluster lock is a root-owned remote `flock` held for the complete foreground mutation. Acquisition atomically increments a root-owned counter under an exact Blazn POC lock directory. Every mutating stage verifies the current fencing token before changing state. The release publisher additionally relies on atomic version-tag creation and conditional object promotion so a stale workflow cannot replace a newer release.
+
+After PostgreSQL is available, API-level schema and release Operations use transactional advisory locking plus a stored fencing generation. Host and cluster scripts still require the remote lock. Lock expiry is informational and never grants automatic takeover: a stale lock or uncertain holder requires reconciliation and audit before a new token is issued. Acquire, renew, verify, release, failed verification, and forced recovery are recorded.
+
+The `ben1-control-plane-mutation` lock is mutually exclusive with `schema-migration`, production-like restore, storage restart, API/ngrok deployment, and backup promotion. Code and fixtures may develop in parallel; only one owner changes live ben1 services, ports, users, groups, firewall state, `/srv/frontro` paths, or public routing.
+
+Proxy activation and recovery use a different boundary: the authoritative `proxy-session/<host-user>` lock is a mode-restricted local per-user lock colocated with the write-ahead ActivationJournal. It requires no root, network, daemon, or Blazn API and therefore cannot block panic-safe `proxy off`. Distributed qualification also acquires a coordinator-only scheduling lock before dispatch so two SSH lanes are never assigned to the same host/user proxy session; that scheduling lock is not required by the local recovery command.
+
+### Per-milestone concurrency map
+
+| Milestone | Parallel work packages | Suggested lanes | Prerequisites | Serialized integration gate |
+| --- | --- | --- | --- | --- |
+| Phase 0 — decisions and safety | Ownership/licensing/distribution/IdP decisions; read-only cluster and storage baseline; Agent Sandbox manifest/image review; disposable-cluster Kueue spike; Mac/Lima inventory | Human owners; `ben1`; `ben2`; `ben4`; `mac-mini-3–6` | Repository access and read-only host access | One timestamped baseline, exact pinned digests, approved rollback inventory, and no live mutation |
+| Phase 1 — standalone CLI | CLI command/output core; POSIX installer and negative tests; release/cross-build/signature pipeline; disposable Linux AMD64/ARM64 tests; clean-account Darwin ARM64 matrix | `ben1`; `ben2`; `ben3`; isolated guest on `ben4`; all six Macs with unique users/prefixes | Reviewed contract commit/tag and one commit-addressed signed candidate digest | One version owner conditionally promotes unchanged candidate bytes, then runs the public curl smoke |
+| Phase 2 — control plane and auth | PostgreSQL and migrations; object storage; API/auth service; ngrok/TLS; generated Go client/auth CLI; namespaced credential-store tests; isolated backup/restore and revocation tests | `ben1`; `ben2`; `ben3`; isolated restore guest on `ben4`; `mac-mini-1/2` | IdP, callback, hostname, TLS, storage paths, reviewed OpenAPI commit, and collision-free service plan | One ben1 deploy owner holds the mutually exclusive control-plane lock; one public-origin owner activates `blazn.benpelo.com` |
+| Phase 2A — workspaces | Workspace/membership schema; RBAC policy; CLI commands; API resources; cross-workspace security tests; UI/auth callback fixtures | `ben1`; `ben2`; `ben3`; `ben4`; `mac-mini-1/2` | Phase 2 sessions and frozen authorization vocabulary | Schema migration first, then generated clients, then two-user live join/revocation test |
+| Phase 3 — nodes | NodeInstallPlan and broker; Linux systemd/bootstrap; node identity/heartbeat; CLI operations; existing-node adoption; Mac launchd/Lima adapter; ben4 install/repair/uninstall fixtures | `ben1`; `ben2`; `ben3`; `ben4`; `mac-mini-3` | Phase 2A operator role, node schema, signing identity, reset authorization | Fresh-node/reset test, existing Linux canary, Mac canary, and remaining node rollout occur one node at a time |
+| Phase 4 — control plane and Agent Sandbox | Control-state resources; upstream manifest/RBAC/network review; Sandbox reconciler; disposable restart/uninstall tests; contract fixtures | `ben1`; `ben2`; `ben3`; isolated guest on `ben4` | Disposable compatibility proof and exact live inventory | One cluster owner installs CRDs/controller, creates LocalQueue, and runs one synthetic canary |
+| Phase 5 — templates and Sandboxes | Template/version API; lifecycle reconciler; access grants and file/artifact transfer; AMD64 lifecycle; ARM64 lifecycle; CLI commands | `ben1`; `ben2`; `ben3`; `ben4`; cluster-scheduled Mac worker Pods | Phase 4 canary, immutable schema, pinned bootstrap fixture images for both architectures, object storage | Direct Sandbox first, then Claim; drain, cleanup, and orphan scan serial under capped POC quota |
+| Phase 6 — development | Example project and dev commands; BuildKit integration; validation/security/provenance; AMD64 build; cluster-scheduled Linux ARM64 BuildKit build; evidence packaging | `ben1`; `ben2`; `ben3`; `ben4`; approved ARM64 worker | Phase 1 release skeleton, trusted build access, Phase 5 template contract | One owner publishes the development multi-architecture manifest and promotes the template after both lanes pass |
+| Phase 6A — model proxy | Router/control state; Linux activation/recovery; macOS activation; protocol/redaction conformance; config non-mutation and crash/reboot matrix | `ben1`; `ben2`; `ben3`; sacrificial `mac-mini-1/2`; `mac-mini-4/5/6` only in exclusive scheduled windows | Phase 1 CLI, Phase 2 credential policy, frozen write-ahead journal and CA contracts | Per-host proxy mutation is exclusive; route claims publish only after twenty-cycle platform gates |
+| Phase 7 — Agents and harnesses | Agent/Run/event contract; Hermes adapter; Codex adapter; Claude adapter; generic adapter; AMD64 and ARM64 portable evaluations | `ben1`; `ben2`; `ben3`; `ben4`; cluster-scheduled `mac-mini-4/5/6-agent` Pods | Frozen Harness Adapter conformance contract; Gate 5 templates; Gate 6 publication; Gate 6A routed model profile | Contract merges first; adapters integrate independently; portable-agent parity gate closes the milestone |
+| Phase 8 — external proof | Codex external control; Claude external control; generic adapter fixture; credential-isolation tests; redacted evidence aggregation | `ben2` and `mac-mini-1`; `ben3` and `mac-mini-2`; `ben4`; `ben1` | Released CLI/JSON contract and Phase 7 adapters | One evidence owner validates identical schemas/semantics, stable IDs within each workflow, unique resources across workflows, and no credential leakage |
+| Phase 9 — qualification | Domain suites in isolated namespaces and unique workspaces/object prefixes; AMD64/ARM64 matrix; fault fixtures; evidence validation; DB/object/Kubernetes cleanup assertions | `ben2`; `ben3`; isolated guest on `ben4`; `mac-mini-3–6` | All prior gates and a fresh baseline | Two complete acceptance passes, disruptions, overflow, DB/object residue scan, rollback, and post-rollback comparison run serially under `ben1` coordinator |
+
+### Dependency DAG and safe overlap
+
+The live critical path is:
+
+```text
+Phase 0 → Phase 1 → Phase 2 → Phase 2A → Phase 3 → Phase 4 → Phase 5 ─┐
+                  ├──────────────────────────────→ Phase 6 ───────────┼→ Phase 7 → Phase 8 → Phase 9
+                  └──────────────→ Phase 6A ──────────────────────────┘
+```
+
+Engineering can overlap safely:
+
+- Phase 4 manifest and adapter work can begin during Phase 3, but live installation waits for Gate 3.
+- Phase 5 template/API code can begin during Phase 4, but live lifecycle tests wait for Gate 4.
+- Phase 6 example, build, validation, and provenance work can begin after Phase 1 contracts and trusted-build access; publication waits for Phase 5.
+- Phase 6A proxy work can begin after the Phase 1 CLI skeleton and Phase 2 credential/routing decisions; it is independent of node and Sandbox implementation.
+- Phase 7 adapter implementations can begin against a frozen conformance fixture while Phases 5, 6, and 6A finish; integrated routed Runs wait for Gate 5, Gate 6, and Gate 6A.
+- Phase 8 and the full Phase 9 remain downstream of integrated portable-agent execution.
+
+### Milestone 1 execution wave
+
+Milestone 1 uses every requested machine without sharing mutable worktrees:
+
+| Work package | Primary lane | Parallel verification lanes |
+| --- | --- | --- |
+| CLI help, version, output, exit codes, and doctor | `ben1` | `mac-mini-1` command/JSON behavior |
+| Secure POSIX installer, receipts, upgrade, uninstall, and fault injection | `ben2` | `mac-mini-2` clean account/prefix curl/PATH; `mac-mini-3` isolated-prefix upgrade/uninstall; disposable AMD64 guest on `ben4` for Linux failure rollback |
+| Cross-build, archive, checksum, provenance, and release workflow | `ben3` | `mac-mini-4` archive/traversal; `mac-mini-5` signature/quarantine verification; `mac-mini-6` independent release verification |
+| Linux native matrix | disposable Ubuntu AMD64 guest on `ben4` | separately named disposable ARM64 guests on `mac-mini-4/5/6`, never the shared agent-worker Lima VMs |
+| Integration, PR ownership, and final release publication | Root integration owner | All lanes consume the same candidate version; only one owner publishes it |
+
+Every Phase 1 host uses a unique temporary test user or HOME, install prefix, receipt namespace, Keychain service/account namespace, and cleanup inventory. Disposable ARM guests are capped at 2 CPU, 4 GiB RAM, and 12 GiB disk by default and are refused when live host capacity or the shared agent-worker VM crosses the reviewed pressure threshold.
+
+The Phase 1 branch set merges in this order: command/output contract, installer, release workflow, platform tests, then integration evidence. CI creates one immutable candidate from the reviewed integration commit. Release publication happens only from the reviewed merged commit, promotes those exact bytes, and is followed by the public curl smoke.
 
 ### Phase 0 — Decisions, baseline, and safety
 
@@ -1263,44 +1380,75 @@ Gate 0:
 - Disposable-cluster Agent Sandbox install, Sandbox lifecycle, and Kueue admission pass.
 - Existing cluster remains unchanged.
 
-### Phase 1 — Repository, contracts, and release skeleton
+### Phase 1 — Standalone CLI and curl distribution
 
 Deliver:
 
-- Go CLI/node module.
-- TypeScript control API service.
-- OpenAPI and JSON schema package.
-- Generated Go client.
-- CI for lint, type-check, unit, contract, security, and release builds.
-- Version command, capability negotiation, JSON output, and structured errors.
-- Signed/checksummed cross-platform release assets.
-- Curl installer and Homebrew formula automation against a test release.
-- NodeInstallPlan schema, signature verification, host discovery, plan rendering, and privileged pipe boundary.
+- One CGO-disabled Go `blazn` binary with no runtime dependency.
+- Root help, explicit help, unknown-command handling, `version`, and offline-safe `doctor`.
+- Human output and deterministic JSON output with stable initial exit categories.
+- CI for formatting, unit tests, static checks, cross-compilation, archives, checksums, provenance, and release assets.
+- Pinned Ed25519 OpenSSH release trust root, signed checksum manifest, and commit-addressed immutable candidate channel.
+- Darwin ARM64, Linux AMD64, and Linux ARM64 release archives.
+- POSIX curl installer with immutable version selection, exact checksum matching, archive traversal checks, atomic replacement, same-version idempotency, and failed-upgrade rollback.
+- Install, upgrade-by-rerunning-installer, uninstall, reinstall, and receipt behavior.
+- Homebrew formula work may proceed in parallel, but it is not required to close the curl milestone until the public tap decision is approved.
 
 Gate 1:
 
-- Fresh macOS and Linux test machines install the same version through the intended channels.
-- CLI/API contract tests pass.
-- Formula and release version/checksum match.
+- The anonymous approved curl URL installs the same immutable version into a clean macOS ARM64 test account/prefix, a disposable Ubuntu 26.04 AMD64 guest, and a disposable Linux ARM64 guest.
+- `help`, `version`, and `doctor` pass in human and JSON modes with documented exit behavior.
+- Wrong signer, invalid or missing signature, changed manifest, digest substitution, verifier unavailable, tampered checksum, duplicate or missing checksum entry, truncated archive, unsupported OS/architecture, and path-traversal archive tests fail safely.
+- All native lanes consume one commit-addressed candidate digest; serialized public promotion reuses those bytes and a post-promotion anonymous curl smoke passes.
+- Same-version reinstall, N-1 to N upgrade, failed-upgrade rollback, uninstall, and reinstall pass.
 - No runtime dependency is required for the CLI binary.
 
-### Phase 2 — Authentication and workspaces
+### Phase 2 — Local control plane, storage, and authentication
 
 Deliver:
 
+- TypeScript control API service on `ben1`.
+- OpenAPI and JSON schema package plus generated Go client.
+- PostgreSQL on the reviewed ben1 data mount with migrations, logical backup, and isolated restore test.
+- Private S3-compatible object storage on the reviewed ben1 data mount with checksums, workspace metadata, and one upload/download test.
+- CPU, memory, disk-capacity, inode, and I/O reservations for PostgreSQL, object storage, API, and ngrok; installation stops if `/srv/frontro` or the separate backup destination does not meet reviewed thresholds.
+- Preflight inventory that refuses collisions with existing ports, systemd units, users, groups, firewall rules, database names, buckets, and exact `/srv/frontro` paths before committing the ownership receipt.
+- Ngrok delivery of the API and authentication UI at `https://blazn.benpelo.com` without exposing PostgreSQL or object-store administration.
 - Device login web flow.
 - Secure credential-store adapters.
-- User, Device, Session, Workspace, Membership, Invitation, and role records.
-- CLI authentication and workspace commands.
-- API authorization and workspace scoping.
-- Device, session, invite, and membership revocation.
+- User, Device, and Session records.
+- CLI authentication commands.
+- Device and session revocation.
+- Parallel CLI/API work consumes one reviewed OpenAPI contract commit and generated-client artifact; scaffolding may start earlier, but integration cannot use hand-copied schemas.
+- Credential-store tests use unique POC service and account names and remove only their own entries.
 
 Gate 2:
 
-- Two real test identities authenticate and join one workspace.
-- Member cannot perform operator actions.
-- Revocation terminates future API and stream access.
+- API, PostgreSQL, object storage, ngrok, and auth health checks pass after service restart.
+- One real test identity completes browser and headless device login.
+- Revocation terminates future API and stream access for that device.
 - No provider password or long-lived token appears in CLI config, logs, or evidence.
+- PostgreSQL migration, backup/restore into a disposable ben4 guest or another isolated target, and object checksum/upload/download tests pass; restore never targets the live POC database.
+- Object tests use a frozen manifest and unique run-specific bucket or prefix, then prove exact cleanup and residue absence.
+- API deploy/restart, schema migration, restore, PostgreSQL/object restart, and ngrok public-origin changes are mutually exclusive under the ben1/public-origin locks.
+- The backup destination is not the same failure domain represented as disaster recovery.
+
+### Phase 2A — Workspace management and authorization
+
+Deliver:
+
+- Workspace, Membership, Invitation, and versioned role records.
+- CLI create, list, get, edit, use, invite, join, members, leave, and revoke workflows.
+- Owner, administrator, operator, member, and viewer authorization.
+- Explicit workspace scope across API paths, access tokens, Operations, and events.
+
+Gate 2A:
+
+- Two real test identities authenticate and join one workspace.
+- Workspace create, list, edit, invite, join, switch, and member removal pass.
+- Member cannot perform operator actions.
+- Removal terminates future workspace API and stream access.
+- Cross-workspace list, direct lookup, event, artifact, and count leakage tests fail closed.
 
 ### Phase 3 — Node service and existing fleet registration
 
@@ -1318,21 +1466,20 @@ Deliver:
 
 Rollout order:
 
-1. Run host discovery and dry-run plans on the fresh Linux test machine and `ben3`.
-2. Turn the fresh Linux test machine into a worker using only the installed `blazn` binary and `blazn node install`.
+1. Run host discovery and dry-run plans on `FreshNodeHost`, `ben4`, and `ben3`.
+2. Turn `FreshNodeHost` into a worker using only the installed `blazn` binary and `blazn node install`. Keep ben4 isolated unless its reset-and-restoration plan was separately approved.
 3. Register `ben3` as the first existing-Linux adoption canary without changing its Kubernetes membership.
 4. Register `mac-mini-3` as the first Mac canary and bind its existing worker.
 5. Prove read-only state and identity rotation.
 6. Prove cordon/uncordon on the fresh Linux and Mac canaries while they have no active Blazn Sandbox.
-7. Prove a bounded Blazn-only drain after a Sandbox exists in Phase 5.
-8. Register remaining nodes serially.
+7. Register remaining nodes serially. Bounded drain qualification moves to Gate 5 after a POC Sandbox exists.
 
 Gate 3:
 
 - The fresh supported Linux machine reaches Ready and Blazn-eligible state without any manually installed dependency beyond `blazn`.
 - The install receipt accounts for every package, file, service, certificate, image, label, taint, and cluster identity introduced by Blazn.
 - Rerunning install is idempotent; doctor is clean; repair is a no-op; uninstall and reinstall succeed.
-- The original nine Node records plus the new Linux Node reconcile with exact host and Kubernetes identities.
+- The original nine Node records plus `FreshNodeHost` reconcile as ten exact host and Kubernetes identities after the fresh-node proof. Ben4 appears in that count only when it was explicitly selected and reset under the approved restoration plan.
 - Removing or revoking one Blazn node identity does not remove the Kubernetes Node.
 - A non-operator cannot mutate node lifecycle.
 - Existing Frontro workloads and queue state remain healthy.
@@ -1342,7 +1489,7 @@ Gate 3:
 Deliver:
 
 - `blazn-poc-system` and `blazn-poc-sandboxes` namespaces.
-- API service account, RBAC, network policies, quota, and retained POC state volume.
+- Stateless Kubernetes controller service account, RBAC, network policies, and quota. Authoritative product state remains in ben1 PostgreSQL and artifacts remain in the ben1 object store.
 - Pinned Agent Sandbox core and extensions.
 - `blazn-poc` LocalQueue mapped to `m1-light`.
 - Controller health, CRD ownership, and uninstall tests.
@@ -1361,6 +1508,7 @@ Deliver:
 
 - SandboxTemplate drafts and immutable versions.
 - AMD64 and ARM64 `coding-small` variants.
+- Pinned multi-architecture bootstrap fixture image that is independent of the Phase 6 development build.
 - Create, watch, get, exec, upload, download, stop, and delete.
 - Access grants and audit.
 - Expiry, cleanup, and artifact export.
@@ -1374,6 +1522,7 @@ Gate 5:
 - Kueue admission is visible for every lifecycle.
 - Exec grants expire and cannot be reused.
 - All Pods, claims, temporary ConfigMaps, access grants, and volumes are absent after cleanup.
+- A bounded Blazn-only drain moves or terminates only the exact POC Sandbox according to policy and leaves existing workloads intact.
 - Results explicitly state the non-hardened RuntimeClass limitation.
 
 ### Phase 6 — Development build and publication
@@ -1411,7 +1560,7 @@ Gate 6A:
 
 - Twenty on/off cycles pass on macOS and the supported Ubuntu profile.
 - Application configuration files remain byte-for-byte unchanged.
-- `proxy off` restores direct connectivity after normal stop, abrupt kill, corrupt local proxy configuration, and Blazn API outage.
+- `proxy off` restores direct connectivity after normal stop, abrupt kill, corrupt local proxy configuration, Blazn API outage, and any journal/receipt corruption where surviving state proves Blazn ownership. Irrecoverably ambiguous ownership returns `RECOVERY_REQUIRED` and is verified not to alter user-owned state.
 - Hermes, Codex HTTP, and a generic OpenAI-compatible client produce verified route decisions.
 - Unsupported Claude Code model interception is reported accurately if Anthropic translation is not implemented.
 - No prompt, message, tool payload, bearer token, cookie, or CA private key appears in logs or evidence.
@@ -1461,6 +1610,7 @@ Gate 8:
 Deliver:
 
 - Complete automated POC qualification suite.
+- Homebrew publication and upgrade closing gate if it was not included in Phase 1.
 - Evidence manifest and checksums.
 - Rollback rehearsal.
 - Gap and production-readiness report.
@@ -1586,11 +1736,13 @@ Rollback proceeds in reverse dependency order:
 4. Delete exact POC Sandboxes, Claims, templates, and warm pools.
 5. Verify no POC Pods, Workloads, Jobs, ConfigMaps, temporary Secrets, access grants, PVCs, or finalizers remain.
 6. Remove the `blazn-poc` LocalQueue only after no Workload references it.
-7. Remove POC runtime and control-plane resources.
+7. Remove POC Kubernetes runtime and stateless controller resources from their exact namespaces.
 8. Remove Agent Sandbox instances, then extensions, controller, and CRDs only after a cluster-wide zero-resource check.
-9. Revoke POC node identities and remove Blazn eligibility without deleting Kubernetes Nodes or Lima VMs.
-10. Remove public POC release assets only if retention policy and user installations are addressed.
-11. Verify all nine Kubernetes Nodes, Kueue, existing LocalQueues, Frontro Agent Control, registry, BuildKit, Metrics Server, and current workloads.
+9. Revoke POC node identities and remove Blazn eligibility. Remove `FreshNodeHost` from the shared cluster and destroy its disposable environment or restore its captured pre-POC state. Never delete an original Kubernetes Node or Lima VM as POC cleanup.
+10. Stop and disable the exact ben1 ngrok, API, PostgreSQL, and S3-compatible services recorded in the ownership receipt; revoke ngrok, IdP, database, object-store, and API credentials; verify their POC ports and public routes are closed.
+11. Apply the approved retain, export, or delete decision separately to PostgreSQL data, object data, logical backups, and each exact `/srv/frontro` POC path. Deletion requires an enumerated receipt, mount and symlink checks, and separate confirmation.
+12. Remove public POC release assets only if retention policy and user installations are addressed.
+13. Verify the original nine Kubernetes Nodes, Kueue, existing LocalQueues, Frontro Agent Control, registry, BuildKit, Metrics Server, and current workloads. If ben4 was used as `FreshNodeHost`, also verify its standalone pre-POC state was restored or its retirement was explicitly accepted.
 
 Never delete a namespace, CRD, Kubernetes Node, Lima instance, host directory, or registry path as a shortcut for POC cleanup.
 
@@ -1608,13 +1760,13 @@ Never delete a namespace, CRD, Kubernetes Node, Lima instance, host directory, o
 | Node management harms existing work | Exact Node UID/version, Blazn-only workload checks, safety confirmation, one-node-at-a-time drains |
 | Linux dependency installation changes the host unexpectedly | Signed plan, dry-run, supported profiles, exact packages and files, ownership receipt, bootstrap taint, staged activation, repair, and explicit managed-runtime removal |
 | MicroK8s join credential requires host-level cluster access | Narrow Node Bootstrap Broker, single-use sealed credential, worker-only join, exact cluster and machine binding, full audit |
-| SQLite loss or corruption | Explicit retained volume, backup before migrations, single writer, no HA claim, restore test |
+| PostgreSQL or object-store loss on ben1 | Dedicated data paths, bounded resources, migrations, logical backup, object checksums, isolated restore test, and explicit no-HA/no-DR claim |
 | BuildKit privilege boundary | Reuse guarded existing workflow; do not expose raw BuildKit credentials to users or sandboxes |
 | Secret leakage through harness or evidence | Capability delivery, no user tokens in nodes, redaction, secret scanning, protected inputs |
 | External harness issues unsafe commands | Same API authorization, explicit confirmations, JSON contract, no Kubernetes credentials |
 | Harness adapters drift into separate products | One versioned adapter contract, shared conformance suite, normalized core events, exact capability declarations, and no adapter-specific resource model |
 | Codex or Claude auth is copied unsafely | Supported provider authentication only, separate vault capabilities, run-scoped leases, no developer credential-directory copying |
-| Proxy leaves applications offline | Publish environment only after health, daemon-independent `off`, watchdog lease, activation receipts, stale-state repair, direct-connectivity verification |
+| Proxy leaves applications offline | Fsynced write-ahead journal before mutation, exact prior-value restoration, publish environment only after health, daemon-independent `off`, watchdog lease, stale-state repair, and direct-connectivity verification |
 | Proxy mutates client configuration | Prohibit application config writes, snapshot and hash before/after every qualification path, fail the milestone on any change |
 | Unsupported protocol silently bypasses routing | Explicit capability discovery and DIRECT/BYPASS events; require authenticated route evidence before claiming interception |
 | Duplicate work after retry | Idempotency records, durable Operations, create-or-get reconciliation, event IDs |
@@ -1626,18 +1778,19 @@ Keep changes reviewable and independently reversible:
 
 1. `poc/contracts-and-repo-layout`
 2. `poc/cli-release-and-installers`
-3. `poc/auth-and-workspaces`
-4. `poc/node-service-and-enrollment`
-5. `poc/node-kubernetes-binding`
-6. `poc/agent-sandbox-installation`
-7. `poc/sandbox-template-api`
-8. `poc/sandbox-lifecycle-and-access`
-9. `poc/development-build-and-refresh`
-10. `poc/cli-managed-model-proxy`
-11. `poc/harness-adapter-contract-and-agents`
-12. `poc/hermes-codex-claude-adapters`
-13. `poc/codex-and-claude-cli-proof`
-14. `poc/qualification-and-rollback`
+3. `poc/control-api-postgres-s3-auth`
+4. `poc/workspaces-membership-rbac`
+5. `poc/node-service-and-enrollment`
+6. `poc/node-kubernetes-binding`
+7. `poc/agent-sandbox-installation`
+8. `poc/sandbox-template-api`
+9. `poc/sandbox-lifecycle-and-access`
+10. `poc/development-build-and-refresh`
+11. `poc/cli-managed-model-proxy`
+12. `poc/harness-adapter-contract-and-agents`
+13. `poc/hermes-codex-claude-adapters`
+14. `poc/codex-and-claude-cli-proof`
+15. `poc/qualification-and-rollback`
 
 Do not combine cluster-wide CRD installation, authentication, node drains, and runtime rollout in one PR or maintenance window.
 
@@ -1646,17 +1799,18 @@ Do not combine cluster-wide CRD installation, authentication, node drains, and r
 The critical path is:
 
 1. Identity provider and public API origin.
-2. CLI/API contracts and release distribution.
-3. Authentication and workspaces.
-4. Node enrollment and fleet binding.
-5. Agent Sandbox compatibility and installation.
-6. Template and Sandbox lifecycle.
-7. Build and publication.
-8. CLI-managed model proxy and recovery.
-9. Harness Adapter contract, portable Agent, and Run lifecycle.
-10. Hermes, Codex CLI, Claude Code, and generic adapter conformance.
-11. External harness control proof.
-12. Qualification and rollback.
+2. Standalone CLI contract and release distribution.
+3. PostgreSQL, object storage, API, ngrok, and authentication.
+4. Workspace membership and authorization.
+5. Node enrollment and fleet binding.
+6. Agent Sandbox compatibility and installation.
+7. Template and Sandbox lifecycle.
+8. Build and publication.
+9. CLI-managed model proxy and recovery.
+10. Harness Adapter contract, portable Agent, and Run lifecycle.
+11. Hermes, Codex CLI, Claude Code, and generic adapter conformance.
+12. External harness control proof.
+13. Qualification and rollback.
 
 CLI release automation, example project authoring, disposable-cluster Agent Sandbox tests, node-service platform adapters, and test fixture work can run in parallel after contracts are frozen.
 
@@ -1667,8 +1821,9 @@ Assuming two to three experienced engineers with access to the current fleet:
 | Workstream | Initial estimate |
 | --- | ---: |
 | Phase 0 decisions and disposable-cluster spike | 3–5 engineering days |
-| CLI, contracts, and distribution | 5–8 days |
-| Authentication and workspaces | 5–8 days |
+| Standalone CLI and distribution | 5–8 days |
+| PostgreSQL, object storage, API, ngrok, and authentication | 6–10 days |
+| Workspaces, membership, and authorization | 4–6 days |
 | Node service and fleet registration | 6–10 days |
 | Fresh Linux bootstrap, join broker, repair, and uninstall | 5–8 days |
 | Agent Sandbox, templates, and lifecycle | 8–12 days |
@@ -1678,7 +1833,7 @@ Assuming two to three experienced engineers with access to the current fleet:
 | Codex CLI, Claude Code, and generic CLI adapters | 6–10 days |
 | External harness proof and qualification | 5–8 days |
 
-The likely elapsed POC is six to eight weeks with parallel work. Re-estimate after Phase 0 because identity registration, public distribution, clean Linux bootstrap, Agent Sandbox/Kueue compatibility, and hardened-runtime expectations can materially change the schedule.
+The likely elapsed POC is seven to nine weeks with parallel work. Re-estimate after Phase 0 because identity registration, public distribution, ben1 storage setup, clean Linux bootstrap, Agent Sandbox/Kueue compatibility, and hardened-runtime expectations can materially change the schedule.
 
 ## Decisions required before implementation
 
@@ -1687,14 +1842,14 @@ The likely elapsed POC is six to eight weeks with parallel work. Re-estimate aft
 3. What hostname and TLS delivery path expose the POC API and verification page?
 4. Will the Blazn source repository become public, or will binaries use a separate public distribution repository or CDN?
 5. Which team owns Homebrew tap and release signing credentials?
-6. Is SQLite acceptable for the POC control plane with an explicit no-HA statement?
+6. Which S3-compatible implementation, ben1 data paths, resource bounds, backup destination, and retention policy are approved alongside local PostgreSQL?
 7. May Agent Sandbox v0.5.6 CRDs and controller be installed on the existing cluster after disposable testing?
 8. Is orchestration-only isolation acceptable for synthetic POC work, with hardened runtime qualification deferred?
 9. Which repository and task are approved for the coding-agent proof?
 10. Which two test identities and workspace roles will verify collaboration?
 11. Which existing local Qwen endpoint and cloud fallback identity are approved for the POC?
 12. Which maintenance windows allow Mac/Linux node lifecycle and queue-overflow tests?
-13. Which fresh Linux distribution, version, architecture, and network location will be the clean-room node-install acceptance host?
+13. Which clean Ubuntu 26.04 AMD64 environment is `FreshNodeHost`? If ben4 is proposed, is its current standalone MicroK8s state approved for capture, reset, shared-cluster join, removal, and restoration during rollback?
 14. Is the POC authorized to install and own the exact operating-system packages, MicroK8s worker runtime, networking settings, registry trust, and systemd service described by the signed NodeInstallPlan on that host?
 15. Which supported installation, licensing, and provider-authentication methods are approved for Hermes, Codex CLI, and Claude Code inside Blazn Sandboxes?
 16. Is macOS user-session activation plus Linux user-session/scoped-command activation an acceptable POC boundary, given that already running processes must restart to inherit environment changes?
@@ -1705,10 +1860,12 @@ The likely elapsed POC is six to eight weeks with parallel work. Re-estimate aft
 The POC is accepted only when:
 
 - Brew and curl installation work from the approved public distribution channel.
+- PostgreSQL and private S3-compatible storage run on the approved ben1 data paths; migration, backup/restore, object checksum, and restart tests pass.
+- `https://blazn.benpelo.com` serves only the Blazn API/auth surface through ngrok and does not expose database or storage administration.
 - Two users authenticate and collaborate in one workspace.
 - A fresh supported Linux host requires only the `blazn` installation and `blazn node install`; Blazn provisions all required dependencies and the node becomes Ready and Sandbox-eligible.
 - Install, interrupted resume, idempotent rerun, doctor, repair, managed uninstall, and reinstall all pass on that host.
-- All nine existing worker Nodes plus the new Linux Node appear with correct platform, architecture, health, capacity, and Kubernetes identity.
+- The original nine worker Nodes plus `FreshNodeHost` appear as ten correct platform, architecture, health, capacity, and Kubernetes identities after the fresh-node proof; ben4 remains outside that count unless its reset-and-restoration plan was approved and executed.
 - Node lifecycle commands are authorized, idempotent, audited, and safe around existing workloads.
 - Agent Sandbox is pinned, isolated to POC use, Kueue-admitted, observable, and removable.
 - One immutable logical SandboxTemplate runs on AMD64 Linux and ARM64 Mac workers.

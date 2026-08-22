@@ -172,7 +172,7 @@ Tags are metadata, not permissions. They support search, filters, collections, a
 
 ### 6. Blazn Agent Harness
 
-The Blazn Agent Harness is the product's canonical runtime for agents. It owns how an agent receives context, requests a model, uses tools, performs work, collaborates, emits events, pauses, resumes, and completes a run. Blazn does not depend on bring-your-own agent harnesses for its core execution model.
+The Blazn Agent Harness is the product's canonical orchestration and adapter contract for agents. It owns how an agent receives context, requests a model, uses tools, performs work, collaborates, emits events, pauses, resumes, and completes a run. The underlying execution engine is interchangeable through versioned Harness Adapters such as Hermes, Codex CLI, Claude Code, or another approved CLI harness; those engines do not redefine Blazn's Agent, Session, Run, policy, event, credential, artifact, or cleanup model.
 
 The harness supports:
 
@@ -185,9 +185,9 @@ The harness supports:
 - Checkpoints, pause, resume, cancellation, retry, and recovery.
 - Agent creation, bounded schedules, delegation, handoffs, and coordinated agent teams.
 - Durable outputs, evaluations, and introspection linked to run history.
-- Model requests sent exclusively through the Smart LLM Router.
+- Model requests sent through the Smart LLM Router by default, with any temporary harness-native provider exception explicitly declared, policy-controlled, and visible rather than mistaken for routed traffic.
 
-The desktop app, CLI, schedules, triggers, and future Blazn Button experiences all initiate work through this same harness. External developer tools may use the AI Proxy, but they do not redefine Blazn's agent lifecycle or execution semantics.
+The desktop app, CLI, schedules, triggers, and future Blazn Button experiences all initiate work through this same harness contract. External developer tools may use the AI Proxy or invoke the Blazn CLI, while approved CLI harnesses can also run inside a Sandbox through adapters. In every case, Blazn remains authoritative for agent lifecycle and execution semantics.
 
 The harness should make an agent's context, environment, tools, actions, model routing, approvals, and state visible without forcing users to understand the underlying orchestration system.
 
@@ -218,7 +218,7 @@ It can route requests to:
 
 Routing accounts for model capability, privacy, availability, health, queue depth, latency, cost, policy, and fallback behavior. A caller can request a logical model alias or a capability tier instead of binding an agent to one provider or machine. Users should be able to understand where a request went, why it went there, and whether a retry or fallback occurred, while existing external tools continue to work with minimal configuration.
 
-The AI Proxy is a model-access surface, not an alternative agent harness. External tools may use its compatible APIs for model requests, while agents created and operated by Blazn always run through the Blazn Agent Harness.
+The AI Proxy is a model-access surface, not an alternative agent lifecycle. External tools and Harness Adapters may use its compatible APIs for model requests, while agents created and operated by Blazn always run through the Blazn Agent Harness contract.
 
 This capability builds on the approach established by Blaze Proxy and brings it into the shared Blazn workspace.
 
@@ -310,7 +310,7 @@ This section turns the product vision into a shared system model. It will be dev
 | [Agents](#agents) | Define agent identity, tags, objectives, configuration, schedules, lifecycle, and history | Initial design |
 | [Triggers, endpoints, and email aliases](#triggers-endpoints-and-email-aliases) | Safely invoke and interact with agent workflows from Slack, websites, email, integrations, schedules, and external events | Initial design |
 | [Development](#development) | Build, test, version, evaluate, and release agents and system components | Initial design |
-| Blazn Agent Harness | Provide the canonical runtime for agent context, tools, execution, collaboration, and recovery | Initial design |
+| Blazn Agent Harness | Provide the canonical orchestration and adapter contract for agent context, tools, interchangeable execution engines, collaboration, and recovery | Initial design |
 | [Credentials and integrations](#credentials-and-integrations) | Share policy-controlled vaults and connect personal or team services safely | Initial design |
 | [CLI control surface](#cli-control-surface) | Provide the supported local and remote interface for people, scripts, CI, and administration | Initial design |
 | [Management API](#management-api) | Provide versioned, authenticated programmatic management of Blazn resources and operations | Initial design |
@@ -6155,20 +6155,20 @@ The first Management API implementation should prove:
 
 #### Definition and authority
 
-The Blazn Agent Harness is the authoritative runtime for every Blazn-managed agent. It converts an objective, conversation, schedule, trigger, desktop or CLI request, internal event, or delegated assignment into a durable run and coordinates that run until it reaches a terminal or explicitly suspended state.
+The Blazn Agent Harness is the authoritative orchestration and adapter layer for every Blazn-managed agent. It converts an objective, conversation, schedule, trigger, desktop or CLI request, internal event, or delegated assignment into a durable run, selects an approved Harness Adapter, and coordinates that run until it reaches a terminal or explicitly suspended state.
 
-Blazn owns the harness contract. This provides one consistent model for identity, context, tools, approvals, environments, events, artifacts, metrics, recovery, and improvement across desktop, CLI, cloud, and embedded experiences. Supporting an external tool or model API does not mean delegating control of the agent lifecycle to an external harness.
+Blazn owns the harness contract rather than hard-coding one execution engine. This provides one consistent model for identity, context, tools, approvals, environments, messages, events, artifacts, metrics, recovery, and improvement across Hermes, Codex CLI, Claude Code, future approved CLI harnesses, desktop, CLI, cloud, and embedded experiences. An adapter delegates engine-specific execution without delegating control of the agent lifecycle.
 
 #### Harness responsibilities
 
 For each run, the harness is responsible for:
 
-- Resolving the agent version, objective, instructions, skills, permissions, and effective LLM Router Policy.
+- Resolving the agent version, HarnessProfile, exact HarnessVersion, objective, instructions, skills, permissions, and effective model-access policy.
 - Building a bounded context from the current conversation, workspace memory, project state, pinned resources, prior run evidence, and explicit user input.
 - Acquiring a sandbox or approved native execution backend with the required capabilities.
 - Making tools, external MCP servers, integrations, and credentials available according to least-privilege grants.
-- Sending all inference requests through the Smart LLM Router.
-- Executing the agent loop and recording model responses, reasoning summaries where supported, tool requests, approvals, results, and errors as structured events.
+- Sending inference through the Smart LLM Router when supported and recording any explicitly approved harness-native provider path as DIRECT rather than routed traffic.
+- Supervising the selected Harness Adapter's agent loop and normalizing model responses, reasoning summaries where supported, messages, tool requests, approvals, results, and errors as structured events.
 - Accepting live user messages, steering, cancellation, and approval decisions without losing run identity.
 - Creating agents with bounded schedules or delegating objectives when the parent agent is permitted to do so.
 - Producing artifacts, a final result, outcome metrics, and post-run introspection.
@@ -6226,23 +6226,23 @@ Checkpoints capture the durable information required to resume safely: conversat
 
 After a harness, node, or model failure, the reconciler determines whether to resume, retry a pure operation, select another model, move portable work, wait for the original environment, or request human intervention. Recovery follows recorded policy and idempotency rules.
 
-#### External clients
+#### Harness Adapters and external clients
 
-Codex, Claude Code, IDEs, and other applications can use the Blazn AI Proxy for model requests. People and automation control Blazn through the CLI, while the desktop app provides the visual experience. These external tools retain their own execution behavior; an agent created in Blazn runs through the Blazn Agent Harness so the workspace receives consistent controls, events, metrics, and recovery semantics.
+Codex, Claude Code, IDEs, and other applications can use the Blazn AI Proxy for model requests or invoke Blazn through the CLI. Hermes, Codex CLI, Claude Code, and other approved engines can also execute inside a Sandbox through versioned Harness Adapters. Each adapter declares capabilities, supported platforms, model and credential requirements, message and resume behavior, structured-event fidelity, cancellation, results, and cleanup. An agent created in Blazn runs through the Blazn Agent Harness contract so the workspace receives consistent controls, events, metrics, and recovery semantics regardless of engine.
 
 #### Version-one boundary
 
 The first harness should prove one durable end-to-end loop:
 
 1. Start a session from the desktop app or CLI.
-2. Resolve one versioned agent and its effective policy.
-3. Acquire one sandbox, assemble bounded context, and attach approved tools.
-4. Route all model requests through the Smart LLM Router.
+2. Resolve one versioned agent, HarnessProfile, HarnessVersion, and effective policy.
+3. Acquire one sandbox, assemble bounded context, attach approved tools, and start one Harness Adapter.
+4. Route model requests through the Smart LLM Router, or explicitly record a policy-approved temporary DIRECT provider path when the POC adapter protocol cannot be routed.
 5. Stream events and accept a follow-up message, cancellation, or approval.
 6. Survive a harness process restart without losing the run.
 7. Produce a final result, artifacts, metrics, and cleanup outcome.
 
-Multi-agent delegation, advanced introspection, long-lived suspension, and broader tool compatibility can build on this contract after the single-agent loop is reliable.
+The first proof should run the same portable Agent and evaluation through Hermes, Codex CLI, and Claude Code adapters. Multi-agent delegation, advanced introspection, long-lived suspension, and broader tool compatibility can build on this contract after the single-agent loop is reliable.
 
 ### Smart LLM Router
 
@@ -6464,9 +6464,9 @@ One person and one machine should be enough to get value. Cloud services add col
 
 Users can see what agents are doing, interrupt work, approve sensitive actions, set boundaries, and understand outcomes.
 
-### One harness, many models and tools
+### One harness contract, interchangeable engines
 
-Blazn should provide one consistent agent runtime across different model providers, native tools, external MCP tools, local and cloud environments, and product surfaces. External developer tools can use the AI Proxy, but Blazn-managed agents retain one observable and recoverable lifecycle.
+Blazn should provide one consistent agent lifecycle across interchangeable approved engines, model providers, native tools, external MCP tools, local and cloud environments, and product surfaces. Hermes, Codex CLI, Claude Code, and future adapters can execute work differently while Blazn retains one observable, governed, and recoverable contract.
 
 ### Work creates memory
 
