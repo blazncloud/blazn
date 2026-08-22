@@ -1,11 +1,13 @@
 #!/bin/sh
 set -eu
 
-TEST_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT_DIR=$(CDPATH= cd -- "$TEST_DIR/.." && pwd)
+TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 compose=$ROOT_DIR/compose.yaml
 ngrok=$ROOT_DIR/ngrok.example.yml
 
+# The first four strings intentionally assert unexpanded Compose interpolation.
+# shellcheck disable=SC2016
 for expected in \
   '127.0.0.1}:${POSTGRES_PORT:-55432}:5432' \
   '127.0.0.1}:${S3_PORT:-59000}:9000' \

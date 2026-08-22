@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-TEST_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT_DIR=$(CDPATH= cd -- "$TEST_DIR/.." && pwd)
+TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 tmp=${TMPDIR:-/tmp}/blazn-m2-preflight-$$
 mkdir -p -- "$tmp/bin"
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
