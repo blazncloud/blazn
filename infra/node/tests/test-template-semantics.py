@@ -168,6 +168,7 @@ with tempfile.TemporaryDirectory(prefix=".node-plan-validator-", dir=repo) as te
     (jcs_dir / "go.mod").write_text('module github.com/gowebpki/jcs\n\ngo 1.24\n')
     (jcs_dir / "jcs.go").write_text('package jcs\nfunc Transform(value []byte) ([]byte, error) { panic("canonicalization is outside this validator-only gate") }\n')
     shutil.copy2(repo / "internal" / "client" / "node.gen.go", client_dir / "node.gen.go")
+    shutil.copy2(repo / "internal" / "client" / "client.gen.go", client_dir / "client.gen.go")
     (client_dir / "node_validator_test.go").write_text(go_test_source)
     (client_dir / "cases.json").write_text(json.dumps(rendered_plans))
     result = subprocess.run(
