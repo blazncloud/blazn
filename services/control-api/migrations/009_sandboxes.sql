@@ -447,6 +447,28 @@ CREATE TABLE sandbox_operation_terminal_receipts (
     (operation_type IN ('stop','delete') AND NOT backend_present AND cleanup_complete AND artifact_export_complete AND grants_revoked AND backend_destroyed))
 );
 
+CREATE FUNCTION sandbox_enforce_terminal_receipt() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+DECLARE current_backend_uid text; current_backend_resource_version text;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'sandbox operation terminal receipts are immutable' USING ERRCODE='55000'; END IF;
+  IF NEW.operation_type='create' AND NEW.status='succeeded' THEN
+    SELECT backend_uid,backend_resource_version INTO current_backend_uid,current_backend_resource_version
+      FROM public.sandboxes WHERE id=NEW.sandbox_id AND workspace_id=NEW.workspace_id;
+    IF current_backend_uid IS NULL OR (NEW.backend_uid,NEW.backend_resource_version) IS DISTINCT FROM (current_backend_uid,current_backend_resource_version) THEN
+      RAISE EXCEPTION 'sandbox create receipt backend identity mismatch' USING ERRCODE='23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER sandbox_operation_terminal_receipts_enforced
+BEFORE INSERT OR UPDATE OR DELETE ON sandbox_operation_terminal_receipts
+FOR EACH ROW EXECUTE FUNCTION sandbox_enforce_terminal_receipt();
+
 CREATE TABLE sandbox_operations (
   id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -539,7 +561,7 @@ CREATE TRIGGER sandbox_access_grants_monotonic
 BEFORE UPDATE ON sandbox_access_grants
 FOR EACH ROW EXECUTE FUNCTION sandbox_enforce_grant_transition();
 
-CREATE FUNCTION sandbox_consume_access_grant(p_grant_id uuid, p_token_hash char(64), p_kind text)
+CREATE FUNCTION sandbox_consume_access_grant(p_grant_id uuid, p_token_hash char(64), p_kind text, p_user_id uuid, p_session_id uuid)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -549,9 +571,14 @@ DECLARE changed bigint; effective_now timestamptz := clock_timestamp();
 BEGIN
   UPDATE public.sandbox_access_grants SET state='expired'
     WHERE id=p_grant_id AND state='active' AND expires_at <= effective_now;
-  UPDATE public.sandbox_access_grants SET state='consumed', consumed_at=effective_now
-    WHERE id=p_grant_id AND state='active' AND expires_at > effective_now
-      AND token_hash=p_token_hash AND kind=p_kind;
+  UPDATE public.sandbox_access_grants grant_row SET state='consumed', consumed_at=effective_now
+    FROM public.sessions session_row
+    WHERE grant_row.id=p_grant_id AND grant_row.state='active' AND grant_row.expires_at > effective_now
+      AND grant_row.token_hash=p_token_hash AND grant_row.kind=p_kind
+      AND grant_row.user_id=p_user_id AND grant_row.session_id=p_session_id
+      AND session_row.id=grant_row.session_id AND session_row.user_id=grant_row.user_id
+      AND session_row.revoked_at IS NULL AND session_row.access_expires_at > effective_now
+      AND session_row.refresh_expires_at > effective_now;
   GET DIAGNOSTICS changed = ROW_COUNT;
   RETURN changed = 1;
 END
@@ -631,7 +658,7 @@ REVOKE ALL ON TABLE sandbox_templates, sandbox_template_versions, sandbox_templa
 REVOKE ALL ON FUNCTION sandbox_reject_immutable_version_mutation(), sandbox_validate_template_version_children(),
   sandbox_publish_template_version(uuid, uuid, uuid, bigint, bytea, text, uuid),
   sandbox_validate_create_children(), sandbox_create_bound_sandbox(uuid, uuid, uuid, text, text, timestamptz, text, jsonb, bytea, text, uuid),
-  sandbox_enforce_grant_transition(), sandbox_consume_access_grant(uuid, char(64), text),
+  sandbox_enforce_terminal_receipt(), sandbox_enforce_grant_transition(), sandbox_consume_access_grant(uuid, char(64), text, uuid, uuid),
   sandbox_revoke_access_grants(uuid, uuid)
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker;
 
@@ -654,7 +681,7 @@ GRANT SELECT, INSERT ON TABLE sandbox_events, sandbox_artifacts,
 
 GRANT EXECUTE ON FUNCTION sandbox_publish_template_version(uuid, uuid, uuid, bigint, bytea, text, uuid),
   sandbox_create_bound_sandbox(uuid, uuid, uuid, text, text, timestamptz, text, jsonb, bytea, text, uuid),
-  sandbox_consume_access_grant(uuid, char(64), text), sandbox_revoke_access_grants(uuid, uuid) TO blazn_runtime;
+  sandbox_consume_access_grant(uuid, char(64), text, uuid, uuid), sandbox_revoke_access_grants(uuid, uuid) TO blazn_runtime;
 
 -- Immutable columns and stored grant bindings cannot be changed by the runtime role.
 REVOKE UPDATE, DELETE ON TABLE sandbox_template_versions FROM blazn_runtime;

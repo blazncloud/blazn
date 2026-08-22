@@ -83,11 +83,16 @@ test("sandbox persistence freezes immutable versions and workspace-scoped bindin
   assert.match(sql, /EXCEPT SELECT repository_name FROM public\.sandbox_sources/);
   assert.match(sql, /sandbox sources must cover every selected template repository exactly once/);
   assert.match(sql, /CREATE FUNCTION sandbox_consume_access_grant[\s\S]*SECURITY DEFINER/);
+  assert.match(sql, /session_row\.id=grant_row\.session_id AND session_row\.user_id=grant_row\.user_id/);
+  assert.match(sql, /session_row\.revoked_at IS NULL AND session_row\.access_expires_at > effective_now/);
+  assert.match(sql, /session_row\.refresh_expires_at > effective_now/);
   assert.match(sql, /CREATE FUNCTION sandbox_revoke_access_grants[\s\S]*SECURITY DEFINER/);
   assert.doesNotMatch(sql, /sandbox_(?:consume_access_grant|revoke_access_grants)\([^)]*p_now/);
   assert.match(sql, /CREATE TRIGGER sandbox_access_grants_monotonic/);
   assert.match(sql, /UNIQUE \(sandbox_id, sequence\)/);
   assert.match(sql, /operation_type = 'create' AND backend_present AND NOT backend_destroyed/);
+  assert.match(sql, /sandbox create receipt backend identity mismatch/);
+  assert.match(sql, /CREATE TRIGGER sandbox_operation_terminal_receipts_enforced/);
   assert.match(sql, /operation_type IN \('stop','delete'\) AND NOT backend_present AND cleanup_complete/);
   assert.match(sql, /FOREIGN KEY \(sandbox_id, workspace_id\) REFERENCES sandboxes\(id, workspace_id\) ON DELETE CASCADE/);
   assert.doesNotMatch(sql, /GRANT UPDATE[^;]*sandbox_access_grants TO blazn_runtime/);

@@ -65,9 +65,14 @@ INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
  ('10000000-0000-4000-8000-000000000001','sandbox-owner@example.invalid','Sandbox Owner','salt','hash'),
  ('10000000-0000-4000-8000-000000000002','sandbox-other@example.invalid','Sandbox Other','salt','hash');
 INSERT INTO devices(id,user_id,name,platform,public_key) VALUES
- ('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','fixture','linux','public');
+ ('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','fixture','linux','public'),
+ ('20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000002','other','linux','public');
 INSERT INTO sessions(id,user_id,device_id,token_hash,refresh_token_hash,access_expires_at,refresh_expires_at) VALUES
- ('30000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','access-hash','refresh-hash',now()+interval '5 minutes',now()+interval '1 hour');
+ ('30000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','access-hash','refresh-hash',now()+interval '5 minutes',now()+interval '1 hour'),
+ ('30000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000002','20000000-0000-4000-8000-000000000002','other-access','other-refresh',now()+interval '5 minutes',now()+interval '1 hour'),
+ ('30000000-0000-4000-8000-000000000003','10000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','expired-access','expired-refresh',now()-interval '1 second',now()+interval '1 hour'),
+ ('30000000-0000-4000-8000-000000000004','10000000-0000-4000-8000-000000000001','20000000-0000-4000-8000-000000000001','revoked-access','revoked-refresh',now()+interval '5 minutes',now()+interval '1 hour');
+UPDATE sessions SET revoked_at=now() WHERE id='30000000-0000-4000-8000-000000000004';
 INSERT INTO workspaces(id,slug,name,created_by) VALUES
  ('40000000-0000-4000-8000-000000000001','sandbox-one','Sandbox One','10000000-0000-4000-8000-000000000001'),
  ('40000000-0000-4000-8000-000000000002','sandbox-two','Sandbox Two','10000000-0000-4000-8000-000000000002');
@@ -116,18 +121,30 @@ END $$;
 INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
  ('80000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.exec','exec',repeat('e',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
 DO $$ BEGIN
-  IF NOT sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec') THEN RAISE EXCEPTION 'atomic grant consume failed'; END IF;
-  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec') THEN RAISE EXCEPTION 'consumed grant replay succeeded'; END IF;
+  IF NOT sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001') THEN RAISE EXCEPTION 'atomic grant consume failed'; END IF;
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001') THEN RAISE EXCEPTION 'consumed grant replay succeeded'; END IF;
+END $$;
+INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
+ ('80000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000003','sandbox.exec','exec',repeat('3',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds'),
+ ('80000000-0000-4000-8000-000000000004','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000004','sandbox.exec','exec',repeat('4',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds'),
+ ('80000000-0000-4000-8000-000000000005','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.exec','exec',repeat('5',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
+DO $$ BEGIN
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000003',repeat('3',64),'exec','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000003') THEN RAISE EXCEPTION 'expired session consumed a grant'; END IF;
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000004',repeat('4',64),'exec','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000004') THEN RAISE EXCEPTION 'revoked session consumed a grant'; END IF;
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000005',repeat('5',64),'exec','10000000-0000-4000-8000-000000000002','30000000-0000-4000-8000-000000000002') THEN RAISE EXCEPTION 'wrong user/session consumed a grant'; END IF;
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000005',repeat('5',64),'exec','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000002') THEN RAISE EXCEPTION 'mismatched bound session consumed a grant'; END IF;
+  IF NOT sandbox_consume_access_grant('80000000-0000-4000-8000-000000000005',repeat('5',64),'exec','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001') THEN RAISE EXCEPTION 'correct bound user/session could not consume grant'; END IF;
 END $$;
 INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
  ('80000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.download','download',repeat('d',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
 DO $$ BEGIN
-  IF sandbox_revoke_access_grants('40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001') <> 1 THEN RAISE EXCEPTION 'atomic grant revoke failed'; END IF;
+  IF sandbox_revoke_access_grants('40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001') <> 3 THEN RAISE EXCEPTION 'atomic grant revoke failed'; END IF;
 END $$;
 
 INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
  ('90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','pending',1,'10000000-0000-4000-8000-000000000001','stop-request-1',repeat('3',64)),
- ('90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','pending',1,'10000000-0000-4000-8000-000000000001','delete-request-1',repeat('4',64));
+ ('90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','pending',1,'10000000-0000-4000-8000-000000000001','delete-request-1',repeat('4',64)),
+ ('90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','pending',1,'10000000-0000-4000-8000-000000000001','create-request-1',repeat('5',64));
 INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES
  ('91000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.stop.requested');
 DO $$ BEGIN
@@ -140,6 +157,16 @@ DO $$ BEGIN
   BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES ('92000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','succeeded',false,true,true,true,false); RAISE EXCEPTION 'incomplete succeeded stop receipt was accepted';
   EXCEPTION WHEN check_violation THEN NULL; END;
   BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES ('92000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,false); RAISE EXCEPTION 'successful create without backend receipt was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+BEGIN;
+UPDATE sandboxes SET backend_uid='backend-uid-1',backend_resource_version='resource-version-1' WHERE id='70000000-0000-4000-8000-000000000001';
+INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version) VALUES
+ ('92000000-0000-4000-8000-000000000020','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,true,'backend-uid-1','resource-version-1');
+UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id='92000000-0000-4000-8000-000000000020',completed_at=now() WHERE id='90000000-0000-4000-8000-000000000003';
+COMMIT;
+DO $$ BEGIN
+  BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version) VALUES ('92000000-0000-4000-8000-000000000021','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,true,'substituted-backend','resource-version-1'); RAISE EXCEPTION 'create receipt accepted substituted backend identity';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 BEGIN;
