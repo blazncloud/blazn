@@ -1,0 +1,37 @@
+{
+  "apiVersion": "blazn.dev/v1alpha1",
+  "kind": "SandboxTemplate",
+  "metadata": {"name": "coding-small"},
+  "spec": {
+    "version": "bootstrap-1",
+    "description": "Pinned non-sensitive Phase 5 bootstrap fixture",
+    "policyProfile": "poc-restricted-v1",
+    "isolation": "approved-non-sensitive-poc",
+    "expiresInSeconds": 900,
+    "networkProfile": "default-deny-v1",
+    "variants": [
+      {
+        "name": "linux-amd64",
+        "platform": "linux",
+        "architecture": "amd64",
+        "imageIndex": "registry.blazn.dev/poc/bootstrap@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "imageDigest": "registry.blazn.dev/poc/bootstrap@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "command": ["/bin/sh", "-lc", "sleep 3600"],
+        "resources": {"requests": {"cpu": "100m", "memory": "128Mi", "ephemeralStorage": "1Gi"}, "limits": {"cpu": "500m", "memory": "512Mi", "ephemeralStorage": "2Gi"}},
+        "placementProfile": "poc-linux-amd64-v1"
+      },
+      {
+        "name": "linux-arm64",
+        "platform": "linux",
+        "architecture": "arm64",
+        "imageIndex": "registry.blazn.dev/poc/bootstrap@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "imageDigest": "registry.blazn.dev/poc/bootstrap@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "command": ["/bin/sh", "-lc", "sleep 3600"],
+        "resources": {"requests": {"cpu": "100m", "memory": "128Mi", "ephemeralStorage": "1Gi"}, "limits": {"cpu": "500m", "memory": "512Mi", "ephemeralStorage": "2Gi"}},
+        "placementProfile": "poc-mac-arm64-v1"
+      }
+    ],
+    "repositories": [{"name": "source", "url": "https://github.com/blazncloud/blazn.git", "destination": "/workspace/src/blazn", "writable": true}],
+    "artifacts": [{"name": "patch", "path": "/workspace/artifacts/change.patch", "mediaType": "text/plain", "required": true}]
+  }
+}
