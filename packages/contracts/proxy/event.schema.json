@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/event.json",
+  "title": "Blazn proxy operational event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs"],
+  "properties": {
+    "eventId": {"type": "string", "format": "uuid"},
+    "cursor": {"type": "string", "minLength": 1, "maxLength": 128},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "type": {"enum": ["request_started", "route_selected", "attempt_finished", "request_finished", "request_cancelled"]},
+    "activationId": {"type": "string", "format": "uuid"},
+    "logicalRequestId": {"type": "string", "format": "uuid"},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
+    "protocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
+    "modelAlias": {"type": "string", "minLength": 1, "maxLength": 128},
+    "routeId": {"type": "string", "format": "uuid"},
+    "destinationClass": {"enum": ["local_node", "company", "provider", "blazn_cloud"]},
+    "outcome": {"enum": ["success", "failed", "cancelled", "fallback"]},
+    "reasonCode": {"type": "string", "minLength": 1, "maxLength": 96},
+    "latencyMs": {"type": "integer", "minimum": 0},
+    "usage": {"type": "object", "additionalProperties": false, "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}}
+  }
+}
