@@ -180,6 +180,10 @@ func TestRollbackStopsImmediatelyWhenWALPersistenceFails(t *testing.T) {
 	if err == nil || len(platform.rolledBack) != 0 || !state.hasWAL || state.receipt.ReceiptID != "" {
 		t.Fatalf("rollback=%v wal=%v receipt=%#v err=%v", platform.rolledBack, state.hasWAL, state.receipt, err)
 	}
+	receipt, err := installer.Recover(context.Background(), plan, meta, identity)
+	if err != nil || receipt.State != "removed" || len(platform.rolledBack) != 2 || state.hasWAL {
+		t.Fatalf("repeat receipt=%#v rollback=%v wal=%v err=%v", receipt, platform.rolledBack, state.hasWAL, err)
+	}
 }
 
 func TestEnrollmentPinIsCreateOnceAndRejectsTrustReplacement(t *testing.T) {
