@@ -103,7 +103,6 @@ type version struct {
 
 type versionIdentifier struct {
 	value   string
-	number  int
 	numeric bool
 }
 
@@ -139,12 +138,11 @@ func parseVersion(value string) (version, error) {
 			if identifier == "" {
 				return version{}, errors.New("expected semantic version")
 			}
-			parsed := versionIdentifier{value: identifier}
-			if number, err := strconv.Atoi(identifier); err == nil {
+			parsed := versionIdentifier{value: identifier, numeric: decimalIdentifier(identifier)}
+			if parsed.numeric {
 				if len(identifier) > 1 && identifier[0] == '0' {
 					return version{}, errors.New("numeric prerelease identifiers cannot contain leading zeroes")
 				}
-				parsed.number, parsed.numeric = number, true
 			}
 			result.prerelease = append(result.prerelease, parsed)
 		}
@@ -180,10 +178,16 @@ func compareVersion(a, b version) int {
 		leftIdentifier, rightIdentifier := a.prerelease[i], b.prerelease[i]
 		switch {
 		case leftIdentifier.numeric && rightIdentifier.numeric:
-			if leftIdentifier.number < rightIdentifier.number {
+			if len(leftIdentifier.value) < len(rightIdentifier.value) {
 				return -1
 			}
-			if leftIdentifier.number > rightIdentifier.number {
+			if len(leftIdentifier.value) > len(rightIdentifier.value) {
+				return 1
+			}
+			if leftIdentifier.value < rightIdentifier.value {
+				return -1
+			}
+			if leftIdentifier.value > rightIdentifier.value {
 				return 1
 			}
 		case leftIdentifier.numeric:
@@ -206,4 +210,16 @@ func compareVersion(a, b version) int {
 		return 1
 	}
 	return 0
+}
+
+func decimalIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -53,4 +53,8 @@ func TestCompatibilityHonorsSemanticPrereleasePrecedence(t *testing.T) {
 	if _, err := parseVersion("v1.0.0-alpha.01"); err == nil {
 		t.Fatal("numeric prerelease identifier with a leading zero was accepted")
 	}
+	manifest.MinimumCoreVersion = "v1.0.0-10000000000000000000"
+	if err := Compatible("v1.0.0-9999999999999999999", manifest); err == nil {
+		t.Fatal("smaller arbitrary-precision numeric prerelease identifier was accepted")
+	}
 }

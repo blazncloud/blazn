@@ -113,6 +113,19 @@ func TestInstalledCanonicalDispatchAndJSONForwarding(t *testing.T) {
 	}
 }
 
+func TestInstalledPluginReceivesExtendedOutputFormats(t *testing.T) {
+	for _, format := range []string{"jsonl", "csv"} {
+		fake := &fakePlugins{installed: true}
+		app, _, _ := pluginApp("", false, fake)
+		if code := app.Run([]string{"person", "search", "Jane", "--output=" + format}); code != 3 {
+			t.Fatalf("format=%s code=%d", format, code)
+		}
+		if fake.format != format || !reflect.DeepEqual(fake.args, []string{"person", "search", "Jane"}) {
+			t.Fatalf("format=%s forwarded=%s args=%v", format, fake.format, fake.args)
+		}
+	}
+}
+
 func TestPluginHelpNeverInstalls(t *testing.T) {
 	for _, args := range [][]string{{"social", "--help"}, {"person", "--help"}} {
 		fake := &fakePlugins{}

@@ -79,8 +79,17 @@ func TestUnknownCommandHumanAndJSON(t *testing.T) {
 
 func TestInvalidOutputIsUsageError(t *testing.T) {
 	code, _, stderr := runApp(t, "--output", "yaml", "version")
-	if code != ExitUsage || !strings.Contains(stderr, "expected human or json") {
+	if code != ExitUsage || !strings.Contains(stderr, "expected human, json, jsonl, or csv") {
 		t.Fatalf("invalid output: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestExtendedOutputIsRejectedForCoreCommands(t *testing.T) {
+	for _, format := range []string{"jsonl", "csv"} {
+		code, _, stderr := runApp(t, "version", "--output", format)
+		if code != ExitUsage || !strings.Contains(stderr, "supported only by plugin commands") {
+			t.Fatalf("format=%s code=%d stderr=%q", format, code, stderr)
+		}
 	}
 }
 

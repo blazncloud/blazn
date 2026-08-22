@@ -29,6 +29,8 @@ type OutputFormat string
 const (
 	OutputHuman OutputFormat = "human"
 	OutputJSON  OutputFormat = "json"
+	OutputJSONL OutputFormat = "jsonl"
+	OutputCSV   OutputFormat = "csv"
 )
 
 type BuildInfo struct {
@@ -118,6 +120,18 @@ func (a *App) Run(args []string) int {
 
 	command := positional[0]
 	rest := positional[1:]
+	if format == OutputJSONL || format == OutputCSV {
+		if a.plugins != nil {
+			if definition, ok := a.plugins.Resolve(command); ok {
+				pluginArgs := positional
+				if command == definition.CanonicalCommand {
+					pluginArgs = rest
+				}
+				return a.runPlugin(format, definition, pluginArgs)
+			}
+		}
+		return a.writeError(OutputHuman, ExitUsage, "usage", fmt.Sprintf("--output %s is supported only by plugin commands", format))
+	}
 	switch command {
 	case "help":
 		if len(rest) > 1 {
@@ -187,7 +201,7 @@ func parseGlobalOptions(args []string) (OutputFormat, []string, error) {
 		switch {
 		case arg == "--output":
 			if i+1 >= len(args) {
-				return format, nil, fmt.Errorf("--output requires human or json")
+				return format, nil, fmt.Errorf("--output requires human, json, jsonl, or csv")
 			}
 			i++
 			value, err := outputFormat(args[i])
@@ -210,10 +224,10 @@ func parseGlobalOptions(args []string) (OutputFormat, []string, error) {
 
 func outputFormat(value string) (OutputFormat, error) {
 	switch OutputFormat(value) {
-	case OutputHuman, OutputJSON:
+	case OutputHuman, OutputJSON, OutputJSONL, OutputCSV:
 		return OutputFormat(value), nil
 	default:
-		return OutputHuman, fmt.Errorf("invalid --output value %q; expected human or json", value)
+		return OutputHuman, fmt.Errorf("invalid --output value %q; expected human, json, jsonl, or csv", value)
 	}
 }
 

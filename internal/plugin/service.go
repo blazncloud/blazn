@@ -108,8 +108,8 @@ func (s *Service) Run(ctx context.Context, definition Definition, args []string,
 		return 0, err
 	}
 	forwarded := append([]string(nil), args...)
-	if format == "json" {
-		forwarded = append(forwarded, "--output=json")
+	if format != "human" {
+		forwarded = append(forwarded, "--output="+format)
 	}
 	return s.Runner.Run(ctx, installed.Path, forwarded, streams)
 }
