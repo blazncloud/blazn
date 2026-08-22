@@ -108,12 +108,12 @@ if [ "$current" = initialized ]; then
   if [ -e "$active_key" ]; then validate_key "$active_key"; else
     if [ -e "$keytmp" ] && { [ ! -f "$keytmp" ] || [ -L "$keytmp" ] || [ "$(stat -c %u "$keytmp")" != 0 ]; }; then die "issuer key pending path is unsafe"; fi
     hex=$(openssl rand -hex 32); printf '%s' "$hex" | xxd -r -p | openssl base64 -A | tr '+/' '-_' | tr -d '=' >"$keytmp"; unset hex
-    chmod 0400 "$keytmp"; sync_path "$keytmp"; validate_key "$keytmp"; mv -- "$keytmp" "$active_key"; sync_path "$ROOT"
+    chmod 0400 "$keytmp"; sync_path "$keytmp"; validate_key "$keytmp"; fault key-pending; mv -- "$keytmp" "$active_key"; sync_path "$ROOT"
   fi
   recovery_key=$RECOVERY/issuer-hmac-v1; recovery_tmp=$RECOVERY/.issuer-hmac.pending
   if [ -e "$recovery_key" ]; then validate_key "$recovery_key"; cmp "$active_key" "$recovery_key" >/dev/null || die "recovery key generation conflicts"; else
     if [ -e "$recovery_tmp" ] && { [ ! -f "$recovery_tmp" ] || [ -L "$recovery_tmp" ] || [ "$(stat -c %u "$recovery_tmp")" != 0 ]; }; then die "recovery key pending path is unsafe"; fi
-    cp -- "$active_key" "$recovery_tmp"; chmod 0400 "$recovery_tmp"; sync_path "$recovery_tmp"; mv -- "$recovery_tmp" "$recovery_key"; sync_path "$RECOVERY"
+    cp -- "$active_key" "$recovery_tmp"; chmod 0400 "$recovery_tmp"; sync_path "$recovery_tmp"; fault recovery-key-pending; mv -- "$recovery_tmp" "$recovery_key"; sync_path "$RECOVERY"
   fi
   tmp=$RECEIPT.tmp.$$; jq --arg digest "sha256:$(sha "$ROOT/issuer-hmac-v1")" '.secret.digest=$digest' "$RECEIPT" >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$RECEIPT"; phase secret-created; current=secret-created; fault secret-created
 fi

@@ -29,11 +29,10 @@ run_install(){
     BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" "$INSTALLER"
 }
 
-for fault in recovery-created initialized secret-created config-bound files-installed service-started complete; do
+for fault in recovery-created initialized key-pending recovery-key-pending secret-created config-bound files-installed service-started complete; do
   root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env"
   if run_install "$root" "$fault" >"$top/$fault.out" 2>"$top/$fault.err"; then printf 'issuer fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null
-  if [ "$fault" = initialized ]; then sudo sh -c 'printf partial >"$1/.issuer-key.pending"; chmod 0600 "$1/.issuer-key.pending"' sh "$root/etc/issuer"; fi
   run_install "$root" >"$top/$fault-retry.out"
   sudo jq -e '.phase=="complete" and .liveJoinBlocked==true and .secret.decodedBytes==32 and .socket.path=="/run/blazn/microk8s-worker-issuer.sock"' "$root/ownership/issuer.json" >/dev/null
   before=$(sudo sha256sum "$root/etc/issuer/issuer-hmac-v1" "$root/etc/issuer/config.json" "$root/usr/libexec/issuer")
