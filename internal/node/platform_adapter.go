@@ -31,6 +31,7 @@ type RootOperation string
 
 const (
 	RootProbe        RootOperation = "probe"
+	RootAuthorize    RootOperation = "authorize_bootstrap"
 	RootServiceState RootOperation = "service_state"
 	RootCapture      RootOperation = "capture"
 	RootApply        RootOperation = "apply"
@@ -49,7 +50,25 @@ type RootRequest struct {
 	Prior         *PriorState            `json:"prior,omitempty"`
 	Material      *RootMaterial          `json:"material,omitempty"`
 	Join          *RootJoinBinding       `json:"join,omitempty"`
+	Bootstrap     *RootBootstrapRequest  `json:"bootstrap,omitempty"`
 }
+type RootBootstrapRequest struct {
+	EnrollmentID       string                                `json:"enrollmentId"`
+	Token              string                                `json:"token"`
+	MachineFingerprint string                                `json:"machineFingerprint"`
+	NodePublicKey      string                                `json:"nodePublicKey"`
+	Platform           client.NodePlatform                   `json:"platform"`
+	Architecture       client.NodeArchitecture               `json:"architecture"`
+	KubernetesBinding  *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
+	PlanSigningKey     client.NodePlanSigningKey             `json:"planSigningKey"`
+	Expected           client.ExchangeNodeEnrollmentResponse `json:"expected"`
+	ProfileID          string                                `json:"profileId"`
+	ProfilePath        string                                `json:"profilePath"`
+}
+
+func (RootBootstrapRequest) String() string   { return "root bootstrap request [REDACTED]" }
+func (RootBootstrapRequest) GoString() string { return "node.RootBootstrapRequest{Token:[REDACTED]}" }
+
 type RootMaterial struct {
 	ComponentName string `json:"componentName"`
 	SHA256        string `json:"sha256"`
@@ -155,6 +174,15 @@ func NewPlatformAdapter(platform string, privileged PrivilegedClient, materials 
 		return nil, errors.New("platform adapter configuration is incomplete")
 	}
 	return &PlatformAdapter{Platform: platform, Privileged: privileged, Materials: materials, Join: join}, nil
+}
+func (a *PlatformAdapter) AuthorizeBootstrap(ctx context.Context, authorization BootstrapAuthorization) error {
+	if err := authorization.Validate(); err != nil {
+		return err
+	}
+	request := a.request(RootAuthorize, authorization.Expected.Plan, 0)
+	request.Bootstrap = &RootBootstrapRequest{EnrollmentID: authorization.EnrollmentID, Token: authorization.Token, MachineFingerprint: authorization.MachineFingerprint, NodePublicKey: authorization.NodePublicKey, Platform: authorization.Platform, Architecture: authorization.Architecture, KubernetesBinding: authorization.KubernetesBinding, PlanSigningKey: authorization.PlanSigningKey, Expected: authorization.Expected, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath}
+	_, err := a.Privileged.Call(ctx, request)
+	return err
 }
 func (a *PlatformAdapter) Preflight(ctx context.Context, plan client.NodeInstallPlan) error {
 	if err := client.ValidateNodeInstallPlan(plan); err != nil {

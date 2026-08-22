@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -26,6 +27,9 @@ import (
 type RootEngine interface {
 	Execute(context.Context, RootRequest) (RootResponse, error)
 }
+type RootRequestAuthorizer interface {
+	AuthorizeRootRequest(context.Context, RootRequest) error
+}
 
 func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engine RootEngine) error {
 	if currentUID() != 0 {
@@ -39,7 +43,7 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	if json.Unmarshal(data, &raw) != nil {
 		return errors.New("root helper request is invalid")
 	}
-	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true}
+	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true}
 	for key := range raw {
 		if !allowed[key] {
 			return fmt.Errorf("root helper field %q is unsupported", key)
@@ -61,11 +65,21 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 		if (request.Platform == "linux" && request.Plan.Target.Platform != client.NodePlatformLinux) || (request.Platform == "macos" && request.Plan.Target.Platform != client.NodePlatformMacOS) {
 			return errors.New("root helper plan platform mismatch")
 		}
-		if err := authorizeRootRequest(request); err != nil {
-			return err
-		}
-		if err := validateRootRequestMaterial(request); err != nil {
-			return err
+		if request.Operation == RootAuthorize {
+			if request.Bootstrap == nil {
+				return errors.New("root bootstrap authorization is missing")
+			}
+		} else {
+			authorizer, ok := engine.(RootRequestAuthorizer)
+			if !ok {
+				return errors.New("root helper authorizer is unavailable")
+			}
+			if err := authorizer.AuthorizeRootRequest(ctx, request); err != nil {
+				return err
+			}
+			if err := validateRootRequestMaterial(request); err != nil {
+				return err
+			}
 		}
 	}
 	if engine == nil {
@@ -112,49 +126,6 @@ func validateRootRequestMaterial(request RootRequest) error {
 	return errors.New("root material component is absent from signed plan")
 }
 
-func authorizeRootRequest(request RootRequest) error {
-	const stateRoot = "/var/lib/blazn/node"
-	state, err := (FileStateStore{Root: stateRoot}).LoadRuntime()
-	if err != nil {
-		return fmt.Errorf("load fixed verified node runtime: %w", err)
-	}
-	want, _ := json.Marshal(state.Exchange.Plan)
-	got, _ := json.Marshal(request.Plan)
-	if !bytes.Equal(want, got) || request.Plan.Digest != state.Exchange.Plan.Digest {
-		return errors.New("root helper plan differs from fixed verified runtime")
-	}
-	if filepath.Dir(state.Pin.ProfilePath) != "/etc/blazn/node/profiles" {
-		return errors.New("root helper profile path is outside the fixed trust root")
-	}
-	version := ""
-	for _, component := range request.Plan.Components {
-		if component.SourceClass == "current_binary" && component.ArtifactType == "binary" {
-			version = component.Version
-			break
-		}
-	}
-	profile, err := LoadTrustedProfile(state.Pin.ProfilePath, "/usr/local/bin/blazn", version)
-	if err != nil {
-		return err
-	}
-	identityBytes, err := readPrivateFile(filepath.Join(stateRoot, "identity.json"), 4096)
-	if err != nil {
-		return err
-	}
-	identity, err := decodeIdentity(identityBytes)
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	if request.Operation == RootRollback {
-		now, err = time.Parse(time.RFC3339, request.Plan.IssuedAt)
-		if err != nil {
-			return err
-		}
-	}
-	return verifyExchange(state.Exchange, state.Pin, identity, EnrollOptions{Platform: request.Plan.Target.Platform, Architecture: request.Plan.Target.Architecture, Profile: profile}, now)
-}
-
 type CommandExecutor interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 	RunInput(context.Context, string, []byte, ...string) ([]byte, error)
@@ -183,6 +154,10 @@ type NativeRootEngine struct {
 	Now                  func() time.Time
 	LimaBindingPath      string
 	allowTestJoinRuntime bool
+	AuthorityPath        string
+	ProfileRoot          string
+	CurrentBinaryPath    string
+	AuthorityHTTPClient  *http.Client
 }
 
 func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (RootResponse, error) {
@@ -190,6 +165,8 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		e.Commands = FixedCommandExecutor{}
 	}
 	switch request.Operation {
+	case RootAuthorize:
+		return RootResponse{}, e.authorizeBootstrap(ctx, request)
 	case RootProbe:
 		if e.Platform != request.Platform {
 			return RootResponse{}, errors.New("root helper OS mismatch")

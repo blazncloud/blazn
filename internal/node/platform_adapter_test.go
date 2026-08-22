@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -367,5 +369,95 @@ func TestInstalledSnapVersionUsesExactRevisionColumn(t *testing.T) {
 	version, err := engine.installedPackageVersion(context.Background(), "microk8s", "snap")
 	if err != nil || version != "revision:9072" {
 		t.Fatalf("version=%q err=%v", version, err)
+	}
+}
+
+func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T) {
+	authorization, _, signer := validBootstrapAuthorizationWithSigner(t)
+	binaryValue := []byte("root-authorized-binary")
+	binarySum := sha256.Sum256(binaryValue)
+	binarySHA := hex.EncodeToString(binarySum[:])
+	plan := authorization.Expected.Plan
+	for index := range plan.Components {
+		if plan.Components[index].SourceClass == "current_binary" {
+			plan.Components[index].SHA256 = binarySHA
+		}
+	}
+	for index := range plan.Mutations {
+		if plan.Mutations[index].Kind == "file" {
+			plan.Mutations[index].Desired["contentSha256"] = binarySHA
+			plan.Mutations[index].DesiredDigest = "sha256:" + binarySHA
+		}
+	}
+	digest, err := client.NodeInstallPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest = digest
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+	authorization.Expected.Plan = plan
+
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.Method != http.MethodPost || request.URL.Path != "/v1/node-enrollments/"+authorization.EnrollmentID+"/exchange" || request.Header.Get("Authorization") != "" {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var replay client.ExchangeNodeEnrollmentRequest
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&replay) != nil || replay.Token != authorization.Token || replay.NodePublicKey != authorization.NodePublicKey || !sameJSON(replay.KubernetesBinding, authorization.KubernetesBinding) {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		response.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(response).Encode(authorization.Expected)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	profileRoot := filepath.Join(root, "profiles")
+	if err := os.Mkdir(profileRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(root, "blazn")
+	if err := os.WriteFile(binaryPath, binaryValue, 0700); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profileRoot, "adopt.json")
+	profileFile := TrustedProfileFile{SchemaVersion: 1, ID: plan.InstallProfile, ControlPlaneOrigin: server.URL, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedDownloadHostSuffixes: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}}
+	profileBytes, _ := json.Marshal(profileFile)
+	if err := os.WriteFile(profilePath, profileBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	authorization.ProfilePath = profilePath
+	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
+	engine := NativeRootEngine{Platform: "linux", AuthorityPath: filepath.Join(root, "authority", "install-authority.json"), ProfileRoot: profileRoot, CurrentBinaryPath: binaryPath, AuthorityHTTPClient: server.Client(), Now: func() time.Time { return when }}
+	bootstrap := RootBootstrapRequest{EnrollmentID: authorization.EnrollmentID, Token: authorization.Token, MachineFingerprint: authorization.MachineFingerprint, NodePublicKey: authorization.NodePublicKey, Platform: authorization.Platform, Architecture: authorization.Architecture, KubernetesBinding: authorization.KubernetesBinding, PlanSigningKey: authorization.PlanSigningKey, Expected: authorization.Expected, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath}
+	request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootAuthorize, Platform: "linux", Plan: plan, Bootstrap: &bootstrap}
+	if err := engine.authorizeBootstrap(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	when = when.Add(time.Second)
+	if err := engine.authorizeBootstrap(context.Background(), request); err != nil {
+		t.Fatalf("idempotent exchange replay failed: %v", err)
+	}
+	encoded, err := readPrivateFile(engine.AuthorityPath, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(authorization.Token)) || bytes.Contains(encoded, []byte(`"token"`)) {
+		t.Fatal("root authority persisted enrollment token material")
+	}
+	authority, err := DecodeRootInstallAuthority(encoded)
+	if err != nil || authority.PlanSigningKey != authorization.PlanSigningKey || !sameJSON(authority.KubernetesBinding, authorization.KubernetesBinding) {
+		t.Fatalf("authority=%#v err=%v", authority, err)
+	}
+	if err := engine.AuthorizeRootRequest(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: RootVerify, Platform: "linux", Plan: plan}); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 {
+		t.Fatalf("exchange replay requests=%d", requests)
 	}
 }
