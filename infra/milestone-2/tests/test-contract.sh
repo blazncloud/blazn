@@ -7,6 +7,7 @@ compose=$ROOT_DIR/compose.yaml
 ngrok=$ROOT_DIR/ngrok.example.yml
 unit=$ROOT_DIR/systemd/blazn-control-plane.service
 ngrok_unit=$ROOT_DIR/systemd/blazn-ngrok.service
+ngrok_qualification_unit=$ROOT_DIR/systemd/blazn-ngrok-qualification.service
 
 # The first four strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
@@ -139,6 +140,7 @@ if grep -E 'SUPERUSER|CREATEDB|CREATEROLE|REPLICATION' "$ROOT_DIR/postgres-init/
 fi
 
 grep -F 'REPLACE_WITH_DEDICATED_BLAZN_NGROK_TOKEN' "$ngrok" >/dev/null
+grep -F 'web_addr: false' "$ngrok" >/dev/null
 # This is intentionally the literal shell-style interpolation token.
 # shellcheck disable=SC2016
 if grep -F '${NGROK_AUTHTOKEN}' "$ngrok" >/dev/null; then
@@ -177,6 +179,8 @@ if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
 fi
 grep -F -- '--url https://blazn.benpelo.com' "$ngrok_unit" >/dev/null
 grep -F 'with-public-origin-lock.sh permanent' "$ngrok_unit" >/dev/null
+grep -F 'Conflicts=blazn-ngrok-qualification.service' "$ngrok_unit" >/dev/null
+grep -F 'Conflicts=blazn-ngrok.service' "$ngrok_qualification_unit" >/dev/null
 grep -F '/usr/bin/setpriv --reuid=blazn-ngrok --regid=blazn-ngrok --clear-groups' "$ngrok_unit" >/dev/null
 grep -F 'unreviewed supplementary group memberships' "$ROOT_DIR/scripts/install-ngrok-user.sh" >/dev/null
 grep -F 'root:blazn-ngrok:710' "$ROOT_DIR/scripts/install-ngrok-user.sh" >/dev/null

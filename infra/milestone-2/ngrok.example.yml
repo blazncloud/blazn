@@ -1,6 +1,9 @@
 version: "3"
 agent:
   authtoken: REPLACE_WITH_DEDICATED_BLAZN_NGROK_TOKEN
+  # ben1 also runs an independently owned HomeAI ngrok agent on 127.0.0.1:4040.
+  # Blazn does not use the local inspector and must not compete for that port.
+  web_addr: false
 
 # Install as /etc/blazn/ngrok/ngrok.yml, root:blazn-ngrok mode 0640. The system
 # units pass the API-only upstream and URL explicitly. The authenticated traffic

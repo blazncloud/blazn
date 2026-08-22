@@ -105,6 +105,8 @@ install dedicated `/etc/blazn/ngrok` as root:blazn-ngrok mode 0750 and
 `ngrok.yml` as root:blazn-ngrok mode 0640
 install reviewed files and systemd unit
 systemctl enable --now blazn-control-plane.service
+systemctl stop blazn-ngrok-qualification.service
+systemctl enable --now blazn-ngrok.service
 health, migration, restart-idempotent bootstrap and object initialization, S3
 checksum, restart, auth, and revocation tests
 with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-id>

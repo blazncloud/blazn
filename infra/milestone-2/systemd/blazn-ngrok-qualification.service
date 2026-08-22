@@ -2,6 +2,7 @@
 Description=Blazn POC temporary ngrok qualification tunnel (API only)
 After=network-online.target
 Wants=network-online.target
+Conflicts=blazn-ngrok.service
 ConditionPathExists=/etc/blazn/ngrok/ngrok.yml
 ConditionPathExists=/etc/blazn/control-plane/secrets/proxy-auth-secret
 
