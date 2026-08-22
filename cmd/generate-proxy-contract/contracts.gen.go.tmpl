@@ -3,12 +3,14 @@
 package proxycontract
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -375,12 +377,14 @@ func (b ResponseBlock)Validate()error{switch b.Type{case "text":if b.Text==nil||
 func (e NormalizedStreamEvent) Validate() error { if !uuidPattern.MatchString(e.LogicalRequestID)||e.Sequence<0||!validStreamType(e.Type){return errors.New("normalized stream event is invalid")};if e.Usage!=nil&&(e.Usage.InputTokens<0||e.Usage.OutputTokens<0){return errors.New("stream usage is invalid")};if e.FinishReason!=nil&&!validFinish(*e.FinishReason){return errors.New("stream finish reason is invalid")};if e.Error!=nil{if err:=e.Error.Validate();err!=nil{return err}};switch e.Type{case "response_start":if e.Text!=nil||e.ArgumentsDelta!=nil||e.Error!=nil{return errors.New("response_start union is invalid")};case "text_delta":if e.Text==nil||e.CallID!=nil||e.ToolName!=nil||e.ArgumentsDelta!=nil||e.Error!=nil{return errors.New("text_delta union is invalid")};case "tool_call_start":if e.CallID==nil||e.ToolName==nil||e.Text!=nil||e.ArgumentsDelta!=nil||e.Error!=nil{return errors.New("tool_call_start union is invalid")};case "tool_arguments_delta":if e.CallID==nil||e.ArgumentsDelta==nil||e.Text!=nil||e.ToolName!=nil||e.Error!=nil{return errors.New("tool_arguments_delta union is invalid")};case "usage":if e.Usage==nil||e.Text!=nil||e.Error!=nil{return errors.New("usage union is invalid")};case "response_end":if e.FinishReason==nil||e.Text!=nil||e.ArgumentsDelta!=nil||e.Error!=nil{return errors.New("response_end union is invalid")};case "error":if e.Error==nil||e.Text!=nil||e.ArgumentsDelta!=nil||e.FinishReason!=nil{return errors.New("error union is invalid")}};return nil }
 func (e NormalizedError) Validate() error { if !validErrorCode(e.Code)||!validRetryClass(e.RetryClass)||len(e.SafeMessage)<1||len(e.SafeMessage)>512||(e.UpstreamStatus!=0&&(e.UpstreamStatus<100||e.UpstreamStatus>599)){return errors.New("normalized error is invalid")};return nil }
 
-// ContractDigest returns the deterministic digest used by activation records.
-// Proxy contract values contain only JSON primitives whose encoding is identical
-// under encoding/json and RFC 8785 (integer numbers and no HTML-sensitive text).
-func ContractDigest(value any) (string,error){encoded,err:=json.Marshal(value);if err!=nil{return "",err};sum:=sha256.Sum256(encoded);return fmt.Sprintf("sha256:%x",sum),nil}
+// ContractDigest returns the RFC 8785 canonical JSON digest used by activation
+// records. Activation schemas contain integer numbers; non-integer numbers are
+// rejected here instead of risking a non-canonical cross-runtime encoding.
+func ContractDigest(value any) (string,error){encoded,err:=canonicalJSON(value);if err!=nil{return "",err};sum:=sha256.Sum256(encoded);return fmt.Sprintf("sha256:%x",sum),nil}
 func ContractChecksum(value any)(string,error){encoded,err:=json.Marshal(value);if err!=nil{return "",err};var object map[string]json.RawMessage;if err=json.Unmarshal(encoded,&object);err!=nil{return "",err};delete(object,"checksum");return ContractDigest(object)}
 func VerifyContractChecksum(value any,expected string)error{actual,err:=ContractChecksum(value);if err!=nil{return err};if actual!=expected{return fmt.Errorf("checksum mismatch: got %s want %s",actual,expected)};return nil}
+func canonicalJSON(value any)([]byte,error){encoded,err:=json.Marshal(value);if err!=nil{return nil,err};decoder:=json.NewDecoder(bytes.NewReader(encoded));decoder.UseNumber();var decoded any;if err=decoder.Decode(&decoded);err!=nil{return nil,err};var output bytes.Buffer;if err=writeCanonical(&output,decoded);err!=nil{return nil,err};return output.Bytes(),nil}
+func writeCanonical(output *bytes.Buffer,value any)error{switch typed:=value.(type){case nil:output.WriteString("null");case bool:if typed{output.WriteString("true")}else{output.WriteString("false")};case string:var encoded bytes.Buffer;encoder:=json.NewEncoder(&encoded);encoder.SetEscapeHTML(false);if err:=encoder.Encode(typed);err!=nil{return err};text:=strings.TrimSuffix(encoded.String(),"\n");text=strings.ReplaceAll(text,`\u2028`,"\u2028");text=strings.ReplaceAll(text,`\u2029`,"\u2029");output.WriteString(text);case json.Number:if strings.ContainsAny(string(typed),".eE"){return errors.New("activation canonical JSON forbids non-integer numbers")};output.WriteString(string(typed));case []any:output.WriteByte('[');for index,item:=range typed{if index>0{output.WriteByte(',')};if err:=writeCanonical(output,item);err!=nil{return err}};output.WriteByte(']');case map[string]any:keys:=make([]string,0,len(typed));for key:=range typed{keys=append(keys,key)};sort.Strings(keys);output.WriteByte('{');for index,key:=range keys{if index>0{output.WriteByte(',')};if err:=writeCanonical(output,key);err!=nil{return err};output.WriteByte(':');if err:=writeCanonical(output,typed[key]);err!=nil{return err}};output.WriteByte('}');default:return fmt.Errorf("unsupported canonical JSON value %T",value)};return nil}
 
 // ValidateJournalReceipt proves the receipt refers to the exact protected
 // journal generation. It does not grant authority to restore environment state

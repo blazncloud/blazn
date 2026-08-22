@@ -206,3 +206,14 @@ func TestJournalReceiptBindingAndChecksum(t *testing.T) {
 		t.Fatal("receipt incorrectly grants environment restore")
 	}
 }
+
+func TestCanonicalDigestVector(t *testing.T) {
+	got, err := ContractDigest(map[string]any{"z": 1, "a": "<>&"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "sha256:4ad7cdde6a20d82804d6653117fcc8e99692008e7464fb732969740847efc601"
+	if got != want {
+		t.Fatalf("canonical digest=%s want=%s", got, want)
+	}
+}
