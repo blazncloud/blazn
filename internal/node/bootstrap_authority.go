@@ -2,11 +2,14 @@ package node
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -15,7 +18,10 @@ import (
 
 const RootInstallAuthoritySchema = "blazn.dev/node-root-install-authority/v1"
 
-var bootstrapDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var (
+	bootstrapDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	bootstrapTokenPattern  = regexp.MustCompile(`^[A-Za-z0-9_-]{43,128}$`)
+)
 
 // BootstrapAuthorization is an in-memory handoff to the privileged platform.
 // Token is deliberately excluded from JSON and redacted from String/GoString.
@@ -39,7 +45,7 @@ func (BootstrapAuthorization) GoString() string {
 }
 
 func (a BootstrapAuthorization) Validate() error {
-	if len(a.Token) < 43 || len(a.Token) > 128 || a.EnrollmentID == "" || a.MachineFingerprint == "" || a.NodePublicKey == "" || a.ProfileID == "" || a.ProfilePath == "" {
+	if !bootstrapTokenPattern.MatchString(a.Token) || a.EnrollmentID == "" || a.MachineFingerprint == "" || a.NodePublicKey == "" || a.ProfileID == "" || !filepath.IsAbs(a.ProfilePath) || filepath.Clean(a.ProfilePath) != a.ProfilePath {
 		return errors.New("bootstrap authorization is incomplete")
 	}
 	if err := client.ValidateExchangeNodeEnrollmentResponse(a.Expected); err != nil {
@@ -48,6 +54,22 @@ func (a BootstrapAuthorization) Validate() error {
 	plan := a.Expected.Plan
 	if plan.EnrollmentID != a.EnrollmentID || plan.InstallProfile != a.ProfileID || plan.Target.MachineFingerprint != a.MachineFingerprint || plan.Target.Platform != a.Platform || plan.Target.Architecture != a.Architecture || plan.SigningKeyID != a.PlanSigningKey.KeyID {
 		return errors.New("bootstrap authorization does not bind its expected plan")
+	}
+	planKey, err := base64.RawURLEncoding.DecodeString(a.PlanSigningKey.PublicKey)
+	if err != nil || len(planKey) != ed25519.PublicKeySize {
+		return errors.New("bootstrap plan signer public key is invalid")
+	}
+	planFingerprint, err := client.NodePublicKeyFingerprint(ed25519.PublicKey(planKey))
+	if err != nil || planFingerprint != a.PlanSigningKey.Fingerprint {
+		return errors.New("bootstrap plan signer fingerprint is inconsistent")
+	}
+	nodeKey, err := base64.RawURLEncoding.DecodeString(a.NodePublicKey)
+	if err != nil || len(nodeKey) != ed25519.PublicKeySize {
+		return errors.New("bootstrap node public key is invalid")
+	}
+	nodeFingerprint, err := client.NodePublicKeyFingerprint(ed25519.PublicKey(nodeKey))
+	if err != nil || nodeFingerprint != a.Expected.Identity.PublicKeyFingerprint {
+		return errors.New("bootstrap node identity fingerprint is inconsistent")
 	}
 	return nil
 }

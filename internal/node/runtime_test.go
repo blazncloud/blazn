@@ -54,6 +54,18 @@ func TestInstallerBootstrapAuthorizationFailsClosedBeforePlatform(t *testing.T) 
 	}
 }
 
+func TestInstallerPassesValidBootstrapAuthorizationOnlyInMemory(t *testing.T) {
+	platform := &mockPlatform{}
+	installer := NewInstaller(platform, &memoryState{})
+	authorization := validBootstrapAuthorization(t)
+	if err := installer.AuthorizeBootstrap(context.Background(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	if platform.authorization == nil || platform.authorization.Token != authorization.Token {
+		t.Fatal("bootstrap token was not handed directly to the privileged platform")
+	}
+}
+
 func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
 	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, ProfileID: "profile/v1", ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: "2026-08-22T12:00:00Z"}
 	first, err := RootInstallAuthorityDigest(authority)
@@ -509,6 +521,26 @@ func testIdentity(t *testing.T) Identity {
 		t.Fatal(err)
 	}
 	return Identity{PrivateKey: privateKey, PublicKey: publicKey}
+}
+
+func validBootstrapAuthorization(t *testing.T) BootstrapAuthorization {
+	t.Helper()
+	nodeIdentity := testIdentity(t)
+	nodeFingerprint := mustFingerprint(t, nodeIdentity)
+	planSigner := testIdentity(t)
+	planFingerprint := mustFingerprint(t, planSigner)
+	plan := client.NodeInstallPlan{
+		SchemaVersion: client.NodeSchemaVersion, PlanID: "11111111-1111-4111-8111-111111111111", NodeID: "22222222-2222-4222-8222-222222222222", EnrollmentID: "33333333-3333-4333-8333-333333333333", WorkspaceID: "44444444-4444-4444-8444-444444444444",
+		IdempotencyKey: "install-key-1", ApprovedBy: "11111111-1111-4111-8111-111111111111", ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: client.NodeModeAdopt, InstallProfile: "existing-linux-worker-adopt/v1",
+		Cluster: client.NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, APIServer: "https://cluster.example.test", KubernetesVersion: "v1.36.1", JoinCredentialEndpoint: "/v1/node-service/join-credentials", BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash, RegistryEndpoints: []string{"https://registry.example.test"}},
+		Target:  client.NodeInstallTarget{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, MachineFingerprint: testHash, NodePublicKeyFingerprint: nodeFingerprint, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240}, RegistryTrust: []client.NodeRegistryTrust{},
+		Components:  []client.NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}},
+		NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash}, Labels: map[string]string{"blazn.dev/pool": "default"}, Taints: []client.NodeTaint{}, ResourceBounds: client.NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
+		Mutations:       []client.NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 2, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 3, Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, UID: 0, GID: 0, Rollback: "restore_prior"}},
+		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: client.NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
+		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
+	}
+	return BootstrapAuthorization{EnrollmentID: plan.EnrollmentID, Token: strings.Repeat("s", 43), MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodeIdentity.PublicBase64(), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, PlanSigningKey: client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: planSigner.PublicBase64(), Fingerprint: planFingerprint}, Expected: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: nodeFingerprint, IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, ProfileID: plan.InstallProfile, ProfilePath: "/etc/blazn/node/profiles/existing-linux-worker-adopt.json"}
 }
 func mustFingerprint(t *testing.T, identity Identity) string {
 	t.Helper()
