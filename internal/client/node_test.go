@@ -540,6 +540,34 @@ func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing
 	if err := ValidateNodeComponentRedirect(trust.Profile, plan.Components[1], "https://redirect.example.test/file"); err == nil {
 		t.Fatal("cross-host redirect passed")
 	}
+	download := plan.Components[len(plan.Components)-1]
+	redirectProfile := trust.Profile
+	redirectProfile.AllowedDownloadHostSuffixes = []string{".cdn.snapcraftcontent.com"}
+	if err := ValidateNodeComponentRedirect(redirectProfile, download, "https://canonical-bos01.cdn.snapcraftcontent.com/download-origin/canonical-lgw01/file"); err != nil {
+		t.Fatalf("approved Snapcraft CDN redirect failed: %v", err)
+	}
+	suffixOnlyInitial := download
+	suffixOnlyInitial.SourceHost = "canonical-bos01.cdn.snapcraftcontent.com"
+	suffixOnlyInitial.Source = "https://canonical-bos01.cdn.snapcraftcontent.com/file"
+	if err := ValidateNodeComponentRedirect(redirectProfile, suffixOnlyInitial, suffixOnlyInitial.Source); err == nil {
+		t.Fatal("initial component source bypassed exact-origin trust through redirect suffix")
+	}
+	for _, candidate := range []string{
+		"http://canonical-bos01.cdn.snapcraftcontent.com/file",
+		"https://user:secret@canonical-bos01.cdn.snapcraftcontent.com/file",
+		"https://canonical-bos01.cdn.snapcraftcontent.com.evil.test/file",
+		"https://cdn.snapcraftcontent.com/file",
+		"https://unlisted.example.test/file",
+	} {
+		if err := ValidateNodeComponentRedirect(redirectProfile, download, candidate); err == nil {
+			t.Fatalf("unsafe or unlisted redirect passed: %s", candidate)
+		}
+	}
+	invalidSuffix := redirectProfile
+	invalidSuffix.AllowedDownloadHostSuffixes = []string{"cdn.snapcraftcontent.com"}
+	if err := ValidateNodeInstallProfile(plan, invalidSuffix); err == nil {
+		t.Fatal("redirect suffix without an exact label boundary passed")
+	}
 	symlink := trust
 	symlink.Profile.VerifyNoSymlinkTraversal = func(target string) error {
 		if target == "/usr/local/bin/blazn" {
