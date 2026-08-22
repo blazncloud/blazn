@@ -75,6 +75,7 @@ metadata_value = {
     "nodePlanReceiptDigest": digest,
 }
 metadata_validator.validate(metadata_value)
+metadata_validator.validate({**metadata_value, "schemaVersion": "blazn.dev/control-plane-backup/v4", "microk8sIssuerMaterialDigest": digest})
 v2_metadata_value = {**metadata_value, "schemaVersion": "blazn.dev/control-plane-backup/v2"}
 del v2_metadata_value["nodePlanReceiptDigest"]
 metadata_validator.validate(v2_metadata_value)

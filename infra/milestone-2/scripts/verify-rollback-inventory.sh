@@ -31,6 +31,7 @@ source_digest=sha256:$(control_api_source_digest "$ROOT_DIR")
 image_id=$(docker image inspect "$CONTROL_API_IMAGE" --format '{{.Id}}')
 config_digest=sha256:$(control_plane_config_digest "$ROOT_DIR")
 node_plan_receipt_digest=sha256:$(jq -cS .nodePlan "$RECEIPT_PATH" | sha256sum | awk '{print $1}')
+issuer_material_digest=$(jq -er '.microk8sIssuer.materialDigest // ""' "$RECEIPT_PATH")
 
 jq -e \
   --arg secretDigest "$secret_digest" \
@@ -39,11 +40,8 @@ jq -e \
   --arg imageId "$image_id" \
   --arg configDigest "$config_digest" \
   --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
-  '.schemaVersion == "blazn.dev/control-plane-backup/v3" and
-   .configDigest == $configDigest and
-   .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and
-   .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest} and
-   .nodePlanReceiptDigest == $nodePlanReceiptDigest' \
+  --arg issuerMaterialDigest "$issuer_material_digest" \
+  -f "$SCRIPT_DIR/verify-rollback-metadata.jq" \
   "$backup/metadata.json" >/dev/null || die "backup inventory does not match the staged rollback release and installed invitation key"
 jq -e \
   --arg secretDigest "$secret_digest" \
@@ -51,9 +49,11 @@ jq -e \
   --arg image "$CONTROL_API_IMAGE" \
   --arg imageId "$image_id" \
   --arg configDigest "$config_digest" \
+  --arg issuerMaterialDigest "$issuer_material_digest" \
   '.configDigest == $configDigest and
    .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and
-   .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest}' \
+   .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest} and
+   (if $issuerMaterialDigest == "" then has("microk8sIssuer")|not else .microk8sIssuer.materialDigest == $issuerMaterialDigest end)' \
   "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the staged rollback release and installed invitation key"
 
-printf 'rollback inventory matches the staged release, image, migration source, config, and invitation key\n'
+printf 'rollback inventory matches the staged release, image, migration source, config, invitation key, and optional issuer material\n'

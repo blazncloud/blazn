@@ -322,6 +322,7 @@ services:
       NODE_PLAN_SIGNING_PRIVATE_KEY_FILE: /run/secrets/node_plan_signing_private_key_v1
       NODE_PLAN_SIGNING_KEY_ID: control-plane-node-plan/v1
       NODE_INSTALL_PLAN_TEMPLATE_FILE: /opt/blazn-node/node-install-plan-template-v1.json
+      BLAZN_NODE_BROKER_LOOPBACK: ${BLAZN_NODE_BROKER_LOOPBACK:-disabled}
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
@@ -371,6 +372,53 @@ services:
           pids: 256
     networks:
       - control
+
+  node-broker:
+    profiles: ["node-broker"]
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    command: ["node", "dist/node-broker-main.js"]
+    user: "${BLAZN_NODE_BROKER_UID:?set receipt-bound broker UID}:${BLAZN_NODE_BROKER_GID:?set receipt-bound broker GID}"
+    read_only: true
+    environment:
+      BLAZN_NODE_BROKER_SECRETS_ROOT: /run/secrets
+      NODE_BROKER_PORT: "8081"
+    secrets:
+      - source: node_broker_database_url
+        target: database-url
+      - source: node_broker_join_credential_v1
+        target: join-credential-v1
+    volumes:
+      - type: bind
+        source: /run/blazn/microk8s-worker-issuer.sock
+        target: /run/blazn/microk8s-worker-issuer.sock
+    network_mode: "service:api"
+    depends_on:
+      api:
+        condition: service_started
+    restart: "no"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8081/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      - /tmp:mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+          pids: 64
 
   poc-identity-provision:
     image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
@@ -442,6 +490,8 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/runtime-database-url
   node_broker_database_url:
     file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/database-url
+  node_broker_join_credential_v1:
+    file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/join-credential-v1
   initial_password:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/initial-password
   s3_root_access_key:

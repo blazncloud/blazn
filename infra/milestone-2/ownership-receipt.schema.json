@@ -69,6 +69,7 @@
     },
     "nodeBroker": { "$ref": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json" },
     "nodePlan": { "$ref": "https://blazn.dev/schemas/poc/node-plan-material-v1.json" },
+    "microk8sIssuer": {"type":"object","additionalProperties":false,"required":["receiptPath","materialDigest"],"properties":{"receiptPath":{"const":"/var/lib/blazn/ownership/microk8s-worker-issuer.json"},"materialDigest":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"}}},
     "units": {
       "type": "array",
       "uniqueItems": true,

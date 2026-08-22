@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/microk8s-worker-issuer-infra-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "binary", "config", "unit", "tmpfiles", "state", "environment", "ownership", "secret", "socket", "microk8s", "recovery", "brokerUid", "brokerGroupCreated", "liveJoinBlocked"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer-infra/v1"},
+    "owner": {"const": "blazn-poc"},
+    "host": {"type": "string", "minLength": 1},
+    "phase": {"enum": ["initialized", "secret-created", "config-bound", "files-installed", "service-started", "complete", "rollback-started", "service-stopped", "rollback-validated", "binary-removed", "config-removed", "secret-removed", "unit-removed", "tmpfiles-removed", "state-removed", "environment-restored", "main-removal-intent", "main-restored", "files-restored", "rolled-back"]},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "binary": {"$ref": "#/$defs/artifact"},
+    "config": {"$ref": "#/$defs/artifact"},
+    "unit": {"$ref": "#/$defs/artifact"},
+    "tmpfiles": {"$ref": "#/$defs/artifact"},
+    "state": {"type": "object", "additionalProperties": false, "required": ["path", "uid", "mode"], "properties": {"path": {"const": "/var/lib/blazn-node-root/microk8s-worker-issuer"}, "uid": {"const": 0}, "mode": {"const": "0700"}}},
+    "environment": {"type": "object", "additionalProperties": false, "required": ["path", "backupPath", "priorDigest", "digest"], "properties": {"path": {"const": "/etc/blazn/control-plane/control-plane.env"}, "backupPath": {"const": "/var/lib/blazn/ownership/microk8s-worker-issuer-recovery/control-plane.env"}, "priorDigest": {"$ref": "#/$defs/digest"}, "digest": {"$ref": "#/$defs/digest"}}},
+    "ownership": {"type": "object", "additionalProperties": false, "required": ["path", "backupPath", "priorDigest"], "properties": {"path": {"const": "/var/lib/blazn/ownership/control-plane.json"}, "backupPath": {"const": "/var/lib/blazn/ownership/microk8s-worker-issuer-recovery/control-plane.json"}, "priorDigest": {"$ref": "#/$defs/digest"}}},
+    "secret": {"type": "object", "additionalProperties": false, "required": ["path", "digest", "encoding", "decodedBytes"], "properties": {"path": {"const": "/etc/blazn/microk8s-worker-issuer/issuer-hmac-v1"}, "digest": {"$ref": "#/$defs/digest"}, "encoding": {"const": "base64url-unpadded"}, "decodedBytes": {"const": 32}}},
+    "socket": {"type": "object", "additionalProperties": false, "required": ["path", "uid", "gid", "mode", "brokerGroup"], "properties": {"path": {"const": "/run/blazn/microk8s-worker-issuer.sock"}, "uid": {"const": 0}, "gid": {"type": "integer", "minimum": 1}, "mode": {"const": "0660"}, "brokerGroup": {"const": "blazn-node-broker"}}},
+    "microk8s": {"type": "object", "additionalProperties": false, "required": ["version", "revision", "gid", "tokenFile"], "properties": {"version": {"const": "v1.35.6"}, "revision": {"enum": [9072, 9075]}, "gid": {"type": "integer", "minimum": 1}, "tokenFile": {"const": "/var/snap/microk8s/current/credentials/cluster-tokens.txt"}}},
+    "recovery": {"type": "object", "additionalProperties": false, "required": ["root", "inventoryDigest"], "properties": {"root": {"type": "string", "pattern": "^/var/lib/blazn/ownership/microk8s-worker-issuer-recovery$"}, "inventoryDigest": {"$ref": "#/$defs/digest"}}},
+    "brokerUid": {"type": "integer", "minimum": 1},
+    "brokerGroupCreated": {"const": false},
+    "rollback": {"type": "object", "additionalProperties": false, "required": ["retainedRecovery", "groupRetained", "rolledBackAt"], "properties": {"retainedRecovery": {"const": true}, "groupRetained": {"const": true}, "rolledBackAt": {"type": "string", "format": "date-time"}}},
+    "rollbackMain": {"type": "object", "additionalProperties": false, "required": ["priorDigest", "resultDigest"], "properties": {"priorDigest": {"$ref": "#/$defs/digest"}, "resultDigest": {"$ref": "#/$defs/digest"}}},
+    "liveJoinBlocked": {"const": true}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["path", "digest", "uid", "mode"], "properties": {"path": {"type": "string", "minLength": 1}, "digest": {"$ref": "#/$defs/digest"}, "uid": {"const": 0}, "mode": {"type": "string", "pattern": "^0[0-7]{3}$"}}}
+  }
+}

@@ -101,6 +101,8 @@ receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 assert_regular_file_owned_mode "$receipt" 0 600
 node_broker_receipt_digest=sha256:$(jq -cS .nodeBroker "$receipt" | sha256sum | awk '{print $1}')
 node_plan_receipt_digest=sha256:$(jq -cS .nodePlan "$receipt" | sha256sum | awk '{print $1}')
+issuer_material_digest=$(jq -er '.microk8sIssuer.materialDigest // ""' "$receipt")
+if [ -n "$issuer_material_digest" ]; then backup_schema=blazn.dev/control-plane-backup/v4; else backup_schema=blazn.dev/control-plane-backup/v3; fi
 jq -cn \
   --arg correlationId "$correlation" \
   --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
@@ -114,7 +116,8 @@ jq -cn \
   --arg secretDigest "$workspace_invitation_hmac_digest" \
   --arg nodeBrokerReceiptDigest "$node_broker_receipt_digest" \
   --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
-  '{schemaVersion:"blazn.dev/control-plane-backup/v3",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest,nodePlanReceiptDigest:$nodePlanReceiptDigest}' \
+  --arg schemaVersion "$backup_schema" --arg issuerMaterialDigest "$issuer_material_digest" \
+  '{schemaVersion:$schemaVersion,correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest,nodePlanReceiptDigest:$nodePlanReceiptDigest} + (if $issuerMaterialDigest=="" then {} else {microk8sIssuerMaterialDigest:$issuerMaterialDigest} end)' \
   >"$staging/metadata.json"
 (
   cd "$staging"

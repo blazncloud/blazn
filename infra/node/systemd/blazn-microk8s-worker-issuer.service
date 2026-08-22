@@ -1,0 +1,39 @@
+[Unit]
+Description=Blazn narrow MicroK8s worker credential issuer
+After=snap.microk8s.daemon-cluster-agent.service
+Requires=snap.microk8s.daemon-cluster-agent.service
+ConditionPathIsExecutable=/usr/libexec/blazn/blazn-microk8s-worker-issuer
+ConditionPathExists=/etc/blazn/microk8s-worker-issuer/config.json
+ConditionPathExists=/etc/blazn/microk8s-worker-issuer/issuer-hmac-v1
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/libexec/blazn/blazn-microk8s-worker-issuer
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=20s
+TimeoutStopSec=10s
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ReadWritePaths=/run/blazn /var/lib/blazn-node-root/microk8s-worker-issuer /var/snap/microk8s/current/credentials
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

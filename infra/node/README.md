@@ -78,3 +78,12 @@ addition to the broker inventory. Restore derives the fingerprint from the seed
 and rejects fingerprint or template drift. Upgrade rollback retains the raw
 seed beneath its root-only, receipt-named recovery directory instead of deleting
 it.
+
+## MicroK8s worker issuer boundary
+
+`install-worker-issuer.sh` provisions the root helper, distinct HMAC
+generation, closed config, broker socket group, systemd/tmpfiles policy,
+recovery inventory, and crash-resumable receipt. The broker Compose profile
+receives only its database URL, AES join key, and fixed Unix socket—never the
+issuer HMAC key, Docker socket, kubeconfig, or MicroK8s directory. Live join
+remains blocked; see `docs/microk8s-worker-issuer-infra-runbook.md`.
