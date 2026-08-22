@@ -17,12 +17,24 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     await admin.query("INSERT INTO workspaces(id,slug,name,created_by) VALUES($1,$2,'Controller Test',$3)", [workspaceId, `controller-${userId.slice(0, 8)}`, userId]);
     await admin.query("INSERT INTO workspace_memberships(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId]);
 
+    const staleStateSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "ready" });
+    const staleStateOperationId = await insertOperation(admin, workspaceId, staleStateSandboxId, userId, "stop");
+    const staleVersionSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped" });
+    const staleVersionOperationId = await insertOperation(admin, workspaceId, staleVersionSandboxId, userId, "stop");
     const createSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
     const createOperationId = await insertOperation(admin, workspaceId, createSandboxId, userId, "create");
     const claims = await Promise.all([first.claim("controller-a", 30), second.claim("controller-b", 30)]);
     const claimed = claims.find((value) => value !== undefined)!;
     assert.equal(claims.filter(Boolean).length, 1, "SKIP LOCKED claim was not exclusive");
     assert.equal(claimed.operationId, createOperationId);
+    const quarantined = await admin.query("SELECT o.id,o.status,r.error,s.state,s.version FROM sandbox_operations o JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id JOIN sandboxes s ON s.id=o.sandbox_id WHERE o.id=ANY($1::uuid[]) ORDER BY o.id", [[staleStateOperationId, staleVersionOperationId]]);
+    assert.equal(quarantined.rowCount, 2);
+    for (const row of quarantined.rows) {
+      assert.equal(row.status, "recovery_required");
+      assert.equal(row.error.code, "stale_sandbox_operation");
+    }
+    assert.equal(quarantined.rows.find((row) => row.id === staleStateOperationId)?.state, "ready", "state-mismatched quarantine changed the Sandbox");
+    assert.equal(quarantined.rows.find((row) => row.id === staleVersionOperationId)?.state, "stopping", "version-mismatched quarantine changed the Sandbox");
     assert.equal(claimed.attempt, 1);
     assert.equal((await admin.query("SELECT state FROM sandboxes WHERE id=$1", [createSandboxId])).rows[0]?.state, "queued");
     assert.equal(claimed.templateDigest, `sha256:${"a".repeat(64)}`);

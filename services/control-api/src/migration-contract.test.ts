@@ -113,7 +113,10 @@ test("sandbox controller migration exposes only fenced database authority", asyn
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/012_sandbox_controller_queue.sql"), "utf8");
   assert.match(sql, /sandbox_operations_one_nonterminal_per_sandbox_idx[\s\S]*status IN \('pending', 'running'\)/);
-  assert.match(sql, /FOR UPDATE OF j SKIP LOCKED LIMIT 1/);
+  assert.match(sql, /legacy_operation_incompatible/);
+  assert.match(sql, /sandbox_controller_operation_is_current/);
+  assert.match(sql, /FOR UPDATE OF j,o,s SKIP LOCKED LIMIT 1/);
+  assert.match(sql, /stale_sandbox_operation/);
   assert.match(sql, /lease_token=p_lease_token AND j\.lease_expires_at>effective_now/);
   assert.match(sql, /sandbox\.operation\.lease_recovered/);
   assert.match(sql, /sandbox_controller_enqueue_expired[\s\S]*FOR UPDATE OF s SKIP LOCKED/);

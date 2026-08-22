@@ -112,6 +112,9 @@ for pair in mainReceipt environment; do backup=$(jq -er --arg pair "$pair" '.inp
 [ "$(plan_object)" = "$(jq -cS .nodePlan "$UPGRADE_RECEIPT")" ] || die "installed Node plan material differs from upgrade receipt"
 phase=$(jq -er .phase "$UPGRADE_RECEIPT")
 case "$phase" in inputs-backed-up|role-ready|environment-bound|build-ready|complete) ;; rollback-*) die "upgrade is in rollback recovery" ;; rolled-back) die "upgrade was rolled back" ;; *) die "upgrade phase is invalid" ;; esac
+if [ "$phase" != inputs-backed-up ]; then
+  jq -e '.databaseRoles.sandboxControllerPreexisting|type=="boolean"' "$UPGRADE_RECEIPT" >/dev/null || die "Sandbox controller role preexistence receipt is absent"
+fi
 
 if [ -f "$BUILD_RECEIPT" ]; then CONTROL_API_IMAGE=$(jq -er .image "$BUILD_RECEIPT"); else CONTROL_API_IMAGE=blazn-control-api:upgrade-placeholder; fi
 export CONTROL_API_IMAGE
@@ -121,6 +124,15 @@ if [ "$phase" = inputs-backed-up ]; then
   postgres_container=$(compose ps -q postgres)
   [ -n "$postgres_container" ] || die "the exact Blazn PostgreSQL container is not running"
   [ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.State.Status}}' "$postgres_container")" = blazn-m2/postgres/running ] || die "the running PostgreSQL container is not the expected Compose service"
+  controller_role_preexisting=$(jq -r '.databaseRoles.sandboxControllerPreexisting // empty' "$UPGRADE_RECEIPT")
+  if [ -z "$controller_role_preexisting" ]; then
+    controller_role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_sandbox_controller'")
+    case "$controller_role_count" in 0) controller_role_preexisting=false ;; 1) controller_role_preexisting=true ;; *) die "could not determine Sandbox controller role state" ;; esac
+    tmp=$UPGRADE_RECEIPT.tmp.$$
+    jq --argjson preexisting "$controller_role_preexisting" '.databaseRoles.sandboxControllerPreexisting=$preexisting' "$UPGRADE_RECEIPT" >"$tmp"
+    chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$UPGRADE_RECEIPT"; sync_path "$(dirname -- "$UPGRADE_RECEIPT")"
+  fi
+  case "$controller_role_preexisting" in true|false) ;; *) die "Sandbox controller role preexistence receipt is invalid" ;; esac
   url=$(sed -n '1p' "$NODE_SECRETS/database-url"); password=${url#*://*:}; password=${password%%@*}
   {
     printf 'BEGIN;\n'
