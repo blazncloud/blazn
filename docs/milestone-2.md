@@ -45,7 +45,7 @@ qualification service does not close that named-origin gate.
 - ben4 backup export: `/srv/blazn-poc-backup`
 - ben1 mounted backup: `/mnt/blazn-poc-backup`
 - retained successful restore evidence:
-  `/var/tmp/blazn-restore/m2-live-002` on ben4
+  `/var/tmp/blazn-restore/m2-final-v2` on ben4
 
 The NFS export is restricted to ben1's primary private-LAN address and is
 mounted `nosuid,nodev,noexec`. Its filesystem identity differs from the live
@@ -64,6 +64,9 @@ The combined committed source passed:
 - Live Linux CLI device login, protected credential storage, current-user and
   device lookup, REST revocation, and immediate SSE revocation over an
   ngrok-assigned TLS endpoint.
+- Authenticated proxy-hop qualification: direct host authorization requests
+  fail with `403`, while ngrok removes client-supplied proxy credentials,
+  injects the root-controlled policy secret, and succeeds.
 - Live macOS ARM64 login, status, remote logout, and deletion through native
   Keychain APIs in an isolated unlocked test Keychain. The test Keychain was
   removed after qualification; the operator's login Keychain was not unlocked
@@ -78,6 +81,14 @@ The combined committed source passed:
 No credential value is included in repository files, command output, logs, or
 this evidence. The initial local account password remains only in the
 root-owned ben1 secret file.
+
+## Deferred hardening
+
+Non-blocking production hardening found during review is tracked in GitHub
+issues 8 through 14. It covers automation/diagnostics, stronger Linux
+credential isolation, proxy-secret rotation, signed image provenance,
+encrypted off-site backup and automated rollback, external identity/RLS/HA,
+and removing initialization-only values from container environments.
 
 ## Permanent-origin activation
 
