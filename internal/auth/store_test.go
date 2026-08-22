@@ -2,6 +2,8 @@ package auth
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -61,9 +63,11 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 	}
 }
 
-func TestMissingSecureStoreFailsClosed(t *testing.T) {
-	if _, err := newSystemStore("linux", &fakeRunner{}); err == nil {
-		t.Fatal("expected missing Secret Service client to fail")
+func TestLinuxWithoutSecretServiceUsesProtectedStandaloneStore(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	store, err := newSystemStore("linux", &fakeRunner{})
+	if err != nil || store.Description() != "protected credential file" {
+		t.Fatalf("store=%T description=%q err=%v", store, store.Description(), err)
 	}
 }
 
@@ -77,5 +81,41 @@ func TestGetAndDeleteAreRedactionSafeAndIdempotent(t *testing.T) {
 	runner.err = errors.New("not found")
 	if err := store.Delete(); err != nil {
 		t.Fatalf("Delete = %v", err)
+	}
+}
+
+func TestProtectedFileStoreRoundTripAndRejectsUnsafeFiles(t *testing.T) {
+	store, err := newProtectedFileStoreAt(filepath.Join(t.TempDir(), "credentials"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put([]byte("session-secret")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get()
+	if err != nil || string(got) != "session-secret" {
+		t.Fatalf("Get=%q err=%v", got, err)
+	}
+	fileStore := store.(*protectedFileStore)
+	info, err := os.Stat(fileStore.path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode=%v err=%v", info.Mode(), err)
+	}
+	if err := store.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get after delete = %v", err)
+	}
+
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("do-not-read"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, fileStore.path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Get(); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("unsafe symlink error = %v", err)
 	}
 }
