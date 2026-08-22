@@ -40,6 +40,9 @@ func TestFileIdentityStoreCreatesPrivateStableKey(t *testing.T) {
 
 func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	binary := filepath.Join(root, "blazn")
 	profilePath := filepath.Join(root, "profile.json")
 	if err := os.WriteFile(binary, []byte("binary"), 0700); err != nil {
@@ -121,6 +124,7 @@ func TestCompletedWALRecoveryNeverRollsBackActiveInstall(t *testing.T) {
 	state.wal.Generation = 1
 	platform := &mockPlatform{failAt: -1}
 	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
 	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 2, 0, 0, time.UTC) }
 	receipt, err := installer.Recover(context.Background(), plan, meta, identity)
 	if err != nil || receipt.State != "active" || len(platform.rolledBack) != 0 || state.hasWAL {
