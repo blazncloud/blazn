@@ -79,6 +79,66 @@ secret_access=$(kctl auth can-i --as=system:serviceaccount:agent-sandbox-system:
 pod_delete=$(kctl auth can-i --as=system:serviceaccount:agent-sandbox-system:agent-sandbox-controller delete pods --all-namespaces || true)
 [ "$pod_delete" = yes ]
 
+# Exercise the Phase 4B adapter through the real v1beta1 API in a separate
+# Blazn-owned namespace and Kueue LocalQueue. The proxy is reachable only on
+# this uniquely owned disposable kind bridge and dies with the cluster.
+kctl create namespace blazn-poc-sandboxes >/dev/null
+kctl create serviceaccount blazn-sandbox-runner -n blazn-poc-sandboxes >/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible=true --overwrite >/dev/null
+cat <<EOF | kapply >/dev/null
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: blazn-adapter-$cluster_suffix
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: blazn-adapter-$cluster_suffix
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: blazn-poc-sandboxes
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: blazn-adapter-$cluster_suffix
+      resources:
+      - name: cpu
+        nominalQuota: "1"
+      - name: memory
+        nominalQuota: 1Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: blazn-poc
+  namespace: blazn-poc-sandboxes
+spec:
+  clusterQueue: blazn-adapter-$cluster_suffix
+EOF
+$docker_cmd exec -d "$node" kubectl proxy --address=0.0.0.0 --accept-hosts='.*' --port=8001
+node_ip=$($docker_cmd inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$node")
+attempt=0
+until curl -fsS "http://$node_ip:8001/version" >/dev/null; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 30 ] || { printf 'disposable Kubernetes API proxy did not become ready\n' >&2; exit 1; }
+  sleep 1
+done
+$docker_cmd run --rm --network kind \
+    -v "$(CDPATH='' cd -- "$ROOT/../.." && pwd):/src:ro" -w /src \
+    -e "BLAZN_SANDBOX_KIND_PROXY_URL=http://$node_ip:8001" \
+    -e "BLAZN_SANDBOX_KIND_IMAGE=$SYNTHETIC_IMAGE" \
+    -e "BLAZN_SANDBOX_KIND_SUFFIX=$cluster_suffix" \
+    "$GO_TEST_IMAGE" go test ./internal/sandboxcontrol -run '^TestDisposableKindLifecycle$' -count=1 -v
+[ "$(kctl get sandbox -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
+[ "$(kctl get pod -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
+[ "$(kctl get workload -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
+kctl delete namespace blazn-poc-sandboxes --wait=true --timeout=120s >/dev/null
+kctl delete clusterqueue "blazn-adapter-$cluster_suffix" --wait=true --timeout=120s >/dev/null
+kctl delete resourceflavor "blazn-adapter-$cluster_suffix" --wait=true --timeout=120s >/dev/null
+kctl label node "$node" blazn.dev/sandbox-eligible- >/dev/null
+
 sed \
   -e "s|SYNTHETIC_IMAGE|$SYNTHETIC_IMAGE|" \
   "$ROOT/synthetic-sandbox.yaml" | kapply >/dev/null
@@ -109,6 +169,9 @@ $docker_cmd exec -i "$node" kubectl delete -f - --ignore-not-found --wait=true -
 [ "$(kctl get mutatingwebhookconfiguration,validatingwebhookconfiguration -o name | grep -c kueue || true)" -eq 0 ]
 [ "$(kctl get clusterqueue blazn-spike --ignore-not-found -o name | wc -l)" -eq 0 ]
 [ "$(kctl get resourceflavor blazn-default --ignore-not-found -o name | wc -l)" -eq 0 ]
+[ "$(kctl get namespace blazn-poc-sandboxes --ignore-not-found -o name | wc -l)" -eq 0 ]
+[ "$(kctl get clusterqueue "blazn-adapter-$cluster_suffix" --ignore-not-found -o name | wc -l)" -eq 0 ]
+[ "$(kctl get resourceflavor "blazn-adapter-$cluster_suffix" --ignore-not-found -o name | wc -l)" -eq 0 ]
 [ "$(kctl get namespace kueue-system --ignore-not-found -o name | wc -l)" -eq 0 ]
 
 if [ "$docker_cmd" = docker ]; then "$tmp/kind" delete cluster --name "$cluster"; else sudo "$tmp/kind" delete cluster --name "$cluster"; fi

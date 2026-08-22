@@ -35,6 +35,8 @@ grep -F 'sandboxes.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/dev/null
 grep -F 'sandboxclaims.extensions.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/dev/null
 grep -F 'sandboxwarmpools.extensions.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/dev/null
 grep -F 'sandboxtemplates.extensions.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/dev/null
+# shellcheck disable=SC2016
+grep -F '"$GO_TEST_IMAGE" go test ./internal/sandboxcontrol' "$ROOT/test-disposable.sh" >/dev/null
 
 # This intentionally locates the literal shell variable in the lifecycle test.
 # shellcheck disable=SC2016

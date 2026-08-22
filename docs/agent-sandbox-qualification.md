@@ -37,8 +37,9 @@ MicroK8s installation was not used or changed.
 
 ## Narrow next PRs
 
-1. Phase 4B: namespace-scoped Blazn adapter, direct Sandbox CRUD/watch, mandatory
-   queue injection, RuntimeClass gate, lifecycle cleanup, and artifact hooks.
+1. Phase 4B: the namespace-scoped adapter now has direct Sandbox CRUD/watch,
+   mandatory queue injection, a fail-closed RuntimeClass gate, receipted
+   lifecycle cleanup, and artifact hooks. Live use remains blocked on Phase 4C.
 2. Phase 4C: serialized shared-cluster CRD/controller/RBAC installation, one
    synthetic canary, admission/orphan evidence, and exact rollback comparison.
 
