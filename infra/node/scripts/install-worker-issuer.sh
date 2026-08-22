@@ -188,6 +188,9 @@ jq -e --arg host "$(hostname)" --argjson uid "$BROKER_UID" --argjson gid "$BROKE
 
 current=$(jq -er .phase "$RECEIPT")
 case "$current" in initialized|secret-created|config-bound|files-installed|service-started|complete) ;; *) die "issuer receipt is not install-resumable" ;; esac
+state_parent=$(dirname -- "$STATE_ROOT")
+if [ ! -e "$state_parent" ]; then mkdir -p -- "$state_parent"; chmod 0700 "$state_parent"; fi
+[ -d "$state_parent" ] && [ ! -L "$state_parent" ] && [ "$(stat -c '%u:%a:%F' "$state_parent")" = "0:700:directory" ] || die "issuer state parent is unsafe"
 mkdir -p -- "$ROOT" "$(dirname -- "$BINARY")" "$(dirname -- "$UNIT")" "$(dirname -- "$TMPFILES")"
 chmod 0700 "$ROOT"
 validate_managed_parent "$(dirname -- "$BINARY")"
@@ -228,6 +231,7 @@ if [ "$current" = files-installed ]; then
   "$SYSTEMCTL" enable --now blazn-microk8s-worker-issuer.service
   if [ "$TEST_MODE" != 1 ]; then
     "$SYSTEMCTL" is-active --quiet blazn-microk8s-worker-issuer.service || die "issuer service is not active"
+    [ "$(stat -c '%u:%a:%F' "$state_parent")" = "0:700:directory" ] || die "issuer state parent is unsafe"
     [ "$(stat -c '%u:%a:%F' "$STATE_ROOT")" = "0:700:directory" ] || die "issuer state root differs from receipt"
     [ "$(stat -c '%u:%g:%a:%F' /run/blazn)" = "0:$BROKER_GID:750:directory" ] || die "issuer socket parent differs from receipt"
     if [ ! -S /run/blazn/microk8s-worker-issuer.sock ] || [ -L /run/blazn/microk8s-worker-issuer.sock ]; then die "issuer socket is unavailable or linked"; fi
@@ -244,7 +248,7 @@ if [ "$(stat -c '%u:%a:%h' "$BINARY")" != 0:755:1 ] || [ "$(stat -c '%u:%a:%h' "
 validate_managed_parent "$(dirname -- "$BINARY")"
 validate_managed_parent "$(dirname -- "$UNIT")"
 validate_managed_parent "$(dirname -- "$TMPFILES")"
-if [ "$TEST_MODE" != 1 ]; then [ "$(stat -c '%u:%a:%F' "$STATE_ROOT")" = "0:700:directory" ] || die "issuer state root differs from receipt"; fi
+if [ "$TEST_MODE" != 1 ]; then [ "$(stat -c '%u:%a:%F' "$state_parent")" = "0:700:directory" ] || die "issuer state parent is unsafe"; [ "$(stat -c '%u:%a:%F' "$STATE_ROOT")" = "0:700:directory" ] || die "issuer state root differs from receipt"; fi
 bind_main_receipt
 [ "sha256:$(sha "$BINARY")" = "$SOURCE_DIGEST" ] || die "installed helper differs from reviewed source digest"
 [ "sha256:$(sha "$BINARY")" = "$(jq -er .binary.digest "$RECEIPT")" ] || die "helper binary differs from receipt"

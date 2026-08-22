@@ -41,14 +41,7 @@ jq -e \
   --arg configDigest "$config_digest" \
   --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
   --arg issuerMaterialDigest "$issuer_material_digest" \
-  '(.schemaVersion == "blazn.dev/control-plane-backup/v3" or .schemaVersion == "blazn.dev/control-plane-backup/v4") and
-   .configDigest == $configDigest and
-   .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and
-   .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest} and
-   .nodePlanReceiptDigest == $nodePlanReceiptDigest and
-   (if .schemaVersion == "blazn.dev/control-plane-backup/v4" then
-      $issuerMaterialDigest != "" and .microk8sIssuerMaterialDigest == $issuerMaterialDigest
-    else has("microk8sIssuerMaterialDigest")|not end)' \
+  -f "$SCRIPT_DIR/verify-rollback-metadata.jq" \
   "$backup/metadata.json" >/dev/null || die "backup inventory does not match the staged rollback release and installed invitation key"
 jq -e \
   --arg secretDigest "$secret_digest" \

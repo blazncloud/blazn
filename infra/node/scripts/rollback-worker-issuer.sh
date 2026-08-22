@@ -36,7 +36,9 @@ if [ "$phase" = service-stopped ]; then
   env=$(jq -er .environment.path "$RECEIPT"); env_backup=$(jq -er .environment.backupPath "$RECEIPT"); if [ "sha256:$(sha "$env")" != "$(jq -er .environment.digest "$RECEIPT")" ] || [ "sha256:$(sha "$env_backup")" != "$(jq -er .environment.priorDigest "$RECEIPT")" ]; then die "environment or backup changed"; fi
   main=$(jq -er .ownership.path "$RECEIPT"); main_backup=$(jq -er .ownership.backupPath "$RECEIPT"); material=$(jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$RECEIPT"); material_digest=sha256:$(printf '%s' "$material"|sha256sum|awk '{print $1}'); jq -e --arg digest "$material_digest" '.microk8sIssuer=={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$main" >/dev/null || die "main receipt does not bind issuer"; [ "sha256:$(sha "$main_backup")" = "$(jq -er .ownership.priorDigest "$RECEIPT")" ] || die "main receipt backup changed"
   [ "$(jq -er .state.path "$RECEIPT")" = "$STATE_ROOT" ] || die "issuer state root differs from receipt"
-  if [ -e "$STATE_ROOT" ] && { [ ! -d "$STATE_ROOT" ] || [ -L "$STATE_ROOT" ]; }; then die "issuer state root is unsafe"; fi; if [ -d "$STATE_ROOT" ] && find "$STATE_ROOT" -mindepth 1 -maxdepth 1 -print | grep . >/dev/null; then die "issuer state contains revocation evidence"; fi
+  if [ ! -d "$STATE_ROOT" ] || [ -L "$STATE_ROOT" ] || [ "$(stat -c '%u:%a:%F' "$STATE_ROOT")" != "0:700:directory" ]; then die "issuer state root is unsafe"; fi
+  state_parent=$(dirname -- "$STATE_ROOT"); if [ ! -d "$state_parent" ] || [ -L "$state_parent" ] || [ "$(stat -c '%u:%a:%F' "$state_parent")" != "0:700:directory" ]; then die "issuer state parent is unsafe"; fi
+  if find "$STATE_ROOT" -mindepth 1 -maxdepth 1 -print | grep . >/dev/null; then die "issuer state contains revocation evidence"; fi
   advance rollback-validated
 fi
 if [ "$phase" = rollback-validated ]; then remove_bound binary; advance binary-removed; fi

@@ -96,6 +96,34 @@ if run_install "$unsafe_parent" >"$top/unsafe-parent.out" 2>"$top/unsafe-parent.
 fi
 grep -F 'managed issuer parent owner or mode is unsafe' "$top/unsafe-parent.err" >/dev/null
 
+unsafe_state_parent=$top/unsafe-state-parent
+mkdir -p "$unsafe_state_parent/ownership"
+printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$unsafe_state_parent/control-plane.env"
+printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$unsafe_state_parent/control-plane.json"
+: >"$unsafe_state_parent/systemctl.log"
+sudo chown -R 0:0 "$unsafe_state_parent"
+sudo chmod 0777 "$unsafe_state_parent"
+sudo chmod 0700 "$unsafe_state_parent/ownership"
+sudo chmod 0600 "$unsafe_state_parent/control-plane.env" "$unsafe_state_parent/control-plane.json"
+if run_install "$unsafe_state_parent" >"$top/unsafe-state-parent.out" 2>"$top/unsafe-state-parent.err"; then printf 'issuer install accepted an unsafe state parent\n' >&2; exit 1; fi
+grep -F 'issuer state parent is unsafe' "$top/unsafe-state-parent.err" >/dev/null
+
+unsafe_state=$top/unsafe-state
+mkdir -p "$unsafe_state/ownership"
+printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$unsafe_state/control-plane.env"
+printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$unsafe_state/control-plane.json"
+: >"$unsafe_state/systemctl.log"
+sudo chown -R 0:0 "$unsafe_state"
+sudo chmod 0700 "$unsafe_state" "$unsafe_state/ownership"
+sudo chmod 0600 "$unsafe_state/control-plane.env" "$unsafe_state/control-plane.json"
+run_install "$unsafe_state" >/dev/null
+sudo mkdir -p "$unsafe_state/issuer-state"
+sudo chmod 0777 "$unsafe_state/issuer-state"
+if run_rollback "$unsafe_state" >"$top/unsafe-state.out" 2>"$top/unsafe-state.err"; then printf 'issuer rollback accepted an unsafe state root\n' >&2; exit 1; fi
+grep -F 'issuer state root is unsafe' "$top/unsafe-state.err" >/dev/null
+sudo chmod 0700 "$unsafe_state/issuer-state"
+run_rollback "$unsafe_state" >/dev/null
+
 for fault in service-stopped-before-phase rollback-validated-before-phase binary-removed-before-phase config-removed-before-phase secret-removed-before-phase unit-removed-before-phase tmpfiles-removed-before-phase state-removed-before-phase environment-restored-before-phase main-removal-intent-before-phase main-removal-intent main-restored-before-phase files-restored-before-phase rolled-back-before-phase; do
   root=$top/rollback-$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"; run_install "$root" >/dev/null; sudo mkdir -p "$root/issuer-state"; sudo chmod 0700 "$root/issuer-state"
   if run_rollback "$root" "$fault" >"$top/rollback-$fault.out" 2>"$top/rollback-$fault.err"; then printf 'rollback fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi

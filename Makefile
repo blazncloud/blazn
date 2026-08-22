@@ -51,6 +51,7 @@ test-infra:
 	./infra/milestone-2/tests/test-release-promotion.sh
 	./infra/milestone-2/tests/test-control-plane-env.sh
 	./infra/milestone-2/tests/test-api-build.sh
+	./infra/milestone-2/tests/test-rollback-metadata-policy.sh
 	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
 	./infra/node/tests/test-contract.sh
 	./infra/node/tests/test-secret-create-resume.sh

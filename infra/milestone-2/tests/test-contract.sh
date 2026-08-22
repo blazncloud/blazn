@@ -94,9 +94,7 @@ grep -F 'NOBYPASSRLS' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'pg_auth_members' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'openssl rand -hex 32' "$ROOT_DIR/scripts/upgrade-live-v2-to-workspace.sh" >/dev/null
 grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
-grep -F 'blazn.dev/control-plane-backup/v4' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
-# shellcheck disable=SC2016
-grep -F 'microk8sIssuerMaterialDigest == $issuerMaterialDigest' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
+test -f "$ROOT_DIR/scripts/verify-rollback-metadata.jq"
 grep -F 'POC_IDENTITY_ACTION: provision' "$compose" >/dev/null
 grep -F 'POC_IDENTITY_ACTION: cleanup' "$compose" >/dev/null
 grep -F 'passwordRecord' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
