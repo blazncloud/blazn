@@ -18,8 +18,7 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
   const port = Number(process.env.NODE_BROKER_PORT ?? "8081");
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Node broker port is invalid");
   const database = createDatabase(databaseUrl);
-  const onDatabaseError=(error:Error)=>process.stderr.write(`${nodeBrokerDatabasePoolError(error)}\n`);
-  database.on("error",onDatabaseError);
+  const onDatabaseError=attachNodeBrokerDatabasePoolErrors(database);
   try {
     await probeNodeBrokerDatabase(database, AbortSignal.timeout(2_000));
     const startupKey = await readJoinCredentialKey(`${root}/join-credential-v1`);
@@ -35,7 +34,8 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
   }
 }
 
-export function nodeBrokerDatabasePoolError(error:unknown):string{const value=error instanceof Error?error:undefined,name=value&&/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(value.name)?value.name:"Error",code=value&&"code" in value&&typeof value.code==="string"&&/^[A-Z0-9]{5}$/.test(value.code)?value.code:"unknown";return`Node broker database pool error name=${name} code=${code}`;}
+export function nodeBrokerDatabasePoolError(error:unknown):string{const value=error instanceof Error?error:undefined,code=value&&"code" in value&&typeof value.code==="string"&&/^[A-Z0-9]{5}$/.test(value.code)?value.code:"unknown";return`Node broker database pool error name=DatabasePoolError code=${code}`;}
+export function attachNodeBrokerDatabasePoolErrors(database:{on(event:"error",listener:(error:Error)=>void):unknown},write:(value:string)=>unknown=(value)=>process.stderr.write(value)):(error:Error)=>void{const listener=(error:Error)=>{write(`${nodeBrokerDatabasePoolError(error)}\n`);};database.on("error",listener);return listener;}
 export async function endNodeBrokerDatabase(database:{end():Promise<void>;off(event:"error",listener:(error:Error)=>void):unknown},onError:(error:Error)=>void):Promise<void>{try{await database.end();}catch(error){onError(error instanceof Error?error:new Error("database shutdown failed"));}finally{database.off("error",onError);}}
 
 if (import.meta.url === `file://${process.argv[1]}`) startNodeBroker().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "Node broker startup failed"}\n`); process.exitCode = 1; });
