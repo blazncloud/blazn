@@ -125,6 +125,7 @@ if [ "$phase" = inputs-backed-up ]; then
   {
     printf 'BEGIN;\n'
     printf "DO \$block\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='blazn_node_broker') THEN EXECUTE 'CREATE ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'; END IF; END \$block\$;\n"
+    printf "DO \$block\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='blazn_sandbox_controller') THEN EXECUTE 'CREATE ROLE blazn_sandbox_controller NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'; END IF; END \$block\$;\n"
     printf "DO \$preserve\$ DECLARE database_row record; role_row record; BEGIN FOR database_row IN SELECT oid,datname FROM pg_database WHERE datallowconn LOOP FOR role_row IN SELECT oid,rolname FROM pg_roles WHERE rolcanlogin AND rolname <> 'blazn_node_broker' AND has_database_privilege(oid,database_row.oid,'CONNECT') LOOP EXECUTE format('GRANT CONNECT ON DATABASE %%I TO %%I',database_row.datname,role_row.rolname); IF has_database_privilege(role_row.oid,database_row.oid,'TEMP') THEN EXECUTE format('GRANT TEMPORARY ON DATABASE %%I TO %%I',database_row.datname,role_row.rolname); END IF; END LOOP; EXECUTE format('REVOKE CONNECT, TEMPORARY ON DATABASE %%I FROM PUBLIC',database_row.datname); END LOOP; END \$preserve\$;\n"
     printf 'REVOKE ALL PRIVILEGES ON DATABASE "%s" FROM blazn_node_broker;\n' "${POSTGRES_DB:-blazn}"
     printf 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM blazn_node_broker;\n'
@@ -138,7 +139,7 @@ if [ "$phase" = inputs-backed-up ]; then
     printf 'REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;\n'
     printf 'GRANT EXECUTE ON FUNCTION workspace_json_contains_secret_key(jsonb) TO blazn_runtime;\n'
     printf "ALTER ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s';\n" "$password"
-    printf 'GRANT CONNECT ON DATABASE "%s" TO blazn_node_broker; GRANT USAGE ON SCHEMA public TO blazn_node_broker; COMMIT;\n' "${POSTGRES_DB:-blazn}"
+    printf 'GRANT CONNECT ON DATABASE "%s" TO blazn_node_broker, blazn_sandbox_controller; GRANT USAGE ON SCHEMA public TO blazn_node_broker, blazn_sandbox_controller; COMMIT;\n' "${POSTGRES_DB:-blazn}"
   } | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
   compose run --rm -T node-migration-preflight >/dev/null
   write_phase role-ready; phase=role-ready; test_fault role-ready

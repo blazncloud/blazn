@@ -35,12 +35,13 @@ CREATE ROLE blazn_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICAT
 CREATE ROLE blazn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'runtime_password';
 CREATE ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'bootstrap_password';
 CREATE ROLE blazn_node_broker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE blazn_sandbox_controller NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER DATABASE blazn OWNER TO blazn_migration;
 REVOKE ALL ON DATABASE blazn FROM PUBLIC;
 GRANT CONNECT ON DATABASE blazn TO blazn_runtime, blazn_bootstrap;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
-GRANT USAGE ON SCHEMA public TO blazn_runtime, blazn_bootstrap, blazn_node_broker;
+GRANT USAGE ON SCHEMA public TO blazn_runtime, blazn_bootstrap, blazn_node_broker, blazn_sandbox_controller;
 SQL
 
 tar -C "$repo_root" -cf - services/control-api | docker run --rm -i --network "$network" \
@@ -167,13 +168,11 @@ DO $$ BEGIN
 END $$;
 
 INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
- ('90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','pending',1,'10000000-0000-4000-8000-000000000001','stop-request-1',repeat('3',64)),
- ('90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','pending',1,'10000000-0000-4000-8000-000000000001','delete-request-1',repeat('4',64)),
  ('90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','pending',1,'10000000-0000-4000-8000-000000000001','create-request-1',repeat('5',64));
 INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES
- ('91000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.stop.requested');
+ ('91000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.create.requested');
 DO $$ BEGIN
-  BEGIN INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES ('91000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.delete.requested'); RAISE EXCEPTION 'sandbox-wide duplicate event sequence succeeded';
+  BEGIN INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES ('91000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.create.duplicate'); RAISE EXCEPTION 'sandbox-wide duplicate event sequence succeeded';
   EXCEPTION WHEN unique_violation THEN NULL; END;
   BEGIN INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES ('91000000-0000-4000-8000-000000000003',NULL,'40000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001',1,'sandbox.invalid'); RAISE EXCEPTION 'cross-workspace sandbox event unexpectedly succeeded';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
@@ -195,10 +194,14 @@ DO $$ BEGIN
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 BEGIN;
+INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
+ ('90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','pending',1,'10000000-0000-4000-8000-000000000001','stop-request-1',repeat('3',64));
 INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES
  ('92000000-0000-4000-8000-000000000010','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','succeeded',true,true,true,true,false);
 UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id='92000000-0000-4000-8000-000000000010',completed_at=now() WHERE id='90000000-0000-4000-8000-000000000001';
 COMMIT;
+INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
+ ('90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','pending',1,'10000000-0000-4000-8000-000000000001','delete-request-1',repeat('4',64));
 DO $$ BEGIN
   BEGIN UPDATE sandbox_operations SET terminal_receipt_id='92000000-0000-4000-8000-000000000010' WHERE id='90000000-0000-4000-8000-000000000002'; RAISE EXCEPTION 'nonterminal operation accepted a receipt';
   EXCEPTION WHEN check_violation THEN NULL; END;
