@@ -39,12 +39,14 @@ type InstallWAL struct {
 	NodeID        string                       `json:"nodeId"`
 	Stage         string                       `json:"stage"`
 	Owner         client.NodeReceiptOwner      `json:"owner"`
+	ServicePrior  ServicePriorState            `json:"servicePrior"`
 	Mutations     []client.NodeReceiptMutation `json:"mutations"`
 	CreatedAt     string                       `json:"createdAt"`
 	UpdatedAt     string                       `json:"updatedAt"`
 }
 
 type StateStore interface {
+	AcquireInstallLock() (func(), error)
 	Pin(EnrollmentPin) error
 	LoadPin() (EnrollmentPin, error)
 	SaveRuntime(RuntimeState) error
@@ -58,6 +60,13 @@ type StateStore interface {
 }
 
 type FileStateStore struct{ Root string }
+
+func (s FileStateStore) AcquireInstallLock() (func(), error) {
+	if err := ensurePrivateDirectory(s.Root, currentUID()); err != nil {
+		return nil, err
+	}
+	return lockInstallFile(filepath.Join(s.Root, ".install.lock"))
+}
 
 func (s FileStateStore) Pin(v EnrollmentPin) error {
 	existing, err := s.LoadPin()

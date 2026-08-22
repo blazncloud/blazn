@@ -95,11 +95,8 @@ func decodeIdentity(value []byte) (Identity, error) {
 
 func writePrivateAtomic(path string, value []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := ensurePrivateDirectory(dir, currentUID()); err != nil {
 		return err
-	}
-	if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("identity directory is unsafe")
 	}
 	tmp, err := os.CreateTemp(dir, ".identity-*")
 	if err != nil {
@@ -135,11 +132,8 @@ func writePrivateAtomic(path string, value []byte) error {
 
 func writePrivateCreate(path string, value []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := ensurePrivateDirectory(dir, currentUID()); err != nil {
 		return err
-	}
-	if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("private state directory is unsafe")
 	}
 	tmp, err := os.CreateTemp(dir, ".create-*")
 	if err != nil {
@@ -178,8 +172,12 @@ func readPrivateFile(path string, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+	owner, nlink, ok := fileOwner(info)
+	if !ok || owner != currentUID() || nlink != 1 || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
 		return nil, errors.New("private state file is unsafe")
+	}
+	if err := ensurePrivateDirectory(filepath.Dir(path), currentUID()); err != nil {
+		return nil, err
 	}
 	file, err := openNoFollow(path)
 	if err != nil {
@@ -187,7 +185,11 @@ func readPrivateFile(path string, limit int64) ([]byte, error) {
 	}
 	defer file.Close()
 	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0600 {
+	if err != nil {
+		return nil, err
+	}
+	openedOwner, openedLinks, openedOK := fileOwner(opened)
+	if !openedOK || openedOwner != currentUID() || openedLinks != 1 || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Mode().Perm() != 0600 {
 		return nil, errors.New("opened private state file is unsafe")
 	}
 	value, err := io.ReadAll(io.LimitReader(file, limit+1))

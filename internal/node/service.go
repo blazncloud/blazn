@@ -67,6 +67,9 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if err != nil {
 		return EnrollResult{}, err
 	}
+	if err := client.ValidateNodeEnrollmentSecret(secret); err != nil {
+		return EnrollResult{}, fmt.Errorf("validate node enrollment response: %w", err)
+	}
 	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: options.WorkspaceID, EnrollmentID: secret.ID, IdempotencyKey: options.IdempotencyKey, Hostname: options.Name, MachineFingerprint: options.MachineFingerprint, ProfileID: options.Profile.ID, ProfilePath: options.ProfilePath, PlanSigningKey: secret.PlanSigningKey, PinnedAt: nowString(s.now())}
 	if err := s.state.Pin(pin); err != nil {
 		return EnrollResult{}, fmt.Errorf("persist pinned plan signer before exchange: %w", err)
@@ -74,6 +77,9 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	response, err := s.api.ExchangeNodeEnrollment(ctx, secret.ID, client.ExchangeNodeEnrollmentRequest{Token: secret.Token, MachineFingerprint: options.MachineFingerprint, NodePublicKey: identity.PublicBase64(), Platform: options.Platform, Architecture: options.Architecture, KubernetesBinding: options.KubernetesBinding})
 	if err != nil {
 		return EnrollResult{}, err
+	}
+	if err := client.ValidateExchangeNodeEnrollmentResponse(response); err != nil {
+		return EnrollResult{}, fmt.Errorf("validate node enrollment exchange: %w", err)
 	}
 	if err := verifyExchange(response, pin, identity, options, s.now()); err != nil {
 		return EnrollResult{}, err
@@ -98,12 +104,19 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 }
 
 func verifyExchange(response client.ExchangeNodeEnrollmentResponse, pin EnrollmentPin, identity Identity, options EnrollOptions, now time.Time) error {
+	if err := client.ValidateExchangeNodeEnrollmentResponse(response); err != nil {
+		return err
+	}
 	publicKey, err := base64.RawURLEncoding.DecodeString(pin.PlanSigningKey.PublicKey)
 	if err != nil || len(publicKey) != ed25519.PublicKeySize {
 		return errors.New("pinned plan signer public key is invalid")
 	}
 	if response.Plan.SigningKeyID != pin.PlanSigningKey.KeyID {
 		return errors.New("install plan signer differs from the pre-exchange pin")
+	}
+	pinnedFingerprint, err := client.NodePublicKeyFingerprint(ed25519.PublicKey(publicKey))
+	if err != nil || pinnedFingerprint != pin.PlanSigningKey.Fingerprint {
+		return errors.New("pinned plan signer fingerprint is inconsistent")
 	}
 	fingerprint, err := identity.Fingerprint()
 	if err != nil || response.Identity.PublicKeyFingerprint != fingerprint {

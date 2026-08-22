@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/KingJammin/blazn/internal/client"
@@ -19,14 +20,15 @@ type CommandEnrollOptions struct {
 }
 
 type CommandRuntime struct {
-	Service           *Service
-	Installer         *Installer
-	Daemon            *Daemon
-	State             StateStore
-	Identities        IdentityStore
-	AccessToken       string
-	CurrentBinaryPath string
-	CurrentVersion    string
+	Service            *Service
+	Installer          *Installer
+	Daemon             *Daemon
+	State              StateStore
+	Identities         IdentityStore
+	AccessToken        string
+	CurrentBinaryPath  string
+	CurrentVersion     string
+	TrustedProfileRoot string
 }
 
 func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOptions) (EnrollResult, error) {
@@ -36,11 +38,19 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	if currentUID() != 0 {
 		return EnrollResult{}, errors.New("node install requires a privileged root execution boundary")
 	}
+	profileRoot := c.TrustedProfileRoot
+	if profileRoot == "" {
+		profileRoot = "/etc/blazn/node/profiles"
+	}
+	cleanProfile := filepath.Clean(options.ProfileFile)
+	if !filepath.IsAbs(profileRoot) || filepath.Clean(profileRoot) != profileRoot || filepath.Dir(cleanProfile) != profileRoot {
+		return EnrollResult{}, errors.New("trusted profile must be one direct file under the approved profile root")
+	}
 	platform, architecture, err := DefaultPlatform()
 	if err != nil {
 		return EnrollResult{}, err
 	}
-	profile, err := LoadTrustedProfile(options.ProfileFile, c.CurrentBinaryPath, c.CurrentVersion)
+	profile, err := LoadTrustedProfile(cleanProfile, c.CurrentBinaryPath, c.CurrentVersion)
 	if err != nil {
 		return EnrollResult{}, err
 	}

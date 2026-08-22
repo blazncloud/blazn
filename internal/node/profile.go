@@ -29,7 +29,7 @@ func LoadTrustedProfile(path, currentBinaryPath, currentVersion string) (client.
 	if !filepath.IsAbs(path) || !filepath.IsAbs(currentBinaryPath) || currentVersion == "" {
 		return client.NodeTrustedInstallProfile{}, errors.New("trusted profile and current binary inputs must be absolute and versioned")
 	}
-	encoded, err := readPrivateFile(path, 64<<10)
+	encoded, err := readTrustedProfile(path)
 	if err != nil {
 		return client.NodeTrustedInstallProfile{}, err
 	}
@@ -42,17 +42,58 @@ func LoadTrustedProfile(path, currentBinaryPath, currentVersion string) (client.
 	if stored.SchemaVersion != 1 || stored.ID == "" {
 		return client.NodeTrustedInstallProfile{}, errors.New("trusted install profile schema or ID is invalid")
 	}
+	binaryInfo, err := os.Lstat(currentBinaryPath)
+	if err != nil {
+		return client.NodeTrustedInstallProfile{}, err
+	}
+	owner, nlink, ok := fileOwner(binaryInfo)
+	if !ok || owner != currentUID() || nlink != 1 || !binaryInfo.Mode().IsRegular() || binaryInfo.Mode()&os.ModeSymlink != 0 || binaryInfo.Mode().Perm()&0022 != 0 || binaryInfo.Mode().Perm()&0111 == 0 {
+		return client.NodeTrustedInstallProfile{}, errors.New("current binary ownership or mode is unsafe")
+	}
 	file, err := openNoFollow(currentBinaryPath)
 	if err != nil {
 		return client.NodeTrustedInstallProfile{}, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(binaryInfo, opened) {
+		return client.NodeTrustedInstallProfile{}, errors.New("current binary changed while opening")
+	}
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return client.NodeTrustedInstallProfile{}, err
 	}
 	profile := client.NodeTrustedInstallProfile{ID: stored.ID, AllowedClusterOrigins: stored.AllowedClusterOrigins, AllowedDownloadOrigins: stored.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: stored.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: stored.AllowedRegistryOrigins, AllowedMutationRoots: stored.AllowedMutationRoots, CurrentBinaryVersion: currentVersion, CurrentBinarySHA256: hex.EncodeToString(hash.Sum(nil)), EmbeddedComponentSHA256: stored.EmbeddedComponentSHA256, LimaBinding: stored.LimaBinding, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
 	return profile, nil
+}
+
+func readTrustedProfile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	owner, nlink, ok := fileOwner(info)
+	mode := info.Mode().Perm()
+	if !ok || owner != currentUID() || nlink != 1 || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || (mode != 0400 && mode != 0600) {
+		return nil, errors.New("trusted profile ownership or mode is unsafe")
+	}
+	if err := ensurePrivateDirectory(filepath.Dir(path), currentUID()); err != nil {
+		return nil, err
+	}
+	file, err := openNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return nil, errors.New("trusted profile changed while opening")
+	}
+	value, err := io.ReadAll(io.LimitReader(file, (64<<10)+1))
+	if err != nil || len(value) > 64<<10 {
+		return nil, errors.New("trusted profile cannot be read safely")
+	}
+	return value, nil
 }
 
 func verifyNoSymlinkTraversal(target string) error {

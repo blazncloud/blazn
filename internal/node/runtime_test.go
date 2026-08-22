@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "blazn")
 	profilePath := filepath.Join(root, "profile.json")
-	if err := os.WriteFile(binary, []byte("binary"), 0600); err != nil {
+	if err := os.WriteFile(binary, []byte("binary"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	profile := `{"schemaVersion":1,"id":"ubuntu-26.04-amd64-worker/v1","allowedClusterOrigins":["https://cluster.example.test"],"allowedDownloadOrigins":[],"allowedDownloadHostSuffixes":[],"allowedRegistryOrigins":[],"allowedMutationRoots":["/var/lib/blazn"],"embeddedComponentSha256":{}}`
@@ -61,6 +62,12 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	}
 	if _, err := LoadTrustedProfile(profilePath, link, "v1"); err == nil {
 		t.Fatal("symlink binary accepted")
+	}
+	if err := os.Chmod(root, 0777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTrustedProfile(profilePath, binary, "v1"); err == nil {
+		t.Fatal("writable trusted-profile parent accepted")
 	}
 }
 
@@ -129,6 +136,45 @@ func TestFileWALCreateIsExclusive(t *testing.T) {
 	}
 	if err := store.CreateWAL(wal); err == nil {
 		t.Fatal("concurrent WAL owner replaced")
+	}
+}
+
+func TestInstallLockAndPrivateStateRejectConcurrentOrLinkedOwners(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	store := FileStateStore{Root: root}
+	release, err := store.AcquireInstallLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := store.AcquireInstallLock(); err == nil {
+		t.Fatal("concurrent install lock acquired")
+	}
+	identityPath := filepath.Join(root, "identity.json")
+	identityStore := FileIdentityStore{Path: identityPath}
+	if _, err := identityStore.LoadOrCreate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(identityPath, filepath.Join(root, "identity-link.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.LoadOrCreate(); err == nil {
+		t.Fatal("hard-linked identity accepted")
+	}
+}
+
+func TestRollbackStopsImmediatelyWhenWALPersistenceFails(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &faultState{memoryState: &memoryState{}, failAt: 4}
+	platform := &mockPlatform{failAt: 1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }
+	_, err := installer.Install(context.Background(), plan, meta, identity)
+	if err == nil || len(platform.rolledBack) != 0 || !state.hasWAL || state.receipt.ReceiptID != "" {
+		t.Fatalf("rollback=%v wal=%v receipt=%#v err=%v", platform.rolledBack, state.hasWAL, state.receipt, err)
 	}
 }
 
@@ -223,11 +269,33 @@ func (m *mockAPI) SubmitNodeHeartbeat(_ context.Context, proof string, heartbeat
 }
 
 type memoryState struct {
+	lock    sync.Mutex
 	pin     EnrollmentPin
 	runtime RuntimeState
 	wal     InstallWAL
 	hasWAL  bool
 	receipt client.NodeInstallReceipt
+}
+
+type faultState struct {
+	*memoryState
+	failAt int
+	saves  int
+}
+
+func (f *faultState) SaveWAL(v InstallWAL) error {
+	f.saves++
+	if f.saves == f.failAt {
+		return errors.New("injected WAL persistence failure")
+	}
+	return f.memoryState.SaveWAL(v)
+}
+
+func (m *memoryState) AcquireInstallLock() (func(), error) {
+	if !m.lock.TryLock() {
+		return nil, errors.New("locked")
+	}
+	return m.lock.Unlock, nil
 }
 
 func (m *memoryState) Pin(v EnrollmentPin) error {

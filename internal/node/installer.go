@@ -49,11 +49,18 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 	if i.platform == nil || i.state == nil {
 		return client.NodeInstallReceipt{}, errors.New("installer dependencies are incomplete")
 	}
+	release, err := i.state.AcquireInstallLock()
+	if err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	defer release()
 	if i.uid() != 0 {
 		return client.NodeInstallReceipt{}, errors.New("privileged node install requires UID 0")
 	}
 	fingerprint, err := identity.Fingerprint()
-	if err != nil || identityMeta.Generation < 1 || identityMeta.SigningKeyID == "" || identityMeta.PublicKeyFingerprint != fingerprint {
+	issuedAt, issuedErr := time.Parse(time.RFC3339, identityMeta.IssuedAt)
+	expiresAt, expiresErr := time.Parse(time.RFC3339, identityMeta.ExpiresAt)
+	if err != nil || identityMeta.Generation < 1 || identityMeta.SigningKeyID == "" || identityMeta.PublicKeyFingerprint != fingerprint || identityMeta.IssuedAt != plan.IssuedAt || issuedErr != nil || expiresErr != nil || !expiresAt.After(issuedAt) {
 		return client.NodeInstallReceipt{}, errors.New("installer identity does not match the enrolled identity")
 	}
 	if existing, loadErr := i.state.LoadReceipt(); loadErr == nil {
@@ -84,7 +91,7 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 		return client.NodeInstallReceipt{}, err
 	}
 	created := i.now().UTC()
-	wal := InstallWAL{SchemaVersion: 1, ReceiptID: receiptID, Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
+	wal := InstallWAL{SchemaVersion: 1, ReceiptID: receiptID, Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, ServicePrior: servicePrior, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
 	if err := i.state.CreateWAL(wal); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
@@ -136,6 +143,14 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 }
 
 func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, identityMeta client.NodeEnrollmentIdentity, identity Identity) (client.NodeInstallReceipt, error) {
+	release, err := i.state.AcquireInstallLock()
+	if err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	defer release()
+	if i.uid() != 0 {
+		return client.NodeInstallReceipt{}, errors.New("privileged node recovery requires UID 0")
+	}
 	wal, err := i.state.LoadWAL()
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
@@ -143,10 +158,10 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 	if wal.PlanID != plan.PlanID || wal.PlanDigest != plan.Digest || wal.NodeID != plan.NodeID {
 		return client.NodeInstallReceipt{}, errors.New("install WAL does not match the verified plan")
 	}
-	servicePrior, err := i.platform.ServiceState(ctx, plan.NodeService)
-	if err != nil {
+	if err := validateWALOwner(wal.Owner); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
+	servicePrior := wal.ServicePrior
 	if wal.Stage == "complete" {
 		receipt, err := i.receipt(plan, identityMeta, identity, servicePrior, wal, "active", nil)
 		if err != nil {
@@ -160,7 +175,10 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 		}
 		return receipt, nil
 	}
-	residues := i.rollback(ctx, plan, &wal)
+	residues, rollbackErr := i.rollback(ctx, plan, &wal)
+	if rollbackErr != nil {
+		return client.NodeInstallReceipt{}, rollbackErr
+	}
 	state := "removed"
 	if len(residues) > 0 {
 		state = "recovery_required"
@@ -182,7 +200,10 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 }
 
 func (i *Installer) failAndRollback(ctx context.Context, plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, servicePrior ServicePriorState, wal *InstallWAL, cause error) (client.NodeInstallReceipt, error) {
-	residues := i.rollback(ctx, plan, wal)
+	residues, rollbackErr := i.rollback(ctx, plan, wal)
+	if rollbackErr != nil {
+		return client.NodeInstallReceipt{}, fmt.Errorf("%v; persist rollback WAL: %w", cause, rollbackErr)
+	}
 	state := "removed"
 	if len(residues) > 0 {
 		state = "recovery_required"
@@ -200,13 +221,17 @@ func (i *Installer) failAndRollback(ctx context.Context, plan client.NodeInstall
 	return receipt, cause
 }
 
-func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, wal *InstallWAL) []client.NodeReceiptResidue {
+func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, wal *InstallWAL) ([]client.NodeReceiptResidue, error) {
 	byOrdinal := map[int64]client.NodeInstallMutation{}
 	for _, mutation := range plan.Mutations {
 		byOrdinal[mutation.Ordinal] = mutation
 	}
 	residues := []client.NodeReceiptResidue{}
 	wal.Stage = "configure"
+	wal.UpdatedAt = nowString(i.now())
+	if err := i.state.SaveWAL(*wal); err != nil {
+		return residues, err
+	}
 	for index := len(wal.Mutations) - 1; index >= 0; index-- {
 		entry := &wal.Mutations[index]
 		if entry.Status != "applied" && entry.Status != "pending" {
@@ -228,9 +253,11 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 			entry.Status = "restored"
 		}
 		wal.UpdatedAt = nowString(i.now())
-		_ = i.state.SaveWAL(*wal)
+		if err := i.state.SaveWAL(*wal); err != nil {
+			return residues, err
+		}
 	}
-	return residues
+	return residues, nil
 }
 
 func (i *Installer) receipt(plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, servicePrior ServicePriorState, wal InstallWAL, state string, residues []client.NodeReceiptResidue) (client.NodeInstallReceipt, error) {
@@ -284,6 +311,13 @@ func validatePriorState(prior PriorState) error {
 		}
 	default:
 		return errors.New("prior state is invalid")
+	}
+	return nil
+}
+func validateWALOwner(owner client.NodeReceiptOwner) error {
+	nonce, err := base64.RawURLEncoding.DecodeString(owner.Nonce)
+	if err != nil || len(nonce) < 24 || owner.UID != 0 || owner.PID < 1 || owner.ProcessStartIdentity == "" {
+		return errors.New("install WAL owner fencing is invalid")
 	}
 	return nil
 }
