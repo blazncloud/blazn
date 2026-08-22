@@ -126,6 +126,7 @@ control_plane_config_digest() {
     export LC_ALL=C
     sha256sum \
       compose.yaml \
+      *.schema.json \
       postgres-init/01-roles.sh \
       scripts/*.sh \
       ngrok.example.yml \

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/control-plane-v2-upgrade-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "host", "secretsRoot", "phase", "createdAt", "digests"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/control-plane-v2-upgrade/v1" },
+    "owner": { "const": "blazn-poc" },
+    "host": { "type": "string", "minLength": 1 },
+    "secretsRoot": { "type": "string", "minLength": 1 },
+    "phase": { "enum": ["secrets-installed", "identity-ready"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "identityValidatedAt": { "type": "string", "format": "date-time" },
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["s3-root-access-key", "s3-root-secret-key", "s3-runtime-access-key", "s3-runtime-secret-key", "bootstrap-database-url"],
+      "properties": {
+        "s3-root-access-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "s3-root-secret-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "s3-runtime-access-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "s3-runtime-secret-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "bootstrap-database-url": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    }
+  }
+}
