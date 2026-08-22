@@ -622,6 +622,11 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 		if !ok {
 			entry.Status = "residue"
 			residues = appendUniqueResidue(residues, client.NodeReceiptResidue{Target: entry.Target, ReasonCode: "mutation_missing", SafeMessage: "verified plan no longer contains the applied mutation"})
+			wal.Residues = append([]client.NodeReceiptResidue(nil), residues...)
+			wal.UpdatedAt = nowString(i.now())
+			if err := i.state.SaveWAL(*wal); err != nil {
+				return residues, err
+			}
 			continue
 		}
 		prior := PriorState{State: entry.PriorState, Material: entry.RollbackMaterial}
@@ -634,6 +639,7 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 			entry.Status = "restored"
 		}
 		wal.UpdatedAt = nowString(i.now())
+		wal.Residues = append([]client.NodeReceiptResidue(nil), residues...)
 		if err := i.state.SaveWAL(*wal); err != nil {
 			return residues, err
 		}

@@ -737,6 +737,40 @@ func TestRepairRecoveryCarriesResiduesAcrossRetries(t *testing.T) {
 	}
 }
 
+func TestRepairResidueStatusAndEvidencePersistAtomicallyAcrossCrash(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &persistResidueFaultState{memoryState: &memoryState{}}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.rollbackErr = errors.New("rollback blocked")
+	mutation := plan.Mutations[0]
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &original, ReceiptID: original.ReceiptID, Generation: original.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair_mutation_1", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: "pending"}}, CreatedAt: original.CreatedAt, UpdatedAt: original.UpdatedAt}
+	if err := state.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("post-save crash was not surfaced")
+	}
+	if !state.hasWAL || state.wal.Mutations[0].Status != "residue" || len(state.wal.Residues) != 1 || !sameJSON(state.receipt, original) {
+		t.Fatalf("atomic persisted wal=%#v receipt=%#v", state.wal, state.receipt)
+	}
+	platform.rollbackErr = nil
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("persisted residue disappeared on retry")
+	}
+	if !state.hasWAL || state.wal.Checkpoint != "repair_recovery_required" || len(state.wal.Residues) != 1 || !sameJSON(state.receipt, original) {
+		t.Fatalf("retry wal=%#v receipt=%#v", state.wal, state.receipt)
+	}
+}
+
 func TestInstallRecoveryHonorsJoinAndPublicationCheckpoints(t *testing.T) {
 	for _, tc := range []struct {
 		name, checkpoint, status, wantState string
@@ -949,6 +983,23 @@ type faultState struct {
 	*memoryState
 	failAt int
 	saves  int
+}
+type persistResidueFaultState struct {
+	*memoryState
+	failed bool
+}
+
+func (s *persistResidueFaultState) SaveWAL(v InstallWAL) error {
+	s.memoryState.SaveWAL(v)
+	if !s.failed && len(v.Residues) > 0 {
+		for _, mutation := range v.Mutations {
+			if mutation.Status == "residue" {
+				s.failed = true
+				return errors.New("injected crash after atomic residue WAL save")
+			}
+		}
+	}
+	return nil
 }
 
 func (f *faultState) SaveWAL(v InstallWAL) error {

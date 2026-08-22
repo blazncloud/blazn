@@ -679,6 +679,20 @@ func TestExpiredObservationAndUninstallRequireExactActiveReceipt(t *testing.T) {
 	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootSaveReceipt, Plan: plan, Receipt: &removedEscape}, authority, profile, "sha256:"+testHash); err == nil {
 		t.Fatal("expired repair authorized removed receipt escape")
 	}
+	residueWAL := removedWAL
+	residueWAL.Lifecycle = "uninstall"
+	residueWAL.Checkpoint = "uninstall"
+	residueWAL.Residues = []client.NodeReceiptResidue{{Target: plan.Hostname, ReasonCode: "quarantine_residue", SafeMessage: "joined worker remains quarantined"}}
+	if err := store.SaveWAL(residueWAL); err != nil {
+		t.Fatal(err)
+	}
+	hostileRemoved, receiptErr := installer.receipt(plan, authorization.Expected.Identity, identity, residueWAL.ServicePrior, residueWAL, "removed", nil)
+	if receiptErr != nil {
+		t.Fatal(receiptErr)
+	}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootSaveReceipt, Plan: plan, Receipt: &hostileRemoved}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("signed empty-residue removed receipt escaped residue WAL")
+	}
 	if err := store.RemoveWAL(); err != nil {
 		t.Fatal(err)
 	}
@@ -724,12 +738,15 @@ func TestExpiredWALTransitionsRejectHostileEvidenceRewrite(t *testing.T) {
 	if validExpiredWALTransition(RootInstallAuthority{Plan: plan}, applied, rewrittenPrior) {
 		t.Fatal("expired WAL rewrote captured prior state")
 	}
-	receipt := client.NodeInstallReceipt{ReceiptID: applied.ReceiptID, Generation: applied.Generation, PlanID: applied.PlanID, PlanDigest: applied.PlanDigest, NodeID: applied.NodeID, Mutations: append([]client.NodeReceiptMutation(nil), applied.Mutations...)}
-	if !terminalReceiptMatchesWAL(receipt, applied) {
+	terminalWAL := applied
+	terminalWAL.Stage = "complete"
+	terminalWAL.Checkpoint = "receipt"
+	receipt := client.NodeInstallReceipt{ReceiptID: terminalWAL.ReceiptID, Generation: terminalWAL.Generation, PlanID: terminalWAL.PlanID, PlanDigest: terminalWAL.PlanDigest, NodeID: terminalWAL.NodeID, State: "active", Mutations: append([]client.NodeReceiptMutation(nil), terminalWAL.Mutations...), Residues: []client.NodeReceiptResidue{}}
+	if !terminalReceiptMatchesWAL(receipt, terminalWAL) {
 		t.Fatal("exact terminal receipt binding rejected")
 	}
 	receipt.Mutations[0].Target = "other"
-	if terminalReceiptMatchesWAL(receipt, applied) {
+	if terminalReceiptMatchesWAL(receipt, terminalWAL) {
 		t.Fatal("terminal receipt escaped WAL mutation binding")
 	}
 }

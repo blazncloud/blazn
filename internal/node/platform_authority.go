@@ -260,6 +260,9 @@ func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, aut
 			return errors.New("repair lifecycle cannot publish a non-active receipt")
 		}
 		restoringOriginal := wal.Lifecycle == "repair" && wal.OriginalReceipt != nil && sameJSON(*request.Receipt, *wal.OriginalReceipt)
+		if !sameReceiptResidues(request.Receipt.Residues, wal.Residues) {
+			return errors.New("terminal receipt residues differ from lifecycle WAL")
+		}
 		if !restoringOriginal && (request.Receipt.ReceiptID != wal.ReceiptID || request.Receipt.Generation != wal.Generation) {
 			return errors.New("terminal receipt differs from lifecycle WAL generation")
 		}
@@ -409,7 +412,27 @@ func monotonicWALCheckpoint(current, next InstallWAL) bool {
 	return rank[next.Checkpoint] >= rank[current.Checkpoint]
 }
 func terminalReceiptMatchesWAL(receipt client.NodeInstallReceipt, wal InstallWAL) bool {
-	return receipt.ReceiptID == wal.ReceiptID && receipt.Generation == wal.Generation && receipt.PlanID == wal.PlanID && receipt.PlanDigest == wal.PlanDigest && receipt.NodeID == wal.NodeID && sameJSON(receipt.Mutations, wal.Mutations)
+	if receipt.ReceiptID != wal.ReceiptID || receipt.Generation != wal.Generation || receipt.PlanID != wal.PlanID || receipt.PlanDigest != wal.PlanDigest || receipt.NodeID != wal.NodeID || !sameJSON(receipt.Mutations, wal.Mutations) || !sameReceiptResidues(receipt.Residues, wal.Residues) {
+		return false
+	}
+	if receipt.State == "active" {
+		return len(wal.Residues) == 0 && wal.Stage == "complete" && allMutationStatuses(wal.Mutations, "applied")
+	}
+	if len(wal.Residues) > 0 {
+		return receipt.State == "recovery_required"
+	}
+	return receipt.State == "removed"
+}
+func sameReceiptResidues(left, right []client.NodeReceiptResidue) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if !sameJSON(left[index], right[index]) {
+			return false
+		}
+	}
+	return true
 }
 
 func validateAuthorityWAL(authority RootInstallAuthority, wal InstallWAL) error {
