@@ -2,6 +2,8 @@ package auth
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +17,6 @@ import (
 
 const (
 	credentialService = "com.blazn.cli.v1alpha1"
-	credentialAccount = "default-session"
 )
 
 var ErrNotFound = errors.New("Blazn session not found")
@@ -30,8 +31,16 @@ type CredentialStore interface {
 type commandRunner interface {
 	LookPath(string) (string, error)
 	Run(name string, args []string, stdin []byte) ([]byte, error)
-	RunPasswordPrompt(name string, args []string, secret []byte) error
+	RunPasswordPrompt(name string, args []string, account string, secret []byte) error
 }
+
+type commandError struct {
+	message  string
+	exitCode int
+	stderr   bool
+}
+
+func (e *commandError) Error() string { return e.message }
 
 type execRunner struct{}
 
@@ -45,21 +54,28 @@ func (execRunner) Run(name string, args []string, stdin []byte) ([]byte, error) 
 	output, err := command.Output()
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
+		hasStderr := message != ""
 		if message == "" {
 			message = err.Error()
 		}
-		return nil, errors.New(message)
+		exitCode := -1
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		}
+		return nil, &commandError{message: message, exitCode: exitCode, stderr: hasStderr}
 	}
 	return output, nil
 }
 
-func (execRunner) RunPasswordPrompt(name string, args []string, secret []byte) error {
-	return storeDarwinCredential(secret)
+func (execRunner) RunPasswordPrompt(name string, args []string, account string, secret []byte) error {
+	return storeDarwinCredential(account, secret)
 }
 
 type systemStore struct {
-	goos   string
-	runner commandRunner
+	goos    string
+	runner  commandRunner
+	account string
 }
 
 func selectedDarwinKeychainPath() (string, error) {
@@ -81,11 +97,20 @@ func selectedDarwinKeychainPath() (string, error) {
 }
 
 func NewSystemStore() (CredentialStore, error) {
-	return newSystemStore(runtime.GOOS, execRunner{})
+	return NewSystemStoreForOrigin(defaultAPIURL)
 }
 
 func newSystemStore(goos string, runner commandRunner) (CredentialStore, error) {
-	store := &systemStore{goos: goos, runner: runner}
+	return newSystemStoreForOrigin(goos, runner, defaultAPIURL)
+}
+
+func NewSystemStoreForOrigin(origin string) (CredentialStore, error) {
+	return newSystemStoreForOrigin(runtime.GOOS, execRunner{}, origin)
+}
+
+func newSystemStoreForOrigin(goos string, runner commandRunner, origin string) (CredentialStore, error) {
+	account := credentialAccountForOrigin(origin)
+	store := &systemStore{goos: goos, runner: runner, account: account}
 	var command string
 	switch goos {
 	case "darwin":
@@ -97,11 +122,21 @@ func newSystemStore(goos string, runner commandRunner) (CredentialStore, error) 
 	}
 	if _, err := runner.LookPath(command); err != nil {
 		if goos == "linux" {
-			return newProtectedFileStore()
+			return newProtectedFileStoreForOrigin(origin)
 		}
 		return nil, fmt.Errorf("secure credential store %q is unavailable: %w", command, err)
 	}
+	if goos == "linux" {
+		if _, err := runner.Run("secret-tool", []string{"search", "--all", "service", credentialService}, nil); err != nil && !isMissingSecretToolItem(err) {
+			return newProtectedFileStoreForOrigin(origin)
+		}
+	}
 	return store, nil
+}
+
+func credentialAccountForOrigin(origin string) string {
+	digest := sha256.Sum256([]byte(origin))
+	return "session-" + hex.EncodeToString(digest[:16])
 }
 
 type protectedFileStore struct {
@@ -110,6 +145,10 @@ type protectedFileStore struct {
 }
 
 func newProtectedFileStore() (CredentialStore, error) {
+	return newProtectedFileStoreForOrigin(defaultAPIURL)
+}
+
+func newProtectedFileStoreForOrigin(origin string) (CredentialStore, error) {
 	base := os.Getenv("XDG_DATA_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -118,10 +157,14 @@ func newProtectedFileStore() (CredentialStore, error) {
 		}
 		base = filepath.Join(home, ".local", "share")
 	}
-	return newProtectedFileStoreAt(filepath.Join(base, "blazn", "credentials"))
+	return newProtectedFileStoreAtAccount(filepath.Join(base, "blazn", "credentials"), credentialAccountForOrigin(origin)+".json")
 }
 
 func newProtectedFileStoreAt(dir string) (CredentialStore, error) {
+	return newProtectedFileStoreAtAccount(dir, "session.v1")
+}
+
+func newProtectedFileStoreAtAccount(dir, name string) (CredentialStore, error) {
 	if !filepath.IsAbs(dir) {
 		return nil, errors.New("credential directory must be absolute")
 	}
@@ -131,7 +174,10 @@ func newProtectedFileStoreAt(dir string) (CredentialStore, error) {
 	if err := validateOwnedMode(dir, true); err != nil {
 		return nil, fmt.Errorf("credential directory is unsafe: %w", err)
 	}
-	return &protectedFileStore{dir: dir, path: filepath.Join(dir, "session.v1")}, nil
+	if filepath.Base(name) != name || name == "." || name == "" {
+		return nil, errors.New("credential filename is unsafe")
+	}
+	return &protectedFileStore{dir: dir, path: filepath.Join(dir, name)}, nil
 }
 
 func (s *protectedFileStore) Description() string { return "protected credential file" }
@@ -257,11 +303,17 @@ func (s *systemStore) Get() ([]byte, error) {
 	var output []byte
 	var err error
 	if s.goos == "darwin" {
-		return loadDarwinCredential()
+		return loadDarwinCredential(s.account)
 	} else {
-		output, err = s.runner.Run("secret-tool", []string{"lookup", "service", credentialService, "account", credentialAccount}, nil)
+		output, err = s.runner.Run("secret-tool", []string{"lookup", "service", credentialService, "account", s.account}, nil)
 	}
-	if err != nil || len(bytes.TrimSpace(output)) == 0 {
+	if err != nil {
+		if isMissingSecretToolItem(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("read Secret Service credential: %w", err)
+	}
+	if len(bytes.TrimSpace(output)) == 0 {
 		return nil, ErrNotFound
 	}
 	return bytes.TrimSpace(output), nil
@@ -272,24 +324,31 @@ func (s *systemStore) Put(secret []byte) error {
 		return errors.New("refusing to store an empty session")
 	}
 	if s.goos == "darwin" {
-		// A trailing -w asks on the controlling terminal. The runner provides a
-		// private PTY so the value never appears in argv, environment, or logs.
-		return s.runner.RunPasswordPrompt("security", []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccount, "-w"}, secret)
+		// The runner uses Security.framework directly, so the value never appears
+		// in argv, environment, stdin, or logs.
+		return s.runner.RunPasswordPrompt("security", []string{"add-generic-password", "-U", "-s", credentialService, "-a", s.account, "-w"}, s.account, secret)
 	}
-	_, err := s.runner.Run("secret-tool", []string{"store", "--label", "Blazn CLI session", "service", credentialService, "account", credentialAccount}, append(secret, '\n'))
+	_, err := s.runner.Run("secret-tool", []string{"store", "--label", "Blazn CLI session", "service", credentialService, "account", s.account}, append(secret, '\n'))
 	return err
 }
 
 func (s *systemStore) Delete() error {
 	var err error
 	if s.goos == "darwin" {
-		return deleteDarwinCredential()
+		return deleteDarwinCredential(s.account)
 	} else {
-		_, err = s.runner.Run("secret-tool", []string{"clear", "service", credentialService, "account", credentialAccount}, nil)
+		_, err = s.runner.Run("secret-tool", []string{"clear", "service", credentialService, "account", s.account}, nil)
 	}
 	if err != nil {
-		// Deletion is idempotent: missing entries are already logged out.
-		return nil
+		if isMissingSecretToolItem(err) {
+			return nil
+		}
+		return fmt.Errorf("delete Secret Service credential: %w", err)
 	}
 	return nil
+}
+
+func isMissingSecretToolItem(err error) bool {
+	var commandErr *commandError
+	return errors.As(err, &commandErr) && commandErr.exitCode == 1 && !commandErr.stderr
 }

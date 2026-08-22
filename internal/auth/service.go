@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/KingJammin/blazn/internal/client"
@@ -26,6 +28,8 @@ const (
 	maxAccessTokenLifetime         = 24 * time.Hour
 )
 
+var ErrOriginMismatch = errors.New("stored Blazn session API origin does not match")
+
 type API interface {
 	CreateDeviceAuthorization(context.Context, client.DeviceAuthorizationRequest) (client.DeviceAuthorization, error)
 	ExchangeDeviceAuthorization(context.Context, client.DeviceSessionRequest) (client.Session, error)
@@ -36,7 +40,12 @@ type API interface {
 	RevokeDevice(context.Context, string, string) error
 }
 
+type ProofBoundSessionRevoker interface {
+	RevokeSession(context.Context, client.RefreshSessionRequest) error
+}
+
 type Credentials struct {
+	APIOrigin        string    `json:"apiOrigin"`
 	AccessToken      string    `json:"accessToken"`
 	RefreshToken     string    `json:"refreshToken"`
 	DeviceID         string    `json:"deviceId"`
@@ -73,6 +82,8 @@ type LogoutResult struct {
 type Service struct {
 	api               API
 	store             CredentialStore
+	origin            string
+	locker            CredentialLocker
 	now               func() time.Time
 	sleep             func(context.Context, time.Duration) error
 	pendingPrivateKey ed25519.PrivateKey
@@ -80,10 +91,16 @@ type Service struct {
 }
 
 func NewService(api API, store CredentialStore) *Service {
+	return newService(api, store, defaultAPIURL, noopCredentialLocker{})
+}
+
+func newService(api API, store CredentialStore, origin string, locker CredentialLocker) *Service {
 	return &Service{
-		api:   api,
-		store: store,
-		now:   time.Now,
+		api:    api,
+		store:  store,
+		origin: origin,
+		locker: locker,
+		now:    time.Now,
 		sleep: func(ctx context.Context, duration time.Duration) error {
 			timer := time.NewTimer(duration)
 			defer timer.Stop()
@@ -102,18 +119,33 @@ func NewDefaultService() (*Service, error) {
 	if apiURL == "" {
 		apiURL = defaultAPIURL
 	}
-	if err := validateAuthAPIURL(apiURL); err != nil {
-		return nil, err
-	}
-	api, err := client.New(apiURL, &http.Client{Timeout: 30 * time.Second})
+	origin, err := canonicalAuthOrigin(apiURL)
 	if err != nil {
 		return nil, err
 	}
-	store, err := NewSystemStore()
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+			redirectOrigin, err := canonicalAuthOrigin(request.URL.String())
+			if err != nil || redirectOrigin != origin {
+				return errors.New("refusing cross-origin authentication redirect")
+			}
+			return nil
+		},
+	}
+	api, err := client.New(apiURL, httpClient)
 	if err != nil {
 		return nil, err
 	}
-	return NewService(api, store), nil
+	store, err := NewSystemStoreForOrigin(origin)
+	if err != nil {
+		return nil, err
+	}
+	locker, err := newCredentialLocker(origin)
+	if err != nil {
+		return nil, err
+	}
+	return newService(api, store, origin, locker), nil
 }
 
 func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Duration, error) {
@@ -165,22 +197,30 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 	for {
 		session, err := s.api.ExchangeDeviceAuthorization(ctx, client.DeviceSessionRequest{DeviceCode: deviceCode, Proof: proof})
 		if err == nil {
-			if err := s.save(session, s.pendingPrivateKey); err != nil {
-				return LoginResult{}, fmt.Errorf("store session: %w", err)
-			}
-			current, err := s.api.GetCurrentUser(ctx, session.AccessToken)
-			if err != nil {
-				_ = s.store.Delete()
-				return LoginResult{}, fmt.Errorf("verify session: %w", err)
-			}
-			return LoginResult{Status: "authenticated", DeviceID: session.DeviceID, User: current.User, Device: current.Device}, nil
+			var result LoginResult
+			lockErr := s.locker.WithLock(ctx, func() error {
+				var finishErr error
+				result, finishErr = s.finishLogin(ctx, session, s.pendingPrivateKey)
+				return finishErr
+			})
+			return result, lockErr
 		}
 		var apiErr *client.APIError
-		if !errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusPreconditionRequired && apiErr.Body.Code != "authorization_pending" && apiErr.Body.Code != "slow_down") {
+		if !errors.As(err, &apiErr) {
 			return LoginResult{}, err
 		}
-		if apiErr.Body.Code == "slow_down" {
+		pending := apiErr.StatusCode == http.StatusPreconditionRequired && apiErr.Body.Code == "authorization_pending"
+		slowDown := apiErr.StatusCode == http.StatusTooManyRequests && apiErr.Body.Code == "slow_down"
+		if !pending && !slowDown {
+			return LoginResult{}, err
+		}
+		if slowDown {
+			// APIError does not expose Retry-After yet. Apply the bounded OAuth
+			// device-flow fallback until the generated client carries that header.
 			interval += 5 * time.Second
+			if interval > 30*time.Second {
+				interval = 30 * time.Second
+			}
 		}
 		if err := s.sleep(ctx, interval); err != nil {
 			return LoginResult{}, err
@@ -189,66 +229,104 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 }
 
 func (s *Service) Status(ctx context.Context) (StatusResult, error) {
-	credentials, err := s.credentials(ctx)
+	var result StatusResult
+	err := s.locker.WithLock(ctx, func() error {
+		credentials, err := s.credentialsLocked(ctx)
+		if errors.Is(err, ErrNotFound) {
+			result = StatusResult{Authenticated: false, Store: s.store.Description()}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		current, err := s.api.GetCurrentUser(ctx, credentials.AccessToken)
+		if err != nil {
+			if isDefinitiveCredentialError(err) {
+				if deleteErr := s.store.Delete(); deleteErr != nil {
+					return deleteErr
+				}
+				result = StatusResult{Authenticated: false, Store: s.store.Description()}
+				return nil
+			}
+			return err
+		}
+		result = StatusResult{Authenticated: true, Store: s.store.Description(), User: &current.User, Device: &current.Device}
+		return nil
+	})
 	if errors.Is(err, ErrNotFound) {
 		return StatusResult{Authenticated: false, Store: s.store.Description()}, nil
 	}
-	if err != nil {
-		return StatusResult{}, err
-	}
-	current, err := s.api.GetCurrentUser(ctx, credentials.AccessToken)
-	if err != nil {
-		if isTerminalSessionError(err) {
-			_ = s.store.Delete()
-			return StatusResult{Authenticated: false, Store: s.store.Description()}, nil
-		}
-		return StatusResult{}, err
-	}
-	return StatusResult{Authenticated: true, Store: s.store.Description(), User: &current.User, Device: &current.Device}, nil
+	return result, err
 }
 
 func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
-	credentials, err := s.credentials(ctx)
-	if errors.Is(err, ErrNotFound) {
-		return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
-	}
-	if err != nil {
-		return LogoutResult{Status: "logout_failed", RemoteRevoked: false}, fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
-	}
-	remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
-	if remoteErr != nil && !isTerminalSessionError(remoteErr) {
-		return LogoutResult{Status: "logout_failed", RemoteRevoked: false}, fmt.Errorf("revoke remote session; local session preserved for retry: %w", remoteErr)
-	}
-	if err := s.store.Delete(); err != nil {
-		return LogoutResult{}, fmt.Errorf("remove local session: %w", err)
-	}
-	return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
+	result := LogoutResult{Status: "logout_failed", RemoteRevoked: false}
+	err := s.locker.WithLock(ctx, func() error {
+		credentials, err := s.credentialsLocked(ctx)
+		if errors.Is(err, ErrNotFound) {
+			result = LogoutResult{Status: "logged_out", RemoteRevoked: true}
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
+		}
+		remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
+		if remoteErr != nil {
+			if !isAccessSessionError(remoteErr) {
+				return fmt.Errorf("revoke remote session; local session preserved for retry: %w", remoteErr)
+			}
+			revoker, ok := s.api.(ProofBoundSessionRevoker)
+			if !ok {
+				return errors.New("access-token revocation was not confirmed and proof-bound session revocation is unavailable; local session preserved")
+			}
+			request, err := refreshProofRequest(credentials)
+			if err != nil {
+				return err
+			}
+			if err := revoker.RevokeSession(ctx, request); err != nil && !isDefinitiveCredentialError(err) {
+				return fmt.Errorf("proof-bound session revocation failed; local session preserved: %w", err)
+			}
+		}
+		if err := s.store.Delete(); err != nil {
+			return fmt.Errorf("remove local session: %w", err)
+		}
+		result = LogoutResult{Status: "logged_out", RemoteRevoked: true}
+		return nil
+	})
+	return result, err
 }
 
 func (s *Service) Devices(ctx context.Context) ([]client.Device, error) {
-	credentials, err := s.credentials(ctx)
-	if err != nil {
-		return nil, err
-	}
-	devices, err := s.api.ListDevices(ctx, credentials.AccessToken)
-	return devices.Items, err
+	var items []client.Device
+	err := s.locker.WithLock(ctx, func() error {
+		credentials, err := s.credentialsLocked(ctx)
+		if err != nil {
+			return err
+		}
+		devices, err := s.api.ListDevices(ctx, credentials.AccessToken)
+		items = devices.Items
+		return err
+	})
+	return items, err
 }
 
 func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
-	credentials, err := s.credentials(ctx)
-	if err != nil {
-		return err
-	}
-	if err := s.api.RevokeDevice(ctx, credentials.AccessToken, deviceID); err != nil {
-		return err
-	}
-	if deviceID == credentials.DeviceID {
-		return s.store.Delete()
-	}
-	return nil
+	return s.locker.WithLock(ctx, func() error {
+		credentials, err := s.credentialsLocked(ctx)
+		if err != nil {
+			return err
+		}
+		if err := s.api.RevokeDevice(ctx, credentials.AccessToken, deviceID); err != nil {
+			return err
+		}
+		if deviceID == credentials.DeviceID {
+			return s.store.Delete()
+		}
+		return nil
+	})
 }
 
-func (s *Service) credentials(ctx context.Context) (Credentials, error) {
+func (s *Service) credentialsLocked(ctx context.Context) (Credentials, error) {
 	credentials, err := s.load()
 	if err != nil {
 		return Credentials{}, err
@@ -256,25 +334,28 @@ func (s *Service) credentials(ctx context.Context) (Credentials, error) {
 	if credentials.ExpiresAt.After(s.now().Add(30 * time.Second)) {
 		return credentials, nil
 	}
-	privateKey, err := decodePrivateKey(credentials.DevicePrivateKey)
+	request, err := refreshProofRequest(credentials)
 	if err != nil {
 		return Credentials{}, err
 	}
-	digest := sha256.Sum256([]byte(credentials.RefreshToken))
-	proofPayload := fmt.Sprintf("blazn-refresh-v1\n%s\n%x", credentials.DeviceID, digest)
-	proof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(proofPayload)))
-	session, err := s.api.RefreshSession(ctx, client.RefreshSessionRequest{RefreshToken: credentials.RefreshToken, DeviceID: credentials.DeviceID, Proof: proof})
+	session, err := s.api.RefreshSession(ctx, request)
 	if err != nil {
-		if isTerminalSessionError(err) {
-			_ = s.store.Delete()
+		if isRefreshCredentialError(err) {
+			if deleteErr := s.store.Delete(); deleteErr != nil {
+				return Credentials{}, deleteErr
+			}
 			return Credentials{}, ErrNotFound
 		}
+		return Credentials{}, err
+	}
+	privateKey, err := decodePrivateKey(credentials.DevicePrivateKey)
+	if err != nil {
 		return Credentials{}, err
 	}
 	if err := s.save(session, privateKey); err != nil {
 		return Credentials{}, err
 	}
-	return Credentials{AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now().Add(time.Duration(session.ExpiresIn) * time.Second), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}, nil
+	return Credentials{APIOrigin: s.origin, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now().Add(time.Duration(session.ExpiresIn) * time.Second), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}, nil
 }
 
 func (s *Service) load() (Credentials, error) {
@@ -286,8 +367,11 @@ func (s *Service) load() (Credentials, error) {
 	if err := json.Unmarshal(encoded, &credentials); err != nil {
 		return Credentials{}, errors.New("stored Blazn session is invalid; run 'blazn auth logout'")
 	}
-	if credentials.AccessToken == "" || credentials.RefreshToken == "" || credentials.DeviceID == "" || credentials.ExpiresAt.IsZero() || credentials.DevicePrivateKey == "" {
+	if credentials.APIOrigin == "" || credentials.AccessToken == "" || credentials.RefreshToken == "" || credentials.DeviceID == "" || credentials.ExpiresAt.IsZero() || credentials.DevicePrivateKey == "" {
 		return Credentials{}, errors.New("stored Blazn session is incomplete; run 'blazn auth logout'")
+	}
+	if credentials.APIOrigin != s.origin {
+		return Credentials{}, fmt.Errorf("%w: stored session belongs to %s, current API is %s", ErrOriginMismatch, credentials.APIOrigin, s.origin)
 	}
 	return credentials, nil
 }
@@ -300,6 +384,7 @@ func (s *Service) save(session client.Session, privateKey ed25519.PrivateKey) er
 		return errors.New("device private key is invalid")
 	}
 	credentials := Credentials{
+		APIOrigin:        s.origin,
 		AccessToken:      session.AccessToken,
 		RefreshToken:     session.RefreshToken,
 		DeviceID:         session.DeviceID,
@@ -311,6 +396,60 @@ func (s *Service) save(session client.Session, privateKey ed25519.PrivateKey) er
 		return err
 	}
 	return s.store.Put(encoded)
+}
+
+func (s *Service) finishLogin(ctx context.Context, session client.Session, privateKey ed25519.PrivateKey) (LoginResult, error) {
+	if err := s.save(session, privateKey); err != nil {
+		return LoginResult{}, s.cleanupIssuedSession(ctx, session, privateKey, false, fmt.Errorf("store session: %w", err))
+	}
+	current, err := s.api.GetCurrentUser(ctx, session.AccessToken)
+	if err != nil {
+		return LoginResult{}, s.cleanupIssuedSession(ctx, session, privateKey, true, fmt.Errorf("verify session: %w", err))
+	}
+	return LoginResult{Status: "authenticated", DeviceID: session.DeviceID, User: current.User, Device: current.Device}, nil
+}
+
+func (s *Service) cleanupIssuedSession(ctx context.Context, session client.Session, privateKey ed25519.PrivateKey, stored bool, cause error) error {
+	revokeErr := s.api.DeleteCurrentSession(ctx, session.AccessToken)
+	if revokeErr != nil {
+		credentials := Credentials{APIOrigin: s.origin, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now(), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}
+		if revoker, ok := s.api.(ProofBoundSessionRevoker); ok {
+			request, proofErr := refreshProofRequest(credentials)
+			if proofErr == nil {
+				proofErr = revoker.RevokeSession(ctx, request)
+			}
+			if proofErr == nil || isDefinitiveCredentialError(proofErr) {
+				revokeErr = nil
+			} else {
+				revokeErr = fmt.Errorf("access revocation failed: %v; proof-bound revocation failed: %w", revokeErr, proofErr)
+			}
+		}
+	}
+	if revokeErr == nil {
+		if stored {
+			if err := s.store.Delete(); err != nil {
+				return fmt.Errorf("%v; remote cleanup confirmed but local cleanup failed: %w", cause, err)
+			}
+		}
+		return fmt.Errorf("%v; issued session was revoked", cause)
+	}
+	if !stored {
+		if err := s.save(session, privateKey); err != nil {
+			return fmt.Errorf("%v; remote cleanup failed: %v; retaining credentials also failed: %w", cause, revokeErr, err)
+		}
+	}
+	return fmt.Errorf("%v; remote cleanup was not confirmed and credentials were retained for retry: %w", cause, revokeErr)
+}
+
+func refreshProofRequest(credentials Credentials) (client.RefreshSessionRequest, error) {
+	privateKey, err := decodePrivateKey(credentials.DevicePrivateKey)
+	if err != nil {
+		return client.RefreshSessionRequest{}, err
+	}
+	digest := sha256.Sum256([]byte(credentials.RefreshToken))
+	proofPayload := fmt.Sprintf("blazn-refresh-v1\n%s\n%x", credentials.DeviceID, digest)
+	proof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(proofPayload)))
+	return client.RefreshSessionRequest{RefreshToken: credentials.RefreshToken, DeviceID: credentials.DeviceID, Proof: proof}, nil
 }
 
 func deviceProofPayload(deviceCode, challenge string) string {
@@ -325,13 +464,26 @@ func decodePrivateKey(encoded string) (ed25519.PrivateKey, error) {
 	return ed25519.PrivateKey(decoded), nil
 }
 
-func isTerminalSessionError(err error) bool {
+func isRefreshCredentialError(err error) bool {
 	for _, code := range []string{"session_invalid", "refresh_invalid", "session_revoked", "device_revoked"} {
 		if client.IsCode(err, code) {
 			return true
 		}
 	}
 	return false
+}
+
+func isDefinitiveCredentialError(err error) bool {
+	for _, code := range []string{"session_invalid", "refresh_invalid", "device_revoked"} {
+		if client.IsCode(err, code) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAccessSessionError(err error) bool {
+	return client.IsCode(err, "session_revoked") || isDefinitiveCredentialError(err)
 }
 
 func OpenBrowser(uri string) error {
@@ -352,15 +504,33 @@ func OpenBrowser(uri string) error {
 }
 
 func validateAuthAPIURL(value string) error {
+	_, err := canonicalAuthOrigin(value)
+	return err
+}
+
+func canonicalAuthOrigin(value string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil {
 		return fmt.Errorf("parse API URL: %w", err)
 	}
-	if parsed.Scheme == "https" {
-		return nil
+	if parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("authentication API URL must contain only scheme, host, and optional base path")
 	}
-	if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") && os.Getenv("BLAZN_ALLOW_INSECURE_LOCALHOST") == "1" {
-		return nil
+	scheme := strings.ToLower(parsed.Scheme)
+	hostname := strings.ToLower(parsed.Hostname())
+	if scheme != "https" && !(scheme == "http" && (hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1") && os.Getenv("BLAZN_ALLOW_INSECURE_LOCALHOST") == "1") {
+		return "", errors.New("authentication API must use HTTPS; insecure HTTP is allowed only for an explicitly enabled loopback test server")
 	}
-	return errors.New("authentication API must use HTTPS; insecure HTTP is allowed only for an explicitly enabled loopback test server")
+	port := parsed.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	host := hostname
+	if strings.Contains(hostname, ":") {
+		host = "[" + hostname + "]"
+	}
+	if port != "" {
+		host = net.JoinHostPort(hostname, port)
+	}
+	return (&url.URL{Scheme: scheme, Host: host}).String(), nil
 }

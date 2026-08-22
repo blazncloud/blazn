@@ -33,7 +33,7 @@ func (f *fakeRunner) Run(name string, args []string, stdin []byte) ([]byte, erro
 	return f.out, f.err
 }
 
-func (f *fakeRunner) RunPasswordPrompt(name string, args []string, secret []byte) error {
+func (f *fakeRunner) RunPasswordPrompt(name string, args []string, _ string, secret []byte) error {
 	f.calls = append(f.calls, runnerCall{name: name, args: append([]string(nil), args...), stdin: append([]byte(nil), secret...)})
 	return f.err
 }
@@ -47,8 +47,9 @@ func TestLinuxStoreUsesNamespacedSecretServiceEntry(t *testing.T) {
 	if err := store.Put([]byte(`{"refreshToken":"secret"}`)); err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := []string{"store", "--label", "Blazn CLI session", "service", credentialService, "account", credentialAccount}
-	if got := runner.calls[0]; got.name != "secret-tool" || !reflect.DeepEqual(got.args, wantArgs) || string(got.stdin) != "{\"refreshToken\":\"secret\"}\n" {
+	account := credentialAccountForOrigin(defaultAPIURL)
+	wantArgs := []string{"store", "--label", "Blazn CLI session", "service", credentialService, "account", account}
+	if got := runner.calls[1]; got.name != "secret-tool" || !reflect.DeepEqual(got.args, wantArgs) || string(got.stdin) != "{\"refreshToken\":\"secret\"}\n" {
 		t.Fatalf("call = %#v", got)
 	}
 }
@@ -62,7 +63,7 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 	if err := store.Put([]byte("session")); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccount, "-w"}
+	want := []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccountForOrigin(defaultAPIURL), "-w"}
 	if got := runner.calls[0]; got.name != "security" || !reflect.DeepEqual(got.args, want) || string(got.stdin) != "session" {
 		t.Fatalf("call = %#v", got)
 	}
@@ -95,13 +96,53 @@ func TestLinuxWithoutSecretServiceUsesProtectedStandaloneStore(t *testing.T) {
 func TestGetAndDeleteAreRedactionSafeAndIdempotent(t *testing.T) {
 	runner := &fakeRunner{paths: map[string]bool{"secret-tool": true}, out: []byte("secret-session\n")}
 	store, _ := newSystemStore("linux", runner)
+	runner.calls = nil
 	got, err := store.Get()
 	if err != nil || string(got) != "secret-session" {
 		t.Fatalf("Get = %q, %v", got, err)
 	}
-	runner.err = errors.New("not found")
+	runner.err = &commandError{message: "exit status 1", exitCode: 1}
 	if err := store.Delete(); err != nil {
 		t.Fatalf("Delete = %v", err)
+	}
+}
+
+func TestSecretServiceBackendFailuresAreNotReportedAsMissingOrDeleted(t *testing.T) {
+	runner := &fakeRunner{paths: map[string]bool{"secret-tool": true}}
+	store, err := newSystemStore("linux", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.err = &commandError{message: "Cannot autolaunch D-Bus", exitCode: 1, stderr: true}
+	if _, err := store.Get(); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("backend lookup error = %v", err)
+	}
+	if err := store.Delete(); err == nil {
+		t.Fatal("backend clear failure was ignored")
+	}
+}
+
+func TestSecretServiceProbeFallsBackToProtectedStore(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	runner := &fakeRunner{paths: map[string]bool{"secret-tool": true}, err: &commandError{message: "no session bus", exitCode: 1, stderr: true}}
+	store, err := newSystemStoreForOrigin("linux", runner, "https://example.test")
+	if err != nil || store.Description() != "protected credential file" {
+		t.Fatalf("store=%T description=%q err=%v", store, store.Description(), err)
+	}
+}
+
+func TestCredentialStoresAreNamespacedByCanonicalOrigin(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	first, err := newProtectedFileStoreForOrigin("https://one.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newProtectedFileStoreForOrigin("https://two.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.(*protectedFileStore).path == second.(*protectedFileStore).path {
+		t.Fatal("different origins share a credential path")
 	}
 }
 
