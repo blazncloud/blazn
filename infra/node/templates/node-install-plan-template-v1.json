@@ -506,12 +506,12 @@
             "name": "microk8s",
             "artifactType": "package",
             "sourceClass": "https",
-            "version": "v1.35.6-rev9072",
+            "version": "v1.35.6-rev9075",
             "publisher": "Canonical",
             "sourceHost": "api.snapcraft.io",
-            "source": "https://api.snapcraft.io/api/v1/snaps/download/EaXqgt1lyCaxKaQCU349mlodBkDCXRcg_9072.snap",
+            "source": "https://api.snapcraft.io/api/v1/snaps/download/EaXqgt1lyCaxKaQCU349mlodBkDCXRcg_9075.snap",
             "repositoryOrigin": "https://api.snapcraft.io",
-            "sha256": "36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2",
+            "sha256": "7493e9842029ca74f32e05038b15b62bda635f24332c421fd62f8508f458f16a",
             "ownership": "adopt_exact"
           },
           {
@@ -605,10 +605,10 @@
             "target": "microk8s",
             "desired": {
               "manager": "snap",
-              "version": "v1.35.6-rev9072",
+              "version": "v1.35.6-rev9075",
               "componentName": "microk8s"
             },
-            "desiredDigest": "sha256:36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2",
+            "desiredDigest": "sha256:7493e9842029ca74f32e05038b15b62bda635f24332c421fd62f8508f458f16a",
             "mode": 0,
             "uid": 0,
             "gid": 0,

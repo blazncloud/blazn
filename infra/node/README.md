@@ -59,7 +59,8 @@ Ubuntu 26.04 AMD64, existing Linux adoption, and macOS/Lima adoption profiles.
 It freezes the current Frontro MicroK8s identity and CA, worker-only boundary,
 release artifacts and checksums, registry trust, platform service definitions,
 resource bounds, ordered mutations, validation gates, and rollback roots.
-The Linux profiles use the official revision-9072 Snapcraft API URL. The local
+The Linux profiles use architecture-specific official Snapcraft API material:
+revision 9072 for AMD64 and revision 9075 for ARM64. The local
 installer profile pins `.cdn.snapcraftcontent.com` as a redirect-only suffix;
 the initial API origin remains exact, and every hop still undergoes HTTPS,
 userinfo, DNS/IP-policy, size, and digest validation.
