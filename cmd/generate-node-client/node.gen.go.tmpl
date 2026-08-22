@@ -91,7 +91,34 @@ type KubernetesBinding struct {
 type CreateNodeOperationRequest struct {
 	Type            NodeOperationType `json:"type"`
 	ExpectedVersion int64             `json:"expectedVersion"`
-	Parameters      map[string]any    `json:"parameters,omitempty"`
+	Parameters      json.RawMessage   `json:"parameters"`
+}
+
+type NodeLabelParameters struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+type KubernetesMutationParameters struct {
+	ClusterID               string `json:"clusterId"`
+	ExpectedNodeUID         string `json:"expectedNodeUid"`
+	ExpectedResourceVersion string `json:"expectedResourceVersion"`
+}
+
+type NodeDrainParameters struct {
+	KubernetesMutationParameters
+	WorkspaceID     string `json:"workspaceId"`
+	DeadlineSeconds int64  `json:"deadlineSeconds"`
+}
+
+type NodeRemoveParameters struct {
+	KubernetesMutationParameters
+	Confirm          bool `json:"confirm"`
+	PreserveHostData bool `json:"preserveHostData"`
+}
+
+type NodeUpdateParameters struct {
+	TargetVersion string `json:"targetVersion"`
 }
 
 type NodeOperation struct {
@@ -114,12 +141,34 @@ type NodeHeartbeat struct {
 }
 
 type NodeCapability struct {
-	Version          int64                  `json:"version"`
-	CPU              int64                  `json:"cpu"`
-	MemoryBytes      int64                  `json:"memoryBytes"`
-	DiskBytes        int64                  `json:"diskBytes"`
-	SandboxBackends  []string               `json:"sandboxBackends"`
-	LocalModels      []LocalModelCapability `json:"localModels"`
+	Version          int64                    `json:"version"`
+	Platform         NodePlatform             `json:"platform"`
+	Architecture     NodeArchitecture         `json:"architecture"`
+	CPU              int64                    `json:"cpu"`
+	MemoryBytes      int64                    `json:"memoryBytes"`
+	DiskBytes        int64                    `json:"diskBytes"`
+	Accelerators     []NodeAccelerator        `json:"accelerators"`
+	Labels           map[string]string        `json:"labels"`
+	Limits           NodeCapabilityLimits     `json:"limits"`
+	Health           NodeCapabilityHealth     `json:"health"`
+	SandboxBackends  []string                 `json:"sandboxBackends"`
+	RuntimeClasses   []string                 `json:"runtimeClasses"`
+	LocalModels      []LocalModelCapability   `json:"localModels"`
+}
+
+type NodeAccelerator struct {
+	Kind  string `json:"kind"`
+	Count int64  `json:"count"`
+}
+
+type NodeCapabilityLimits struct {
+	MaxConcurrentSandboxes int64 `json:"maxConcurrentSandboxes"`
+	MaxConcurrentAgents    int64 `json:"maxConcurrentAgents"`
+}
+
+type NodeCapabilityHealth struct {
+	Status      string   `json:"status"`
+	ReasonCodes []string `json:"reasonCodes"`
 }
 
 type LocalModelCapability struct {
@@ -132,6 +181,8 @@ type LocalModelCapability struct {
 	DataBoundary   string   `json:"dataBoundary"`
 	Healthy        bool     `json:"healthy"`
 	MaxConcurrency int64    `json:"maxConcurrency"`
+	MaxContextTokens int64  `json:"maxContextTokens"`
+	MaxOutputTokens  int64  `json:"maxOutputTokens"`
 }
 
 type JoinCredentialRequest struct {
@@ -268,7 +319,67 @@ var (
 	nodeHashPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	nodeDigestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	nodeBase64URLPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	nodeLabelPattern     = regexp.MustCompile(`^blazn\.dev/[a-z0-9][a-z0-9._-]{0,62}$`)
+	nodeVersionPattern   = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
 )
+
+func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) error {
+	if request.ExpectedVersion < 1 || len(request.Parameters) == 0 || len(request.Parameters) > 4096 {
+		return fmt.Errorf("node operation request is invalid")
+	}
+	switch request.Type {
+	case "pause", "resume", "rotate_identity", "repair":
+		var parameters struct{}
+		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil {
+			return fmt.Errorf("%s parameters: %w", request.Type, err)
+		}
+	case "label":
+		var parameters NodeLabelParameters
+		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil || !nodeLabelPattern.MatchString(parameters.Key) || len(parameters.Value) > 128 {
+			return fmt.Errorf("label parameters are invalid")
+		}
+	case "cordon", "uncordon":
+		var parameters KubernetesMutationParameters
+		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil || !validKubernetesMutation(parameters) {
+			return fmt.Errorf("%s parameters are invalid", request.Type)
+		}
+	case "drain":
+		var parameters NodeDrainParameters
+		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil || !validKubernetesMutation(parameters.KubernetesMutationParameters) || !nodeUUIDPattern.MatchString(parameters.WorkspaceID) || parameters.DeadlineSeconds < 60 || parameters.DeadlineSeconds > 3600 {
+			return fmt.Errorf("drain parameters are invalid")
+		}
+	case "remove":
+		var parameters NodeRemoveParameters
+		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil || !validKubernetesMutation(parameters.KubernetesMutationParameters) || !parameters.Confirm || !parameters.PreserveHostData {
+			return fmt.Errorf("remove parameters are invalid")
+		}
+	case "update":
+		var parameters NodeUpdateParameters
+		if err := decodeClosedNodeObject(request.Parameters, &parameters); err != nil || len(parameters.TargetVersion) > 128 || !nodeVersionPattern.MatchString(parameters.TargetVersion) {
+			return fmt.Errorf("update parameters are invalid")
+		}
+	default:
+		return fmt.Errorf("node operation type is invalid")
+	}
+	return nil
+}
+
+func validKubernetesMutation(parameters KubernetesMutationParameters) bool {
+	return len(parameters.ClusterID) >= 1 && len(parameters.ClusterID) <= 128 && len(parameters.ExpectedNodeUID) >= 1 && len(parameters.ExpectedNodeUID) <= 128 && len(parameters.ExpectedResourceVersion) >= 1 && len(parameters.ExpectedResourceVersion) <= 128
+}
+
+func decodeClosedNodeObject(encoded []byte, output any) error {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("parameters must contain exactly one JSON object")
+	}
+	return nil
+}
 
 func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	if plan.SchemaVersion != NodeSchemaVersion {
@@ -439,8 +550,8 @@ func (c *Client) GetNode(ctx context.Context, accessToken, nodeID string) (Node,
 
 func (c *Client) CreateNodeOperation(ctx context.Context, accessToken, nodeID, idempotencyKey string, request CreateNodeOperationRequest) (NodeOperation, error) {
 	var output NodeOperation
-	if request.ExpectedVersion < 1 || len(request.Parameters) > 32 {
-		return output, fmt.Errorf("node operation request is invalid")
+	if err := ValidateCreateNodeOperationRequest(request); err != nil {
+		return output, err
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(nodeID)+"/operations", accessToken, "", idempotencyKey, request, &output, http.StatusAccepted)
 	return output, err

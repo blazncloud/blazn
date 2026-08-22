@@ -20,7 +20,7 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256 = "72075586a8404f73485eb2c155632ae94301d7a1b472e76a7b3523b53c3fbd6e"
+	openAPISHA256 = "4dddb7d993567d14321eb3a53d3abc8569b303e70279ec08957ab8b06acee531"
 	planSHA256    = "663d02a35bd912f713e7139a7ebe452525a7baa8a3a24a1da250a28b75496eb7"
 	receiptSHA256 = "5618b6ddfec05f8c9e0b84b76774a24abc4be3b145de7707aa0ab675f1ee082c"
 )
@@ -205,6 +205,21 @@ func validateOpenAPI(document map[string]any) error {
 	}
 	if atString(document, "components", "schemas", "ExchangeNodeEnrollmentRequest", "properties", "token", "type") != "string" {
 		return fmt.Errorf("enrollment token must remain in JSON request body")
+	}
+	capability, ok := at(document, "components", "schemas", "NodeCapability").(map[string]any)
+	if !ok || capability["additionalProperties"] != false {
+		return fmt.Errorf("NodeCapability must remain a closed object")
+	}
+	for _, field := range []string{"version", "platform", "architecture", "cpu", "memoryBytes", "diskBytes", "accelerators", "labels", "limits", "health", "sandboxBackends", "runtimeClasses", "localModels"} {
+		if at(capability, "properties", field) == nil {
+			return fmt.Errorf("NodeCapability.%s is missing or mis-nested", field)
+		}
+	}
+	if atString(document, "components", "schemas", "NodeCapability", "properties", "localModels", "items", "$ref") != "#/components/schemas/LocalModelCapability" || at(document, "components", "schemas", "LocalModelCapability") == nil {
+		return fmt.Errorf("LocalModelCapability must be a top-level component referenced by NodeCapability")
+	}
+	if len(at(document, "components", "schemas", "CreateNodeOperationRequest", "allOf").([]any)) != 6 {
+		return fmt.Errorf("node operation discriminators changed")
 	}
 	return nil
 }
