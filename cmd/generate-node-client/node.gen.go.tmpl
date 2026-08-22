@@ -1,0 +1,560 @@
+// Code generated from the Blazn node contracts; DO NOT EDIT.
+// OpenAPI SHA256: OPENAPI_SHA256
+// NodeInstallPlan SHA256: PLAN_SHA256
+// NodeInstallReceipt SHA256: RECEIPT_SHA256
+
+package client
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+)
+
+const NodeSchemaVersion = "nodes/v1alpha1"
+
+type NodePlatform string
+type NodeArchitecture string
+type NodeEnrollmentMode string
+type NodeLifecycleState string
+type NodeTrustState string
+type NodeOperationType string
+type NodeOperationStatus string
+
+const (
+	NodePlatformLinux NodePlatform = "linux"
+	NodePlatformMacOS NodePlatform = "macos"
+	NodeArchAMD64     NodeArchitecture = "amd64"
+	NodeArchARM64     NodeArchitecture = "arm64"
+	NodeModeFresh     NodeEnrollmentMode = "fresh"
+	NodeModeAdopt     NodeEnrollmentMode = "adopt"
+)
+
+type CreateNodeEnrollmentRequest struct {
+	Name         string               `json:"name"`
+	Mode         NodeEnrollmentMode   `json:"mode"`
+	Platform     NodePlatform         `json:"platform"`
+	Architecture NodeArchitecture     `json:"architecture,omitempty"`
+}
+
+type NodeEnrollmentSecret struct {
+	ID        string `json:"id"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
+type ExchangeNodeEnrollmentRequest struct {
+	Token             string             `json:"token"`
+	MachineFingerprint string             `json:"machineFingerprint"`
+	NodePublicKey      string             `json:"nodePublicKey"`
+	Platform           NodePlatform       `json:"platform"`
+	Architecture       NodeArchitecture   `json:"architecture"`
+	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
+}
+
+type Node struct {
+	ID                 string             `json:"id"`
+	WorkspaceID        string             `json:"workspaceId"`
+	Name               string             `json:"name"`
+	Kind               string             `json:"kind"`
+	Platform           NodePlatform       `json:"platform"`
+	Architecture       NodeArchitecture   `json:"architecture"`
+	LifecycleState     NodeLifecycleState `json:"lifecycleState"`
+	TrustState         NodeTrustState     `json:"trustState"`
+	AgentEligible      bool               `json:"agentEligible"`
+	Version            int64              `json:"version"`
+	CapabilityVersion  *int64             `json:"capabilityVersion"`
+	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
+	CreatedAt          string             `json:"createdAt"`
+	UpdatedAt          string             `json:"updatedAt"`
+}
+
+type NodeList struct {
+	Items []Node `json:"items"`
+}
+
+type KubernetesBinding struct {
+	ClusterID       string `json:"clusterId"`
+	NodeName        string `json:"nodeName"`
+	NodeUID         string `json:"nodeUid"`
+	ResourceVersion string `json:"resourceVersion"`
+}
+
+type CreateNodeOperationRequest struct {
+	Type            NodeOperationType `json:"type"`
+	ExpectedVersion int64             `json:"expectedVersion"`
+	Parameters      map[string]any    `json:"parameters,omitempty"`
+}
+
+type NodeOperation struct {
+	ID                  string              `json:"id"`
+	NodeID              string              `json:"nodeId"`
+	Type                NodeOperationType   `json:"type"`
+	Status              NodeOperationStatus `json:"status"`
+	ExpectedNodeVersion int64               `json:"expectedNodeVersion"`
+	CreatedAt           string              `json:"createdAt"`
+}
+
+type NodeHeartbeat struct {
+	NodeID             string         `json:"nodeId"`
+	IdentityGeneration int64          `json:"identityGeneration"`
+	BootID             string         `json:"bootId"`
+	Sequence           int64          `json:"sequence"`
+	SentAt             string         `json:"sentAt"`
+	CapabilityDigest   string         `json:"capabilityDigest"`
+	Capability         NodeCapability `json:"capability"`
+}
+
+type NodeCapability struct {
+	Version          int64                  `json:"version"`
+	CPU              int64                  `json:"cpu"`
+	MemoryBytes      int64                  `json:"memoryBytes"`
+	DiskBytes        int64                  `json:"diskBytes"`
+	SandboxBackends  []string               `json:"sandboxBackends"`
+	LocalModels      []LocalModelCapability `json:"localModels"`
+}
+
+type LocalModelCapability struct {
+	RouteID        string   `json:"routeId"`
+	DisplayName    string   `json:"displayName"`
+	Model          string   `json:"model"`
+	Protocol       string   `json:"protocol"`
+	EndpointClass  string   `json:"endpointClass"`
+	Capabilities   []string `json:"capabilities"`
+	DataBoundary   string   `json:"dataBoundary"`
+	Healthy        bool     `json:"healthy"`
+	MaxConcurrency int64    `json:"maxConcurrency"`
+}
+
+type JoinCredentialRequest struct {
+	EnrollmentID            string `json:"enrollmentId"`
+	PlanID                  string `json:"planId"`
+	PlanDigest              string `json:"planDigest"`
+	NodeID                  string `json:"nodeId"`
+	MachineFingerprint      string `json:"machineFingerprint"`
+	NodePublicKeyFingerprint string `json:"nodePublicKeyFingerprint"`
+}
+
+type JoinCredential struct {
+	Credential string `json:"credential"`
+	ExpiresAt  string `json:"expiresAt"`
+	ClusterID  string `json:"clusterId"`
+	WorkerOnly bool   `json:"workerOnly"`
+}
+
+type NodeInstallPlan struct {
+	SchemaVersion string                `json:"schemaVersion"`
+	PlanID        string                `json:"planId"`
+	NodeID        string                `json:"nodeId"`
+	EnrollmentID  string                `json:"enrollmentId"`
+	WorkspaceID   string                `json:"workspaceId"`
+	Mode          NodeEnrollmentMode    `json:"mode"`
+	Cluster       NodeInstallCluster    `json:"cluster"`
+	Target        NodeInstallTarget     `json:"target"`
+	Components    []NodeInstallComponent `json:"components"`
+	Mutations     []NodeInstallMutation `json:"mutations"`
+	Rollback      NodeInstallRollback   `json:"rollback"`
+	IssuedAt      string                `json:"issuedAt"`
+	ExpiresAt     string                `json:"expiresAt"`
+	SigningKeyID  string                `json:"signingKeyId"`
+	Digest        string                `json:"digest"`
+	Signature     string                `json:"signature"`
+}
+
+type NodeInstallCluster struct {
+	ID                    string `json:"id"`
+	WorkerOnly            bool   `json:"workerOnly"`
+	BootstrapTaint        string `json:"bootstrapTaint"`
+	ExpectedCAFingerprint string `json:"expectedCaFingerprint"`
+}
+
+type NodeInstallTarget struct {
+	Platform           NodePlatform     `json:"platform"`
+	Architecture       NodeArchitecture `json:"architecture"`
+	MachineFingerprint string           `json:"machineFingerprint"`
+	MinCPU             int64            `json:"minCpu"`
+	MinMemoryBytes     int64            `json:"minMemoryBytes"`
+	MinDiskBytes       int64            `json:"minDiskBytes"`
+}
+
+type NodeInstallComponent struct {
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Source    string `json:"source"`
+	SHA256    string `json:"sha256"`
+	Ownership string `json:"ownership"`
+}
+
+type NodeInstallMutation struct {
+	Ordinal       int64  `json:"ordinal"`
+	Kind          string `json:"kind"`
+	Target        string `json:"target"`
+	DesiredDigest string `json:"desiredDigest"`
+	Rollback      string `json:"rollback"`
+}
+
+type NodeInstallRollback struct {
+	PreserveUserData     bool   `json:"preserveUserData"`
+	PreserveControlPlane bool   `json:"preserveControlPlane"`
+	AmbiguousOwnership   string `json:"ambiguousOwnership"`
+}
+
+type NodeInstallReceipt struct {
+	SchemaVersion string                   `json:"schemaVersion"`
+	ReceiptID     string                   `json:"receiptId"`
+	PlanID        string                   `json:"planId"`
+	PlanDigest    string                   `json:"planDigest"`
+	NodeID        string                   `json:"nodeId"`
+	Generation    int64                    `json:"generation"`
+	State         string                   `json:"state"`
+	Owner         NodeReceiptOwner         `json:"owner"`
+	Binary        NodeReceiptBinary        `json:"binary"`
+	Service       NodeReceiptService       `json:"service"`
+	Mutations     []NodeReceiptMutation    `json:"mutations"`
+	Residues      []NodeReceiptResidue     `json:"residues,omitempty"`
+	CreatedAt     string                   `json:"createdAt"`
+	UpdatedAt     string                   `json:"updatedAt"`
+	Checksum      string                   `json:"checksum"`
+}
+
+type NodeReceiptOwner struct {
+	UID                  int64  `json:"uid"`
+	PID                  int64  `json:"pid"`
+	ProcessStartIdentity string `json:"processStartIdentity"`
+	Nonce                string `json:"nonce"`
+}
+
+type NodeReceiptBinary struct {
+	Path   string `json:"path"`
+	Digest string `json:"digest"`
+}
+
+type NodeReceiptService struct {
+	Manager          string `json:"manager"`
+	Name             string `json:"name"`
+	DefinitionDigest string `json:"definitionDigest"`
+}
+
+type NodeReceiptMutation struct {
+	Ordinal       int64  `json:"ordinal"`
+	Kind          string `json:"kind"`
+	Target        string `json:"target"`
+	PriorState    string `json:"priorState"`
+	PriorDigest   string `json:"priorDigest,omitempty"`
+	DesiredDigest string `json:"desiredDigest"`
+	Status        string `json:"status"`
+}
+
+type NodeReceiptResidue struct {
+	Target string `json:"target"`
+	Reason string `json:"reason"`
+}
+
+type NodeEventStream struct {
+	Body        io.ReadCloser
+	ContentType string
+}
+
+var (
+	nodeUUIDPattern      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	nodeHashPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	nodeDigestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	nodeBase64URLPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
+
+func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
+	if plan.SchemaVersion != NodeSchemaVersion {
+		return fmt.Errorf("schemaVersion must be %q", NodeSchemaVersion)
+	}
+	for name, value := range map[string]string{"planId": plan.PlanID, "nodeId": plan.NodeID, "enrollmentId": plan.EnrollmentID, "workspaceId": plan.WorkspaceID} {
+		if !nodeUUIDPattern.MatchString(value) {
+			return fmt.Errorf("%s must be a UUID", name)
+		}
+	}
+	if plan.Mode != NodeModeFresh && plan.Mode != NodeModeAdopt {
+		return fmt.Errorf("mode is invalid")
+	}
+	if len(plan.Cluster.ID) < 1 || len(plan.Cluster.ID) > 128 || !plan.Cluster.WorkerOnly || plan.Cluster.BootstrapTaint != "blazn.dev/bootstrap=pending:NoSchedule" || !nodeDigestPattern.MatchString(plan.Cluster.ExpectedCAFingerprint) {
+		return fmt.Errorf("cluster is invalid")
+	}
+	if !validPlatform(plan.Target.Platform) || !validArchitecture(plan.Target.Architecture) || !nodeHashPattern.MatchString(plan.Target.MachineFingerprint) || plan.Target.MinCPU < 1 || plan.Target.MinMemoryBytes < 1073741824 || plan.Target.MinDiskBytes < 10737418240 {
+		return fmt.Errorf("target is invalid")
+	}
+	if len(plan.Components) > 64 || len(plan.Mutations) > 256 {
+		return fmt.Errorf("plan collection limit exceeded")
+	}
+	for index, component := range plan.Components {
+		parsed, err := url.Parse(component.Source)
+		if len(component.Name) < 1 || len(component.Name) > 128 || len(component.Version) < 1 || len(component.Version) > 128 || err != nil || parsed.Scheme != "https" || parsed.Host == "" || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
+			return fmt.Errorf("components[%d] is invalid", index)
+		}
+	}
+	if err := validatePlanMutations(plan.Mutations); err != nil {
+		return err
+	}
+	if !plan.Rollback.PreserveUserData || !plan.Rollback.PreserveControlPlane || plan.Rollback.AmbiguousOwnership != "recovery_required" {
+		return fmt.Errorf("rollback safety policy is invalid")
+	}
+	if err := validateTimeWindow(plan.IssuedAt, plan.ExpiresAt); err != nil {
+		return fmt.Errorf("plan time window: %w", err)
+	}
+	if len(plan.SigningKeyID) < 1 || len(plan.SigningKeyID) > 128 || !nodeDigestPattern.MatchString(plan.Digest) || len(plan.Signature) != 86 || !nodeBase64URLPattern.MatchString(plan.Signature) {
+		return fmt.Errorf("plan signature metadata is invalid")
+	}
+	return nil
+}
+
+func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
+	if receipt.SchemaVersion != NodeSchemaVersion || !nodeUUIDPattern.MatchString(receipt.ReceiptID) || !nodeUUIDPattern.MatchString(receipt.PlanID) || !nodeUUIDPattern.MatchString(receipt.NodeID) || !nodeDigestPattern.MatchString(receipt.PlanDigest) || receipt.Generation < 1 {
+		return fmt.Errorf("receipt identity is invalid")
+	}
+	if !oneOf(receipt.State, "preparing", "installing", "joining", "verifying", "active", "rolling_back", "recovery_required", "removed") {
+		return fmt.Errorf("receipt state is invalid")
+	}
+	if receipt.Owner.UID < 0 || receipt.Owner.PID < 1 || receipt.Owner.ProcessStartIdentity == "" || len(receipt.Owner.Nonce) < 32 || len(receipt.Owner.Nonce) > 128 || !nodeBase64URLPattern.MatchString(receipt.Owner.Nonce) {
+		return fmt.Errorf("receipt owner is invalid")
+	}
+	if !strings.HasPrefix(receipt.Binary.Path, "/") || !nodeDigestPattern.MatchString(receipt.Binary.Digest) || !oneOf(receipt.Service.Manager, "systemd", "launchd") || len(receipt.Service.Name) < 1 || len(receipt.Service.Name) > 256 || !nodeDigestPattern.MatchString(receipt.Service.DefinitionDigest) {
+		return fmt.Errorf("receipt binary or service is invalid")
+	}
+	if len(receipt.Mutations) > 256 {
+		return fmt.Errorf("receipt mutation limit exceeded")
+	}
+	seen := make(map[int64]struct{}, len(receipt.Mutations))
+	for index, mutation := range receipt.Mutations {
+		if mutation.Ordinal < 1 || !oneOf(mutation.Kind, nodeMutationKinds()...) || len(mutation.Target) < 1 || len(mutation.Target) > 1024 || !oneOf(mutation.PriorState, "absent", "owned", "preexisting_exact") || (mutation.PriorDigest != "" && !nodeDigestPattern.MatchString(mutation.PriorDigest)) || !nodeDigestPattern.MatchString(mutation.DesiredDigest) || !oneOf(mutation.Status, "pending", "applied", "restored", "removed", "residue") {
+			return fmt.Errorf("mutations[%d] is invalid", index)
+		}
+		if _, exists := seen[mutation.Ordinal]; exists {
+			return fmt.Errorf("mutations[%d] repeats ordinal %d", index, mutation.Ordinal)
+		}
+		seen[mutation.Ordinal] = struct{}{}
+	}
+	for index, residue := range receipt.Residues {
+		if residue.Target == "" || len(residue.Reason) < 1 || len(residue.Reason) > 512 {
+			return fmt.Errorf("residues[%d] is invalid", index)
+		}
+	}
+	created, err := time.Parse(time.RFC3339, receipt.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("createdAt is invalid")
+	}
+	updated, err := time.Parse(time.RFC3339, receipt.UpdatedAt)
+	if err != nil || updated.Before(created) {
+		return fmt.Errorf("updatedAt is invalid")
+	}
+	if !nodeDigestPattern.MatchString(receipt.Checksum) {
+		return fmt.Errorf("checksum is invalid")
+	}
+	return nil
+}
+
+func validatePlanMutations(mutations []NodeInstallMutation) error {
+	seen := make(map[int64]struct{}, len(mutations))
+	for index, mutation := range mutations {
+		if mutation.Ordinal < 1 || !oneOf(mutation.Kind, nodeMutationKinds()...) || len(mutation.Target) < 1 || len(mutation.Target) > 1024 || !nodeDigestPattern.MatchString(mutation.DesiredDigest) || !oneOf(mutation.Rollback, "restore_prior", "remove_if_owned", "leave_and_report") {
+			return fmt.Errorf("mutations[%d] is invalid", index)
+		}
+		if _, exists := seen[mutation.Ordinal]; exists {
+			return fmt.Errorf("mutations[%d] repeats ordinal %d", index, mutation.Ordinal)
+		}
+		seen[mutation.Ordinal] = struct{}{}
+	}
+	return nil
+}
+
+func nodeMutationKinds() []string {
+	return []string{"package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"}
+}
+
+func validPlatform(value NodePlatform) bool {
+	return value == NodePlatformLinux || value == NodePlatformMacOS
+}
+
+func validArchitecture(value NodeArchitecture) bool {
+	return value == NodeArchAMD64 || value == NodeArchARM64
+}
+
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func validateTimeWindow(startValue, endValue string) error {
+	start, err := time.Parse(time.RFC3339, startValue)
+	if err != nil {
+		return fmt.Errorf("issuedAt is invalid")
+	}
+	end, err := time.Parse(time.RFC3339, endValue)
+	if err != nil || !end.After(start) {
+		return fmt.Errorf("expiresAt must be after issuedAt")
+	}
+	return nil
+}
+
+func (c *Client) CreateNodeEnrollment(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request CreateNodeEnrollmentRequest) (NodeEnrollmentSecret, error) {
+	var output NodeEnrollmentSecret
+	if len(request.Name) < 1 || len(request.Name) > 128 || (request.Mode != NodeModeFresh && request.Mode != NodeModeAdopt) || !validPlatform(request.Platform) || (request.Architecture != "" && !validArchitecture(request.Architecture)) {
+		return output, fmt.Errorf("node enrollment request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/node-enrollments", accessToken, "", idempotencyKey, request, &output, http.StatusCreated)
+	return output, err
+}
+
+func (c *Client) ExchangeNodeEnrollment(ctx context.Context, enrollmentID string, request ExchangeNodeEnrollmentRequest) (NodeInstallPlan, error) {
+	var output NodeInstallPlan
+	if len(request.Token) < 43 || len(request.Token) > 128 || !nodeHashPattern.MatchString(request.MachineFingerprint) || len(request.NodePublicKey) != 43 || !nodeBase64URLPattern.MatchString(request.NodePublicKey) || !validPlatform(request.Platform) || !validArchitecture(request.Architecture) {
+		return output, fmt.Errorf("node enrollment exchange request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-enrollments/"+url.PathEscape(enrollmentID)+"/exchange", "", "", "", request, &output, http.StatusOK)
+	if err == nil {
+		err = ValidateNodeInstallPlan(output)
+	}
+	return output, err
+}
+
+func (c *Client) ListNodes(ctx context.Context, accessToken, workspaceID string) (NodeList, error) {
+	var output NodeList
+	err := c.nodeDo(ctx, http.MethodGet, "/v1/workspaces/"+url.PathEscape(workspaceID)+"/nodes", accessToken, "", "", nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) GetNode(ctx context.Context, accessToken, nodeID string) (Node, error) {
+	var output Node
+	err := c.nodeDo(ctx, http.MethodGet, "/v1/nodes/"+url.PathEscape(nodeID), accessToken, "", "", nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) CreateNodeOperation(ctx context.Context, accessToken, nodeID, idempotencyKey string, request CreateNodeOperationRequest) (NodeOperation, error) {
+	var output NodeOperation
+	if request.ExpectedVersion < 1 || len(request.Parameters) > 32 {
+		return output, fmt.Errorf("node operation request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/nodes/"+url.PathEscape(nodeID)+"/operations", accessToken, "", idempotencyKey, request, &output, http.StatusAccepted)
+	return output, err
+}
+
+func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, heartbeat NodeHeartbeat) error {
+	if nodeProof == "" || heartbeat.IdentityGeneration < 1 || heartbeat.Sequence < 0 || !nodeDigestPattern.MatchString(heartbeat.CapabilityDigest) {
+		return fmt.Errorf("node heartbeat is invalid")
+	}
+	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
+}
+
+func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof string, request JoinCredentialRequest) (JoinCredential, error) {
+	var output JoinCredential
+	if nodeProof == "" || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeHashPattern.MatchString(request.NodePublicKeyFingerprint) {
+		return output, fmt.Errorf("join credential request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/join-credentials", "", nodeProof, "", request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) StreamNodeEvents(ctx context.Context, accessToken, nodeID, lastEventID string) (*NodeEventStream, error) {
+	if accessToken == "" {
+		return nil, fmt.Errorf("access token is required")
+	}
+	if len(lastEventID) > 128 {
+		return nil, fmt.Errorf("Last-Event-ID exceeds 128 characters")
+	}
+	endpoint := c.nodeEndpoint("/v1/nodes/" + url.PathEscape(nodeID) + "/events")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create node event request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	response, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call node event API: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		defer response.Body.Close()
+		return nil, decodeNodeAPIError(response)
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		response.Body.Close()
+		return nil, fmt.Errorf("node event API returned unsupported content type")
+	}
+	return &NodeEventStream{Body: response.Body, ContentType: mediaType}, nil
+}
+
+func (c *Client) nodeEndpoint(path string) string {
+	endpoint := *c.baseURL
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
+	return endpoint.String()
+}
+
+func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProof, idempotencyKey string, input, output any, success int) error {
+	if accessToken != "" && nodeProof != "" {
+		return fmt.Errorf("request cannot use both bearer and node proof authentication")
+	}
+	if idempotencyKey != "" && (len(idempotencyKey) < 8 || len(idempotencyKey) > 128) {
+		return fmt.Errorf("idempotency key must contain between 8 and 128 characters")
+	}
+	var body io.Reader
+	if input != nil {
+		encoded, err := json.Marshal(input)
+		if err != nil {
+			return fmt.Errorf("encode node request: %w", err)
+		}
+		body = bytes.NewReader(encoded)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.nodeEndpoint(path), body)
+	if err != nil {
+		return fmt.Errorf("create node request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	if nodeProof != "" {
+		req.Header.Set("X-Blazn-Node-Proof", nodeProof)
+	}
+	if idempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", idempotencyKey)
+	}
+	response, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("call node API: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != success {
+		return decodeNodeAPIError(response)
+	}
+	if output == nil || success == http.StatusNoContent {
+		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
+		return err
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output); err != nil {
+		return fmt.Errorf("decode node response: %w", err)
+	}
+	return nil
+}
+
+func decodeNodeAPIError(response *http.Response) error {
+	var apiError ErrorBody
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&apiError); err != nil && err != io.EOF {
+		apiError.Message = http.StatusText(response.StatusCode)
+	}
+	return &APIError{StatusCode: response.StatusCode, Body: apiError}
+}
