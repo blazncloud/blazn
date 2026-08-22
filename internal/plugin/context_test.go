@@ -22,14 +22,21 @@ func validRuntimeContext(t *testing.T) RuntimeContext {
 
 func TestRuntimeContextRoundTripAndSpoofReplacement(t *testing.T) {
 	context := validRuntimeContext(t)
-	environment, err := runtimeEnvironment([]string{"PATH=/bin", strings.ToLower(RuntimeContextEnvironment) + `={"spoofed":true}`}, context)
+	environment, err := runtimeEnvironment([]string{
+		"PATH=/bin",
+		"LC_MESSAGES=C",
+		"OPENAI_API_KEY=must-not-pass",
+		"AWS_SESSION_TOKEN=must-not-pass",
+		"GH_TOKEN=must-not-pass",
+		strings.ToLower(RuntimeContextEnvironment) + `={"spoofed":true}`,
+	}, context)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(environment) != 2 || environment[0] != "PATH=/bin" || !strings.HasPrefix(environment[1], RuntimeContextEnvironment+"=") {
+	if len(environment) != 3 || environment[0] != "PATH=/bin" || environment[1] != "LC_MESSAGES=C" || !strings.HasPrefix(environment[2], RuntimeContextEnvironment+"=") {
 		t.Fatalf("environment = %#v", environment)
 	}
-	actual, err := DecodeRuntimeContext(strings.TrimPrefix(environment[1], RuntimeContextEnvironment+"="))
+	actual, err := DecodeRuntimeContext(strings.TrimPrefix(environment[2], RuntimeContextEnvironment+"="))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,5 +90,13 @@ func TestRuntimeContextRejectsUnsafeOrIncoherentValues(t *testing.T) {
 		if err := value.Validate(); err == nil {
 			t.Fatalf("case %d passed: %#v", index, value)
 		}
+	}
+}
+
+func TestRuntimeContextRejectsOversizedResourceIdentity(t *testing.T) {
+	context := validRuntimeContext(t)
+	context.WorkspaceID = strings.Repeat("w", 256)
+	if err := context.Validate(); err == nil {
+		t.Fatal("oversized Workspace identity passed")
 	}
 }

@@ -14,8 +14,8 @@ func TestExecProcessRunnerPassesOnlyValidatedRuntimeContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("BLAZN_PLUGIN_CONTEXT_HELPER", "1")
 	t.Setenv(RuntimeContextEnvironment, `{"spoofed":true}`)
+	t.Setenv("OPENAI_API_KEY", "must-not-pass")
 	runtimeContext := validRuntimeContext(t)
 	var stdout bytes.Buffer
 	code, err := (execProcessRunner{}).Run(context.Background(), executable, []string{"-test.run=TestRuntimeContextProcessHelper"}, runtimeContext, Stdio{Stdout: &stdout, Stderr: &stdout})
@@ -25,10 +25,15 @@ func TestExecProcessRunnerPassesOnlyValidatedRuntimeContext(t *testing.T) {
 }
 
 func TestRuntimeContextProcessHelper(t *testing.T) {
-	if os.Getenv("BLAZN_PLUGIN_CONTEXT_HELPER") != "1" {
+	encoded := os.Getenv(RuntimeContextEnvironment)
+	if encoded == "" || encoded == `{"spoofed":true}` {
 		return
 	}
-	runtimeContext, err := DecodeRuntimeContext(os.Getenv(RuntimeContextEnvironment))
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		_, _ = fmt.Fprintln(os.Stderr, "secret environment was inherited")
+		os.Exit(3)
+	}
+	runtimeContext, err := DecodeRuntimeContext(encoded)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)

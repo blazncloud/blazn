@@ -60,6 +60,11 @@ The context status is explicit:
 
 The envelope never includes access tokens, refresh tokens, integration
 credentials, provider keys, local model addresses, or credential-store paths.
+Root dispatch also replaces the process environment with a small portability
+allowlist covering executable lookup, home and temporary directories, locale,
+terminal behavior, operating-system process requirements, and TLS certificate
+locations. Ambient provider, GitHub, cloud, SSH-agent, proxy, and arbitrary
+application variables are not inherited by plugins.
 Plugins reject unknown fields, incoherent states, unsafe origins, unsupported
 versions, and contexts larger than 16 KiB. The runtime envelope is metadata,
 not authorization; future Management API and model operations use a separately

@@ -77,12 +77,20 @@ func (c RuntimeContext) Validate() error {
 		return errors.New("plugin runtime context status is invalid")
 	}
 	if c.APIOrigin != "" {
+		if len(c.APIOrigin) > 2048 {
+			return errors.New("plugin runtime context API origin is too long")
+		}
 		parsed, err := url.Parse(c.APIOrigin)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 			return errors.New("plugin runtime context API origin is invalid")
 		}
 		if parsed.Scheme != "https" && !(parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1")) {
 			return errors.New("plugin runtime context API origin is unsafe")
+		}
+	}
+	for _, identifier := range []string{c.UserID, c.WorkspaceID, c.ProjectID} {
+		if len(identifier) > 255 {
+			return errors.New("plugin runtime context resource identity is too long")
 		}
 	}
 	encoded, err := json.Marshal(c)
@@ -131,9 +139,21 @@ func runtimeEnvironment(base []string, context RuntimeContext) ([]string, error)
 	result := make([]string, 0, len(base)+1)
 	for _, value := range base {
 		name, _, _ := strings.Cut(value, "=")
-		if !strings.EqualFold(name, RuntimeContextEnvironment) {
+		if allowedPluginEnvironment(name) {
 			result = append(result, value)
 		}
 	}
 	return append(result, prefix+encoded), nil
+}
+
+func allowedPluginEnvironment(name string) bool {
+	upper := strings.ToUpper(name)
+	switch upper {
+	case "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "TZ",
+		"LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "NO_COLOR",
+		"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SSL_CERT_FILE", "SSL_CERT_DIR":
+		return true
+	default:
+		return strings.HasPrefix(upper, "LC_")
+	}
 }
