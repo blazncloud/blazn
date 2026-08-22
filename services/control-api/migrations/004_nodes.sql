@@ -141,8 +141,8 @@ CREATE TABLE node_operation_events (
 
 CREATE TABLE node_join_issuances (
   id uuid PRIMARY KEY,
-  enrollment_id uuid NOT NULL REFERENCES node_enrollments(id),
-  plan_id uuid NOT NULL REFERENCES node_install_plans(id),
+  enrollment_id uuid NOT NULL UNIQUE REFERENCES node_enrollments(id),
+  plan_id uuid NOT NULL UNIQUE REFERENCES node_install_plans(id),
   node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
   node_public_key_fingerprint char(64) NOT NULL CHECK (node_public_key_fingerprint ~ '^[0-9a-f]{64}$'),
   machine_fingerprint char(64) NOT NULL CHECK (machine_fingerprint ~ '^[0-9a-f]{64}$'),
@@ -153,7 +153,8 @@ CREATE TABLE node_join_issuances (
   revoked_at timestamptz,
   joined_node_uid text,
   CHECK (expires_at > issued_at),
-  CHECK (NOT (consumed_at IS NOT NULL AND revoked_at IS NOT NULL))
+  CHECK (NOT (consumed_at IS NOT NULL AND revoked_at IS NOT NULL)),
+  CHECK ((consumed_at IS NOT NULL) = (joined_node_uid IS NOT NULL))
 );
 
 CREATE TABLE node_audit_events (

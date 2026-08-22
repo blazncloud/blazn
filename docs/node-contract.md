@@ -58,6 +58,14 @@ invalid input, `3` auth/identity, `4` policy/permission, `5` not found, `6`
 version/state/idempotency conflict, `7` compatibility/unavailable, `8`
 deadline/queue timeout, and `9` partial operation or recovery required.
 
+Operation bodies are discriminated by type. Cordon/uncordon/drain/remove carry
+the exact cluster ID, expected Kubernetes Node UID, and resourceVersion. Drain
+also carries the workspace owner selector and a 60–3600 second deadline; the
+server derives the exact eligible Pod set and accepts no arbitrary selector.
+Remove requires `confirm:true` and `preserveHostData:true`. Label keys are
+restricted to the `blazn.dev/` namespace. Pause/resume/rotate/repair accept an
+empty parameter object, and update accepts only a semantic target version.
+
 ## API and persistence
 
 [`nodes.openapi.json`](../packages/contracts/nodes.openapi.json) is the HTTP
@@ -73,6 +81,10 @@ every replay verifies workspace, target, request digest, and current authority.
 Node lifecycle state and Kubernetes mutations serialize by locking the Node row
 and rechecking expected version, bound cluster ID, Node UID, resourceVersion,
 and operation state inside the transaction.
+API digests use the rendered `sha256:<64-lowercase-hex>` form; PostgreSQL
+`char(64)` digest columns store only the lowercase payload. The persistence
+adapter must validate the prefix and length before stripping it and must restore
+the prefix on output. No unvalidated string conversion is permitted.
 
 ## Enrollment and identity
 
