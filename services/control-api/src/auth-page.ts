@@ -24,6 +24,11 @@ function providerLabel(connection: string): string {
   return labels[connection] ?? connection;
 }
 
+function providerMark(connection: string): string {
+  const marks: Record<string, string> = { "google-oauth2": "G", github: "GH", apple: "A" };
+  return marks[connection] ?? connection.slice(0, 2).toUpperCase();
+}
+
 function oidcLink(code: string, mode: AuthMode, connection?: string): string {
   const query = new URLSearchParams({ user_code: code, mode });
   if (connection) query.set("connection", connection);
@@ -32,7 +37,7 @@ function oidcLink(code: string, mode: AuthMode, connection?: string): string {
 
 function socialButtons(input: ActivationPageInput): string {
   if (!input.oidcEnabled) return `<div class="notice"><strong>Account creation is not enabled yet.</strong><span>An isolated Blazn identity service must be configured by an administrator.</span></div>`;
-  const buttons = input.socialConnections.map((connection) => `<a class="social" href="${escapeHtml(oidcLink(input.code, input.mode, connection))}"><span class="provider-mark">${escapeHtml(providerLabel(connection).slice(0, 1))}</span>Continue with ${escapeHtml(providerLabel(connection))}</a>`).join("");
+  const buttons = input.socialConnections.map((connection) => `<a class="social" href="${escapeHtml(oidcLink(input.code, input.mode, connection))}"><span class="provider-mark">${escapeHtml(providerMark(connection))}</span>Continue with ${escapeHtml(providerLabel(connection))}</a>`).join("");
   const emailLabel = input.mode === "signup" ? "Create account with email" : "Continue with email";
   return `${buttons}<a class="social" href="${escapeHtml(oidcLink(input.code, input.mode))}"><span class="provider-mark">@</span>${emailLabel}</a>`;
 }
