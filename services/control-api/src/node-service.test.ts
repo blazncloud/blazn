@@ -8,7 +8,8 @@ import { NodeHttpError } from "./node-types.js";
 
 const workspaceId="11111111-1111-4111-8111-111111111111",userId="22222222-2222-4222-8222-222222222222",nodeId="33333333-3333-4333-8333-333333333333";
 const principal={userId,email:"operator@example.test",displayName:"Operator"};
-const planFactory={create:async()=>({digest:`sha256:${"a".repeat(64)}`,signature:"b".repeat(86),signingKeyId:"test/v1"})};
+const planSigningKey={keyId:"test/v1",publicKey:"A".repeat(43),fingerprint:`sha256:${"a".repeat(64)}`};
+const planFactory={signingKey:async()=>planSigningKey,create:async()=>({digest:`sha256:${"a".repeat(64)}`,signature:"b".repeat(86),signingKeyId:"test/v1"})};
 
 test("enrollment is authorized before replay and reconstructs no stored secret",async()=>{
   const key=Buffer.alloc(32,7);let authorized=true;const receipts=new Map<string,NodeIdempotencyReceipt>();let insertedTokenHash="";let enrollmentId="";
@@ -22,6 +23,7 @@ test("enrollment is authorized before replay and reconstructs no stored secret",
   const first=await service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"});
   const replay=await service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"});
   assert.equal(replay.token,first.token);assert.equal(replay.replayed,true);assert.equal(first.token,enrollmentToken(key,workspaceId,enrollmentId,userId,"same-key-1"));assert.equal(insertedTokenHash.length,64);
+  assert.deepEqual(first.planSigningKey,planSigningKey);assert.deepEqual(replay.planSigningKey,planSigningKey);
   assert.equal(JSON.stringify([...receipts.values()]).includes(first.token),false);
   authorized=false;
   await assert.rejects(()=>service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="membership_required");

@@ -43,12 +43,19 @@ export function verifyNodeProof(publicKey: string, prefix: string, body: unknown
 
 export interface NodePlanSigner {
   readonly keyId: string;
+  publicKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;
   sign(unsignedPlan: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class FileNodePlanSigner implements NodePlanSigner {
   constructor(readonly keyId: string, private readonly privateKeyFile: string) {
     if (!keyId || keyId.length > 128) throw new Error("node plan signing key ID is invalid");
+  }
+  async publicKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }> {
+    const privateKey = await readEd25519PrivateKey(this.privateKeyFile);
+    const jwk = createPublicKey(privateKey).export({ format: "jwk" });
+    if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string") throw new Error("node plan signing public key is invalid");
+    return { keyId: this.keyId, publicKey: jwk.x, fingerprint: `sha256:${publicKeyFingerprint(jwk.x)}` };
   }
   async sign(unsignedPlan: Record<string, unknown>): Promise<Record<string, unknown>> {
     const normalized: Record<string, unknown> = { ...unsignedPlan, signingKeyId: this.keyId };

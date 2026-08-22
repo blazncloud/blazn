@@ -15,15 +15,15 @@ export class NodeService {
     validIdempotency(idempotencyKey); validName(input.name); validPlatform(input.platform); if (input.architecture) validArchitecture(input.architecture);
     if (input.mode !== "fresh" && input.mode !== "adopt") invalid("mode is invalid");
     if (input.mode === "fresh" && (input.platform !== "linux" || (input.architecture && input.architecture !== "amd64"))) invalid("fresh POC enrollment requires linux/amd64");
-    const digest = requestDigest(input); const key = await this.enrollmentKey();
+    const digest = requestDigest(input); const [key, planSigningKey] = await Promise.all([this.enrollmentKey(), this.planFactory.signingKey()]);
     return this.store.transaction(async (tx) => {
       await tx.lockIdempotency(principal.userId,"node.enrollment.create",idempotencyKey);
       await authorize(tx,principal,workspaceId,true,true);
       const receipt=await tx.getIdempotency(principal.userId,"node.enrollment.create",idempotencyKey);
-      if(receipt){ verifyReceipt(receipt,workspaceId,`workspace:${workspaceId}`,digest); const stored=receipt.responseBody as {id:string;tokenKeyId:"node-enrollment/v1";expiresAt:string}; return {...stored,token:enrollmentToken(key,workspaceId,stored.id,principal.userId,idempotencyKey),replayed:true}; }
+      if(receipt){ verifyReceipt(receipt,workspaceId,`workspace:${workspaceId}`,digest); const stored=receipt.responseBody as {id:string;tokenKeyId:"node-enrollment/v1";planSigningKey:{keyId:string;publicKey:string;fingerprint:string};expiresAt:string}; return {...stored,token:enrollmentToken(key,workspaceId,stored.id,principal.userId,idempotencyKey),replayed:true}; }
       const id=randomUUID(); const expiresAt=new Date(this.now().getTime()+15*60_000); const token=enrollmentToken(key,workspaceId,id,principal.userId,idempotencyKey);
       await tx.insertEnrollment({id,workspaceId,name:input.name.trim(),mode:input.mode,platform:input.platform,architecture:input.architecture??null,tokenHash:sha256Hex(token),idempotencyKey,createdBy:principal.userId,expiresAt});
-      const stored={id,tokenKeyId:"node-enrollment/v1" as const,expiresAt:expiresAt.toISOString()};
+      const stored={id,tokenKeyId:"node-enrollment/v1" as const,planSigningKey,expiresAt:expiresAt.toISOString()};
       await tx.putIdempotency(principal.userId,"node.enrollment.create",idempotencyKey,{workspaceId,targetKey:`workspace:${workspaceId}`,requestDigest:digest,responseStatus:201,responseBody:stored});
       return {...stored,token,replayed:false};
     });

@@ -8,10 +8,15 @@ export interface NodePlanContext {
   machineFingerprint: string; nodePublicKeyFingerprint: string; issuedAt: Date; expiresAt: Date;
 }
 
-export interface NodePlanFactory { create(context: NodePlanContext): Promise<Record<string, unknown>> }
+export interface NodePlanFactory {
+  signingKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;
+  create(context: NodePlanContext): Promise<Record<string, unknown>>;
+}
 
 export class TemplateNodePlanFactory implements NodePlanFactory {
   constructor(private readonly templateFile: string, private readonly signer: NodePlanSigner) {}
+
+  signingKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }> { return this.signer.publicKey(); }
 
   async create(context: NodePlanContext): Promise<Record<string, unknown>> {
     const parsed: unknown = JSON.parse(await readFile(this.templateFile, "utf8"));
