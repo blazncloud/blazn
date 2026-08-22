@@ -36,6 +36,14 @@ grep -F 'sandboxclaims.extensions.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/d
 grep -F 'sandboxwarmpools.extensions.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/dev/null
 grep -F 'sandboxtemplates.extensions.agents.x-k8s.io' "$tmp/agent-sandbox.yaml" >/dev/null
 
+# This intentionally locates the literal shell variable in the lifecycle test.
+# shellcheck disable=SC2016
+delete_line=$(grep -n 'delete cluster --name "$cluster";' "$ROOT/test-disposable.sh" | tail -1 | cut -d: -f1)
+residue_line=$(grep -n 'network ls --format' "$ROOT/test-disposable.sh" | cut -d: -f1)
+disarm_line=$(grep -n '^creation_attempted=0$' "$ROOT/test-disposable.sh" | tail -1 | cut -d: -f1)
+[ "$delete_line" -lt "$residue_line" ]
+[ "$residue_line" -lt "$disarm_line" ]
+
 trap - EXIT HUP INT TERM
 cleanup
 printf 'Agent Sandbox and Kueue pinned-manifest audit passed\n'

@@ -112,10 +112,10 @@ $docker_cmd exec -i "$node" kubectl delete -f - --ignore-not-found --wait=true -
 [ "$(kctl get namespace kueue-system --ignore-not-found -o name | wc -l)" -eq 0 ]
 
 if [ "$docker_cmd" = docker ]; then "$tmp/kind" delete cluster --name "$cluster"; else sudo "$tmp/kind" delete cluster --name "$cluster"; fi
-creation_attempted=0
 [ "$($docker_cmd ps -a --filter "name=$cluster" -q | wc -l)" -eq 0 ]
 [ "$($docker_cmd network ls --format '{{.Name}}' | grep -c "$cluster" || true)" -eq 0 ]
 [ "$($docker_cmd volume ls --format '{{.Name}}' | grep -c "$cluster" || true)" -eq 0 ]
+creation_attempted=0
 trap - EXIT HUP INT TERM
 cleanup
 printf 'Disposable Agent Sandbox/Kueue lifecycle and residue test passed\n'
