@@ -55,7 +55,7 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	replayRequest := client.ExchangeNodeEnrollmentRequest{Token: bootstrap.Token, MachineFingerprint: bootstrap.MachineFingerprint, NodePublicKey: bootstrap.NodePublicKey, Platform: bootstrap.Platform, Architecture: bootstrap.Architecture, KubernetesBinding: bootstrap.KubernetesBinding}
 	httpClient := e.AuthorityHTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Transport: &http.Transport{Proxy: nil, DisableCompression: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		httpClient = newRootAuthorityHTTPClient()
 	}
 	clientCopy := *httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -67,7 +67,7 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	replayContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	replayed, err := api.ExchangeNodeEnrollment(replayContext, bootstrap.EnrollmentID, replayRequest)
-	bootstrap.Token = ""
+	replayRequest.Token = ""
 	if err != nil {
 		return errors.New("root enrollment exchange replay failed")
 	}
@@ -104,6 +104,10 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 		}
 	}
 	return nil
+}
+
+func newRootAuthorityHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{Proxy: nil, DisableCompression: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 func (e NativeRootEngine) AuthorizeRootRequest(_ context.Context, request RootRequest) error {

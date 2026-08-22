@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -416,7 +418,7 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 	}))
 	defer server.Close()
 
-	root := t.TempDir()
+	root := testRoot(t)
 	profileRoot := filepath.Join(root, "profiles")
 	if err := os.Mkdir(profileRoot, 0700); err != nil {
 		t.Fatal(err)
@@ -459,5 +461,20 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 	}
 	if requests != 2 {
 		t.Fatalf("exchange replay requests=%d", requests)
+	}
+}
+
+func TestRootAuthorityHTTPClientHasNoProxyAndRejectsRedirects(t *testing.T) {
+	httpClient := newRootAuthorityHTTPClient()
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || !transport.DisableCompression || transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		t.Fatalf("unsafe root authority transport: %#v", httpClient.Transport)
+	}
+	request, _ := http.NewRequest(http.MethodPost, "https://control.example.test/exchange", nil)
+	if err := httpClient.CheckRedirect(request, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("redirect policy error=%v", err)
+	}
+	if httpClient.Timeout != 30*time.Second {
+		t.Fatalf("root authority timeout=%v", httpClient.Timeout)
 	}
 }
