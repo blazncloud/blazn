@@ -3,6 +3,12 @@ def expected_tolerations:
     {"effect":"NoExecute","key":"node.kubernetes.io/not-ready","operator":"Exists","tolerationSeconds":300},
     {"effect":"NoExecute","key":"node.kubernetes.io/unreachable","operator":"Exists","tolerationSeconds":300}
   ];
+def bounded_runtime_image($expected_image; $expected_digest):
+  . == $expected_image or
+  test("^sha256:[0-9a-f]{64}$") or
+  (test("^[A-Za-z0-9][A-Za-z0-9._/:+-]*@sha256:[0-9a-f]{64}$") and endswith("@" + $expected_digest));
+def bound_expected_digest($expected_digest):
+  . == $expected_digest or endswith("@" + $expected_digest);
 
 ($expected_image | split("@")[1]) as $expected_digest
 | if (
@@ -47,10 +53,10 @@ def expected_tolerations:
     .status.phase == "Running" and
     (.status.containerStatuses | length) == 1 and
     .status.containerStatuses[0].name == "main" and
-    (.status.containerStatuses[0].image | test("^sha256:[0-9a-f]{64}$")) and
-    (.status.containerStatuses[0].imageID | endswith($expected_digest)) and
-    .status.containerStatuses[0].allocatedResources == {"cpu":"100m","memory":"64Mi"} and
-    .status.containerStatuses[0].resources == {"limits":{"cpu":"200m","memory":"128Mi"},"requests":{"cpu":"100m","memory":"64Mi"}} and
+    (.status.containerStatuses[0].image | bounded_runtime_image($expected_image; $expected_digest)) and
+    (.status.containerStatuses[0].imageID | bound_expected_digest($expected_digest)) and
+    ((.status.containerStatuses[0] | has("allocatedResources") | not) or .status.containerStatuses[0].allocatedResources == {"cpu":"100m","memory":"64Mi"}) and
+    ((.status.containerStatuses[0] | has("resources") | not) or .status.containerStatuses[0].resources == {"limits":{"cpu":"200m","memory":"128Mi"},"requests":{"cpu":"100m","memory":"64Mi"}}) and
     .status.containerStatuses[0].ready == true and
     .status.containerStatuses[0].restartCount == 0 and
     .status.containerStatuses[0].started == true

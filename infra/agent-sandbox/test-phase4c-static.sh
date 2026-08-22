@@ -102,12 +102,26 @@ attest_pod() {
     -f "$PHASE4C/attest-pod.jq" "$1" >/dev/null
 }
 attest_pod "$PHASE4C/pod-attestation-fixture.json"
-for mutation in extra-selector extra-request wrong-owner wrong-image-id; do
+for allowed_shape in expected-ref normalized-ref digest-image-id missing-status-resources; do
+  case "$allowed_shape" in
+    expected-ref) filter='.status.containerStatuses[0].image = "example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+    normalized-ref) filter='.status.containerStatuses[0].image = "registry.example.invalid/cache/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+    digest-image-id) filter='.status.containerStatuses[0].imageID = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+    missing-status-resources) filter='del(.status.containerStatuses[0].allocatedResources,.status.containerStatuses[0].resources)' ;;
+  esac
+  jq "$filter" "$PHASE4C/pod-attestation-fixture.json" >"$tmp/pod-$allowed_shape.json"
+  attest_pod "$tmp/pod-$allowed_shape.json"
+done
+for mutation in extra-selector extra-request wrong-owner wrong-status-ref wrong-normalized-digest wrong-image-id wrong-allocated-resources wrong-status-resources; do
   case "$mutation" in
     extra-selector) filter='.spec.nodeSelector.extra = "forbidden"' ;;
     extra-request) filter='.spec.containers[0].resources.requests["ephemeral-storage"] = "1Mi"' ;;
     wrong-owner) filter='.metadata.ownerReferences[0].uid = "77777777-7777-4777-8777-777777777777"' ;;
+    wrong-status-ref) filter='.status.containerStatuses[0].image = "example.invalid/synthetic:latest"' ;;
+    wrong-normalized-digest) filter='.status.containerStatuses[0].image = "registry.example.invalid/cache/synthetic@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' ;;
     wrong-image-id) filter='.status.containerStatuses[0].imageID = "example.invalid/synthetic@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' ;;
+    wrong-allocated-resources) filter='.status.containerStatuses[0].allocatedResources.cpu = "101m"' ;;
+    wrong-status-resources) filter='.status.containerStatuses[0].resources.limits.memory = "129Mi"' ;;
   esac
   jq "$filter" "$PHASE4C/pod-attestation-fixture.json" >"$tmp/pod-$mutation.json"
   if attest_pod "$tmp/pod-$mutation.json" 2>/dev/null; then printf 'Pod attestation accepted mutation: %s\n' "$mutation" >&2; exit 1; fi
