@@ -7,8 +7,9 @@ container inventory, the kind node, and the synthetic workload.
 
 Run the static audit with `./test-static.sh`. Run the full install/lifecycle/
 uninstall proof on an isolated Linux Docker host with `./test-disposable.sh`.
-The latter creates only a uniquely named `blazn-as-v056-<pid>` kind cluster and
-removes its containers, network, volumes, manifests, and temporary files.
+The latter creates only a collision-resistant `blazn-as-v056-<12-hex>` kind
+cluster after proving that name is absent. Cleanup authority is enabled only
+for that verified creation attempt, including partial-create failures.
 
 Passing Phase 4A proves orchestration compatibility, not hardened isolation.
 Real untrusted or cross-tenant work remains blocked until a gVisor or Kata
@@ -43,3 +44,8 @@ Kueue admission is Pod-level: Blazn must place
 `kueue.x-k8s.io/queue-name` in every managed Sandbox `podTemplate`. A Sandbox
 without that label must fail validation rather than fall back to an unmanaged
 Pod.
+
+Acceptance requires the generated Pod to be Running and the admitted Kueue
+Workload to reserve exactly the fixture's 100m CPU and 64Mi memory. Uninstall
+proves zero Kueue CRDs, ClusterRoles/Bindings, visibility APIServices, webhooks,
+fixture queues/flavors, controller namespace, and Docker resources.

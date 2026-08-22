@@ -15,12 +15,14 @@ MicroK8s installation was not used or changed.
 - A direct synthetic Sandbox reached `Ready=True` with reason
   `DependenciesReady`.
 - Its generated Pod carried the mandatory LocalQueue label and Kueue created an
-  admitted Workload reserving 100m CPU and 64Mi memory.
+  admitted Workload reserving exactly 100m CPU and 64Mi memory; the Pod phase
+  was explicitly Running.
 - Deleting the Sandbox removed its Pod and Kueue Workload despite Kueue's
   `resource-in-use` finalizer.
 - Uninstall left zero matching Agent Sandbox/Kueue CRDs, cluster RBAC, or
-  webhooks. Deleting kind left zero matching Docker containers, networks, or
-  volumes.
+  webhooks. Kueue checks also cover visibility APIServices and the fixture
+  ClusterQueue/ResourceFlavor. Deleting the uniquely owned kind cluster left
+  zero matching Docker containers, networks, or volumes.
 
 ## Live blockers
 
