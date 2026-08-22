@@ -264,7 +264,7 @@ func TestVerifySignedInstallAndOperationReceipts(t *testing.T) {
 	}
 	operation.Digest = digest
 	operation.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-operation-receipt-v1\n"+digest)))
-	trust := NodeOperationReceiptTrust{Keyring: NodeSigningKeyring{operation.SigningKeyID: publicKey}, ReceiptID: operation.ReceiptID, OperationID: operation.OperationID, NodeID: operation.NodeID, WorkspaceID: operation.WorkspaceID, OperationType: operation.OperationType, ExpectedNodeVersion: operation.ExpectedNodeVersion}
+	trust := NodeOperationReceiptTrust{Keyring: NodeSigningKeyring{operation.SigningKeyID: publicKey}, OperationID: operation.OperationID, NodeID: operation.NodeID, WorkspaceID: operation.WorkspaceID, OperationType: operation.OperationType, ExpectedNodeVersion: operation.ExpectedNodeVersion}
 	if err := VerifyNodeOperationReceipt(operation, trust); err != nil {
 		t.Fatal(err)
 	}
