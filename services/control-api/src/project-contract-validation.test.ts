@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import SwaggerParser from "@apidevtools/swagger-parser";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import type { FormatsPlugin } from "ajv-formats";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+const formatsModule = require("ajv-formats") as { default?: FormatsPlugin } | FormatsPlugin;
+const addFormats = ("default" in formatsModule ? formatsModule.default : formatsModule) as FormatsPlugin;
 const contract = path.resolve(here, "../../../packages/contracts/projects.openapi.json");
 const migration = path.resolve(here, "../migrations/010_projects.sql");
 
