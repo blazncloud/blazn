@@ -42,6 +42,19 @@ func (m *memoryContexts) Save(value Selection) error {
 	return nil
 }
 
+func TestCurrentSelectionBindsOriginAndAuthenticatedUser(t *testing.T) {
+	contexts := &memoryContexts{selection: Selection{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: "workspace-1"}}
+	selection, err := NewService(nil, &fakeSessions{}, contexts).CurrentSelection(context.Background())
+	if err != nil || selection.APIOrigin != "https://example.test" || selection.UserID != "user-1" || selection.WorkspaceID != "workspace-1" {
+		t.Fatalf("selection=%#v err=%v", selection, err)
+	}
+	contexts.selection = Selection{}
+	selection, err = NewService(nil, &fakeSessions{}, contexts).CurrentSelection(context.Background())
+	if !errors.Is(err, ErrNoContext) || selection.APIOrigin != "https://example.test" || selection.UserID != "user-1" || selection.WorkspaceID != "" {
+		t.Fatalf("unselected=%#v err=%v", selection, err)
+	}
+}
+
 func TestJoinUsesBodyOnlyRetriesAccessAndSelectsWorkspace(t *testing.T) {
 	const workspaceID = "123e4567-e89b-42d3-a456-426614174000"
 	token := strings.Repeat("t", 43)

@@ -25,7 +25,7 @@ func TestPluginEnvironmentRemovesInstallerCredentials(t *testing.T) {
 
 type countingRunner struct{ calls int }
 
-func (r *countingRunner) Run(context.Context, string, []string, Stdio) (int, error) {
+func (r *countingRunner) Run(context.Context, string, []string, RuntimeContext, Stdio) (int, error) {
 	r.calls++
 	return 0, nil
 }
@@ -57,8 +57,40 @@ func TestServiceRechecksCompatibilityForHealthAndDispatch(t *testing.T) {
 	if content := byName["content"]; content.Installed || content.Healthy || content.Message != "not installed" {
 		t.Fatalf("content status=%+v", content)
 	}
-	if _, err := service.Run(context.Background(), definition, []string{"person", "search"}, "human", Stdio{}); err == nil {
+	runtimeContext, err := NewRuntimeContext("v1.0.0", "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background(), definition, []string{"person", "search"}, "human", runtimeContext, Stdio{}); err == nil {
 		t.Fatal("incompatible installed plugin was dispatched")
+	}
+	if runner.calls != 0 {
+		t.Fatalf("runner calls=%d", runner.calls)
+	}
+}
+
+func TestServiceRejectsInvalidRuntimeContextBeforeDispatch(t *testing.T) {
+	store, err := NewStoreAt(filepath.Join(t.TempDir(), "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := DefaultCatalog().Plugin("content")
+	manifest := validManifest("v1.0.0")
+	manifest.Name = definition.Name
+	manifest.Executable = definition.Executable
+	manifest.Commands = append([]string{definition.CanonicalCommand}, definition.Aliases...)
+	if _, err := store.Activate(definition, manifest, candidate(t, t.TempDir(), definition.Executable)); err != nil {
+		t.Fatal(err)
+	}
+	runner := &countingRunner{}
+	service := &Service{Catalog: DefaultCatalog(), Store: store, Runner: runner, CoreVersion: "v1.0.0"}
+	runtimeContext, err := NewRuntimeContext("v1.0.0", "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeContext.InvocationID = "invalid"
+	if _, err := service.Run(context.Background(), definition, []string{"doctor"}, "human", runtimeContext, Stdio{}); err == nil {
+		t.Fatal("invalid runtime context was dispatched")
 	}
 	if runner.calls != 0 {
 		t.Fatalf("runner calls=%d", runner.calls)

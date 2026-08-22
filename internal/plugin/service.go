@@ -27,16 +27,21 @@ type Stdio struct {
 }
 
 type ProcessRunner interface {
-	Run(context.Context, string, []string, Stdio) (int, error)
+	Run(context.Context, string, []string, RuntimeContext, Stdio) (int, error)
 }
 
 type execProcessRunner struct{}
 
-func (execProcessRunner) Run(ctx context.Context, path string, args []string, streams Stdio) (int, error) {
+func (execProcessRunner) Run(ctx context.Context, path string, args []string, runtimeContext RuntimeContext, streams Stdio) (int, error) {
 	command := exec.CommandContext(ctx, path, args...)
 	command.Env = pluginEnvironment(os.Environ())
 	command.Stdin, command.Stdout, command.Stderr = streams.Stdin, streams.Stdout, streams.Stderr
-	err := command.Run()
+	environment, err := runtimeEnvironment(os.Environ(), runtimeContext)
+	if err != nil {
+		return 1, err
+	}
+	command.Env = environment
+	err = command.Run()
 	if err == nil {
 		return 0, nil
 	}
@@ -122,7 +127,10 @@ func (s *Service) List() []Status {
 func (s *Service) Rollback(name string) (Receipt, error) { return s.Store.Rollback(name) }
 func (s *Service) Remove(name string) error              { return s.Store.Remove(name) }
 
-func (s *Service) Run(ctx context.Context, definition Definition, args []string, format string, streams Stdio) (int, error) {
+func (s *Service) Run(ctx context.Context, definition Definition, args []string, format string, runtimeContext RuntimeContext, streams Stdio) (int, error) {
+	if err := runtimeContext.Validate(); err != nil {
+		return 0, fmt.Errorf("validate plugin runtime context: %w", err)
+	}
 	installed, err := s.Store.Current(definition.Name)
 	if err != nil {
 		return 0, err
@@ -134,5 +142,8 @@ func (s *Service) Run(ctx context.Context, definition Definition, args []string,
 	if format != "human" {
 		forwarded = append(forwarded, "--output="+format)
 	}
-	return s.Runner.Run(ctx, installed.Path, forwarded, streams)
+	if runtimeContext.OutputFormat != format {
+		return 0, errors.New("plugin runtime context output format does not match dispatch")
+	}
+	return s.Runner.Run(ctx, installed.Path, forwarded, runtimeContext, streams)
 }

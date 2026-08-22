@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,18 +45,19 @@ type BuildInfo struct {
 }
 
 type App struct {
-	stdout      io.Writer
-	stderr      io.Writer
-	build       BuildInfo
-	doctor      func() DoctorReport
-	uninstall   func() (UninstallResult, error)
-	auth        func() (authCommands, error)
-	openBrowser func(string) error
-	workspace   func() (workspaceCommands, error)
-	node        func(bool) (nodeCommands, error)
-	stdin       io.Reader
-	stdinTTY    func() bool
-	plugins     pluginCommands
+	stdout        io.Writer
+	stderr        io.Writer
+	build         BuildInfo
+	doctor        func() DoctorReport
+	uninstall     func() (UninstallResult, error)
+	auth          func() (authCommands, error)
+	openBrowser   func(string) error
+	workspace     func() (workspaceCommands, error)
+	node          func(bool) (nodeCommands, error)
+	stdin         io.Reader
+	stdinTTY      func() bool
+	plugins       pluginCommands
+	pluginContext func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
 }
 
 type pluginCommands interface {
@@ -65,7 +67,7 @@ type pluginCommands interface {
 	List() []pluginpkg.Status
 	Rollback(string) (pluginpkg.Receipt, error)
 	Remove(string) error
-	Run(context.Context, pluginpkg.Definition, []string, string, pluginpkg.Stdio) (int, error)
+	Run(context.Context, pluginpkg.Definition, []string, string, pluginpkg.RuntimeContext, pluginpkg.Stdio) (int, error)
 }
 
 var defaultNodeCommandFactory = newDefaultNodeCommands
@@ -91,7 +93,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 	if pluginErr == nil {
 		plugins = pluginService
 	}
-	return &App{
+	app := &App{
 		stdout:    stdout,
 		stderr:    stderr,
 		build:     build,
@@ -107,6 +109,33 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
 		plugins:     plugins,
 	}
+	app.pluginContext = app.resolvePluginContext
+	return app
+}
+
+func (a *App) resolvePluginContext(ctx context.Context, format OutputFormat) (pluginpkg.RuntimeContext, error) {
+	runtimeContext, err := pluginpkg.NewRuntimeContext(a.build.Version, string(format))
+	if err != nil {
+		return pluginpkg.RuntimeContext{}, err
+	}
+	commands, err := a.workspace()
+	if err != nil {
+		return runtimeContext, nil
+	}
+	selection, err := commands.CurrentSelection(ctx)
+	runtimeContext.APIOrigin = selection.APIOrigin
+	if err == nil {
+		runtimeContext.Status = "selected"
+		runtimeContext.ReasonCode = ""
+		runtimeContext.UserID = selection.UserID
+		runtimeContext.WorkspaceID = selection.WorkspaceID
+		return runtimeContext, runtimeContext.Validate()
+	}
+	if errors.Is(err, workspacepkg.ErrNoContext) {
+		runtimeContext.Status = "unselected"
+		runtimeContext.ReasonCode = "workspace_not_selected"
+	}
+	return runtimeContext, runtimeContext.Validate()
 }
 
 func (a *App) Run(args []string) int {
