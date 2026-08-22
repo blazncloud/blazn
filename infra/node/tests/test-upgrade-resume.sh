@@ -29,8 +29,10 @@ case "$*" in
   *"select count(*) from pg_auth_members"*) printf '0\n' ;;
   "compose "*" exec -T postgres psql "*)
     body=$(cat); [ "${FAKE_SQL_FAIL:-0}" != 1 ] || exit 88
-    case "$body" in *"DROP ROLE blazn_node_broker"*) rm -f "$FAKE_ROLE_STATE" ;; *"CREATE ROLE blazn_node_broker"*) : >"$FAKE_ROLE_STATE" ;; esac
-    case "$body" in *"DROP ROLE blazn_sandbox_controller"*) rm -f "$FAKE_CONTROLLER_ROLE_STATE" ;; *"CREATE ROLE blazn_sandbox_controller"*) : >"$FAKE_CONTROLLER_ROLE_STATE" ;; esac
+    if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_node_broker'; then rm -f "$FAKE_ROLE_STATE"
+    elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_node_broker'; then : >"$FAKE_ROLE_STATE"; fi
+    if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_sandbox_controller'; then rm -f "$FAKE_CONTROLLER_ROLE_STATE"
+    elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_sandbox_controller'; then : >"$FAKE_CONTROLLER_ROLE_STATE"; fi
     ;;
   "compose "*" run --rm -T node-migration-preflight") [ -f "$FAKE_ROLE_STATE" ] ;;
   *) printf 'unexpected synthetic docker call: %s\n' "$*" >&2; exit 97 ;;
