@@ -1,7 +1,7 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
 // OpenAPI SHA256: 075126546f4277f5b3def6381746c9bbc6b222c9408cf17e03950d5075b60571
-// NodeInstallPlan SHA256: 977c783d975a06fed3079a6ea3a864efa509570d0ee931085e8dcfdf4b555421
-// NodeInstallReceipt SHA256: 381bbcb30009dd098512bf646329940bb17d158534a96bd36e54ef5f36bddfde
+// NodeInstallPlan SHA256: 111984c682128e09a2caba46d405feb848c34e65ded478dbc49d9e74a677341e
+// NodeInstallReceipt SHA256: cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
 
 package client
@@ -317,14 +317,17 @@ type NodeRegistryTrust struct {
 }
 
 type NodeInstallComponent struct {
-	Name         string `json:"name"`
-	ArtifactType string `json:"artifactType"`
-	Version      string `json:"version"`
-	Publisher    string `json:"publisher"`
-	SourceHost   string `json:"sourceHost"`
-	Source       string `json:"source"`
-	SHA256       string `json:"sha256"`
-	Ownership    string `json:"ownership"`
+	Name             string `json:"name"`
+	ArtifactType     string `json:"artifactType"`
+	Version          string `json:"version"`
+	Publisher        string `json:"publisher"`
+	SourceHost       string `json:"sourceHost"`
+	Source           string `json:"source"`
+	RepositoryOrigin string `json:"repositoryOrigin,omitempty"`
+	RegistryHost     string `json:"registryHost,omitempty"`
+	OCIReference     string `json:"ociReference,omitempty"`
+	SHA256           string `json:"sha256"`
+	Ownership        string `json:"ownership"`
 }
 
 type NodeInstallService struct {
@@ -366,6 +369,7 @@ type NodeInstallRollback struct {
 	PreserveUserData     bool   `json:"preserveUserData"`
 	PreserveControlPlane bool   `json:"preserveControlPlane"`
 	AmbiguousOwnership   string `json:"ambiguousOwnership"`
+	BackupRootClass      string `json:"backupRootClass"`
 	BackupRoot           string `json:"backupRoot"`
 }
 
@@ -504,10 +508,12 @@ type NodeInstallPlanTrust struct {
 }
 
 type NodeInstallReceiptTrust struct {
-	PlanID     string
-	PlanDigest string
-	NodeID     string
-	Signer     NodeTrustedSigner
+	PlanID                   string
+	PlanDigest               string
+	NodeID                   string
+	Signer                   NodeTrustedSigner
+	BackupRoot               string
+	VerifyNoSymlinkTraversal func(string) error
 }
 
 type NodeOperationReceiptTrust struct {
@@ -546,14 +552,15 @@ var (
 	nodeKubernetesVersionPattern = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
 	nodeReasonCodePattern        = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 	nodeHostnamePattern          = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
-	nodeReceiptLocatorPattern    = regexp.MustCompile(`^receipt-backup://[A-Za-z0-9._/-]{1,512}$`)
+	nodeReceiptLocatorPattern    = regexp.MustCompile(`^receipt-backup://[A-Za-z0-9_-]{1,128}$`)
 	nodePackageTargetPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
 	nodeSystemdTargetPattern     = regexp.MustCompile(`^/etc/systemd/system/[A-Za-z0-9_.@-]+\.service$`)
 	nodeSystemdUnitPattern       = regexp.MustCompile(`^[A-Za-z0-9_.@-]+\.service$`)
 	nodeLaunchdTargetPattern     = regexp.MustCompile(`^/Library/LaunchDaemons/[A-Za-z0-9_.-]+\.plist$`)
-	nodeImageTargetPattern       = regexp.MustCompile(`^[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$`)
+	nodeImageTargetPattern       = regexp.MustCompile(`^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$`)
 	nodeFirewallTargetPattern    = regexp.MustCompile(`^blazn:[a-z0-9_-]{1,64}$`)
-	nodeBackupRootPattern        = regexp.MustCompile(`^/var/lib/blazn/install-backups/[A-Za-z0-9._-]{1,128}$`)
+	nodeLinuxBackupRootPattern   = regexp.MustCompile(`^/var/lib/blazn/install-backups/[A-Za-z0-9_-]{1,128}$`)
+	nodeMacOSBackupRootPattern   = regexp.MustCompile(`^/Library/Application Support/Blazn/install-backups/[A-Za-z0-9_-]{1,128}$`)
 )
 
 func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) error {
@@ -735,13 +742,29 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !nodeHostnamePattern.MatchString(component.SourceHost) || err != nil || !validHTTPSURL(component.Source) || parsed.Hostname() != component.SourceHost || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
 			return fmt.Errorf("components[%d] is invalid", index)
 		}
+		switch component.ArtifactType {
+		case "package":
+			origin, originErr := nodeURLOrigin(component.RepositoryOrigin)
+			if originErr != nil || origin != component.RepositoryOrigin || component.RegistryHost != "" || component.OCIReference != "" {
+				return fmt.Errorf("components[%d] package repository binding is invalid", index)
+			}
+		case "image":
+			registryOrigin, registryHost, registryErr := nodeOCIRegistryOrigin(component.OCIReference)
+			if !nodeHostnamePattern.MatchString(component.RegistryHost) || !nodeImageTargetPattern.MatchString(component.OCIReference) || component.RepositoryOrigin != "" || registryErr != nil || registryOrigin == "" || registryHost != component.RegistryHost || !strings.HasSuffix(component.OCIReference, "@sha256:"+component.SHA256) {
+				return fmt.Errorf("components[%d] image registry binding is invalid", index)
+			}
+		default:
+			if component.RepositoryOrigin != "" || component.RegistryHost != "" || component.OCIReference != "" {
+				return fmt.Errorf("components[%d] has unrelated repository metadata", index)
+			}
+		}
 	}
-	componentNames := make(map[string]struct{}, len(plan.Components))
+	componentNames := make(map[string]NodeInstallComponent, len(plan.Components))
 	for _, component := range plan.Components {
 		if _, exists := componentNames[component.Name]; exists {
 			return fmt.Errorf("component name %q is duplicated", component.Name)
 		}
-		componentNames[component.Name] = struct{}{}
+		componentNames[component.Name] = component
 	}
 	if !oneOf(plan.NodeService.Manager, "systemd", "launchd") || len(plan.NodeService.UnitName) < 1 || len(plan.NodeService.UnitName) > 256 || !strings.HasPrefix(plan.NodeService.BinaryPath, "/") || len(plan.NodeService.RunAsUser) < 1 || len(plan.NodeService.RunAsUser) > 128 || len(plan.NodeService.RunAsGroup) < 1 || len(plan.NodeService.RunAsGroup) > 128 || !nodeHashPattern.MatchString(plan.NodeService.DefinitionSHA256) {
 		return fmt.Errorf("node service is invalid")
@@ -766,18 +789,25 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		return err
 	}
 	for index, mutation := range plan.Mutations {
-		if component := nodeMutationSourceComponent(mutation); component != "" {
-			if _, exists := componentNames[component]; !exists {
-				return fmt.Errorf("mutations[%d] references unknown component %q", index, component)
+		if componentName := nodeMutationSourceComponent(mutation); componentName != "" {
+			component, exists := componentNames[componentName]
+			if !exists {
+				return fmt.Errorf("mutations[%d] references unknown component %q", index, componentName)
+			}
+			if err := validateNodeMutationComponentBinding(plan, mutation, component); err != nil {
+				return fmt.Errorf("mutations[%d]: %w", index, err)
 			}
 		}
+	}
+	if err := validateNodeProfileSemantics(plan); err != nil {
+		return err
 	}
 	for _, validation := range plan.ValidationTests {
 		if !oneOf(validation, "binary_digest", "service_active", "node_identity", "cluster_ca", "worker_only", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility") {
 			return fmt.Errorf("validation test is invalid")
 		}
 	}
-	if !plan.Rollback.PreserveUserData || !plan.Rollback.PreserveControlPlane || plan.Rollback.AmbiguousOwnership != "recovery_required" || !nodeBackupRootPattern.MatchString(plan.Rollback.BackupRoot) {
+	if !plan.Rollback.PreserveUserData || !plan.Rollback.PreserveControlPlane || plan.Rollback.AmbiguousOwnership != "recovery_required" || !validNodeBackupRoot(plan.Rollback.BackupRootClass, plan.Rollback.BackupRoot) {
 		return fmt.Errorf("rollback safety policy is invalid")
 	}
 	approved, err := time.Parse(time.RFC3339, plan.ApprovedAt)
@@ -795,6 +825,17 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		return fmt.Errorf("plan signature metadata is invalid")
 	}
 	return nil
+}
+
+func validNodeBackupRoot(class, root string) bool {
+	switch class {
+	case "linux_var_lib":
+		return nodeLinuxBackupRootPattern.MatchString(root)
+	case "macos_library_application_support":
+		return nodeMacOSBackupRootPattern.MatchString(root)
+	default:
+		return false
+	}
 }
 
 func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
@@ -954,7 +995,7 @@ func DecodeNodeInstallPlan(reader io.Reader) (NodeInstallPlan, error) {
 		"target":         {"platform", "architecture", "machineFingerprint", "nodePublicKeyFingerprint", "minCpu", "minMemoryBytes", "minDiskBytes"},
 		"nodeService":    {"manager", "unitName", "binaryPath", "runAsUser", "runAsGroup", "definitionSha256"},
 		"resourceBounds": {"reservedCpuMillis", "reservedMemoryBytes", "maxPods", "maxConcurrentAgents"},
-		"rollback":       {"preserveUserData", "preserveControlPlane", "ambiguousOwnership", "backupRoot"},
+		"rollback":       {"preserveUserData", "preserveControlPlane", "ambiguousOwnership", "backupRootClass", "backupRoot"},
 	} {
 		if err := requireNodeNestedFields(raw, key, fields...); err != nil {
 			return plan, err
@@ -1315,6 +1356,15 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
 			return err
 		}
+		if component.ArtifactType == "package" && !nodeOriginAllowed(component.RepositoryOrigin, profile.AllowedDownloadOrigins) {
+			return fmt.Errorf("package component %q repository origin is not trusted", component.Name)
+		}
+		if component.ArtifactType == "image" {
+			origin, _, err := nodeOCIRegistryOrigin(component.OCIReference)
+			if err != nil || !nodeOriginAllowed(origin, profile.AllowedRegistryOrigins) {
+				return fmt.Errorf("image component %q registry origin is not trusted", component.Name)
+			}
+		}
 	}
 	if err := validateNodeTrustedRoots(profile.AllowedMutationRoots); err != nil {
 		return err
@@ -1413,6 +1463,19 @@ func nodeHostAllowed(hostname string, allowed []string) bool {
 	return false
 }
 
+func nodeOCIRegistryOrigin(reference string) (origin string, hostname string, err error) {
+	slash := strings.IndexByte(reference, '/')
+	if slash <= 0 {
+		return "", "", fmt.Errorf("OCI reference has no registry authority")
+	}
+	origin, err = nodeURLOrigin("https://" + reference[:slash])
+	if err != nil {
+		return "", "", err
+	}
+	parsed, _ := url.Parse(origin)
+	return origin, parsed.Hostname(), nil
+}
+
 func VerifyNodeInstallReceipt(receipt NodeInstallReceipt, trust NodeInstallReceiptTrust) error {
 	if err := ValidateNodeInstallReceipt(receipt); err != nil {
 		return err
@@ -1435,7 +1498,34 @@ func VerifyNodeInstallReceipt(receipt NodeInstallReceipt, trust NodeInstallRecei
 			return fmt.Errorf("install receipt %s does not match trusted input", name)
 		}
 	}
+	if (!nodeLinuxBackupRootPattern.MatchString(trust.BackupRoot) && !nodeMacOSBackupRootPattern.MatchString(trust.BackupRoot)) || trust.VerifyNoSymlinkTraversal == nil {
+		return fmt.Errorf("trusted receipt backup root is invalid")
+	}
+	for _, mutation := range receipt.Mutations {
+		if mutation.RollbackMaterial.Kind == "absent" {
+			continue
+		}
+		resolved, err := ResolveNodeRollbackLocator(trust.BackupRoot, mutation.RollbackMaterial.Locator)
+		if err != nil {
+			return err
+		}
+		if err := trust.VerifyNoSymlinkTraversal(resolved); err != nil {
+			return fmt.Errorf("rollback material traverses an untrusted link: %w", err)
+		}
+	}
 	return nil
+}
+
+func ResolveNodeRollbackLocator(backupRoot, locator string) (string, error) {
+	if (!nodeLinuxBackupRootPattern.MatchString(backupRoot) && !nodeMacOSBackupRootPattern.MatchString(backupRoot)) || !nodeReceiptLocatorPattern.MatchString(locator) {
+		return "", fmt.Errorf("rollback root or locator is invalid")
+	}
+	id := strings.TrimPrefix(locator, "receipt-backup://")
+	resolved := path.Join(backupRoot, id)
+	if !nodePathUnderChildAny(resolved, []string{backupRoot}) {
+		return "", fmt.Errorf("rollback locator escapes backup root")
+	}
+	return resolved, nil
 }
 
 func VerifyNodeOperationReceipt(receipt NodeOperationReceipt, trust NodeOperationReceiptTrust) error {
@@ -1559,10 +1649,11 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 	switch mutation.Kind {
 	case "package":
 		var desired struct {
-			Manager string `json:"manager"`
-			Version string `json:"version"`
+			Manager       string `json:"manager"`
+			Version       string `json:"version"`
+			ComponentName string `json:"componentName"`
 		}
-		if !oneOf(mutation.Action, "install", "adopt_exact") || !nodePackageTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Manager, "apt", "snap", "brew") || len(desired.Version) < 1 || len(desired.Version) > 128 {
+		if !oneOf(mutation.Action, "install", "adopt_exact") || !nodePackageTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Manager, "apt", "snap", "brew") || len(desired.Version) < 1 || len(desired.Version) > 128 || len(desired.ComponentName) < 1 || len(desired.ComponentName) > 128 {
 			return fmt.Errorf("package action or payload is invalid")
 		}
 	case "file", "certificate":
@@ -1596,9 +1687,10 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 		}
 	case "image":
 		var desired struct {
-			Platform string `json:"platform"`
+			Platform      string `json:"platform"`
+			ComponentName string `json:"componentName"`
 		}
-		if !oneOf(mutation.Action, "pull", "adopt_exact") || !nodeImageTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Platform, "linux/amd64", "linux/arm64") {
+		if !oneOf(mutation.Action, "pull", "adopt_exact") || !nodeImageTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Platform, "linux/amd64", "linux/arm64") || len(desired.ComponentName) < 1 || len(desired.ComponentName) > 128 {
 			return fmt.Errorf("image action or payload is invalid")
 		}
 	case "label":
@@ -1641,7 +1733,72 @@ func decodeNodeDesired(input map[string]any, output any) error {
 
 func nodeMutationSourceComponent(mutation NodeInstallMutation) string {
 	value, _ := mutation.Desired["sourceComponent"].(string)
+	if value == "" {
+		value, _ = mutation.Desired["componentName"].(string)
+	}
 	return value
+}
+
+func validateNodeMutationComponentBinding(plan NodeInstallPlan, mutation NodeInstallMutation, component NodeInstallComponent) error {
+	switch mutation.Kind {
+	case "package":
+		version, _ := mutation.Desired["version"].(string)
+		if component.ArtifactType != "package" || mutation.Target != component.Name || version != component.Version || component.RepositoryOrigin == "" {
+			return fmt.Errorf("package mutation does not match its signed component")
+		}
+	case "image":
+		if component.ArtifactType != "image" || mutation.Target != component.OCIReference || component.RegistryHost == "" || !strings.HasSuffix(mutation.Target, "@sha256:"+component.SHA256) {
+			return fmt.Errorf("image mutation does not match its signed component")
+		}
+	default:
+		_ = plan
+	}
+	return nil
+}
+
+func validateNodeProfileSemantics(plan NodeInstallPlan) error {
+	wantImagePlatform := "linux/amd64"
+	if plan.Target.Architecture == NodeArchARM64 {
+		wantImagePlatform = "linux/arm64"
+	}
+	switch plan.InstallProfile {
+	case "ubuntu-26.04-amd64-worker/v1", "existing-linux-worker-adopt/v1":
+		if plan.NodeService.Manager != "systemd" || plan.NodeService.RunAsUser != "blazn-node" || plan.NodeService.RunAsGroup != "blazn-node" || plan.Rollback.BackupRootClass != "linux_var_lib" {
+			return fmt.Errorf("Linux profile service identity is invalid")
+		}
+		for _, mutation := range plan.Mutations {
+			if mutation.Kind == "launchd_unit" {
+				return fmt.Errorf("Linux profile contains a launchd mutation")
+			}
+			if mutation.Kind == "package" {
+				manager, _ := mutation.Desired["manager"].(string)
+				if !oneOf(manager, "apt", "snap") {
+					return fmt.Errorf("Linux profile package manager is invalid")
+				}
+			}
+			if mutation.Kind == "image" && mutation.Desired["platform"] != wantImagePlatform {
+				return fmt.Errorf("Linux profile image architecture is invalid")
+			}
+		}
+	case "macos-lima-worker-adopt/v1":
+		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "root" || plan.NodeService.RunAsGroup != "wheel" || plan.Rollback.BackupRootClass != "macos_library_application_support" {
+			return fmt.Errorf("macOS profile service identity is invalid")
+		}
+		for _, mutation := range plan.Mutations {
+			if mutation.Kind == "systemd_unit" {
+				return fmt.Errorf("macOS profile contains a systemd mutation")
+			}
+			if mutation.Kind == "package" && mutation.Desired["manager"] != "brew" {
+				return fmt.Errorf("macOS profile package manager is invalid")
+			}
+			if mutation.Kind == "image" && mutation.Desired["platform"] != "linux/arm64" {
+				return fmt.Errorf("macOS profile image architecture is invalid")
+			}
+		}
+	default:
+		return fmt.Errorf("install profile is invalid")
+	}
+	return nil
 }
 
 func nodeHasParentTraversal(value string) bool {
