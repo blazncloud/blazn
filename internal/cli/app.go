@@ -48,6 +48,7 @@ type App struct {
 	auth        func() (authCommands, error)
 	openBrowser func(string) error
 	workspace   func() (workspaceCommands, error)
+	node        func() (nodeCommands, error)
 	stdin       io.Reader
 	stdinTTY    func() bool
 }
@@ -79,8 +80,11 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		},
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
-		stdin:       os.Stdin,
-		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		node: func() (nodeCommands, error) {
+			return nil, fmt.Errorf("node runtime requires an injected trusted local profile and privileged platform adapter")
+		},
+		stdin:    os.Stdin,
+		stdinTTY: func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
 	}
 }
 
@@ -139,6 +143,8 @@ func (a *App) Run(args []string) int {
 		return a.runAuth(format, rest)
 	case "workspace":
 		return a.runWorkspace(format, rest)
+	case "node":
+		return a.runNode(format, rest)
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
 	}

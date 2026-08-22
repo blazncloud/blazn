@@ -28,6 +28,7 @@ var rootCommands = []helpCommand{
 	{Name: "auth", Summary: "Authenticate this device and manage sessions"},
 	{Name: "doctor", Summary: "Run offline readiness checks"},
 	{Name: "help", Summary: "Show help for a command"},
+	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
 	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
 	{Name: "workspace", Summary: "Create, select, and manage workspaces"},
@@ -76,6 +77,8 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 				{Name: "watch", Summary: "Stream reauthorized workspace events"},
 			},
 		}
+	case "node":
+		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|heartbeat [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}}}
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown help topic %q", topic))
 	}
