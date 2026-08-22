@@ -1,0 +1,85 @@
+{
+  "id": "11111111-1111-4111-8111-111111111111",
+  "version": 1,
+  "workspaceId": "22222222-2222-4222-8222-222222222222",
+  "protocols": ["openai-responses", "openai-chat", "anthropic-messages"],
+  "aliases": {
+    "company-assistant": {
+      "routeIds": ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"],
+      "dataClass": "company",
+      "allowedDestinationBoundaries": ["local", "external"]
+    },
+    "company-assistant-public": {
+      "routeIds": ["33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"],
+      "dataClass": "public",
+      "allowedDestinationBoundaries": ["local", "external"]
+    },
+    "company-assistant-restricted": {
+      "routeIds": ["33333333-3333-4333-8333-333333333333"],
+      "dataClass": "restricted",
+      "allowedDestinationBoundaries": ["local"]
+    },
+    "company-assistant-local": {
+      "routeIds": ["33333333-3333-4333-8333-333333333333"],
+      "dataClass": "local_only",
+      "allowedDestinationBoundaries": ["local"]
+    }
+  },
+  "routes": [
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "destinationClass": "local_node",
+      "endpoint": {
+        "scheme": "http",
+        "hostname": "127.0.0.1",
+        "port": 11434,
+        "basePath": "/v1",
+        "hostnameAllowlist": ["127.0.0.1"],
+        "resolvedAddressPolicy": "loopback_only"
+      },
+      "sourceProtocols": ["openai-responses", "openai-chat", "anthropic-messages"],
+      "destinationProtocol": "openai-chat",
+      "model": "qwen3.8",
+      "capabilities": ["text", "tools", "structured_output", "streaming"],
+      "acceptedDataClasses": ["public", "company", "restricted", "local_only"],
+      "dataBoundary": "local",
+      "healthTimeoutMs": 2000,
+      "credentialRef": "node-route://qwen38",
+      "costClass": "local"
+    },
+    {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "destinationClass": "provider",
+      "endpoint": {
+        "scheme": "https",
+        "hostname": "api.openai.com",
+        "port": 443,
+        "basePath": "/v1",
+        "hostnameAllowlist": ["api.openai.com"],
+        "resolvedAddressPolicy": "public_unicast_only"
+      },
+      "sourceProtocols": ["openai-responses", "openai-chat", "anthropic-messages"],
+      "destinationProtocol": "openai-responses",
+      "model": "gpt-5.4",
+      "capabilities": ["text", "tools", "structured_output", "streaming"],
+      "acceptedDataClasses": ["public", "company"],
+      "dataBoundary": "external",
+      "healthTimeoutMs": 5000,
+      "credentialRef": "workspace-vault://poc/model-providers/openai",
+      "costClass": "metered_high"
+    }
+  ],
+  "requestLimits": {
+    "maxContextTokens": 131072,
+    "maxOutputTokens": 8192,
+    "timeoutMs": 120000,
+    "streaming": true,
+    "maxCostClass": "metered_high"
+  },
+  "fallback": {
+    "maxAttempts": 2,
+    "retryableReasons": ["connection_failure", "timeout_before_first_byte", "rate_limited", "upstream_5xx", "model_unavailable", "compatible_context_overflow"],
+    "allowedBoundaryTransitions": ["local_to_external"]
+  },
+  "contentCapture": false
+}

@@ -44,10 +44,16 @@ uses the retryable `upgrade-live-v2-to-workspace.sh` and then separately
 reconciles the main ownership receipt. Receipts and backups store only its
 SHA-256 digest, never the key.
 
-Fresh PostgreSQL initialization creates three distinct identities: the
+Fresh PostgreSQL initialization creates four distinct identities: the
 container-only administrative user, `blazn_migration` as the non-superuser
 database/schema owner, `blazn_bootstrap` for the initial identity only, and
-`blazn_runtime` for request handling. Migration SQL grants table-specific
+`blazn_runtime` for request handling, plus `blazn_node_broker` for the narrow
+Node join-issuance boundary. The broker authenticates through its own root-owned
+database URL. A pre-migration gate proves its restricted role attributes,
+CONNECT, and schema USAGE; a post-migration gate proves the exact positive and
+negative grants from `004_nodes.sql` before API bootstrap. The Node enrollment
+HMAC and join-credential AES-256-GCM keys remain root-owned and are not mounted
+into the current API, bootstrap, or migration services. Migration SQL grants table-specific
 operations to bootstrap and runtime; initialization does not grant blanket
 future-table DML.
 
@@ -102,7 +108,7 @@ systemctl enable --now blazn-control-plane.service
 health, migration, restart-idempotent bootstrap and object initialization, S3
 checksum, restart, auth, and revocation tests
 with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-id>
-restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host only
+restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id> <ownership-receipt> <node-key-inventory>  # isolated host only
 ```
 
 The serialized Workspace migration and two-user acceptance procedure is

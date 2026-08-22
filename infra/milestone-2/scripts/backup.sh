@@ -94,6 +94,9 @@ manifest_tmp=$staging.sha256.$$
   find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
 ) >"$manifest_tmp"
 mv -- "$manifest_tmp" "$staging/SHA256SUMS"
+receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
+assert_regular_file_owned_mode "$receipt" 0 600
+node_broker_receipt_digest=sha256:$(jq -cS .nodeBroker "$receipt" | sha256sum | awk '{print $1}')
 jq -cn \
   --arg correlationId "$correlation" \
   --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
@@ -105,7 +108,8 @@ jq -cn \
   --arg image "$control_api_image" \
   --arg imageId "$control_api_image_id" \
   --arg secretDigest "$workspace_invitation_hmac_digest" \
-  '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest}}' \
+  --arg nodeBrokerReceiptDigest "$node_broker_receipt_digest" \
+  '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,configDigest:$configDigest,controlApi:{sourceDigest:$sourceDigest,image:$image,imageId:$imageId},secretDigests:{"workspace-invitation-hmac-v1":$secretDigest},nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest}' \
   >"$staging/metadata.json"
 (
   cd "$staging"

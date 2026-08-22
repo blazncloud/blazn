@@ -18,3 +18,4 @@ load_control_api_image "$ROOT_DIR"
 "$SCRIPT_DIR/preflight.sh" --deploy
 docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" up --detach --wait --remove-orphans
 verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
+verify_node_prerequisite_containers "$ROOT_DIR" "$ENV_FILE"

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-broker-upgrade-receipt-v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "inputs", "nodeBroker"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/node-broker-upgrade/v2" },
+    "owner": { "const": "blazn-poc" },
+    "host": { "type": "string", "minLength": 1 },
+    "phase": { "enum": ["inputs-backed-up", "role-ready", "environment-bound", "build-ready", "complete", "rollback-started", "role-removed", "secrets-retained", "environment-restored", "build-restored", "main-restored", "source-restore-required", "rolled-back"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mainReceipt", "environment", "buildReceipt", "sourceDigest", "configDigest"],
+      "properties": {
+        "mainReceipt": { "$ref": "#/$defs/fileBackup" },
+        "environment": { "$ref": "#/$defs/fileBackup" },
+        "buildReceipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "backupPath", "digest", "present"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "backupPath": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$" },
+            "present": { "type": "boolean" }
+          }
+        },
+        "sourceDigest": { "type": "string" },
+        "configDigest": { "type": "string" }
+      }
+    },
+    "nodeBroker": { "$ref": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json" },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retainedPath", "startedAt"],
+      "properties": {
+        "retainedPath": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "rolledBackAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "fileBackup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "backupPath", "digest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "backupPath": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$" }
+      }
+    }
+  }
+}

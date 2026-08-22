@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "blazn-anthropic-harness-shape/v1",
+  "provenance": {
+    "claim": "reproducible_harness_shape_only",
+    "captureStatus": "not_captured",
+    "client": "Claude Code",
+    "targetVersion": "2.1.212",
+    "note": "This is a checked compatibility harness, not a byte-for-byte capture from Claude Code. Promotion to exact requires a redacted capture from the pinned client."
+  },
+  "activation": {
+    "environment": {
+      "ANTHROPIC_BASE_URL": "http://127.0.0.1:47123",
+      "ANTHROPIC_API_KEY": "<listener-token>",
+      "ANTHROPIC_AUTH_TOKEN": "<listener-token>"
+    },
+    "endpointPrecedence": [
+      "ANTHROPIC_BASE_URL selects the loopback listener",
+      "ANTHROPIC_AUTH_TOKEN has gateway-token precedence over ANTHROPIC_API_KEY",
+      "Blazn replaces both credential variables with the same activation-local listener token"
+    ],
+    "expectedRequestHeaders": {
+      "authorization": "Bearer <listener-token>",
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json"
+    }
+  },
+  "request": {
+    "model": "company-assistant",
+    "max_tokens": 2048,
+    "system": [
+      {"type": "text", "text": "You are a coding agent operating through Blazn."}
+    ],
+    "messages": [
+      {"role": "user", "content": [{"type": "text", "text": "Inspect the repository."}]},
+      {"role": "assistant", "content": [
+        {"type": "text", "text": "I will inspect it."},
+        {"type": "tool_use", "id": "toolu_01", "name": "read_file", "input": {"path": "README.md"}}
+      ]},
+      {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_01", "content": "# Blazn"},
+        {"type": "text", "text": "Summarize it."}
+      ]}
+    ],
+    "tools": [{
+      "name": "read_file",
+      "description": "Read a repository file.",
+      "input_schema": {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": false
+      }
+    }],
+    "tool_choice": {"type": "auto"},
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "stop_sequences": ["<END>"],
+    "stream": true
+  },
+  "nonstreamResponse": {
+    "id": "msg_fixture",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-fixture",
+    "content": [{"type": "text", "text": "Repository summary"}],
+    "stop_reason": "stop_sequence",
+    "stop_sequence": "<END>",
+    "usage": {"input_tokens": 41, "output_tokens": 5}
+  },
+  "sseTranscript": [
+    {
+      "event": "message_start",
+      "data": {"type": "message_start", "message": {"id": "msg_fixture", "type": "message", "role": "assistant", "content": [], "model": "claude-fixture", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 41, "output_tokens": 0}}}
+    },
+    {
+      "event": "content_block_start",
+      "data": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+    },
+    {
+      "event": "content_block_delta",
+      "data": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Repository summary"}}
+    },
+    {"event": "content_block_stop", "data": {"type": "content_block_stop", "index": 0}},
+    {
+      "event": "message_delta",
+      "data": {"type": "message_delta", "delta": {"stop_reason": "stop_sequence", "stop_sequence": "<END>"}, "usage": {"output_tokens": 5}}
+    },
+    {"event": "message_stop", "data": {"type": "message_stop"}}
+  ]
+}

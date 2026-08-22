@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated test test-control-api test-infra release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated test test-control-api test-infra release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -24,6 +24,18 @@ generate-workspace-client:
 check-workspace-generated:
 	go run ./cmd/generate-workspace-client --check
 
+generate-node-client:
+	go run ./cmd/generate-node-client
+
+check-node-generated:
+	go run ./cmd/generate-node-client --check
+
+generate-proxy-contract:
+	go run ./cmd/generate-proxy-contract
+
+check-proxy-generated:
+	go run ./cmd/generate-proxy-contract --check
+
 test:
 	go test ./...
 
@@ -40,6 +52,12 @@ test-infra:
 	./infra/milestone-2/tests/test-control-plane-env.sh
 	./infra/milestone-2/tests/test-api-build.sh
 	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
+	./infra/node/tests/test-contract.sh
+	./infra/node/tests/test-secret-create-resume.sh
+	./infra/node/tests/test-upgrade-resume.sh
+	./infra/node/tests/test-backup-metadata.sh
+	./infra/node/tests/test-postgres-privileges.sh
+	shellcheck infra/node/scripts/*.sh infra/node/tests/*.sh
 
 release:
 	./scripts/release.sh
@@ -50,4 +68,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated test test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-proxy-generated check-node-generated test test-release test-install

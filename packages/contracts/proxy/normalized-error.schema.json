@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/normalized-error.json",
+  "title": "Normalized proxy error",
+  "type": "object", "additionalProperties": false,
+  "required": ["code", "retryClass", "safeMessage"],
+  "properties": {
+    "code": {"enum": ["invalid_request", "unsupported_capability", "authentication_failed", "policy_denied", "context_overflow", "rate_limited", "model_unavailable", "upstream_5xx", "connection_failure", "timeout_before_first_byte", "cancelled", "internal_error"]},
+    "retryClass": {"enum": ["never", "before_first_byte_only"]},
+    "safeMessage": {"type": "string", "minLength": 1, "maxLength": 512},
+    "upstreamStatus": {"type": "integer", "minimum": 100, "maximum": 599}
+  }
+}
