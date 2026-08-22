@@ -3,6 +3,7 @@ package node
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,11 +25,17 @@ type EnrollmentPin struct {
 }
 
 type RuntimeState struct {
-	SchemaVersion     int                                   `json:"schemaVersion"`
-	Pin               EnrollmentPin                         `json:"pin"`
-	Exchange          client.ExchangeNodeEnrollmentResponse `json:"exchange"`
-	KubernetesBinding *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
-	UpdatedAt         string                                `json:"updatedAt"`
+	SchemaVersion      int                                   `json:"schemaVersion"`
+	ControlPlaneOrigin string                                `json:"controlPlaneOrigin"`
+	Pin                EnrollmentPin                         `json:"pin"`
+	Exchange           client.ExchangeNodeEnrollmentResponse `json:"exchange"`
+	KubernetesBinding  *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
+	PendingJoin        *PendingJoinState                     `json:"pendingJoin,omitempty"`
+	UpdatedAt          string                                `json:"updatedAt"`
+}
+type PendingJoinState struct {
+	PlanID     string `json:"planId"`
+	IssuanceID string `json:"issuanceId"`
 }
 
 type InstallWAL struct {
@@ -39,6 +46,7 @@ type InstallWAL struct {
 	PlanDigest    string                       `json:"planDigest"`
 	NodeID        string                       `json:"nodeId"`
 	Stage         string                       `json:"stage"`
+	Checkpoint    string                       `json:"checkpoint"`
 	Owner         client.NodeReceiptOwner      `json:"owner"`
 	ServicePrior  ServicePriorState            `json:"servicePrior"`
 	Mutations     []client.NodeReceiptMutation `json:"mutations"`
@@ -107,7 +115,7 @@ func (s FileStateStore) SaveRuntime(v RuntimeState) error { return s.write("runt
 func (s FileStateStore) LoadRuntime() (RuntimeState, error) {
 	var v RuntimeState
 	err := s.read("runtime.json", 64<<10, &v)
-	if err == nil && (v.SchemaVersion != 1 || v.Pin.SchemaVersion != 1) {
+	if err == nil && (v.SchemaVersion != 1 || v.Pin.SchemaVersion != 1 || !validControlPlaneOrigin(v.ControlPlaneOrigin) || (v.PendingJoin != nil && (v.PendingJoin.PlanID == "" || v.PendingJoin.IssuanceID == ""))) {
 		err = errors.New("node runtime state schema is unsupported")
 	}
 	return v, err
@@ -167,7 +175,13 @@ func (s FileStateStore) read(name string, limit int64, v any) error {
 	}
 	decoder := json.NewDecoder(bytesReader(encoded))
 	decoder.DisallowUnknownFields()
-	return decoder.Decode(v)
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("node state contains trailing JSON")
+	}
+	return nil
 }
 
 func nowString(now time.Time) string { return now.UTC().Format(time.RFC3339Nano) }

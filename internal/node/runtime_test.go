@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,11 +64,134 @@ func TestProductionRuntimeSeparatesServiceAndInstallerState(t *testing.T) {
 	}
 }
 
+func TestDaemonRuntimeStartsAndHeartbeatsFromServiceStateWithoutUserToken(t *testing.T) {
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Path != "/v1/node-service/heartbeats" || request.Header.Get("Authorization") != "" || request.Header.Get("X-Blazn-Node-Proof") == "" {
+			t.Errorf("unexpected daemon request")
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	root := testRoot(t)
+	paths := ProductionNodePaths{ServiceStateRoot: filepath.Join(root, "service"), RootStateRoot: filepath.Join(root, "privileged"), ProfileRoot: filepath.Join(root, "profiles")}
+	identities := FileIdentityStore{Path: filepath.Join(paths.ServiceStateRoot, "identity.json")}
+	identity, err := identities.LoadOrCreate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := installPlan()
+	plan.ExpiresAt = "2026-08-22T13:00:00Z"
+	state := FileStateStore{Root: paths.ServiceStateRoot}
+	if err := state.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: server.URL, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, UpdatedAt: plan.IssuedAt}); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newProductionDaemonCommandRuntime(paths, "v-test", server.Client(), fixedCapability{capability: testCapability()})
+	if err != nil || runtime.AccessToken != "" || runtime.Service != nil || runtime.Daemon == nil {
+		t.Fatalf("runtime=%#v err=%v", runtime, err)
+	}
+	runtime.Daemon.now = func() time.Time { return time.Date(2026, 8, 22, 12, 30, 0, 0, time.UTC) }
+	if _, err := runtime.Heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestFileStateRejectsTrailingJSON(t *testing.T) {
+	root := filepath.Join(testRoot(t), "state")
+	store := FileStateStore{Root: root}
+	if err := store.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: EnrollmentPin{SchemaVersion: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "runtime.json")
+	value, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, append(value, []byte("{}")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadRuntime(); err == nil {
+		t.Fatal("trailing runtime JSON was accepted")
+	}
+}
+
+func TestAuthorizedOwnershipTransitionPreservesPrivateDaemonState(t *testing.T) {
+	root := filepath.Join(testRoot(t), "service")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	uid, gid := int(currentUID()), os.Getgid()
+	if err := transitionPrivateStateOwnership(root, uid, gid, map[int64]bool{int64(uid): true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transitionPrivateStateOwnership(root, uid, gid, map[int64]bool{int64(uid): true}); err != nil {
+		t.Fatalf("idempotent transition: %v", err)
+	}
+	for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+		info, err := os.Lstat(filepath.Join(root, name))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("%s info=%v err=%v", name, info, err)
+		}
+	}
+}
+
+func TestSystemBinaryPromotionRequiresMatchingActiveNodeReceipt(t *testing.T) {
+	value := []byte("old-root-binary")
+	sum := sha256.Sum256(value)
+	receipt := client.NodeInstallReceipt{State: "active", Binary: client.NodeReceiptBinary{Path: defaultRootBinaryPath, Digest: "sha256:" + fmt.Sprintf("%x", sum)}}
+	if !receiptOwnsSystemBinary(receipt, value) {
+		t.Fatal("matching receipt ownership was rejected")
+	}
+	receipt.Binary.Digest = "sha256:" + testHash
+	if receiptOwnsSystemBinary(receipt, value) {
+		t.Fatal("mismatched receipt authorized binary replacement")
+	}
+	receipt.Binary.Digest = "sha256:" + fmt.Sprintf("%x", sum)
+	receipt.State = "removed"
+	if !receiptOwnsSystemBinary(receipt, value) {
+		t.Fatal("archived removed receipt did not retain binary ownership")
+	}
+}
+
+func TestDaemonSudoPolicyAllowsOnlyFixedObservationSubcommand(t *testing.T) {
+	plan := installPlan()
+	plan.NodeService.RunAsUser = "blazn-node"
+	policy := string(nodeObservationPolicy(plan))
+	if !strings.Contains(policy, "NOPASSWD: /usr/local/bin/blazn node-root-observe\n") || strings.Contains(policy, " node-root-helper") || strings.Contains(policy, "*") {
+		t.Fatalf("policy=%q", policy)
+	}
+}
+
+func TestPrivilegedStatePropagatesLifecycleCancellation(t *testing.T) {
+	seenCancelled := false
+	client := functionPrivilegedClient(func(ctx context.Context, _ RootRequest) (RootResponse, error) {
+		seenCancelled = errors.Is(ctx.Err(), context.Canceled)
+		return RootResponse{OK: true}, nil
+	})
+	state := &PrivilegedInstallState{Client: client, Local: &memoryState{}, Platform: "linux"}
+	state.BindPlan(installPlan())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	state.BindContext(ctx)
+	if err := state.SaveWAL(InstallWAL{SchemaVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if !seenCancelled {
+		t.Fatal("privileged state discarded lifecycle cancellation")
+	}
+}
+
 func TestProductionCapabilityUsesPersistedVerifiedBinding(t *testing.T) {
 	authorization, _ := validBootstrapAuthorization(t)
 	plan := authorization.Expected.Plan
 	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
-	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{"gvisor"}, SandboxBackends: []string{"kubernetes-agent-sandbox"}, ReasonCodes: []string{}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{"gvisor"}, SandboxBackends: []string{"kubernetes-agent-sandbox"}, ReasonCodes: []string{}}
 	capability, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +218,7 @@ func TestProductionCapabilityDegradesAndRejectsIdentityMismatch(t *testing.T) {
 	authorization, _ := validBootstrapAuthorization(t)
 	plan := authorization.Expected.Plan
 	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
-	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{"worker_observation_failed"}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{"worker_observation_failed"}}
 	capability, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background())
 	if err != nil || capability.Host.Health.Status != "degraded" || len(capability.Host.Health.ReasonCodes) < 2 {
 		t.Fatalf("capability=%#v err=%v", capability, err)
@@ -125,7 +250,7 @@ func TestAgentSandboxControllerAvailabilityRequiresObservedAvailableGeneration(t
 
 func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
 	materials := ProductionEmbeddedMaterials()
-	for name, want := range map[string]string{"blazn-node-systemd": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
+	for name, want := range map[string]string{"blazn-node-systemd": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
 		sum := sha256.Sum256(materials[name])
 		if fmt.Sprintf("%x", sum) != want {
 			t.Fatalf("material %s digest=%x", name, sum)
@@ -490,6 +615,33 @@ func TestRollbackStopsImmediatelyWhenWALPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestNodeRepairUninstallAndReinstallLifecycle(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	installed, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil || installed.State != "active" {
+		t.Fatalf("install=%#v err=%v", installed, err)
+	}
+	repaired, err := installer.Repair(context.Background(), plan, meta, identity)
+	if err != nil || repaired.State != "active" || repaired.Generation != installed.Generation+1 {
+		t.Fatalf("repair=%#v err=%v", repaired, err)
+	}
+	removed, err := installer.Uninstall(context.Background(), plan, meta, identity, false)
+	if err != nil || removed.State != "removed" || len(platform.rolledBack) != len(plan.Mutations) {
+		t.Fatalf("uninstall=%#v rollback=%#v err=%v", removed, platform.rolledBack, err)
+	}
+	reinstalled, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil || reinstalled.State != "active" {
+		t.Fatalf("reinstall=%#v err=%v", reinstalled, err)
+	}
+}
+
 func TestEnrollmentPinIsCreateOnceAndRejectsTrustReplacement(t *testing.T) {
 	store := FileStateStore{Root: filepath.Join(testRoot(t), "state")}
 	pin := EnrollmentPin{SchemaVersion: 1, EnrollmentID: "11111111-1111-4111-8111-111111111111", PlanSigningKey: client.NodePlanSigningKey{KeyID: "plan/v1", PublicKey: strings.Repeat("A", 43), Fingerprint: "sha256:" + testHash}}
@@ -713,7 +865,7 @@ func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
 		t.Fatalf("result=%#v binding=%#v err=%v", result, state.runtime.KubernetesBinding, err)
 	}
 	plan := authorization.Expected.Plan
-	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
 	daemon := NewDaemon(api, state, fixedIdentity{identity}, ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}})
 	daemon.now = func() time.Time { return when }
 	if _, err := daemon.Heartbeat(context.Background()); err != nil {

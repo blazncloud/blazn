@@ -19,13 +19,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 const (
 	RootHelperSchema      = "blazn.dev/node-root-helper/v1"
 	DefaultRootHelperPath = "/usr/local/bin/blazn"
 	RootHelperSubcommand  = "node-root-helper"
+	RootObserveSubcommand = "node-root-observe"
 )
 
 type RootOperation string
@@ -38,8 +39,11 @@ const (
 	RootApply         RootOperation = "apply"
 	RootRollback      RootOperation = "rollback"
 	RootVerify        RootOperation = "verify"
+	RootObserve       RootOperation = "observe"
 	RootJoin          RootOperation = "join"
+	RootAbortJoin     RootOperation = "abort_join_intent"
 	RootFinalizeState RootOperation = "finalize_service_state"
+	RootRemoveSupport RootOperation = "remove_service_support"
 	RootCreateWAL     RootOperation = "create_wal"
 	RootSaveWAL       RootOperation = "save_wal"
 	RootLoadWAL       RootOperation = "load_wal"
@@ -104,7 +108,24 @@ type RootResponse struct {
 	KubernetesBinding *client.KubernetesBinding  `json:"kubernetesBinding,omitempty"`
 	WAL               *InstallWAL                `json:"wal,omitempty"`
 	Receipt           *client.NodeInstallReceipt `json:"receipt,omitempty"`
+	Observation       *RootNodeObservation       `json:"observation,omitempty"`
 	ErrorCode         string                     `json:"errorCode,omitempty"`
+}
+
+// RootNodeObservation is the deliberately narrow privileged snapshot exposed
+// to the unprivileged daemon. It contains no kubeconfig, token, endpoint, pod,
+// workload, or arbitrary object data.
+type RootNodeObservation struct {
+	Binding                client.KubernetesBinding `json:"binding"`
+	AllocatableCPUMillis   int64                    `json:"allocatableCpuMillis"`
+	AllocatableMemoryBytes int64                    `json:"allocatableMemoryBytes"`
+	AllocatableDiskBytes   int64                    `json:"allocatableDiskBytes"`
+	ServiceActive          bool                     `json:"serviceActive"`
+	NodeReady              bool                     `json:"nodeReady"`
+	Pressure               bool                     `json:"pressure"`
+	RuntimeClasses         []string                 `json:"runtimeClasses"`
+	SandboxBackends        []string                 `json:"sandboxBackends"`
+	ReasonCodes            []string                 `json:"reasonCodes"`
 }
 
 type PrivilegedClient interface {
@@ -123,6 +144,34 @@ type PipePrivilegedClient struct {
 	HelperPath string
 	UseSudo    bool
 	Timeout    time.Duration
+}
+
+type PipeObservationClient struct {
+	HelperPath string
+	Timeout    time.Duration
+}
+
+func (c PipeObservationClient) Call(ctx context.Context, request RootRequest) (RootResponse, error) {
+	if request.Operation != RootObserve || request.SchemaVersion != RootHelperSchema {
+		return RootResponse{}, errors.New("observation helper accepts only the fixed observe operation")
+	}
+	if c.HelperPath == "" {
+		c.HelperPath = DefaultRootHelperPath
+	}
+	if c.HelperPath != DefaultRootHelperPath || c.Timeout < time.Second || c.Timeout > 2*time.Minute {
+		return RootResponse{}, errors.New("observation helper configuration is invalid")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	command := exec.CommandContext(runCtx, "/usr/bin/sudo", "-n", c.HelperPath, RootObserveSubcommand)
+	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
+	var stdout bytes.Buffer
+	command.Stdout = &limitedOutput{writer: &stdout, remaining: 2 << 20}
+	command.Stderr = &limitedOutput{writer: &bytes.Buffer{}, remaining: 4096}
+	if err := command.Run(); err != nil {
+		return RootResponse{}, errors.New("root observation helper failed")
+	}
+	return decodeRootResponse(&stdout)
 }
 
 func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (RootResponse, error) {
@@ -187,9 +236,20 @@ type PlatformAdapter struct {
 	Materials        MaterialResolver
 	Join             JoinCoordinator
 	plan             client.NodeInstallPlan
-	deferred         []client.NodeInstallMutation
 	joined           *RootJoinBinding
+	joinConfirmed    bool
+	checkpoint       func(string) error
 	bootstrapBinding *client.KubernetesBinding
+}
+
+func (a *PlatformAdapter) SetInstallCheckpoint(checkpoint func(string) error) {
+	a.checkpoint = checkpoint
+}
+func (a *PlatformAdapter) saveCheckpoint(value string) error {
+	if a.checkpoint == nil {
+		return nil
+	}
+	return a.checkpoint(value)
 }
 
 func (a *PlatformAdapter) KubernetesBinding() *client.KubernetesBinding {
@@ -201,6 +261,17 @@ func (a *PlatformAdapter) KubernetesBinding() *client.KubernetesBinding {
 
 func (a *PlatformAdapter) FinalizeServiceState(ctx context.Context, plan client.NodeInstallPlan) error {
 	_, err := a.Privileged.Call(ctx, a.request(RootFinalizeState, plan, 0))
+	return err
+}
+func (a *PlatformAdapter) RemoveServiceSupport(ctx context.Context, plan client.NodeInstallPlan) error {
+	_, err := a.Privileged.Call(ctx, a.request(RootRemoveSupport, plan, 0))
+	return err
+}
+func (a *PlatformAdapter) AbortIncompleteJoin(ctx context.Context, plan client.NodeInstallPlan) error {
+	if plan.Mode != client.NodeModeFresh || a.joined != nil {
+		return nil
+	}
+	_, err := a.Privileged.Call(ctx, a.request(RootAbortJoin, plan, 0))
 	return err
 }
 
@@ -235,7 +306,6 @@ func (a *PlatformAdapter) Preflight(ctx context.Context, plan client.NodeInstall
 		return errors.New("privileged root helper preflight failed")
 	}
 	a.plan = plan
-	a.deferred = nil
 	if response.KubernetesBinding != nil {
 		binding := *response.KubernetesBinding
 		a.bootstrapBinding = &binding
@@ -251,8 +321,14 @@ func (a *PlatformAdapter) ServiceState(ctx context.Context, service client.NodeI
 	return *response.Service, nil
 }
 func (a *PlatformAdapter) Capture(ctx context.Context, mutation client.NodeInstallMutation, backupRoot string) (PriorState, error) {
+	if mutation.Kind == "label" || mutation.Kind == "taint" {
+		if err := a.ensureJoined(ctx, a.plan); err != nil {
+			return PriorState{}, err
+		}
+	}
 	request := a.request(RootCapture, a.plan, mutation.Ordinal)
 	request.BackupRoot = backupRoot
+	request.Join = a.joined
 	response, err := a.Privileged.Call(ctx, request)
 	if err != nil || response.Prior == nil {
 		return PriorState{}, errors.New("capture mutation state failed")
@@ -261,7 +337,19 @@ func (a *PlatformAdapter) Capture(ctx context.Context, mutation client.NodeInsta
 }
 func (a *PlatformAdapter) Apply(ctx context.Context, mutation client.NodeInstallMutation) error {
 	if mutation.Kind == "label" || mutation.Kind == "taint" {
-		a.deferred = append(a.deferred, mutation)
+		if err := a.ensureJoined(ctx, a.plan); err != nil {
+			return err
+		}
+		request := a.request(RootApply, a.plan, mutation.Ordinal)
+		request.Join = a.joined
+		response, err := a.Privileged.Call(ctx, request)
+		if err != nil {
+			return err
+		}
+		if response.KubernetesBinding == nil || response.KubernetesBinding.NodeUID != a.joined.ExpectedNodeUID || response.KubernetesBinding.NodeName != a.joined.ExpectedNodeName {
+			return errors.New("cluster mutation did not return the root-authorized Node binding")
+		}
+		a.joined.ExpectedResourceVersion = response.KubernetesBinding.ResourceVersion
 		return nil
 	}
 	request := a.request(RootApply, a.plan, mutation.Ordinal)
@@ -288,10 +376,41 @@ func (a *PlatformAdapter) Rollback(ctx context.Context, mutation client.NodeInst
 	return err
 }
 func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPlan) error {
+	if err := a.ensureJoined(ctx, plan); err != nil {
+		return err
+	}
+	binding := *a.joined
+	if plan.Mode == client.NodeModeFresh && !a.joinConfirmed {
+		if err := a.saveCheckpoint("broker_consume"); err != nil {
+			return err
+		}
+		if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: binding.ExpectedNodeName, UID: binding.ExpectedNodeUID, ResourceVersion: binding.ExpectedResourceVersion}); err != nil {
+			return err
+		}
+		a.joinConfirmed = true
+		if err := a.saveCheckpoint("broker_consumed"); err != nil {
+			return err
+		}
+	}
+	if err := a.saveCheckpoint("verify"); err != nil {
+		return err
+	}
+	request := a.request(RootVerify, plan, 0)
+	request.Join = &binding
+	_, err := a.Privileged.Call(ctx, request)
+	return err
+}
+
+func (a *PlatformAdapter) ensureJoined(ctx context.Context, plan client.NodeInstallPlan) error {
+	if a.joined != nil && a.joined.ExpectedNodeUID != "" && a.joined.ExpectedResourceVersion != "" {
+		return nil
+	}
 	var binding RootJoinBinding
 	var response RootResponse
-	fresh := plan.Mode == client.NodeModeFresh
-	if fresh {
+	if plan.Mode == client.NodeModeFresh {
+		if err := a.saveCheckpoint("join_intent"); err != nil {
+			return err
+		}
 		issued, err := a.Join.WorkerCredential(ctx, plan)
 		if err != nil {
 			return err
@@ -302,6 +421,9 @@ func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPla
 		}
 		request := a.request(RootJoin, plan, 0)
 		request.Join = &binding
+		if err := a.saveCheckpoint("join"); err != nil {
+			return err
+		}
 		response, err = a.Privileged.Call(ctx, request)
 		if err != nil || response.NodeUID == "" || response.NodeName != binding.ExpectedNodeName || response.ResourceVersion == "" {
 			return errors.New("worker join failed")
@@ -316,27 +438,10 @@ func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPla
 	binding.ExpectedNodeUID = response.NodeUID
 	binding.ExpectedResourceVersion = response.ResourceVersion
 	a.joined = &binding
-	for _, mutation := range a.deferred {
-		request := a.request(RootApply, plan, mutation.Ordinal)
-		request.Join = &binding
-		applied, err := a.Privileged.Call(ctx, request)
-		if err != nil {
-			return err
-		}
-		if applied.KubernetesBinding == nil || applied.KubernetesBinding.NodeUID != binding.ExpectedNodeUID || applied.KubernetesBinding.NodeName != binding.ExpectedNodeName {
-			return errors.New("cluster mutation did not return the root-authorized Node binding")
-		}
-		binding.ExpectedResourceVersion = applied.KubernetesBinding.ResourceVersion
+	if err := a.saveCheckpoint("binding"); err != nil {
+		return err
 	}
-	if fresh {
-		if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: binding.ExpectedNodeName, UID: binding.ExpectedNodeUID, ResourceVersion: binding.ExpectedResourceVersion}); err != nil {
-			return err
-		}
-	}
-	request := a.request(RootVerify, plan, 0)
-	request.Join = &binding
-	_, err := a.Privileged.Call(ctx, request)
-	return err
+	return nil
 }
 func (a *PlatformAdapter) request(operation RootOperation, plan client.NodeInstallPlan, ordinal int64) RootRequest {
 	return RootRequest{SchemaVersion: RootHelperSchema, Operation: operation, Platform: a.Platform, Plan: plan, Ordinal: ordinal}

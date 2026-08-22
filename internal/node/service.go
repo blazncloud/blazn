@@ -93,7 +93,7 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 			return EnrollResult{}, err
 		}
 	}
-	state := RuntimeState{SchemaVersion: 1, Pin: pin, Exchange: response, KubernetesBinding: options.KubernetesBinding, UpdatedAt: nowString(s.now())}
+	state := RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: options.Profile.ControlPlaneOrigin, Pin: pin, Exchange: response, KubernetesBinding: options.KubernetesBinding, UpdatedAt: nowString(s.now())}
 	if err := s.state.SaveRuntime(state); err != nil {
 		return EnrollResult{}, fmt.Errorf("persist verified node plan: %w", err)
 	}

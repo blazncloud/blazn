@@ -11,14 +11,15 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type LiveNodeObservation struct {
-	CPUMillis, MemoryBytes, DiskBytes            int64
-	ServiceActive, NodeReady, Pressure           bool
-	Binding                                      client.KubernetesBinding
-	RuntimeClasses, SandboxBackends, ReasonCodes []string
+	CPUMillis, MemoryBytes, DiskBytes                                  int64
+	AllocatableCPUMillis, AllocatableMemoryBytes, AllocatableDiskBytes int64
+	ServiceActive, NodeReady, Pressure                                 bool
+	Binding                                                            client.KubernetesBinding
+	RuntimeClasses, SandboxBackends, ReasonCodes                       []string
 }
 type LiveNodeObserver interface {
 	Observe(context.Context, client.NodeInstallPlan, client.KubernetesBinding) (LiveNodeObservation, error)
@@ -42,7 +43,7 @@ func (p ProductionCapabilityProvider) Capability(ctx context.Context) (client.No
 	plan := state.Exchange.Plan
 	observer := p.Observer
 	if observer == nil {
-		observer = HostLiveNodeObserver{}
+		return client.NodeCapability{}, errors.New("privileged live node observer is unavailable")
 	}
 	observed, err := observer.Observe(ctx, plan, *state.KubernetesBinding)
 	if err != nil {
@@ -64,14 +65,17 @@ func (p ProductionCapabilityProvider) Capability(ctx context.Context) (client.No
 			health.ReasonCodes = appendUnique(health.ReasonCodes, "worker_pressure")
 		}
 	}
-	workerCPU, workerMemory := observed.CPUMillis-plan.ResourceBounds.ReservedCPUMillis, observed.MemoryBytes-plan.ResourceBounds.ReservedMemoryBytes
-	if observed.CPUMillis < plan.Target.MinCPU*1000 || observed.MemoryBytes < plan.Target.MinMemoryBytes || observed.DiskBytes < plan.Target.MinDiskBytes || workerCPU < 1 || workerMemory < 1 {
+	workerCPU, workerMemory, workerDisk := observed.AllocatableCPUMillis, observed.AllocatableMemoryBytes, observed.AllocatableDiskBytes
+	if observed.CPUMillis < plan.Target.MinCPU*1000 || observed.MemoryBytes < plan.Target.MinMemoryBytes || observed.DiskBytes < plan.Target.MinDiskBytes {
 		return client.NodeCapability{}, errors.New("live host capacity is below the signed minimum")
+	}
+	if workerCPU < 1 || workerMemory < 1 || workerDisk < 1 {
+		return client.NodeCapability{}, errors.New("Kubernetes worker allocatable capacity is unavailable")
 	}
 	capability := client.NodeCapability{
 		Version:         1,
 		Host:            client.NodeHostCapacity{Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, CPUMillis: observed.CPUMillis, MemoryBytes: observed.MemoryBytes, DiskBytes: observed.DiskBytes, Accelerators: []client.NodeAccelerator{}, Health: health},
-		Worker:          client.NodeWorkerCapacity{Platform: client.NodePlatformLinux, Architecture: plan.Target.Architecture, AllocatableCPUMillis: workerCPU, AllocatableMemoryBytes: workerMemory, AllocatableDiskBytes: observed.DiskBytes, Labels: cloneLabels(plan.Labels), Limits: client.NodeCapabilityLimits{MaxConcurrentSandboxes: plan.ResourceBounds.MaxConcurrentAgents, MaxConcurrentAgents: plan.ResourceBounds.MaxConcurrentAgents}, Health: health, KubernetesBinding: observed.Binding},
+		Worker:          client.NodeWorkerCapacity{Platform: client.NodePlatformLinux, Architecture: plan.Target.Architecture, AllocatableCPUMillis: workerCPU, AllocatableMemoryBytes: workerMemory, AllocatableDiskBytes: workerDisk, Labels: cloneLabels(plan.Labels), Limits: client.NodeCapabilityLimits{MaxConcurrentSandboxes: plan.ResourceBounds.MaxConcurrentAgents, MaxConcurrentAgents: plan.ResourceBounds.MaxConcurrentAgents}, Health: health, KubernetesBinding: observed.Binding},
 		SandboxBackends: nonNilStrings(observed.SandboxBackends), RuntimeClasses: nonNilStrings(observed.RuntimeClasses), LocalModels: []client.LocalModelCapability{},
 	}
 	if err := client.ValidateNodeCapability(capability); err != nil {
@@ -80,75 +84,38 @@ func (p ProductionCapabilityProvider) Capability(ctx context.Context) (client.No
 	return capability, nil
 }
 
-type HostLiveNodeObserver struct{}
+type PrivilegedLiveNodeObserver struct {
+	Client   PrivilegedClient
+	Platform string
+}
 
-func (HostLiveNodeObserver) Observe(ctx context.Context, plan client.NodeInstallPlan, binding client.KubernetesBinding) (LiveNodeObservation, error) {
-	o := LiveNodeObservation{CPUMillis: int64(runtime.NumCPU()) * 1000, Binding: binding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+func (p PrivilegedLiveNodeObserver) Observe(ctx context.Context, plan client.NodeInstallPlan, binding client.KubernetesBinding) (LiveNodeObservation, error) {
+	if p.Client == nil || (p.Platform != "linux" && p.Platform != "macos") {
+		return LiveNodeObservation{}, errors.New("privileged node observer is unavailable")
+	}
+	host := LiveNodeObservation{CPUMillis: int64(runtime.NumCPU()) * 1000, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
 	memory, err := liveMemoryBytes(ctx)
 	if err != nil {
-		return o, err
+		return host, err
 	}
-	o.MemoryBytes = memory
+	host.MemoryBytes = memory
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(string(os.PathSeparator), &stat); err != nil {
-		return o, err
+		return host, err
 	}
-	o.DiskBytes = int64(stat.Bavail) * int64(stat.Bsize)
-	platform := "linux"
-	if plan.Target.Platform == client.NodePlatformMacOS {
-		platform = "macos"
+	host.DiskBytes = int64(stat.Bavail) * int64(stat.Bsize)
+	response, err := p.Client.Call(ctx, RootRequest{SchemaVersion: RootHelperSchema, Operation: RootObserve, Platform: p.Platform, Plan: plan})
+	if err != nil || response.Observation == nil {
+		return host, errors.New("privileged worker observation failed")
 	}
-	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}}
-	service, serviceErr := engine.serviceState(ctx, plan.NodeService)
-	o.ServiceActive = serviceErr == nil && service.Service != nil && service.Service.Active
-	output, err := engine.kubectl(ctx, plan, "get", "node", binding.NodeName, "-o", "json")
-	if err != nil {
-		o.ReasonCodes = append(o.ReasonCodes, "worker_observation_failed")
-		return o, nil
+	o := response.Observation
+	if o.Binding.ClusterID != binding.ClusterID || o.Binding.NodeName != binding.NodeName || o.Binding.NodeUID != binding.NodeUID {
+		return host, errors.New("privileged worker observation binding differs from daemon state")
 	}
-	var node struct {
-		Metadata struct{ Name, UID, ResourceVersion string } `json:"metadata"`
-		Status   struct {
-			Conditions []struct{ Type, Status string } `json:"conditions"`
-		} `json:"status"`
-	}
-	if json.Unmarshal(output, &node) != nil || node.Metadata.Name != binding.NodeName || node.Metadata.UID == "" || node.Metadata.ResourceVersion == "" {
-		return o, errors.New("live Kubernetes node response is invalid")
-	}
-	o.Binding.NodeUID, o.Binding.ResourceVersion = node.Metadata.UID, node.Metadata.ResourceVersion
-	for _, condition := range node.Status.Conditions {
-		if condition.Type == "Ready" && condition.Status == "True" {
-			o.NodeReady = true
-		}
-		if (condition.Type == "MemoryPressure" || condition.Type == "DiskPressure" || condition.Type == "PIDPressure") && condition.Status == "True" {
-			o.Pressure = true
-		}
-	}
-	if classes, classErr := engine.kubectl(ctx, plan, "get", "runtimeclass", "-o", "json"); classErr == nil {
-		var list struct {
-			Items []struct {
-				Metadata struct {
-					Name string `json:"name"`
-				} `json:"metadata"`
-			} `json:"items"`
-		}
-		if json.Unmarshal(classes, &list) == nil {
-			for _, item := range list.Items {
-				if item.Metadata.Name != "" {
-					o.RuntimeClasses = append(o.RuntimeClasses, item.Metadata.Name)
-				}
-			}
-		}
-	}
-	if resources, resourceErr := engine.kubectl(ctx, plan, "api-resources", "-o", "name"); resourceErr == nil && strings.Contains(string(resources), "sandboxes.agents.x-k8s.io") {
-		controller, controllerErr := engine.kubectl(ctx, plan, "get", "deployment", "agent-sandbox-controller", "-n", "agent-sandbox-system", "-o", "json")
-		if controllerErr == nil && agentSandboxControllerAvailable(controller) {
-			o.SandboxBackends = append(o.SandboxBackends, "kubernetes-agent-sandbox")
-		} else {
-			o.ReasonCodes = appendUnique(o.ReasonCodes, "sandbox_controller_unavailable")
-		}
-	}
-	return o, nil
+	host.AllocatableCPUMillis, host.AllocatableMemoryBytes, host.AllocatableDiskBytes = o.AllocatableCPUMillis, o.AllocatableMemoryBytes, o.AllocatableDiskBytes
+	host.ServiceActive, host.NodeReady, host.Pressure, host.Binding = o.ServiceActive, o.NodeReady, o.Pressure, o.Binding
+	host.RuntimeClasses, host.SandboxBackends, host.ReasonCodes = nonNilStrings(o.RuntimeClasses), nonNilStrings(o.SandboxBackends), nonNilStrings(o.ReasonCodes)
+	return host, nil
 }
 
 func agentSandboxControllerAvailable(value []byte) bool {

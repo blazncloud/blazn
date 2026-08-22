@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type JoinAPI interface {
@@ -73,6 +73,14 @@ func (c *BrokerJoinCoordinator) WorkerCredential(ctx context.Context, plan clien
 	c.mu.Lock()
 	c.pending = &pendingJoinCredential{PlanID: plan.PlanID, IssuanceID: credential.IssuanceID, Identity: identity}
 	c.mu.Unlock()
+	state.PendingJoin = &PendingJoinState{PlanID: plan.PlanID, IssuanceID: credential.IssuanceID}
+	state.UpdatedAt = nowString(c.now())
+	if err := c.State.SaveRuntime(state); err != nil {
+		c.mu.Lock()
+		c.pending = nil
+		c.mu.Unlock()
+		return RootJoinBinding{}, errors.New("persist join issuance before host join: " + err.Error())
+	}
 	return RootJoinBinding{Credential: credential.Credential, ClusterID: credential.ClusterID, ExpectedNodeName: plan.Hostname, BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}, nil
 }
 
@@ -83,6 +91,12 @@ func (c *BrokerJoinCoordinator) ConfirmJoined(ctx context.Context, plan client.N
 	c.mu.Lock()
 	pending := c.pending
 	c.mu.Unlock()
+	if pending == nil {
+		state, identity, loadErr := c.boundRuntime(plan)
+		if loadErr == nil && state.PendingJoin != nil && state.PendingJoin.PlanID == plan.PlanID {
+			pending = &pendingJoinCredential{PlanID: plan.PlanID, IssuanceID: state.PendingJoin.IssuanceID, Identity: identity}
+		}
+	}
 	if pending == nil || pending.PlanID != plan.PlanID || pending.IssuanceID == "" {
 		return errors.New("join credential issuance is unavailable for consumption")
 	}
@@ -103,6 +117,15 @@ func (c *BrokerJoinCoordinator) ConfirmJoined(ctx context.Context, plan client.N
 		c.pending = nil
 	}
 	c.mu.Unlock()
+	state, _, stateErr := c.boundRuntime(plan)
+	if stateErr != nil {
+		return stateErr
+	}
+	state.PendingJoin = nil
+	state.UpdatedAt = nowString(c.now())
+	if err := c.State.SaveRuntime(state); err != nil {
+		return errors.New("clear consumed join issuance: " + err.Error())
+	}
 	return nil
 }
 

@@ -17,11 +17,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type RootEngine interface {
@@ -104,13 +105,17 @@ func validateRootRequestShape(request RootRequest) error {
 		if request.Bootstrap == nil || !noMutationFields() {
 			return errors.New("root authorize request fields are invalid")
 		}
-	case RootProbe, RootServiceState, RootFinalizeState:
+	case RootProbe, RootServiceState, RootFinalizeState, RootObserve, RootRemoveSupport, RootAbortJoin:
 		if request.Bootstrap != nil || !noMutationFields() {
 			return errors.New("root probe request fields are invalid")
 		}
 	case RootCapture:
-		if request.Bootstrap != nil || request.Ordinal < 1 || request.BackupRoot == "" || request.Prior != nil || request.Material != nil || request.Join != nil {
+		if request.Bootstrap != nil || request.Ordinal < 1 || request.BackupRoot == "" || request.Prior != nil || request.Material != nil {
 			return errors.New("root capture request fields are invalid")
+		}
+		mutation, err := mutationByOrdinal(request.Plan, request.Ordinal)
+		if err != nil || ((mutation.Kind == "label" || mutation.Kind == "taint") != (request.Join != nil)) {
+			return errors.New("root capture join binding is invalid")
 		}
 	case RootApply:
 		if request.Bootstrap != nil || request.Ordinal < 1 || request.BackupRoot != "" || request.Prior != nil {
@@ -216,7 +221,10 @@ type NativeRootEngine struct {
 	AuthorityPath        string
 	ProfileRoot          string
 	CurrentBinaryPath    string
+	RootStateRoot        string
 	AuthorityHTTPClient  *http.Client
+	LookupUser           func(string) (*user.User, error)
+	LookupGroup          func(string) (*user.Group, error)
 }
 
 func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (RootResponse, error) {
@@ -235,7 +243,7 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 			if pathErr != nil {
 				return RootResponse{}, pathErr
 			}
-			if identityErr := e.ensureMacOSServiceIdentity(request.Plan.NodeService, paths.ServiceStateRoot); identityErr != nil {
+			if identityErr := e.ensureMacOSServiceIdentity(ctx, request.Plan.NodeService, paths.ServiceStateRoot); identityErr != nil {
 				return RootResponse{}, identityErr
 			}
 		}
@@ -250,12 +258,15 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		return RootResponse{KubernetesBinding: binding}, err
 	case RootServiceState:
 		return e.serviceState(ctx, request.Plan.NodeService)
+	case RootObserve:
+		observation, err := e.observeCapability(ctx, request.Plan)
+		return RootResponse{Observation: &observation}, err
 	case RootCapture:
 		mutation, err := mutationByOrdinal(request.Plan, request.Ordinal)
 		if err != nil {
 			return RootResponse{}, err
 		}
-		prior, err := e.capture(ctx, request.Plan, mutation, request.BackupRoot)
+		prior, err := e.capture(ctx, request.Plan, mutation, request.BackupRoot, request.Join)
 		return RootResponse{Prior: &prior}, err
 	case RootApply:
 		mutation, err := mutationByOrdinal(request.Plan, request.Ordinal)
@@ -319,15 +330,150 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		}
 		binding, err := e.updateRootKubernetesBinding(request.Plan, joined)
 		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion, KubernetesBinding: binding}, err
+	case RootAbortJoin:
+		return RootResponse{}, e.abortRootJoinIntent(ctx, request.Plan)
 	case RootVerify:
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	case RootFinalizeState:
-		return RootResponse{}, e.finalizeServiceState(request.Plan)
+		return RootResponse{}, e.finalizeServiceState(ctx, request.Plan)
+	case RootRemoveSupport:
+		return RootResponse{}, e.removeServiceSupport(request.Plan)
 	case RootCreateWAL, RootSaveWAL, RootLoadWAL, RootRemoveWAL, RootSaveReceipt, RootLoadReceipt:
 		return e.executeRootState(request)
 	default:
 		return RootResponse{}, errors.New("root helper operation is unsupported")
 	}
+}
+
+func (e NativeRootEngine) observeCapability(ctx context.Context, plan client.NodeInstallPlan) (RootNodeObservation, error) {
+	binding, err := e.rootKubernetesBinding()
+	if err != nil || binding == nil {
+		return RootNodeObservation{}, errors.New("root-authorized Kubernetes binding is unavailable")
+	}
+	return e.observeCapabilityBinding(ctx, plan, *binding)
+}
+
+func (e NativeRootEngine) observeCapabilityBinding(ctx context.Context, plan client.NodeInstallPlan, binding client.KubernetesBinding) (RootNodeObservation, error) {
+	output, err := e.kubectl(ctx, plan, "get", "node", binding.NodeName, "-o", "json")
+	if err != nil {
+		return RootNodeObservation{}, err
+	}
+	var value struct {
+		Metadata struct{ Name, UID, ResourceVersion string } `json:"metadata"`
+		Status   struct {
+			Allocatable map[string]string               `json:"allocatable"`
+			Conditions  []struct{ Type, Status string } `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := decodeSingleJSON(output, &value); err != nil || value.Metadata.Name != binding.NodeName || value.Metadata.UID != binding.NodeUID || value.Metadata.ResourceVersion == "" {
+		return RootNodeObservation{}, errors.New("live Kubernetes node observation is invalid")
+	}
+	cpu, err := parseCPUQuantity(value.Status.Allocatable["cpu"])
+	if err != nil {
+		return RootNodeObservation{}, errors.New("worker allocatable CPU is invalid")
+	}
+	memory, err := parseByteQuantity(value.Status.Allocatable["memory"])
+	if err != nil {
+		return RootNodeObservation{}, errors.New("worker allocatable memory is invalid")
+	}
+	disk, err := parseByteQuantity(value.Status.Allocatable["ephemeral-storage"])
+	if err != nil {
+		return RootNodeObservation{}, errors.New("worker allocatable storage is invalid")
+	}
+	result := RootNodeObservation{Binding: client.KubernetesBinding{ClusterID: binding.ClusterID, NodeName: binding.NodeName, NodeUID: binding.NodeUID, ResourceVersion: value.Metadata.ResourceVersion}, AllocatableCPUMillis: cpu, AllocatableMemoryBytes: memory, AllocatableDiskBytes: disk, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	service, serviceErr := e.serviceState(ctx, plan.NodeService)
+	result.ServiceActive = serviceErr == nil && service.Service != nil && service.Service.Active
+	if serviceErr != nil {
+		result.ReasonCodes = append(result.ReasonCodes, "service_observation_failed")
+	}
+	for _, condition := range value.Status.Conditions {
+		if condition.Type == "Ready" && condition.Status == "True" {
+			result.NodeReady = true
+		}
+		if (condition.Type == "MemoryPressure" || condition.Type == "DiskPressure" || condition.Type == "PIDPressure") && condition.Status == "True" {
+			result.Pressure = true
+		}
+	}
+	if classes, classErr := e.kubectl(ctx, plan, "get", "runtimeclass", "-o", "json"); classErr == nil {
+		var list struct {
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if decodeSingleJSON(classes, &list) == nil {
+			for _, item := range list.Items {
+				if item.Metadata.Name != "" {
+					result.RuntimeClasses = append(result.RuntimeClasses, item.Metadata.Name)
+				}
+			}
+		} else {
+			result.ReasonCodes = appendUnique(result.ReasonCodes, "runtimeclass_discovery_invalid")
+		}
+	} else {
+		result.ReasonCodes = appendUnique(result.ReasonCodes, "runtimeclass_discovery_failed")
+	}
+	if resources, resourceErr := e.kubectl(ctx, plan, "api-resources", "-o", "name"); resourceErr == nil {
+		if strings.Contains(string(resources), "sandboxes.agents.x-k8s.io") {
+			controller, controllerErr := e.kubectl(ctx, plan, "get", "deployment", "agent-sandbox-controller", "-n", "agent-sandbox-system", "-o", "json")
+			if controllerErr == nil && agentSandboxControllerAvailable(controller) {
+				result.SandboxBackends = append(result.SandboxBackends, "kubernetes-agent-sandbox")
+			} else {
+				result.ReasonCodes = appendUnique(result.ReasonCodes, "sandbox_controller_unavailable")
+			}
+		}
+	} else {
+		result.ReasonCodes = appendUnique(result.ReasonCodes, "api_discovery_failed")
+	}
+	sort.Strings(result.RuntimeClasses)
+	sort.Strings(result.SandboxBackends)
+	sort.Strings(result.ReasonCodes)
+	return result, nil
+}
+
+func decodeSingleJSON(value []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("trailing JSON")
+	}
+	return nil
+}
+
+func parseCPUQuantity(value string) (int64, error) {
+	if strings.HasSuffix(value, "m") {
+		millis, err := strconv.ParseInt(strings.TrimSuffix(value, "m"), 10, 64)
+		if err != nil || millis < 1 {
+			return 0, errors.New("invalid CPU quantity")
+		}
+		return millis, nil
+	}
+	cores, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || cores < 1 || cores > (1<<50)/1000 {
+		return 0, errors.New("invalid CPU quantity")
+	}
+	return cores * 1000, nil
+}
+
+func parseByteQuantity(value string) (int64, error) {
+	multipliers := map[string]int64{"Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40, "K": 1000, "M": 1000 * 1000, "G": 1000 * 1000 * 1000}
+	for suffix, multiplier := range multipliers {
+		if strings.HasSuffix(value, suffix) {
+			n, err := strconv.ParseInt(strings.TrimSuffix(value, suffix), 10, 64)
+			if err != nil || n < 1 || n > (1<<62)/multiplier {
+				return 0, errors.New("invalid byte quantity")
+			}
+			return n * multiplier, nil
+		}
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n < 1 {
+		return 0, errors.New("invalid byte quantity")
+	}
+	return n, nil
 }
 
 func (e NativeRootEngine) executeRootState(request RootRequest) (RootResponse, error) {
@@ -363,13 +509,13 @@ func (e NativeRootEngine) executeRootState(request RootRequest) (RootResponse, e
 	return RootResponse{}, err
 }
 
-func (e NativeRootEngine) finalizeServiceState(plan client.NodeInstallPlan) error {
+func (e NativeRootEngine) finalizeServiceState(ctx context.Context, plan client.NodeInstallPlan) error {
 	paths, err := NodeProductionPaths(plan.Target.Platform)
 	if err != nil {
 		return err
 	}
 	if plan.Target.Platform == client.NodePlatformMacOS {
-		if err := e.ensureMacOSServiceIdentity(plan.NodeService, paths.ServiceStateRoot); err != nil {
+		if err := e.ensureMacOSServiceIdentity(ctx, plan.NodeService, paths.ServiceStateRoot); err != nil {
 			return err
 		}
 	}
@@ -386,7 +532,7 @@ func (e NativeRootEngine) finalizeServiceState(plan client.NodeInstallPlan) erro
 	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
 		return errors.New("node service identity must be dedicated and non-root")
 	}
-	return filepath.Walk(paths.ServiceStateRoot, func(path string, info os.FileInfo, walkErr error) error {
+	if err := filepath.Walk(paths.ServiceStateRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -401,18 +547,79 @@ func (e NativeRootEngine) finalizeServiceState(plan client.NodeInstallPlan) erro
 			return err
 		}
 		return os.Chmod(path, mode)
-	})
+	}); err != nil {
+		return err
+	}
+	policyPath := nodeObservationPolicyPath(plan.Target.Platform)
+	policy := nodeObservationPolicy(plan)
+	if info, statErr := os.Lstat(policyPath); statErr == nil {
+		existing, readErr := readBoundedRegular(policyPath, 4096)
+		if readErr != nil {
+			return readErr
+		}
+		owner, _, ownerOK := fileOwner(info)
+		if !ownerOK || owner != 0 || info.Mode().Perm() != 0440 || !bytes.Equal(existing, policy) {
+			return errors.New("preexisting node observation policy differs from receipt ownership")
+		}
+	} else if errors.Is(statErr, os.ErrNotExist) {
+		if err := writeRootAtomic(policyPath, policy, 0440, 0, 0); err != nil {
+			return err
+		}
+	} else {
+		return statErr
+	}
+	_, err = e.Commands.Run(ctx, "/usr/sbin/visudo", "-c", "-f", policyPath)
+	return err
 }
 
-func (e NativeRootEngine) ensureMacOSServiceIdentity(service client.NodeInstallService, home string) error {
+func (e NativeRootEngine) removeServiceSupport(plan client.NodeInstallPlan) error {
+	if plan.NodeService.RunAsUser != "blazn-node" && plan.NodeService.RunAsUser != "_blazn-node" {
+		return errors.New("node service identity is invalid")
+	}
+	path := nodeObservationPolicyPath(plan.Target.Platform)
+	if _, statErr := os.Lstat(path); errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	} else if statErr != nil {
+		return statErr
+	}
+	value, err := readBoundedRegular(path, 4096)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(value, nodeObservationPolicy(plan)) {
+		return errors.New("node observation policy is not receipt-bound")
+	}
+	return os.Remove(path)
+}
+
+func nodeObservationPolicy(plan client.NodeInstallPlan) []byte {
+	return []byte("# blazn receipt-owned node observation policy " + plan.PlanID + "\n" + plan.NodeService.RunAsUser + " ALL=(root) NOPASSWD: /usr/local/bin/blazn node-root-observe\n")
+}
+
+func nodeObservationPolicyPath(platform client.NodePlatform) string {
+	if platform == client.NodePlatformMacOS {
+		return "/private/etc/sudoers.d/blazn-node-observe"
+	}
+	return "/etc/sudoers.d/blazn-node-observe"
+}
+
+func (e NativeRootEngine) ensureMacOSServiceIdentity(ctx context.Context, service client.NodeInstallService, home string) error {
 	if service.RunAsUser != "_blazn-node" || service.RunAsGroup != "_blazn-node" || home != MacOSNodeServiceStateRoot {
 		return errors.New("macOS node service identity contract is invalid")
 	}
-	if account, err := user.Lookup(service.RunAsUser); err == nil {
-		if account.Uid == "0" {
-			return errors.New("macOS node service identity is root")
+	lookupUser, lookupGroup := e.LookupUser, e.LookupGroup
+	if lookupUser == nil {
+		lookupUser = user.Lookup
+	}
+	if lookupGroup == nil {
+		lookupGroup = user.LookupGroup
+	}
+	if account, err := lookupUser(service.RunAsUser); err == nil {
+		group, groupErr := lookupGroup(service.RunAsGroup)
+		if groupErr != nil || account.Username != service.RunAsUser || account.Uid != "299" || account.Gid != "299" || account.HomeDir != home || group.Name != service.RunAsGroup || group.Gid != "299" {
+			return errors.New("existing macOS node service identity differs from the dedicated contract")
 		}
-		return nil
+		return e.verifyMacOSDSCLIdentity(ctx, home)
 	}
 	if account, err := user.LookupId("299"); err == nil && account.Username != service.RunAsUser {
 		return errors.New("macOS node service UID is already occupied")
@@ -422,11 +629,59 @@ func (e NativeRootEngine) ensureMacOSServiceIdentity(service client.NodeInstallS
 	}
 	commands := [][]string{{".", "-create", "/Groups/_blazn-node"}, {".", "-create", "/Groups/_blazn-node", "PrimaryGroupID", "299"}, {".", "-create", "/Users/_blazn-node"}, {".", "-create", "/Users/_blazn-node", "UniqueID", "299"}, {".", "-create", "/Users/_blazn-node", "PrimaryGroupID", "299"}, {".", "-create", "/Users/_blazn-node", "NFSHomeDirectory", home}, {".", "-create", "/Users/_blazn-node", "UserShell", "/usr/bin/false"}, {".", "-create", "/Users/_blazn-node", "IsHidden", "1"}}
 	for _, args := range commands {
-		if _, err := e.Commands.Run(context.Background(), "/usr/bin/dscl", args...); err != nil {
+		if _, err := e.Commands.Run(ctx, "/usr/bin/dscl", args...); err != nil {
 			return errors.New("create dedicated macOS node service identity failed")
 		}
 	}
+	return e.verifyMacOSDSCLIdentity(ctx, home)
+}
+
+func (e NativeRootEngine) verifyMacOSDSCLIdentity(ctx context.Context, home string) error {
+	attributes, attrErr := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", "/Users/_blazn-node", "UniqueID", "PrimaryGroupID", "NFSHomeDirectory", "UserShell", "IsHidden")
+	if attrErr != nil || !exactDSCLAttributes(attributes, map[string]string{"UniqueID": "299", "PrimaryGroupID": "299", "NFSHomeDirectory": home, "UserShell": "/usr/bin/false", "IsHidden": "1"}) {
+		return errors.New("existing macOS node service account properties differ from contract")
+	}
+	groupAttributes, groupAttrErr := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", "/Groups/_blazn-node", "PrimaryGroupID")
+	if groupAttrErr != nil || !exactDSCLAttributes(groupAttributes, map[string]string{"PrimaryGroupID": "299"}) {
+		return errors.New("existing macOS node service group differs from contract")
+	}
+	for _, attribute := range []string{"GroupMembership", "GroupMembers"} {
+		value, memberErr := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", "/Groups/_blazn-node", attribute)
+		if memberErr == nil && strings.TrimSpace(string(value)) != "" {
+			return errors.New("existing macOS node service group has supplementary members")
+		}
+		if memberErr != nil {
+			var commandErr *FixedCommandError
+			if !errors.As(memberErr, &commandErr) || commandErr.ExitCode != 1 {
+				return errors.New("existing macOS node service membership cannot be verified")
+			}
+		}
+	}
 	return nil
+}
+
+func exactDSCLAttributes(output []byte, expected map[string]string) bool {
+	actual := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		key, value := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if key == "" || actual[key] != "" {
+			return false
+		}
+		actual[key] = value
+	}
+	if len(actual) != len(expected) {
+		return false
+	}
+	for key, value := range expected {
+		if actual[key] != value {
+			return false
+		}
+	}
+	return true
 }
 func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeInstallService) (RootResponse, error) {
 	state := ServicePriorState{}
@@ -445,9 +700,32 @@ func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeI
 	}
 	return RootResponse{Service: &state}, nil
 }
-func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, backupRoot string) (PriorState, error) {
+func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, backupRoot string, join *RootJoinBinding) (PriorState, error) {
 	if !canonicalPath(backupRoot) {
 		return PriorState{}, errors.New("backup root is unsafe")
+	}
+	if mutation.Kind == "label" || mutation.Kind == "taint" {
+		state, err := e.readClusterNode(ctx, plan, join)
+		if err != nil {
+			return PriorState{}, err
+		}
+		metadata := map[string]string{"kind": mutation.Kind, "target": mutation.Target, "present": "false"}
+		if mutation.Kind == "label" {
+			if value, ok := state.Labels[mutation.Target]; ok {
+				metadata["present"], metadata["value"] = "true", value
+			}
+		} else {
+			for _, taint := range state.Taints {
+				if taint.Key == mutation.Target && taint.Effect == stringValue(mutation.Desired["effect"]) {
+					metadata["present"], metadata["value"], metadata["effect"] = "true", taint.Value, taint.Effect
+					break
+				}
+			}
+		}
+		if metadata["present"] == "false" {
+			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+		}
+		return e.backupMetadata(backupRoot, plan, mutation, metadata)
 	}
 	if (mutation.Kind == "systemd_unit" || mutation.Kind == "launchd_unit") && mutation.Action == "enable" {
 		response, err := e.serviceState(ctx, plan.NodeService)
@@ -542,7 +820,7 @@ func (e NativeRootEngine) backupFile(root string, plan client.NodeInstallPlan, m
 	return e.writeBackup(root, plan, mutation, content, "file_backup", info.Mode().Perm(), owner, group)
 }
 func (e NativeRootEngine) writeBackup(root string, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, value []byte, kind string, mode os.FileMode, uid, gid int64) (PriorState, error) {
-	id := backupID(plan.PlanID, mutation.Ordinal)
+	id := backupID(plan.PlanID, mutation.Ordinal, value)
 	if err := ensurePrivateDirectory(root, 0); err != nil {
 		return PriorState{}, err
 	}
@@ -834,7 +1112,14 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 		if "sha256:"+hex.EncodeToString(sum[:]) != prior.Material.Digest {
 			return errors.New("rollback backup digest mismatch")
 		}
-		return writeRootAtomic(m.Target, content, os.FileMode(*prior.Material.Mode), int(*prior.Material.UID), int(*prior.Material.GID))
+		if err := writeRootAtomic(m.Target, content, os.FileMode(*prior.Material.Mode), int(*prior.Material.UID), int(*prior.Material.GID)); err != nil {
+			return err
+		}
+		if m.Kind == "systemd_unit" {
+			_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "daemon-reload")
+			return err
+		}
+		return nil
 	}
 	if prior.Material.Kind == "metadata_snapshot" {
 		path, err := client.ResolveNodeRollbackLocator(backupRoot, prior.Material.Locator)
@@ -874,46 +1159,67 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			_, err = e.Commands.Run(ctx, "/usr/bin/apt-get", "install", "-y", m.Target+"="+metadata["version"])
 			return err
 		case "service":
-			enabled, enabledErr := strconv.ParseBool(metadata["enabled"])
-			active, activeErr := strconv.ParseBool(metadata["active"])
-			if enabledErr != nil || activeErr != nil || metadata["name"] != plan.NodeService.UnitName || metadata["manager"] != plan.NodeService.Manager {
-				return errors.New("rollback service metadata is invalid")
-			}
-			if metadata["manager"] == "systemd" {
-				enableAction := "disable"
-				if enabled {
-					enableAction = "enable"
-				}
-				if _, err = e.Commands.Run(ctx, "/usr/bin/systemctl", enableAction, metadata["name"]); err != nil {
-					return err
-				}
-				activeAction := "stop"
-				if active {
-					activeAction = "start"
-				}
-				_, err = e.Commands.Run(ctx, "/usr/bin/systemctl", activeAction, metadata["name"])
-				return err
-			}
-			_, currentErr := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+metadata["name"])
-			if active || enabled {
-				if currentErr == nil {
-					return nil
-				}
-				_, err = e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", m.Target)
-			} else {
-				if currentErr != nil {
-					return nil
-				}
-				_, err = e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+metadata["name"])
-			}
-			return err
+			return e.restoreServicePrior(ctx, plan, m, metadata)
 		case "directory":
 			return restoreDirectoryMetadata(m.Target, metadata)
+		case "label":
+			if m.Kind != "label" || metadata["target"] != m.Target || metadata["present"] != "true" {
+				return errors.New("rollback label metadata is invalid")
+			}
+			restore := m
+			restore.Desired = map[string]any{"value": metadata["value"]}
+			return e.applyClusterMutation(ctx, plan, restore, join, false)
+		case "taint":
+			if m.Kind != "taint" || metadata["target"] != m.Target || metadata["present"] != "true" || metadata["effect"] == "" {
+				return errors.New("rollback taint metadata is invalid")
+			}
+			restore := m
+			restore.Desired = map[string]any{"value": metadata["value"], "effect": metadata["effect"]}
+			return e.applyClusterMutation(ctx, plan, restore, join, false)
 		default:
 			return errors.New("rollback metadata kind is unsupported")
 		}
 	}
 	return errors.New("rollback material kind is unsupported")
+}
+
+func (e NativeRootEngine) restoreServicePrior(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, metadata map[string]string) error {
+	enabled, enabledErr := strconv.ParseBool(metadata["enabled"])
+	active, activeErr := strconv.ParseBool(metadata["active"])
+	if enabledErr != nil || activeErr != nil || metadata["name"] != plan.NodeService.UnitName || metadata["manager"] != plan.NodeService.Manager {
+		return errors.New("rollback service metadata is invalid")
+	}
+	if metadata["manager"] == "systemd" {
+		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "daemon-reload"); err != nil {
+			return err
+		}
+		enableAction := "disable"
+		if enabled {
+			enableAction = "enable"
+		}
+		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", enableAction, metadata["name"]); err != nil {
+			return err
+		}
+		activeAction := "stop"
+		if active {
+			activeAction = "start"
+		}
+		_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", activeAction, metadata["name"])
+		return err
+	}
+	_, currentErr := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+metadata["name"])
+	if active || enabled {
+		if currentErr == nil {
+			return nil
+		}
+		_, err := e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", mutation.Target)
+		return err
+	}
+	if currentErr != nil {
+		return nil
+	}
+	_, err := e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+metadata["name"])
+	return err
 }
 
 func (e NativeRootEngine) verifyRollbackDesired(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, join *RootJoinBinding) error {
@@ -1041,32 +1347,125 @@ func (e NativeRootEngine) kubectl(ctx context.Context, plan client.NodeInstallPl
 	return e.Commands.Run(ctx, "/usr/local/bin/limactl", fixed...)
 }
 func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, join *RootJoinBinding, remove bool) error {
-	if join == nil || join.ExpectedNodeUID == "" {
-		return errors.New("cluster mutation requires joined node binding")
+	state, err := e.readClusterNode(ctx, plan, join)
+	if err != nil {
+		return err
 	}
-	observed, err := e.observeNode(ctx, plan, join.ExpectedNodeName)
-	if err != nil || observed.UID != join.ExpectedNodeUID {
-		return errors.New("cluster mutation node UID differs from binding")
-	}
-	if join.ExpectedResourceVersion == "" || observed.ResourceVersion != join.ExpectedResourceVersion {
-		return errors.New("cluster mutation resourceVersion differs from its precondition")
-	}
-	var args []string
+	operations := []map[string]any{{"op": "test", "path": "/metadata/uid", "value": state.UID}, {"op": "test", "path": "/metadata/resourceVersion", "value": state.ResourceVersion}}
 	if m.Kind == "label" {
-		value := m.Target + "=" + stringValue(m.Desired["value"])
+		path := "/metadata/labels/" + strings.ReplaceAll(strings.ReplaceAll(m.Target, "~", "~0"), "/", "~1")
+		prior, exists := state.Labels[m.Target]
 		if remove {
-			value = m.Target + "-"
+			if !exists {
+				return nil
+			}
+			operations = append(operations, map[string]any{"op": "test", "path": path, "value": prior}, map[string]any{"op": "remove", "path": path})
+		} else {
+			if !state.LabelsPresent {
+				operations = append(operations, map[string]any{"op": "add", "path": "/metadata/labels", "value": map[string]string{m.Target: stringValue(m.Desired["value"])}})
+			} else {
+				op := "add"
+				if exists {
+					op = "replace"
+					operations = append(operations, map[string]any{"op": "test", "path": path, "value": prior})
+				}
+				operations = append(operations, map[string]any{"op": op, "path": path, "value": stringValue(m.Desired["value"])})
+			}
 		}
-		args = []string{"label", "node", join.ExpectedNodeName, value, "--overwrite"}
 	} else {
-		value := m.Target + "=" + stringValue(m.Desired["value"]) + ":" + stringValue(m.Desired["effect"])
-		if remove {
-			value = m.Target + ":" + stringValue(m.Desired["effect"]) + "-"
+		updated := append([]clusterTaint(nil), state.Taints...)
+		found := -1
+		for index, taint := range updated {
+			if taint.Key == m.Target && taint.Effect == stringValue(m.Desired["effect"]) {
+				found = index
+				break
+			}
 		}
-		args = []string{"taint", "node", join.ExpectedNodeName, value, "--overwrite"}
+		if remove {
+			if found < 0 {
+				return nil
+			}
+			updated = append(updated[:found], updated[found+1:]...)
+		} else {
+			desired := clusterTaint{Key: m.Target, Value: stringValue(m.Desired["value"]), Effect: stringValue(m.Desired["effect"])}
+			if found < 0 {
+				updated = append(updated, desired)
+			} else {
+				updated[found] = desired
+			}
+		}
+		if state.TaintsPresent {
+			operations = append(operations, map[string]any{"op": "test", "path": "/spec/taints", "value": state.Taints}, map[string]any{"op": "replace", "path": "/spec/taints", "value": updated})
+		} else {
+			operations = append(operations, map[string]any{"op": "add", "path": "/spec/taints", "value": updated})
+		}
 	}
-	_, err = e.kubectl(ctx, plan, args...)
-	return err
+	encoded, err := json.Marshal(operations)
+	if err != nil {
+		return err
+	}
+	output, err := e.kubectl(ctx, plan, "patch", "node", join.ExpectedNodeName, "--type=json", "--patch", string(encoded), "-o", "json")
+	if err != nil {
+		return errors.New("atomic Kubernetes node mutation failed")
+	}
+	var result struct {
+		Metadata struct{ Name, UID, ResourceVersion string } `json:"metadata"`
+	}
+	if decodeSingleJSON(output, &result) != nil || result.Metadata.Name != join.ExpectedNodeName || result.Metadata.UID != join.ExpectedNodeUID || result.Metadata.ResourceVersion == "" {
+		return errors.New("atomic Kubernetes mutation response is invalid")
+	}
+	join.ExpectedResourceVersion = result.Metadata.ResourceVersion
+	return nil
+}
+
+type clusterTaint struct {
+	Key    string `json:"key"`
+	Value  string `json:"value,omitempty"`
+	Effect string `json:"effect"`
+}
+type clusterNodeState struct {
+	Name, UID, ResourceVersion   string
+	Labels                       map[string]string
+	Taints                       []clusterTaint
+	LabelsPresent, TaintsPresent bool
+}
+
+func (e NativeRootEngine) readClusterNode(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding) (clusterNodeState, error) {
+	if join == nil || join.ExpectedNodeUID == "" || join.ExpectedResourceVersion == "" {
+		return clusterNodeState{}, errors.New("cluster mutation requires an exact joined node binding")
+	}
+	output, err := e.kubectl(ctx, plan, "get", "node", join.ExpectedNodeName, "-o", "json")
+	if err != nil {
+		return clusterNodeState{}, err
+	}
+	var value struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string `json:"labels"`
+		} `json:"metadata"`
+		Spec struct {
+			Taints *[]clusterTaint `json:"taints"`
+		} `json:"spec"`
+	}
+	if decodeSingleJSON(output, &value) != nil || value.Metadata.Name != join.ExpectedNodeName || value.Metadata.UID != join.ExpectedNodeUID {
+		return clusterNodeState{}, errors.New("cluster mutation node UID differs from binding")
+	}
+	if value.Metadata.ResourceVersion != join.ExpectedResourceVersion {
+		return clusterNodeState{}, errors.New("cluster mutation resourceVersion differs from its precondition")
+	}
+	labelsPresent := value.Metadata.Labels != nil
+	if value.Metadata.Labels == nil {
+		value.Metadata.Labels = map[string]string{}
+	}
+	taintsPresent := value.Spec.Taints != nil
+	taints := []clusterTaint{}
+	if taintsPresent {
+		taints = *value.Spec.Taints
+		if taints == nil {
+			taints = []clusterTaint{}
+		}
+	}
+	return clusterNodeState{Name: value.Metadata.Name, UID: value.Metadata.UID, ResourceVersion: value.Metadata.ResourceVersion, Labels: value.Metadata.Labels, Taints: taints, LabelsPresent: labelsPresent, TaintsPresent: taintsPresent}, nil
 }
 func (e NativeRootEngine) observeNode(ctx context.Context, plan client.NodeInstallPlan, name string) (JoinedNode, error) {
 	output, err := e.kubectl(ctx, plan, "get", "node", name, "-o", "json")
@@ -1328,8 +1727,9 @@ func writeRootAtomic(path string, value []byte, mode os.FileMode, uid, gid int) 
 	}
 	return writeRootAtomicNative(path, value, mode, uid, gid)
 }
-func backupID(planID string, ordinal int64) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", planID, ordinal)))
+func backupID(planID string, ordinal int64, content []byte) string {
+	contentSum := sha256.Sum256(content)
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%x", planID, ordinal, contentSum)))
 	value := sum[:16]
 	value[6] = (value[6] & 0x0f) | 0x40
 	value[8] = (value[8] & 0x3f) | 0x80

@@ -17,11 +17,16 @@ type NodeEnrollOptions = nodepkg.CommandEnrollOptions
 type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
 	Recover(context.Context) (client.NodeInstallReceipt, error)
+	Repair(context.Context) (client.NodeInstallReceipt, error)
+	Uninstall(context.Context, bool) (client.NodeInstallReceipt, error)
 	Heartbeat(context.Context) (nodepkg.HeartbeatResult, error)
 	Serve(context.Context, time.Duration) error
 }
 
-func newDefaultNodeCommands(build BuildInfo) (nodeCommands, error) {
+func newDefaultNodeCommands(build BuildInfo, daemonOnly bool) (nodeCommands, error) {
+	if daemonOnly {
+		return nodepkg.NewProductionDaemonCommandRuntime(build.Version, &http.Client{Timeout: 30 * time.Second}, nil)
+	}
 	sessions, err := workspacepkg.NewDefaultSessionProvider()
 	if err != nil {
 		return nil, err
@@ -45,7 +50,7 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 	if len(args) == 0 || helpRequested(args) {
 		return a.writeHelp(format, "node")
 	}
-	commands, err := a.node()
+	commands, err := a.node(args[0] == "serve" || args[0] == "heartbeat")
 	if err != nil {
 		return a.writeError(format, ExitUnavailable, "node_unavailable", err.Error())
 	}
@@ -87,6 +92,28 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 		}
 		result, err := commands.Recover(ctx)
 		return a.writeNodeValue(format, result, err, "node install recovery completed")
+	case "repair":
+		if len(args) != 1 {
+			return a.nodeUsage(format, errors.New("repair accepts no arguments"))
+		}
+		result, err := commands.Repair(ctx)
+		return a.writeNodeValue(format, result, err, "node repair completed")
+	case "uninstall":
+		confirmed, removeManaged := false, false
+		for _, arg := range args[1:] {
+			if arg == "--yes" {
+				confirmed = true
+			} else if arg == "--remove-managed-runtime" {
+				removeManaged = true
+			} else {
+				return a.nodeUsage(format, fmt.Errorf("unknown node uninstall option %q", arg))
+			}
+		}
+		if !confirmed {
+			return a.nodeUsage(format, errors.New("node uninstall requires --yes"))
+		}
+		result, err := commands.Uninstall(ctx, removeManaged)
+		return a.writeNodeValue(format, result, err, "node uninstall completed")
 	case "heartbeat":
 		if len(args) != 1 {
 			return a.nodeUsage(format, errors.New("heartbeat accepts no arguments"))

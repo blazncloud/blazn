@@ -13,8 +13,10 @@ import (
 )
 
 type fakeNodeCommands struct {
-	options    NodeEnrollOptions
-	heartbeats int
+	options          NodeEnrollOptions
+	heartbeats       int
+	repairs          int
+	uninstallManaged bool
 }
 
 func (f *fakeNodeCommands) Serve(context.Context, time.Duration) error { return nil }
@@ -26,6 +28,14 @@ func (f *fakeNodeCommands) Enroll(_ context.Context, options NodeEnrollOptions) 
 func (*fakeNodeCommands) Recover(context.Context) (client.NodeInstallReceipt, error) {
 	return client.NodeInstallReceipt{State: "removed"}, nil
 }
+func (f *fakeNodeCommands) Repair(context.Context) (client.NodeInstallReceipt, error) {
+	f.repairs++
+	return client.NodeInstallReceipt{State: "active"}, nil
+}
+func (f *fakeNodeCommands) Uninstall(_ context.Context, managed bool) (client.NodeInstallReceipt, error) {
+	f.uninstallManaged = managed
+	return client.NodeInstallReceipt{State: "removed"}, nil
+}
 func (f *fakeNodeCommands) Heartbeat(context.Context) (nodepkg.HeartbeatResult, error) {
 	f.heartbeats++
 	return nodepkg.HeartbeatResult{NodeID: "node-a", Sequence: 0}, nil
@@ -35,7 +45,7 @@ func TestNodeCLIRequiresExplicitSafeEnrollmentInputsAndJSON(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
-	app.node = func() (nodeCommands, error) { return fake, nil }
+	app.node = func(bool) (nodeCommands, error) { return fake, nil }
 	code := app.Run([]string{"--output", "json", "node", "enroll", "--workspace", "workspace-a", "--request-id", "request-1", "--name", "node-a", "--mode", "fresh", "--machine-fingerprint", strings.Repeat("a", 64), "--profile", "/etc/blazn/profile.json"})
 	if code != ExitSuccess {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
@@ -58,8 +68,8 @@ func TestNodeHelpAndHeartbeat(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
-	app.node = func() (nodeCommands, error) { return fake, nil }
-	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node enroll|recover|heartbeat") || !strings.Contains(stdout.String(), "root-authorize") {
+	app.node = func(bool) (nodeCommands, error) { return fake, nil }
+	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
 		t.Fatalf("help=%q code=%d", stdout.String(), code)
 	}
 	stdout.Reset()
@@ -72,7 +82,7 @@ func TestNodeCLIRequiresAndCarriesExactAdoptedBinding(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
-	app.node = func() (nodeCommands, error) { return fake, nil }
+	app.node = func(bool) (nodeCommands, error) { return fake, nil }
 	base := []string{"node", "enroll", "--workspace", "workspace-a", "--request-id", "request-1", "--name", "node-a", "--mode", "adopt", "--machine-fingerprint", strings.Repeat("a", 64), "--profile", "/etc/blazn/profile.json"}
 	if code := app.Run(base); code != ExitUsage {
 		t.Fatalf("adopt without binding code=%d", code)
@@ -89,13 +99,32 @@ func TestNodeCLIRequiresAndCarriesExactAdoptedBinding(t *testing.T) {
 	}
 }
 
+func TestNodeRepairAndConfirmedUninstallCLI(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeNodeCommands{}
+	app := New(&stdout, &stderr, BuildInfo{})
+	app.node = func(bool) (nodeCommands, error) { return fake, nil }
+	if code := app.Run([]string{"node", "repair"}); code != ExitSuccess || fake.repairs != 1 {
+		t.Fatalf("repair code=%d calls=%d", code, fake.repairs)
+	}
+	if code := app.Run([]string{"node", "uninstall"}); code != ExitUsage {
+		t.Fatalf("unconfirmed uninstall code=%d", code)
+	}
+	if code := app.Run([]string{"node", "uninstall", "--yes", "--remove-managed-runtime"}); code != ExitSuccess || !fake.uninstallManaged {
+		t.Fatalf("uninstall code=%d managed=%v stderr=%s", code, fake.uninstallManaged, stderr.String())
+	}
+}
+
 func TestNewAppWiresDefaultNodeCommandFactory(t *testing.T) {
 	prior := defaultNodeCommandFactory
 	defer func() { defaultNodeCommandFactory = prior }()
 	fake := &fakeNodeCommands{}
 	called := false
-	defaultNodeCommandFactory = func(build BuildInfo) (nodeCommands, error) {
+	defaultNodeCommandFactory = func(build BuildInfo, daemonOnly bool) (nodeCommands, error) {
 		called = true
+		if !daemonOnly {
+			t.Fatal("heartbeat requested interactive node construction")
+		}
 		if build.Version != "v-test" {
 			t.Fatalf("build=%#v", build)
 		}

@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type PrivilegedInstallState struct {
@@ -15,6 +15,13 @@ type PrivilegedInstallState struct {
 	Platform string
 	mu       sync.RWMutex
 	plan     client.NodeInstallPlan
+	ctx      context.Context
+}
+
+func (s *PrivilegedInstallState) BindContext(ctx context.Context) {
+	s.mu.Lock()
+	s.ctx = ctx
+	s.mu.Unlock()
 }
 
 func (s *PrivilegedInstallState) BindPlan(plan client.NodeInstallPlan) {
@@ -37,7 +44,13 @@ func (s *PrivilegedInstallState) call(operation RootOperation, wal *InstallWAL, 
 		return RootResponse{}, err
 	}
 	request.WAL, request.Receipt = wal, receipt
-	return s.Client.Call(context.Background(), request)
+	s.mu.RLock()
+	ctx := s.ctx
+	s.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.Client.Call(ctx, request)
 }
 func (s *PrivilegedInstallState) AcquireInstallLock() (func(), error) {
 	return s.Local.AcquireInstallLock()

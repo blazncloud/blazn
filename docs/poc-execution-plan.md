@@ -44,7 +44,7 @@ This plan is based on:
 - `FrontRowXP/blaze-internal` at `origin/main` commit `5e553c6`, reviewed on 2026-08-21.
 - The live MicroK8s cluster, inspected read-only on 2026-08-21.
 - `frontro-agent-fleet-m1-plan.md` and `frontro-agent-fleet-kubernetes-plan.md` from the existing workspace.
-- `KingJammin/blaze-proxy` at commit `66188a1` and release `v0.6.0`.
+- `blazncloud/blaze-proxy` at commit `66188a1` and release `v0.6.0`.
 - [Kubernetes SIG Agent Sandbox overview](https://agent-sandbox.sigs.k8s.io/docs/getting_started/overview/).
 - [Kubernetes SIG Agent Sandbox release v0.5.6](https://github.com/kubernetes-sigs/agent-sandbox/releases/tag/v0.5.6).
 - The official Agent Sandbox Kueue and warm-pool examples in the `kubernetes-sigs/agent-sandbox` repository.

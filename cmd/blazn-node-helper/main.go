@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	nodepkg "github.com/KingJammin/blazn/internal/node"
+	nodepkg "github.com/blazncloud/blazn/internal/node"
 	"os"
 )
 

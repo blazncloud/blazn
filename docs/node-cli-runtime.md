@@ -41,6 +41,23 @@ The daemon skeleton reloads the enrolled private identity for every heartbeat,
 checks its fingerprint and expiry, binds host/worker capability to the verified
 plan, computes the frozen capability digest, and signs canonical JSON with the
 node-proof prefix. A new process uses a new boot ID and starts sequence zero.
+`node serve` constructs this runtime solely from the finalized service-owned
+identity, runtime record, and its persisted HTTPS control-plane origin; it does
+not open a workspace session or load a user access token. Host totals come from
+the host, while worker CPU, memory, and ephemeral storage come exclusively from
+Kubernetes `status.allocatable` through the fixed no-input `node-root-observe`
+helper. The service identity's receipt-bound sudo rule authorizes only that
+subcommand and exposes no kubeconfig, Lima credential, or general root-helper
+operation.
+
+`node repair` requires the still-current reviewed plan and preserves the
+original uninstall prior-state evidence while journaling repair-time rollback
+material separately. `node uninstall --yes` rolls back receipt-owned service,
+eligibility, identity, and state mutations; package/image runtime is preserved
+unless `--remove-managed-runtime` is explicitly supplied. An expired plan can
+authorize only rollback backed by the exact root WAL or terminal receipt, not
+new apply, repair, join, or capture work. Successful uninstall can therefore be
+followed by a clean enrollment and reinstall.
 
 The concrete isolated HTTP replay and root-owned authority persistence are
 implemented by the privileged Linux/macOS adapter milestone. This contract

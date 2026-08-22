@@ -3,13 +3,19 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 const RootPrepareStateSubcommand = "node-root-helper-init"
@@ -31,6 +37,36 @@ func RunProductionRootHelper(ctx context.Context, input io.Reader, output io.Wri
 		CurrentBinaryPath: defaultRootBinaryPath,
 	}
 	return RunRootHelper(ctx, input, output, engine)
+}
+
+func RunProductionObservationHelper(ctx context.Context, output io.Writer) error {
+	if currentUID() != 0 {
+		return errors.New("root observation helper requires UID 0")
+	}
+	paths, err := HostProductionNodePaths()
+	if err != nil {
+		return err
+	}
+	platform := "linux"
+	if paths.RootStateRoot == MacOSNodeRootStateRoot {
+		platform = "macos"
+	}
+	authority, err := loadRootAuthority(paths.InstallAuthorityPath())
+	if err != nil {
+		return err
+	}
+	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot}
+	request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootObserve, Platform: platform, Plan: authority.Plan}
+	if err := engine.AuthorizeRootRequest(ctx, request); err != nil {
+		return err
+	}
+	response, err := engine.Execute(ctx, request)
+	if err != nil {
+		return err
+	}
+	response.SchemaVersion = RootHelperSchema
+	response.OK = true
+	return json.NewEncoder(output).Encode(response)
 }
 
 func prepareProductionServiceState(ctx context.Context, expected, binary string) error {
@@ -63,13 +99,17 @@ func PrepareProductionServiceState() error {
 	if err != nil {
 		return err
 	}
-	if err := ensurePrivateDirectory(paths.ServiceStateRoot, 0); err != nil {
-		return err
+	allowed := map[int64]bool{0: true, int64(uid): true}
+	serviceName := "blazn-node"
+	if paths.ServiceStateRoot == MacOSNodeServiceStateRoot {
+		serviceName = "_blazn-node"
 	}
-	if err := os.Chown(paths.ServiceStateRoot, uid, gid); err != nil {
-		return err
+	if service, lookupErr := user.Lookup(serviceName); lookupErr == nil {
+		if serviceUID, parseErr := strconv.ParseInt(service.Uid, 10, 64); parseErr == nil && serviceUID > 0 {
+			allowed[serviceUID] = true
+		}
 	}
-	if err := os.Chmod(paths.ServiceStateRoot, 0700); err != nil {
+	if err := transitionPrivateStateOwnership(paths.ServiceStateRoot, uid, gid, allowed); err != nil {
 		return err
 	}
 	source, err := os.Executable()
@@ -86,11 +126,84 @@ func PrepareProductionServiceState() error {
 	}
 	if existing, readErr := readBoundedRegular(defaultRootBinaryPath, 512<<20); readErr == nil {
 		if !bytes.Equal(existing, value) {
-			return errors.New("system Blazn binary differs from the authenticated installer")
+			if !rootReceiptOwnsSystemBinary(paths.RootStateRoot, existing) {
+				return errors.New("system Blazn binary differs from both the authenticated installer and receipt-owned version")
+			}
+			return writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0)
 		}
 		return nil
 	} else if !errors.Is(readErr, os.ErrNotExist) && !strings.Contains(readErr.Error(), "material path is unsafe") {
 		return readErr
 	}
 	return writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0)
+}
+
+func receiptOwnsSystemBinary(receipt client.NodeInstallReceipt, value []byte) bool {
+	sum := sha256.Sum256(value)
+	return (receipt.State == "active" || receipt.State == "removed") && receipt.Binary.Path == defaultRootBinaryPath && receipt.Binary.Digest == "sha256:"+hex.EncodeToString(sum[:])
+}
+
+func rootReceiptOwnsSystemBinary(root string, value []byte) bool {
+	if receipt, err := (FileStateStore{Root: root}).LoadReceipt(); err == nil && receiptOwnsSystemBinary(receipt, value) {
+		return true
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) > 128 {
+		return false
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "retired-") || !strings.HasSuffix(name, "-receipt.json") || len(name) != len("retired--receipt.json")+36 {
+			continue
+		}
+		encoded, readErr := readPrivateFile(filepath.Join(root, name), 256<<10)
+		if readErr != nil {
+			continue
+		}
+		receipt, decodeErr := client.DecodeNodeInstallReceipt(bytes.NewReader(encoded))
+		if decodeErr == nil && receiptOwnsSystemBinary(receipt, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func transitionPrivateStateOwnership(root string, uid, gid int, allowed map[int64]bool) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || uid <= 0 || gid <= 0 || !allowed[int64(uid)] {
+		return errors.New("service-state ownership transition is invalid")
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return err
+	}
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		owner, links, ok := fileOwner(info)
+		if !ok || !allowed[owner] || info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && (!info.Mode().IsRegular() || links != 1)) {
+			return errors.New("service state contains an unsafe ownership boundary")
+		}
+		want := os.FileMode(0600)
+		if info.IsDir() {
+			want = 0700
+		}
+		if info.Mode().Perm() != want {
+			return errors.New("service state permissions differ from the private contract")
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Chown(path, uid, gid); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0700)
+		}
+		return os.Chmod(path, 0600)
+	})
 }

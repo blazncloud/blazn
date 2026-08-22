@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -21,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type mockJoinAPI struct {
@@ -316,12 +317,23 @@ func TestBrokerJoinCoordinatorBindsIssueAndConsumeToPersistedIdentity(t *testing
 	if binding.Credential != api.credential.Credential || binding.ExpectedNodeName != plan.Hostname || api.issueRequest.NodePublicKeyFingerprint != fingerprint || len(api.issueProof) != 86 {
 		t.Fatalf("issue binding is incomplete: binding=%+v request=%+v", binding, api.issueRequest)
 	}
+	if state.runtime.PendingJoin == nil || state.runtime.PendingJoin.IssuanceID != api.credential.IssuanceID {
+		t.Fatal("non-secret join issuance was not persisted before host join")
+	}
+	coordinator, err = NewBrokerJoinCoordinator(api, state, fixedIdentity{Identity: identity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator.Now = func() time.Time { return now }
 	joined := JoinedNode{Name: plan.Hostname, UID: "uid-1", ResourceVersion: "7"}
 	if err := coordinator.ConfirmJoined(context.Background(), plan, joined); err != nil {
 		t.Fatal(err)
 	}
 	if api.consumeRequest.JoinedNodeUID != joined.UID || api.consumeRequest.ResourceVersion != joined.ResourceVersion || len(api.consumeProof) != 86 {
 		t.Fatalf("consume binding is incomplete: %+v", api.consumeRequest)
+	}
+	if state.runtime.PendingJoin != nil {
+		t.Fatal("consumed join issuance remained persisted")
 	}
 	if err := coordinator.ConfirmJoined(context.Background(), plan, joined); err == nil {
 		t.Fatal("consumed join issuance was reusable")
@@ -391,6 +403,217 @@ func TestServiceStateRequiresExactSystemdOutputs(t *testing.T) {
 	if response.Service == nil || response.Service.Enabled || response.Service.Active {
 		t.Fatalf("non-exact service states were accepted: %+v", response.Service)
 	}
+}
+
+func TestSystemdPriorRestoreReloadsThenRestoresEnabledAndActive(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return nil, nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	metadata := map[string]string{"active": "false", "enabled": "false", "kind": "service", "manager": "systemd", "name": "blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).restoreServicePrior(context.Background(), plan, mutation, metadata); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"daemon-reload", "disable blazn-node.service", "stop blazn-node.service"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestClusterMutationUsesAtomicResourceVersionCAS(t *testing.T) {
+	plan := testJoinPlan("linux")
+	binding := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", WorkerOnly: true}
+	patchCalls := 0
+	commands := scriptedExecutor{run: func(path string, args []string, _ []byte) ([]byte, error) {
+		if path != "/snap/bin/microk8s.kubectl" {
+			return nil, errors.New("unexpected command")
+		}
+		if len(args) >= 2 && args[0] == "get" {
+			return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"7","labels":{"blazn.dev/pool":"old"}},"spec":{"taints":[]}}`), nil
+		}
+		if len(args) >= 2 && args[0] == "patch" {
+			patchCalls++
+			var operations []map[string]any
+			if err := json.Unmarshal([]byte(args[5]), &operations); err != nil {
+				t.Fatal(err)
+			}
+			if len(operations) < 3 || operations[1]["path"] != "/metadata/resourceVersion" || operations[1]["value"] != "7" {
+				t.Fatalf("patch=%s", args[5])
+			}
+			return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"8"}}`), nil
+		}
+		return nil, errors.New("unexpected kubectl operation")
+	}}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands}
+	mutation := client.NodeInstallMutation{Kind: "label", Target: "blazn.dev/pool", Desired: map[string]any{"value": "new"}}
+	if err := engine.applyClusterMutation(context.Background(), plan, mutation, binding, false); err != nil {
+		t.Fatal(err)
+	}
+	if patchCalls != 1 || binding.ExpectedResourceVersion != "8" {
+		t.Fatalf("patchCalls=%d binding=%#v", patchCalls, binding)
+	}
+}
+
+func TestKubernetesQuantitiesAreStrict(t *testing.T) {
+	if cpu, err := parseCPUQuantity("3500m"); err != nil || cpu != 3500 {
+		t.Fatalf("cpu=%d err=%v", cpu, err)
+	}
+	if memory, err := parseByteQuantity("16Gi"); err != nil || memory != 16<<30 {
+		t.Fatalf("memory=%d err=%v", memory, err)
+	}
+	for _, value := range []string{"", "3.5", "-1m", "1Pi"} {
+		if _, err := parseCPUQuantity(value); err == nil {
+			t.Fatalf("CPU quantity %q accepted", value)
+		}
+	}
+}
+
+func TestPrivilegedObservationParsesRealShapedLinuxAndMacWorkers(t *testing.T) {
+	for _, platform := range []string{"linux", "macos"} {
+		t.Run(platform, func(t *testing.T) {
+			plan := testJoinPlan(platform)
+			plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+			engine := NativeRootEngine{Platform: platform}
+			if platform == "macos" {
+				plan.NodeService = client.NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node"}
+				value := []byte(`{"schemaVersion":"blazn.dev/lima-worker-binding/v1","clusterId":"cluster-1","vmName":"blazn-worker","workerName":"worker-1"}`)
+				path := filepath.Join(testRoot(t), "lima.json")
+				if err := os.WriteFile(path, value, 0600); err != nil {
+					t.Fatal(err)
+				}
+				sum := sha256.Sum256(value)
+				plan.Components = []client.NodeInstallComponent{{Name: "lima-worker-binding", SourceClass: "embedded", ArtifactType: "configuration", SHA256: hex.EncodeToString(sum[:])}}
+				engine.LimaBindingPath = path
+			}
+			engine.Commands = scriptedExecutor{run: func(path string, args []string, _ []byte) ([]byte, error) {
+				joined := strings.Join(args, " ")
+				if strings.Contains(joined, "get node worker-1 -o json") {
+					return []byte(`{"apiVersion":"v1","kind":"Node","metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"44","labels":{"kubernetes.io/arch":"arm64"}},"spec":{"taints":[]},"status":{"allocatable":{"cpu":"3500m","memory":"16Gi","ephemeral-storage":"120Gi","pods":"110"},"conditions":[{"type":"Ready","status":"True"},{"type":"MemoryPressure","status":"False"}]}}`), nil
+				}
+				if strings.Contains(joined, "get runtimeclass -o json") {
+					return []byte(`{"apiVersion":"node.k8s.io/v1","items":[{"metadata":{"name":"gvisor","resourceVersion":"9"}}],"kind":"RuntimeClassList"}`), nil
+				}
+				if strings.Contains(joined, "api-resources -o name") {
+					return nil, &FixedCommandError{ExitCode: 1}
+				}
+				if path == "/usr/bin/systemctl" {
+					if args[0] == "is-enabled" {
+						return []byte("enabled\n"), nil
+					}
+					return []byte("active\n"), nil
+				}
+				if path == "/bin/launchctl" {
+					return []byte("service"), nil
+				}
+				return nil, errors.New("unexpected observation command")
+			}}
+			binding := client.KubernetesBinding{ClusterID: "cluster-1", NodeName: "worker-1", NodeUID: "uid-1", ResourceVersion: "43"}
+			observed, err := engine.observeCapabilityBinding(context.Background(), plan, binding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observed.AllocatableCPUMillis != 3500 || observed.AllocatableMemoryBytes != 16<<30 || observed.AllocatableDiskBytes != 120<<30 || !observed.NodeReady || !observed.ServiceActive || len(observed.RuntimeClasses) != 1 || !containsArgument(observed.ReasonCodes, "api_discovery_failed") {
+				t.Fatalf("observation=%#v", observed)
+			}
+		})
+	}
+}
+
+func TestExistingMacServiceIdentityMustMatchEveryDedicatedAttribute(t *testing.T) {
+	account := &user.User{Username: "_blazn-node", Uid: "299", Gid: "299", HomeDir: MacOSNodeServiceStateRoot}
+	group := &user.Group{Name: "_blazn-node", Gid: "299"}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		if containsArgument(args, "GroupMembership") || containsArgument(args, "GroupMembers") {
+			return nil, &FixedCommandError{ExitCode: 1}
+		}
+		if strings.Contains(strings.Join(args, " "), "/Users/_blazn-node") {
+			return []byte("UniqueID: 299\nPrimaryGroupID: 299\nNFSHomeDirectory: " + MacOSNodeServiceStateRoot + "\nUserShell: /usr/bin/false\nIsHidden: 1\n"), nil
+		}
+		return []byte("PrimaryGroupID: 299\n"), nil
+	}}
+	engine := NativeRootEngine{Platform: "macos", Commands: commands, LookupUser: func(string) (*user.User, error) { return account, nil }, LookupGroup: func(string) (*user.Group, error) { return group, nil }}
+	service := client.NodeInstallService{RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node"}
+	if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err != nil {
+		t.Fatal(err)
+	}
+	account.HomeDir = "/Users/shared"
+	if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err == nil {
+		t.Fatal("macOS account with shared home was accepted")
+	}
+}
+
+func TestExpiredPlanAllowsOnlyReceiptBoundRecovery(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	profile := trustedBootstrapProfile(plan)
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: profile.ID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: profile.ControlPlaneOrigin, AuthorizedAt: plan.IssuedAt}
+	digest, err := RootInstallAuthorityDigest(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.Digest = digest
+	root := filepath.Join(testRoot(t), "root-state")
+	store := FileStateStore{Root: root}
+	wal := InstallWAL{SchemaVersion: 1, ReceiptID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Mutations: []client.NodeReceiptMutation{}}
+	if err := store.SaveWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	engine := NativeRootEngine{Platform: "linux", RootStateRoot: root}
+	request := RootRequest{Operation: RootLoadWAL, Plan: plan, Platform: "linux"}
+	if err := engine.authorizeReceiptBoundRecovery(request, authority, profile, "sha256:"+testHash); err != nil {
+		t.Fatal(err)
+	}
+	request.Operation = RootApply
+	if err := engine.authorizeReceiptBoundRecovery(request, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("expired authority applied a new mutation")
+	}
+}
+
+func TestRemovedRootAuthorityIsVerifiedAndArchivedForReinstall(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	state := &memoryState{}
+	installer := NewInstaller(&mockPlatform{failAt: -1}, state)
+	installer.uid = func() int64 { return 0 }
+	issued, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+	installer.now = func() time.Time { return issued.Add(time.Minute) }
+	active, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := installer.Uninstall(context.Background(), plan, authorization.Expected.Identity, identity, false)
+	if err != nil || removed.State != "removed" {
+		t.Fatalf("removed=%#v err=%v", removed, err)
+	}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: plan.IssuedAt}
+	authority.Digest, _ = RootInstallAuthorityDigest(authority)
+	encoded, _ := json.Marshal(authority)
+	root := filepath.Join(testRoot(t), "root")
+	authorityPath := filepath.Join(root, "install-authority.json")
+	if err := writePrivateCreate(authorityPath, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := (FileStateStore{Root: root}).SaveReceipt(removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{authorityPath, filepath.Join(root, "install-receipt.json")} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("canonical evidence remains: %s err=%v", path, err)
+		}
+	}
+	for _, path := range []string{filepath.Join(root, "retired-"+plan.PlanID+"-authority.json"), filepath.Join(root, "retired-"+plan.PlanID+"-receipt.json")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("archive missing: %s err=%v", path, err)
+		}
+	}
+	_ = active
 }
 
 func TestInstalledSnapVersionUsesExactRevisionColumn(t *testing.T) {
@@ -554,6 +777,15 @@ func TestRootHelperResponseRequiresEOF(t *testing.T) {
 	}
 }
 
+func TestDaemonObservationClientRejectsEveryMutationOperation(t *testing.T) {
+	client := PipeObservationClient{HelperPath: DefaultRootHelperPath, Timeout: time.Second}
+	for _, operation := range []RootOperation{RootApply, RootRollback, RootJoin, RootLoadReceipt, RootFinalizeState} {
+		if _, err := client.Call(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: operation}); err == nil {
+			t.Fatalf("operation %s reached daemon sudo boundary", operation)
+		}
+	}
+}
+
 func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T) {
 	authorization, _ := validBootstrapAuthorization(t)
 	plan := authorization.Expected.Plan
@@ -576,7 +808,9 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 	}
 	adapter.plan = plan
 	adapter.bootstrapBinding = authorization.KubernetesBinding
-	adapter.deferred = []client.NodeInstallMutation{{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/node", Desired: map[string]any{"value": "true"}}}
+	if err := adapter.Apply(context.Background(), client.NodeInstallMutation{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/node", Desired: map[string]any{"value": "true"}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := adapter.Verify(context.Background(), plan); err != nil {
 		t.Fatal(err)
 	}
@@ -604,12 +838,24 @@ func TestFreshJoinConsumptionUsesFinalDeferredMutationBinding(t *testing.T) {
 		}
 	})
 	adapter, _ := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, coordinator)
-	adapter.deferred = []client.NodeInstallMutation{{Ordinal: 1, Kind: "label"}, {Ordinal: 2, Kind: "taint"}}
+	checkpoints := []string{}
+	adapter.SetInstallCheckpoint(func(value string) error { checkpoints = append(checkpoints, value); return nil })
+	adapter.plan = plan
+	if err := adapter.Apply(context.Background(), client.NodeInstallMutation{Ordinal: 1, Kind: "label"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Apply(context.Background(), client.NodeInstallMutation{Ordinal: 2, Kind: "taint"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := adapter.Verify(context.Background(), plan); err != nil {
 		t.Fatal(err)
 	}
 	if coordinator.confirms != 1 || coordinator.confirmed.ResourceVersion != "9" || coordinator.confirmed.UID != "uid-1" {
 		t.Fatalf("confirmed=%#v count=%d", coordinator.confirmed, coordinator.confirms)
+	}
+	wantCheckpoints := []string{"join_intent", "join", "binding", "broker_consume", "broker_consumed", "verify"}
+	if !sameJSON(checkpoints, wantCheckpoints) {
+		t.Fatalf("checkpoints=%#v want=%#v", checkpoints, wantCheckpoints)
 	}
 }
 
@@ -733,12 +979,12 @@ func TestPackageCaptureDistinguishesAbsentFromProbeFailure(t *testing.T) {
 	mutation := client.NodeInstallMutation{Ordinal: 1, Kind: "package", Target: "microk8s", Desired: map[string]any{"manager": "snap"}}
 	backupRoot := testRoot(t)
 	engine := NativeRootEngine{Commands: scriptedExecutor{run: func(string, []string, []byte) ([]byte, error) { return nil, &FixedCommandError{ExitCode: 1} }}}
-	prior, err := engine.capture(context.Background(), plan, mutation, backupRoot)
+	prior, err := engine.capture(context.Background(), plan, mutation, backupRoot, nil)
 	if err != nil || prior.State != "absent" {
 		t.Fatalf("prior=%#v err=%v", prior, err)
 	}
 	engine.Commands = scriptedExecutor{run: func(string, []string, []byte) ([]byte, error) { return nil, errors.New("probe transport failure") }}
-	if _, err := engine.capture(context.Background(), plan, mutation, backupRoot); err == nil {
+	if _, err := engine.capture(context.Background(), plan, mutation, backupRoot, nil); err == nil {
 		t.Fatal("package probe failure was misclassified as absence")
 	}
 }

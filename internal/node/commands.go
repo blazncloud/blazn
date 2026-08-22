@@ -76,6 +76,9 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 			installerState = c.State
 		}
 		c.Installer = NewInstaller(platformAdapter, installerState)
+		if _, ok := installerState.(*PrivilegedInstallState); ok {
+			c.Installer.uid = func() int64 { return 0 }
+		}
 		c.Service.installer = c.Installer
 	}
 	if options.Mode == client.NodeModeAdopt && (options.KubernetesBinding == nil || options.KubernetesBinding.ClusterID == "" || options.KubernetesBinding.NodeName != options.Name || options.KubernetesBinding.NodeUID == "" || options.KubernetesBinding.ResourceVersion == "") {
@@ -135,6 +138,117 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 	return receipt, err
 }
 
+func (c *CommandRuntime) Repair(ctx context.Context) (client.NodeInstallReceipt, error) {
+	state, identity, profile, err := c.lifecycleContext(ctx, true)
+	if err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	if err := c.configureInstaller(profile); err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	receipt, err := c.Installer.Repair(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+	if err == nil {
+		err = c.Installer.FinalizeServiceState(ctx, state.Exchange.Plan)
+	}
+	return receipt, err
+}
+
+func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime bool) (client.NodeInstallReceipt, error) {
+	state, identity, profile, err := c.lifecycleContext(ctx, false)
+	if err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	if err := c.configureInstaller(profile); err != nil {
+		return client.NodeInstallReceipt{}, err
+	}
+	receipt, err := c.Installer.Uninstall(ctx, state.Exchange.Plan, state.Exchange.Identity, identity, removeManagedRuntime)
+	if err != nil {
+		return receipt, err
+	}
+	if remover, ok := c.Installer.platform.(interface {
+		RemoveServiceSupport(context.Context, client.NodeInstallPlan) error
+	}); ok {
+		if err := remover.RemoveServiceSupport(ctx, state.Exchange.Plan); err != nil {
+			return receipt, err
+		}
+	}
+	if store, ok := c.State.(FileStateStore); ok {
+		for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+			path := filepath.Join(store.Root, name)
+			info, statErr := os.Lstat(path)
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return receipt, errors.New("node service-state cleanup encountered an unsafe entry")
+			}
+			if removeErr := os.Remove(path); removeErr != nil {
+				return receipt, removeErr
+			}
+		}
+	}
+	return receipt, nil
+}
+
+func (c *CommandRuntime) lifecycleContext(ctx context.Context, requireCurrent bool) (RuntimeState, Identity, client.NodeTrustedInstallProfile, error) {
+	if c.State == nil || c.Identities == nil {
+		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, errors.New("node lifecycle dependencies are unavailable")
+	}
+	if c.PrepareState != nil {
+		if err := c.PrepareState(ctx); err != nil {
+			return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
+		}
+	}
+	state, err := c.State.LoadRuntime()
+	if err != nil {
+		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
+	}
+	identity, err := c.Identities.LoadOrCreate()
+	if err != nil {
+		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
+	}
+	profile, err := LoadTrustedProfile(state.Pin.ProfilePath, c.CurrentBinaryPath, c.CurrentVersion)
+	if err != nil {
+		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
+	}
+	when := time.Now()
+	if !requireCurrent {
+		issuedAt, parseErr := time.Parse(time.RFC3339, state.Exchange.Plan.IssuedAt)
+		if parseErr != nil {
+			return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, parseErr
+		}
+		when = issuedAt
+	}
+	if err := verifyExchange(state.Exchange, state.Pin, identity, EnrollOptions{Platform: state.Exchange.Plan.Target.Platform, Architecture: state.Exchange.Plan.Target.Architecture, Profile: profile}, when); err != nil {
+		if requireCurrent {
+			return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, fmt.Errorf("repair requires an authorized fresh, unexpired plan: %w", err)
+		}
+		return RuntimeState{}, Identity{}, client.NodeTrustedInstallProfile{}, err
+	}
+	return state, identity, profile, nil
+}
+
+func (c *CommandRuntime) configureInstaller(profile client.NodeTrustedInstallProfile) error {
+	if c.PlatformFactory != nil {
+		platform, err := c.PlatformFactory(profile)
+		if err != nil {
+			return err
+		}
+		state := c.InstallerState
+		if state == nil {
+			state = c.State
+		}
+		c.Installer = NewInstaller(platform, state)
+		if _, ok := state.(*PrivilegedInstallState); ok {
+			c.Installer.uid = func() int64 { return 0 }
+		}
+	}
+	if c.Installer == nil {
+		return errors.New("node lifecycle installer is unavailable")
+	}
+	return nil
+}
+
 func NewProductionCommandRuntime(api API, accessToken, currentVersion string, join JoinCoordinator, capabilities CapabilityProvider, embedded map[string][]byte) (*CommandRuntime, error) {
 	if api == nil || accessToken == "" || currentVersion == "" {
 		return nil, errors.New("production node runtime dependencies are incomplete")
@@ -154,6 +268,50 @@ func NewProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 	return newProductionCommandRuntime(api, accessToken, currentVersion, join, capabilities, embedded, paths, binary)
 }
 
+// NewProductionDaemonCommandRuntime uses only the finalized service-owned
+// runtime, node identity, and pinned control-plane origin. In particular it
+// never opens a human workspace session or accepts a user access token.
+func NewProductionDaemonCommandRuntime(currentVersion string, httpClient *http.Client, capabilities CapabilityProvider) (*CommandRuntime, error) {
+	if currentVersion == "" {
+		return nil, errors.New("production node daemon version is unavailable")
+	}
+	paths, err := HostProductionNodePaths()
+	if err != nil {
+		return nil, err
+	}
+	return newProductionDaemonCommandRuntime(paths, currentVersion, httpClient, capabilities)
+}
+
+func newProductionDaemonCommandRuntime(paths ProductionNodePaths, currentVersion string, httpClient *http.Client, capabilities CapabilityProvider) (*CommandRuntime, error) {
+	if paths.ServiceStateRoot == "" || paths.RootStateRoot == "" || paths.ServiceStateRoot == paths.RootStateRoot {
+		return nil, errors.New("production node daemon paths are invalid")
+	}
+	platformName := "linux"
+	if paths.RootStateRoot == MacOSNodeRootStateRoot {
+		platformName = "macos"
+	}
+	state := FileStateStore{Root: paths.ServiceStateRoot}
+	persisted, err := state.LoadRuntime()
+	if err != nil {
+		return nil, fmt.Errorf("load daemon service state: %w", err)
+	}
+	if !validControlPlaneOrigin(persisted.ControlPlaneOrigin) {
+		return nil, errors.New("persisted daemon control-plane origin is invalid")
+	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	api, err := client.New(persisted.ControlPlaneOrigin, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	identities := FileIdentityStore{Path: filepath.Join(paths.ServiceStateRoot, "identity.json")}
+	if capabilities == nil {
+		capabilities = ProductionCapabilityProvider{State: state, Observer: PrivilegedLiveNodeObserver{Client: PipeObservationClient{HelperPath: DefaultRootHelperPath, Timeout: 30 * time.Second}, Platform: platformName}}
+	}
+	return &CommandRuntime{Daemon: NewDaemon(api, state, identities, capabilities), State: state, Identities: identities, CurrentVersion: currentVersion}, nil
+}
+
 func newProductionCommandRuntime(api API, accessToken, currentVersion string, join JoinCoordinator, capabilities CapabilityProvider, embedded map[string][]byte, paths ProductionNodePaths, binary string) (*CommandRuntime, error) {
 	if api == nil || accessToken == "" || currentVersion == "" || !filepath.IsAbs(binary) || paths.ServiceStateRoot == "" || paths.RootStateRoot == "" || paths.ServiceStateRoot == paths.RootStateRoot || paths.ProfileRoot == "" {
 		return nil, errors.New("production node runtime dependencies or paths are invalid")
@@ -167,7 +325,7 @@ func newProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 	installerState := &PrivilegedInstallState{Client: privileged, Local: state, Platform: platformName}
 	identities := FileIdentityStore{Path: filepath.Join(paths.ServiceStateRoot, "identity.json")}
 	if capabilities == nil {
-		capabilities = ProductionCapabilityProvider{State: state}
+		capabilities = ProductionCapabilityProvider{State: state, Observer: PrivilegedLiveNodeObserver{Client: privileged, Platform: platformName}}
 	}
 	if join == nil {
 		joinAPI, ok := api.(JoinAPI)
