@@ -180,6 +180,10 @@ BEGIN
     UPDATE node_operations SET status='pending',completed_at=now(),receipt_id=NULL WHERE id='dddddddd-1111-4111-8111-111111111111';
     RAISE EXCEPTION 'nonterminal operation completion accepted';
   EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN
+    UPDATE node_operations SET status='succeeded',completed_at=now() WHERE id='dddddddd-2222-4222-8222-222222222222';
+    RAISE EXCEPTION 'terminal operation without signed receipt accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 
 DO $$
@@ -198,6 +202,19 @@ SELECT id FROM node_enrollments WHERE id='55555555-5555-4555-8555-555555555555';
 SELECT id FROM node_install_plans WHERE id='99999999-9999-4999-8999-999999999999';
 INSERT INTO node_join_issuances(id,workspace_id,enrollment_id,plan_id,node_id,node_public_key_fingerprint,machine_fingerprint,credential_hash,credential_ciphertext,credential_key_id,idempotency_key,request_digest,issued_at,expires_at) VALUES
   ('aaaaaaaa-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','55555555-5555-4555-8555-555555555555','99999999-9999-4999-8999-999999999999','33333333-3333-4333-8333-333333333333',repeat('e',64),repeat('a',64),repeat('8',64),decode(repeat('aa',29),'hex'),'node-join-credential/v1','join-key-a',repeat('9',64),now(),now()+interval '5 minutes');
+RESET ROLE;
+
+SET ROLE blazn_migration;
+DO $$
+BEGIN
+  BEGIN
+    UPDATE node_join_issuances SET consumed_at=now(),joined_node_uid='wrong-uid'
+      WHERE id='aaaaaaaa-2222-4222-8222-222222222222';
+    RAISE EXCEPTION 'consumed issuance UID mismatch accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+END $$;
+UPDATE node_join_issuances SET consumed_at=now(),joined_node_uid='uid-a'
+  WHERE id='aaaaaaaa-2222-4222-8222-222222222222';
 RESET ROLE;
 
 SELECT has_table_privilege('blazn_node_broker','nodes','SELECT') AS broker_nodes_read,
