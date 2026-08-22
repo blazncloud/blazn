@@ -121,6 +121,28 @@ func TestNodeValidatorRejectsNodeErrorDrift(t *testing.T) {
 	}
 }
 
+func TestNodeValidatorRejectsUnresolvedRecursiveLocalReference(t *testing.T) {
+	sources := checkedInSources(t)
+	nodeKey := filepath.Join("packages", "contracts", "nodes.openapi.json")
+	commonKey := filepath.Join("packages", "contracts", "openapi.json")
+	changed := cloneDocument(t, sources[nodeKey].doc)
+	at(changed, "components", "schemas", "WorkerCapacity", "properties", "kubernetesBinding").(map[string]any)["$ref"] = "#/components/schemas/MissingBinding"
+	if err := validateSharedNodeErrors(changed, sources[commonKey].doc); err == nil || !strings.Contains(err.Error(), "unresolved local reference") {
+		t.Fatalf("unresolved local reference error=%v", err)
+	}
+}
+
+func TestNodeValidatorRejectsSharedStatusMismatch(t *testing.T) {
+	sources := checkedInSources(t)
+	nodeKey := filepath.Join("packages", "contracts", "nodes.openapi.json")
+	commonKey := filepath.Join("packages", "contracts", "openapi.json")
+	common := cloneDocument(t, sources[commonKey].doc)
+	at(common, "components", "schemas", "Error", "x-blazn-error-status").(map[string]any)["unauthorized"] = float64(403)
+	if err := validateSharedNodeErrors(sources[nodeKey].doc, common); err == nil || !strings.Contains(err.Error(), "shared error status differs") {
+		t.Fatalf("shared status mismatch error=%v", err)
+	}
+}
+
 func TestNodeValidatorRejectsMisnestedCapabilityModels(t *testing.T) {
 	sources := checkedInSources(t)
 	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
