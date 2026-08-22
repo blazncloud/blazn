@@ -31,8 +31,8 @@ sha256_file() {
 }
 
 case "$(uname -s)" in
-  Darwin) test_os=Darwin ;;
-  Linux) test_os=Linux ;;
+  Darwin) test_os=darwin ;;
+  Linux) test_os=linux ;;
   *) fail "test host OS is unsupported" ;;
 esac
 case "$(uname -m)" in
@@ -41,13 +41,12 @@ case "$(uname -m)" in
   *) fail "test host architecture is unsupported" ;;
 esac
 
-test_asset="blazn_${test_os}_${test_arch}.tar.gz"
+test_asset="blazn_1.2.3_${test_os}_${test_arch}.tar.gz"
 test_version=v1.2.3
 test_dist="$test_root/dist"
 test_release="$test_dist/download/$test_version"
 test_install="$test_root/install"
-mkdir -p "$test_release" "$test_dist/latest/download" "$test_install" "$test_root/payload"
-printf '%s\n' "$test_version" > "$test_dist/latest/download/version.txt"
+mkdir -p "$test_release" "$test_install" "$test_root/payload"
 
 cat > "$test_root/payload/blazn" <<'EOF'
 #!/bin/sh
@@ -58,21 +57,22 @@ chmod 0755 "$test_root/payload/blazn"
 
 ssh-keygen -q -t ed25519 -N '' -f "$test_root/signing_key"
 test_fingerprint=$(ssh-keygen -lf "$test_root/signing_key.pub" -E sha256 | awk '{print $2}')
-printf 'release@blazn.dev namespaces="file" %s\n' "$(cat "$test_root/signing_key.pub")" > "$test_root/allowed_signers"
+printf 'blazn-release namespaces="blazn-release" %s\n' "$(cat "$test_root/signing_key.pub")" > "$test_root/allowed_signers"
 
 sign_manifest() {
-  rm -f "$test_release/checksums.txt.sig"
-  ssh-keygen -q -Y sign -f "$test_root/signing_key" -n file "$test_release/checksums.txt"
+  rm -f "$test_release/SHA256SUMS.sig"
+  ssh-keygen -q -Y sign -f "$test_root/signing_key" -n blazn-release "$test_release/SHA256SUMS"
 }
 
 write_manifest() {
-  printf '%s  %s\n' "$(sha256_file "$test_release/$test_asset")" "$test_asset" > "$test_release/checksums.txt"
+  printf '%s  %s\n' "$(sha256_file "$test_release/$test_asset")" "$test_asset" > "$test_release/SHA256SUMS"
   sign_manifest
 }
 
 run_installer() {
   BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
   BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
@@ -82,6 +82,7 @@ run_installer() {
 run_installer_bad_fingerprint() {
   BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
   BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT='SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
@@ -89,7 +90,7 @@ run_installer_bad_fingerprint() {
 }
 
 inode_of() {
-  if [ "$test_os" = "Darwin" ]; then
+  if [ "$test_os" = "darwin" ]; then
     stat -f '%i' "$1"
   else
     stat -c '%i' "$1"
@@ -116,18 +117,18 @@ fi
 grep -q 'exactly the expected signing key' "$test_root/fingerprint.out" || fail "fingerprint failure is explicit"
 pass "wrong signing fingerprint is rejected"
 
-cp "$test_release/checksums.txt" "$test_root/good-checksums"
-printf '# tampered\n' >> "$test_release/checksums.txt"
+cp "$test_release/SHA256SUMS" "$test_root/good-checksums"
+printf '# tampered\n' >> "$test_release/SHA256SUMS"
 if run_installer >"$test_root/tampered-signature.out" 2>&1; then
   fail "tampered signed manifest was accepted"
 fi
 grep -q 'signature verification failed' "$test_root/tampered-signature.out" || fail "signature failure is explicit"
-cp "$test_root/good-checksums" "$test_release/checksums.txt"
+cp "$test_root/good-checksums" "$test_release/SHA256SUMS"
 sign_manifest
 pass "tampered manifest is rejected"
 
-cp "$test_release/checksums.txt" "$test_root/duplicate-checksums"
-cat "$test_root/duplicate-checksums" >> "$test_release/checksums.txt"
+cp "$test_release/SHA256SUMS" "$test_root/duplicate-checksums"
+cat "$test_root/duplicate-checksums" >> "$test_release/SHA256SUMS"
 sign_manifest
 if run_installer >"$test_root/duplicate.out" 2>&1; then
   fail "duplicate checksum entry was accepted"
@@ -136,7 +137,7 @@ grep -q 'exactly one entry' "$test_root/duplicate.out" || fail "duplicate checks
 write_manifest
 pass "duplicate checksum entry is rejected"
 
-printf '%064d  some-other-asset.tar.gz\n' 0 > "$test_release/checksums.txt"
+printf '%064d  some-other-asset.tar.gz\n' 0 > "$test_release/SHA256SUMS"
 sign_manifest
 if run_installer >"$test_root/missing.out" 2>&1; then
   fail "missing checksum entry was accepted"

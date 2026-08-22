@@ -3,7 +3,7 @@
 # Install a signed, immutable Blazn CLI release.
 #
 # Configuration:
-#   BLAZN_VERSION       Release tag. When unset, resolve latest/download/version.txt.
+#   BLAZN_VERSION       Required immutable release tag (for example, v0.1.0).
 #   BLAZN_INSTALL_DIR   Destination directory (default: $HOME/.local/bin).
 #   BLAZN_DIST_URL      Release root (default: GitHub releases).
 #
@@ -13,13 +13,13 @@
 
 set -eu
 
-BLAZN_RELEASE_IDENTITY="release@blazn.dev"
-BLAZN_SIGNATURE_NAMESPACE="file"
+BLAZN_RELEASE_IDENTITY="blazn-release"
+BLAZN_SIGNATURE_NAMESPACE="blazn-release"
 BLAZN_DEFAULT_DIST_URL="https://github.com/KingJammin/blazn/releases"
 
 # Public half of the release key held by the release workflow. Rotation requires
 # shipping a reviewed installer that contains the new trust root.
-BLAZN_EMBEDDED_ALLOWED_SIGNERS='release@blazn.dev namespaces="file" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOAAOSVVKmi6rjId2kH7hm06Tlew2O+S+CL6II9Xe/Yu blazn-poc-release'
+BLAZN_EMBEDDED_ALLOWED_SIGNERS='blazn-release namespaces="blazn-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOAAOSVVKmi6rjId2kH7hm06Tlew2O+S+CL6II9Xe/Yu blazn-poc-release'
 BLAZN_EMBEDDED_SIGNING_FINGERPRINT='SHA256:7YNVtjsrLjtanzQluFUPQly75P2sNarToYIy4r7+Szs'
 
 blazn_err() {
@@ -76,11 +76,10 @@ blazn_cleanup() {
   if [ -n "${blazn_tmp_dir:-}" ] && [ -d "$blazn_tmp_dir" ]; then
     rm -f \
       "$blazn_tmp_dir/archive.tar.gz" \
-      "$blazn_tmp_dir/checksums.txt" \
-      "$blazn_tmp_dir/checksums.txt.sig" \
+      "$blazn_tmp_dir/SHA256SUMS" \
+      "$blazn_tmp_dir/SHA256SUMS.sig" \
       "$blazn_tmp_dir/allowed_signers" \
       "$blazn_tmp_dir/signing_keys" \
-      "$blazn_tmp_dir/version.txt" \
       "$blazn_tmp_dir/archive.list" \
       "$blazn_tmp_dir/archive.verbose" \
       "$blazn_tmp_dir/extract/blazn" 2>/dev/null || true
@@ -96,8 +95,8 @@ blazn_command_required awk
 blazn_command_required mktemp
 
 case "$(uname -s)" in
-  Darwin) blazn_os=Darwin ;;
-  Linux) blazn_os=Linux ;;
+  Darwin) blazn_os=darwin ;;
+  Linux) blazn_os=linux ;;
   *) blazn_die "unsupported operating system: $(uname -s)" ;;
 esac
 
@@ -120,20 +119,18 @@ trap blazn_cleanup EXIT HUP INT TERM
 mkdir "$blazn_tmp_dir/extract"
 
 blazn_version=${BLAZN_VERSION:-}
-if [ -z "$blazn_version" ]; then
-  blazn_download "$blazn_dist_url/latest/download/version.txt" "$blazn_tmp_dir/version.txt"
-  IFS= read -r blazn_version < "$blazn_tmp_dir/version.txt" || true
-fi
-
 case "$blazn_version" in
-  ''|.|..|*[!A-Za-z0-9._-]*) blazn_die "invalid release version" ;;
+  '') blazn_die "BLAZN_VERSION is required; use an immutable release tag such as v0.1.0" ;;
+  .|..|*[!A-Za-z0-9._-]*) blazn_die "invalid release version" ;;
 esac
+blazn_asset_version=${blazn_version#v}
+[ -n "$blazn_asset_version" ] || blazn_die "invalid release version"
 
-blazn_asset="blazn_${blazn_os}_${blazn_arch}.tar.gz"
+blazn_asset="blazn_${blazn_asset_version}_${blazn_os}_${blazn_arch}.tar.gz"
 blazn_release_url="$blazn_dist_url/download/$blazn_version"
 
-blazn_download "$blazn_release_url/checksums.txt" "$blazn_tmp_dir/checksums.txt"
-blazn_download "$blazn_release_url/checksums.txt.sig" "$blazn_tmp_dir/checksums.txt.sig"
+blazn_download "$blazn_release_url/SHA256SUMS" "$blazn_tmp_dir/SHA256SUMS"
+blazn_download "$blazn_release_url/SHA256SUMS.sig" "$blazn_tmp_dir/SHA256SUMS.sig"
 
 if [ -n "${BLAZN_ALLOWED_SIGNERS:-}" ]; then
   [ -f "$BLAZN_ALLOWED_SIGNERS" ] || blazn_die "BLAZN_ALLOWED_SIGNERS is not a regular file"
@@ -184,8 +181,8 @@ if ! ssh-keygen -Y verify \
   -f "$blazn_tmp_dir/allowed_signers" \
   -I "$BLAZN_RELEASE_IDENTITY" \
   -n "$BLAZN_SIGNATURE_NAMESPACE" \
-  -s "$blazn_tmp_dir/checksums.txt.sig" \
-  < "$blazn_tmp_dir/checksums.txt" >/dev/null 2>&1; then
+  -s "$blazn_tmp_dir/SHA256SUMS.sig" \
+  < "$blazn_tmp_dir/SHA256SUMS" >/dev/null 2>&1; then
   blazn_die "checksum signature verification failed"
 fi
 
@@ -197,7 +194,7 @@ blazn_checksum_matches=$(awk -v asset="$blazn_asset" '
       print $1
     }
   }
-' "$blazn_tmp_dir/checksums.txt")
+' "$blazn_tmp_dir/SHA256SUMS")
 blazn_checksum_count=$(printf '%s\n' "$blazn_checksum_matches" | awk 'NF { count++ } END { print count + 0 }')
 [ "$blazn_checksum_count" -eq 1 ] || \
   blazn_die "checksum manifest must contain exactly one entry for $blazn_asset"
