@@ -299,6 +299,63 @@ func TestClearRemovalAndDirectorySyncFaultsRemainReconcileable(t *testing.T) {
 	}
 }
 
+func TestRecoveryRequiredTransitionFaultsAlwaysRemainRepairable(t *testing.T) {
+	type faultCase struct {
+		point      string
+		occurrence int
+	}
+	cases := []faultCase{{"state.removed", 1}, {"state.remove.parent.synced", 1}}
+	for _, point := range []string{"state.temp.opened", "state.temp.written", "state.temp.synced", "state.temp.closed", "state.renamed", "state.parent.synced"} {
+		// The internal reservation write is occurrence one; the authoritative
+		// journal and redundant receipt are occurrences two and three.
+		cases = append(cases, faultCase{point, 2}, faultCase{point, 3})
+	}
+	for _, testCase := range cases {
+		name := testCase.point + "-occurrence-" + strconv.Itoa(testCase.occurrence)
+		t.Run(name, func(t *testing.T) {
+			var enabled atomic.Bool
+			var seen atomic.Int32
+			now := time.Date(2026, 8, 22, 7, 0, 0, 0, time.UTC)
+			store := testStoreWithOptions(t,
+				WithClock(func() time.Time { return now }),
+				WithFaultInjector(FaultFunc(func(point string) error {
+					if enabled.Load() && point == testCase.point && int(seen.Add(1)) == testCase.occurrence {
+						return errors.New("injected recovery transition fault")
+					}
+					return nil
+				})),
+			)
+			journal := testJournal()
+			writeActiveRecords(t, store, journal)
+			enabled.Store(true)
+			_, err := store.Recover(context.Background(), &fakeEnvironment{conflict: map[string]bool{"OPENAI_API_KEY": true}}, newFakeListener(proofFromJournal(journal)))
+			if err == nil {
+				t.Fatal("fault was not reached")
+			}
+			enabled.Store(false)
+			now = now.Add(time.Minute)
+			result, reconcileErr := store.Reconcile(context.Background())
+			if reconcileErr != nil {
+				t.Fatal(reconcileErr)
+			}
+			if result.State != ReconciliationActive && result.State != ReconciliationRecoveryRequired {
+				t.Fatalf("unexpected post-fault state: %+v", result)
+			}
+			persistedJournal, err := readJournal(store.paths.Journal, store.uid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persistedReceipt, err := readReceipt(store.paths.Receipt, store.uid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateBinding(persistedJournal, persistedReceipt); err != nil {
+				t.Fatalf("post-fault records are not bound: %v", err)
+			}
+		})
+	}
+}
+
 func TestRecoverValidRecordsRestoresAndVerifiesListenerStop(t *testing.T) {
 	store := testStore(t)
 	journal := testJournal()

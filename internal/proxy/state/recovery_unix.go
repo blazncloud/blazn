@@ -180,7 +180,7 @@ func (s *Store) recoverFromReceiptOnly(ctx context.Context, locked *lockedStore,
 		result.ManualRemediation = append(result.ManualRemediation, manualListener(result.ListenerEvidence)...)
 	}
 	if stopErr != nil {
-		return errors.Join(ErrRecoveryRequired, stopErr)
+		return ErrRecoveryRequired
 	}
 	return ErrRecoveryRequired
 }
