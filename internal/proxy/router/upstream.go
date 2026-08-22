@@ -135,8 +135,22 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		}
 		result := upstreamResult{response: response, route: route, attempt: attempt + 1, attemptStarted: started, cancel: attemptCancel}
 		if request.Stream {
+			watchStop, watchDone := make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(watchDone)
+				select {
+				case <-timerFired:
+					_ = response.Body.Close()
+				case <-watchStop:
+				}
+			}()
 			prepared, prepareErr := prepareStream(result, request)
-			if timerDidFire(routeTimer, timerFired) {
+			timedOut := timerDidFire(routeTimer, timerFired)
+			if !timedOut {
+				close(watchStop)
+			}
+			<-watchDone
+			if timedOut {
 				prepareErr = &APIError{Code: "timeout_before_first_byte", Message: "upstream did not produce an event before the route deadline", Status: 504, Retryable: true, Reason: proxycontract.ReasonTimeoutBeforeFirstByte}
 			}
 			if prepareErr != nil {
