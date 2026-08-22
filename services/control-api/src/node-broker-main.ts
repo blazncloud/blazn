@@ -27,15 +27,15 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
     const service = new NodeBrokerService(new PgNodeBrokerStore(database), () => readJoinCredentialKey(`${root}/join-credential-v1`), resolvedIssuer);
     const server = createNodeBrokerServer(service);
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
-    server.once("close", () => { void database.end().finally(()=>database.off("error",onDatabaseError)); });
+    server.once("close", () => { void endNodeBrokerDatabase(database,onDatabaseError); });
     return server;
   } catch (error) {
-    await database.end();
-    database.off("error",onDatabaseError);
+    await endNodeBrokerDatabase(database,onDatabaseError);
     throw error;
   }
 }
 
 export function nodeBrokerDatabasePoolError(error:unknown):string{const value=error instanceof Error?error:undefined,name=value&&/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(value.name)?value.name:"Error",code=value&&"code" in value&&typeof value.code==="string"&&/^[A-Z0-9]{5}$/.test(value.code)?value.code:"unknown";return`Node broker database pool error name=${name} code=${code}`;}
+export async function endNodeBrokerDatabase(database:{end():Promise<void>;off(event:"error",listener:(error:Error)=>void):unknown},onError:(error:Error)=>void):Promise<void>{try{await database.end();}catch(error){onError(error instanceof Error?error:new Error("database shutdown failed"));}finally{database.off("error",onError);}}
 
 if (import.meta.url === `file://${process.argv[1]}`) startNodeBroker().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "Node broker startup failed"}\n`); process.exitCode = 1; });
