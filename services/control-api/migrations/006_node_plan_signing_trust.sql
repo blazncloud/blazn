@@ -29,3 +29,16 @@ COMMENT ON COLUMN node_enrollments.plan_signing_public_key IS
   'Immutable raw Ed25519 public key encoded as unpadded base64url.';
 COMMENT ON COLUMN node_enrollments.plan_signing_key_fingerprint IS
   'Immutable lowercase SHA-256 of the raw plan-signing public key.';
+
+REVOKE UPDATE ON TABLE node_enrollments FROM blazn_runtime;
+GRANT UPDATE (
+  status,
+  machine_binding,
+  node_public_key,
+  node_public_key_fingerprint,
+  consumed_by_node_id,
+  exchanged_at,
+  consumed_at,
+  revoked_at,
+  version
+) ON TABLE node_enrollments TO blazn_runtime;

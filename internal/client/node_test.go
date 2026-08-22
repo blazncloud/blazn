@@ -164,6 +164,37 @@ func TestServiceBinaryRequiresRootExecutableMetadata(t *testing.T) {
 	}
 }
 
+func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
+	plan := validNodeInstallPlan()
+	plan.InstallProfile, plan.Target.Platform, plan.Target.Architecture = "macos-lima-worker-adopt/v1", NodePlatformMacOS, NodeArchARM64
+	plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "wheel", DefinitionSHA256: testHash}
+	plan.Rollback.BackupRootClass, plan.Rollback.BackupRoot = "macos_library_application_support", "/Library/Application Support/Blazn/install-backups/receipt-1"
+	binding := NodeTrustedLimaBinding{ComponentName: "lima-worker-binding", Target: "/Library/Application Support/Blazn/lima-worker-binding.json", ClusterID: plan.Cluster.ID, VMName: "blazn-worker", WorkerName: "worker-1"}
+	binding.SHA256, _ = NodeLimaBindingSHA256(binding)
+	plan.Components = []NodeInstallComponent{{Name: "lima-worker-binding", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: binding.SHA256, Ownership: "adopt_exact"}}
+	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: binding.Target, Desired: map[string]any{"sourceComponent": "lima-worker-binding", "contentSha256": binding.SHA256}, DesiredDigest: "sha256:" + binding.SHA256, Mode: 0600, Rollback: "leave_and_report"}}
+	plan.ValidationTests = append(plan.ValidationTests, "lima_worker_binding")
+	addAuthenticatedServiceBinary(&plan)
+	addEmbeddedServiceDefinition(&plan)
+	if err := ValidateNodeInstallPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"lima-worker-binding": binding.SHA256, "service-definition": testHash}, LimaBinding: &binding, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	if err := ValidateNodeInstallProfile(plan, profile); err != nil {
+		t.Fatal(err)
+	}
+	wrongVM := binding
+	wrongVM.VMName = "other-worker"
+	profile.LimaBinding = &wrongVM
+	if err := ValidateNodeInstallProfile(plan, profile); err == nil {
+		t.Fatal("wrong locally trusted Lima VM passed binding verification")
+	}
+	plan.Mutations[len(plan.Mutations)-1].Desired["label"] = "com.attacker.node"
+	if err := ValidateNodeInstallPlan(plan); err == nil {
+		t.Fatal("launchd definition with mismatched label passed")
+	}
+}
+
 func TestNodeEnrollmentSecretPinsPlanSigningKey(t *testing.T) {
 	publicKey, _ := testSigningKey()
 	fingerprint, _ := NodePublicKeyFingerprint(publicKey)
@@ -203,7 +234,7 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 		case "certificate":
 			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "certificate", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "install"}}
 		case "systemd_unit":
-			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "install"}}
+			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}}
 		case "launchd_unit":
 			plan.InstallProfile = "macos-lima-worker-adopt/v1"
 			plan.Mode = NodeModeAdopt

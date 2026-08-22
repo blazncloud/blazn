@@ -30,4 +30,6 @@ test("node enrollment signing trust is immutable and relationally bound to plans
   assert.match(sql, /plan_signing_public_key char\(43\) NOT NULL/);
   assert.match(sql, /plan_signing_key_fingerprint char\(64\) NOT NULL/);
   assert.match(sql, /FOREIGN KEY \(enrollment_id, signing_key_id\)[\s\S]*REFERENCES node_enrollments\(id, plan_signing_key_id\)/);
+  assert.match(sql, /REVOKE UPDATE ON TABLE node_enrollments FROM blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT UPDATE \([^)]*plan_signing_(?:key_id|public_key|key_fingerprint)/);
 });

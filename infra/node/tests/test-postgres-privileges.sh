@@ -124,10 +124,17 @@ if { emit_rollback_sql; printf 'SELECT 1/0;\nCOMMIT;\n'; } | docker exec -i "$co
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")" = 0 ] || { printf 'completed rollback left the role\n' >&2; exit 1; }
 setup_broker
 
-for migration in 004_nodes.sql 005_node_broker_security.sql; do
+for migration in 004_nodes.sql 005_node_broker_security.sql 006_node_plan_signing_trust.sql; do
   docker exec -i "$container" env PGPASSWORD=1111111111111111111111111111111111111111111111111111111111111111 psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_migration -d blazn <"$REPO_ROOT/services/control-api/migrations/$migration" >/dev/null
 done
 verify post-migration >/dev/null
+
+[ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_table_privilege('blazn_runtime','node_enrollments','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','status','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','plan_signing_key_id','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','plan_signing_public_key','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','plan_signing_key_fingerprint','UPDATE')")" = 'f|t|f|f|f' ] || { printf 'runtime enrollment signing-key update privilege matrix differs\n' >&2; exit 1; }
+docker exec "$container" env PGPASSWORD=2222222222222222222222222222222222222222222222222222222222222222 psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_runtime -d blazn -c 'UPDATE node_enrollments SET status=status WHERE false' >/dev/null
+if docker exec "$container" env PGPASSWORD=2222222222222222222222222222222222222222222222222222222222222222 psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_runtime -d blazn -c 'UPDATE node_enrollments SET plan_signing_key_id=plan_signing_key_id WHERE false' >"$tmp/out" 2>"$tmp/err"; then
+  printf 'runtime unexpectedly updated immutable enrollment signing key\n' >&2; exit 1
+fi
+grep -F 'permission denied for table node_enrollments' "$tmp/err" >/dev/null
 
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'GRANT CONNECT ON DATABASE postgres TO blazn_node_broker' >/dev/null
 if verify post-migration >"$tmp/out" 2>"$tmp/err"; then printf 'unexpected postgres database grant passed\n' >&2; exit 1; fi

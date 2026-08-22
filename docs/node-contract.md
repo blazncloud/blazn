@@ -185,7 +185,10 @@ home, or shell mismatch. The macOS profile embeds a digest-pinned Lima binding
 configuration naming the exact existing VM/worker and requires
 `lima_worker_binding` evidence before eligibility. Local profile trust pins the
 asset name, exact Application Support target, digest, VM name, and worker name;
-a generic embedded configuration is insufficient.
+a generic embedded configuration is insufficient. The embedded asset is RFC
+8785 canonical JSON with `schemaVersion`, `clusterId`, `vmName`, and
+`workerName`; verification recomputes its SHA-256 from the locally trusted
+cluster/VM/worker tuple and compares it to the component and mutation digests.
 
 The enrollment row pins the plan-signing key ID, raw public key, and fingerprint
 at first creation. An idempotent enrollment replay and its later exchange return

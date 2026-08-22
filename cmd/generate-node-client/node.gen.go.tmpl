@@ -501,6 +501,7 @@ type NodeTrustedLimaBinding struct {
 	ComponentName string
 	Target        string
 	SHA256        string
+	ClusterID     string
 	VMName        string
 	WorkerName    string
 }
@@ -1930,7 +1931,11 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 	count := 0
 	for _, mutation := range plan.Mutations {
 		component := components[nodeMutationSourceComponent(mutation)]
-		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && mutation.Action == "adopt_exact" && mutation.Mode == 0644 && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.Ownership == "adopt_exact" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+		managerIdentity := mutation.Desired["unitName"] == plan.NodeService.UnitName
+		if plan.NodeService.Manager == "launchd" {
+			managerIdentity = mutation.Desired["label"] == plan.NodeService.UnitName
+		}
+		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && managerIdentity && mutation.Action == "adopt_exact" && mutation.Mode == 0644 && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.Ownership == "adopt_exact" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
 			count++
 		}
 	}
@@ -1980,7 +1985,11 @@ func nodeHasEmbeddedLimaBinding(plan NodeInstallPlan) bool {
 }
 
 func nodeHasTrustedEmbeddedLimaBinding(plan NodeInstallPlan, binding *NodeTrustedLimaBinding) bool {
-	if binding == nil || binding.ComponentName == "" || binding.Target != "/Library/Application Support/Blazn/lima-worker-binding.json" || !nodeHashPattern.MatchString(binding.SHA256) || binding.VMName == "" || binding.WorkerName == "" {
+	if binding == nil || binding.ComponentName != "lima-worker-binding" || binding.Target != "/Library/Application Support/Blazn/lima-worker-binding.json" || binding.ClusterID != plan.Cluster.ID || binding.VMName == "" || binding.WorkerName == "" {
+		return false
+	}
+	expectedSHA256, err := NodeLimaBindingSHA256(*binding)
+	if err != nil || binding.SHA256 != expectedSHA256 {
 		return false
 	}
 	components := make(map[string]NodeInstallComponent, len(plan.Components))
@@ -1997,6 +2006,21 @@ func nodeHasTrustedEmbeddedLimaBinding(plan NodeInstallPlan, binding *NodeTruste
 		}
 	}
 	return false
+}
+
+func NodeLimaBindingSHA256(binding NodeTrustedLimaBinding) (string, error) {
+	payload := struct {
+		SchemaVersion string `json:"schemaVersion"`
+		ClusterID     string `json:"clusterId"`
+		VMName        string `json:"vmName"`
+		WorkerName    string `json:"workerName"`
+	}{"blazn.dev/lima-worker-binding/v1", binding.ClusterID, binding.VMName, binding.WorkerName}
+	canonical, err := nodeCanonicalJSON(payload)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func nodeHasParentTraversal(value string) bool {
