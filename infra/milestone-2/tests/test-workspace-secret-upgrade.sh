@@ -89,8 +89,9 @@ grep -F 'unexpected mode' "$corrupt/err" >/dev/null
 
 receipt_mismatch=$(fixture receipt-mismatch)
 run_upgrade "$receipt_mismatch" >"$receipt_mismatch/first.out"
-sudo jq '.secretDigests={"workspace-invitation-hmac-v1":("sha256:" + ("0" * 64))}' \
-  "$receipt_mismatch/ownership/control-plane.json" >"$receipt_mismatch/main.tmp"
+sudo sh -euc 'jq "$1" "$2" >"$3"' sh \
+  '.secretDigests={"workspace-invitation-hmac-v1":("sha256:" + ("0" * 64))}' \
+  "$receipt_mismatch/ownership/control-plane.json" "$receipt_mismatch/main.tmp"
 sudo mv "$receipt_mismatch/main.tmp" "$receipt_mismatch/ownership/control-plane.json"
 sudo chown 0:0 "$receipt_mismatch/ownership/control-plane.json"
 sudo chmod 0600 "$receipt_mismatch/ownership/control-plane.json"
