@@ -26,7 +26,7 @@ cleanup() { rm -f -- "$pgpass"; }
 trap cleanup EXIT HUP INT TERM
 umask 077
 printf 'postgres:5432:blazn:blazn_node_broker:%s\n' "$password" >"$pgpass"
-export PGHOST=postgres PGPORT=5432 PGDATABASE=blazn PGUSER=blazn_node_broker PGPASSFILE=$pgpass
+export PGHOST=postgres PGPORT=5432 PGDATABASE=blazn PGUSER=blazn_node_broker PGPASSFILE="$pgpass"
 
 query() {
   psql -X -v ON_ERROR_STOP=1 -Atqc "$1"
@@ -72,7 +72,7 @@ if [ "$mode" = post-migration ]; then
     has_table_privilege(current_user, format('public.%I', table_name), 'REFERENCES') || ',' ||
     has_table_privilege(current_user, format('public.%I', table_name), 'TRIGGER'), ';' order by table_name)
     from information_schema.tables where table_schema='public' and table_name like 'node_%' or table_schema='public' and table_name='nodes'")
-  required='node_audit_events=f,f,f,f,f,f,f;node_capability_versions=f,f,f,f,f,f,f;node_enrollments=t,f,f,f,f,f,f;node_heartbeat_state=f,f,f,f,f,f,f;node_identities=f,f,f,f,f,f,f;node_install_plans=t,f,f,f,f,f,f;node_install_receipts=f,f,f,f,f,f,f;node_join_issuances=t,t,t,f,f,f,f;node_operation_events=f,f,f,f,f,f,f;node_operation_receipts=f,f,f,f,f,f,f;node_operations=f,f,f,f,f,f,f;nodes=t,f,f,f,f,f,f'
+  required='node_audit_events=false,false,false,false,false,false,false;node_capability_versions=false,false,false,false,false,false,false;node_enrollments=true,false,false,false,false,false,false;node_heartbeat_state=false,false,false,false,false,false,false;node_identities=false,false,false,false,false,false,false;node_install_plans=true,false,false,false,false,false,false;node_install_receipts=false,false,false,false,false,false,false;node_join_issuances=true,true,true,false,false,false,false;node_operation_events=false,false,false,false,false,false,false;node_operation_receipts=false,false,false,false,false,false,false;node_operations=false,false,false,false,false,false,false;nodes=true,false,false,false,false,false,false'
   [ "$expected" = "$required" ] || {
     printf 'node broker table privilege matrix differs from migration 004\n' >&2
     exit 1

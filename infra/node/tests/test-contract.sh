@@ -6,6 +6,8 @@ NODE_ROOT=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 M2_ROOT=$(CDPATH='' cd -- "$NODE_ROOT/../milestone-2" && pwd)
 compose=$M2_ROOT/compose.yaml
 
+# The final literal intentionally asserts required Compose interpolation.
+# shellcheck disable=SC2016
 for expected in \
   'node-migration-preflight:' \
   'entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "pre-migration"]' \
