@@ -863,38 +863,7 @@ func writeRootAtomic(path string, value []byte, mode os.FileMode, uid, gid int) 
 	if err := verifyNoSymlinkTraversal(path); err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".blazn-root-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err = tmp.Chmod(mode); err == nil {
-		err = tmp.Chown(uid, gid)
-	}
-	if err == nil {
-		_, err = tmp.Write(value)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	closeErr := tmp.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	if err != nil {
-		return err
-	}
-	directory, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer directory.Close()
-	return directory.Sync()
+	return writeRootAtomicNative(path, value, mode, uid, gid)
 }
 func backupID(planID string, ordinal int64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", planID, ordinal)))
