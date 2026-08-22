@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,23 @@ type mockJoinAPI struct {
 	consumeProof   string
 	credential     client.JoinCredential
 	node           client.Node
+}
+
+type countingJoinCoordinator struct{ issues, confirms int }
+
+func (c *countingJoinCoordinator) WorkerCredential(context.Context, client.NodeInstallPlan) (RootJoinBinding, error) {
+	c.issues++
+	return RootJoinBinding{}, nil
+}
+func (c *countingJoinCoordinator) ConfirmJoined(context.Context, client.NodeInstallPlan, JoinedNode) error {
+	c.confirms++
+	return nil
+}
+
+type functionPrivilegedClient func(context.Context, RootRequest) (RootResponse, error)
+
+func (f functionPrivilegedClient) Call(ctx context.Context, request RootRequest) (RootResponse, error) {
+	return f(ctx, request)
 }
 
 func (m *mockJoinAPI) IssueNodeJoinCredential(_ context.Context, proof, _ string, request client.JoinCredentialRequest) (client.JoinCredential, error) {
@@ -375,6 +393,9 @@ func TestInstalledSnapVersionUsesExactRevisionColumn(t *testing.T) {
 }
 
 func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux signed profile paths are qualified on Linux")
+	}
 	authorization, _, signer := validBootstrapAuthorizationWithSigner(t)
 	binaryValue := []byte("root-authorized-binary")
 	binarySum := sha256.Sum256(binaryValue)
@@ -476,5 +497,36 @@ func TestRootAuthorityHTTPClientHasNoProxyAndRejectsRedirects(t *testing.T) {
 	}
 	if httpClient.Timeout != 30*time.Second {
 		t.Fatalf("root authority timeout=%v", httpClient.Timeout)
+	}
+}
+
+func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	coordinator := &countingJoinCoordinator{}
+	resourceVersion := int64(7)
+	privileged := functionPrivilegedClient(func(_ context.Context, request RootRequest) (RootResponse, error) {
+		switch request.Operation {
+		case RootApply:
+			resourceVersion++
+			return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: strconv.FormatInt(resourceVersion, 10)}}, nil
+		case RootVerify:
+			return RootResponse{OK: true}, nil
+		default:
+			return RootResponse{}, errors.New("unexpected privileged operation")
+		}
+	})
+	adapter, err := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, coordinator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.plan = plan
+	adapter.bootstrapBinding = authorization.KubernetesBinding
+	adapter.deferred = []client.NodeInstallMutation{{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/node", Desired: map[string]any{"value": "true"}}}
+	if err := adapter.Verify(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.issues != 0 || coordinator.confirms != 0 || adapter.joined == nil || adapter.joined.ExpectedResourceVersion != "8" {
+		t.Fatalf("issues=%d confirms=%d joined=%#v", coordinator.issues, coordinator.confirms, adapter.joined)
 	}
 }

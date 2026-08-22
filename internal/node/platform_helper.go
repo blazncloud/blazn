@@ -58,28 +58,29 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	if request.SchemaVersion != RootHelperSchema || (request.Platform != "linux" && request.Platform != "macos") {
 		return errors.New("root helper binding is invalid")
 	}
-	if request.Operation != RootProbe {
-		if err := client.ValidateNodeInstallPlan(request.Plan); err != nil {
+	if err := validateRootRequestShape(request); err != nil {
+		return err
+	}
+	if err := client.ValidateNodeInstallPlan(request.Plan); err != nil {
+		return err
+	}
+	if (request.Platform == "linux" && request.Plan.Target.Platform != client.NodePlatformLinux) || (request.Platform == "macos" && request.Plan.Target.Platform != client.NodePlatformMacOS) {
+		return errors.New("root helper plan platform mismatch")
+	}
+	if request.Operation == RootAuthorize {
+		if request.Bootstrap == nil {
+			return errors.New("root bootstrap authorization is missing")
+		}
+	} else {
+		authorizer, ok := engine.(RootRequestAuthorizer)
+		if !ok {
+			return errors.New("root helper authorizer is unavailable")
+		}
+		if err := authorizer.AuthorizeRootRequest(ctx, request); err != nil {
 			return err
 		}
-		if (request.Platform == "linux" && request.Plan.Target.Platform != client.NodePlatformLinux) || (request.Platform == "macos" && request.Plan.Target.Platform != client.NodePlatformMacOS) {
-			return errors.New("root helper plan platform mismatch")
-		}
-		if request.Operation == RootAuthorize {
-			if request.Bootstrap == nil {
-				return errors.New("root bootstrap authorization is missing")
-			}
-		} else {
-			authorizer, ok := engine.(RootRequestAuthorizer)
-			if !ok {
-				return errors.New("root helper authorizer is unavailable")
-			}
-			if err := authorizer.AuthorizeRootRequest(ctx, request); err != nil {
-				return err
-			}
-			if err := validateRootRequestMaterial(request); err != nil {
-				return err
-			}
+		if err := validateRootRequestMaterial(request); err != nil {
+			return err
 		}
 	}
 	if engine == nil {
@@ -92,6 +93,45 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	response.SchemaVersion = RootHelperSchema
 	response.OK = true
 	return json.NewEncoder(output).Encode(response)
+}
+
+func validateRootRequestShape(request RootRequest) error {
+	noMutationFields := func() bool {
+		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil
+	}
+	switch request.Operation {
+	case RootAuthorize:
+		if request.Bootstrap == nil || !noMutationFields() {
+			return errors.New("root authorize request fields are invalid")
+		}
+	case RootProbe, RootServiceState:
+		if request.Bootstrap != nil || !noMutationFields() {
+			return errors.New("root probe request fields are invalid")
+		}
+	case RootCapture:
+		if request.Bootstrap != nil || request.Ordinal < 1 || request.BackupRoot == "" || request.Prior != nil || request.Material != nil || request.Join != nil {
+			return errors.New("root capture request fields are invalid")
+		}
+	case RootApply:
+		if request.Bootstrap != nil || request.Ordinal < 1 || request.BackupRoot != "" || request.Prior != nil {
+			return errors.New("root apply request fields are invalid")
+		}
+	case RootRollback:
+		if request.Bootstrap != nil || request.Ordinal < 1 || request.BackupRoot == "" || request.Prior == nil || request.Material != nil {
+			return errors.New("root rollback request fields are invalid")
+		}
+	case RootJoin:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
+			return errors.New("root join request fields are invalid")
+		}
+	case RootVerify:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
+			return errors.New("root verify request fields are invalid")
+		}
+	default:
+		return errors.New("root helper operation is unsupported")
+	}
+	return nil
 }
 
 func validateRootRequestMaterial(request RootRequest) error {
@@ -171,7 +211,8 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if e.Platform != request.Platform {
 			return RootResponse{}, errors.New("root helper OS mismatch")
 		}
-		return RootResponse{}, nil
+		binding, err := e.rootKubernetesBinding()
+		return RootResponse{KubernetesBinding: binding}, err
 	case RootServiceState:
 		return e.serviceState(ctx, request.Plan.NodeService)
 	case RootCapture:
@@ -186,16 +227,51 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if err != nil {
 			return RootResponse{}, err
 		}
-		return RootResponse{}, e.apply(ctx, request.Plan, mutation, request.Material, request.Join)
+		if err := e.apply(ctx, request.Plan, mutation, request.Material, request.Join); err != nil {
+			return RootResponse{}, err
+		}
+		if mutation.Kind == "label" || mutation.Kind == "taint" {
+			observed, err := e.observeNode(ctx, request.Plan, request.Join.ExpectedNodeName)
+			if err != nil {
+				return RootResponse{}, err
+			}
+			binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
+			return RootResponse{KubernetesBinding: binding}, err
+		}
+		return RootResponse{}, nil
 	case RootRollback:
 		mutation, err := mutationByOrdinal(request.Plan, request.Ordinal)
 		if err != nil || request.Prior == nil {
 			return RootResponse{}, errors.New("rollback request is incomplete")
 		}
-		return RootResponse{}, e.rollback(ctx, request.Plan, mutation, *request.Prior, request.BackupRoot, request.Join)
+		if err := e.rollback(ctx, request.Plan, mutation, *request.Prior, request.BackupRoot, request.Join); err != nil {
+			return RootResponse{}, err
+		}
+		if mutation.Kind == "label" || mutation.Kind == "taint" {
+			observed, err := e.observeNode(ctx, request.Plan, request.Join.ExpectedNodeName)
+			if err != nil {
+				return RootResponse{}, err
+			}
+			binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
+			return RootResponse{KubernetesBinding: binding}, err
+		}
+		return RootResponse{}, nil
 	case RootJoin:
+		if existing, err := e.rootKubernetesBinding(); err != nil {
+			return RootResponse{}, err
+		} else if existing != nil {
+			observed, observeErr := e.observeNode(ctx, request.Plan, existing.NodeName)
+			if observeErr != nil || observed.UID != existing.NodeUID {
+				return RootResponse{}, errors.New("existing joined Node differs from root authority")
+			}
+			return RootResponse{NodeUID: observed.UID, NodeName: observed.Name, ResourceVersion: observed.ResourceVersion, KubernetesBinding: existing}, nil
+		}
 		joined, err := e.join(ctx, request.Plan, request.Join)
-		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion}, err
+		if err != nil {
+			return RootResponse{}, err
+		}
+		binding, err := e.updateRootKubernetesBinding(request.Plan, joined)
+		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion, KubernetesBinding: binding}, err
 	case RootVerify:
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	default:

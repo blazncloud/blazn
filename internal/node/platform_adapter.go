@@ -75,22 +75,24 @@ type RootMaterial struct {
 	ContentBase64 string `json:"contentBase64,omitempty"`
 }
 type RootJoinBinding struct {
-	Credential       string `json:"credential"`
-	ClusterID        string `json:"clusterId"`
-	ExpectedNodeName string `json:"expectedNodeName"`
-	BootstrapTaint   string `json:"bootstrapTaint"`
-	WorkerOnly       bool   `json:"workerOnly"`
-	ExpectedNodeUID  string `json:"expectedNodeUid,omitempty"`
+	Credential              string `json:"credential"`
+	ClusterID               string `json:"clusterId"`
+	ExpectedNodeName        string `json:"expectedNodeName"`
+	BootstrapTaint          string `json:"bootstrapTaint"`
+	WorkerOnly              bool   `json:"workerOnly"`
+	ExpectedNodeUID         string `json:"expectedNodeUid,omitempty"`
+	ExpectedResourceVersion string `json:"expectedResourceVersion,omitempty"`
 }
 type RootResponse struct {
-	SchemaVersion   string             `json:"schemaVersion"`
-	OK              bool               `json:"ok"`
-	Prior           *PriorState        `json:"prior,omitempty"`
-	Service         *ServicePriorState `json:"service,omitempty"`
-	NodeUID         string             `json:"nodeUid,omitempty"`
-	NodeName        string             `json:"nodeName,omitempty"`
-	ResourceVersion string             `json:"resourceVersion,omitempty"`
-	ErrorCode       string             `json:"errorCode,omitempty"`
+	SchemaVersion     string                    `json:"schemaVersion"`
+	OK                bool                      `json:"ok"`
+	Prior             *PriorState               `json:"prior,omitempty"`
+	Service           *ServicePriorState        `json:"service,omitempty"`
+	NodeUID           string                    `json:"nodeUid,omitempty"`
+	NodeName          string                    `json:"nodeName,omitempty"`
+	ResourceVersion   string                    `json:"resourceVersion,omitempty"`
+	KubernetesBinding *client.KubernetesBinding `json:"kubernetesBinding,omitempty"`
+	ErrorCode         string                    `json:"errorCode,omitempty"`
 }
 
 type PrivilegedClient interface {
@@ -160,13 +162,14 @@ func (l *limitedOutput) Write(value []byte) (int, error) {
 }
 
 type PlatformAdapter struct {
-	Platform   string
-	Privileged PrivilegedClient
-	Materials  MaterialResolver
-	Join       JoinCoordinator
-	plan       client.NodeInstallPlan
-	deferred   []client.NodeInstallMutation
-	joined     *RootJoinBinding
+	Platform         string
+	Privileged       PrivilegedClient
+	Materials        MaterialResolver
+	Join             JoinCoordinator
+	plan             client.NodeInstallPlan
+	deferred         []client.NodeInstallMutation
+	joined           *RootJoinBinding
+	bootstrapBinding *client.KubernetesBinding
 }
 
 func NewPlatformAdapter(platform string, privileged PrivilegedClient, materials MaterialResolver, join JoinCoordinator) (*PlatformAdapter, error) {
@@ -182,6 +185,10 @@ func (a *PlatformAdapter) AuthorizeBootstrap(ctx context.Context, authorization 
 	request := a.request(RootAuthorize, authorization.Expected.Plan, 0)
 	request.Bootstrap = &RootBootstrapRequest{EnrollmentID: authorization.EnrollmentID, Token: authorization.Token, MachineFingerprint: authorization.MachineFingerprint, NodePublicKey: authorization.NodePublicKey, Platform: authorization.Platform, Architecture: authorization.Architecture, KubernetesBinding: authorization.KubernetesBinding, PlanSigningKey: authorization.PlanSigningKey, Expected: authorization.Expected, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath}
 	_, err := a.Privileged.Call(ctx, request)
+	if err == nil && authorization.KubernetesBinding != nil {
+		binding := *authorization.KubernetesBinding
+		a.bootstrapBinding = &binding
+	}
 	return err
 }
 func (a *PlatformAdapter) Preflight(ctx context.Context, plan client.NodeInstallPlan) error {
@@ -197,6 +204,10 @@ func (a *PlatformAdapter) Preflight(ctx context.Context, plan client.NodeInstall
 	}
 	a.plan = plan
 	a.deferred = nil
+	if response.KubernetesBinding != nil {
+		binding := *response.KubernetesBinding
+		a.bootstrapBinding = &binding
+	}
 	return nil
 }
 func (a *PlatformAdapter) ServiceState(ctx context.Context, service client.NodeInstallService) (ServicePriorState, error) {
@@ -234,38 +245,64 @@ func (a *PlatformAdapter) Rollback(ctx context.Context, mutation client.NodeInst
 	request.Prior = &prior
 	request.BackupRoot = a.plan.Rollback.BackupRoot
 	request.Join = a.joined
-	_, err := a.Privileged.Call(ctx, request)
+	response, err := a.Privileged.Call(ctx, request)
+	if err == nil && (mutation.Kind == "label" || mutation.Kind == "taint") {
+		if response.KubernetesBinding == nil || a.joined == nil || response.KubernetesBinding.NodeUID != a.joined.ExpectedNodeUID || response.KubernetesBinding.NodeName != a.joined.ExpectedNodeName {
+			return errors.New("cluster rollback did not return the root-authorized Node binding")
+		}
+		a.joined.ExpectedResourceVersion = response.KubernetesBinding.ResourceVersion
+	}
 	return err
 }
 func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPlan) error {
-	binding, err := a.Join.WorkerCredential(ctx, plan)
-	if err != nil {
-		return err
-	}
-	if !binding.WorkerOnly || binding.ClusterID != plan.Cluster.ID || binding.ExpectedNodeName != plan.Hostname || binding.BootstrapTaint != plan.Cluster.BootstrapTaint {
-		return errors.New("worker join credential does not bind the verified plan")
-	}
-	request := a.request(RootJoin, plan, 0)
-	request.Join = &binding
-	response, err := a.Privileged.Call(ctx, request)
-	if err != nil || response.NodeUID == "" || response.NodeName != binding.ExpectedNodeName || response.ResourceVersion == "" {
-		return errors.New("worker join failed")
+	var binding RootJoinBinding
+	var response RootResponse
+	fresh := plan.Mode == client.NodeModeFresh
+	if fresh {
+		issued, err := a.Join.WorkerCredential(ctx, plan)
+		if err != nil {
+			return err
+		}
+		binding = issued
+		if !binding.WorkerOnly || binding.ClusterID != plan.Cluster.ID || binding.ExpectedNodeName != plan.Hostname || binding.BootstrapTaint != plan.Cluster.BootstrapTaint {
+			return errors.New("worker join credential does not bind the verified plan")
+		}
+		request := a.request(RootJoin, plan, 0)
+		request.Join = &binding
+		response, err = a.Privileged.Call(ctx, request)
+		if err != nil || response.NodeUID == "" || response.NodeName != binding.ExpectedNodeName || response.ResourceVersion == "" {
+			return errors.New("worker join failed")
+		}
+	} else {
+		if a.bootstrapBinding == nil || a.bootstrapBinding.ClusterID != plan.Cluster.ID || a.bootstrapBinding.NodeName != plan.Hostname || a.bootstrapBinding.NodeUID == "" || a.bootstrapBinding.ResourceVersion == "" {
+			return errors.New("adopted worker binding does not match root-authorized plan")
+		}
+		response = RootResponse{NodeUID: a.bootstrapBinding.NodeUID, NodeName: a.bootstrapBinding.NodeName, ResourceVersion: a.bootstrapBinding.ResourceVersion}
+		binding = RootJoinBinding{ClusterID: a.bootstrapBinding.ClusterID, ExpectedNodeName: a.bootstrapBinding.NodeName, ExpectedNodeUID: a.bootstrapBinding.NodeUID, ExpectedResourceVersion: a.bootstrapBinding.ResourceVersion, BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
 	}
 	binding.ExpectedNodeUID = response.NodeUID
+	binding.ExpectedResourceVersion = response.ResourceVersion
 	a.joined = &binding
 	for _, mutation := range a.deferred {
-		request = a.request(RootApply, plan, mutation.Ordinal)
-		request.Join = &RootJoinBinding{ClusterID: binding.ClusterID, ExpectedNodeName: binding.ExpectedNodeName, ExpectedNodeUID: response.NodeUID, BootstrapTaint: binding.BootstrapTaint, WorkerOnly: true}
-		if _, err := a.Privileged.Call(ctx, request); err != nil {
+		request := a.request(RootApply, plan, mutation.Ordinal)
+		request.Join = &binding
+		applied, err := a.Privileged.Call(ctx, request)
+		if err != nil {
+			return err
+		}
+		if applied.KubernetesBinding == nil || applied.KubernetesBinding.NodeUID != binding.ExpectedNodeUID || applied.KubernetesBinding.NodeName != binding.ExpectedNodeName {
+			return errors.New("cluster mutation did not return the root-authorized Node binding")
+		}
+		binding.ExpectedResourceVersion = applied.KubernetesBinding.ResourceVersion
+	}
+	if fresh {
+		if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: response.NodeName, UID: response.NodeUID, ResourceVersion: response.ResourceVersion}); err != nil {
 			return err
 		}
 	}
-	if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: response.NodeName, UID: response.NodeUID, ResourceVersion: response.ResourceVersion}); err != nil {
-		return err
-	}
-	request = a.request(RootVerify, plan, 0)
-	request.Join = &RootJoinBinding{ClusterID: binding.ClusterID, ExpectedNodeName: binding.ExpectedNodeName, ExpectedNodeUID: response.NodeUID, BootstrapTaint: binding.BootstrapTaint, WorkerOnly: true}
-	_, err = a.Privileged.Call(ctx, request)
+	request := a.request(RootVerify, plan, 0)
+	request.Join = &binding
+	_, err := a.Privileged.Call(ctx, request)
 	return err
 }
 func (a *PlatformAdapter) request(operation RootOperation, plan client.NodeInstallPlan, ordinal int64) RootRequest {

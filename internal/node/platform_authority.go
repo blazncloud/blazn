@@ -110,16 +110,12 @@ func newRootAuthorityHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: nil, DisableCompression: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
-func (e NativeRootEngine) AuthorizeRootRequest(_ context.Context, request RootRequest) error {
+func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request RootRequest) error {
 	if request.Bootstrap != nil {
 		return errors.New("bootstrap secret is not accepted for privileged mutations")
 	}
 	profileRoot, binaryPath, authorityPath := e.authorityPaths()
-	encoded, err := readPrivateFile(authorityPath, 8<<20)
-	if err != nil {
-		return fmt.Errorf("load root install authority: %w", err)
-	}
-	authority, err := DecodeRootInstallAuthority(encoded)
+	authority, err := loadRootAuthority(authorityPath)
 	if err != nil {
 		return err
 	}
@@ -134,7 +130,22 @@ func (e NativeRootEngine) AuthorizeRootRequest(_ context.Context, request RootRe
 	if e.Now != nil {
 		now = e.Now()
 	}
-	return VerifyRootInstallAuthority(authority, RootInstallAuthorityTrust{Now: now, Profile: profile, ProfileSHA256: profileSHA256})
+	if err := VerifyRootInstallAuthority(authority, RootInstallAuthorityTrust{Now: now, Profile: profile, ProfileSHA256: profileSHA256}); err != nil {
+		return err
+	}
+	if authority.KubernetesBinding != nil {
+		if e.Commands == nil {
+			e.Commands = FixedCommandExecutor{}
+		}
+		observed, observeErr := e.observeNode(ctx, authority.Plan, authority.KubernetesBinding.NodeName)
+		if observeErr != nil || observed.UID != authority.KubernetesBinding.NodeUID || observed.ResourceVersion != authority.KubernetesBinding.ResourceVersion {
+			return errors.New("live Kubernetes binding differs from root install authority")
+		}
+		if request.Join != nil && (request.Join.ClusterID != authority.KubernetesBinding.ClusterID || request.Join.ExpectedNodeName != authority.KubernetesBinding.NodeName || (request.Join.ExpectedNodeUID != "" && request.Join.ExpectedNodeUID != authority.KubernetesBinding.NodeUID) || (request.Join.ExpectedResourceVersion != "" && request.Join.ExpectedResourceVersion != authority.KubernetesBinding.ResourceVersion)) {
+			return errors.New("privileged request Kubernetes binding differs from root install authority")
+		}
+	}
+	return nil
 }
 
 func (e NativeRootEngine) authorityPaths() (string, string, string) {
@@ -216,4 +227,47 @@ func sameAuthorityBinding(left, right RootInstallAuthority) bool {
 	left.AuthorizedAt, left.Digest = "", ""
 	right.AuthorizedAt, right.Digest = "", ""
 	return sameJSON(left, right)
+}
+
+func loadRootAuthority(path string) (RootInstallAuthority, error) {
+	encoded, err := readPrivateFile(path, 8<<20)
+	if err != nil {
+		return RootInstallAuthority{}, fmt.Errorf("load root install authority: %w", err)
+	}
+	return DecodeRootInstallAuthority(encoded)
+}
+
+func (e NativeRootEngine) rootKubernetesBinding() (*client.KubernetesBinding, error) {
+	_, _, path := e.authorityPaths()
+	authority, err := loadRootAuthority(path)
+	if err != nil || authority.KubernetesBinding == nil {
+		return nil, err
+	}
+	binding := *authority.KubernetesBinding
+	return &binding, nil
+}
+
+func (e NativeRootEngine) updateRootKubernetesBinding(plan client.NodeInstallPlan, joined JoinedNode) (*client.KubernetesBinding, error) {
+	_, _, path := e.authorityPaths()
+	authority, err := loadRootAuthority(path)
+	if err != nil || authority.Plan.Digest != plan.Digest || !sameJSON(authority.Plan, plan) {
+		return nil, errors.New("cannot bind joined Node to different root authority")
+	}
+	binding := &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: joined.Name, NodeUID: joined.UID, ResourceVersion: joined.ResourceVersion}
+	if authority.KubernetesBinding != nil && (authority.KubernetesBinding.ClusterID != binding.ClusterID || authority.KubernetesBinding.NodeName != binding.NodeName || authority.KubernetesBinding.NodeUID != binding.NodeUID) {
+		return nil, errors.New("joined Node identity differs from root authority")
+	}
+	authority.KubernetesBinding = binding
+	authority.Digest, err = RootInstallAuthorityDigest(authority)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(authority)
+	if err != nil {
+		return nil, err
+	}
+	if err := writePrivateAtomic(path, encoded); err != nil {
+		return nil, err
+	}
+	return binding, nil
 }
