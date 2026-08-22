@@ -122,7 +122,7 @@ for fault in rollback-started role-removed secrets-retained environment-restored
   if ! run_rollback "$root" >"$root/rollback-retry.out" 2>"$root/rollback-retry.err"; then sudo tail -80 "$root/rollback-retry.err" >&2; exit 1; fi
   sudo jq -e '(.nodeBroker|not)' "$root/ownership/control-plane.json" >/dev/null
   sudo jq -e '.phase=="rolled-back"' "$root/ownership/node-broker-upgrade.json" >/dev/null
-  sudo test ! -e "$root/etc/node-broker" && sudo test -d "$root/ownership/node-broker-rollback-rollback" || { printf 'rollback retention state is invalid after %s\n' "$fault" >&2; exit 1; }
+  if ! sudo test ! -e "$root/etc/node-broker" || ! sudo test -d "$root/ownership/node-broker-rollback-rollback"; then printf 'rollback retention state is invalid after %s\n' "$fault" >&2; exit 1; fi
   [ ! -e "$root/role-ready" ] || { printf 'rollback retry left database role\n' >&2; exit 1; }
   sudo test ! -s "$root/control-plane.env" || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
 done
