@@ -33,7 +33,7 @@ func validNodeInstallPlan() NodeInstallPlan {
 		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}},
 		NodeService:   NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash},
 		Labels:        map[string]string{"blazn.dev/pool": "default"}, Taints: []NodeTaint{}, ResourceBounds: NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
-		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 2, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"}},
+		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 2, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 3, Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, UID: 0, GID: 0, Rollback: "restore_prior"}},
 		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
 		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
 	}
@@ -45,9 +45,10 @@ func addAuthenticatedServiceBinary(plan *NodeInstallPlan) {
 }
 
 func addEmbeddedServiceDefinition(plan *NodeInstallPlan) {
+	hasEnable := false
 	for _, mutation := range plan.Mutations {
-		if mutation.Kind == "systemd_unit" || mutation.Kind == "launchd_unit" {
-			return
+		if (mutation.Kind == "systemd_unit" || mutation.Kind == "launchd_unit") && mutation.Action == "enable" {
+			hasEnable = true
 		}
 	}
 	found := false
@@ -71,7 +72,18 @@ func addEmbeddedServiceDefinition(plan *NodeInstallPlan) {
 	if plan.Mode == NodeModeFresh {
 		action, rollback = "write", "remove_if_owned"
 	}
-	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: int64(len(plan.Mutations) + 1), Kind: kind, Action: action, Target: target, Desired: desired, DesiredDigest: "sha256:" + plan.NodeService.DefinitionSHA256, Mode: 0644, UID: 0, GID: 0, Rollback: rollback})
+	hasDefinition := false
+	for _, mutation := range plan.Mutations {
+		if mutation.Kind == kind && mutation.Action != "enable" {
+			hasDefinition = true
+		}
+	}
+	if !hasDefinition {
+		plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: int64(len(plan.Mutations) + 1), Kind: kind, Action: action, Target: target, Desired: desired, DesiredDigest: "sha256:" + plan.NodeService.DefinitionSHA256, Mode: 0644, UID: 0, GID: 0, Rollback: rollback})
+	}
+	if !hasEnable {
+		plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: int64(len(plan.Mutations) + 1), Kind: kind, Action: "enable", Target: target, Desired: desired, DesiredDigest: "sha256:" + plan.NodeService.DefinitionSHA256, UID: 0, GID: 0, Rollback: "restore_prior"})
+	}
 }
 
 func validNodeCapability() NodeCapability {
@@ -116,7 +128,7 @@ func TestNodeInstallComponentSourceClassesAreClosed(t *testing.T) {
 	plan.Mutations[0].Target = "/etc/blazn/config"
 	plan.Mutations[0].Desired["sourceComponent"] = "config"
 	plan.Components = append(plan.Components, NodeInstallComponent{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"})
-	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: 3, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"})
+	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: 4, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"})
 	plan.Components[0].Source = ""
 	plan.Components[0].SourceHost = ""
 	if err := ValidateNodeInstallPlan(plan); err != nil {
@@ -159,7 +171,7 @@ func TestFreshLinuxBindsServiceAccountAndWritableDataRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	for index := range plan.Mutations {
-		if plan.Mutations[index].Kind == "systemd_unit" {
+		if plan.Mutations[index].Kind == "systemd_unit" && plan.Mutations[index].Action != "enable" {
 			plan.Mutations[index].Action = "adopt_exact"
 		}
 	}
@@ -167,7 +179,7 @@ func TestFreshLinuxBindsServiceAccountAndWritableDataRoot(t *testing.T) {
 		t.Fatal("fresh service definition falsely adopted as preexisting")
 	}
 	for index := range plan.Mutations {
-		if plan.Mutations[index].Kind == "systemd_unit" {
+		if plan.Mutations[index].Kind == "systemd_unit" && plan.Mutations[index].Action != "enable" {
 			plan.Mutations[index].Action = "write"
 		}
 	}

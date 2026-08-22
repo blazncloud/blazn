@@ -1928,7 +1928,7 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 	if plan.NodeService.Manager == "launchd" {
 		wantedKind, wantedTarget = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist"
 	}
-	count := 0
+	definitionCount, enableCount, definitionOrdinal := 0, 0, int64(0)
 	for _, mutation := range plan.Mutations {
 		component := components[nodeMutationSourceComponent(mutation)]
 		managerIdentity := mutation.Desired["unitName"] == plan.NodeService.UnitName
@@ -1939,11 +1939,24 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 		if plan.Mode == NodeModeFresh {
 			ownershipCoherent = component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned"
 		}
-		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && managerIdentity && ownershipCoherent && mutation.Mode == 0644 && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
-			count++
+		materialBound := mutation.Kind == wantedKind && mutation.Target == wantedTarget && managerIdentity && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256
+		if materialBound && ownershipCoherent && mutation.Mode == 0644 {
+			definitionCount++
+			definitionOrdinal = mutation.Ordinal
+		}
+		if materialBound && mutation.Action == "enable" && mutation.Rollback == "restore_prior" {
+			enableCount++
 		}
 	}
-	return count == 1
+	if definitionCount != 1 || enableCount != 1 {
+		return false
+	}
+	for _, mutation := range plan.Mutations {
+		if mutation.Kind == wantedKind && mutation.Action == "enable" {
+			return mutation.Ordinal > definitionOrdinal
+		}
+	}
+	return false
 }
 
 func nodeHasValidation(values []string, wanted string) bool {
