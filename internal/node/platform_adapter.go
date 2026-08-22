@@ -318,6 +318,9 @@ func (a *PlatformAdapter) material(ctx context.Context, mutation client.NodeInst
 	}
 	for _, component := range a.plan.Components {
 		if component.Name == name {
+			if component.SourceClass == "https" || component.SourceClass == "current_binary" {
+				return &RootMaterial{ComponentName: name, SHA256: component.SHA256}, nil
+			}
 			content, err := a.Materials.Resolve(ctx, component)
 			if err != nil {
 				return nil, err

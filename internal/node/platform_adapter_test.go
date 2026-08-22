@@ -50,6 +50,12 @@ func (f functionPrivilegedClient) Call(ctx context.Context, request RootRequest)
 	return f(ctx, request)
 }
 
+type functionMaterialResolver func(context.Context, client.NodeInstallComponent) ([]byte, error)
+
+func (f functionMaterialResolver) Resolve(ctx context.Context, component client.NodeInstallComponent) ([]byte, error) {
+	return f(ctx, component)
+}
+
 func (m *mockJoinAPI) IssueNodeJoinCredential(_ context.Context, proof, _ string, request client.JoinCredentialRequest) (client.JoinCredential, error) {
 	m.issueProof, m.issueRequest = proof, request
 	return m.credential, nil
@@ -575,5 +581,19 @@ func TestPackageCaptureDistinguishesAbsentFromProbeFailure(t *testing.T) {
 	engine.Commands = scriptedExecutor{run: func(string, []string, []byte) ([]byte, error) { return nil, errors.New("probe transport failure") }}
 	if _, err := engine.capture(context.Background(), plan, mutation, backupRoot); err == nil {
 		t.Fatal("package probe failure was misclassified as absence")
+	}
+}
+
+func TestLargeHTTPSAndCurrentBinaryMaterialsStayOutOfRootPipe(t *testing.T) {
+	plan := client.NodeInstallPlan{Components: []client.NodeInstallComponent{{Name: "microk8s", ArtifactType: "package", SourceClass: "https", SHA256: strings.Repeat("a", 64)}, {Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: strings.Repeat("b", 64)}}}
+	resolver := functionMaterialResolver(func(context.Context, client.NodeInstallComponent) ([]byte, error) {
+		return nil, errors.New("large material must not be resolved outside root")
+	})
+	adapter := &PlatformAdapter{Materials: resolver, plan: plan}
+	for _, mutation := range []client.NodeInstallMutation{{Desired: map[string]any{"componentName": "microk8s"}}, {Desired: map[string]any{"sourceComponent": "blazn"}}} {
+		material, err := adapter.material(context.Background(), mutation)
+		if err != nil || material == nil || material.ContentBase64 != "" {
+			t.Fatalf("material=%#v err=%v", material, err)
+		}
 	}
 }

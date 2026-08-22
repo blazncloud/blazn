@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -108,6 +109,99 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 
 func newRootAuthorityHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: nil, DisableCompression: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+func (e NativeRootEngine) stageHTTPSPackage(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, material *RootMaterial) (string, func(), error) {
+	if material == nil || material.ContentBase64 != "" || material.ComponentName != stringValue(mutation.Desired["componentName"]) {
+		return "", nil, errors.New("HTTPS package material binding is invalid")
+	}
+	var component *client.NodeInstallComponent
+	for index := range plan.Components {
+		candidate := &plan.Components[index]
+		if candidate.Name == material.ComponentName {
+			component = candidate
+			break
+		}
+	}
+	if component == nil || component.SourceClass != "https" || component.ArtifactType != "package" || component.SHA256 != material.SHA256 {
+		return "", nil, errors.New("HTTPS package component is invalid")
+	}
+	profileRoot, binaryPath, authorityPath := e.authorityPaths()
+	authority, err := loadRootAuthority(authorityPath)
+	if err != nil {
+		return "", nil, err
+	}
+	profile, _, err := loadAuthorityProfile(profileRoot, binaryPath, authority)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := client.ValidateNodeComponentRedirect(profile, *component, component.Source); err != nil {
+		return "", nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, component.Source, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	httpClient := e.AuthorityHTTPClient
+	if httpClient == nil {
+		httpClient = newRootAuthorityHTTPClient()
+	}
+	clientCopy := *httpClient
+	clientCopy.Timeout = 30 * time.Second
+	clientCopy.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) > 5 {
+			return errors.New("too many package redirects")
+		}
+		return client.ValidateNodeComponentRedirect(profile, *component, request.URL.String())
+	}
+	response, err := clientCopy.Do(request)
+	if err != nil {
+		return "", nil, errors.New("root package download failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("root package download status %d", response.StatusCode)
+	}
+	const maximum = int64(512 << 20)
+	if response.ContentLength > maximum {
+		return "", nil, errors.New("root package download exceeds limit")
+	}
+	temporary, err := os.CreateTemp("/var/tmp", ".blazn-package-*")
+	if err != nil {
+		return "", nil, err
+	}
+	path := temporary.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	failed := func(failure error) (string, func(), error) { _ = temporary.Close(); cleanup(); return "", nil, failure }
+	if err := temporary.Chmod(0600); err != nil {
+		return failed(err)
+	}
+	hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(temporary, hash), io.LimitReader(response.Body, maximum+1))
+	if err != nil || written > maximum {
+		return failed(errors.New("root package download exceeds limit"))
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != component.SHA256 {
+		return failed(errors.New("root package download digest mismatch"))
+	}
+	if err := temporary.Sync(); err != nil {
+		return failed(err)
+	}
+	if err := temporary.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	owner, links, ownerOK := fileOwner(info)
+	if !ownerOK || owner != currentUID() || links != 1 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		cleanup()
+		return "", nil, errors.New("staged root package is unsafe")
+	}
+	return path, cleanup, nil
 }
 
 func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request RootRequest) error {

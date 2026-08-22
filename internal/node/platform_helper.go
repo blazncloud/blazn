@@ -445,6 +445,12 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		}
 		return os.Chmod(m.Target, os.FileMode(m.Mode))
 	case "file", "certificate":
+		if component := planComponent(plan, material); component != nil && component.SourceClass == "current_binary" {
+			if material.ContentBase64 != "" || m.Action != "adopt_exact" || component.ArtifactType != "binary" {
+				return errors.New("current binary mutation binding is invalid")
+			}
+			return verifyFileDigestAndMetadata(m.Target, component.SHA256, os.FileMode(m.Mode), m.UID, m.GID)
+		}
 		content, err := decodeMaterial(material)
 		if err != nil {
 			return err
@@ -481,29 +487,17 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		if m.Action == "adopt_exact" {
 			return e.verifyPackage(ctx, m, manager)
 		}
-		content, err := decodeMaterial(material)
+		name, cleanup, err := e.stageHTTPSPackage(ctx, plan, m, material)
 		if err != nil {
 			return err
 		}
-		tmp, err := os.CreateTemp("/var/tmp", "blazn-package-*")
-		if err != nil {
-			return err
-		}
-		name := tmp.Name()
-		defer os.Remove(name)
-		if err := tmp.Chmod(0600); err == nil {
-			_, err = tmp.Write(content)
-		}
-		tmp.Close()
-		if err != nil {
-			return err
-		}
+		defer cleanup()
 		if manager == "snap" {
 			_, err = e.Commands.Run(ctx, "/usr/bin/snap", "install", name, "--dangerous")
 		} else if manager == "brew" {
 			_, err = e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "install", name)
 		} else {
-			_, err = e.Commands.Run(ctx, "/usr/bin/apt-get", "install", "-y", m.Target+"="+stringValue(m.Desired["version"]))
+			_, err = e.Commands.Run(ctx, "/usr/bin/apt-get", "install", "-y", name)
 		}
 		return err
 	case "image":
@@ -519,6 +513,18 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 	default:
 		return errors.New("mutation kind is unsupported")
 	}
+}
+
+func planComponent(plan client.NodeInstallPlan, material *RootMaterial) *client.NodeInstallComponent {
+	if material == nil {
+		return nil
+	}
+	for index := range plan.Components {
+		if plan.Components[index].Name == material.ComponentName && plan.Components[index].SHA256 == material.SHA256 {
+			return &plan.Components[index]
+		}
+	}
+	return nil
 }
 func (e NativeRootEngine) verifyPackage(ctx context.Context, m client.NodeInstallMutation, manager string) error {
 	expected := stringValue(m.Desired["version"])
