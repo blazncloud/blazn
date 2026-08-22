@@ -64,12 +64,14 @@ type RootJoinBinding struct {
 	ExpectedNodeUID  string `json:"expectedNodeUid,omitempty"`
 }
 type RootResponse struct {
-	SchemaVersion string             `json:"schemaVersion"`
-	OK            bool               `json:"ok"`
-	Prior         *PriorState        `json:"prior,omitempty"`
-	Service       *ServicePriorState `json:"service,omitempty"`
-	NodeUID       string             `json:"nodeUid,omitempty"`
-	ErrorCode     string             `json:"errorCode,omitempty"`
+	SchemaVersion   string             `json:"schemaVersion"`
+	OK              bool               `json:"ok"`
+	Prior           *PriorState        `json:"prior,omitempty"`
+	Service         *ServicePriorState `json:"service,omitempty"`
+	NodeUID         string             `json:"nodeUid,omitempty"`
+	NodeName        string             `json:"nodeName,omitempty"`
+	ResourceVersion string             `json:"resourceVersion,omitempty"`
+	ErrorCode       string             `json:"errorCode,omitempty"`
 }
 
 type PrivilegedClient interface {
@@ -78,9 +80,10 @@ type PrivilegedClient interface {
 type MaterialResolver interface {
 	Resolve(context.Context, client.NodeInstallComponent) ([]byte, error)
 }
+type JoinedNode struct{ Name, UID, ResourceVersion string }
 type JoinCoordinator interface {
 	WorkerCredential(context.Context, client.NodeInstallPlan) (RootJoinBinding, error)
-	ConfirmJoined(context.Context, client.NodeInstallPlan, string) error
+	ConfirmJoined(context.Context, client.NodeInstallPlan, JoinedNode) error
 }
 
 type PipePrivilegedClient struct {
@@ -144,6 +147,7 @@ type PlatformAdapter struct {
 	Join       JoinCoordinator
 	plan       client.NodeInstallPlan
 	deferred   []client.NodeInstallMutation
+	joined     *RootJoinBinding
 }
 
 func NewPlatformAdapter(platform string, privileged PrivilegedClient, materials MaterialResolver, join JoinCoordinator) (*PlatformAdapter, error) {
@@ -200,6 +204,8 @@ func (a *PlatformAdapter) Apply(ctx context.Context, mutation client.NodeInstall
 func (a *PlatformAdapter) Rollback(ctx context.Context, mutation client.NodeInstallMutation, prior PriorState) error {
 	request := a.request(RootRollback, a.plan, mutation.Ordinal)
 	request.Prior = &prior
+	request.BackupRoot = a.plan.Rollback.BackupRoot
+	request.Join = a.joined
 	_, err := a.Privileged.Call(ctx, request)
 	return err
 }
@@ -214,9 +220,11 @@ func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPla
 	request := a.request(RootJoin, plan, 0)
 	request.Join = &binding
 	response, err := a.Privileged.Call(ctx, request)
-	if err != nil || response.NodeUID == "" {
+	if err != nil || response.NodeUID == "" || response.NodeName != binding.ExpectedNodeName || response.ResourceVersion == "" {
 		return errors.New("worker join failed")
 	}
+	binding.ExpectedNodeUID = response.NodeUID
+	a.joined = &binding
 	for _, mutation := range a.deferred {
 		request = a.request(RootApply, plan, mutation.Ordinal)
 		request.Join = &RootJoinBinding{ClusterID: binding.ClusterID, ExpectedNodeName: binding.ExpectedNodeName, ExpectedNodeUID: response.NodeUID, BootstrapTaint: binding.BootstrapTaint, WorkerOnly: true}
@@ -224,7 +232,7 @@ func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPla
 			return err
 		}
 	}
-	if err := a.Join.ConfirmJoined(ctx, plan, response.NodeUID); err != nil {
+	if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: response.NodeName, UID: response.NodeUID, ResourceVersion: response.ResourceVersion}); err != nil {
 		return err
 	}
 	request = a.request(RootVerify, plan, 0)

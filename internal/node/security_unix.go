@@ -17,6 +17,13 @@ func fileOwner(info os.FileInfo) (int64, uint64, bool) {
 	}
 	return int64(stat.Uid), uint64(stat.Nlink), true
 }
+func fileGroup(info os.FileInfo) (int64, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int64(stat.Gid), true
+}
 
 func ensurePrivateDirectory(path string, uid int64) error {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {

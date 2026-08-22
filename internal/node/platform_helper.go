@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -59,6 +61,12 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 		if (request.Platform == "linux" && request.Plan.Target.Platform != client.NodePlatformLinux) || (request.Platform == "macos" && request.Plan.Target.Platform != client.NodePlatformMacOS) {
 			return errors.New("root helper plan platform mismatch")
 		}
+		if err := authorizeRootRequest(request); err != nil {
+			return err
+		}
+		if err := validateRootRequestMaterial(request); err != nil {
+			return err
+		}
 	}
 	if engine == nil {
 		return errors.New("root helper engine is unavailable")
@@ -72,14 +80,90 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	return json.NewEncoder(output).Encode(response)
 }
 
+func validateRootRequestMaterial(request RootRequest) error {
+	if request.Operation != RootApply {
+		return nil
+	}
+	mutation, err := mutationByOrdinal(request.Plan, request.Ordinal)
+	if err != nil {
+		return err
+	}
+	name, _ := mutation.Desired["sourceComponent"].(string)
+	if name == "" {
+		name, _ = mutation.Desired["componentName"].(string)
+	}
+	if name == "" {
+		if request.Material != nil {
+			return errors.New("unrequested root material is present")
+		}
+		return nil
+	}
+	if request.Material == nil || request.Material.ComponentName != name {
+		return errors.New("root material component binding is invalid")
+	}
+	for _, component := range request.Plan.Components {
+		if component.Name == name {
+			if request.Material.SHA256 != component.SHA256 {
+				return errors.New("root material digest binding is invalid")
+			}
+			return nil
+		}
+	}
+	return errors.New("root material component is absent from signed plan")
+}
+
+func authorizeRootRequest(request RootRequest) error {
+	const stateRoot = "/var/lib/blazn/node"
+	state, err := (FileStateStore{Root: stateRoot}).LoadRuntime()
+	if err != nil {
+		return fmt.Errorf("load fixed verified node runtime: %w", err)
+	}
+	want, _ := json.Marshal(state.Exchange.Plan)
+	got, _ := json.Marshal(request.Plan)
+	if !bytes.Equal(want, got) || request.Plan.Digest != state.Exchange.Plan.Digest {
+		return errors.New("root helper plan differs from fixed verified runtime")
+	}
+	if filepath.Dir(state.Pin.ProfilePath) != "/etc/blazn/node/profiles" {
+		return errors.New("root helper profile path is outside the fixed trust root")
+	}
+	version := ""
+	for _, component := range request.Plan.Components {
+		if component.SourceClass == "current_binary" && component.ArtifactType == "binary" {
+			version = component.Version
+			break
+		}
+	}
+	profile, err := LoadTrustedProfile(state.Pin.ProfilePath, "/usr/local/bin/blazn", version)
+	if err != nil {
+		return err
+	}
+	identity, err := (FileIdentityStore{Path: filepath.Join(stateRoot, "identity.json")}).LoadOrCreate()
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if request.Operation == RootRollback {
+		now, err = time.Parse(time.RFC3339, request.Plan.IssuedAt)
+		if err != nil {
+			return err
+		}
+	}
+	return verifyExchange(state.Exchange, state.Pin, identity, EnrollOptions{Platform: request.Plan.Target.Platform, Architecture: request.Plan.Target.Architecture, Profile: profile}, now)
+}
+
 type CommandExecutor interface {
 	Run(context.Context, string, ...string) ([]byte, error)
+	RunInput(context.Context, string, []byte, ...string) ([]byte, error)
 }
 type FixedCommandExecutor struct{}
 
 func (FixedCommandExecutor) Run(ctx context.Context, path string, args ...string) ([]byte, error) {
+	return (FixedCommandExecutor{}).RunInput(ctx, path, nil, args...)
+}
+func (FixedCommandExecutor) RunInput(ctx context.Context, path string, input []byte, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, path, args...)
-	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin", "LANG=C", "LC_ALL=C"}
+	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin", "LANG=C", "LC_ALL=C", "SNAP=/snap/microk8s/current", "SNAP_DATA=/var/snap/microk8s/current", "SNAP_COMMON=/var/snap/microk8s/common"}
+	command.Stdin = bytes.NewReader(input)
 	var stdout bytes.Buffer
 	command.Stdout = &limitedOutput{writer: &stdout, remaining: 1 << 20}
 	command.Stderr = &limitedOutput{writer: &bytes.Buffer{}, remaining: 4096}
@@ -90,9 +174,11 @@ func (FixedCommandExecutor) Run(ctx context.Context, path string, args ...string
 }
 
 type NativeRootEngine struct {
-	Platform string
-	Commands CommandExecutor
-	Now      func() time.Time
+	Platform             string
+	Commands             CommandExecutor
+	Now                  func() time.Time
+	LimaBindingPath      string
+	allowTestJoinRuntime bool
 }
 
 func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (RootResponse, error) {
@@ -125,10 +211,10 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if err != nil || request.Prior == nil {
 			return RootResponse{}, errors.New("rollback request is incomplete")
 		}
-		return RootResponse{}, e.rollback(ctx, mutation, *request.Prior)
+		return RootResponse{}, e.rollback(ctx, request.Plan, mutation, *request.Prior, request.BackupRoot, request.Join)
 	case RootJoin:
-		uid, err := e.join(ctx, request.Plan, request.Join)
-		return RootResponse{NodeUID: uid}, err
+		joined, err := e.join(ctx, request.Plan, request.Join)
+		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion}, err
 	case RootVerify:
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	default:
@@ -156,12 +242,26 @@ func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPl
 	if !canonicalPath(backupRoot) {
 		return PriorState{}, errors.New("backup root is unsafe")
 	}
-	if mutation.Kind == "group" || mutation.Kind == "user" {
+	if mutation.Kind == "group" {
+		group, err := user.LookupGroup(mutation.Target)
+		if err != nil {
+			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+		}
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "group", "name": group.Name, "gid": group.Gid})
+	}
+	if mutation.Kind == "user" {
 		account, err := user.Lookup(mutation.Target)
 		if err != nil {
 			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
 		}
-		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"name": account.Username, "uid": account.Uid, "gid": account.Gid, "home": account.HomeDir})
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "user", "name": account.Username, "uid": account.Uid, "gid": account.Gid, "home": account.HomeDir})
+	}
+	if mutation.Kind == "package" {
+		manager := stringValue(mutation.Desired["manager"])
+		if err := e.verifyPackage(ctx, mutation, manager); err != nil {
+			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
+		}
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "package", "name": mutation.Target, "manager": manager, "version": stringValue(mutation.Desired["version"])})
 	}
 	if strings.HasPrefix(mutation.Target, "/") {
 		info, err := os.Lstat(mutation.Target)
@@ -188,14 +288,15 @@ func (e NativeRootEngine) backupMetadata(root string, plan client.NodeInstallPla
 }
 func (e NativeRootEngine) backupFile(root string, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, info os.FileInfo, content []byte) (PriorState, error) {
 	owner, _, ok := fileOwner(info)
-	if !ok {
+	group, groupOK := fileGroup(info)
+	if !ok || !groupOK {
 		return PriorState{}, errors.New("target owner is unavailable")
 	}
-	return e.writeBackup(root, plan, mutation, content, "file_backup", info.Mode().Perm(), owner, owner)
+	return e.writeBackup(root, plan, mutation, content, "file_backup", info.Mode().Perm(), owner, group)
 }
 func (e NativeRootEngine) writeBackup(root string, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, value []byte, kind string, mode os.FileMode, uid, gid int64) (PriorState, error) {
 	id := backupID(plan.PlanID, mutation.Ordinal)
-	if err := os.MkdirAll(root, 0700); err != nil {
+	if err := ensurePrivateDirectory(root, 0); err != nil {
 		return PriorState{}, err
 	}
 	path := filepath.Join(root, id)
@@ -211,14 +312,17 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 	switch m.Kind {
 	case "group":
 		gid := number(m.Desired["gid"])
-		if _, err := user.LookupGroup(m.Target); err == nil {
+		if existing, err := user.LookupGroup(m.Target); err == nil {
+			if existing.Gid != strconv.FormatInt(gid, 10) {
+				return errors.New("existing group differs from exact signed GID")
+			}
 			return nil
 		}
 		_, err := e.Commands.Run(ctx, "/usr/sbin/groupadd", "--system", "--gid", strconv.FormatInt(gid, 10), m.Target)
 		return err
 	case "user":
 		if _, err := user.Lookup(m.Target); err == nil {
-			return nil
+			return e.verifyUser(ctx, m)
 		}
 		_, err := e.Commands.Run(ctx, "/usr/sbin/useradd", "--system", "--uid", strconv.FormatInt(number(m.Desired["uid"]), 10), "--gid", stringValue(m.Desired["group"]), "--home-dir", stringValue(m.Desired["home"]), "--shell", stringValue(m.Desired["shell"]), m.Target)
 		return err
@@ -237,6 +341,9 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		content, err := decodeMaterial(material)
 		if err != nil {
 			return err
+		}
+		if m.Action == "adopt_exact" {
+			return verifyExactFile(m.Target, content, os.FileMode(m.Mode), m.UID, m.GID)
 		}
 		return writeRootAtomic(m.Target, content, os.FileMode(m.Mode), int(m.UID), int(m.GID))
 	case "systemd_unit", "launchd_unit":
@@ -293,17 +400,9 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		_, err := e.Commands.Run(ctx, "/snap/bin/microk8s.ctr", "images", "pull", m.Target)
 		return err
 	case "label":
-		if join == nil || join.ExpectedNodeUID == "" {
-			return errors.New("label requires joined node binding")
-		}
-		_, err := e.Commands.Run(ctx, "/snap/bin/microk8s.kubectl", "label", "node", join.ExpectedNodeName, m.Target+"="+stringValue(m.Desired["value"]), "--overwrite")
-		return err
+		return e.applyClusterMutation(ctx, plan, m, join, false)
 	case "taint":
-		if join == nil || join.ExpectedNodeUID == "" {
-			return errors.New("taint requires joined node binding")
-		}
-		_, err := e.Commands.Run(ctx, "/snap/bin/microk8s.kubectl", "taint", "node", join.ExpectedNodeName, m.Target+"="+stringValue(m.Desired["value"])+":"+stringValue(m.Desired["effect"]), "--overwrite")
-		return err
+		return e.applyClusterMutation(ctx, plan, m, join, false)
 	case "firewall":
 		_, err := e.Commands.Run(ctx, "/usr/sbin/ufw", "allow", strconv.FormatInt(number(m.Desired["port"]), 10)+"/"+stringValue(m.Desired["protocol"]))
 		return err
@@ -312,18 +411,76 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 	}
 }
 func (e NativeRootEngine) verifyPackage(ctx context.Context, m client.NodeInstallMutation, manager string) error {
+	expected := stringValue(m.Desired["version"])
 	if manager == "snap" {
-		_, err := e.Commands.Run(ctx, "/usr/bin/snap", "list", m.Target)
-		return err
+		output, err := e.Commands.Run(ctx, "/usr/bin/snap", "list", m.Target, "--unicode=never")
+		if err != nil {
+			return err
+		}
+		revision := strings.TrimPrefix(expected, "v1.35.6-rev")
+		if revision == expected || !containsField(string(output), revision) {
+			return errors.New("installed snap revision differs from signed plan")
+		}
+		return nil
 	}
 	if manager == "brew" {
-		_, err := e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "list", "--versions", m.Target)
+		output, err := e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "list", "--versions", m.Target)
+		if err != nil {
+			return err
+		}
+		if !containsField(string(output), expected) {
+			return errors.New("installed brew version differs from signed plan")
+		}
+		return nil
+	}
+	output, err := e.Commands.Run(ctx, "/usr/bin/dpkg-query", "-W", "-f=${Version}", m.Target)
+	if err != nil {
 		return err
 	}
-	_, err := e.Commands.Run(ctx, "/usr/bin/dpkg-query", "-W", m.Target)
-	return err
+	if strings.TrimSpace(string(output)) != expected {
+		return errors.New("installed package version differs from signed plan")
+	}
+	return nil
 }
-func (e NativeRootEngine) rollback(ctx context.Context, m client.NodeInstallMutation, prior PriorState) error {
+func (e NativeRootEngine) verifyUser(ctx context.Context, m client.NodeInstallMutation) error {
+	output, err := e.Commands.Run(ctx, "/usr/bin/getent", "passwd", m.Target)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(strings.TrimSpace(string(output)), ":")
+	if len(parts) != 7 || parts[0] != m.Target || parts[2] != strconv.FormatInt(number(m.Desired["uid"]), 10) || parts[3] != strconv.FormatInt(number(m.Desired["gid"]), 10) || parts[5] != stringValue(m.Desired["home"]) || parts[6] != stringValue(m.Desired["shell"]) {
+		return errors.New("existing user differs from exact signed account")
+	}
+	return nil
+}
+func containsField(value, want string) bool {
+	for _, field := range strings.Fields(value) {
+		if field == want {
+			return true
+		}
+	}
+	return false
+}
+func verifyExactFile(path string, content []byte, mode os.FileMode, uid, gid int64) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != mode.Perm() {
+		return errors.New("adopted file metadata differs from signed plan")
+	}
+	owner, _, ok := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	if !ok || !groupOK || owner != uid || group != gid {
+		return errors.New("adopted file ownership differs from signed plan")
+	}
+	value, err := readBoundedRegular(path, 512<<20)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(value, content) {
+		return errors.New("adopted file content differs from signed plan")
+	}
+	return nil
+}
+func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, prior PriorState, backupRoot string, join *RootJoinBinding) error {
 	if prior.State == "absent" {
 		switch m.Kind {
 		case "group":
@@ -333,95 +490,265 @@ func (e NativeRootEngine) rollback(ctx context.Context, m client.NodeInstallMuta
 			_, err := e.Commands.Run(ctx, "/usr/sbin/userdel", m.Target)
 			return err
 		case "systemd_unit":
-			_, _ = e.Commands.Run(ctx, "/usr/bin/systemctl", "disable", "--now", filepath.Base(m.Target))
+			if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "disable", "--now", filepath.Base(m.Target)); err != nil {
+				return err
+			}
 			return os.Remove(m.Target)
 		case "launchd_unit":
-			_, _ = e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+strings.TrimSuffix(filepath.Base(m.Target), ".plist"))
+			if _, err := e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+strings.TrimSuffix(filepath.Base(m.Target), ".plist")); err != nil {
+				return err
+			}
 			return os.Remove(m.Target)
+		case "package":
+			manager := stringValue(m.Desired["manager"])
+			if manager == "snap" {
+				_, err := e.Commands.Run(ctx, "/usr/bin/snap", "remove", m.Target)
+				return err
+			}
+			if manager == "brew" {
+				_, err := e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "uninstall", m.Target)
+				return err
+			}
+			_, err := e.Commands.Run(ctx, "/usr/bin/apt-get", "remove", "-y", m.Target)
+			return err
+		case "label":
+			return e.applyClusterMutation(ctx, plan, m, join, true)
+		case "taint":
+			return e.applyClusterMutation(ctx, plan, m, join, true)
 		default:
 			if strings.HasPrefix(m.Target, "/") {
-				return os.RemoveAll(m.Target)
+				return os.Remove(m.Target)
 			}
 		}
 		return nil
 	}
 	if prior.Material.Kind == "file_backup" {
-		path, err := client.ResolveNodeRollbackLocator(filepath.Dir(filepath.Dir(prior.Material.Locator)), prior.Material.Locator)
-		_ = path
-		_ = err
-		return errors.New("file rollback requires receipt-bound backup resolver")
+		if prior.Material.Mode == nil || prior.Material.UID == nil || prior.Material.GID == nil {
+			return errors.New("file rollback metadata is incomplete")
+		}
+		path, err := client.ResolveNodeRollbackLocator(backupRoot, prior.Material.Locator)
+		if err != nil {
+			return err
+		}
+		content, err := readBoundedRegular(path, 512<<20)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(content)
+		if "sha256:"+hex.EncodeToString(sum[:]) != prior.Material.Digest {
+			return errors.New("rollback backup digest mismatch")
+		}
+		return writeRootAtomic(m.Target, content, os.FileMode(*prior.Material.Mode), int(*prior.Material.UID), int(*prior.Material.GID))
 	}
 	if prior.Material.Kind == "metadata_snapshot" {
-		return nil
+		path, err := client.ResolveNodeRollbackLocator(backupRoot, prior.Material.Locator)
+		if err != nil {
+			return err
+		}
+		content, err := readBoundedRegular(path, 1<<20)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(content)
+		if "sha256:"+hex.EncodeToString(sum[:]) != prior.Material.Digest {
+			return errors.New("rollback metadata digest mismatch")
+		}
+		var metadata map[string]string
+		if json.Unmarshal(content, &metadata) != nil {
+			return errors.New("rollback metadata is invalid")
+		}
+		switch metadata["kind"] {
+		case "group":
+			_, err = e.Commands.Run(ctx, "/usr/sbin/groupmod", "--gid", metadata["gid"], m.Target)
+			return err
+		case "user":
+			args := []string{"--uid", metadata["uid"], "--gid", metadata["gid"], "--home", metadata["home"], m.Target}
+			_, err = e.Commands.Run(ctx, "/usr/sbin/usermod", args...)
+			return err
+		case "package":
+			manager := metadata["manager"]
+			if manager == "snap" {
+				_, err = e.Commands.Run(ctx, "/usr/bin/snap", "refresh", m.Target, "--revision", strings.TrimPrefix(metadata["version"], "v1.35.6-rev"))
+				return err
+			}
+			if manager == "brew" {
+				_, err = e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "install", m.Target+"@"+metadata["version"])
+				return err
+			}
+			_, err = e.Commands.Run(ctx, "/usr/bin/apt-get", "install", "-y", m.Target+"="+metadata["version"])
+			return err
+		default:
+			return errors.New("rollback metadata kind is unsupported")
+		}
 	}
 	return errors.New("rollback material kind is unsupported")
 }
 
-func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) (string, error) {
+func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) (JoinedNode, error) {
 	if binding == nil || !binding.WorkerOnly || binding.ClusterID != plan.Cluster.ID {
-		return "", errors.New("join binding is invalid")
+		return JoinedNode{}, errors.New("join binding is invalid")
 	}
 	payload, urls, err := decodeJoinCredential(binding.Credential, binding)
 	if err != nil {
-		return "", err
+		return JoinedNode{}, err
 	}
 	_ = payload
 	if len(urls) == 0 {
-		return "", errors.New("join credential has no endpoint")
+		return JoinedNode{}, errors.New("join credential has no endpoint")
 	}
+	if err := e.verifyJoinRuntime(ctx, plan); err != nil {
+		return JoinedNode{}, err
+	}
+	input := []byte(urls[0] + "\n")
 	if e.Platform == "linux" {
-		if _, err := e.Commands.Run(ctx, "/snap/bin/microk8s.join", urls[0], "--worker"); err != nil {
-			return "", err
+		if _, err := e.Commands.RunInput(ctx, "/snap/microk8s/current/usr/bin/python3", input, "-c", microK8sJoinStdinProgram); err != nil {
+			return JoinedNode{}, err
 		}
 	} else {
-		vm, err := readLimaVM(plan)
+		vm, err := readLimaVM(plan, e.LimaBindingPath)
 		if err != nil {
-			return "", err
+			return JoinedNode{}, err
 		}
-		if _, err := e.Commands.Run(ctx, "/usr/local/bin/limactl", "shell", vm, "sudo", "/snap/bin/microk8s.join", urls[0], "--worker"); err != nil {
-			return "", err
+		if _, err := e.Commands.RunInput(ctx, "/usr/local/bin/limactl", input, "shell", vm, "sudo", "/usr/bin/env", "SNAP=/snap/microk8s/current", "SNAP_DATA=/var/snap/microk8s/current", "SNAP_COMMON=/var/snap/microk8s/common", "/snap/microk8s/current/usr/bin/python3", "-c", microK8sJoinStdinProgram); err != nil {
+			return JoinedNode{}, err
 		}
 	}
-	return e.observeNodeUID(ctx, binding.ExpectedNodeName)
+	return e.observeNode(ctx, plan, binding.ExpectedNodeName)
 }
-func (e NativeRootEngine) observeNodeUID(ctx context.Context, name string) (string, error) {
-	output, err := e.Commands.Run(ctx, "/snap/bin/microk8s.kubectl", "get", "node", name, "-o", "json")
+
+const microK8sJoinStdinProgram = `import importlib.util,sys
+p="/snap/microk8s/current/scripts/wrappers/join.py"
+s=importlib.util.spec_from_file_location("blazn_microk8s_join",p)
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+c=sys.stdin.readline().strip()
+if not c: raise SystemExit(2)
+m.join.callback(c,"as-worker",False,False)
+`
+const pinnedJoinSHA256 = "cd050fe6926af0ae07a7505834eb92a94c1f370f89e7cdcedb79e95ed63ad419"
+
+func (e NativeRootEngine) verifyJoinRuntime(ctx context.Context, plan client.NodeInstallPlan) error {
+	if e.allowTestJoinRuntime {
+		return nil
+	}
+	if e.Platform == "linux" {
+		value, err := os.ReadFile("/snap/microk8s/current/scripts/wrappers/join.py")
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(value)
+		if hex.EncodeToString(sum[:]) != pinnedJoinSHA256 {
+			return errors.New("pinned MicroK8s join helper digest mismatch")
+		}
+		return nil
+	}
+	vm, err := readLimaVM(plan, e.LimaBindingPath)
 	if err != nil {
-		return "", err
+		return err
+	}
+	output, err := e.Commands.Run(ctx, "/usr/local/bin/limactl", "shell", vm, "sha256sum", "/snap/microk8s/current/scripts/wrappers/join.py")
+	if err != nil || !strings.HasPrefix(string(output), pinnedJoinSHA256+" ") {
+		return errors.New("Lima MicroK8s join helper digest mismatch")
+	}
+	return nil
+}
+func (e NativeRootEngine) kubectl(ctx context.Context, plan client.NodeInstallPlan, args ...string) ([]byte, error) {
+	if e.Platform == "linux" {
+		return e.Commands.Run(ctx, "/snap/bin/microk8s.kubectl", args...)
+	}
+	vm, err := readLimaVM(plan, e.LimaBindingPath)
+	if err != nil {
+		return nil, err
+	}
+	fixed := append([]string{"shell", vm, "sudo", "/snap/bin/microk8s.kubectl"}, args...)
+	return e.Commands.Run(ctx, "/usr/local/bin/limactl", fixed...)
+}
+func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, join *RootJoinBinding, remove bool) error {
+	if join == nil || join.ExpectedNodeUID == "" {
+		return errors.New("cluster mutation requires joined node binding")
+	}
+	observed, err := e.observeNode(ctx, plan, join.ExpectedNodeName)
+	if err != nil || observed.UID != join.ExpectedNodeUID {
+		return errors.New("cluster mutation node UID differs from binding")
+	}
+	var args []string
+	if m.Kind == "label" {
+		value := m.Target + "=" + stringValue(m.Desired["value"])
+		if remove {
+			value = m.Target + "-"
+		}
+		args = []string{"label", "node", join.ExpectedNodeName, value, "--overwrite"}
+	} else {
+		value := m.Target + "=" + stringValue(m.Desired["value"]) + ":" + stringValue(m.Desired["effect"])
+		if remove {
+			value = m.Target + ":" + stringValue(m.Desired["effect"]) + "-"
+		}
+		args = []string{"taint", "node", join.ExpectedNodeName, value, "--overwrite"}
+	}
+	_, err = e.kubectl(ctx, plan, args...)
+	return err
+}
+func (e NativeRootEngine) observeNode(ctx context.Context, plan client.NodeInstallPlan, name string) (JoinedNode, error) {
+	output, err := e.kubectl(ctx, plan, "get", "node", name, "-o", "json")
+	if err != nil {
+		return JoinedNode{}, err
 	}
 	var value struct {
 		Metadata struct {
-			UID string `json:"uid"`
+			Name            string `json:"name"`
+			UID             string `json:"uid"`
+			ResourceVersion string `json:"resourceVersion"`
 		} `json:"metadata"`
 	}
-	if json.Unmarshal(output, &value) != nil || value.Metadata.UID == "" {
-		return "", errors.New("joined node UID is unavailable")
+	if json.Unmarshal(output, &value) != nil || value.Metadata.UID == "" || value.Metadata.Name != name || value.Metadata.ResourceVersion == "" {
+		return JoinedNode{}, errors.New("joined node binding is unavailable")
 	}
-	return value.Metadata.UID, nil
+	return JoinedNode{Name: value.Metadata.Name, UID: value.Metadata.UID, ResourceVersion: value.Metadata.ResourceVersion}, nil
 }
 func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
 	if binding == nil || binding.ExpectedNodeUID == "" {
 		return errors.New("verification binding is incomplete")
 	}
-	uid, err := e.observeNodeUID(ctx, binding.ExpectedNodeName)
-	if err != nil || uid != binding.ExpectedNodeUID {
+	joined, err := e.observeNode(ctx, plan, binding.ExpectedNodeName)
+	if err != nil || joined.UID != binding.ExpectedNodeUID {
 		return errors.New("joined node UID differs from binding")
 	}
-	output, err := e.Commands.Run(ctx, "/snap/bin/microk8s.kubectl", "get", "node", binding.ExpectedNodeName, "-o", "json")
+	output, err := e.kubectl(ctx, plan, "get", "node", binding.ExpectedNodeName, "-o", "json")
 	if err != nil {
 		return err
 	}
-	if !bytes.Contains(output, []byte(plan.Cluster.BootstrapTaint)) {
+	var node struct {
+		Spec struct {
+			Taints []struct {
+				Key    string `json:"key"`
+				Value  string `json:"value"`
+				Effect string `json:"effect"`
+			} `json:"taints"`
+		} `json:"spec"`
+	}
+	if json.Unmarshal(output, &node) != nil {
+		return errors.New("joined node taint response is invalid")
+	}
+	observedTaint := false
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "blazn.dev/bootstrap" && taint.Value == "pending" && taint.Effect == "NoSchedule" {
+			observedTaint = true
+		}
+	}
+	if !observedTaint {
 		return errors.New("bootstrap taint is not observed")
 	}
 	return nil
 }
 
 type joinPayload struct {
-	SchemaVersion, IssuanceID, ClusterID, ExpectedNodeName, BootstrapTaint string
-	WorkerOnly                                                             bool
-	ExpiresAt                                                              time.Time
-	URLs                                                                   []string
+	SchemaVersion    string    `json:"schemaVersion"`
+	IssuanceID       string    `json:"issuanceId"`
+	ClusterID        string    `json:"clusterId"`
+	ExpectedNodeName string    `json:"expectedNodeName"`
+	BootstrapTaint   string    `json:"bootstrapTaint"`
+	WorkerOnly       bool      `json:"workerOnly"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	URLs             []string  `json:"urls"`
 }
 
 func decodeJoinCredential(encoded string, binding *RootJoinBinding) (joinPayload, []string, error) {
@@ -430,23 +757,71 @@ func decodeJoinCredential(encoded string, binding *RootJoinBinding) (joinPayload
 	if err != nil {
 		return payload, nil, err
 	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || len(fields) != 8 {
+		return payload, nil, errors.New("worker credential payload fields are invalid")
+	}
+	for _, key := range []string{"schemaVersion", "issuanceId", "clusterId", "expectedNodeName", "bootstrapTaint", "workerOnly", "expiresAt", "urls"} {
+		if fields[key] == nil {
+			return payload, nil, errors.New("worker credential payload fields are incomplete")
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {
 		return payload, nil, err
 	}
-	if payload.SchemaVersion != "blazn.dev/microk8s-worker-join/v1" || payload.ClusterID != binding.ClusterID || payload.ExpectedNodeName != binding.ExpectedNodeName || payload.BootstrapTaint != binding.BootstrapTaint || !payload.WorkerOnly || !time.Now().Before(payload.ExpiresAt) {
+	if payload.SchemaVersion != "blazn.dev/microk8s-worker-join/v1" || payload.IssuanceID == "" || payload.ClusterID != binding.ClusterID || payload.ExpectedNodeName != binding.ExpectedNodeName || payload.BootstrapTaint != binding.BootstrapTaint || !payload.WorkerOnly || !time.Now().Before(payload.ExpiresAt) {
 		return payload, nil, errors.New("worker credential payload is invalid")
+	}
+	for _, candidate := range payload.URLs {
+		parsed, err := url.Parse("https://" + candidate)
+		parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+		if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || net.ParseIP(parsed.Hostname()) == nil || parsed.Port() == "" || len(parts) != 2 || len(parts[0]) != 32 || len(parts[1]) < 16 {
+			return payload, nil, errors.New("worker credential endpoint is invalid")
+		}
 	}
 	return payload, payload.URLs, nil
 }
-func readLimaVM(plan client.NodeInstallPlan) (string, error) {
+func readLimaVM(plan client.NodeInstallPlan, configuredPath string) (string, error) {
+	var expected string
 	for _, component := range plan.Components {
-		if component.Name == "lima-worker-binding" {
-			return "blazn-worker", nil
+		if component.Name == "lima-worker-binding" && component.SourceClass == "embedded" && component.ArtifactType == "configuration" {
+			expected = component.SHA256
+			break
 		}
 	}
-	return "", errors.New("Lima binding component is unavailable")
+	if expected == "" {
+		return "", errors.New("Lima binding component is unavailable")
+	}
+	path := configuredPath
+	if path == "" {
+		path = "/Library/Application Support/Blazn/lima-worker-binding.json"
+	}
+	value, err := readBoundedRegular(path, 64<<10)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(value)
+	if hex.EncodeToString(sum[:]) != expected {
+		return "", errors.New("Lima binding digest differs from signed component")
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(value, &raw) != nil || len(raw) != 4 {
+		return "", errors.New("Lima binding is invalid")
+	}
+	var binding struct {
+		SchemaVersion string `json:"schemaVersion"`
+		ClusterID     string `json:"clusterId"`
+		VMName        string `json:"vmName"`
+		WorkerName    string `json:"workerName"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&binding) != nil || binding.SchemaVersion != "blazn.dev/lima-worker-binding/v1" || binding.ClusterID != plan.Cluster.ID || binding.WorkerName != plan.Hostname || binding.VMName == "" {
+		return "", errors.New("Lima binding does not match signed plan")
+	}
+	return binding.VMName, nil
 }
 func decodeMaterial(material *RootMaterial) ([]byte, error) {
 	if material == nil {
@@ -492,7 +867,15 @@ func writeRootAtomic(path string, value []byte, mode os.FileMode, uid, gid int) 
 	if err == nil {
 		err = os.Rename(name, path)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 func backupID(planID string, ordinal int64) string {
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", planID, ordinal)))

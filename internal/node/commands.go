@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -29,6 +31,7 @@ type CommandRuntime struct {
 	CurrentBinaryPath  string
 	CurrentVersion     string
 	TrustedProfileRoot string
+	PlatformFactory    func(client.NodeTrustedInstallProfile) (Platform, error)
 }
 
 func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOptions) (EnrollResult, error) {
@@ -58,6 +61,14 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	if err != nil {
 		return EnrollResult{}, err
 	}
+	if c.PlatformFactory != nil {
+		platformAdapter, err := c.PlatformFactory(profile)
+		if err != nil {
+			return EnrollResult{}, err
+		}
+		c.Installer = NewInstaller(platformAdapter, c.State)
+		c.Service.installer = c.Installer
+	}
 	return c.Service.Enroll(ctx, EnrollOptions{AccessToken: c.AccessToken, WorkspaceID: options.WorkspaceID, IdempotencyKey: options.RequestID, Name: options.Name, Mode: options.Mode, Platform: platform, Architecture: architecture, MachineFingerprint: options.MachineFingerprint, Profile: profile, ProfilePath: options.ProfileFile}, true)
 }
 func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt, error) {
@@ -84,6 +95,33 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 		return client.NodeInstallReceipt{}, fmt.Errorf("reverify signed plan before recovery: %w", err)
 	}
 	return c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+}
+
+func NewProductionCommandRuntime(api API, accessToken, currentVersion string, join JoinCoordinator, capabilities CapabilityProvider, embedded map[string][]byte) (*CommandRuntime, error) {
+	if api == nil || accessToken == "" || currentVersion == "" || join == nil || capabilities == nil {
+		return nil, errors.New("production node runtime dependencies are incomplete")
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	binary, err = filepath.EvalSymlinks(binary)
+	if err != nil {
+		return nil, err
+	}
+	if binary != "/usr/local/bin/blazn" {
+		return nil, errors.New("production node runtime requires the receipt-owned /usr/local/bin/blazn binary")
+	}
+	state := FileStateStore{Root: "/var/lib/blazn/node"}
+	identities := FileIdentityStore{Path: "/var/lib/blazn/node/identity.json"}
+	service := NewService(api, identities, state, nil)
+	daemon := NewDaemon(api, state, identities, capabilities)
+	runtime := &CommandRuntime{Service: service, Daemon: daemon, State: state, Identities: identities, AccessToken: accessToken, CurrentBinaryPath: binary, CurrentVersion: currentVersion, TrustedProfileRoot: "/etc/blazn/node/profiles"}
+	runtime.PlatformFactory = func(profile client.NodeTrustedInstallProfile) (Platform, error) {
+		resolver := TrustedMaterialResolver{Profile: profile, CurrentBinaryPath: binary, Embedded: embedded, HTTP: &http.Client{Timeout: 2 * time.Minute}, MaxBytes: 512 << 20}
+		return SupportedPlatformAdapter(PipePrivilegedClient{HelperPath: DefaultRootHelperPath, UseSudo: true, Timeout: 2 * time.Minute}, resolver, join)
+	}
+	return runtime, nil
 }
 func (c *CommandRuntime) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if c.Daemon == nil {
