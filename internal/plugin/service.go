@@ -105,6 +105,9 @@ func (s *Service) Rollback(name string) (Receipt, error) { return s.Store.Rollba
 func (s *Service) Remove(name string) error              { return s.Store.Remove(name) }
 
 func (s *Service) Run(ctx context.Context, definition Definition, args []string, format string, runtimeContext RuntimeContext, streams Stdio) (int, error) {
+	if err := runtimeContext.Validate(); err != nil {
+		return 0, fmt.Errorf("validate plugin runtime context: %w", err)
+	}
 	installed, err := s.Store.Current(definition.Name)
 	if err != nil {
 		return 0, err
