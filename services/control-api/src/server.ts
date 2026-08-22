@@ -19,6 +19,10 @@ import { WorkspaceHttpRouter } from "./workspace-http.js";
 import { WorkspaceService } from "./workspace-service.js";
 import { PgWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceHttpError } from "./workspace-types.js";
+import { ProjectHttpRouter } from "./project-http.js";
+import { ProjectService } from "./project-service.js";
+import { PgProjectStore } from "./project-store.js";
+import { ProjectHttpError } from "./project-types.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
@@ -26,6 +30,7 @@ const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
+const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
 const brokerMode = process.env.BLAZN_NODE_BROKER_LOOPBACK ?? "disabled";
@@ -368,6 +373,10 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return { userId: session.userId, email: session.email, displayName: session.displayName };
     });
   }
+  if (projectRouter.matches(url.pathname)) {
+    const session = await authenticate(request);
+    return projectRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+  }
   if (workspaceRouter.matches(url.pathname)) {
     const session = await authenticate(request);
     const principal = { userId: session.userId, email: session.email, displayName: session.displayName };
@@ -386,7 +395,7 @@ const server = createServer((request, response) => {
   const requestId = randomUUID();
   response.setHeader("x-request-id", requestId);
   route(request, response).catch((error: unknown) => {
-    const httpError = error instanceof HttpError || error instanceof WorkspaceHttpError || error instanceof NodeHttpError ? error : new HttpError("internal_error", "request failed");
+    const httpError = error instanceof HttpError || error instanceof WorkspaceHttpError || error instanceof NodeHttpError || error instanceof ProjectHttpError ? error : new HttpError("internal_error", "request failed");
     if (!response.headersSent) {
       if ("retryAfter" in httpError && httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
       sendJson(response, httpError.status, httpError instanceof NodeHttpError ? nodeErrorBody(httpError, requestId) : { code: httpError.code, message: httpError.message, requestId });
