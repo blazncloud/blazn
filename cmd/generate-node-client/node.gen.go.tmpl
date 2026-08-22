@@ -805,6 +805,9 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	if !oneOf(plan.NodeService.Manager, "systemd", "launchd") || len(plan.NodeService.UnitName) < 1 || len(plan.NodeService.UnitName) > 256 || !strings.HasPrefix(plan.NodeService.BinaryPath, "/") || len(plan.NodeService.RunAsUser) < 1 || len(plan.NodeService.RunAsUser) > 128 || len(plan.NodeService.RunAsGroup) < 1 || len(plan.NodeService.RunAsGroup) > 128 || !nodeHashPattern.MatchString(plan.NodeService.DefinitionSHA256) {
 		return fmt.Errorf("node service is invalid")
 	}
+	if (plan.NodeService.Manager == "systemd" && !nodeSystemdUnitPattern.MatchString(plan.NodeService.UnitName)) || (plan.NodeService.Manager == "launchd" && (!strings.Contains(plan.NodeService.UnitName, ".") || strings.HasSuffix(plan.NodeService.UnitName, ".plist"))) {
+		return fmt.Errorf("node service unit name is invalid for its manager")
+	}
 	if len(plan.Labels) > 64 || len(plan.Taints) > 16 {
 		return fmt.Errorf("plan labels or taints exceed limits")
 	}
@@ -1927,7 +1930,7 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 	count := 0
 	for _, mutation := range plan.Mutations {
 		component := components[nodeMutationSourceComponent(mutation)]
-		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && mutation.Action == "adopt_exact" && mutation.Mode == 0644 && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.Ownership == "adopt_exact" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
 			count++
 		}
 	}
