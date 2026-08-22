@@ -24,8 +24,12 @@ const (
 
 func TestNodeBrokerUnavailableErrorStatusIsGenerated(t *testing.T) {
 	status, ok := NodeErrorHTTPStatus("node_broker_unavailable")
-	if !ok || status != http.StatusServiceUnavailable { t.Fatalf("status=%d ok=%v", status, ok) }
-	if _, ok := NodeErrorHTTPStatus("unreviewed"); ok { t.Fatal("unknown Node error code was accepted") }
+	if !ok || status != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d ok=%v", status, ok)
+	}
+	if _, ok := NodeErrorHTTPStatus("unreviewed"); ok {
+		t.Fatal("unknown Node error code was accepted")
+	}
 }
 
 func validNodeInstallPlan() NodeInstallPlan {

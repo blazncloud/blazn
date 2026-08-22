@@ -452,10 +452,14 @@ func validateSharedNodeErrors(node, common map[string]any) error {
 func nodeErrorStatusSource(document map[string]any) string {
 	statuses := at(document, "components", "schemas", "NodeError", "x-blazn-error-status").(map[string]any)
 	keys := make([]string, 0, len(statuses))
-	for key := range statuses { keys = append(keys, key) }
+	for key := range statuses {
+		keys = append(keys, key)
+	}
 	sort.Strings(keys)
 	var output strings.Builder
-	for _, key := range keys { fmt.Fprintf(&output, "\t%q: %d,\n", key, int(statuses[key].(float64))) }
+	for _, key := range keys {
+		fmt.Fprintf(&output, "\t%q: %d,\n", key, int(statuses[key].(float64)))
+	}
 	return output.String()
 }
 
