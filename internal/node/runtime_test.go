@@ -88,7 +88,7 @@ func TestServiceAuthorizesBootstrapBeforeRuntimePersistenceAndInstall(t *testing
 func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
 	authorization, _ := validBootstrapAuthorization(t)
 	plan := authorization.Expected.Plan
-	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: "2026-08-21T00:00:30Z"}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: "2026-08-21T00:00:30Z"}
 	authority.Digest, _ = RootInstallAuthorityDigest(authority)
 	trust := RootInstallAuthorityTrust{Now: time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC), Profile: trustedBootstrapProfile(plan), ProfileSHA256: authority.ProfileSHA256}
 	if err := VerifyRootInstallAuthority(authority, trust); err != nil {
@@ -107,6 +107,13 @@ func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
 	withToken, _ := json.Marshal(unknown)
 	if _, err := DecodeRootInstallAuthority(withToken); err == nil {
 		t.Fatal("token-like unknown root-authority field was accepted")
+	}
+	tamperedBinding := authority
+	bindingCopy := *authority.KubernetesBinding
+	bindingCopy.NodeUID = "substituted-uid"
+	tamperedBinding.KubernetesBinding = &bindingCopy
+	if err := VerifyRootInstallAuthority(tamperedBinding, trust); err == nil {
+		t.Fatal("tampered root-authority Kubernetes binding was accepted")
 	}
 	tamperedKey := authority
 	otherSigner := testIdentity(t)

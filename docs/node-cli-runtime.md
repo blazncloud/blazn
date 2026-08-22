@@ -21,9 +21,11 @@ receipt, CLI output, arguments, environment variables, or logs. A platform that
 cannot authorize this bootstrap fails closed. Successful implementations write
 only the token-free, digested `blazn.dev/node-root-install-authority/v1` record
 to root-owned state. That authority includes the exact plan-signing public-key
-tuple and Node public key so every later privileged operation can recompute both
-fingerprints, verify the stored plan signature and current expiry against the
-root-owned profile, and avoid the service-owned enrollment pin entirely.
+tuple, Node public key, and the replay-authenticated nullable Kubernetes binding
+so every later privileged operation can recompute both fingerprints, verify the
+stored plan signature and current expiry against the root-owned profile, re-prove
+the adopted Node UID/resourceVersion, and avoid the service-owned enrollment pin
+entirely.
 
 Privileged mutation is exposed through the narrow `node.Platform` interface.
 Before each mutation, prior state and rollback material are durably written to

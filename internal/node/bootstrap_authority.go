@@ -97,6 +97,7 @@ type RootInstallAuthority struct {
 	Identity           client.NodeEnrollmentIdentity `json:"identity"`
 	PlanSigningKey     client.NodePlanSigningKey     `json:"planSigningKey"`
 	NodePublicKey      string                        `json:"nodePublicKey"`
+	KubernetesBinding  *client.KubernetesBinding     `json:"kubernetesBinding"`
 	ProfileID          string                        `json:"profileId"`
 	ProfileSHA256      string                        `json:"profileSha256"`
 	ControlPlaneOrigin string                        `json:"controlPlaneOrigin"`
@@ -122,6 +123,12 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 	}
 	if authority.Plan.SigningKeyID != authority.PlanSigningKey.KeyID {
 		return errors.New("root install authority plan signer key ID is invalid")
+	}
+	if authority.Plan.Mode == client.NodeModeFresh && authority.KubernetesBinding != nil {
+		return errors.New("fresh root install authority cannot pre-bind Kubernetes")
+	}
+	if authority.Plan.Mode == client.NodeModeAdopt && (authority.KubernetesBinding == nil || authority.KubernetesBinding.ClusterID != authority.Plan.Cluster.ID || authority.KubernetesBinding.NodeName != authority.Plan.Hostname || authority.KubernetesBinding.NodeUID == "" || authority.KubernetesBinding.ResourceVersion == "") {
+		return errors.New("root install authority Kubernetes binding is invalid")
 	}
 	planKey, err := base64.RawURLEncoding.DecodeString(authority.PlanSigningKey.PublicKey)
 	if err != nil || len(planKey) != ed25519.PublicKeySize {
