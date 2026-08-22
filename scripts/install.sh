@@ -6,6 +6,10 @@
 #   BLAZN_VERSION       Required immutable release tag (for example, v0.1.0).
 #   BLAZN_INSTALL_DIR   Destination directory (default: $HOME/.local/bin).
 #   BLAZN_DIST_URL      Release root (default: GitHub releases).
+#   BLAZN_NO_PATH_UPDATE
+#                       Set to 1 to leave shell profiles unchanged.
+#   BLAZN_SHELL_PROFILE Explicit POSIX shell profile to update when PATH setup
+#                       cannot be inferred from SHELL.
 #
 # A controlled distribution can provide BLAZN_ALLOWED_SIGNERS and
 # BLAZN_SIGNING_FINGERPRINT together. Production releases use the public key
@@ -36,6 +40,93 @@ blazn_command_required() {
     blazn_die "required command not found: $1"
   fi
   command -v "$1" >/dev/null 2>&1 || blazn_die "required command not found: $1"
+}
+
+blazn_configure_path() {
+  case "${BLAZN_NO_PATH_UPDATE:-0}" in
+    0) ;;
+    1)
+      printf 'Shell PATH update skipped because BLAZN_NO_PATH_UPDATE=1.\n'
+      return 0
+      ;;
+    *)
+      blazn_err "BLAZN_NO_PATH_UPDATE must be 0 or 1; shell profile was not changed"
+      return 0
+      ;;
+  esac
+
+  case ":${PATH:-}:" in
+    *:"$blazn_install_dir":*) return 0 ;;
+  esac
+
+  case "$blazn_install_dir" in
+    *:*)
+      blazn_err "cannot add an installation directory containing ':' to PATH"
+      return 0
+      ;;
+    *'
+'*)
+      blazn_err "cannot add an installation directory containing a newline to PATH"
+      return 0
+      ;;
+  esac
+
+  blazn_profile=${BLAZN_SHELL_PROFILE:-}
+  if [ -z "$blazn_profile" ]; then
+    blazn_shell_name=${SHELL##*/}
+    case "$blazn_shell_name" in
+      zsh)
+        blazn_profile="${HOME:?HOME is required}/.zprofile"
+        ;;
+      bash)
+        if [ -e "${HOME:?HOME is required}/.bash_profile" ]; then
+          blazn_profile="$HOME/.bash_profile"
+        else
+          blazn_profile="$HOME/.profile"
+        fi
+        ;;
+      sh|dash|ksh|mksh)
+        blazn_profile="${HOME:?HOME is required}/.profile"
+        ;;
+      *)
+        blazn_err "could not infer a POSIX shell profile from SHELL=${SHELL:-unset}"
+        blazn_err "set BLAZN_SHELL_PROFILE or add $blazn_install_dir to PATH"
+        return 0
+        ;;
+    esac
+  fi
+
+  case "$blazn_profile" in
+    /*) ;;
+    *)
+      blazn_err "BLAZN_SHELL_PROFILE must be an absolute path; shell profile was not changed"
+      return 0
+      ;;
+  esac
+  if [ -e "$blazn_profile" ] && [ ! -f "$blazn_profile" ]; then
+    blazn_err "shell profile is not a regular file: $blazn_profile"
+    return 0
+  fi
+
+  blazn_profile_parent=${blazn_profile%/*}
+  mkdir -p "$blazn_profile_parent" || {
+    blazn_err "could not create shell profile directory $blazn_profile_parent"
+    return 0
+  }
+  blazn_escaped_install_dir=$(printf '%s' "$blazn_install_dir" | sed "s/'/'\\\\''/g")
+  blazn_path_line="export PATH='${blazn_escaped_install_dir}':\"\$PATH\""
+  if [ -f "$blazn_profile" ] && grep -Fqx "$blazn_path_line" "$blazn_profile"; then
+    return 0
+  fi
+  {
+    printf '\n# Added by the Blazn installer.\n'
+    printf '%s\n' "$blazn_path_line"
+  } >> "$blazn_profile" || {
+    blazn_err "could not update shell profile $blazn_profile"
+    return 0
+  }
+  printf 'Added %s to PATH in %s. Open a new terminal to run blazn.\n' \
+    "$blazn_install_dir" "$blazn_profile"
 }
 
 blazn_download() {
@@ -519,6 +610,7 @@ if [ -e "$blazn_destination" ]; then
   if [ "$blazn_installed_checksum" = "$blazn_binary_checksum" ] && \
      [ "$blazn_receipt_version" = "$blazn_version" ]; then
     printf 'blazn %s is already installed at %s\n' "$blazn_version" "$blazn_destination"
+    blazn_configure_path
     exit 0
   fi
 elif [ -e "$blazn_receipt" ]; then
@@ -596,7 +688,4 @@ if [ -n "$blazn_backup_receipt" ]; then
 fi
 
 printf 'Installed blazn %s to %s\n' "$blazn_version" "$blazn_destination"
-case ":${PATH:-}:" in
-  *:"$blazn_install_dir":*) ;;
-  *) printf 'Add %s to PATH to run blazn. No shell configuration was changed.\n' "$blazn_install_dir" ;;
-esac
+blazn_configure_path

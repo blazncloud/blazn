@@ -49,6 +49,7 @@ test_version=v1.2.3
 test_dist="$test_root/dist"
 test_release="$test_dist/download/$test_version"
 test_install="$test_root/install"
+test_profile="$test_root/shell-profile"
 mkdir -p "$test_release" "$test_install" "$test_root/payload"
 
 cat > "$test_root/payload/blazn" <<'EOF'
@@ -81,6 +82,19 @@ run_installer() {
   BLAZN_DIST_URL="file://$test_dist" \
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
+run_installer_without_path_update() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$1" \
+  BLAZN_NO_PATH_UPDATE=1 \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
     sh "$test_repo_root/scripts/install.sh"
@@ -91,6 +105,7 @@ run_installer_bad_fingerprint() {
   BLAZN_DIST_URL="file://$test_dist" \
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT='SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
     sh "$test_repo_root/scripts/install.sh"
@@ -101,6 +116,7 @@ run_installer_fault() {
   BLAZN_DIST_URL="file://$test_dist" \
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
   BLAZN_TEST_FAIL_STEP=$1 \
@@ -112,6 +128,7 @@ run_installer_missing_command() {
   BLAZN_DIST_URL="file://$test_dist" \
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
   BLAZN_TEST_MISSING_COMMAND=$1 \
@@ -123,6 +140,7 @@ run_installer_restore_fault() {
   BLAZN_DIST_URL="file://$test_dist" \
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
   BLAZN_TEST_FAIL_STEP=after-backup \
@@ -135,6 +153,7 @@ run_installer_recovery_pause() {
   BLAZN_DIST_URL="file://$test_dist" \
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
   BLAZN_TEST_RECOVERY_PAUSE_FILE=$1 \
@@ -164,12 +183,24 @@ run_installer >/dev/null
 grep -q '^version=v1.2.3$' "$test_install/.blazn-install-receipt" || fail "receipt records version"
 pass "signed archive installs with receipt"
 
+expected_path_line="export PATH='$test_install':\"\$PATH\""
+[ -f "$test_profile" ] || fail "installer did not create the selected shell profile"
+grep -Fqx "$expected_path_line" "$test_profile" || fail "installer did not persist its binary directory in PATH"
+pass "install persists the binary directory in the shell profile"
+
 first_inode=$(inode_of "$test_install/blazn")
 run_installer > "$test_root/idempotent.out"
 second_inode=$(inode_of "$test_install/blazn")
 [ "$first_inode" = "$second_inode" ] || fail "same version is idempotent"
 grep -q 'already installed' "$test_root/idempotent.out" || fail "idempotent result is reported"
+[ "$(grep -Fxc "$expected_path_line" "$test_profile")" -eq 1 ] || fail "same-version install duplicated PATH configuration"
 pass "same version is idempotent"
+
+opt_out_profile="$test_root/opt-out-profile"
+run_installer_without_path_update "$opt_out_profile" > "$test_root/path-opt-out.out"
+[ ! -e "$opt_out_profile" ] || fail "PATH opt-out changed a shell profile"
+grep -q 'PATH update skipped' "$test_root/path-opt-out.out" || fail "PATH opt-out was not reported"
+pass "managed installs can opt out of shell PATH changes"
 
 if run_installer_bad_fingerprint >"$test_root/fingerprint.out" 2>&1; then
   fail "wrong signing fingerprint was accepted"
@@ -419,4 +450,4 @@ grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fai
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
-printf '1..20\n'
+printf '1..22\n'
