@@ -25,7 +25,7 @@ Install the current public release with:
 
 ```bash
 curl -fL --progress-bar --show-error \
-  https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
+  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.3/install.sh |
   BLAZN_VERSION=v0.1.0-poc.3 sh
 ```
 
@@ -122,7 +122,7 @@ The disposable guest was removed after qualification. The shared `frontro-agent-
 
 ## Publication status
 
-`KingJammin/blazn` and its signed GitHub release assets are public. The
+`blazncloud/blazn` and its signed GitHub release assets are public. The
 anonymous curl command above is the approved distribution path. A custom domain
 or package-manager channel can be added later without changing the signed asset
 contract.

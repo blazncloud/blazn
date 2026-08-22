@@ -49,7 +49,7 @@ This plan is based on:
 - [Kubernetes SIG Agent Sandbox release v0.5.6](https://github.com/kubernetes-sigs/agent-sandbox/releases/tag/v0.5.6).
 - The official Agent Sandbox Kueue and warm-pool examples in the `kubernetes-sigs/agent-sandbox` repository.
 
-Any code moved from the private `FrontRowXP/blaze-internal` repository into `KingJammin/blazn` requires an explicit ownership and licensing decision. Until that is recorded, reuse means adopting proven contracts and patterns or creating an interface-compatible implementation, not silently copying private code.
+Any code moved from the private `FrontRowXP/blaze-internal` repository into `blazncloud/blazn` requires an explicit ownership and licensing decision. Until that is recorded, reuse means adopting proven contracts and patterns or creating an interface-compatible implementation, not silently copying private code.
 
 ## Verified starting state
 
@@ -1193,7 +1193,7 @@ Use a public tap, such as a separately approved `KingJammin/homebrew-blazn`, or 
 Acceptance requires:
 
 ```bash
-brew tap kingjammin/blazn <approved-tap-url>
+brew tap blazncloud/blazn <approved-tap-url>
 brew install blazn
 blazn version
 brew upgrade blazn
@@ -1837,7 +1837,7 @@ The likely elapsed POC is seven to nine weeks with parallel work. Re-estimate af
 
 ## Decisions required before implementation
 
-1. Can code from `FrontRowXP/blaze-internal` be moved into `KingJammin/blazn`, and under what license?
+1. Can code from `FrontRowXP/blaze-internal` be moved into `blazncloud/blazn`, and under what license?
 2. Which identity provider backs the POC device login?
 3. What hostname and TLS delivery path expose the POC API and verification page?
 4. Will the Blazn source repository become public, or will binaries use a separate public distribution repository or CDN?

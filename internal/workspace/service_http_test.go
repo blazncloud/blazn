@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type fakeSessions struct{ forced int }

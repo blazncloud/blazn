@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 const activationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

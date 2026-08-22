@@ -1,3 +1,3 @@
-module github.com/KingJammin/blazn-release-fixture
+module github.com/blazncloud/blazn-release-fixture
 
 go 1.22

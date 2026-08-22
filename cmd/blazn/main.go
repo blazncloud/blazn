@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/KingJammin/blazn/internal/cli"
+	"github.com/blazncloud/blazn/internal/cli"
 )
 
 var (

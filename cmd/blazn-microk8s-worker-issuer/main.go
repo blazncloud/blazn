@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/microk8sissuer"
-	nodepkg "github.com/KingJammin/blazn/internal/node"
+	"github.com/blazncloud/blazn/internal/microk8sissuer"
+	nodepkg "github.com/blazncloud/blazn/internal/node"
 )
 
 const (

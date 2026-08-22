@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 type streamEnvelope struct {

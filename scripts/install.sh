@@ -21,7 +21,7 @@ set -eu
 
 BLAZN_RELEASE_IDENTITY="blazn-release"
 BLAZN_SIGNATURE_NAMESPACE="blazn-release"
-BLAZN_DEFAULT_DIST_URL="https://github.com/KingJammin/blazn/releases"
+BLAZN_DEFAULT_DIST_URL="https://github.com/blazncloud/blazn/releases"
 
 # Public half of the release key held by the release workflow. Rotation requires
 # shipping a reviewed installer that contains the new trust root.

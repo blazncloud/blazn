@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 const MaxRequestBytes = 8 << 20
