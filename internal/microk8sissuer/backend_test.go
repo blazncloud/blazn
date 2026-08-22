@@ -2,6 +2,7 @@ package microk8sissuer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,15 +12,19 @@ import (
 )
 
 type fakeRunner struct {
-	output    []byte
-	args      []string
-	calls     int
-	tokenFile string
+	output     []byte
+	args       []string
+	calls      int
+	tokenFile  string
+	failStatus bool
 }
 
-func (f *fakeRunner) Run(_ context.Context, _ string, args []string) ([]byte, error) {
+func (f *fakeRunner) Run(_ context.Context, path string, args []string) ([]byte, error) {
 	f.calls++
 	f.args = append([]string(nil), args...)
+	if f.failStatus && path == "/snap/bin/microk8s.status" {
+		return nil, errors.New("unready details")
+	}
 	if len(args) >= 2 && args[0] == "--token" && f.tokenFile != "" {
 		file, _ := os.OpenFile(f.tokenFile, os.O_APPEND|os.O_WRONLY, 0)
 		if file != nil {
@@ -28,6 +33,20 @@ func (f *fakeRunner) Run(_ context.Context, _ string, args []string) ([]byte, er
 		}
 	}
 	return f.output, nil
+}
+
+func TestBackendHealthUsesOnlyTheFixedReadinessProbe(t *testing.T) {
+	backend, runner, _ := backendFixture(t, "")
+	if err := backend.Healthy(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.args) != 3 || runner.args[0] != "--wait-ready" || runner.args[1] != "--timeout" || runner.args[2] != "5" {
+		t.Fatalf("readiness args %#v", runner.args)
+	}
+	runner.failStatus = true
+	if err := backend.Healthy(context.Background()); err == nil || err.Error() == "unready details" {
+		t.Fatal("readiness failed open or leaked output")
+	}
 }
 func backendFixture(t *testing.T, content string) (*MicroK8sBackend, *fakeRunner, string) {
 	t.Helper()
