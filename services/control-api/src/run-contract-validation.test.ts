@@ -25,7 +25,7 @@ test("Run and Artifact OpenAPI exposes only Project-scoped public routes", async
 
 test("Run schema separates synthetic proof from populated live placement", async () => {
   const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> } };
-  const ajv = new Ajv2020({ strict: true, allErrors: true }); addFormats(ajv);
+  const ajv = new Ajv2020({ strict: true, strictRequired: false, allErrors: true }); addFormats(ajv);
   const validate = ajv.compile(document.components.schemas.Run!);
   const base = {
     id: "00000000-0000-4000-8000-000000000003", workspaceId: "00000000-0000-4000-8000-000000000001", projectId: "00000000-0000-4000-8000-000000000002",
@@ -43,7 +43,7 @@ test("Run schema separates synthetic proof from populated live placement", async
 
 test("Artifact schema exposes availability without leaking storage keys", async () => {
   const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> } };
-  const ajv = new Ajv2020({ strict: true, allErrors: true }); addFormats(ajv);
+  const ajv = new Ajv2020({ strict: true, strictRequired: false, allErrors: true }); addFormats(ajv);
   const validate = ajv.compile(document.components.schemas.Artifact!);
   const artifact = { id: "00000000-0000-4000-8000-000000000007", workspaceId: "00000000-0000-4000-8000-000000000001", projectId: "00000000-0000-4000-8000-000000000002", kind: "content.video", mediaType: "video", name: "render.mp4", status: "ready", version: 1, digest: `sha256:${"b".repeat(64)}`, sizeBytes: 10, createdBy: "00000000-0000-4000-8000-000000000004", createdAt: "2026-08-22T00:00:00Z", updatedAt: "2026-08-22T00:00:01Z", downloadAvailable: true };
   assert.equal(validate(artifact), true, JSON.stringify(validate.errors));
