@@ -21,6 +21,7 @@ type Selection struct {
 	APIOrigin     string    `json:"apiOrigin"`
 	UserID        string    `json:"userId"`
 	WorkspaceID   string    `json:"workspaceId"`
+	ProjectID     string    `json:"projectId,omitempty"`
 	SelectedAt    time.Time `json:"selectedAt"`
 }
 
@@ -77,14 +78,14 @@ func (s *FileContextStore) Load(origin, userID string) (Selection, error) {
 	if err := json.Unmarshal(encoded, &selection); err != nil {
 		return Selection{}, errors.New("workspace context is invalid")
 	}
-	if selection.SchemaVersion != 1 || selection.APIOrigin != origin || selection.UserID != userID || selection.WorkspaceID == "" || selection.SelectedAt.IsZero() {
+	if selection.SchemaVersion != 1 || selection.APIOrigin != origin || selection.UserID != userID || selection.WorkspaceID == "" || (selection.ProjectID != "" && !uuidPattern.MatchString(selection.ProjectID)) || selection.SelectedAt.IsZero() {
 		return Selection{}, errors.New("workspace context does not match the current origin and user")
 	}
 	return selection, nil
 }
 
 func (s *FileContextStore) Save(selection Selection) error {
-	if selection.APIOrigin == "" || selection.UserID == "" || selection.WorkspaceID == "" {
+	if selection.APIOrigin == "" || selection.UserID == "" || selection.WorkspaceID == "" || (selection.ProjectID != "" && !uuidPattern.MatchString(selection.ProjectID)) {
 		return errors.New("workspace context is incomplete")
 	}
 	selection.SchemaVersion = 1

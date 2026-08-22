@@ -55,6 +55,24 @@ func TestCurrentSelectionBindsOriginAndAuthenticatedUser(t *testing.T) {
 	}
 }
 
+func TestWorkspaceUseClearsPreviouslySelectedProject(t *testing.T) {
+	const workspaceID = "123e4567-e89b-42d3-a456-426614174000"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"workspace":{"id":"` + workspaceID + `","slug":"team","name":"Team","status":"active","version":1,"currentUserRole":"member","createdAt":"now","updatedAt":"now"}}`))
+	}))
+	defer server.Close()
+	api, _ := client.New(server.URL, server.Client())
+	contexts := &memoryContexts{selection: Selection{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: workspaceID, ProjectID: "123e4567-e89b-42d3-a456-426614174001"}}
+	service := NewService(api, &fakeSessions{}, contexts)
+	if _, err := service.Use(context.Background(), workspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if contexts.selection.WorkspaceID != workspaceID || contexts.selection.ProjectID != "" {
+		t.Fatalf("selection=%#v", contexts.selection)
+	}
+}
+
 func TestJoinUsesBodyOnlyRetriesAccessAndSelectsWorkspace(t *testing.T) {
 	const workspaceID = "123e4567-e89b-42d3-a456-426614174000"
 	token := strings.Repeat("t", 43)
