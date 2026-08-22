@@ -11,7 +11,7 @@ import (
 )
 
 func TestCredentialLockSerializesSameOrigin(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	first, err := newCredentialLocker("https://example.test")
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestCredentialLockSerializesAcrossProcesses(t *testing.T) {
 	marker := filepath.Join(runtimeDir, "marker")
 	release := filepath.Join(runtimeDir, "release")
 	command := exec.Command(os.Args[0], "-test.run=^TestCredentialLockSerializesAcrossProcesses$")
-	command.Env = append(os.Environ(), "BLAZN_LOCK_HELPER=1", "XDG_RUNTIME_DIR="+runtimeDir, "BLAZN_LOCK_MARKER="+marker, "BLAZN_LOCK_RELEASE="+release)
+	command.Env = append(os.Environ(), "BLAZN_LOCK_HELPER=1", "HOME="+runtimeDir, "BLAZN_LOCK_MARKER="+marker, "BLAZN_LOCK_RELEASE="+release)
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestCredentialLockSerializesAcrossProcesses(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	t.Setenv("HOME", runtimeDir)
 	locker, err := newCredentialLocker("https://example.test")
 	if err != nil {
 		t.Fatal(err)
@@ -104,10 +104,28 @@ func TestCredentialLockSerializesAcrossProcesses(t *testing.T) {
 }
 
 func TestCredentialLocksAreScopedByOrigin(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 	first, _ := newCredentialLocker("https://one.example")
 	second, _ := newCredentialLocker("https://two.example")
 	if first.(*fileCredentialLocker).path == second.(*fileCredentialLocker).path {
 		t.Fatal("different origins share one lock")
+	}
+}
+
+func TestCredentialLockPathIgnoresXDGEnvironment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime-one"))
+	first, err := newCredentialLocker("https://example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(t.TempDir(), "runtime-two"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data-two"))
+	second, err := newCredentialLocker("https://example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.(*fileCredentialLocker).path != second.(*fileCredentialLocker).path {
+		t.Fatalf("lock paths differ: %q %q", first.(*fileCredentialLocker).path, second.(*fileCredentialLocker).path)
 	}
 }

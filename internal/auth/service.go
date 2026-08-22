@@ -44,6 +44,15 @@ type ProofBoundSessionRevoker interface {
 	RevokeSession(context.Context, client.RefreshSessionRequest) error
 }
 
+type RevokeSessionRequest struct {
+	DeviceID string `json:"deviceId"`
+	Proof    string `json:"proof"`
+}
+
+type StableDeviceSessionRevoker interface {
+	RevokeSessionWithDeviceProof(context.Context, RevokeSessionRequest) error
+}
+
 type Credentials struct {
 	APIOrigin        string    `json:"apiOrigin"`
 	AccessToken      string    `json:"accessToken"`
@@ -88,6 +97,7 @@ type Service struct {
 	sleep             func(context.Context, time.Duration) error
 	pendingPrivateKey ed25519.PrivateKey
 	pendingChallenge  string
+	pendingRelease    func()
 }
 
 func NewService(api API, store CredentialStore) *Service {
@@ -149,6 +159,23 @@ func NewDefaultService() (*Service, error) {
 }
 
 func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Duration, error) {
+	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	release, err := s.locker.Acquire(lockCtx)
+	if err != nil {
+		return LoginStart{}, "", 0, err
+	}
+	releaseOnError := true
+	defer func() {
+		if releaseOnError {
+			release()
+		}
+	}()
+	if _, err := s.credentialsLocked(ctx); err == nil {
+		return LoginStart{}, "", 0, errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
+	} else if !errors.Is(err, ErrNotFound) {
+		return LoginStart{}, "", 0, fmt.Errorf("check existing Blazn session before login: %w", err)
+	}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return LoginStart{}, "", 0, fmt.Errorf("generate device key: %w", err)
@@ -170,6 +197,8 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 	}
 	s.pendingPrivateKey = privateKey
 	s.pendingChallenge = authorization.Challenge
+	s.pendingRelease = release
+	releaseOnError = false
 	start := LoginStart{
 		UserCode:                authorization.UserCode,
 		VerificationURI:         authorization.VerificationURI,
@@ -180,6 +209,13 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 }
 
 func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval time.Duration) (LoginResult, error) {
+	lockHeld := false
+	if s.pendingRelease != nil {
+		release := s.pendingRelease
+		s.pendingRelease = nil
+		defer release()
+		lockHeld = true
+	}
 	if len(s.pendingPrivateKey) != ed25519.PrivateKeySize || s.pendingChallenge == "" {
 		return LoginResult{}, errors.New("device authorization state is missing; restart login")
 	}
@@ -198,6 +234,13 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 		session, err := s.api.ExchangeDeviceAuthorization(ctx, client.DeviceSessionRequest{DeviceCode: deviceCode, Proof: proof})
 		if err == nil {
 			var result LoginResult
+			if lockHeld {
+				// A successful BeginLogin retains the cross-process lock until this
+				// method returns. Tests and recovery callers without that state acquire
+				// the lock around finalization here.
+				result, err = s.finishLogin(ctx, session, s.pendingPrivateKey)
+				return result, err
+			}
 			entered := false
 			lockErr := s.locker.WithLock(ctx, func() error {
 				entered = true
@@ -234,9 +277,9 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 				interval = time.Duration(apiErr.RetryAfter) * time.Second
 			} else {
 				interval += 5 * time.Second
-			}
-			if interval > 30*time.Second {
-				interval = 30 * time.Second
+				if interval > 30*time.Second {
+					interval = 30 * time.Second
+				}
 			}
 		}
 		if err := s.sleep(ctx, interval); err != nil {
@@ -258,6 +301,21 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 		}
 		current, err := s.api.GetCurrentUser(ctx, credentials.AccessToken)
 		if err != nil {
+			if client.IsCode(err, "session_revoked") {
+				credentials, err = s.refreshCredentialsLocked(ctx, credentials)
+				if errors.Is(err, ErrNotFound) {
+					result = StatusResult{Authenticated: false, Store: s.store.Description()}
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				current, err = s.api.GetCurrentUser(ctx, credentials.AccessToken)
+				if err == nil {
+					result = StatusResult{Authenticated: true, Store: s.store.Description(), User: &current.User, Device: &current.Device}
+					return nil
+				}
+			}
 			if isDefinitiveCredentialError(err) {
 				if deleteErr := s.store.Delete(); deleteErr != nil {
 					return deleteErr
@@ -288,12 +346,15 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 			return fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
 		}
 		revoker, ok := s.api.(ProofBoundSessionRevoker)
-		if ok {
+		if stableErr := s.revokeSessionStable(ctx, credentials); stableErr == nil {
+			// Stable device proof does not depend on the current refresh-token
+			// generation, so response loss and rotation cannot orphan the session.
+		} else if ok {
 			request, err := refreshProofRequest(credentials)
 			if err != nil {
 				return err
 			}
-			if err := revoker.RevokeSession(ctx, request); err != nil && !isRefreshCredentialError(err) {
+			if err := revoker.RevokeSession(ctx, request); err != nil {
 				return fmt.Errorf("proof-bound session revocation failed; local session preserved: %w", err)
 			}
 		} else {
@@ -349,13 +410,26 @@ func (s *Service) credentialsLocked(ctx context.Context) (Credentials, error) {
 	if credentials.ExpiresAt.After(s.now().Add(30 * time.Second)) {
 		return credentials, nil
 	}
+	return s.refreshCredentialsLocked(ctx, credentials)
+}
+
+func (s *Service) refreshCredentialsLocked(ctx context.Context, credentials Credentials) (Credentials, error) {
 	request, err := refreshProofRequest(credentials)
 	if err != nil {
 		return Credentials{}, err
 	}
 	session, err := s.api.RefreshSession(ctx, request)
 	if err != nil {
-		if isRefreshCredentialError(err) {
+		if client.IsCode(err, "session_revoked") || client.IsCode(err, "refresh_invalid") {
+			if revokeErr := s.revokeSessionStable(ctx, credentials); revokeErr != nil {
+				return Credentials{}, fmt.Errorf("refresh credential may be stale; stable device revocation was not confirmed and local credentials were preserved: %v; refresh error: %w", revokeErr, err)
+			}
+			if deleteErr := s.store.Delete(); deleteErr != nil {
+				return Credentials{}, deleteErr
+			}
+			return Credentials{}, ErrNotFound
+		}
+		if isDefinitiveCredentialError(err) {
 			if deleteErr := s.store.Delete(); deleteErr != nil {
 				return Credentials{}, deleteErr
 			}
@@ -460,12 +534,14 @@ func (s *Service) revokeIssuedSession(ctx context.Context, session client.Sessio
 	revokeErr := s.api.DeleteCurrentSession(ctx, session.AccessToken)
 	if revokeErr != nil {
 		credentials := Credentials{APIOrigin: s.origin, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now(), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}
-		if revoker, ok := s.api.(ProofBoundSessionRevoker); ok {
+		if stableErr := s.revokeSessionStable(ctx, credentials); stableErr == nil {
+			revokeErr = nil
+		} else if revoker, ok := s.api.(ProofBoundSessionRevoker); ok {
 			request, proofErr := refreshProofRequest(credentials)
 			if proofErr == nil {
 				proofErr = revoker.RevokeSession(ctx, request)
 			}
-			if proofErr == nil || isRefreshCredentialError(proofErr) {
+			if proofErr == nil {
 				revokeErr = nil
 			} else {
 				revokeErr = fmt.Errorf("access revocation failed: %v; proof-bound revocation failed: %w", revokeErr, proofErr)
@@ -473,6 +549,35 @@ func (s *Service) revokeIssuedSession(ctx context.Context, session client.Sessio
 		}
 	}
 	return revokeErr
+}
+
+func (s *Service) revokeSessionStable(ctx context.Context, credentials Credentials) error {
+	revoker, ok := s.api.(StableDeviceSessionRevoker)
+	if !ok {
+		return errors.New("stable device-bound session revocation is unavailable")
+	}
+	request, err := stableRevokeRequest(credentials)
+	if err != nil {
+		return err
+	}
+	if err := revoker.RevokeSessionWithDeviceProof(ctx, request); err != nil && !isStableRevocationConfirmation(err) {
+		return err
+	}
+	return nil
+}
+
+func stableRevokeRequest(credentials Credentials) (RevokeSessionRequest, error) {
+	privateKey, err := decodePrivateKey(credentials.DevicePrivateKey)
+	if err != nil {
+		return RevokeSessionRequest{}, err
+	}
+	payload := "blazn-session-revoke-v1\n" + credentials.DeviceID
+	proof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload)))
+	return RevokeSessionRequest{DeviceID: credentials.DeviceID, Proof: proof}, nil
+}
+
+func isStableRevocationConfirmation(err error) bool {
+	return client.IsCode(err, "device_revoked") || client.IsCode(err, "device_not_found") || client.IsCode(err, "session_invalid")
 }
 
 func refreshProofRequest(credentials Credentials) (client.RefreshSessionRequest, error) {

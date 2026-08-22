@@ -69,10 +69,14 @@ type fakeAPI struct {
 	refreshRequest       client.RefreshSessionRequest
 	refreshErr           error
 	currentErr           error
+	currentErrs          []error
 	currentCalls         int
 	revokeSessionRequest client.RefreshSessionRequest
 	revokeSessionErr     error
 	revokeSessions       int
+	stableRevokeRequest  RevokeSessionRequest
+	stableRevokeErr      error
+	stableRevokes        int
 }
 
 func (a *fakeAPI) CreateDeviceAuthorization(_ context.Context, request client.DeviceAuthorizationRequest) (client.DeviceAuthorization, error) {
@@ -103,12 +107,22 @@ func (a *fakeAPI) DeleteCurrentSession(_ context.Context, token string) error {
 }
 func (a *fakeAPI) GetCurrentUser(context.Context, string) (client.CurrentUser, error) {
 	a.currentCalls++
+	if len(a.currentErrs) > 0 {
+		err := a.currentErrs[0]
+		a.currentErrs = a.currentErrs[1:]
+		return a.current, err
+	}
 	return a.current, a.currentErr
 }
 func (a *fakeAPI) RevokeSession(_ context.Context, request client.RefreshSessionRequest) error {
 	a.revokeSessions++
 	a.revokeSessionRequest = request
 	return a.revokeSessionErr
+}
+func (a *fakeAPI) RevokeSessionWithDeviceProof(_ context.Context, request RevokeSessionRequest) error {
+	a.stableRevokes++
+	a.stableRevokeRequest = request
+	return a.stableRevokeErr
 }
 func (a *fakeAPI) ListDevices(context.Context, string) (client.DeviceList, error) {
 	return a.devices, nil
@@ -210,7 +224,7 @@ func TestLogoutRevokesThenDeletes(t *testing.T) {
 	api := &fakeAPI{}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
-	if err != nil || result.Status != "logged_out" || api.revokeSessions != 1 || api.deleted != 0 || store.deleted != 1 {
+	if err != nil || result.Status != "logged_out" || api.stableRevokes != 1 || api.revokeSessions != 0 || api.deleted != 0 || store.deleted != 1 {
 		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
 	}
 }
@@ -219,7 +233,7 @@ func TestLogoutRefreshesExpiredAccessBeforeRemoteRevocation(t *testing.T) {
 	api := &fakeAPI{session: client.Session{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 300, DeviceID: "dev-1"}}
 	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
-	if err != nil || result.Status != "logged_out" || api.refreshes != 1 || api.revokeSessions != 1 || api.revokeSessionRequest.RefreshToken != "fresh-refresh" || store.deleted != 1 {
+	if err != nil || result.Status != "logged_out" || api.refreshes != 1 || api.stableRevokes != 1 || api.stableRevokeRequest.DeviceID != "dev-1" || store.deleted != 1 {
 		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
 	}
 }
@@ -243,7 +257,7 @@ func TestLogoutPreservesLocalCredentialWhenExpiredSessionCannotRefresh(t *testin
 }
 
 func TestLogoutPreservesLocalCredentialWhenRemoteRevocationFails(t *testing.T) {
-	api := &fakeAPI{revokeSessionErr: errors.New("network unavailable")}
+	api := &fakeAPI{stableRevokeErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
 	if err == nil || result.Status != "logout_failed" || result.RemoteRevoked || store.deleted != 0 {
@@ -255,7 +269,7 @@ func TestLogoutUsesProofBoundRevocationWhenAccessRevocationIsAmbiguous(t *testin
 	api := &fakeAPI{deleteErr: &client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}}}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
-	if err != nil || !result.RemoteRevoked || api.revokeSessions != 1 || api.revokeSessionRequest.RefreshToken != "refresh" || store.deleted != 1 {
+	if err != nil || !result.RemoteRevoked || api.stableRevokes != 1 || api.revokeSessions != 0 || store.deleted != 1 {
 		t.Fatalf("Logout=%#v api=%#v store=%#v err=%v", result, api, store, err)
 	}
 }
@@ -282,7 +296,7 @@ func TestPostExchangeVerificationFailureRevokesAndDeletes(t *testing.T) {
 }
 
 func TestPostExchangeCleanupFailureRetainsCredential(t *testing.T) {
-	api := &fakeAPI{currentErr: errors.New("verification unavailable"), deleteErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
+	api := &fakeAPI{currentErr: errors.New("verification unavailable"), deleteErr: errors.New("network unavailable"), stableRevokeErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
 	store := &memoryStore{}
 	service := testService(api, store)
 	privateKey := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
@@ -293,13 +307,69 @@ func TestPostExchangeCleanupFailureRetainsCredential(t *testing.T) {
 }
 
 func TestPostExchangeStoreFailureAttemptsCleanupAndRetainsOnCleanupFailure(t *testing.T) {
-	api := &fakeAPI{deleteErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
+	api := &fakeAPI{deleteErr: errors.New("network unavailable"), stableRevokeErr: errors.New("network unavailable"), revokeSessionErr: errors.New("network unavailable")}
 	store := &memoryStore{putErrs: []error{errors.New("keyring unavailable"), nil}}
 	service := testService(api, store)
 	privateKey := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
 	_, err := service.finishLogin(context.Background(), client.Session{AccessToken: "access", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresIn: 300}, privateKey)
 	if err == nil || store.put != 2 || len(store.value) == 0 || api.deleted != 1 || api.revokeSessions != 1 {
 		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
+	}
+}
+
+func TestStableRevokeProofIsDeviceBoundAndDomainSeparated(t *testing.T) {
+	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	credentials := Credentials{DeviceID: "dev-1", DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}
+	request, err := stableRevokeRequest(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := base64.RawURLEncoding.DecodeString(request.Proof)
+	if err != nil || !ed25519.Verify(privateKey.Public().(ed25519.PublicKey), []byte("blazn-session-revoke-v1\ndev-1"), proof) {
+		t.Fatal("stable revoke proof did not verify")
+	}
+	if ed25519.Verify(privateKey.Public().(ed25519.PublicKey), []byte("blazn-refresh-v1\ndev-1"), proof) {
+		t.Fatal("stable revoke proof was not domain separated")
+	}
+}
+
+func TestBeginLoginRefusesExistingValidSessionBeforeAuthorization(t *testing.T) {
+	api := &fakeAPI{}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	service := testService(api, store)
+	if _, _, _, err := service.BeginLogin(context.Background()); err == nil || len(api.authorizationRequest.DevicePublicKey) != 0 {
+		t.Fatalf("authorization request=%#v err=%v", api.authorizationRequest, err)
+	}
+}
+
+func TestStatusRefreshesAfterUnexpectedAccessRevocation(t *testing.T) {
+	api := &fakeAPI{
+		session:     client.Session{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 300, DeviceID: "dev-1"},
+		current:     client.CurrentUser{User: client.User{ID: "user-1"}, Device: client.Device{ID: "dev-1"}},
+		currentErrs: []error{&client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}}, nil},
+	}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	status, err := testService(api, store).Status(context.Background())
+	if err != nil || !status.Authenticated || api.refreshes != 1 || api.currentCalls != 2 {
+		t.Fatalf("status=%#v api=%#v err=%v", status, api, err)
+	}
+}
+
+func TestExplicitRetryAfterIsNotCappedToFallbackMaximum(t *testing.T) {
+	api := &fakeAPI{
+		exchangeErrs: []error{
+			&client.APIError{StatusCode: http.StatusTooManyRequests, RetryAfter: 120, Body: client.ErrorBody{Code: "slow_down"}},
+			context.Canceled,
+		},
+	}
+	service := testService(api, &memoryStore{})
+	service.pendingPrivateKey = make([]byte, ed25519.PrivateKeySize)
+	service.pendingChallenge = "challenge"
+	var slept time.Duration
+	service.sleep = func(_ context.Context, duration time.Duration) error { slept = duration; return nil }
+	_, _ = service.CompleteLogin(context.Background(), "code", time.Second)
+	if slept != 120*time.Second {
+		t.Fatalf("slept=%v want=2m", slept)
 	}
 }
 
