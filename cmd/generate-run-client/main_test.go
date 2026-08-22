@@ -60,4 +60,11 @@ func TestRunGeneratorRejectsOperationAndSchemaDrift(t *testing.T) {
 			t.Fatal("required tenant fields drift passed")
 		}
 	})
+	t.Run("enum", func(t *testing.T) {
+		document := load()
+		valueAt(document, "components", "schemas", "ProofClass").(map[string]any)["enum"] = []any{"synthetic"}
+		if err := validate(document, string(runTemplate)); err == nil {
+			t.Fatal("proof class enum drift passed")
+		}
+	})
 }

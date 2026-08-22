@@ -105,6 +105,22 @@ func TestRunClientRejectsInvalidInputsBeforeNetwork(t *testing.T) {
 		t.Fatalf("requests=%d", requests)
 	}
 }
+
+func TestRunClientGetRunRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID {
+			t.Fatalf("get %s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(runEnvelopeJSON("queued", 1)))
+	}))
+	defer server.Close()
+	api, _ := New(server.URL, server.Client())
+	result, err := api.GetRun(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID)
+	if err != nil || result.Run.ID != runTestRunID {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
 func runEnvelopeJSON(status string, version int) string {
 	completed := ""
 	receipt := "null"
