@@ -79,6 +79,7 @@ blazn_cleanup() {
       "$blazn_tmp_dir/checksums.txt" \
       "$blazn_tmp_dir/checksums.txt.sig" \
       "$blazn_tmp_dir/allowed_signers" \
+      "$blazn_tmp_dir/signing_keys" \
       "$blazn_tmp_dir/version.txt" \
       "$blazn_tmp_dir/archive.list" \
       "$blazn_tmp_dir/archive.verbose" \
@@ -154,10 +155,30 @@ case "$blazn_expected_fingerprint" in
   *) blazn_die "signing fingerprint must use SHA256 format" ;;
 esac
 
-blazn_fingerprint_count=$(ssh-keygen -lf "$blazn_tmp_dir/allowed_signers" -E sha256 2>/dev/null \
+# `ssh-keygen -l` reads public-key records, not allowed_signers records with
+# principals and options. Extract only each key type and base64 body before
+# fingerprinting it, then require one trust root in total.
+awk '
+  {
+    for (field = 1; field <= NF; field++) {
+      if ($field ~ /^(ssh-|ecdsa-)/ && field < NF) {
+        print $field " " $(field + 1)
+        found++
+        break
+      }
+    }
+  }
+  END { if (found == 0) exit 1 }
+' "$blazn_tmp_dir/allowed_signers" > "$blazn_tmp_dir/signing_keys" || \
+  blazn_die "allowed signers does not contain a public key"
+
+blazn_fingerprints=$(ssh-keygen -lf "$blazn_tmp_dir/signing_keys" -E sha256 2>/dev/null) || \
+  blazn_die "could not fingerprint allowed signing key"
+blazn_fingerprint_total=$(printf '%s\n' "$blazn_fingerprints" | awk 'NF { count++ } END { print count + 0 }')
+blazn_fingerprint_count=$(printf '%s\n' "$blazn_fingerprints" \
   | awk -v wanted="$blazn_expected_fingerprint" '$2 == wanted { count++ } END { print count + 0 }')
-[ "$blazn_fingerprint_count" -eq 1 ] || \
-  blazn_die "allowed signers does not contain exactly one expected signing key"
+[ "$blazn_fingerprint_total" -eq 1 ] && [ "$blazn_fingerprint_count" -eq 1 ] || \
+  blazn_die "allowed signers must contain exactly the expected signing key"
 
 if ! ssh-keygen -Y verify \
   -f "$blazn_tmp_dir/allowed_signers" \
