@@ -190,7 +190,7 @@ jobs:
           unlink "$RUNNER_TEMP/blazn-release/signing-key"
       - name: Publish exact signed candidate without rebuilding
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.BLAZN_RELEASE_GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
