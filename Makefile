@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check test release test-release ci
+.PHONY: fmt fmt-check test release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -21,4 +21,7 @@ release:
 test-release:
 	./scripts/test-release.sh
 
-ci: fmt-check test test-release
+test-install:
+	./scripts/test-install.sh
+
+ci: fmt-check test test-release test-install
