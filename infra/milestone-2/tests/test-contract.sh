@@ -37,6 +37,8 @@ for expected in \
 done
 grep -F 'subnet: 172.18.0.0/16' "$compose" >/dev/null
 grep -F 'gateway: 172.18.0.1' "$compose" >/dev/null
+# This intentionally asserts the literal required Compose interpolation.
+# shellcheck disable=SC2016
 grep -F 'image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}' "$compose" >/dev/null
 
 # These strings intentionally assert unexpanded Compose interpolation.
