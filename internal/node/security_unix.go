@@ -3,6 +3,8 @@
 package node
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -10,12 +12,104 @@ import (
 	"syscall"
 )
 
+func writeRootAtomicNative(path string, value []byte, mode os.FileMode, uid, gid int) error {
+	directoryPath := filepath.Dir(path)
+	if err := verifyRootOwnedDirectoryChain(directoryPath); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	directoryInfo, err := root.Lstat(".")
+	if err != nil {
+		return err
+	}
+	directoryOwner, directoryLinks, ok := fileOwner(directoryInfo)
+	if !ok || !directoryInfo.IsDir() || directoryOwner != 0 || directoryLinks < 2 || directoryInfo.Mode().Perm()&0022 != 0 {
+		return errors.New("root write directory changed or is unsafe")
+	}
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return err
+	}
+	temporaryName := ".blazn-root-" + hex.EncodeToString(random)
+	file, err := root.OpenFile(temporaryName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(temporaryName)
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	owner, links, ok := fileOwner(info)
+	if !ok || !info.Mode().IsRegular() || links != 1 || owner != 0 {
+		return errors.New("root temporary file is unsafe")
+	}
+	if err := file.Chmod(mode); err != nil {
+		return err
+	}
+	if err := file.Chown(uid, gid); err != nil {
+		return err
+	}
+	if _, err := file.Write(value); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := root.Rename(temporaryName, filepath.Base(path)); err != nil {
+		return err
+	}
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func verifyRootOwnedDirectoryChain(path string) error {
+	for candidate := path; ; candidate = filepath.Dir(candidate) {
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			return err
+		}
+		owner, _, ok := fileOwner(info)
+		if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || owner != 0 || info.Mode().Perm()&0022 != 0 {
+			return fmt.Errorf("root write directory boundary is unsafe: %s", candidate)
+		}
+		if candidate == string(filepath.Separator) {
+			return nil
+		}
+	}
+}
+
 func fileOwner(info os.FileInfo) (int64, uint64, bool) {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return 0, 0, false
 	}
 	return int64(stat.Uid), uint64(stat.Nlink), true
+}
+func fileGroup(info os.FileInfo) (int64, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int64(stat.Gid), true
 }
 
 func ensurePrivateDirectory(path string, uid int64) error {
