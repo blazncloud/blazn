@@ -1,16 +1,17 @@
 // Code generated from packages/contracts/proxy; DO NOT EDIT.
-// activation-journal.schema.json SHA256: 2f58611a5be80c932374bedeafc765018e629c2d106259d8b4776a321f0ddb67
-// activation-receipt.schema.json SHA256: fd41f579f30433ab2c0c57ac364bcf4fc603ef293ac3b39cf71e310e7c99e6ee
+// activation-journal.schema.json SHA256: 995bb08935ae5d100ff186623fbd43042b438a09687d2049ebd956735fbfff48
+// activation-receipt.schema.json SHA256: b1e215804f849a48c9c148b163c715f375cc9ae3799859f00ff31056d7bcd0ba
 // event.schema.json SHA256: e61f1a558c744122c36427d692bbb9b7c7b620e84d75612b2e60e9c17d0310d3
 // normalized-error.schema.json SHA256: 3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c
-// normalized-request.schema.json SHA256: 40999c0f9f2109515dd4784d79ba92a2474c22d9cc9a8bee8b60b57699104778
-// normalized-response.schema.json SHA256: 16b383d0a61bd87d3d0983dd813d2940badb095cac6660642c4e8f5114d02285
-// normalized-stream-event.schema.json SHA256: a8e30211bd54861dfbb04568802da8f6f476e4ad7eff21dbbb9ba11809a85e4b
-// policy.schema.json SHA256: 36c42efd44aca0de01280fb190001aac2bf06dac83d870ba7a3f211b12c84bc9
+// normalized-request.schema.json SHA256: 98923667ba46cd8d3207cfcb3cd62d757e41b8f8d71bf78d5eec1b5dda284df1
+// normalized-response.schema.json SHA256: 90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87
+// normalized-stream-event.schema.json SHA256: 0e81faa5cac68535a8201e82feb999b942f8ab01559870a3b25919d0dd1b65be
+// policy.schema.json SHA256: 176b6b24bb6066e7cb05d7efcc9c02c76242501b5ae3947250cb1fe0804015b5
 
 package proxycontract
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -219,28 +220,34 @@ type RollbackStep struct {
 type ActivationReceipt struct {
 	SchemaVersion        string               `json:"schemaVersion"`
 	ActivationID         string               `json:"activationId"`
+	Nonce                string               `json:"nonce"`
 	Generation           int                  `json:"generation"`
+	OwnerUID             int                  `json:"ownerUid"`
 	JournalDigest        string               `json:"journalDigest"`
 	PolicyDigest         string               `json:"policyDigest"`
 	Platform             Platform             `json:"platform"`
 	Mode                 ActivationMode       `json:"mode"`
 	SessionIdentity      string               `json:"sessionIdentity"`
+	Binary               BinaryIdentity       `json:"binary"`
 	Listener             ReceiptListener      `json:"listener"`
 	PublicationMechanism PublicationMechanism `json:"publicationMechanism"`
 	Environment          []ReceiptEnvironment `json:"environment"`
+	RollbackSummary      []RollbackStep       `json:"rollbackSummary"`
 	ActivatedAt          string               `json:"activatedAt"`
 	State                ReceiptState         `json:"state"`
 	Checksum             string               `json:"checksum"`
 }
 type ReceiptListener struct {
-	PID                  int    `json:"pid"`
-	ProcessStartIdentity string `json:"processStartIdentity"`
-	ExecutableIdentity   string `json:"executableIdentity"`
-	Address              string `json:"address"`
+	PID                    int    `json:"pid"`
+	ProcessStartIdentity   string `json:"processStartIdentity"`
+	ExecutableIdentity     string `json:"executableIdentity"`
+	Address                string `json:"address"`
+	ListenerKeyFingerprint string `json:"listenerKeyFingerprint"`
 }
 type ReceiptEnvironment struct {
 	Name               EnvironmentName `json:"name"`
 	DesiredValueDigest string          `json:"desiredValueDigest"`
+	ActivationMarker   string          `json:"activationMarker"`
 }
 
 type Event struct {
@@ -282,11 +289,11 @@ type NormalizedRequest struct {
 type RequestBlock struct {
 	Role      NormalizedRole      `json:"role"`
 	Type      NormalizedBlockType `json:"type"`
-	Text      string              `json:"text,omitempty"`
-	CallID    string              `json:"callId,omitempty"`
-	ToolName  string              `json:"toolName,omitempty"`
-	Arguments any                 `json:"arguments,omitempty"`
-	Result    any                 `json:"result,omitempty"`
+	Text      *string             `json:"text,omitempty"`
+	CallID    *string             `json:"callId,omitempty"`
+	ToolName  *string             `json:"toolName,omitempty"`
+	Arguments json.RawMessage     `json:"arguments,omitempty"`
+	Result    json.RawMessage     `json:"result,omitempty"`
 }
 type Tool struct {
 	Name        string         `json:"name"`
@@ -310,21 +317,21 @@ type NormalizedResponse struct {
 }
 type ResponseBlock struct {
 	Type      NormalizedBlockType `json:"type"`
-	Text      string              `json:"text,omitempty"`
-	CallID    string              `json:"callId,omitempty"`
-	ToolName  string              `json:"toolName,omitempty"`
-	Arguments any                 `json:"arguments,omitempty"`
+	Text      *string             `json:"text,omitempty"`
+	CallID    *string             `json:"callId,omitempty"`
+	ToolName  *string             `json:"toolName,omitempty"`
+	Arguments json.RawMessage     `json:"arguments,omitempty"`
 }
 type NormalizedStreamEvent struct {
 	LogicalRequestID string           `json:"logicalRequestId"`
 	Sequence         int              `json:"sequence"`
 	Type             StreamEventType  `json:"type"`
-	Text             string           `json:"text,omitempty"`
-	CallID           string           `json:"callId,omitempty"`
-	ToolName         string           `json:"toolName,omitempty"`
-	ArgumentsDelta   string           `json:"argumentsDelta,omitempty"`
+	Text             *string          `json:"text,omitempty"`
+	CallID           *string          `json:"callId,omitempty"`
+	ToolName         *string          `json:"toolName,omitempty"`
+	ArgumentsDelta   *string          `json:"argumentsDelta,omitempty"`
 	Usage            *Usage           `json:"usage,omitempty"`
-	FinishReason     FinishReason     `json:"finishReason,omitempty"`
+	FinishReason     *FinishReason    `json:"finishReason,omitempty"`
 	Error            *NormalizedError `json:"error,omitempty"`
 }
 type NormalizedError struct {
@@ -340,74 +347,130 @@ var noncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
 var aliasPattern = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,128}$`)
 
 func DecodePolicy(reader io.Reader) (Policy, error) {
-	value, err := decodeStrict[Policy](reader)
+	value, raw, err := decodeStrict[Policy](reader)
+	if err != nil {
+		return value, err
+	}
+	if err = requiredJSON(raw, "contentCapture", "requestLimits"); err == nil {
+		err = requiredNested(raw, "requestLimits", "streaming")
+	}
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeActivationJournal(reader io.Reader) (ActivationJournal, error) {
-	value, err := decodeStrict[ActivationJournal](reader)
+	value, raw, err := decodeStrict[ActivationJournal](reader)
 	if err != nil {
+		return value, err
+	}
+	if err = requiredArrayNested(raw, "environment", "priorPresent"); err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeEvent(reader io.Reader) (Event, error) {
-	value, err := decodeStrict[Event](reader)
+	value, _, err := decodeStrict[Event](reader)
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeActivationReceipt(reader io.Reader) (ActivationReceipt, error) {
-	value, err := decodeStrict[ActivationReceipt](reader)
+	value, _, err := decodeStrict[ActivationReceipt](reader)
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedRequest(reader io.Reader) (NormalizedRequest, error) {
-	value, err := decodeStrict[NormalizedRequest](reader)
+	value, raw, err := decodeStrict[NormalizedRequest](reader)
 	if err != nil {
+		return value, err
+	}
+	if err = requiredJSON(raw, "stream"); err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedResponse(reader io.Reader) (NormalizedResponse, error) {
-	value, err := decodeStrict[NormalizedResponse](reader)
+	value, _, err := decodeStrict[NormalizedResponse](reader)
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedStreamEvent(reader io.Reader) (NormalizedStreamEvent, error) {
-	value, err := decodeStrict[NormalizedStreamEvent](reader)
+	value, _, err := decodeStrict[NormalizedStreamEvent](reader)
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedError(reader io.Reader) (NormalizedError, error) {
-	value, err := decodeStrict[NormalizedError](reader)
+	value, _, err := decodeStrict[NormalizedError](reader)
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 
-func decodeStrict[T any](reader io.Reader) (T, error) {
+func decodeStrict[T any](reader io.Reader) (T, json.RawMessage, error) {
 	var value T
-	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	encoded, err := io.ReadAll(io.LimitReader(reader, 1<<20))
+	if err != nil {
+		return value, nil, err
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(encoded)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&value); err != nil {
-		return value, err
+		return value, nil, err
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return value, errors.New("JSON value has trailing data")
+		return value, nil, errors.New("JSON value has trailing data")
 	}
-	return value, nil
+	return value, encoded, nil
+}
+
+func requiredJSON(raw json.RawMessage, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	for _, name := range names {
+		if _, ok := object[name]; !ok {
+			return fmt.Errorf("required JSON field %s is absent", name)
+		}
+	}
+	return nil
+}
+func requiredNested(raw json.RawMessage, parent string, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	child, ok := object[parent]
+	if !ok {
+		return fmt.Errorf("required JSON field %s is absent", parent)
+	}
+	return requiredJSON(child, names...)
+}
+func requiredArrayNested(raw json.RawMessage, parent string, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(object[parent], &entries); err != nil {
+		return err
+	}
+	for i, entry := range entries {
+		if err := requiredJSON(entry, names...); err != nil {
+			return fmt.Errorf("%s[%d]: %w", parent, i, err)
+		}
+	}
+	return nil
 }
 
 func (p Policy) Validate() error {
@@ -439,13 +502,22 @@ func (p Policy) Validate() error {
 				return fmt.Errorf("alias %q boundary is invalid", name)
 			}
 		}
-		for _, id := range alias.RouteIDs {
+		if alias.DataClass == DataLocalOnly && (len(alias.AllowedDestinationBoundaries) != 1 || alias.AllowedDestinationBoundaries[0] != BoundaryLocal) {
+			return fmt.Errorf("alias %q local_only must remain local", name)
+		}
+		for index, id := range alias.RouteIDs {
 			route, exists := routes[id]
 			if !exists {
 				return fmt.Errorf("alias %q references unknown route %s", name, id)
 			}
-			if !containsDataClass(route.AcceptedDataClasses, alias.DataClass) || !containsBoundary(alias.AllowedDestinationBoundaries, route.DataBoundary) {
-				return fmt.Errorf("alias %q route %s violates data-class boundary", name, id)
+			if !containsDataClass(route.AcceptedDataClasses, alias.DataClass) || !containsBoundary(alias.AllowedDestinationBoundaries, route.DataBoundary) || costRank(route.CostClass) > costRank(p.RequestLimits.MaxCostClass) {
+				return fmt.Errorf("alias %q route %s violates data-class, boundary, or cost policy", name, id)
+			}
+			if index > 0 {
+				prior := routes[alias.RouteIDs[index-1]]
+				if prior.DataBoundary != route.DataBoundary && !containsTransition(p.Fallback.AllowedBoundaryTransitions, transition(prior.DataBoundary, route.DataBoundary)) {
+					return fmt.Errorf("alias %q fallback boundary transition is not allowed", name)
+				}
 			}
 		}
 	}
@@ -475,6 +547,10 @@ func (r Route) Validate() error {
 		if !validDataClass(value) {
 			return fmt.Errorf("route %q data class is invalid", r.ID)
 		}
+	}
+	want := map[DestinationClass]DataBoundary{DestinationLocalNode: BoundaryLocal, DestinationCompany: BoundaryCompany, DestinationProvider: BoundaryExternal, DestinationBlaznCloud: BoundaryExternal}[r.DestinationClass]
+	if r.DataBoundary != want {
+		return fmt.Errorf("route %q destination class and boundary disagree", r.ID)
 	}
 	return nil
 }
@@ -514,8 +590,8 @@ func (j ActivationJournal) Validate() error {
 	if j.Listener.PID < 1 || j.Listener.ProcessStartIdentity == "" || j.Listener.ExecutableIdentity == "" || !validLoopbackAddress(j.Listener.Address) || !digestPattern.MatchString(j.Listener.ListenerKeyFingerprint) {
 		return errors.New("activation journal listener identity is invalid")
 	}
-	if len(j.Environment) > 16 {
-		return errors.New("activation journal environment exceeds 16 entries")
+	if len(j.Environment) != 5 {
+		return errors.New("activation journal environment must contain exactly five entries")
 	}
 	seen := map[EnvironmentName]bool{}
 	for _, mutation := range j.Environment {
@@ -526,6 +602,9 @@ func (j ActivationJournal) Validate() error {
 		if mutation.PriorPresent != (mutation.PriorValue != nil) || (mutation.PriorPresent && mutation.RollbackAction != RollbackRestore) || (!mutation.PriorPresent && mutation.RollbackAction != RollbackRemove) {
 			return errors.New("activation journal rollback semantics are invalid")
 		}
+	}
+	if len(seen) != 5 {
+		return errors.New("activation journal environment set is incomplete")
 	}
 	for index, action := range j.RollbackActions {
 		if action.Ordinal != index+1 || !validRollbackOperation(action.Operation) || len(action.Target) < 1 || len(action.Target) > 256 {
@@ -547,24 +626,32 @@ func (j ActivationJournal) Validate() error {
 }
 
 func (r ActivationReceipt) Validate() error {
-	if r.SchemaVersion != "proxy/v1alpha1" || !uuidPattern.MatchString(r.ActivationID) || r.Generation < 1 || !digestPattern.MatchString(r.JournalDigest) || !digestPattern.MatchString(r.PolicyDigest) || !validPlatform(r.Platform) || !validMode(r.Mode) || len(r.SessionIdentity) < 1 || len(r.SessionIdentity) > 256 || !validPublication(r.PublicationMechanism) || (r.State != "active" && r.State != "recovery_required") || !digestPattern.MatchString(r.Checksum) {
+	if r.SchemaVersion != "proxy/v1alpha1" || !uuidPattern.MatchString(r.ActivationID) || !noncePattern.MatchString(r.Nonce) || r.Generation < 1 || r.OwnerUID < 0 || !digestPattern.MatchString(r.JournalDigest) || !digestPattern.MatchString(r.PolicyDigest) || !validPlatform(r.Platform) || !validMode(r.Mode) || len(r.SessionIdentity) < 1 || len(r.SessionIdentity) > 256 || !validPublication(r.PublicationMechanism) || (r.State != "active" && r.State != "recovery_required") || !digestPattern.MatchString(r.Checksum) || !strings.HasPrefix(r.Binary.Path, "/") || !digestPattern.MatchString(r.Binary.Digest) {
 		return errors.New("activation receipt identity is invalid")
 	}
-	if r.Listener.PID < 1 || r.Listener.ProcessStartIdentity == "" || r.Listener.ExecutableIdentity == "" || !validLoopbackAddress(r.Listener.Address) {
+	if r.Listener.PID < 1 || r.Listener.ProcessStartIdentity == "" || r.Listener.ExecutableIdentity == "" || !validLoopbackAddress(r.Listener.Address) || !digestPattern.MatchString(r.Listener.ListenerKeyFingerprint) {
 		return errors.New("activation receipt listener is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, r.ActivatedAt); err != nil {
 		return errors.New("activation receipt timestamp is invalid")
 	}
-	if len(r.Environment) > 16 {
-		return errors.New("activation receipt environment exceeds 16")
+	if len(r.Environment) != 5 {
+		return errors.New("activation receipt environment must contain exactly five entries")
 	}
 	seen := map[EnvironmentName]bool{}
 	for _, entry := range r.Environment {
-		if !validEnvironmentName(entry.Name) || seen[entry.Name] || !digestPattern.MatchString(entry.DesiredValueDigest) {
+		if !validEnvironmentName(entry.Name) || seen[entry.Name] || !digestPattern.MatchString(entry.DesiredValueDigest) || len(entry.ActivationMarker) < 16 {
 			return errors.New("activation receipt environment is invalid")
 		}
 		seen[entry.Name] = true
+	}
+	if len(seen) != 5 {
+		return errors.New("activation receipt environment set is incomplete")
+	}
+	for index, action := range r.RollbackSummary {
+		if action.Ordinal != index+1 || !validRollbackOperation(action.Operation) || len(action.Target) < 1 || len(action.Target) > 256 {
+			return errors.New("activation receipt rollback summary is invalid")
+		}
 	}
 	if r.Mode == ModeScopedRun && r.PublicationMechanism != "process_environment" {
 		return errors.New("scoped receipt must use process environment")
@@ -610,8 +697,8 @@ func (r NormalizedRequest) Validate() error {
 		}
 	}
 	for _, b := range r.Blocks {
-		if !validRole(b.Role) || !validBlockType(b.Type) {
-			return errors.New("request block is invalid")
+		if err := b.Validate(); err != nil {
+			return err
 		}
 	}
 	for _, tool := range r.Tools {
@@ -621,14 +708,49 @@ func (r NormalizedRequest) Validate() error {
 	}
 	return nil
 }
+func (b RequestBlock) Validate() error {
+	if !validRole(b.Role) || !validBlockType(b.Type) {
+		return errors.New("request block is invalid")
+	}
+	switch b.Type {
+	case "text":
+		if b.Text == nil || b.CallID != nil || b.ToolName != nil || b.Arguments != nil || b.Result != nil {
+			return errors.New("text request block union is invalid")
+		}
+	case "tool_call":
+		if b.Role != "assistant" || b.CallID == nil || *b.CallID == "" || b.ToolName == nil || *b.ToolName == "" || b.Arguments == nil || b.Text != nil || b.Result != nil {
+			return errors.New("tool-call request block union is invalid")
+		}
+	case "tool_result":
+		if b.Role != "tool" || b.CallID == nil || *b.CallID == "" || b.Result == nil || b.Text != nil || b.ToolName != nil || b.Arguments != nil {
+			return errors.New("tool-result request block union is invalid")
+		}
+	}
+	return nil
+}
 func (r NormalizedResponse) Validate() error {
 	if !uuidPattern.MatchString(r.LogicalRequestID) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !uuidPattern.MatchString(r.RouteID) || !validFinish(r.FinishReason) || r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 {
 		return errors.New("normalized response is invalid")
 	}
 	for _, b := range r.Blocks {
-		if b.Type != "text" && b.Type != "tool_call" {
-			return errors.New("response block is invalid")
+		if err := b.Validate(); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+func (b ResponseBlock) Validate() error {
+	switch b.Type {
+	case "text":
+		if b.Text == nil || b.CallID != nil || b.ToolName != nil || b.Arguments != nil {
+			return errors.New("text response block union is invalid")
+		}
+	case "tool_call":
+		if b.CallID == nil || *b.CallID == "" || b.ToolName == nil || *b.ToolName == "" || b.Arguments == nil || b.Text != nil {
+			return errors.New("tool-call response block union is invalid")
+		}
+	default:
+		return errors.New("response block is invalid")
 	}
 	return nil
 }
@@ -639,11 +761,43 @@ func (e NormalizedStreamEvent) Validate() error {
 	if e.Usage != nil && (e.Usage.InputTokens < 0 || e.Usage.OutputTokens < 0) {
 		return errors.New("stream usage is invalid")
 	}
-	if e.FinishReason != "" && !validFinish(e.FinishReason) {
+	if e.FinishReason != nil && !validFinish(*e.FinishReason) {
 		return errors.New("stream finish reason is invalid")
 	}
 	if e.Error != nil {
-		return e.Error.Validate()
+		if err := e.Error.Validate(); err != nil {
+			return err
+		}
+	}
+	switch e.Type {
+	case "response_start":
+		if e.Text != nil || e.ArgumentsDelta != nil || e.Error != nil {
+			return errors.New("response_start union is invalid")
+		}
+	case "text_delta":
+		if e.Text == nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.Error != nil {
+			return errors.New("text_delta union is invalid")
+		}
+	case "tool_call_start":
+		if e.CallID == nil || e.ToolName == nil || e.Text != nil || e.ArgumentsDelta != nil || e.Error != nil {
+			return errors.New("tool_call_start union is invalid")
+		}
+	case "tool_arguments_delta":
+		if e.CallID == nil || e.ArgumentsDelta == nil || e.Text != nil || e.ToolName != nil || e.Error != nil {
+			return errors.New("tool_arguments_delta union is invalid")
+		}
+	case "usage":
+		if e.Usage == nil || e.Text != nil || e.Error != nil {
+			return errors.New("usage union is invalid")
+		}
+	case "response_end":
+		if e.FinishReason == nil || e.Text != nil || e.ArgumentsDelta != nil || e.Error != nil {
+			return errors.New("response_end union is invalid")
+		}
+	case "error":
+		if e.Error == nil || e.Text != nil || e.ArgumentsDelta != nil || e.FinishReason != nil {
+			return errors.New("error union is invalid")
+		}
 	}
 	return nil
 }
@@ -653,6 +807,83 @@ func (e NormalizedError) Validate() error {
 	}
 	return nil
 }
+
+// ContractDigest returns the deterministic digest used by activation records.
+// Proxy contract values contain only JSON primitives whose encoding is identical
+// under encoding/json and RFC 8785 (integer numbers and no HTML-sensitive text).
+func ContractDigest(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum), nil
+}
+func ContractChecksum(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	var object map[string]json.RawMessage
+	if err = json.Unmarshal(encoded, &object); err != nil {
+		return "", err
+	}
+	delete(object, "checksum")
+	return ContractDigest(object)
+}
+func VerifyContractChecksum(value any, expected string) error {
+	actual, err := ContractChecksum(value)
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return fmt.Errorf("checksum mismatch: got %s want %s", actual, expected)
+	}
+	return nil
+}
+
+// ValidateJournalReceipt proves the receipt refers to the exact protected
+// journal generation. It does not grant authority to restore environment state
+// from the receipt; prior values exist only in a valid journal.
+func ValidateJournalReceipt(j ActivationJournal, r ActivationReceipt) error {
+	if err := j.Validate(); err != nil {
+		return fmt.Errorf("journal: %w", err)
+	}
+	if err := r.Validate(); err != nil {
+		return fmt.Errorf("receipt: %w", err)
+	}
+	journalDigest, err := ContractDigest(j)
+	if err != nil {
+		return err
+	}
+	if r.ActivationID != j.ActivationID || r.Nonce != j.Nonce || r.Generation != j.Generation || r.OwnerUID != j.OwnerUID || r.JournalDigest != journalDigest || r.PolicyDigest != j.Policy.Digest || r.Platform != j.Platform || r.Mode != j.Mode || r.SessionIdentity != j.SessionIdentity || r.Binary != j.Binary {
+		return errors.New("receipt and journal identity differ")
+	}
+	if r.Listener.PID != j.Listener.PID || r.Listener.ProcessStartIdentity != j.Listener.ProcessStartIdentity || r.Listener.ExecutableIdentity != j.Listener.ExecutableIdentity || r.Listener.Address != j.Listener.Address || r.Listener.ListenerKeyFingerprint != j.Listener.ListenerKeyFingerprint {
+		return errors.New("receipt and journal listener differ")
+	}
+	if len(r.Environment) != len(j.Environment) || len(r.RollbackSummary) != len(j.RollbackActions) {
+		return errors.New("receipt and journal recovery records differ")
+	}
+	environment := map[EnvironmentName]ReceiptEnvironment{}
+	for _, entry := range r.Environment {
+		environment[entry.Name] = entry
+	}
+	for _, entry := range j.Environment {
+		other, ok := environment[entry.Name]
+		if !ok || other.DesiredValueDigest != entry.DesiredValueDigest || other.ActivationMarker != entry.ActivationMarker {
+			return errors.New("receipt and journal environment differ")
+		}
+	}
+	for index := range j.RollbackActions {
+		if r.RollbackSummary[index] != j.RollbackActions[index] {
+			return errors.New("receipt and journal rollback order differs")
+		}
+	}
+	return nil
+}
+func (r ActivationReceipt) AllowsVerifiedListenerStop() bool { return r.Validate() == nil }
+func (r ActivationReceipt) AllowsEnvironmentRestore() bool   { return false }
 
 func validProtocol(v Protocol) bool {
 	return v == ProtocolOpenAIResponses || v == ProtocolOpenAIChat || v == ProtocolAnthropicMessages
@@ -665,6 +896,19 @@ func validBoundary(v DataBoundary) bool {
 }
 func validCost(v CostClass) bool {
 	return v == CostLocal || v == CostIncluded || v == CostMeteredLow || v == CostMeteredHigh
+}
+func costRank(v CostClass) int {
+	switch v {
+	case CostLocal:
+		return 0
+	case CostIncluded:
+		return 1
+	case CostMeteredLow:
+		return 2
+	case CostMeteredHigh:
+		return 3
+	}
+	return 99
 }
 func validJournalState(v JournalState) bool {
 	return v == JournalPrepared || v == JournalPublishing || v == JournalActive || v == JournalDeactivating || v == JournalRecoveryRequired
@@ -768,6 +1012,17 @@ func allTransitions(values []BoundaryTransition) bool {
 		}
 	}
 	return true
+}
+func transition(from, to DataBoundary) BoundaryTransition {
+	return BoundaryTransition(string(from) + "_to_" + string(to))
+}
+func containsTransition(values []BoundaryTransition, target BoundaryTransition) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 func containsDataClass(values []DataClass, target DataClass) bool {
 	for _, v := range values {
