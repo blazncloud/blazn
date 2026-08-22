@@ -5,7 +5,7 @@ export LC_ALL=C
 die(){ printf 'blazn-worker-issuer-rollback: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "rollback requires root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "rollback requires the control-plane lock"
-for command_name in cp dirname docker find grep jq mv sha256sum stat sync; do command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"; done
+for command_name in cp dirname find grep jq mv sha256sum stat sync; do command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"; done
 RECEIPT=${BLAZN_ISSUER_RECEIPT_PATH:-/var/lib/blazn/ownership/microk8s-worker-issuer.json}
 STATE_ROOT=${BLAZN_ISSUER_STATE_ROOT:-/var/lib/blazn/microk8s-worker-issuer}
 SYSTEMCTL=${BLAZN_ISSUER_TEST_SYSTEMCTL:-systemctl}
