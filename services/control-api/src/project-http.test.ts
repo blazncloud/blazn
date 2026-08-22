@@ -53,6 +53,7 @@ test("Project HTTP rejects unknown fields, no-op updates, unsafe IDs, and method
     const origin = serverOrigin(server);
     const cases: Array<[string, RequestInit]> = [
       [`${origin}/v1/workspaces/${workspaceId}/projects`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "project-create-1" }, body: JSON.stringify({ name: "Project", apiKey: "must-not-pass" }) }],
+      [`${origin}/v1/workspaces/${workspaceId}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Project" }) }],
       [`${origin}/v1/workspaces/${workspaceId}/projects/${projectId}`, { method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": "project-update-1" }, body: JSON.stringify({ expectedVersion: 1 }) }],
       [`${origin}/v1/workspaces/not-a-uuid/projects`, { method: "GET" }],
       [`${origin}/v1/workspaces/${workspaceId}/projects`, { method: "OPTIONS" }],
