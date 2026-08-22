@@ -2,7 +2,7 @@
 // OpenAPI SHA256: 075126546f4277f5b3def6381746c9bbc6b222c9408cf17e03950d5075b60571
 // NodeInstallPlan SHA256: 3013566a4ee672ad43b72429c23e677219f3782c3b69d9cec973b7126999fddd
 // NodeInstallReceipt SHA256: 7a0791874671dc82222d7abf80f4cedf00bbdb0d40cbeaa7ed268496414e1c85
-// NodeOperationReceipt SHA256: OPERATION_7a0791874671dc82222d7abf80f4cedf00bbdb0d40cbeaa7ed268496414e1c85
+// NodeOperationReceipt SHA256: 6ae34cba3202a8be488bb3b38db36b87c456d3fef5c0cc64f23caf521dd4d925
 
 package client
 
@@ -478,7 +478,6 @@ type NodeInstallReceiptTrust struct {
 
 type NodeOperationReceiptTrust struct {
 	Keyring             NodeSigningKeyring
-	ReceiptID           string
 	OperationID         string
 	NodeID              string
 	WorkspaceID         string
@@ -714,8 +713,13 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	if !plan.Rollback.PreserveUserData || !plan.Rollback.PreserveControlPlane || plan.Rollback.AmbiguousOwnership != "recovery_required" || !strings.HasPrefix(plan.Rollback.BackupRoot, "/") {
 		return fmt.Errorf("rollback safety policy is invalid")
 	}
-	if _, err := time.Parse(time.RFC3339, plan.ApprovedAt); err != nil {
+	approved, err := time.Parse(time.RFC3339, plan.ApprovedAt)
+	if err != nil {
 		return fmt.Errorf("approvedAt is invalid")
+	}
+	issued, err := time.Parse(time.RFC3339, plan.IssuedAt)
+	if err != nil || approved.After(issued) {
+		return fmt.Errorf("approvedAt must not be after issuedAt")
 	}
 	if err := validateTimeWindow(plan.IssuedAt, plan.ExpiresAt); err != nil {
 		return fmt.Errorf("plan time window: %w", err)
@@ -937,6 +941,9 @@ func decodeTypedNodeAPIResponse(reader io.Reader, output any) error {
 		if err := requireNodeFields(raw, "items"); err != nil {
 			return err
 		}
+		if err := requireNodeArrayFields(raw, "items", "id", "workspaceId", "name", "kind", "platform", "architecture", "lifecycleState", "trustState", "agentEligible", "version", "capabilityVersion", "identity", "createdAt", "updatedAt"); err != nil {
+			return err
+		}
 		if value.Items == nil {
 			return fmt.Errorf("node list items must be an array")
 		}
@@ -949,6 +956,13 @@ func decodeTypedNodeAPIResponse(reader io.Reader, output any) error {
 	case *NodeOperation:
 		if err := requireNodeFields(raw, "id", "nodeId", "type", "status", "expectedNodeVersion", "result", "error", "receipt", "createdAt"); err != nil {
 			return err
+		}
+		if receiptJSON, exists := raw["receipt"]; exists && string(receiptJSON) != "null" {
+			receipt, err := DecodeNodeOperationReceipt(bytes.NewReader(receiptJSON))
+			if err != nil {
+				return fmt.Errorf("receipt: %w", err)
+			}
+			value.Receipt = &receipt
 		}
 		return ValidateNodeOperation(*value)
 	case *JoinCredential:
@@ -1097,7 +1111,7 @@ func VerifyNodeOperationReceipt(receipt NodeOperationReceipt, trust NodeOperatio
 	if err := verifyNodeSignature(trust.Keyring, receipt.SigningKeyID, receipt.Signature, "blazn-node-operation-receipt-v1\n", digest); err != nil {
 		return fmt.Errorf("operation receipt signature: %w", err)
 	}
-	bindings := [][3]string{{"receiptId", receipt.ReceiptID, trust.ReceiptID}, {"operationId", receipt.OperationID, trust.OperationID}, {"nodeId", receipt.NodeID, trust.NodeID}, {"workspaceId", receipt.WorkspaceID, trust.WorkspaceID}, {"operationType", string(receipt.OperationType), string(trust.OperationType)}}
+	bindings := [][3]string{{"operationId", receipt.OperationID, trust.OperationID}, {"nodeId", receipt.NodeID, trust.NodeID}, {"workspaceId", receipt.WorkspaceID, trust.WorkspaceID}, {"operationType", string(receipt.OperationType), string(trust.OperationType)}}
 	for _, binding := range bindings {
 		if binding[2] == "" || !nodeSecureEqual(binding[1], binding[2]) {
 			return fmt.Errorf("operation receipt %s does not match trusted input", binding[0])
