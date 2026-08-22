@@ -35,7 +35,9 @@ var rootCommands = []helpCommand{
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
 	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
+	{Name: "sandbox", Summary: "Create and operate isolated agent sandboxes"},
 	{Name: "social", Summary: "Search public entities and manage social content (plugin)"},
+	{Name: "template", Summary: "Validate and publish sandbox templates"},
 	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
 	{Name: "workspace", Summary: "Create, select, and manage workspaces"},
@@ -86,6 +88,10 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		}
 	case "node":
 		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|repair|uninstall|heartbeat|serve [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll, root-authorize, and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "repair", Summary: "Reconcile an active receipt using a current authorized plan"}, {Name: "uninstall", Summary: "Remove Node-owned state and restore receipt-captured prior values"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}, {Name: "serve", Summary: "Run the token-free Node heartbeat daemon"}}}
+	case "template":
+		output = helpOutput{Command: "template", Usage: "blazn template validate|publish -f FILE [options]", Summary: "Validate templates offline or publish them to a workspace.", Commands: []helpCommand{{Name: "validate", Summary: "Validate and digest a local template without authentication"}, {Name: "publish", Summary: "Publish a valid template to a workspace"}}}
+	case "sandbox":
+		output = helpOutput{Command: "sandbox", Usage: "blazn sandbox create|list|get|watch|exec|upload|download|stop|delete [options]", Summary: "Create and operate isolated agent sandboxes.", Commands: []helpCommand{{Name: "create", Summary: "Request a sandbox from a published template"}, {Name: "list", Summary: "List sandboxes in a workspace"}, {Name: "get", Summary: "Get one sandbox"}, {Name: "watch", Summary: "Stream sandbox events as JSON Lines"}, {Name: "exec", Summary: "Run a command with a one-time access grant"}, {Name: "upload", Summary: "Upload a file with a one-time access grant"}, {Name: "download", Summary: "Download a file with a one-time access grant"}, {Name: "stop", Summary: "Request sandbox shutdown"}, {Name: "delete", Summary: "Request sandbox deletion"}}}
 	case "plugins":
 		output = helpOutput{Command: "plugins", Usage: "blazn plugins list|doctor|install|rollback|remove [NAME] [--yes]", Summary: "Install and manage signed allowlisted Blazn plugins.", Commands: []helpCommand{{Name: "list", Summary: "List allowlisted plugins"}, {Name: "doctor", Summary: "Validate installed plugin receipts"}, {Name: "install", Summary: "Install a signed plugin release"}, {Name: "rollback", Summary: "Activate the previous installed version"}, {Name: "remove", Summary: "Remove a receipt-owned plugin"}}}
 	default:

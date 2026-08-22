@@ -15,6 +15,7 @@ import (
 	"github.com/blazncloud/blazn/internal/client"
 	nodepkg "github.com/blazncloud/blazn/internal/node"
 	pluginpkg "github.com/blazncloud/blazn/internal/plugin"
+	sandboxpkg "github.com/blazncloud/blazn/internal/sandbox"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
@@ -54,6 +55,7 @@ type App struct {
 	openBrowser   func(string) error
 	workspace     func() (workspaceCommands, error)
 	node          func(bool) (nodeCommands, error)
+	sandbox       func() (sandboxCommands, error)
 	stdin         io.Reader
 	stdinTTY      func() bool
 	plugins       pluginCommands
@@ -81,6 +83,11 @@ type authCommands interface {
 	RevokeDevice(context.Context, string) error
 }
 
+type sandboxCommands interface {
+	TemplateCommandRuntime
+	SandboxCommandRuntime
+}
+
 func New(stdout, stderr io.Writer, build BuildInfo) *App {
 	if build.GOOS == "" {
 		build.GOOS = runtime.GOOS
@@ -105,6 +112,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
 		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
+		sandbox:     func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
 		stdin:       os.Stdin,
 		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
 		plugins:     plugins,
@@ -234,6 +242,27 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(format, rest)
 	case "node":
 		return a.runNode(format, rest)
+	case "template":
+		if helpRequested(rest) {
+			return a.writeHelp(format, "template")
+		}
+		if len(rest) > 0 && rest[0] == "validate" {
+			return a.RunTemplateCommand(context.Background(), format, rest, nil)
+		}
+		runtime, err := a.sandbox()
+		if err != nil {
+			return writeSandboxCLIError(format, a.stderr, a.stdout, ExitUnavailable, "unavailable", "sandbox command runtime is unavailable", "local")
+		}
+		return a.RunTemplateCommand(context.Background(), format, rest, runtime)
+	case "sandbox":
+		if helpRequested(rest) {
+			return a.writeHelp(format, "sandbox")
+		}
+		runtime, err := a.sandbox()
+		if err != nil {
+			return writeSandboxCLIError(format, a.stderr, a.stdout, ExitUnavailable, "unavailable", "sandbox command runtime is unavailable", "local")
+		}
+		return a.RunSandboxCommand(context.Background(), format, rest, runtime)
 	case "plugins":
 		return a.runPlugins(format, rest)
 	default:
