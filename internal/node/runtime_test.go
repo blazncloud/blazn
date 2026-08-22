@@ -20,6 +20,29 @@ import (
 
 const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+func TestProductionNodePathsSeparateServiceAndPrivilegedState(t *testing.T) {
+	linux, err := NodeProductionPaths(client.NodePlatformLinux)
+	if err != nil || linux.ServiceStateRoot != "/var/lib/blazn/node" || linux.RootStateRoot != "/var/lib/blazn-node-root" || linux.ProfileRoot != "/etc/blazn/node/profiles" {
+		t.Fatalf("linux=%#v err=%v", linux, err)
+	}
+	mac, err := NodeProductionPaths(client.NodePlatformMacOS)
+	if err != nil || mac.ServiceStateRoot != "/Library/Application Support/Blazn/Node" || mac.RootStateRoot != "/Library/Application Support/BlaznNodeRoot" || mac.ProfileRoot != "/Library/Application Support/BlaznNodeRoot/profiles" {
+		t.Fatalf("mac=%#v err=%v", mac, err)
+	}
+	if linux.ServiceStateRoot == linux.RootStateRoot || mac.ServiceStateRoot == mac.RootStateRoot {
+		t.Fatal("service-owned and privileged Node state roots overlap")
+	}
+	if linux.InstallAuthorityPath() != "/var/lib/blazn-node-root/install-authority.json" || linux.InstallWALPath() != "/var/lib/blazn-node-root/install-wal.json" || linux.InstallReceiptPath() != "/var/lib/blazn-node-root/install-receipt.json" || linux.InstallBackupRoot() != "/var/lib/blazn-node-root/install-backups" {
+		t.Fatalf("linux privileged paths=%#v", linux)
+	}
+	if LinuxMicroK8sIssuerStateRoot != "/var/lib/blazn-node-root/microk8s-worker-issuer" {
+		t.Fatalf("issuer state root=%q", LinuxMicroK8sIssuerStateRoot)
+	}
+	if mac.InstallAuthorityPath() != "/Library/Application Support/BlaznNodeRoot/install-authority.json" || mac.InstallWALPath() != "/Library/Application Support/BlaznNodeRoot/install-wal.json" || mac.InstallReceiptPath() != "/Library/Application Support/BlaznNodeRoot/install-receipt.json" || mac.InstallBackupRoot() != "/Library/Application Support/BlaznNodeRoot/install-backups" {
+		t.Fatalf("mac privileged paths=%#v", mac)
+	}
+}
+
 func TestBootstrapAuthorizationNeverSerializesOrFormatsToken(t *testing.T) {
 	token := strings.Repeat("s", 43)
 	authorization := BootstrapAuthorization{EnrollmentID: "enrollment", Token: token, MachineFingerprint: testHash, NodePublicKey: strings.Repeat("A", 43)}
@@ -602,7 +625,7 @@ func validBootstrapAuthorization(t *testing.T) (BootstrapAuthorization, Identity
 		Components:  []client.NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}},
 		NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash}, Labels: map[string]string{"blazn.dev/pool": "default"}, Taints: []client.NodeTaint{}, ResourceBounds: client.NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
 		Mutations:       []client.NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 2, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"}, {Ordinal: 3, Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "service-definition"}, DesiredDigest: "sha256:" + testHash, UID: 0, GID: 0, Rollback: "restore_prior"}},
-		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: client.NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
+		ValidationTests: []string{"binary_digest", "service_active", "worker_only"}, Rollback: client.NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_node_root", BackupRoot: "/var/lib/blazn-node-root/install-backups/receipt-1"},
 		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
 	}
 	digest, err := client.NodeInstallPlanDigest(plan)
@@ -615,7 +638,7 @@ func validBootstrapAuthorization(t *testing.T) (BootstrapAuthorization, Identity
 }
 
 func trustedBootstrapProfile(plan client.NodeInstallPlan) client.NodeTrustedInstallProfile {
-	return client.NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	return client.NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn-node-root/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 }
 func mustFingerprint(t *testing.T, identity Identity) string {
 	t.Helper()
@@ -626,7 +649,7 @@ func mustFingerprint(t *testing.T, identity Identity) string {
 	return value
 }
 func installPlan() client.NodeInstallPlan {
-	return client.NodeInstallPlan{SchemaVersion: client.NodeSchemaVersion, PlanID: "11111111-1111-4111-8111-111111111111", NodeID: "22222222-2222-4222-8222-222222222222", EnrollmentID: "33333333-3333-4333-8333-333333333333", WorkspaceID: "44444444-4444-8444-444444444444", Digest: "sha256:" + testHash, Cluster: client.NodeInstallCluster{ID: "cluster-a"}, Target: client.NodeInstallTarget{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64}, Components: []client.NodeInstallComponent{{Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: testHash}}, NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", DefinitionSHA256: testHash}, Mutations: []client.NodeInstallMutation{{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "gid": float64(991), "system": true}, DesiredDigest: "sha256:" + testHash}, {Ordinal: 2, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node"}, DesiredDigest: "sha256:" + testHash}}, Rollback: client.NodeInstallRollback{BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/test"}, IssuedAt: "2026-08-22T12:00:00Z", ExpiresAt: "2026-08-22T12:15:00Z"}
+	return client.NodeInstallPlan{SchemaVersion: client.NodeSchemaVersion, PlanID: "11111111-1111-4111-8111-111111111111", NodeID: "22222222-2222-4222-8222-222222222222", EnrollmentID: "33333333-3333-4333-8333-333333333333", WorkspaceID: "44444444-4444-8444-444444444444", Digest: "sha256:" + testHash, Cluster: client.NodeInstallCluster{ID: "cluster-a"}, Target: client.NodeInstallTarget{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64}, Components: []client.NodeInstallComponent{{Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: testHash}}, NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", DefinitionSHA256: testHash}, Mutations: []client.NodeInstallMutation{{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "gid": float64(991), "system": true}, DesiredDigest: "sha256:" + testHash}, {Ordinal: 2, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node"}, DesiredDigest: "sha256:" + testHash}}, Rollback: client.NodeInstallRollback{BackupRootClass: "linux_node_root", BackupRoot: "/var/lib/blazn-node-root/install-backups/test"}, IssuedAt: "2026-08-22T12:00:00Z", ExpiresAt: "2026-08-22T12:15:00Z"}
 }
 func testCapability() client.NodeCapability {
 	return client.NodeCapability{Version: 1, Host: client.NodeHostCapacity{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, CPUMillis: 1000, MemoryBytes: 1 << 30, DiskBytes: 10 << 30, Accelerators: []client.NodeAccelerator{}, Health: client.NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}}, Worker: client.NodeWorkerCapacity{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, AllocatableCPUMillis: 900, AllocatableMemoryBytes: 1 << 30, AllocatableDiskBytes: 10 << 30, Labels: map[string]string{}, Limits: client.NodeCapabilityLimits{MaxConcurrentSandboxes: 1, MaxConcurrentAgents: 1}, Health: client.NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, KubernetesBinding: client.KubernetesBinding{ClusterID: "cluster-a", NodeName: "node-a", NodeUID: "uid-a", ResourceVersion: "1"}}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []client.LocalModelCapability{}}

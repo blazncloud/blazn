@@ -1,6 +1,6 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
 // OpenAPI SHA256: 73c3703e8715a841ed6a1c7cfb6b6b296449b43978108c9665025dc825a213b0
-// NodeInstallPlan SHA256: d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d
+// NodeInstallPlan SHA256: b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f
 // NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
 
@@ -646,8 +646,8 @@ var (
 	nodeLaunchdTargetPattern     = regexp.MustCompile(`^/Library/LaunchDaemons/[A-Za-z0-9_.-]+\.plist$`)
 	nodeImageTargetPattern       = regexp.MustCompile(`^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$`)
 	nodeFirewallTargetPattern    = regexp.MustCompile(`^blazn:[a-z0-9_-]{1,64}$`)
-	nodeLinuxBackupRootPattern   = regexp.MustCompile(`^/var/lib/blazn/install-backups/[A-Za-z0-9_-]{1,128}$`)
-	nodeMacOSBackupRootPattern   = regexp.MustCompile(`^/Library/Application Support/Blazn/install-backups/[A-Za-z0-9_-]{1,128}$`)
+	nodeLinuxBackupRootPattern   = regexp.MustCompile(`^/var/lib/blazn-node-root/install-backups/[A-Za-z0-9_-]{1,128}$`)
+	nodeMacOSBackupRootPattern   = regexp.MustCompile(`^/Library/Application Support/BlaznNodeRoot/install-backups/[A-Za-z0-9_-]{1,128}$`)
 )
 
 func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) error {
@@ -932,9 +932,9 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 
 func validNodeBackupRoot(class, root string) bool {
 	switch class {
-	case "linux_var_lib":
+	case "linux_node_root":
 		return nodeLinuxBackupRootPattern.MatchString(root)
-	case "macos_library_application_support":
+	case "macos_node_root":
 		return nodeMacOSBackupRootPattern.MatchString(root)
 	default:
 		return false
@@ -2004,7 +2004,7 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 	}
 	switch plan.InstallProfile {
 	case "ubuntu-26.04-amd64-worker/v1", "existing-linux-worker-adopt/v1":
-		if plan.NodeService.Manager != "systemd" || plan.NodeService.RunAsUser != "blazn-node" || plan.NodeService.RunAsGroup != "blazn-node" || plan.Rollback.BackupRootClass != "linux_var_lib" {
+		if plan.NodeService.Manager != "systemd" || plan.NodeService.RunAsUser != "blazn-node" || plan.NodeService.RunAsGroup != "blazn-node" || plan.Rollback.BackupRootClass != "linux_node_root" {
 			return fmt.Errorf("Linux profile service identity is invalid")
 		}
 		for _, mutation := range plan.Mutations {
@@ -2027,7 +2027,7 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 			}
 		}
 	case "macos-lima-worker-adopt/v1":
-		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "root" || plan.NodeService.RunAsGroup != "wheel" || plan.Rollback.BackupRootClass != "macos_library_application_support" {
+		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "root" || plan.NodeService.RunAsGroup != "wheel" || plan.Rollback.BackupRootClass != "macos_node_root" {
 			return fmt.Errorf("macOS profile service identity is invalid")
 		}
 		for _, mutation := range plan.Mutations {

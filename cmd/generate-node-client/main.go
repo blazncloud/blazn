@@ -23,7 +23,7 @@ var nodeTemplate []byte
 const (
 	openAPISHA256          = "73c3703e8715a841ed6a1c7cfb6b6b296449b43978108c9665025dc825a213b0"
 	commonOpenAPISHA256    = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
-	planSHA256             = "d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d"
+	planSHA256             = "b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f"
 	receiptSHA256          = "459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6"
 	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
 )
@@ -144,6 +144,9 @@ func validateSources(sources map[string]source, template string) error {
 	if err := validateInstallSchema(plan, "Blazn NodeInstallPlan", []string{"schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "installProfile", "cluster", "target", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install plan: %w", err)
 	}
+	if err := validateNodeRootStateContract(plan, template); err != nil {
+		return err
+	}
 	if err := validateInstallSchema(receipt, "Blazn NodeInstallReceipt", []string{"schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "nodeIdentityGeneration", "signerKind", "signerFingerprint", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install receipt: %w", err)
 	}
@@ -171,6 +174,40 @@ func validateSources(sources map[string]source, template string) error {
 	for _, unsafe := range []string{"PathEscape(request.Token)", `query.Set("token"`, "Authorization\", \"Bearer \"+request.Token"} {
 		if strings.Contains(template, unsafe) {
 			return fmt.Errorf("enrollment token enters an unsafe transport surface: %q", unsafe)
+		}
+	}
+	return nil
+}
+
+func validateNodeRootStateContract(plan map[string]any, template string) error {
+	classes, ok := at(plan, "properties", "rollback", "properties", "backupRootClass", "enum").([]any)
+	if !ok || len(classes) != 2 || !containsAllStrings(classes, "linux_node_root", "macos_node_root") {
+		return fmt.Errorf("Node privileged root state classes changed")
+	}
+	conditions, ok := at(plan, "properties", "rollback", "allOf").([]any)
+	if !ok || len(conditions) != 2 {
+		return fmt.Errorf("Node privileged root state conditions changed")
+	}
+	want := map[string]string{"linux_node_root": `^/var/lib/blazn-node-root/install-backups/[A-Za-z0-9_-]{1,128}$`, "macos_node_root": `^/Library/Application Support/BlaznNodeRoot/install-backups/[A-Za-z0-9_-]{1,128}$`}
+	seen := map[string]bool{}
+	for _, condition := range conditions {
+		object, ok := condition.(map[string]any)
+		if !ok {
+			return fmt.Errorf("Node privileged root state condition is invalid")
+		}
+		class := atString(object, "if", "properties", "backupRootClass", "const")
+		pattern := atString(object, "then", "properties", "backupRoot", "pattern")
+		if want[class] != pattern {
+			return fmt.Errorf("Node privileged root state path changed for %s", class)
+		}
+		seen[class] = true
+	}
+	if len(seen) != 2 {
+		return fmt.Errorf("Node privileged root state paths are incomplete")
+	}
+	for _, marker := range []string{"linux_node_root", "macos_node_root", "/var/lib/blazn-node-root/install-backups/", "/Library/Application Support/BlaznNodeRoot/install-backups/"} {
+		if !strings.Contains(template, marker) {
+			return fmt.Errorf("generated Node client lacks privileged root state marker %q", marker)
 		}
 	}
 	return nil

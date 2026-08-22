@@ -242,8 +242,8 @@
           "preserveUserData": true,
           "preserveControlPlane": true,
           "ambiguousOwnership": "recovery_required",
-          "backupRootClass": "linux_var_lib",
-          "backupRoot": "/var/lib/blazn/install-backups/node-install"
+          "backupRootClass": "linux_node_root",
+          "backupRoot": "/var/lib/blazn-node-root/install-backups/node-install"
         }
       }
     },
@@ -474,8 +474,8 @@
           "preserveUserData": true,
           "preserveControlPlane": true,
           "ambiguousOwnership": "recovery_required",
-          "backupRootClass": "linux_var_lib",
-          "backupRoot": "/var/lib/blazn/install-backups/node-adopt"
+          "backupRootClass": "linux_node_root",
+          "backupRoot": "/var/lib/blazn-node-root/install-backups/node-adopt"
         }
       },
       "arm64": {
@@ -704,8 +704,8 @@
           "preserveUserData": true,
           "preserveControlPlane": true,
           "ambiguousOwnership": "recovery_required",
-          "backupRootClass": "linux_var_lib",
-          "backupRoot": "/var/lib/blazn/install-backups/node-adopt"
+          "backupRootClass": "linux_node_root",
+          "backupRoot": "/var/lib/blazn-node-root/install-backups/node-adopt"
         }
       }
     },
@@ -885,8 +885,8 @@
           "preserveUserData": true,
           "preserveControlPlane": true,
           "ambiguousOwnership": "recovery_required",
-          "backupRootClass": "macos_library_application_support",
-          "backupRoot": "/Library/Application Support/Blazn/install-backups/node-adopt"
+          "backupRootClass": "macos_node_root",
+          "backupRoot": "/Library/Application Support/BlaznNodeRoot/install-backups/node-adopt"
         }
       }
     }

@@ -40,7 +40,11 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	}
 	profileRoot := c.TrustedProfileRoot
 	if profileRoot == "" {
-		profileRoot = "/etc/blazn/node/profiles"
+		paths, err := HostProductionNodePaths()
+		if err != nil {
+			return EnrollResult{}, err
+		}
+		profileRoot = paths.ProfileRoot
 	}
 	cleanProfile := filepath.Clean(options.ProfileFile)
 	if !filepath.IsAbs(profileRoot) || filepath.Clean(profileRoot) != profileRoot || filepath.Dir(cleanProfile) != profileRoot {

@@ -77,9 +77,9 @@
       ]}
     },
     "validationTests": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"enum": ["binary_digest", "service_account", "service_active", "node_identity", "cluster_ca", "worker_only", "lima_worker_binding", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility"]}},
-    "rollback": {"type": "object", "additionalProperties": false, "required": ["preserveUserData", "preserveControlPlane", "ambiguousOwnership", "backupRootClass", "backupRoot"], "properties": {"preserveUserData": {"const": true}, "preserveControlPlane": {"const": true}, "ambiguousOwnership": {"const": "recovery_required"}, "backupRootClass": {"enum": ["linux_var_lib", "macos_library_application_support"]}, "backupRoot": {"type": "string", "not": {"pattern": "(?:^|/)\\.\\.(?:/|$)"}}}, "allOf": [
-      {"if": {"properties": {"backupRootClass": {"const": "linux_var_lib"}}, "required": ["backupRootClass"]}, "then": {"properties": {"backupRoot": {"pattern": "^/var/lib/blazn/install-backups/[A-Za-z0-9_-]{1,128}$"}}}},
-      {"if": {"properties": {"backupRootClass": {"const": "macos_library_application_support"}}, "required": ["backupRootClass"]}, "then": {"properties": {"backupRoot": {"pattern": "^/Library/Application Support/Blazn/install-backups/[A-Za-z0-9_-]{1,128}$"}}}}
+    "rollback": {"type": "object", "additionalProperties": false, "required": ["preserveUserData", "preserveControlPlane", "ambiguousOwnership", "backupRootClass", "backupRoot"], "properties": {"preserveUserData": {"const": true}, "preserveControlPlane": {"const": true}, "ambiguousOwnership": {"const": "recovery_required"}, "backupRootClass": {"enum": ["linux_node_root", "macos_node_root"]}, "backupRoot": {"type": "string", "not": {"pattern": "(?:^|/)\\.\\.(?:/|$)"}}}, "allOf": [
+      {"if": {"properties": {"backupRootClass": {"const": "linux_node_root"}}, "required": ["backupRootClass"]}, "then": {"properties": {"backupRoot": {"pattern": "^/var/lib/blazn-node-root/install-backups/[A-Za-z0-9_-]{1,128}$"}}}},
+      {"if": {"properties": {"backupRootClass": {"const": "macos_node_root"}}, "required": ["backupRootClass"]}, "then": {"properties": {"backupRoot": {"pattern": "^/Library/Application Support/BlaznNodeRoot/install-backups/[A-Za-z0-9_-]{1,128}$"}}}}
     ]},
     "issuedAt": {"type": "string", "format": "date-time"},
     "expiresAt": {"type": "string", "format": "date-time"},

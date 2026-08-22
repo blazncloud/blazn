@@ -44,3 +44,8 @@ The concrete isolated HTTP replay and root-owned authority persistence are
 implemented by the privileged Linux/macOS adapter milestone. This contract
 does not permit a platform to trust the service-owned enrollment pin/runtime
 as root authority and never substitutes unprivileged or unmanaged mutations.
+Linux privileged state is rooted at `/var/lib/blazn-node-root`; macOS privileged
+state is rooted at `/Library/Application Support/BlaznNodeRoot`. Both are
+root-owned mode `0700` and contain authority, install WAL/receipts, and rollback
+backups. Daemon identity/runtime state remains in the separate service-owned
+platform path.

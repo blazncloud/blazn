@@ -237,3 +237,23 @@ func TestNodeTemplateRequiresRootControlPlaneOriginSemantics(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeContractRequiresDistinctPrivilegedRootState(t *testing.T) {
+	sources := checkedInSources(t)
+	key := filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json")
+	plan := sources[key].doc
+	if err := validateNodeRootStateContract(plan, string(nodeTemplate)); err != nil {
+		t.Fatal(err)
+	}
+	changed := cloneDocument(t, plan)
+	at(changed, "properties", "rollback", "properties", "backupRootClass").(map[string]any)["enum"] = []any{"linux_var_lib", "macos_library_application_support"}
+	if err := validateNodeRootStateContract(changed, string(nodeTemplate)); err == nil || !strings.Contains(err.Error(), "privileged root state") {
+		t.Fatalf("legacy service-owned roots error=%v", err)
+	}
+	changed = cloneDocument(t, plan)
+	conditions := at(changed, "properties", "rollback", "allOf").([]any)
+	conditions[0].(map[string]any)["then"].(map[string]any)["properties"].(map[string]any)["backupRoot"].(map[string]any)["pattern"] = `^/var/lib/blazn/install-backups/`
+	if err := validateNodeRootStateContract(changed, string(nodeTemplate)); err == nil || !strings.Contains(err.Error(), "privileged root state") {
+		t.Fatalf("service-owned backup path error=%v", err)
+	}
+}
