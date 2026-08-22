@@ -186,7 +186,7 @@ func TestCreateFailsClosedWhenLiveRuntimeDisappears(t *testing.T) {
 }
 
 func TestRuntimeGateFailsClosed(t *testing.T) {
-	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	base := testCreate()
 	base.ExpiresAt = now.Add(time.Hour)
 	tests := []struct {
