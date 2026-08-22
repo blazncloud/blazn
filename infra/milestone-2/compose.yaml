@@ -90,6 +90,36 @@ services:
     networks:
       - control
 
+  object-init:
+    image: ${MINIO_MC_IMAGE:?set MINIO_MC_IMAGE to the reviewed immutable digest}
+    entrypoint: ["/bin/sh", "-euc"]
+    command:
+      - |
+        access=$$(cat /run/secrets/s3_access_key)
+        secret=$$(cat /run/secrets/s3_secret_key)
+        mc alias set blazn http://object:9000 "$$access" "$$secret" >/dev/null
+        mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}" >/dev/null
+        mc stat "blazn/${S3_BUCKET:-blazn-poc}" >/dev/null
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+    depends_on:
+      object:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+          pids: 64
+    networks:
+      - control
+
   api-migrate:
     build:
       context: ../../services/control-api
@@ -133,6 +163,9 @@ services:
       api-migrate:
         condition: service_completed_successfully
     restart: "no"
+    labels:
+      blazn.dev/operation: bootstrap
+      blazn.dev/restart-idempotent: "true"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -169,8 +202,8 @@ services:
     depends_on:
       api-bootstrap:
         condition: service_completed_successfully
-      object:
-        condition: service_healthy
+      object-init:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [

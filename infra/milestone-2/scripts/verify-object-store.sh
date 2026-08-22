@@ -29,7 +29,7 @@ trap cleanup EXIT HUP INT TERM
 
 docker compose -f "$ROOT_DIR/compose.yaml" --profile tools run --rm \
   -v "$work:/fixture" object-client \
-  'access=$(cat /run/secrets/s3_access_key); secret=$(cat /run/secrets/s3_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; prefix="$1/object-verification/$2"; mc cp /fixture/input/payload.txt "blazn/$prefix/payload.txt" >/dev/null; mc cp "blazn/$prefix/payload.txt" /fixture/output/payload.txt >/dev/null; mc rm --recursive --force "blazn/$prefix" >/dev/null; if mc find "blazn/$prefix" | grep . >/dev/null; then exit 42; fi' \
+  'access=$(cat /run/secrets/s3_access_key); secret=$(cat /run/secrets/s3_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; prefix="$1/object-verification/$2"; mc cp /fixture/input/payload.txt "blazn/$prefix/payload.txt" >/dev/null; mc cp "blazn/$prefix/payload.txt" /fixture/output/payload.txt >/dev/null; mc rm --recursive --force "blazn/$prefix" >/dev/null; mc ls --recursive "blazn/$prefix" >/tmp/residue 2>/dev/null || true; [ ! -s /tmp/residue ]' \
   -- "${S3_BUCKET:-blazn-poc}" "$run_id"
 
 actual=$(sha256_file "$work/output/payload.txt")

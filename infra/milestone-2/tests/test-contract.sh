@@ -9,6 +9,8 @@ unit=$ROOT_DIR/systemd/blazn-control-plane.service
 
 # The first four strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
+# These strings intentionally assert unexpanded Compose interpolation.
+# shellcheck disable=SC2016
 for expected in \
   '127.0.0.1}:${POSTGRES_PORT:-55432}:5432' \
   '127.0.0.1}:${S3_PORT:-59000}:9000' \
@@ -32,11 +34,26 @@ for expected in \
   }
 done
 
+for expected in \
+  'object-init:' \
+  'mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}"' \
+  'mc stat "blazn/${S3_BUCKET:-blazn-poc}"' \
+  'object-init:' \
+  'condition: service_completed_successfully' \
+  'blazn.dev/restart-idempotent: "true"'; do
+  grep -F "$expected" "$compose" >/dev/null || {
+    printf 'one-shot initialization contract is missing: %s\n' "$expected" >&2
+    exit 1
+  }
+done
+
 runtime_api=$(awk '
   /^  api:$/ { in_api=1; next }
   in_api && /^[^ ]/ { exit }
   in_api { print }
 ' "$compose")
+printf '%s\n' "$runtime_api" | grep -F 'object-init:' >/dev/null
+printf '%s\n' "$runtime_api" | grep -F 'condition: service_completed_successfully' >/dev/null
 for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_INITIAL_PASSWORD_FILE migration_database_url initial_password; do
   if printf '%s\n' "$runtime_api" | grep -F "$forbidden" >/dev/null; then
     printf 'runtime API receives a privileged bootstrap/migration secret: %s\n' "$forbidden" >&2

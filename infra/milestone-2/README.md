@@ -36,6 +36,11 @@ database/schema owner, and `blazn_runtime` with connect, schema usage, table
 DML, and sequence-use privileges only. Default privileges make future objects
 created by migrations available to runtime without granting runtime DDL.
 
+The object service has its own restart-idempotent one-shot initializer. It uses
+the pinned `mc` image to create the required bucket with `--ignore-existing`
+and verifies it before the API starts. The API then performs an authenticated
+signed `HeadBucket`, so a healthy process also proves its bucket access.
+
 ## Required decisions before a ben1 deployment
 
 1. Approve the exact `/srv/frontro/blazn-poc/control-plane` mount and confirm it
@@ -67,7 +72,8 @@ with-control-plane-lock.sh dependency <correlation-id> auto install-compose-plug
 with-control-plane-lock.sh prepare <correlation-id> auto prepare-host.sh
 install reviewed files and systemd unit
 systemctl enable --now blazn-control-plane.service
-health, migration, S3 checksum, restart, auth, and revocation tests
+health, migration, restart-idempotent bootstrap and object initialization, S3
+checksum, restart, auth, and revocation tests
 with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-id>
 restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host only
 ```
