@@ -67,6 +67,20 @@ blazn_sha256() {
 }
 
 blazn_cleanup() {
+  if [ "${blazn_install_in_progress:-0}" = "1" ]; then
+    if [ "${blazn_new_binary_installed:-0}" = "1" ] && [ -n "${blazn_destination:-}" ]; then
+      rm -f "$blazn_destination" 2>/dev/null || true
+    fi
+    if [ "${blazn_new_receipt_installed:-0}" = "1" ] && [ -n "${blazn_receipt:-}" ]; then
+      rm -f "$blazn_receipt" 2>/dev/null || true
+    fi
+    if [ -n "${blazn_backup_binary:-}" ] && [ -f "$blazn_backup_binary" ]; then
+      mv "$blazn_backup_binary" "$blazn_destination" 2>/dev/null || true
+    fi
+    if [ -n "${blazn_backup_receipt:-}" ] && [ -f "$blazn_backup_receipt" ]; then
+      mv "$blazn_backup_receipt" "$blazn_receipt" 2>/dev/null || true
+    fi
+  fi
   if [ -n "${blazn_stage_binary:-}" ]; then
     rm -f "$blazn_stage_binary" 2>/dev/null || true
   fi
@@ -92,6 +106,7 @@ blazn_command_required curl
 blazn_command_required tar
 blazn_command_required ssh-keygen
 blazn_command_required awk
+blazn_command_required grep
 blazn_command_required mktemp
 
 case "$(uname -s)" in
@@ -230,6 +245,10 @@ tar -xzf "$blazn_tmp_dir/archive.tar.gz" -C "$blazn_tmp_dir/extract" blazn || \
   blazn_die "extracted blazn binary is not a regular file"
 chmod 0755 "$blazn_tmp_dir/extract/blazn"
 blazn_binary_checksum=$(blazn_sha256 "$blazn_tmp_dir/extract/blazn")
+blazn_version_output=$("$blazn_tmp_dir/extract/blazn" version --output=json 2>/dev/null) || \
+  blazn_die "downloaded blazn binary failed its version smoke test"
+printf '%s\n' "$blazn_version_output" | grep -F '"version":"'"$blazn_version"'"' >/dev/null || \
+  blazn_die "downloaded blazn binary version does not match $blazn_version"
 
 blazn_install_dir=${BLAZN_INSTALL_DIR:-${HOME:?HOME is required}/.local/bin}
 case "$blazn_install_dir" in
@@ -272,14 +291,45 @@ chmod 0755 "$blazn_stage_binary"
 } > "$blazn_stage_receipt" || blazn_die "could not stage installation receipt"
 chmod 0644 "$blazn_stage_receipt"
 
-if ! mv -f "$blazn_stage_binary" "$blazn_destination"; then
-  rm -f "$blazn_stage_binary" "$blazn_stage_receipt"
+blazn_install_in_progress=1
+blazn_new_binary_installed=0
+blazn_new_receipt_installed=0
+blazn_backup_binary=""
+blazn_backup_receipt=""
+
+if [ -e "$blazn_destination" ]; then
+  [ -f "$blazn_destination" ] && [ ! -L "$blazn_destination" ] || \
+    blazn_die "existing installation path is not a regular file"
+  blazn_backup_binary="$blazn_install_dir/.blazn.backup.$$"
+  mv "$blazn_destination" "$blazn_backup_binary" || blazn_die "could not stage the existing blazn binary"
+fi
+if [ -e "$blazn_receipt" ]; then
+  [ -f "$blazn_receipt" ] && [ ! -L "$blazn_receipt" ] || \
+    blazn_die "existing receipt path is not a regular file"
+  blazn_backup_receipt="$blazn_install_dir/.blazn-receipt.backup.$$"
+  mv "$blazn_receipt" "$blazn_backup_receipt" || blazn_die "could not stage the existing receipt"
+fi
+
+if ! mv "$blazn_stage_binary" "$blazn_destination"; then
   blazn_die "could not atomically install blazn"
 fi
-if ! mv -f "$blazn_stage_receipt" "$blazn_receipt"; then
-  rm -f "$blazn_stage_receipt"
+blazn_new_binary_installed=1
+blazn_stage_binary=""
+if ! mv "$blazn_stage_receipt" "$blazn_receipt"; then
   blazn_die "blazn was installed, but its receipt could not be written"
 fi
+blazn_new_receipt_installed=1
+blazn_stage_receipt=""
+
+if [ -n "$blazn_backup_binary" ]; then
+  rm -f "$blazn_backup_binary"
+  blazn_backup_binary=""
+fi
+if [ -n "$blazn_backup_receipt" ]; then
+  rm -f "$blazn_backup_receipt"
+  blazn_backup_receipt=""
+fi
+blazn_install_in_progress=0
 
 printf 'Installed blazn %s to %s\n' "$blazn_version" "$blazn_destination"
 case ":${PATH:-}:" in

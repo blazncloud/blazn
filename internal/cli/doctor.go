@@ -1,6 +1,12 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
 
 type DoctorReport struct {
 	Command         string        `json:"command"`
@@ -22,6 +28,10 @@ func RunDoctor(build BuildInfo) DoctorReport {
 		platformCheck(build.GOOS),
 		architectureCheck(build.GOARCH),
 		buildMetadataCheck(build),
+		installPathCheck(),
+		configPermissionsCheck(),
+		installerToolsCheck(),
+		credentialStoreCheck(build.GOOS),
 	}
 	report := DoctorReport{
 		Command:         "doctor",
@@ -40,6 +50,122 @@ func RunDoctor(build BuildInfo) DoctorReport {
 		}
 	}
 	return report
+}
+
+func installPathCheck() DoctorCheck {
+	check := DoctorCheck{Name: "install.path", Severity: "info", Status: "pass", Message: "executable path is available on PATH", Remediation: "none"}
+	executable, err := os.Executable()
+	if err != nil {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "could not resolve the running executable path"
+		check.Remediation = "reinstall Blazn from the signed curl installer"
+		return check
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "could not normalize the running executable path"
+		check.Remediation = "reinstall Blazn into an absolute user-owned path"
+		return check
+	}
+	directory := filepath.Dir(executable)
+	for _, candidate := range filepath.SplitList(os.Getenv("PATH")) {
+		absolute, err := filepath.Abs(candidate)
+		if err == nil && absolute == directory {
+			return check
+		}
+	}
+	check.Severity = "warning"
+	check.Status = "warn"
+	check.Message = fmt.Sprintf("executable directory %s is not on PATH", directory)
+	check.Remediation = fmt.Sprintf("add %s to PATH; Blazn will not edit shell configuration", directory)
+	return check
+}
+
+func configPermissionsCheck() DoctorCheck {
+	check := DoctorCheck{Name: "config.permissions", Severity: "info", Status: "pass", Message: "Blazn configuration directory is absent or private", Remediation: "none"}
+	base, err := os.UserConfigDir()
+	if err != nil {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "could not resolve the user configuration directory"
+		check.Remediation = "set a valid user home/configuration directory before authentication"
+		return check
+	}
+	path := filepath.Join(base, "blazn")
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return check
+	}
+	if err != nil {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "could not inspect the Blazn configuration directory"
+		check.Remediation = "verify ownership and permissions on the Blazn configuration directory"
+		return check
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		check.Severity = "error"
+		check.Status = "fail"
+		check.Message = "Blazn configuration path is not a real directory"
+		check.Remediation = "replace it with a private user-owned directory after preserving authorized data"
+		return check
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = fmt.Sprintf("Blazn configuration directory permissions are %04o", info.Mode().Perm())
+		check.Remediation = "restrict the Blazn configuration directory to mode 0700"
+	}
+	return check
+}
+
+func installerToolsCheck() DoctorCheck {
+	check := DoctorCheck{Name: "installer.tools", Severity: "info", Status: "pass", Message: "installer verification tools are available", Remediation: "none"}
+	missing := make([]string, 0)
+	for _, command := range []string{"curl", "tar", "ssh-keygen", "awk", "mktemp"} {
+		if _, err := exec.LookPath(command); err != nil {
+			missing = append(missing, command)
+		}
+	}
+	if _, err := exec.LookPath("sha256sum"); err != nil {
+		if _, fallbackErr := exec.LookPath("shasum"); fallbackErr != nil {
+			missing = append(missing, "sha256sum or shasum")
+		}
+	}
+	if len(missing) > 0 {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "installer tools unavailable: " + strings.Join(missing, ", ")
+		check.Remediation = "install the missing OS baseline tools before the next Blazn upgrade"
+	}
+	return check
+}
+
+func credentialStoreCheck(goos string) DoctorCheck {
+	check := DoctorCheck{Name: "credential_store", Severity: "info", Status: "pass", Message: "supported OS credential store is available", Remediation: "none"}
+	var command string
+	switch goos {
+	case "darwin":
+		command = "/usr/bin/security"
+	case "linux":
+		command = "secret-tool"
+	default:
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "credential-store capability is unknown on this platform"
+		check.Remediation = "use a supported macOS or Linux platform"
+		return check
+	}
+	if _, err := exec.LookPath(command); err != nil {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "persistent OS credential storage is unavailable"
+		check.Remediation = "install or unlock the supported credential store; later auth can use an in-memory session"
+	}
+	return check
 }
 
 func platformCheck(goos string) DoctorCheck {

@@ -2,7 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -49,7 +53,7 @@ func TestJSONHelpIsDeterministic(t *testing.T) {
 	if code != ExitSuccess || first != second {
 		t.Fatalf("JSON help differs:\n%s\n%s", first, second)
 	}
-	const want = "{\"command\":\"blazn\",\"usage\":\"blazn [--output human|json] <command>\",\"summary\":\"Control Blazn from the command line.\",\"commands\":[{\"name\":\"doctor\",\"summary\":\"Run offline readiness checks\"},{\"name\":\"help\",\"summary\":\"Show help for a command\"},{\"name\":\"version\",\"summary\":\"Show build and contract version information\"}]}\n"
+	const want = "{\"command\":\"blazn\",\"usage\":\"blazn [--output human|json] <command>\",\"summary\":\"Control Blazn from the command line.\",\"commands\":[{\"name\":\"doctor\",\"summary\":\"Run offline readiness checks\"},{\"name\":\"help\",\"summary\":\"Show help for a command\"},{\"name\":\"uninstall\",\"summary\":\"Remove a receipt-owned direct installation\"},{\"name\":\"version\",\"summary\":\"Show build and contract version information\"}]}\n"
 	if first != want {
 		t.Fatalf("JSON help = %q, want %q", first, want)
 	}
@@ -112,10 +116,10 @@ func TestDoctorJSONAndExitCodes(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("decode doctor: %v", err)
 	}
-	if report.Status != "ok" || len(report.Checks) != 3 {
+	if (report.Status != "ok" && report.Status != "warning") || len(report.Checks) != 7 {
 		t.Fatalf("doctor report = %#v", report)
 	}
-	wantNames := []string{"runtime.os", "runtime.architecture", "build.metadata"}
+	wantNames := []string{"runtime.os", "runtime.architecture", "build.metadata", "install.path", "config.permissions", "installer.tools", "credential_store"}
 	for i, name := range wantNames {
 		if report.Checks[i].Name != name || report.Checks[i].Severity == "" || report.Checks[i].Status == "" || report.Checks[i].Remediation == "" {
 			t.Fatalf("doctor check %d = %#v", i, report.Checks[i])
@@ -136,5 +140,85 @@ func TestDoctorJSONAndExitCodes(t *testing.T) {
 func TestExitCodeConstants(t *testing.T) {
 	if ExitSuccess != 0 || ExitFailure != 1 || ExitUsage != 2 || ExitUnavailable != 7 {
 		t.Fatalf("exit codes changed: %d %d %d %d", ExitSuccess, ExitFailure, ExitUsage, ExitUnavailable)
+	}
+}
+
+func TestUninstallRequiresConfirmation(t *testing.T) {
+	code, _, stderr := runApp(t, "uninstall")
+	if code != ExitUsage || !strings.Contains(stderr, "requires --yes") {
+		t.Fatalf("uninstall without confirmation: code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestUninstallCommandJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := New(&stdout, &stderr, testBuild)
+	app.uninstall = func() (UninstallResult, error) {
+		return UninstallResult{Command: "uninstall", Status: "removed", Path: "/tmp/bin/blazn", ConfigPreserved: true}, nil
+	}
+	if code := app.Run([]string{"uninstall", "--yes", "--output=json"}); code != ExitSuccess {
+		t.Fatalf("uninstall code=%d stderr=%q", code, stderr.String())
+	}
+	const want = "{\"command\":\"uninstall\",\"status\":\"removed\",\"path\":\"/tmp/bin/blazn\",\"configPreserved\":true}\n"
+	if stdout.String() != want {
+		t.Fatalf("uninstall JSON=%q want=%q", stdout.String(), want)
+	}
+}
+
+func TestRunUninstallAtRemovesOnlyReceiptOwnedFiles(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "blazn")
+	content := []byte("standalone-binary")
+	if err := os.WriteFile(executable, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	receipt := filepath.Join(dir, installReceiptName)
+	receiptBody := fmt.Sprintf("version=v1.2.3\nbinary_sha256=%x\n", digest)
+	if err := os.WriteFile(receipt, []byte(receiptBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(dir, "config-preserved")
+	if err := os.WriteFile(config, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := runUninstallAt(executable)
+	if err != nil {
+		t.Fatalf("runUninstallAt: %v", err)
+	}
+	if result.Status != "removed" || !result.ConfigPreserved {
+		t.Fatalf("result=%#v", result)
+	}
+	for _, removed := range []string{executable, receipt} {
+		if _, err := os.Stat(removed); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed, err=%v", removed, err)
+		}
+	}
+	if got, err := os.ReadFile(config); err != nil || string(got) != "keep" {
+		t.Fatalf("config changed: %q err=%v", got, err)
+	}
+}
+
+func TestRunUninstallAtRefusesModifiedBinary(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "blazn")
+	if err := os.WriteFile(executable, []byte("modified"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	receipt := filepath.Join(dir, installReceiptName)
+	if err := os.WriteFile(receipt, []byte("version=v1.2.3\nbinary_sha256="+strings.Repeat("0", 64)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runUninstallAt(executable); err == nil || !strings.Contains(err.Error(), "differs from its receipt") {
+		t.Fatalf("expected checksum refusal, got %v", err)
+	}
+	if _, err := os.Stat(executable); err != nil {
+		t.Fatalf("modified binary was removed: %v", err)
+	}
+	if _, err := os.Stat(receipt); err != nil {
+		t.Fatalf("receipt was removed: %v", err)
 	}
 }

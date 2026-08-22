@@ -50,6 +50,10 @@ mkdir -p "$test_release" "$test_install" "$test_root/payload"
 
 cat > "$test_root/payload/blazn" <<'EOF'
 #!/bin/sh
+if [ "${1:-}" = "version" ]; then
+  printf '{"version":"v1.2.3","commit":"test","buildTime":"test","goos":"test","goarch":"test","contractVersion":"v1alpha1"}\n'
+  exit 0
+fi
 printf 'blazn test v1.2.3\n'
 EOF
 chmod 0755 "$test_root/payload/blazn"

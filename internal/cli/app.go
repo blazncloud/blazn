@@ -32,10 +32,11 @@ type BuildInfo struct {
 }
 
 type App struct {
-	stdout io.Writer
-	stderr io.Writer
-	build  BuildInfo
-	doctor func() DoctorReport
+	stdout    io.Writer
+	stderr    io.Writer
+	build     BuildInfo
+	doctor    func() DoctorReport
+	uninstall func() (UninstallResult, error)
 }
 
 func New(stdout, stderr io.Writer, build BuildInfo) *App {
@@ -46,10 +47,11 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		build.GOARCH = runtime.GOARCH
 	}
 	return &App{
-		stdout: stdout,
-		stderr: stderr,
-		build:  build,
-		doctor: func() DoctorReport { return RunDoctor(build) },
+		stdout:    stdout,
+		stderr:    stderr,
+		build:     build,
+		doctor:    func() DoctorReport { return RunDoctor(build) },
+		uninstall: RunUninstall,
 	}
 }
 
@@ -96,6 +98,14 @@ func (a *App) Run(args []string) int {
 			return a.writeError(format, ExitUsage, "usage", "doctor does not accept arguments")
 		}
 		return a.writeDoctor(format)
+	case "uninstall":
+		if helpRequested(rest) {
+			return a.writeHelp(format, "uninstall")
+		}
+		if len(rest) != 1 || rest[0] != "--yes" {
+			return a.writeError(format, ExitUsage, "confirmation_required", "uninstall requires --yes")
+		}
+		return a.writeUninstall(format)
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
 	}

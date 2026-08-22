@@ -27,6 +27,7 @@ type commandError struct {
 var rootCommands = []helpCommand{
 	{Name: "doctor", Summary: "Run offline readiness checks"},
 	{Name: "help", Summary: "Show help for a command"},
+	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
 }
 
@@ -46,6 +47,8 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		output = helpOutput{Command: "version", Usage: "blazn version [--output human|json]", Summary: "Show build and contract version information."}
 	case "doctor":
 		output = helpOutput{Command: "doctor", Usage: "blazn doctor [--output human|json]", Summary: "Run deterministic checks without network access."}
+	case "uninstall":
+		output = helpOutput{Command: "uninstall", Usage: "blazn uninstall --yes [--output human|json]", Summary: "Remove a direct installation owned by its Blazn receipt while preserving configuration."}
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown help topic %q", topic))
 	}
