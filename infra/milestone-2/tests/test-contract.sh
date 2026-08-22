@@ -94,6 +94,15 @@ grep -F 'NOBYPASSRLS' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'pg_auth_members' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'openssl rand -hex 32' "$ROOT_DIR/scripts/upgrade-live-v2-to-workspace.sh" >/dev/null
 grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/verify-rollback-inventory.sh" >/dev/null
+grep -F 'POC_IDENTITY_ACTION: provision' "$compose" >/dev/null
+grep -F 'POC_IDENTITY_ACTION: cleanup' "$compose" >/dev/null
+grep -F 'passwordRecord' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
+grep -F 'workspace reference outside the exact cleanup inventory' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
+grep -F 'preflight.sh --existing-deploy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'verify-live-workspace.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'with-control-plane-env.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'stage-release.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'cmp -s "$unit_source" "$installed_unit"' "$ROOT_DIR/scripts/promote-release.sh" >/dev/null
 if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null; then
   printf 'database initialization grants broad future-table privileges\n' >&2
   exit 1

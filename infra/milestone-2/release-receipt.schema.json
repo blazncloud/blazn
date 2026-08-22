@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/release-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "commit", "tree", "path", "manifestDigest", "releaseDigest", "controlApiSourceDigest", "controlPlaneConfigDigest", "systemdUnitDigest", "stagedAt", "fencingToken", "correlationId"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/release/v1" },
+    "id": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "tree": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "path": { "type": "string", "minLength": 1 },
+    "manifestDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "releaseDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "controlApiSourceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "controlPlaneConfigDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "systemdUnitDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "stagedAt": { "type": "string", "format": "date-time" },
+    "fencingToken": { "type": "integer", "minimum": 1 },
+    "correlationId": { "type": "string", "minLength": 1 }
+  }
+}

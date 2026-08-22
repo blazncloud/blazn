@@ -28,7 +28,8 @@ fixture() {
   chmod 0700 "$secrets" "$ownership"
   jq -cn --arg host "$(hostname)" --arg secrets "$secrets" \
     '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,paths:{secrets:$secrets}}' >"$ownership/control-plane.json"
-  chmod 0600 "$ownership/control-plane.json"
+  jq -cn '{schemaVersion:"blazn.dev/active-release/v1",releaseDigest:("sha256:" + ("1" * 64))}' >"$ownership/active-release.json"
+  chmod 0600 "$ownership/control-plane.json" "$ownership/active-release.json"
   sudo chown -R 0:0 "$secrets" "$ownership"
   printf '%s\n' "$root"
 }
@@ -37,9 +38,11 @@ run_upgrade() {
   root=$1
   sudo env \
     BLAZN_FENCING_TOKEN=9 \
+    BLAZN_CORRELATION_ID=workspace-live-test \
     BLAZN_SECRETS_ROOT="$root/secrets" \
     BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
     BLAZN_WORKSPACE_SECRET_UPGRADE_RECEIPT_PATH="$root/ownership/workspace-secret-upgrade.json" \
+    BLAZN_ACTIVE_RELEASE_RECEIPT="$root/ownership/active-release.json" \
     "$UPGRADE"
 }
 
@@ -49,7 +52,7 @@ secret=$normal/secrets/workspace-invitation-hmac-v1
 [ "$(sudo wc -c "$secret" | awk '{print $1}')" = 65 ]
 sudo grep -Eq '^[a-f0-9]{64}$' "$secret"
 [ "$(sudo stat -c '%u:%a' "$secret")" = 0:444 ]
-sudo jq -e '.schemaVersion == "blazn.dev/workspace-secret-upgrade/v1" and (.secretDigest | test("^sha256:[a-f0-9]{64}$"))' \
+sudo jq -e '.schemaVersion == "blazn.dev/workspace-secret-upgrade/v1" and (.secretDigest | test("^sha256:[a-f0-9]{64}$")) and (.releaseDigest | test("^sha256:[a-f0-9]{64}$")) and .fencingToken == 9 and .correlationId == "workspace-live-test"' \
   "$normal/ownership/workspace-secret-upgrade.json" >/dev/null
 before=$(sudo sha256sum "$secret")
 run_upgrade "$normal" >"$normal/run-2.out"

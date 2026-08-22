@@ -230,3 +230,51 @@ control_plane_config_digest() {
     printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"
   ) | sha256sum | awk '{ print $1 }'
 }
+
+verify_versioned_release() {
+  release=$1
+  receipt=$2
+  assert_directory_owned_mode "$release" 0 555
+  assert_regular_file_owned_mode "$release/.blazn-release-files.sha256" 0 444
+  assert_regular_file_owned_mode "$receipt" 0 600
+  manifest_digest=sha256:$(sha256_file "$release/.blazn-release-files.sha256")
+  jq -e --arg path "$release" --arg manifestDigest "$manifest_digest" \
+    '.schemaVersion == "blazn.dev/release/v1" and .path == $path and .manifestDigest == $manifestDigest and (.releaseDigest | test("^sha256:[a-f0-9]{64}$"))' \
+    "$receipt" >/dev/null || die "versioned release receipt is invalid: $release"
+  (
+    cd "$release"
+    sha256sum -c .blazn-release-files.sha256 >/dev/null
+  ) || die "versioned release file manifest failed: $release"
+  expected_source=$(jq -er .controlApiSourceDigest "$receipt")
+  expected_config=$(jq -er .controlPlaneConfigDigest "$receipt")
+  [ "$expected_source" = "sha256:$(control_api_source_digest "$release/infra/milestone-2")" ] || die "versioned release API/migration source digest changed"
+  [ "$expected_config" = "sha256:$(control_plane_config_digest "$release/infra/milestone-2")" ] || die "versioned release control-plane config digest changed"
+}
+
+verify_legacy_release() {
+  release=$1
+  receipt=$2
+  assert_directory_owned_mode "$release" 0 555
+  assert_regular_file_owned_mode "$receipt" 0 600
+  manifest=$(jq -er .manifestPath "$receipt")
+  assert_regular_file_owned_mode "$manifest" 0 600
+  manifest_digest=sha256:$(sha256_file "$manifest")
+  jq -e --arg path "$release" --arg manifestDigest "$manifest_digest" --arg manifestPath "$manifest" \
+    '.schemaVersion == "blazn.dev/legacy-release/v1" and .path == $path and .manifestPath == $manifestPath and .manifestDigest == $manifestDigest and (.releaseDigest | test("^sha256:[a-f0-9]{64}$"))' \
+    "$receipt" >/dev/null || die "legacy release receipt is invalid: $release"
+  (
+    cd "$release"
+    sha256sum -c "$manifest" >/dev/null
+  ) || die "legacy release file manifest failed: $release"
+}
+
+verify_managed_release() {
+  release=$1
+  receipt=$2
+  schema=$(jq -er .schemaVersion "$receipt")
+  case $schema in
+    blazn.dev/release/v1) verify_versioned_release "$release" "$receipt" ;;
+    blazn.dev/legacy-release/v1) verify_legacy_release "$release" "$receipt" ;;
+    *) die "unsupported managed release receipt schema" ;;
+  esac
+}

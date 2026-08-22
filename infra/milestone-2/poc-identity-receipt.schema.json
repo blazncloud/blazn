@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/second-identity-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "userId", "profileDigest", "passwordDigest", "workspacesDigest", "releaseDigest", "createdAt", "fencingToken", "correlationId"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/poc-second-identity/v1" },
+    "status": { "enum": ["active", "cleaned"] },
+    "userId": { "type": "string", "format": "uuid" },
+    "profileDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "passwordDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "workspacesDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "releaseDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "fencingToken": { "type": "integer", "minimum": 1 },
+    "correlationId": { "type": "string", "minLength": 1 },
+    "cleanedAt": { "type": "string", "format": "date-time" },
+    "cleanupCounts": { "type": "object" }
+  }
+}

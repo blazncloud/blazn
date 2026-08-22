@@ -108,11 +108,32 @@ restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host onl
 The serialized Workspace migration and two-user acceptance procedure is
 [`workspace-live-integration-runbook.md`](workspace-live-integration-runbook.md).
 
+Existing deployments never copy a mutable checkout over `/opt/blazn`.
+`stage-release.sh` archives an exact commit into a checksummed, immutable direct
+child of `/opt/blazn-releases`. With the service stopped, `promote-release.sh`
+uses a retryable intent, preserves and receipts the prior release, atomically
+swaps the active symlink, installs the matching systemd unit, and records the
+promotion. `rollback-release.sh` performs the same verification and atomic swap
+in reverse. All three operations require the control-plane fencing lock.
+
 For an existing installation or reviewed source update, run
 `build-control-api.sh` under the control-plane lock, review its source/image
 receipt, then run `update-receipt-config.sh` in a separate lock operation before
 starting the service. Startup rebuilds and verifies but never silently
 reconciles a changed image into the main receipt.
+
+`preflight.sh --existing-deploy` is the live-service check: occupied ports are
+expected, but each must resolve to its exact receipt-bound Compose service,
+loopback binding, health state, API image ID, and source-matching systemd unit.
+`--plan` remains for an unoccupied proposed installation.
+
+The second Workspace qualification identity is created only by
+`manage-poc-identity.sh`. It reuses the API's scrypt implementation through the
+receipt-bound API image, keeps its password/profile and CLI home root-controlled,
+records exact qualification workspace IDs, and performs transactional cleanup
+of those workspaces plus the identity's authorizations, devices, and sessions.
+`verify-live-workspace.sh` proves cross-tenant denial through authenticated API
+calls; database-role SQL is not treated as tenant-isolation evidence.
 
 The dependency installer places the pinned Compose plugin under the dedicated
 `/etc/blazn/docker-cli` configuration root. The systemd unit sets that exact

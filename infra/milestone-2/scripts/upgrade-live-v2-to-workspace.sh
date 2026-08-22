@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 [ "$(id -u)" -eq 0 ] || die "workspace secret upgrade must run as root"
-[ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "workspace secret upgrade must run through with-control-plane-lock.sh"
+[ -n "${BLAZN_FENCING_TOKEN:-}" ] && [ -n "${BLAZN_CORRELATION_ID:-}" ] || die "workspace secret upgrade must run through with-control-plane-lock.sh"
 require_command jq
 require_command openssl
 require_command sha256sum
@@ -16,9 +16,12 @@ MAIN_RECEIPT=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 UPGRADE_RECEIPT=${BLAZN_WORKSPACE_SECRET_UPGRADE_RECEIPT_PATH:-/var/lib/blazn/ownership/workspace-secret-upgrade.json}
 SECRET=$SECRETS_ROOT/workspace-invitation-hmac-v1
 STAGE=$SECRETS_ROOT/.workspace-secret-upgrade-staging
+ACTIVE_RELEASE_RECEIPT=${BLAZN_ACTIVE_RELEASE_RECEIPT:-/var/lib/blazn/ownership/active-release.json}
 
 assert_directory_owned_mode "$SECRETS_ROOT" 0 700
 assert_regular_file_owned_mode "$MAIN_RECEIPT" 0 600
+assert_regular_file_owned_mode "$ACTIVE_RELEASE_RECEIPT" 0 600
+release_digest=$(jq -er '.releaseDigest | select(test("^sha256:[a-f0-9]{64}$"))' "$ACTIVE_RELEASE_RECEIPT")
 require_absolute_path BLAZN_WORKSPACE_SECRET_UPGRADE_RECEIPT_PATH "$UPGRADE_RECEIPT"
 assert_not_symlink_chain "$UPGRADE_RECEIPT"
 jq -e --arg host "$(hostname)" --arg secrets "$SECRETS_ROOT" \
@@ -29,8 +32,8 @@ validate_upgrade_receipt() {
   assert_regular_file_owned_mode "$UPGRADE_RECEIPT" 0 600
   validate_workspace_invitation_secret "$SECRET"
   digest=sha256:$(sha256_file "$SECRET")
-  jq -e --arg host "$(hostname)" --arg secrets "$SECRETS_ROOT" --arg digest "$digest" \
-    '.schemaVersion == "blazn.dev/workspace-secret-upgrade/v1" and .owner == "blazn-poc" and .host == $host and .secretsRoot == $secrets and .secretDigest == $digest' \
+  jq -e --arg host "$(hostname)" --arg secrets "$SECRETS_ROOT" --arg digest "$digest" --arg releaseDigest "$release_digest" --arg correlationId "$BLAZN_CORRELATION_ID" --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
+    '.schemaVersion == "blazn.dev/workspace-secret-upgrade/v1" and .owner == "blazn-poc" and .host == $host and .secretsRoot == $secrets and .secretDigest == $digest and .releaseDigest == $releaseDigest and .correlationId == $correlationId and (.fencingToken | type == "number" and . <= $fencingToken)' \
     "$UPGRADE_RECEIPT" >/dev/null || die "workspace secret upgrade receipt is invalid"
   main_digest=$(jq -r '.secretDigests["workspace-invitation-hmac-v1"] // empty' "$MAIN_RECEIPT")
   [ -z "$main_digest" ] || [ "$main_digest" = "$digest" ] || \
@@ -77,7 +80,10 @@ else
     --arg secrets "$SECRETS_ROOT" \
     --arg createdAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg digest "sha256:$(sha256_file "$SECRET")" \
-    '{schemaVersion:"blazn.dev/workspace-secret-upgrade/v1",owner:"blazn-poc",host:$host,secretsRoot:$secrets,createdAt:$createdAt,secretDigest:$digest}' \
+    --arg releaseDigest "$release_digest" \
+    --arg correlationId "$BLAZN_CORRELATION_ID" \
+    --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
+    '{schemaVersion:"blazn.dev/workspace-secret-upgrade/v1",owner:"blazn-poc",host:$host,secretsRoot:$secrets,createdAt:$createdAt,secretDigest:$digest,releaseDigest:$releaseDigest,fencingToken:$fencingToken,correlationId:$correlationId}' \
     >"$receipt_tmp"
   chmod 0600 "$receipt_tmp"
   ln -- "$receipt_tmp" "$UPGRADE_RECEIPT" || {
