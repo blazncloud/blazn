@@ -35,7 +35,7 @@ export class NodeBrokerService {
 
   async health(signal: AbortSignal): Promise<void> {
     if (!this.store.health || !this.issuer.health) throw new Error("Node broker health dependencies are unavailable");
-    await this.store.health();
+    await this.store.health(signal);
     const key = await this.joinKey();
     if (key.length !== 32) throw new Error("join credential key is invalid");
     key.fill(0);

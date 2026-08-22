@@ -35,7 +35,7 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
           const contentType = response.headers["content-type"];
           const retry = response.headers["retry-after"];
           if (!statuses.has(response.statusCode ?? 0) || contentType !== "application/json" || rawHeaderCount(response.rawHeaders,"content-type")!==1 || rawHeaderCount(response.rawHeaders,"retry-after")>1 || rawHeaderCount(response.rawHeaders,"location")!==0 || (Array.isArray(retry) ? retry.length !== 1 : false)) return fail(new Error("Node broker response contract is invalid"));
-          const body = Buffer.concat(chunks); try { validateBrokerBody(response.statusCode!, JSON.parse(body.toString("utf8"))); } catch { return fail(new Error("Node broker response JSON is invalid")); }
+          const body = Buffer.concat(chunks); try { const parsed:unknown=JSON.parse(body.toString("utf8"));if(path==="/healthz"){if(response.statusCode!==200||JSON.stringify(parsed)!=='{"status":"ok"}')throw new Error();}else validateBrokerBody(response.statusCode!,parsed); } catch { return fail(new Error("Node broker response JSON is invalid")); }
           if (retry !== undefined && (response.statusCode !== 429 || typeof retry !== "string" || !/^[1-9][0-9]{0,2}$/.test(retry))) return fail(new Error("Node broker retry contract is invalid"));
           clearTimeout(deadline);resolve({ status: response.statusCode!, body, ...(typeof retry === "string" ? { retryAfter: retry } : {}) });
         });

@@ -42,13 +42,13 @@ export interface NodeBrokerTransaction {
 }
 
 export interface NodeBrokerStore {
-  health?(): Promise<void>;
+  health?(signal: AbortSignal): Promise<void>;
   transaction<T>(action: (tx: NodeBrokerTransaction) => Promise<T>): Promise<T>;
 }
 
 export class PgNodeBrokerStore implements NodeBrokerStore {
   constructor(private readonly database: Database) {}
-  async health(): Promise<void> { await this.database.query("SELECT 1"); }
+  async health(signal: AbortSignal): Promise<void> { if(signal.aborted)throw signal.reason;await Promise.race([this.database.query({text:"SELECT 1",query_timeout:1_500}),new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))]); }
   async transaction<T>(
     action: (tx: NodeBrokerTransaction) => Promise<T>,
   ): Promise<T> {
