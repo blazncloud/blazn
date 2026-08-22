@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type memoryStore struct {

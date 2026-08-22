@@ -1,4 +1,4 @@
-module github.com/KingJammin/blazn
+module github.com/blazncloud/blazn
 
 go 1.26.2
 

@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 const maxPolicyBytes = 1 << 20

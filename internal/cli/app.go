@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/auth"
-	"github.com/KingJammin/blazn/internal/client"
-	workspacepkg "github.com/KingJammin/blazn/internal/workspace"
+	"github.com/blazncloud/blazn/internal/auth"
+	"github.com/blazncloud/blazn/internal/client"
+	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
 const (

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 const (

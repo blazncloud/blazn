@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
