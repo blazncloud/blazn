@@ -60,10 +60,14 @@ grep -F "object.spec.podTemplate.spec.runtimeClassName == 'blazn-qualified'" "$t
 grep -F 'namespace: blazn-poc' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F 'object.metadata.namespace == '\''blazn-poc'\''' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F 'validationActions: [Deny]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
-grep -F "c.image.matches('^.+@sha256:[0-9a-f]{64}$')" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "containers[0].image == 'BLAZN_SYNTHETIC_IMAGE'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "size(object.spec.podTemplate.spec.volumes) == 0" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "request.userInfo.username == 'BLAZN_CREATE_PRINCIPAL'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "object.spec == oldObject.spec" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "object.metadata.name == 'phase4c-canary'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+grep -F "containers[0].image == 'example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+grep -F "c.command == ['sh', '-c', 'trap : TERM INT; sleep 3600 & wait']" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+grep -F "c.resources.requests.cpu == '100m'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
 if grep -A30 'name: blazn-agent-sandbox-observer' "$PHASE4C/controller-boundary.yaml.in" | grep -F 'customresourcedefinitions' >/dev/null; then exit 1; fi
 grep -F 'verbs: ["get", "patch"]' "$PHASE4C/bootstrap.yaml.in" >/dev/null
 if grep -F 'verbs: ["get", "patch", "update"]' "$PHASE4C/bootstrap.yaml.in" >/dev/null; then exit 1; fi
@@ -73,6 +77,7 @@ grep -F 'clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE' "$PHASE4C/blazn-poc.yaml.in
 grep -F "approved-non-sensitive-phase4c-canary" "$PHASE4C/render-fixtures.sh" >/dev/null
 grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
 grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
+grep -F 'delete_if_owned canary-sandbox sandbox phase4c-canary' "$PHASE4C/rollback.sh" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'cmp "$pre/$file" "$post/$file"' "$PHASE4C/rollback.sh" >/dev/null
 # shellcheck disable=SC2016

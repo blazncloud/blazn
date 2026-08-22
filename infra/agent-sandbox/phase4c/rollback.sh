@@ -74,18 +74,37 @@ for entry in \
   # shellcheck disable=SC2086
   if uid_for_delete $entry >/dev/null; then :; fi
 done
-[ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] || check_namespace_contents blazn-poc
-[ -z "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ] || check_namespace_contents agent-sandbox-system
 phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
 
 delete_if_owned() {
-  key=$1 resource=$2 name=$3 namespace=$4 api_path=$5
+  key=$1 resource=$2 name=$3 namespace=$4 api_path=$5 propagation=${6:-Foreground}
   uid=$(uid_for_delete "$key" "$resource" "$name" "$namespace") || return 0
-  phase4c_delete_uid "$api_path" "$uid"
+  phase4c_delete_uid "$api_path" "$uid" "$propagation"
 }
 
-# Stop reconciliation first, then remove the uniquely owned workload namespace.
+# Remove an active canary while its controller can still clear finalizers. A
+# rollback from canary-intent/canary-ready must not strand the workload
+# namespace by stopping reconciliation first.
+canary_existed=$(kubectl get sandbox phase4c-canary -n blazn-poc --ignore-not-found -o name)
+if [ -n "$canary_existed" ]; then
+  delete_if_owned canary-sandbox sandbox phase4c-canary blazn-poc '/apis/agents.x-k8s.io/v1beta1/namespaces/blazn-poc/sandboxes/phase4c-canary' Background
+  phase4c_stop_uid_proxy
+  kubectl wait --for=delete sandbox/phase4c-canary -n blazn-poc --timeout=120s
+  kubectl wait --for=delete pod/phase4c-canary -n blazn-poc --timeout=120s
+  kubectl wait --for=delete workload.kueue.x-k8s.io --all -n blazn-poc --timeout=120s
+  phase4c_start_uid_proxy "$transaction"
+fi
+
+# The controller and Kueue do not copy the transaction annotation to every
+# generated object. Scan after the UID-fenced canary cascade so its expected
+# Pod/Workload are gone, while any independent unowned object still blocks
+# namespace deletion.
+[ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] || check_namespace_contents blazn-poc
+[ -z "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ] || check_namespace_contents agent-sandbox-system
+
+# Stop reconciliation only after the active canary and its dependents are gone,
+# then remove the uniquely owned namespaces.
 delete_if_owned namespace-agent-sandbox-system namespace agent-sandbox-system '' '/api/v1/namespaces/agent-sandbox-system'
 if [ -n "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ]; then kubectl wait --for=delete namespace/agent-sandbox-system --timeout=180s; fi
 delete_if_owned namespace-blazn-poc namespace blazn-poc '' '/api/v1/namespaces/blazn-poc'

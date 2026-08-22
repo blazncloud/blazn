@@ -21,10 +21,15 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/blazn-as-disposable.XXXXXX")
 chmod 0700 "$tmp"
 cluster_absence_verified=0
 creation_attempted=0
+phase4c_lock_owned=0
 cleanup() {
   if [ -d "$tmp/phase4c-transaction" ]; then sudo -n chown -R "$(id -u):$(id -g)" "$tmp/phase4c-transaction" >/dev/null 2>&1 || true; fi
   if [ -x "$tmp/kind" ] && [ "$cluster_absence_verified" -eq 1 ] && [ "$creation_attempted" -eq 1 ]; then
     if [ "$docker_cmd" = docker ]; then "$tmp/kind" delete cluster --name "$cluster" >/dev/null 2>&1 || true; else sudo "$tmp/kind" delete cluster --name "$cluster" >/dev/null 2>&1 || true; fi
+  fi
+  if [ "$phase4c_lock_owned" -eq 1 ]; then
+    sudo -n find /run/lock/blazn -xdev -type f -delete
+    sudo -n find /run/lock/blazn -xdev -depth -type d -empty -delete
   fi
   find "$tmp" -xdev -type f -delete
   find "$tmp" -xdev -depth -type d -empty -delete
@@ -57,6 +62,7 @@ fi
 cluster_absence_verified=1
 creation_attempted=1
 if [ "$docker_cmd" = docker ]; then "$tmp/kind" create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --kubeconfig "$tmp/kubeconfig" --wait 180s; else sudo "$tmp/kind" create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --kubeconfig "$tmp/kubeconfig" --wait 180s; fi
+if [ "$docker_cmd" != docker ]; then sudo chown "$(id -u):$(id -g)" "$tmp/kubeconfig"; chmod 0600 "$tmp/kubeconfig"; fi
 node=$cluster-control-plane
 kctl() { $docker_cmd exec "$node" kubectl "$@"; }
 kapply() { $docker_cmd exec -i "$node" kubectl apply --server-side -f -; }
@@ -123,6 +129,8 @@ sudo -n "$phase4c_root/prepare-transaction.sh" "$tmp/phase4c-install.yaml" "$tmp
 phase4c_digest=$(sudo -n cat "$tmp/phase4c-transaction/input.digest")
 phase4c_context=$(cat "$tmp/phase4c-inventory/context")
 phase4c_uid=$(cat "$tmp/phase4c-inventory/kube-system.uid")
+[ ! -e /run/lock/blazn ] || { printf 'disposable Phase 4C lock path unexpectedly exists\n' >&2; exit 1; }
+phase4c_lock_owned=1
 if sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
   BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \
@@ -139,10 +147,18 @@ else
     exit 1
   fi
 fi
-sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
+if sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
   BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \
-  "$phase4c_root/with-live-lock.sh" "$phase4c_root/canary.sh" "$tmp/phase4c-transaction"
+  BLAZN_PHASE4C_FAIL_AFTER=canary-ready BLAZN_PHASE4C_DISPOSABLE_TEST=true \
+  "$phase4c_root/with-live-lock.sh" "$phase4c_root/canary.sh" "$tmp/phase4c-transaction"; then
+  printf 'Phase 4C canary-ready failpoint unexpectedly succeeded\n' >&2
+  exit 1
+else
+  phase4c_fail_code=$?
+  [ "$phase4c_fail_code" -eq 86 ] || { printf 'Phase 4C canary-ready failpoint exited %s\n' "$phase4c_fail_code" >&2; exit 1; }
+  [ "$(sudo -n cat "$tmp/phase4c-transaction/phase")" = canary-ready ]
+fi
 sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
   BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \

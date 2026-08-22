@@ -16,7 +16,10 @@ trap cleanup EXIT HUP INT TERM
 : "${BLAZN_PHASE4C_TRANSACTION_ID:?set the reviewed Phase 4C transaction UUID}"
 case "$BLAZN_PHASE4C_TRANSACTION_ID" in ????????-????-4???-[89ab]???-????????????) ;; *) printf 'invalid Phase 4C transaction UUID\n' >&2; exit 1 ;; esac
 command -v openssl >/dev/null 2>&1 || { printf 'openssl is required\n' >&2; exit 1; }
-case "$BLAZN_SYNTHETIC_IMAGE" in *@sha256:*) ;; *) printf 'synthetic image must be digest pinned\n' >&2; exit 1 ;; esac
+printf '%s\n' "$BLAZN_SYNTHETIC_IMAGE" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/:+-]*@sha256:[0-9a-f]{64}$' || {
+  printf 'synthetic image must be a safely renderable digest-pinned reference\n' >&2
+  exit 1
+}
 
 runtime_trust=qualified-runtime
 runtime_line=''
@@ -78,7 +81,11 @@ for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sa
     "          readOnlyRootFilesystem: true" >>"$init_containers"
 done
 sed "s|BLAZN_EXISTING_CLUSTER_QUEUE|$BLAZN_EXISTING_CLUSTER_QUEUE|g" "$ROOT/blazn-poc.yaml.in" >"$output/blazn-poc.yaml"
-sed -e "s|BLAZN_RUNTIME_ADMISSION_EXPRESSION|$runtime_admission|g" -e "s|BLAZN_CREATE_PRINCIPAL|$create_principal|g" -e "s|BLAZN_TRANSACTION_ID|$BLAZN_PHASE4C_TRANSACTION_ID|g" "$ROOT/controller-boundary.yaml.in" >"$output/controller-boundary.yaml"
+sed -e "s|BLAZN_RUNTIME_ADMISSION_EXPRESSION|$runtime_admission|g" \
+  -e "s|BLAZN_SYNTHETIC_IMAGE|$BLAZN_SYNTHETIC_IMAGE|g" \
+  -e "s|BLAZN_CREATE_PRINCIPAL|$create_principal|g" \
+  -e "s|BLAZN_TRANSACTION_ID|$BLAZN_PHASE4C_TRANSACTION_ID|g" \
+  "$ROOT/controller-boundary.yaml.in" >"$output/controller-boundary.yaml"
 sed -e "s|BLAZN_TLS_CERT|$cert_b64|g" -e "s|BLAZN_TLS_KEY|$key_b64|g" -e "s|BLAZN_TRANSACTION_ID|$BLAZN_PHASE4C_TRANSACTION_ID|g" "$ROOT/bootstrap.yaml.in" |
   awk -v init="$init_containers" '$0 == "BLAZN_BOOTSTRAP_INIT_CONTAINERS" { while ((getline line < init) > 0) print line; close(init); next } { print }' >"$output/bootstrap.yaml"
 sed \

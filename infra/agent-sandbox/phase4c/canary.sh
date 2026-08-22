@@ -139,6 +139,8 @@ while :; do
       phase4c_write_phase "$transaction" controller-ready; phase=controller-ready ;;
     controller-ready)
       sed 's/namespace: blazn-poc/namespace: default/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/outside-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a Sandbox outside blazn-poc\n' >&2; exit 1; fi
+      sed 's/name: phase4c-canary/name: phase4c-near-miss/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/wrong-name-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a differently named Sandbox\n' >&2; exit 1; fi
+      sed 's/sleep 3600/sleep 3599/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/wrong-command-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a different canary command\n' >&2; exit 1; fi
       phase4c_write_phase "$transaction" canary-intent; phase=canary-intent ;;
     canary-intent)
       assert_absent_or_owned sandbox phase4c-canary blazn-poc

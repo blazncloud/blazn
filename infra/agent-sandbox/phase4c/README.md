@@ -61,8 +61,10 @@ the unique transaction annotation and captures or rechecks every owned UID.
 Deletes use Kubernetes `DeleteOptions.preconditions.uid` through a private
 root-only Unix-socket proxy; a same-name replacement is never deleted. The
 namespace scan rejects unowned durable objects before rollback. Disposable
-tests crash at a journal failpoint, resume the persisted phase, inspect the
-exact UID-precondition request, and exercise pre-mutation rollback.
+tests crash after controller installation and resume the persisted phase, then
+crash again with the canary Ready and prove direct rollback removes that canary
+while its controller can still clear finalizers. They also inspect the exact
+UID-precondition request and exercise pre-mutation rollback.
 
 ## Serialized live runbook
 
