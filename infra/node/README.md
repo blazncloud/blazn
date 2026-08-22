@@ -20,4 +20,20 @@ on that post-migration gate.
 
 The control-plane ownership receipt stores only SHA-256 digests and key IDs.
 Backups bind their metadata to the canonical digest of that receipt section;
-no Node broker secret is copied into backup evidence.
+no Node broker secret is copied into backup evidence. A restore qualification
+must be supplied the matching ownership receipt and a separately protected key
+inventory containing the database URL, enrollment HMAC key, and join-credential
+key. Restore fails before creating a database when metadata, receipt, or key
+digests differ, because encrypted join issuances are not recoverable without the
+exact AES key generation.
+
+Fresh and upgrade secret creation share a journaled state machine. Every file is
+written to a unique temporary tree, fsynced, validated for length/ownership/mode,
+and atomically published. The live upgrade also backs up the exact environment,
+build receipt, source/config bindings, and ownership receipt before modifying
+them. It writes the Compose secrets-root setting and reconciles the build and
+config receipt itself, so systemd does not depend on a manual environment edit.
+Rollback is a crash-resumable journal: database grants and owned dependencies
+are cleared transactionally before the role is dropped, secrets are moved to a
+recoverable receipt-bound location, and the prior environment/build/ownership
+inputs are atomically restored.

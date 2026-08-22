@@ -31,6 +31,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=runtime_password="$runtime_password" \
   --set=node_broker_password="$node_broker_password" \
   --set=database_name="$POSTGRES_DB" <<'SQL'
+BEGIN;
 CREATE ROLE blazn_migration
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
   PASSWORD :'migration_password';
@@ -55,4 +56,7 @@ GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
 GRANT USAGE ON SCHEMA public TO blazn_runtime;
 GRANT USAGE ON SCHEMA public TO blazn_bootstrap;
 GRANT USAGE ON SCHEMA public TO blazn_node_broker;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+COMMIT;
 SQL

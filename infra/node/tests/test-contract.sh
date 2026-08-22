@@ -42,8 +42,18 @@ grep -F 'GRANT CONNECT ON DATABASE :"database_name" TO blazn_node_broker' "$M2_R
 grep -F 'GRANT USAGE ON SCHEMA public TO blazn_node_broker' "$M2_ROOT/postgres-init/01-roles.sh" >/dev/null
 grep -F 'nodeBroker' "$M2_ROOT/ownership-receipt.schema.json" >/dev/null
 grep -F 'nodeBrokerReceiptDigest' "$M2_ROOT/scripts/backup.sh" >/dev/null
-grep -F 'migration 004 is applied; automatic prerequisite rollback is forbidden' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
+grep -F 'Node migrations are applied; automatic prerequisite rollback is forbidden' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
+grep -F 'REASSIGN OWNED BY blazn_node_broker TO blazn_migration' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
+for service in node-migration-preflight node-broker-verify; do
+  body=$(awk -v marker="  $service:" '$0==marker {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
+  printf '%s\n' "$body" | grep -F 'user: "999:999"' >/dev/null
+  printf '%s\n' "$body" | grep -F 'read_only: true' >/dev/null
+done
 
 for script in "$NODE_ROOT"/scripts/*.sh "$NODE_ROOT"/tests/*.sh; do sh -n "$script"; done
 jq empty "$NODE_ROOT"/*.schema.json "$M2_ROOT/ownership-receipt.schema.json"
+node_schema_id=$(jq -er '."$id"' "$NODE_ROOT/node-broker-receipt.schema.json")
+[ "$(jq -er '.properties.nodeBroker."$ref"' "$M2_ROOT/ownership-receipt.schema.json")" = "$node_schema_id" ]
+[ "$(jq -er '.properties.nodeBroker."$ref"' "$NODE_ROOT/node-broker-upgrade-receipt.schema.json")" = "$node_schema_id" ]
+python3 "$TEST_DIR/test-schemas.py"
 printf 'Node infrastructure contract tests passed\n'

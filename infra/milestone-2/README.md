@@ -99,7 +99,7 @@ systemctl enable --now blazn-control-plane.service
 health, migration, restart-idempotent bootstrap and object initialization, S3
 checksum, restart, auth, and revocation tests
 with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-id>
-restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host only
+restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id> <ownership-receipt> <node-key-inventory>  # isolated host only
 ```
 
 For an existing installation or reviewed source update, run

@@ -8,44 +8,108 @@ M2_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIR/../../milestone-2" && pwd)
 
 [ "$(id -u)" -eq 0 ] || die "Node infrastructure rollback must run as root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "Node infrastructure rollback must run through the control-plane lock"
-require_command docker
-require_command jq
-require_command sha256sum
+for command_name in docker jq sha256sum sync; do require_command "$command_name"; done
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 
 ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
 MAIN_RECEIPT=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
+BUILD_RECEIPT=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
 UPGRADE_RECEIPT=${BLAZN_NODE_BROKER_UPGRADE_RECEIPT:-/var/lib/blazn/ownership/node-broker-upgrade.json}
+CREATE_JOURNAL=${BLAZN_NODE_BROKER_CREATE_JOURNAL:-/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json}
+NODE_ROOT=/etc/blazn/node-broker
+RETAIN_PARENT=/var/lib/blazn/ownership
+if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ]; then
+  NODE_ROOT=${BLAZN_NODE_INFRA_TEST_NODE_ROOT:?test Node root is required}
+  CREATE_JOURNAL=${BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL:?test create journal is required}
+  RETAIN_PARENT=${BLAZN_NODE_INFRA_TEST_RETAIN_PARENT:?test retention parent is required}
+fi
+
 assert_regular_file_owned_mode "$UPGRADE_RECEIPT" 0 600
-phase=$(jq -er '.phase' "$UPGRADE_RECEIPT")
-[ "$phase" = receipt-bound ] || die "rollback requires a receipt-bound Node infrastructure upgrade"
-backup=$(jq -er '.mainReceipt.backupPath' "$UPGRADE_RECEIPT")
-[ "$(jq -er '.mainReceipt.backupDigest' "$UPGRADE_RECEIPT")" = "sha256:$(sha256_file "$backup")" ] || die "main receipt rollback backup digest changed"
+jq -e '.schemaVersion=="blazn.dev/node-broker-upgrade/v2" and .owner=="blazn-poc"' "$UPGRADE_RECEIPT" >/dev/null || die "Node upgrade receipt is invalid"
+phase=$(jq -er .phase "$UPGRADE_RECEIPT")
+case "$phase" in complete|rollback-started|role-removed|secrets-retained|environment-restored|build-restored|main-restored) ;; rolled-back) printf 'Node broker prerequisite rollback is already complete\n'; exit 0 ;; *) die "rollback requires a completed or recovering Node upgrade" ;; esac
 
+sync_path() { sync -f "$1"; }
+write_phase() {
+  next=$1; retained=$2; tmp=$UPGRADE_RECEIPT.tmp.$$
+  jq --arg phase "$next" --arg retained "$retained" --arg updatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.phase=$phase | .rollback.retainedPath=$retained | .updatedAt=$updatedAt' "$UPGRADE_RECEIPT" >"$tmp"
+  chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$UPGRADE_RECEIPT"; sync_path "$(dirname -- "$UPGRADE_RECEIPT")"
+}
+test_fault() { [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ] || return 0; [ "${BLAZN_NODE_ROLLBACK_TEST_FAIL_AFTER:-}" != "$1" ] || die "injected rollback fault after $1"; }
+restore_file() {
+  backup=$1; expected=$2; target=$3
+  [ "$expected" = "sha256:$(sha256_file "$backup")" ] || die "rollback backup digest changed: $backup"
+  tmp=$target.tmp.$$; cp --preserve=mode,timestamps -- "$backup" "$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$target"; sync_path "$(dirname -- "$target")"
+}
+
+if [ "$phase" = complete ]; then
+  correlation=${BLAZN_CORRELATION_ID:-manual}
+  case "$correlation" in ''|*[!a-zA-Z0-9._-]*) die "rollback correlation ID is invalid" ;; esac
+  retained=$RETAIN_PARENT/node-broker-rollback-$correlation
+  [ ! -e "$retained" ] || die "rollback retention target already exists"
+  tmp=$UPGRADE_RECEIPT.tmp.$$
+  jq --arg retained "$retained" --arg startedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.phase="rollback-started" | .rollback={retainedPath:$retained,startedAt:$startedAt}' "$UPGRADE_RECEIPT" >"$tmp"
+  chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$UPGRADE_RECEIPT"; sync_path "$(dirname -- "$UPGRADE_RECEIPT")"; phase=rollback-started; test_fault rollback-started
+else retained=$(jq -er .rollback.retainedPath "$UPGRADE_RECEIPT"); fi
+case "$retained" in "$RETAIN_PARENT"/node-broker-rollback-*) ;; *) die "rollback retention target escaped its reviewed parent" ;; esac
+
+if [ -f "$BUILD_RECEIPT" ]; then CONTROL_API_IMAGE=$(jq -er .image "$BUILD_RECEIPT"); else CONTROL_API_IMAGE=blazn-control-api:rollback-placeholder; fi
+export CONTROL_API_IMAGE BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_ROOT/secrets"
 compose() { docker compose -f "$M2_ROOT/compose.yaml" --env-file "$ENV_FILE" "$@"; }
-applied=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from schema_migrations where version='004_nodes.sql'")
-[ "$applied" = 0 ] || die "migration 004 is applied; automatic prerequisite rollback is forbidden"
+applied=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from schema_migrations where version in ('004_nodes.sql','005_node_broker_security.sql')")
+[ "$applied" = 0 ] || die "Node migrations are applied; automatic prerequisite rollback is forbidden"
 
-node_root=/etc/blazn/node-broker
-node_secrets=$node_root/secrets
-assert_directory_owned_mode "$node_root" 0 700
-assert_directory_owned_mode "$node_secrets" 0 700
-for name in database-url enrollment-hmac-v1 join-credential-v1; do
-  expected=$(jq -er --arg name "$name" '.nodeBroker.digests[$name]' "$UPGRADE_RECEIPT")
-  [ "$expected" = "sha256:$(sha256_file "$node_secrets/$name")" ] || die "installed Node broker secret differs from rollback receipt: $name"
-done
+if [ "$phase" = rollback-started ]; then
+  role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")
+  if [ "$role_count" = 1 ]; then
+    cat_sql='BEGIN;
+REASSIGN OWNED BY blazn_node_broker TO blazn_migration;
+DROP OWNED BY blazn_node_broker;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM blazn_node_broker;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM blazn_node_broker;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM blazn_node_broker;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM blazn_node_broker;
+REVOKE ALL PRIVILEGES ON DATABASE blazn FROM blazn_node_broker;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON TABLES FROM blazn_node_broker;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON SEQUENCES FROM blazn_node_broker;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_node_broker;
+DROP ROLE blazn_node_broker;
+COMMIT;'
+    printf '%s\n' "$cat_sql" | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+  elif [ "$role_count" != 0 ]; then die "could not determine broker role state"; fi
+  write_phase role-removed "$retained"; phase=role-removed; test_fault role-removed
+fi
 
-retained=/var/lib/blazn/ownership/node-broker-rollback-${BLAZN_CORRELATION_ID:-manual}
-case "$retained" in /var/lib/blazn/ownership/node-broker-rollback-[a-zA-Z0-9._-]*) ;; *) die "rollback correlation ID is invalid" ;; esac
-[ ! -e "$retained" ] || die "rollback retention target already exists"
-printf 'DROP ROLE blazn_node_broker;\n' | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
-mv -- "$node_root" "$retained"
-tmp=$MAIN_RECEIPT.tmp.$$
-cp --preserve=mode,timestamps -- "$backup" "$tmp"
-chmod 0600 "$tmp"
-mv -- "$tmp" "$MAIN_RECEIPT"
-tmp=$UPGRADE_RECEIPT.tmp.$$
-jq --arg rolledBackAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg retained "$retained" '.phase="rolled-back" | .rolledBackAt=$rolledBackAt | .retainedSecretsPath=$retained' "$UPGRADE_RECEIPT" >"$tmp"
-chmod 0600 "$tmp"
-mv -- "$tmp" "$UPGRADE_RECEIPT"
-printf 'Node broker prerequisites rolled back; secrets retained recoverably at %s\n' "$retained"
+if [ "$phase" = role-removed ]; then
+  if [ -d "$NODE_ROOT" ]; then inventory=$NODE_ROOT/secrets; else inventory=$retained/secrets; fi
+  for name in database-url enrollment-hmac-v1 join-credential-v1; do
+    expected=$(jq -er --arg name "$name" '.nodeBroker.digests[$name]' "$UPGRADE_RECEIPT")
+    [ "$expected" = "sha256:$(sha256_file "$inventory/$name")" ] || die "installed Node broker secret differs from rollback receipt: $name"
+  done
+  if [ -d "$NODE_ROOT" ] && [ ! -e "$retained" ]; then mv -- "$NODE_ROOT" "$retained"; sync_path "$RETAIN_PARENT"; elif [ -d "$retained" ] && [ ! -e "$NODE_ROOT" ]; then :; else die "secret retention transition is ambiguous"; fi
+  if [ -f "$CREATE_JOURNAL" ]; then mv -- "$CREATE_JOURNAL" "$retained/secret-create-journal.json"; sync_path "$(dirname -- "$CREATE_JOURNAL")"; fi
+  write_phase secrets-retained "$retained"; phase=secrets-retained; test_fault secrets-retained
+fi
+
+if [ "$phase" = secrets-retained ]; then
+  cp --preserve=mode,timestamps -- "$ENV_FILE" "$retained/control-plane.env.after"; chmod 0600 "$retained/control-plane.env.after"; sync_path "$retained/control-plane.env.after"
+  restore_file "$(jq -er .inputs.environment.backupPath "$UPGRADE_RECEIPT")" "$(jq -er .inputs.environment.digest "$UPGRADE_RECEIPT")" "$ENV_FILE"
+  write_phase environment-restored "$retained"; phase=environment-restored; test_fault environment-restored
+fi
+if [ "$phase" = environment-restored ]; then
+  prior_present=$(jq -er .inputs.buildReceipt.present "$UPGRADE_RECEIPT")
+  if [ -e "$BUILD_RECEIPT" ]; then cp --preserve=mode,timestamps -- "$BUILD_RECEIPT" "$retained/control-api-build.after.json"; chmod 0600 "$retained/control-api-build.after.json"; sync_path "$retained/control-api-build.after.json"; fi
+  if [ "$prior_present" = true ]; then restore_file "$(jq -er .inputs.buildReceipt.backupPath "$UPGRADE_RECEIPT")" "$(jq -er .inputs.buildReceipt.digest "$UPGRADE_RECEIPT")" "$BUILD_RECEIPT"; elif [ -e "$BUILD_RECEIPT" ]; then mv -- "$BUILD_RECEIPT" "$retained/control-api-build.created.json"; sync_path "$(dirname -- "$BUILD_RECEIPT")"; fi
+  write_phase build-restored "$retained"; phase=build-restored; test_fault build-restored
+fi
+if [ "$phase" = build-restored ]; then
+  cp --preserve=mode,timestamps -- "$MAIN_RECEIPT" "$retained/control-plane.after.json"; chmod 0600 "$retained/control-plane.after.json"; sync_path "$retained/control-plane.after.json"
+  restore_file "$(jq -er .inputs.mainReceipt.backupPath "$UPGRADE_RECEIPT")" "$(jq -er .inputs.mainReceipt.digest "$UPGRADE_RECEIPT")" "$MAIN_RECEIPT"
+  write_phase main-restored "$retained"; phase=main-restored; test_fault main-restored
+fi
+if [ "$phase" = main-restored ]; then
+  tmp=$UPGRADE_RECEIPT.tmp.$$
+  jq --arg rolledBackAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.phase="rolled-back" | .rollback.rolledBackAt=$rolledBackAt' "$UPGRADE_RECEIPT" >"$tmp"
+  chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$UPGRADE_RECEIPT"; sync_path "$(dirname -- "$UPGRADE_RECEIPT")"; phase=rolled-back; test_fault rolled-back
+fi
+printf 'Node broker prerequisites rolled back; recovery evidence retained at %s\n' "$retained"

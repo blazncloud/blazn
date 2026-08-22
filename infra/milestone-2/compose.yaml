@@ -168,6 +168,8 @@ services:
 
   node-migration-preflight:
     image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    user: "999:999"
+    read_only: true
     entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "pre-migration"]
     environment:
       NODE_BROKER_DATABASE_URL_FILE: /run/secrets/node_broker_database_url
@@ -182,6 +184,8 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -197,6 +201,8 @@ services:
 
   node-broker-verify:
     image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    user: "999:999"
+    read_only: true
     entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "post-migration"]
     environment:
       NODE_BROKER_DATABASE_URL_FILE: /run/secrets/node_broker_database_url
@@ -211,6 +217,8 @@ services:
       api-migrate:
         condition: service_completed_successfully
     restart: "no"
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999
     security_opt:
       - no-new-privileges:true
     cap_drop:

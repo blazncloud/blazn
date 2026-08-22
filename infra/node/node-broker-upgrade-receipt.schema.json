@@ -1,28 +1,60 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.dev/schemas/poc/node-broker-upgrade-receipt-v1.json",
+  "$id": "https://blazn.dev/schemas/poc/node-broker-upgrade-receipt-v2.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "mainReceipt", "nodeBroker"],
+  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "inputs", "nodeBroker"],
   "properties": {
-    "schemaVersion": { "const": "blazn.dev/node-broker-upgrade/v1" },
+    "schemaVersion": { "const": "blazn.dev/node-broker-upgrade/v2" },
     "owner": { "const": "blazn-poc" },
     "host": { "type": "string", "minLength": 1 },
-    "phase": { "enum": ["staged", "secrets-installed", "role-ready", "receipt-bound", "rolled-back"] },
+    "phase": { "enum": ["inputs-backed-up", "role-ready", "environment-bound", "build-ready", "complete", "rollback-started", "role-removed", "secrets-retained", "environment-restored", "build-restored", "main-restored", "rolled-back"] },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" },
-    "mainReceipt": {
+    "inputs": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "backupPath", "backupDigest"],
+      "required": ["mainReceipt", "environment", "buildReceipt", "sourceDigest", "configDigest"],
       "properties": {
-        "path": { "type": "string", "minLength": 1 },
-        "backupPath": { "type": "string", "minLength": 1 },
-        "backupDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        "mainReceipt": { "$ref": "#/$defs/fileBackup" },
+        "environment": { "$ref": "#/$defs/fileBackup" },
+        "buildReceipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "backupPath", "digest", "present"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "backupPath": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$" },
+            "present": { "type": "boolean" }
+          }
+        },
+        "sourceDigest": { "type": "string" },
+        "configDigest": { "type": "string" }
       }
     },
     "nodeBroker": { "$ref": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json" },
-    "rolledBackAt": { "type": "string", "format": "date-time" },
-    "retainedSecretsPath": { "type": "string", "minLength": 1 }
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retainedPath", "startedAt"],
+      "properties": {
+        "retainedPath": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "rolledBackAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "fileBackup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "backupPath", "digest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "backupPath": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^(|sha256:[a-f0-9]{64})$" }
+      }
+    }
   }
 }

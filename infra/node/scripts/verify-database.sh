@@ -31,6 +31,12 @@ export PGHOST=postgres PGPORT=5432 PGDATABASE=blazn PGUSER=blazn_node_broker PGP
 query() {
   psql -X -v ON_ERROR_STOP=1 -Atqc "$1"
 }
+assert_empty() {
+  sql=$1
+  label=$2
+  result=$(query "$sql")
+  [ -z "$result" ] || { printf 'node broker has unexpected effective %s privileges: %s\n' "$label" "$result" >&2; exit 1; }
+}
 
 identity=$(query "select current_user, rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls from pg_roles where rolname = current_user")
 [ "$identity" = 'blazn_node_broker|t|f|f|f|f|f' ] || {
@@ -62,6 +68,19 @@ identity=$(query "select current_user, rolcanlogin, rolsuper, rolcreatedb, rolcr
   exit 1
 }
 
+assert_empty "select datname from pg_database where datname not in ('template0','template1','postgres','blazn') and datallowconn and
+  (has_database_privilege(current_user, oid, 'CONNECT') or has_database_privilege(current_user, oid, 'CREATE') or has_database_privilege(current_user, oid, 'TEMP')) order by datname" database
+assert_empty "select nspname from pg_namespace where nspname !~ '^pg_' and nspname <> 'information_schema' and nspname <> 'public' and
+  (has_schema_privilege(current_user, oid, 'USAGE') or has_schema_privilege(current_user, oid, 'CREATE')) order by nspname" schema
+assert_empty "select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
+  where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind='S' and
+  (has_sequence_privilege(current_user,c.oid,'USAGE') or has_sequence_privilege(current_user,c.oid,'SELECT') or has_sequence_privilege(current_user,c.oid,'UPDATE')) order by 1" sequence
+assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+  where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+assert_empty "select pg_get_userbyid(d.defaclrole) || ':' || coalesce(n.nspname,'*') || ':' || d.defaclobjtype || ':' || coalesce(r.rolname,'PUBLIC') || ':' || x.privilege_type
+  from pg_default_acl d left join pg_namespace n on n.oid=d.defaclnamespace cross join lateral aclexplode(d.defaclacl) x left join pg_roles r on r.oid=x.grantee
+  where (x.grantee=0 or x.grantee=(select oid from pg_roles where rolname=current_user)) order by 1" default
+
 if [ "$mode" = post-migration ]; then
   expected=$(query "select string_agg(table_name || '=' ||
     has_table_privilege(current_user, format('public.%I', table_name), 'SELECT') || ',' ||
@@ -81,6 +100,16 @@ if [ "$mode" = post-migration ]; then
     printf 'node broker table privilege matrix differs from migration 004: %s\n' "$expected" >&2
     exit 1
   }
+  assert_empty "with expected(name) as (values ('nodes'),('node_enrollments'),('node_install_plans'),('node_join_issuances'))
+    select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace left join expected e on e.name=c.relname
+    where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind in ('r','p','v','m','f') and e.name is null and
+      (has_table_privilege(current_user,c.oid,'SELECT') or has_table_privilege(current_user,c.oid,'INSERT') or has_table_privilege(current_user,c.oid,'UPDATE') or
+       has_table_privilege(current_user,c.oid,'DELETE') or has_table_privilege(current_user,c.oid,'TRUNCATE') or has_table_privilege(current_user,c.oid,'REFERENCES') or has_table_privilege(current_user,c.oid,'TRIGGER')) order by 1" relation
+else
+  assert_empty "select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
+    where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind in ('r','p','v','m','f') and
+      (has_table_privilege(current_user,c.oid,'SELECT') or has_table_privilege(current_user,c.oid,'INSERT') or has_table_privilege(current_user,c.oid,'UPDATE') or
+       has_table_privilege(current_user,c.oid,'DELETE') or has_table_privilege(current_user,c.oid,'TRUNCATE') or has_table_privilege(current_user,c.oid,'REFERENCES') or has_table_privilege(current_user,c.oid,'TRIGGER')) order by 1" relation
 fi
 
 printf 'node broker %s database verification passed\n' "$mode"

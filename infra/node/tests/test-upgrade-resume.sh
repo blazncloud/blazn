@@ -4,6 +4,7 @@ set -eu
 TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 NODE_ROOT=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 UPGRADE=$NODE_ROOT/scripts/upgrade-control-plane.sh
+ROLLBACK=$NODE_ROOT/scripts/rollback-control-plane.sh
 command -v sudo >/dev/null 2>&1 || { printf 'Node upgrade resume test skipped: sudo unavailable\n'; exit 0; }
 sudo -n true >/dev/null 2>&1 || { printf 'Node upgrade resume test skipped: passwordless sudo unavailable\n'; exit 0; }
 
@@ -23,8 +24,9 @@ case "$*" in
   "compose "*" ps -q postgres") printf 'synthetic-postgres\n' ;;
   "inspect --format "*) printf 'blazn-m2/postgres/running\n' ;;
   *"select count(*) from pg_roles where rolname='blazn_node_broker'"*) if [ -f "$FAKE_ROLE_STATE" ]; then printf '1\n'; else printf '0\n'; fi ;;
+  *"select count(*) from schema_migrations where version in"*) printf '0\n' ;;
   *"select count(*) from pg_auth_members"*) printf '0\n' ;;
-  "compose "*" exec -T postgres psql "*) body=$(cat); case "$body" in *blazn_node_broker*) : >"$FAKE_ROLE_STATE" ;; esac ;;
+  "compose "*" exec -T postgres psql "*) body=$(cat); [ "${FAKE_SQL_FAIL:-0}" != 1 ] || exit 88; case "$body" in *"DROP ROLE blazn_node_broker"*) rm -f "$FAKE_ROLE_STATE" ;; *blazn_node_broker*) : >"$FAKE_ROLE_STATE" ;; esac ;;
   "compose "*" run --rm -T node-migration-preflight") [ -f "$FAKE_ROLE_STATE" ] ;;
   *) printf 'unexpected synthetic docker call: %s\n' "$*" >&2; exit 97 ;;
 esac
@@ -44,27 +46,54 @@ fixture() {
   printf '%s\n' "$root"
 }
 
+run_rollback() {
+  root=$1
+  fail_after=${2:-}
+  sql_fail=${3:-0}
+  sudo env \
+    PATH="$root/bin:$PATH" FAKE_ROLE_STATE="$root/role-ready" BLAZN_FENCING_TOKEN=12 BLAZN_CORRELATION_ID=rollback \
+    BLAZN_NODE_INFRA_TEST_MODE=1 BLAZN_NODE_ROLLBACK_TEST_FAIL_AFTER="$fail_after" \
+    BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
+    BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL="$root/ownership/secret-create.json" \
+    BLAZN_NODE_INFRA_TEST_RETAIN_PARENT="$root/ownership" \
+    BLAZN_NODE_BROKER_CREATE_JOURNAL="$root/ownership/secret-create.json" \
+    BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" \
+    BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
+    BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$root/ownership/node-broker-upgrade.json" \
+    BLAZN_NODE_BROKER_UPGRADE_BACKUP_ROOT="$root/ownership/upgrade-inputs" \
+    BLAZN_CONTROL_API_BUILD_RECEIPT="$root/ownership/no-build-receipt" \
+    "$ROLLBACK"
+}
+
 run_upgrade() {
   root=$1
   fail_after=${2:-}
   sudo env \
     PATH="$root/bin:$PATH" \
     FAKE_ROLE_STATE="$root/role-ready" \
+    FAKE_SQL_FAIL="$sql_fail" \
     BLAZN_FENCING_TOKEN=11 \
     BLAZN_NODE_INFRA_TEST_MODE=1 \
     BLAZN_NODE_INFRA_TEST_FAIL_AFTER="$fail_after" \
     BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
-    BLAZN_NODE_INFRA_TEST_STAGE="$root/etc/node-broker-staging" \
+    BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL="$root/ownership/secret-create.json" \
     BLAZN_NODE_BROKER_SECRETS_ROOT="$root/etc/node-broker/secrets" \
     BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" \
     BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
     BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$root/ownership/node-broker-upgrade.json" \
-    BLAZN_NODE_BROKER_MAIN_RECEIPT_BACKUP="$root/ownership/control-plane.before.json" \
+    BLAZN_NODE_BROKER_UPGRADE_BACKUP_ROOT="$root/ownership/upgrade-inputs" \
     BLAZN_CONTROL_API_BUILD_RECEIPT="$root/ownership/no-build-receipt" \
     "$UPGRADE"
 }
 
-for fault in secrets-installed role-ready receipt-bound; do
+sql_root=$(fixture sql-transaction)
+if run_upgrade "$sql_root" '' 1 >"$sql_root/sql-first.out" 2>"$sql_root/sql-first.err"; then printf 'failing SQL role transaction unexpectedly passed\n' >&2; exit 1; fi
+[ ! -e "$sql_root/role-ready" ] || { printf 'failing SQL role transaction left role state\n' >&2; exit 1; }
+sudo jq -e '.phase=="inputs-backed-up"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
+run_upgrade "$sql_root" >"$sql_root/sql-retry.out"
+sudo jq -e '.phase=="complete"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
+
+for fault in secrets-published input-root-created main-backed-up environment-backed-up build-backed-up role-ready environment-bound build-ready complete; do
   root=$(fixture "$fault")
   if run_upgrade "$root" "$fault" >"$root/first.out" 2>"$root/first.err"; then
     printf 'injected fault unexpectedly completed: %s\n' "$fault" >&2
@@ -72,8 +101,9 @@ for fault in secrets-installed role-ready receipt-bound; do
   fi
   grep -F "injected test fault after $fault" "$root/first.err" >/dev/null
   run_upgrade "$root" >"$root/retry.out"
-  sudo jq -e '.phase=="receipt-bound"' "$root/ownership/node-broker-upgrade.json" >/dev/null
+  sudo jq -e '.phase=="complete" and .schemaVersion=="blazn.dev/node-broker-upgrade/v2"' "$root/ownership/node-broker-upgrade.json" >/dev/null
   sudo jq -e '.nodeBroker.schemaVersion=="blazn.dev/node-broker-infra/v1"' "$root/ownership/control-plane.json" >/dev/null
+  sudo grep -Fx 'BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets' "$root/control-plane.env" >/dev/null
   before=$(sudo sha256sum "$root/etc/node-broker/secrets/database-url" "$root/etc/node-broker/secrets/enrollment-hmac-v1" "$root/etc/node-broker/secrets/join-credential-v1")
   run_upgrade "$root" >"$root/idempotent.out"
   after=$(sudo sha256sum "$root/etc/node-broker/secrets/database-url" "$root/etc/node-broker/secrets/enrollment-hmac-v1" "$root/etc/node-broker/secrets/join-credential-v1")
@@ -82,6 +112,19 @@ for fault in secrets-installed role-ready receipt-bound; do
     printf 'upgrade test output exposed secret material\n' >&2
     exit 1
   fi
+done
+
+for fault in rollback-started role-removed secrets-retained environment-restored build-restored main-restored rolled-back; do
+  root=$(fixture "rollback-$fault")
+  run_upgrade "$root" >"$root/upgrade.out"
+  if run_rollback "$root" "$fault" >"$root/rollback-first.out" 2>"$root/rollback-first.err"; then printf 'rollback fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
+  grep -F "injected rollback fault after $fault" "$root/rollback-first.err" >/dev/null
+  run_rollback "$root" >"$root/rollback-retry.out"
+  sudo jq -e '(.nodeBroker|not)' "$root/ownership/control-plane.json" >/dev/null
+  sudo jq -e '.phase=="rolled-back"' "$root/ownership/node-broker-upgrade.json" >/dev/null
+  [ ! -e "$root/etc/node-broker" ] && [ -d "$root/ownership/node-broker-rollback-rollback" ] || { printf 'rollback retention state is invalid\n' >&2; exit 1; }
+  [ ! -e "$root/role-ready" ] || { printf 'rollback retry left database role\n' >&2; exit 1; }
+  [ ! -s "$root/control-plane.env" ] || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
 done
 
 trap - EXIT HUP INT TERM

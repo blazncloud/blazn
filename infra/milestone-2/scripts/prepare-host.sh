@@ -68,6 +68,8 @@ control_api_image_id=$(jq -er .imageId "$CONTROL_API_BUILD_RECEIPT")
 node_database_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/database-url")
 node_enrollment_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/enrollment-hmac-v1")
 node_join_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/join-credential-v1")
+node_creation_journal=/var/lib/blazn/ownership/node-broker-secret-create.json
+node_creation_journal_digest=sha256:$(sha256_file "$node_creation_journal")
 
 config_digest=$(control_plane_config_digest "$ROOT_DIR")
 host=$(hostname)
@@ -93,11 +95,13 @@ jq -cn \
   --arg nodeDatabaseDigest "$node_database_digest" \
   --arg nodeEnrollmentDigest "$node_enrollment_digest" \
   --arg nodeJoinDigest "$node_join_digest" \
+  --arg nodeCreationJournal "$node_creation_journal" \
+  --arg nodeCreationJournalDigest "$node_creation_journal_digest" \
   --argjson postgresPort "${POSTGRES_PORT:-55432}" \
   --argjson s3Port "${S3_PORT:-59000}" \
   --argjson s3ConsolePort "${S3_CONSOLE_PORT:-59001}" \
   --argjson apiPort "${API_PORT:-58080}" \
-  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},nodeBroker:{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:$nodeSecrets,databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest}},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
+  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},nodeBroker:{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:$nodeSecrets,databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
   >"$receipt_tmp"
 chmod 0600 "$receipt_tmp"
 mv -- "$receipt_tmp" "$RECEIPT_PATH"

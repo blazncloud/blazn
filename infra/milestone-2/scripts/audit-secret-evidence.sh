@@ -9,6 +9,8 @@ ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 [ "$(id -u)" -eq 0 ] || die "secret evidence audit must run as root"
 require_command docker
 require_command jq
+require_command base64
+require_command od
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 load_control_api_image "$ROOT_DIR"
 
@@ -54,6 +56,23 @@ for secret_file in /etc/blazn/control-plane/secrets/*; do
       assert_absent "$password" "$(basename -- "$secret_file") password"
       ;;
   esac
+done
+
+node_secrets=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
+assert_directory_owned_mode "$node_secrets" 0 700
+assert_regular_file_owned_mode "$node_secrets/database-url" 0 444
+node_database_url=$(sed -n '1p' "$node_secrets/database-url")
+assert_absent "$node_database_url" "Node broker database URL"
+node_database_password=${node_database_url#*://*:}
+node_database_password=${node_database_password%%@*}
+assert_absent "$node_database_password" "Node broker database password"
+for key_name in enrollment-hmac-v1 join-credential-v1; do
+  key_file=$node_secrets/$key_name
+  assert_regular_file_owned_mode "$key_file" 0 400
+  key_hex=$(od -An -v -tx1 "$key_file" | tr -d ' \n')
+  key_base64=$(base64 -w 0 "$key_file")
+  assert_absent "$key_hex" "$key_name hex"
+  assert_absent "$key_base64" "$key_name base64"
 done
 
 ngrok_token=$(awk '$1 == "authtoken:" { print $2; exit }' /etc/blazn/ngrok/ngrok.yml)

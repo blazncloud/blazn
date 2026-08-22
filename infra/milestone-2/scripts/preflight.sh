@@ -164,11 +164,16 @@ if [ "$MODE" = deploy ]; then
   assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/database-url" 0 444
   assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/enrollment-hmac-v1" 0 400
   assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/join-credential-v1" 0 400
+  node_creation_journal=$(jq -er .nodeBroker.creationJournal.path "$RECEIPT_PATH")
+  case "$node_creation_journal" in /var/lib/blazn/ownership/node-broker-secret-create.json|/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json) ;; *) die "ownership receipt has an unreviewed Node secret-creation journal" ;; esac
+  assert_regular_file_owned_mode "$node_creation_journal" 0 600
   jq -e \
     --arg nodeDatabaseDigest "sha256:$(sha256_file "$NODE_SECRETS_ROOT/database-url")" \
     --arg nodeEnrollmentDigest "sha256:$(sha256_file "$NODE_SECRETS_ROOT/enrollment-hmac-v1")" \
     --arg nodeJoinDigest "sha256:$(sha256_file "$NODE_SECRETS_ROOT/join-credential-v1")" \
-    '.nodeBroker == {schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:"/etc/blazn/node-broker/secrets",databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest}}' \
+    --arg nodeCreationJournal "$node_creation_journal" \
+    --arg nodeCreationJournalDigest "sha256:$(sha256_file "$node_creation_journal")" \
+    '.nodeBroker == {schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:"/etc/blazn/node-broker/secrets",databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}}' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not bind the Node broker prerequisites"
 fi
 
