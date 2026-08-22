@@ -2,6 +2,7 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/common.sh"
 
@@ -102,14 +103,40 @@ done
 if [ "$MODE" = deploy ]; then
   [ "$(id -u)" -eq 0 ] || die "deploy preflight must run as root"
   require_command docker
+  require_command jq
+  require_command sha256sum
   docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is unavailable"
   require_command flock
   [ -d "$DATA_ROOT/postgres" ] || die "prepared PostgreSQL directory is missing"
   [ -d "$DATA_ROOT/objects" ] || die "prepared object directory is missing"
   [ -d "$SECRETS_ROOT" ] || die "prepared secrets directory is missing"
   [ -f "$RECEIPT_PATH" ] || die "ownership receipt is missing"
+  [ "$(stat -c '%u' "$RECEIPT_PATH")" -eq 0 ] || die "ownership receipt must be owned by root"
+  [ "$(stat -c '%a' "$RECEIPT_PATH")" = 600 ] || die "ownership receipt must have mode 0600"
+  config_digest=sha256:$(sha256_file "$ROOT_DIR/compose.yaml")
+  jq -e \
+    --arg host "$(hostname)" \
+    --arg data "$DATA_ROOT" \
+    --arg backup "$BACKUP_ROOT" \
+    --arg secrets "$SECRETS_ROOT" \
+    --arg configDigest "$config_digest" \
+    --arg postgresImage "$POSTGRES_IMAGE" \
+    --arg minioImage "$MINIO_IMAGE" \
+    --arg minioMcImage "$MINIO_MC_IMAGE" \
+    --argjson postgresPort "${POSTGRES_PORT:-55432}" \
+    --argjson s3Port "${S3_PORT:-59000}" \
+    --argjson s3ConsolePort "${S3_CONSOLE_PORT:-59001}" \
+    --argjson apiPort "${API_PORT:-58080}" \
+    '.schemaVersion == "blazn.dev/control-plane-ownership/v1" and
+     .owner == "blazn-poc" and .host == $host and
+     .paths == {data:$data,backup:$backup,secrets:$secrets} and
+     .ports == [$postgresPort,$s3Port,$s3ConsolePort,$apiPort] and
+     .images == [$postgresImage,$minioImage,$minioMcImage] and
+     .configDigest == $configDigest' \
+    "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
   for secret in postgres-password postgres-url s3-access-key s3-secret-key; do
     [ -f "$SECRETS_ROOT/$secret" ] || die "required secret file is missing: $secret"
+    [ "$(stat -c '%u' "$SECRETS_ROOT/$secret")" -eq 0 ] || die "secret file must be owned by root: $secret"
     mode=$(stat -c '%a' "$SECRETS_ROOT/$secret")
     [ "$mode" = 600 ] || die "secret file must have mode 0600: $secret"
   done
