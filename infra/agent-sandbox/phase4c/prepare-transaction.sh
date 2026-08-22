@@ -33,7 +33,7 @@ check_closed() {
   [ -z "$(find "$directory" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" ] || { printf 'input directory contains a link or non-file\n' >&2; exit 1; }
 }
 
-[ -f "$install_bundle" ] && [ ! -L "$install_bundle" ] && [ "$(stat -c '%h' "$install_bundle")" = 1 ] || { printf 'install bundle is unsafe\n' >&2; exit 1; }
+if [ ! -f "$install_bundle" ] || [ -L "$install_bundle" ] || [ "$(stat -c '%h' "$install_bundle")" != 1 ]; then printf 'install bundle is unsafe\n' >&2; exit 1; fi
 check_closed "$fixtures" "$fixture_files"
 check_closed "$pre" "$inventory_files"
 (cd "$pre" && sha256sum -c inventory.sha256 >/dev/null)

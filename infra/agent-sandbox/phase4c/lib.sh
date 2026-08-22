@@ -31,10 +31,10 @@ phase4c_require_mutation_authority() {
     return 1
   }
   lock_id=$(stat -Lc '%d:%i' "/proc/$$/fd/9")
-  [ -n "${BLAZN_LIVE_CLUSTER_LOCK_ID:-}" ] && [ "$lock_id" = "$BLAZN_LIVE_CLUSTER_LOCK_ID" ] || {
+  if [ -z "${BLAZN_LIVE_CLUSTER_LOCK_ID:-}" ] || [ "$lock_id" != "$BLAZN_LIVE_CLUSTER_LOCK_ID" ]; then
     printf 'inherited live-cluster lock inode identity changed\n' >&2
     return 1
-  }
+  fi
   [ "$(stat -Lc '%u:%a:%h' "/proc/$$/fd/9")" = '0:600:1' ] || {
     printf 'inherited live-cluster lock metadata is unsafe\n' >&2
     return 1
@@ -67,10 +67,10 @@ phase4c_write_phase() {
 
 phase4c_verify_transaction() {
   transaction=$1
-  [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' "$transaction")" = '0:700' ] || {
+  if [ ! -d "$transaction" ] || [ -L "$transaction" ] || [ "$(stat -c '%u:%a' "$transaction")" != '0:700' ]; then
     printf 'transaction directory metadata is unsafe\n' >&2
     return 1
-  }
+  fi
   : "${BLAZN_REVIEWED_INPUT_DIGEST:?set the separately reviewed transaction input digest}"
   [ "$(cat "$transaction/input.digest")" = "$BLAZN_REVIEWED_INPUT_DIGEST" ] || { printf 'reviewed input digest mismatch\n' >&2; return 1; }
   (cd "$transaction" && sha256sum -c input.sha256 >/dev/null) || { printf 'sealed transaction input changed\n' >&2; return 1; }

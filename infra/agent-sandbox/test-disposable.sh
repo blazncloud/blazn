@@ -22,6 +22,7 @@ chmod 0700 "$tmp"
 cluster_absence_verified=0
 creation_attempted=0
 cleanup() {
+  if [ -d "$tmp/phase4c-transaction" ]; then sudo -n chown -R "$(id -u):$(id -g)" "$tmp/phase4c-transaction" >/dev/null 2>&1 || true; fi
   if [ -x "$tmp/kind" ] && [ "$cluster_absence_verified" -eq 1 ] && [ "$creation_attempted" -eq 1 ]; then
     if [ "$docker_cmd" = docker ]; then "$tmp/kind" delete cluster --name "$cluster" >/dev/null 2>&1 || true; else sudo "$tmp/kind" delete cluster --name "$cluster" >/dev/null 2>&1 || true; fi
   fi
@@ -123,7 +124,13 @@ if sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   printf 'Phase 4C disposable failpoint unexpectedly succeeded\n' >&2
   exit 1
 else
-  [ "$?" -eq 86 ]
+  phase4c_fail_code=$?
+  if [ "$phase4c_fail_code" -ne 86 ]; then
+    printf 'Phase 4C disposable failpoint exited %s at phase ' "$phase4c_fail_code" >&2
+    sudo -n cat "$tmp/phase4c-transaction/phase" >&2 || true
+    sudo -n find "$tmp/phase4c-transaction/evidence" -maxdepth 1 -type f -print -exec tail -40 {} \; >&2 || true
+    exit 1
+  fi
 fi
 sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
