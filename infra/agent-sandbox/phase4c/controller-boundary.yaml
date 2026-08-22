@@ -1,0 +1,147 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: blazn-agent-sandbox-observer
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  resourceNames:
+  - sandboxclaims.extensions.agents.x-k8s.io
+  - sandboxes.agents.x-k8s.io
+  - sandboxtemplates.extensions.agents.x-k8s.io
+  - sandboxwarmpools.extensions.agents.x-k8s.io
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: blazn-agent-sandbox-observer
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: blazn-agent-sandbox-observer
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-agent-sandbox-system
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["agent-sandbox-webhook-certs"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-agent-sandbox-system
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-agent-sandbox-system
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-agent-sandbox-controller
+  namespace: blazn-poc
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods", "services"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["", "events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes/finalizers", "sandboxes/status"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-agent-sandbox-controller
+  namespace: blazn-poc
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-agent-sandbox-controller
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: blazn-agent-sandbox-boundary
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["agents.x-k8s.io"]
+      apiVersions: ["v1beta1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["sandboxes"]
+      scope: Namespaced
+  validations:
+  - expression: "object.metadata.namespace == 'blazn-poc'"
+    message: "Phase 4C permits Sandbox objects only in blazn-poc"
+  - expression: "has(object.spec.podTemplate.metadata.labels) && object.spec.podTemplate.metadata.labels['kueue.x-k8s.io/queue-name'] == 'blazn-poc'"
+    message: "Sandbox podTemplate must target the blazn-poc LocalQueue"
+  - expression: "object.spec.shutdownPolicy == 'Delete'"
+    message: "Phase 4C Sandbox shutdownPolicy must be Delete"
+  - expression: "object.spec.podTemplate.spec.serviceAccountName == 'blazn-sandbox-runner' && object.spec.podTemplate.spec.automountServiceAccountToken == false"
+    message: "Sandbox Pods must use the tokenless blazn-sandbox-runner identity"
+  - expression: "object.metadata.labels['blazn.dev/runtime-trust'] in ['qualified-runtime', 'orchestration-only']"
+    message: "Sandbox must declare its reviewed runtime trust mode"
+  - expression: "object.metadata.labels['blazn.dev/runtime-trust'] == 'qualified-runtime' ? has(object.spec.podTemplate.spec.runtimeClassName) : (!has(object.spec.podTemplate.spec.runtimeClassName) && object.metadata.annotations['blazn.dev/non-sensitive-poc'] == 'approved')"
+    message: "A qualified runtime is required unless the canary is explicitly approved as non-sensitive orchestration-only input"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: blazn-agent-sandbox-boundary
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+spec:
+  policyName: blazn-agent-sandbox-boundary
+  validationActions: [Deny]

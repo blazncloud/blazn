@@ -1,0 +1,35 @@
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: phase4c-canary
+  namespace: blazn-poc
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+    blazn.dev/runtime-trust: BLAZN_RUNTIME_TRUST
+  annotations:
+    blazn.dev/non-sensitive-poc: BLAZN_NON_SENSITIVE_APPROVAL
+spec:
+  shutdownPolicy: Delete
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: blazn-phase4c
+        kueue.x-k8s.io/queue-name: blazn-poc
+    spec:
+BLAZN_RUNTIME_CLASS_LINE
+      serviceAccountName: blazn-sandbox-runner
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+      - name: main
+        image: BLAZN_SYNTHETIC_IMAGE
+        command: ["sh", "-c", "trap : TERM INT; sleep 3600 & wait"]
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile: {type: RuntimeDefault}
