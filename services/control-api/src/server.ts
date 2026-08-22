@@ -218,7 +218,9 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const session = await authenticate(request);
     await database.query("UPDATE sessions SET revoked_at = now() WHERE id = $1", [session.sessionId]);
     closeStream(session.sessionId);
-    response.writeHead(204, { "cache-control": "no-store" }); return response.end();
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    return;
   }
   if (request.method === "GET" && url.pathname === "/v1/auth/devices") {
     const session = await authenticate(request);
@@ -232,7 +234,9 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     if (!result.rowCount) throw new HttpError(404, "device_not_found", "device was not found");
     const revoked = await database.query<{ id: string }>("UPDATE sessions SET revoked_at = now() WHERE device_id = $1 RETURNING id", [deviceMatch[1]]);
     for (const row of revoked.rows) closeStream(row.id);
-    response.writeHead(204, { "cache-control": "no-store" }); return response.end();
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    return;
   }
   if (request.method === "GET" && url.pathname === "/v1/events") {
     const session = await authenticate(request);
