@@ -218,7 +218,8 @@ func validateOpenAPI(document map[string]any) error {
 	if atString(document, "components", "schemas", "NodeCapability", "properties", "localModels", "items", "$ref") != "#/components/schemas/LocalModelCapability" || at(document, "components", "schemas", "LocalModelCapability") == nil {
 		return fmt.Errorf("LocalModelCapability must be a top-level component referenced by NodeCapability")
 	}
-	if len(at(document, "components", "schemas", "CreateNodeOperationRequest", "allOf").([]any)) != 6 {
+	discriminators, ok := at(document, "components", "schemas", "CreateNodeOperationRequest", "allOf").([]any)
+	if !ok || len(discriminators) != 6 {
 		return fmt.Errorf("node operation discriminators changed")
 	}
 	return nil
