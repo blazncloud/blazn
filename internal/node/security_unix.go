@@ -47,21 +47,28 @@ func ensurePrivateDirectory(path string, uid int64) error {
 }
 
 func lockInstallFile(path string) (func(), error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	var before os.FileInfo
+	before, err := os.Lstat(path)
+	if err == nil {
+		owner, nlink, ok := fileOwner(before)
+		if !ok || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || owner != currentUID() || nlink != 1 || before.Mode().Perm() != 0600 {
+			return nil, errors.New("install lock path is unsafe")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, err
 	}
-	if err := file.Chmod(0600); err != nil {
-		file.Close()
-		return nil, err
-	}
+	file := os.NewFile(uintptr(fd), path)
 	info, err := file.Stat()
 	if err != nil {
 		file.Close()
 		return nil, err
 	}
 	owner, nlink, ok := fileOwner(info)
-	if !ok || owner != currentUID() || nlink != 1 || info.Mode().Perm() != 0600 {
+	if !ok || owner != currentUID() || nlink != 1 || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || (before != nil && !os.SameFile(before, info)) {
 		file.Close()
 		return nil, errors.New("install lock file is unsafe")
 	}

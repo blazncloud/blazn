@@ -150,7 +150,6 @@ func TestInstallLockAndPrivateStateRejectConcurrentOrLinkedOwners(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
 	if _, err := store.AcquireInstallLock(); err == nil {
 		t.Fatal("concurrent install lock acquired")
 	}
@@ -164,6 +163,52 @@ func TestInstallLockAndPrivateStateRejectConcurrentOrLinkedOwners(t *testing.T) 
 	}
 	if _, err := identityStore.LoadOrCreate(); err == nil {
 		t.Fatal("hard-linked identity accepted")
+	}
+	release()
+	unsafeRoot := filepath.Join(testRoot(t), "unsafe-state")
+	if err := os.MkdirAll(unsafeRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(unsafeRoot, "target")
+	if err := os.WriteFile(target, []byte("unchanged"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(unsafeRoot, ".install.lock")); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(target)
+	if _, err := (FileStateStore{Root: unsafeRoot}).AcquireInstallLock(); err == nil {
+		t.Fatal("symlink install lock accepted")
+	}
+	after, _ := os.Stat(target)
+	value, _ := os.ReadFile(target)
+	if before.Mode() != after.Mode() || string(value) != "unchanged" {
+		t.Fatal("symlink target was modified before lock validation")
+	}
+}
+
+func TestActiveReceiptReplayRejectsLiveDriftAndRollbackSymlink(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	mode, uid, gid := int64(0600), int64(0), int64(0)
+	prior := PriorState{State: "preexisting_exact", Material: client.NodeRollbackMaterial{Kind: "metadata_snapshot", Locator: "receipt-backup://55555555-5555-4555-8555-555555555555", Digest: "sha256:" + testHash, Mode: &mode, UID: &uid, GID: &gid}}
+	platform := &mockPlatform{failAt: -1, prior: &prior}
+	state := &memoryState{}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }
+	if _, err := installer.Install(context.Background(), plan, meta, identity); err != nil {
+		t.Fatal(err)
+	}
+	platform.verifyErr = errors.New("live service drift")
+	if _, err := installer.Install(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("live drift accepted as idempotent install")
+	}
+	platform.verifyErr = nil
+	installer.verifyNoSymlink = func(string) error { return errors.New("rollback path traverses symlink") }
+	if _, err := installer.Install(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("symlinked rollback material accepted on receipt replay")
 	}
 }
 
@@ -347,13 +392,18 @@ type mockPlatform struct {
 	failAt     int
 	applyCalls int
 	rolledBack []int64
+	prior      *PriorState
+	verifyErr  error
 }
 
 func (*mockPlatform) Preflight(context.Context, client.NodeInstallPlan) error { return nil }
 func (*mockPlatform) ServiceState(context.Context, client.NodeInstallService) (ServicePriorState, error) {
 	return ServicePriorState{}, nil
 }
-func (*mockPlatform) Capture(_ context.Context, m client.NodeInstallMutation, _ string) (PriorState, error) {
+func (m *mockPlatform) Capture(_ context.Context, _ client.NodeInstallMutation, _ string) (PriorState, error) {
+	if m.prior != nil {
+		return *m.prior, nil
+	}
 	return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
 }
 func (m *mockPlatform) Apply(_ context.Context, mutation client.NodeInstallMutation) error {
@@ -368,7 +418,7 @@ func (m *mockPlatform) Rollback(_ context.Context, mutation client.NodeInstallMu
 	m.rolledBack = append(m.rolledBack, mutation.Ordinal)
 	return nil
 }
-func (*mockPlatform) Verify(context.Context, client.NodeInstallPlan) error { return nil }
+func (m *mockPlatform) Verify(context.Context, client.NodeInstallPlan) error { return m.verifyErr }
 
 func testRoot(t *testing.T) string {
 	t.Helper()

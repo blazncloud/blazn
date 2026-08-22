@@ -39,10 +39,11 @@ type Installer struct {
 	now             func() time.Time
 	uid             func() int64
 	processIdentity func() string
+	verifyNoSymlink func(string) error
 }
 
 func NewInstaller(platform Platform, state StateStore) *Installer {
-	return &Installer{platform: platform, state: state, now: time.Now, uid: currentUID, processIdentity: func() string { return fmt.Sprintf("pid-%d-start-%d", os.Getpid(), time.Now().UnixNano()) }}
+	return &Installer{platform: platform, state: state, now: time.Now, uid: currentUID, processIdentity: func() string { return fmt.Sprintf("pid-%d-start-%d", os.Getpid(), time.Now().UnixNano()) }, verifyNoSymlink: verifyNoSymlinkTraversal}
 }
 
 func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, identityMeta client.NodeEnrollmentIdentity, identity Identity) (client.NodeInstallReceipt, error) {
@@ -64,12 +65,15 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 		return client.NodeInstallReceipt{}, errors.New("installer identity does not match the enrolled identity")
 	}
 	if existing, loadErr := i.state.LoadReceipt(); loadErr == nil {
-		trust := client.NodeInstallReceiptTrust{PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: identityMeta.SigningKeyID, Generation: identityMeta.Generation, Fingerprint: fingerprint, PublicKey: identity.PublicKey}, BackupRoot: plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+		trust := client.NodeInstallReceiptTrust{PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: identityMeta.SigningKeyID, Generation: identityMeta.Generation, Fingerprint: fingerprint, PublicKey: identity.PublicKey}, BackupRoot: plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: i.verifyNoSymlink}
 		if existing.State != "active" {
 			return client.NodeInstallReceipt{}, errors.New("prior node install receipt requires explicit recovery before reinstall")
 		}
 		if err := client.VerifyNodeInstallReceipt(existing, trust); err != nil {
 			return client.NodeInstallReceipt{}, fmt.Errorf("existing node install receipt is untrusted: %w", err)
+		}
+		if err := i.platform.Verify(ctx, plan); err != nil {
+			return client.NodeInstallReceipt{}, fmt.Errorf("live node state drifted from the active receipt: %w", err)
 		}
 		return existing, nil
 	} else if !errors.Is(loadErr, os.ErrNotExist) {
