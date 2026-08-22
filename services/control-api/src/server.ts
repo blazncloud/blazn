@@ -7,12 +7,18 @@ import { enforceLimit, remoteIdentity, TrustedProxyPolicy } from "./limits.js";
 import { randomToken, sessionRevokePayload, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
 import { sessionAccessError } from "./session-state.js";
 import { verifyBucket } from "./s3.js";
+import { readInvitationKey } from "./workspace-crypto.js";
+import { WorkspaceHttpRouter } from "./workspace-http.js";
+import { WorkspaceService } from "./workspace-service.js";
+import { PgWorkspaceStore } from "./workspace-store.js";
+import { WorkspaceHttpError } from "./workspace-types.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
 const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
+const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 
 function closeStream(sessionId: string): void {
   const streams = activeStreams.get(sessionId);
@@ -335,6 +341,10 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     })();
     return;
   }
+  if (workspaceRouter.matches(url.pathname)) {
+    const session = await authenticate(request);
+    return workspaceRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+  }
   const known = new Set(["/healthz", "/activate", "/v1/auth/device/authorizations", "/v1/auth/device/approve", "/v1/auth/device/sessions", "/v1/auth/sessions/refresh", "/v1/auth/sessions/revoke", "/v1/auth/me", "/v1/auth/session", "/v1/auth/devices", "/v1/events"]);
   if (known.has(url.pathname) || deviceMatch) throw new HttpError("method_not_allowed", "method is not allowed for this route");
   throw new HttpError("not_found", "route not found");
@@ -345,13 +355,13 @@ const server = createServer((request, response) => {
   const requestId = randomUUID();
   response.setHeader("x-request-id", requestId);
   route(request, response).catch((error: unknown) => {
-    const httpError = error instanceof HttpError ? error : new HttpError("internal_error", "request failed");
+    const httpError = error instanceof HttpError || error instanceof WorkspaceHttpError ? error : new HttpError("internal_error", "request failed");
     if (!response.headersSent) {
-      if (httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
+      if ("retryAfter" in httpError && httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
       sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
     }
     else response.end();
-    if (!(error instanceof HttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });
+    if (!(error instanceof HttpError) && !(error instanceof WorkspaceHttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });
   }).finally(() => {
     if (process.env.NODE_ENV !== "test") console.info("control-api request", { method: request.method, path: request.url?.split("?")[0], status: response.statusCode, duration_ms: Date.now() - started });
   });
