@@ -36,6 +36,7 @@ done
 # shellcheck disable=SC2016
 for expected in \
   'object-init:' \
+  'MC_CONFIG_DIR: /tmp/mc' \
   'mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}"' \
   'mc stat "blazn/${S3_BUCKET:-blazn-poc}"' \
   'object-init:' \

@@ -84,6 +84,8 @@ services:
     image: ${MINIO_MC_IMAGE:?set MINIO_MC_IMAGE to the reviewed immutable digest}
     profiles: ["tools"]
     entrypoint: ["/bin/sh", "-euc"]
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
     secrets:
       - s3_access_key
       - s3_secret_key
@@ -93,6 +95,8 @@ services:
   object-init:
     image: ${MINIO_MC_IMAGE:?set MINIO_MC_IMAGE to the reviewed immutable digest}
     entrypoint: ["/bin/sh", "-euc"]
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
     command:
       - |
         access=$$(cat /run/secrets/s3_access_key)
