@@ -198,11 +198,23 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 		session, err := s.api.ExchangeDeviceAuthorization(ctx, client.DeviceSessionRequest{DeviceCode: deviceCode, Proof: proof})
 		if err == nil {
 			var result LoginResult
+			entered := false
 			lockErr := s.locker.WithLock(ctx, func() error {
+				entered = true
 				var finishErr error
 				result, finishErr = s.finishLogin(ctx, session, s.pendingPrivateKey)
 				return finishErr
 			})
+			if lockErr != nil && !entered {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				cleanupErr := s.locker.WithLock(cleanupCtx, func() error {
+					return s.cleanupIssuedSession(cleanupCtx, session, s.pendingPrivateKey, false, fmt.Errorf("credential lock failed after session exchange: %w", lockErr))
+				})
+				if cleanupErr != nil {
+					return LoginResult{}, cleanupErr
+				}
+			}
 			return result, lockErr
 		}
 		var apiErr *client.APIError
@@ -353,7 +365,7 @@ func (s *Service) credentialsLocked(ctx context.Context) (Credentials, error) {
 		return Credentials{}, err
 	}
 	if err := s.save(session, privateKey); err != nil {
-		return Credentials{}, err
+		return Credentials{}, s.cleanupRotatedSession(ctx, session, privateKey, fmt.Errorf("store rotated session: %w", err))
 	}
 	return Credentials{APIOrigin: s.origin, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now().Add(time.Duration(session.ExpiresIn) * time.Second), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}, nil
 }
@@ -410,6 +422,38 @@ func (s *Service) finishLogin(ctx context.Context, session client.Session, priva
 }
 
 func (s *Service) cleanupIssuedSession(ctx context.Context, session client.Session, privateKey ed25519.PrivateKey, stored bool, cause error) error {
+	revokeErr := s.revokeIssuedSession(ctx, session, privateKey)
+	if revokeErr == nil {
+		if stored {
+			if err := s.store.Delete(); err != nil {
+				return fmt.Errorf("%v; remote cleanup confirmed but local cleanup failed: %w", cause, err)
+			}
+		}
+		return fmt.Errorf("%v; issued session was revoked", cause)
+	}
+	if !stored {
+		if err := s.save(session, privateKey); err != nil {
+			return fmt.Errorf("%v; remote cleanup failed: %v; retaining credentials also failed: %w", cause, revokeErr, err)
+		}
+	}
+	return fmt.Errorf("%v; remote cleanup was not confirmed and credentials were retained for retry: %w", cause, revokeErr)
+}
+
+func (s *Service) cleanupRotatedSession(ctx context.Context, session client.Session, privateKey ed25519.PrivateKey, cause error) error {
+	revokeErr := s.revokeIssuedSession(ctx, session, privateKey)
+	if revokeErr == nil {
+		if err := s.store.Delete(); err != nil {
+			return fmt.Errorf("%v; rotated session was revoked but stale local credential cleanup failed: %w", cause, err)
+		}
+		return fmt.Errorf("%v; rotated session was revoked and stale local credentials were removed", cause)
+	}
+	if err := s.save(session, privateKey); err != nil {
+		return fmt.Errorf("%v; remote cleanup failed: %v; retaining rotated credentials also failed: %w", cause, revokeErr, err)
+	}
+	return fmt.Errorf("%v; remote cleanup was not confirmed and rotated credentials were retained for retry: %w", cause, revokeErr)
+}
+
+func (s *Service) revokeIssuedSession(ctx context.Context, session client.Session, privateKey ed25519.PrivateKey) error {
 	revokeErr := s.api.DeleteCurrentSession(ctx, session.AccessToken)
 	if revokeErr != nil {
 		credentials := Credentials{APIOrigin: s.origin, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now(), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}
@@ -425,20 +469,7 @@ func (s *Service) cleanupIssuedSession(ctx context.Context, session client.Sessi
 			}
 		}
 	}
-	if revokeErr == nil {
-		if stored {
-			if err := s.store.Delete(); err != nil {
-				return fmt.Errorf("%v; remote cleanup confirmed but local cleanup failed: %w", cause, err)
-			}
-		}
-		return fmt.Errorf("%v; issued session was revoked", cause)
-	}
-	if !stored {
-		if err := s.save(session, privateKey); err != nil {
-			return fmt.Errorf("%v; remote cleanup failed: %v; retaining credentials also failed: %w", cause, revokeErr, err)
-		}
-	}
-	return fmt.Errorf("%v; remote cleanup was not confirmed and credentials were retained for retry: %w", cause, revokeErr)
+	return revokeErr
 }
 
 func refreshProofRequest(credentials Credentials) (client.RefreshSessionRequest, error) {

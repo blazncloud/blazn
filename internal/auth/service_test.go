@@ -189,6 +189,15 @@ func TestStatusRefreshesExpiredSession(t *testing.T) {
 	}
 }
 
+func TestRefreshStoreFailureRevokesRotatedSessionAndRemovesStaleCredential(t *testing.T) {
+	api := &fakeAPI{session: client.Session{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 300, DeviceID: "dev-1"}}
+	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z"), putErrs: []error{errors.New("keyring unavailable")}}
+	_, err := testService(api, store).Status(context.Background())
+	if err == nil || api.deletedToken != "new-access" || store.deleted != 1 || len(store.value) != 0 {
+		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
+	}
+}
+
 func TestStatusWithoutCredentialsIsNotAnError(t *testing.T) {
 	service := testService(&fakeAPI{}, &memoryStore{})
 	status, err := service.Status(context.Background())
