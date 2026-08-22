@@ -40,7 +40,10 @@ type API interface {
 	DownloadSandboxGrantFile(context.Context, string, string, string) (io.ReadCloser, int64, string, error)
 }
 
-type ClientAPI struct{ Client *client.Client }
+type ClientAPI struct {
+	Client *client.Client
+	wire   *strictTransport
+}
 
 func (a ClientAPI) CreateSandboxTemplate(ctx context.Context, token, workspace, key string, manifest client.SandboxManifest) (client.SandboxTemplateEnvelope, error) {
 	return a.Client.CreateSandboxTemplate(ctx, token, workspace, key, manifest)
@@ -70,10 +73,16 @@ func (a ClientAPI) CreateSandboxAccessGrant(ctx context.Context, token, id strin
 	return a.Client.CreateSandboxAccessGrant(ctx, token, id, request)
 }
 func (a ClientAPI) StreamSandboxEvents(ctx context.Context, token, id, cursor string) (EventStream, error) {
-	return a.Client.StreamSandboxEvents(ctx, token, id, cursor)
+	if a.wire == nil {
+		return nil, errors.New("strict sandbox event transport is unavailable")
+	}
+	return a.wire.StreamSandboxEvents(ctx, token, id, cursor)
 }
 func (a ClientAPI) ExecuteSandboxGrant(ctx context.Context, id, token string, request client.SandboxExecRequest) (client.SandboxExecResult, error) {
-	return a.Client.ExecuteSandboxGrant(ctx, id, token, request)
+	if a.wire == nil {
+		return client.SandboxExecResult{}, errors.New("strict sandbox exec transport is unavailable")
+	}
+	return a.wire.ExecuteSandboxGrant(ctx, id, token, request)
 }
 func (a ClientAPI) UploadSandboxGrantFile(ctx context.Context, id, token, path, digest string, body io.Reader, size int64) (client.SandboxFileTransferResult, error) {
 	return a.Client.UploadSandboxGrantFile(ctx, id, token, path, digest, body, size)
@@ -116,11 +125,16 @@ func NewDefaultService() (*Service, error) {
 	if apiURL == "" {
 		apiURL = sessions.Origin()
 	}
-	generated, err := client.New(apiURL, &http.Client{Timeout: 30 * time.Second})
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	generated, err := client.New(apiURL, httpClient)
 	if err != nil {
 		return nil, err
 	}
-	return NewService(ClientAPI{Client: generated}, NewWorkspaceTokenProvider(sessions)), nil
+	wire, err := newStrictTransport(apiURL, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	return NewService(ClientAPI{Client: generated, wire: wire}, NewWorkspaceTokenProvider(sessions)), nil
 }
 
 func (s *Service) token(ctx context.Context, forceRefresh bool) (string, error) {
