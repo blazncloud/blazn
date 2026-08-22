@@ -96,24 +96,28 @@ Rules:
 ## CLI contract
 
 ```text
-blazn workspace create NAME [--slug SLUG]
+blazn workspace create NAME [--slug SLUG] --request-id KEY
 blazn workspace list
 blazn workspace get [WORKSPACE]
-blazn workspace edit WORKSPACE --name NAME --expected-version VERSION
+blazn workspace edit WORKSPACE --name NAME --expected-version VERSION --request-id KEY
 blazn workspace use WORKSPACE
-blazn workspace invite [WORKSPACE] --role ROLE [--expires-in DURATION]
+blazn workspace invite [WORKSPACE] --role ROLE [--expires-in DURATION] --request-id KEY
 blazn workspace invitations [WORKSPACE]
-blazn workspace revoke-invite INVITATION --expected-version VERSION
-blazn workspace join --invite-stdin
+blazn workspace revoke-invite INVITATION --expected-version VERSION --request-id KEY
+blazn workspace join --invite-stdin --request-id KEY
 blazn workspace members [WORKSPACE]
-blazn workspace set-role USER --role ROLE --expected-version VERSION
-blazn workspace remove-member USER --expected-version VERSION
-blazn workspace leave
+blazn workspace set-role USER --role ROLE --expected-version VERSION --request-id KEY
+blazn workspace remove-member USER --expected-version VERSION --request-id KEY
+blazn workspace leave --request-id KEY
+blazn workspace watch [WORKSPACE] [--cursor CURSOR]
 ```
 
 Invitation secrets are accepted only through a hidden prompt or stdin, never a
 normal argument. The selected workspace is nonsecret local state, written
 atomically to an owner-only file. `--workspace` overrides selection.
+Every remote mutation requires an explicit stable `--request-id`; the CLI never
+silently creates a process-local key that cannot be reused after an ambiguous
+response. Retries of the same logical mutation reuse the same key.
 
 Representative JSON envelopes:
 
@@ -129,8 +133,19 @@ Representative JSON envelopes:
 {"invitation":{"id":"uuid","workspaceId":"uuid","role":"member","status":"pending","version":1,"createdAt":"timestamp","expiresAt":"timestamp"},"inviteToken":"one-time-secret"}
 ```
 
+If invitation acceptance commits but saving local selection fails, the CLI
+returns exit `9` with the accepted workspace and exact request key, for example:
+
+```json
+{"workspace":{"id":"uuid","slug":"acme","name":"Acme","status":"active","version":1,"currentUserRole":"member","createdAt":"timestamp","updatedAt":"timestamp"},"accepted":true,"selected":false,"idempotencyKey":"caller-stable-key","selectionError":"safe local error"}
+```
+
+The operator completes recovery with `blazn workspace use WORKSPACE`; the
+invitation is not accepted again.
+
 Exit behavior remains `0` success, `1` domain/API denial, `2` usage or missing
-local context, and `7` unavailable API/auth store/network.
+local context, `7` unavailable API/auth store/network, and `9` remote mutation
+committed with a required local recovery action.
 
 ## Persistence and trust boundary
 

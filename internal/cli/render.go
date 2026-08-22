@@ -66,7 +66,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		}
 	case "workspace":
 		output = helpOutput{
-			Command: "workspace", Usage: "blazn workspace <command> [--workspace WORKSPACE] [--request-id KEY]", Summary: "Create, select, and manage Blazn workspaces.",
+			Command: "workspace", Usage: "blazn workspace <command> [--workspace WORKSPACE] [--request-id KEY (required for mutations)]", Summary: "Create, select, and manage Blazn workspaces.",
 			Commands: []helpCommand{
 				{Name: "create", Summary: "Create a workspace"}, {Name: "list", Summary: "List accessible workspaces"},
 				{Name: "get", Summary: "Get a workspace"}, {Name: "edit", Summary: "Edit a workspace"}, {Name: "use", Summary: "Select a workspace locally"},
