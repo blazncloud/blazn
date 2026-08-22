@@ -33,6 +33,32 @@ export interface Config {
   trustedProxyCidrs: string[];
   trustedProxyHops: number;
   trustedProxySecret?: string;
+  zitadel?: {
+    issuerUrl: string;
+    clientId: string;
+    clientSecret: string;
+    cookieKey: string;
+    requireMfa: boolean;
+  };
+}
+
+function booleanValue(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function zitadelConfig(): Config["zitadel"] {
+  const issuerUrl = process.env.ZITADEL_ISSUER_URL?.trim();
+  const clientId = process.env.ZITADEL_CLIENT_ID?.trim();
+  const configured = Boolean(issuerUrl || clientId || process.env.ZITADEL_CLIENT_SECRET_FILE || process.env.OIDC_COOKIE_KEY_FILE);
+  if (!configured) return undefined;
+  if (!issuerUrl || !clientId) throw new Error("ZITADEL_ISSUER_URL and ZITADEL_CLIENT_ID are required when ZITADEL is configured");
+  const issuer = new URL(issuerUrl);
+  if (issuer.protocol !== "https:" || issuer.search || issuer.hash || issuer.username || issuer.password) throw new Error("ZITADEL_ISSUER_URL must be an HTTPS origin");
+  return { issuerUrl: issuer.href.replace(/\/$/, ""), clientId, clientSecret: valueOrFile("ZITADEL_CLIENT_SECRET"), cookieKey: valueOrFile("OIDC_COOKIE_KEY"), requireMfa: booleanValue("ZITADEL_REQUIRE_MFA", true) };
 }
 
 function cidrList(name: string): string[] {
@@ -55,6 +81,7 @@ export function loadConfig(): Config {
   if (process.env.NODE_ENV === "production" && !trustedProxySecretFile) throw new Error("TRUSTED_PROXY_SECRET_FILE is required in production");
   const trustedProxySecret = trustedProxySecretFile ? readFileSync(trustedProxySecretFile, "utf8").trim() : undefined;
   if (trustedProxySecret !== undefined && (trustedProxySecret.length < 32 || trustedProxySecret.length > 512)) throw new Error("trusted proxy secret must contain between 32 and 512 characters");
+  const zitadel = zitadelConfig();
   return {
     port: boundedInteger("PORT", 8080, 1, 65535),
     bindAddress: process.env.BIND_ADDRESS ?? "127.0.0.1",
@@ -71,5 +98,6 @@ export function loadConfig(): Config {
     trustedProxyCidrs: cidrList("TRUSTED_PROXY_CIDRS"),
     trustedProxyHops: boundedInteger("TRUSTED_PROXY_HOPS", 1, 1, 8),
     ...(trustedProxySecret === undefined ? {} : { trustedProxySecret }),
+    ...(zitadel === undefined ? {} : { zitadel }),
   };
 }

@@ -1,0 +1,14 @@
+entryPoints:
+  web:
+    address: :8080
+providers:
+  file:
+    filename: /etc/traefik/routes.yaml
+    watch: true
+api:
+  dashboard: false
+ping:
+  entryPoint: web
+log:
+  level: INFO
+accessLog: {}

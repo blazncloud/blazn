@@ -1,0 +1,17 @@
+Log:
+  Level: info
+ExternalSecure: true
+TLS:
+  Enabled: false
+Database:
+  postgres:
+    Host: postgres
+    Port: 5432
+    Database: zitadel
+    User:
+      SSL:
+        Mode: disable
+    Admin:
+      ExistingDatabase: postgres
+      SSL:
+        Mode: disable
