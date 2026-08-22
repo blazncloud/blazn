@@ -175,7 +175,11 @@ export class WorkspaceService {
 
   async eventBatch(principal: WorkspacePrincipal, workspaceId: string, afterId = "") {
     return this.store.transaction(async (transaction) => {
-      await this.authorize(transaction, principal, workspaceId, "read", false);
+      // Membership removal takes the same workspace-row lock. Keeping authority
+      // evaluation and the event read in this transaction makes the authorized
+      // snapshot linearizable with removal instead of allowing a post-removal
+      // batch to escape between two unrelated queries.
+      await this.authorize(transaction, principal, workspaceId, "read", true);
       return transaction.listEvents(workspaceId, afterId);
     });
   }

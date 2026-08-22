@@ -58,6 +58,8 @@ export type WorkspaceErrorCode =
   | "invitation_consumed"
   | "invitation_revoked"
   | "last_owner"
+  | "method_not_allowed"
+  | "rate_limited"
   | "invalid_request";
 
 const workspaceErrorStatus: Record<WorkspaceErrorCode, number> = {
@@ -72,6 +74,8 @@ const workspaceErrorStatus: Record<WorkspaceErrorCode, number> = {
   invitation_consumed: 410,
   invitation_revoked: 410,
   last_owner: 409,
+  method_not_allowed: 405,
+  rate_limited: 429,
   invalid_request: 400,
 };
 
