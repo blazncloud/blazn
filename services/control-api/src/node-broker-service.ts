@@ -33,6 +33,15 @@ export class NodeBrokerService {
     private readonly providerTimeoutMs = 10_000,
   ) {}
 
+  async health(signal: AbortSignal): Promise<void> {
+    if (!this.store.health || !this.issuer.health) throw new Error("Node broker health dependencies are unavailable");
+    await this.store.health(signal);
+    const key = await this.joinKey();
+    if (key.length !== 32) { key.fill(0); throw new Error("join credential key is invalid"); }
+    key.fill(0);
+    await this.issuer.health(signal);
+  }
+
   async issue(
     idempotencyKey: string,
     request: JoinCredentialRequest,

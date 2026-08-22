@@ -13,6 +13,7 @@ import { NodeHttpRouter } from "./node-http.js";
 import { TemplateNodePlanFactory } from "./node-plan.js";
 import { NodeService } from "./node-service.js";
 import { PgNodeStore } from "./node-store.js";
+import { LoopbackNodeBrokerProxy } from "./node-broker-proxy.js";
 import { nodeErrorBody, NodeHttpError } from "./node-types.js";
 import { WorkspaceHttpRouter } from "./workspace-http.js";
 import { WorkspaceService } from "./workspace-service.js";
@@ -27,11 +28,14 @@ const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.t
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
+const brokerMode = process.env.BLAZN_NODE_BROKER_LOOPBACK ?? "disabled";
+if (brokerMode !== "enabled" && brokerMode !== "disabled") throw new Error("BLAZN_NODE_BROKER_LOOPBACK must be enabled or disabled");
+const brokerProxy = brokerMode === "enabled" ? new LoopbackNodeBrokerProxy() : undefined;
 const nodeRouter = new NodeHttpRouter(new NodeService(
   new PgNodeStore(database),
   () => readNodeEnrollmentKey(process.env.NODE_ENROLLMENT_HMAC_FILE ?? `${nodeSecretsRoot}/enrollment-hmac-v1`),
   new TemplateNodePlanFactory(process.env.NODE_INSTALL_PLAN_TEMPLATE_FILE ?? "/etc/blazn/node-plan/node-install-plan-template-v1.json", nodePlanSigner),
-));
+), brokerProxy, (request) => enforceLimit(database, "node-broker-public", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 60, 60));
 
 function closeStream(sessionId: string): void {
   const streams = activeStreams.get(sessionId);
@@ -88,6 +92,10 @@ async function health(response: ServerResponse): Promise<void> {
     await verifyBucket(config.s3Endpoint, config.s3Region, config.s3Bucket, config.s3AccessKey, config.s3SecretKey);
   } catch {
     throw new HttpError("object_storage_unavailable", "object storage credentials or required bucket are unavailable");
+  }
+  if (brokerProxy) {
+    try { await brokerProxy.health(AbortSignal.timeout(2_000)); }
+    catch { throw new NodeHttpError("node_broker_unavailable", "Node broker is unavailable"); }
   }
   sendJson(response, 200, { status: "ok", database: "ok", objectStorage: "ok" });
 }

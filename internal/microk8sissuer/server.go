@@ -107,6 +107,16 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusForbidden, &ProtocolError{Code: "peer_denied", Message: "socket peer is not authorized"})
 		return
 	}
+	if r.Method == "GET" && r.URL.Path == "/healthz" && r.URL.RawQuery == "" {
+		ctx, cancel := context.WithTimeout(r.Context(), s.Timeout)
+		defer cancel()
+		if err := s.Service.Health(ctx); err != nil {
+			s.writeError(w, http.StatusServiceUnavailable, &ProtocolError{Code: "microk8s_unavailable", Message: "MicroK8s readiness check failed"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"schemaVersion": SchemaVersion, "operation": "health", "healthy": true})
+		return
+	}
 	if r.Method != "POST" || r.URL.Path != "/v1/worker-credentials" || r.URL.RawQuery != "" || r.Header.Get("content-type") != "application/json" {
 		s.writeError(w, http.StatusBadRequest, invalid("HTTP request is invalid"))
 		return

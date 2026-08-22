@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -99,5 +100,24 @@ func TestServerAllowsExactPeerAndClosedRequest(t *testing.T) {
 	server.handle(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestServerHealthProbesBackendWithoutLeakingFailure(t *testing.T) {
+	backend := &fakeBackend{}
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
+	server := &Server{Service: service, AllowedUID: uint32(os.Getuid()), AllowedGID: uint32(os.Getgid()), Timeout: time.Second}
+	request := httptest.NewRequest(http.MethodGet, "http://unix/healthz", nil)
+	request = request.WithContext(context.WithValue(request.Context(), peerKey{}, Peer{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}))
+	response := httptest.NewRecorder()
+	server.handle(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("healthy status %d", response.Code)
+	}
+	backend.failHealthy = true
+	response = httptest.NewRecorder()
+	server.handle(response, request)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "detail") {
+		t.Fatalf("failure status/body %d %q", response.Code, response.Body.String())
 	}
 }

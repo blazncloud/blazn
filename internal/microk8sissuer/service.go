@@ -70,6 +70,8 @@ func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 	return s.revoke(ctx, req.ProviderHandle)
 }
 
+func (s *Service) Health(ctx context.Context) error { return s.backend.Healthy(ctx) }
+
 func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error) {
 	var response IssueResponse
 	err := s.locked(ctx, func() error {

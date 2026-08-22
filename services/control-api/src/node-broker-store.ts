@@ -42,11 +42,13 @@ export interface NodeBrokerTransaction {
 }
 
 export interface NodeBrokerStore {
+  health?(signal: AbortSignal): Promise<void>;
   transaction<T>(action: (tx: NodeBrokerTransaction) => Promise<T>): Promise<T>;
 }
 
 export class PgNodeBrokerStore implements NodeBrokerStore {
   constructor(private readonly database: Database) {}
+  async health(signal: AbortSignal): Promise<void> { await probeNodeBrokerDatabase(this.database,signal); }
   async transaction<T>(
     action: (tx: NodeBrokerTransaction) => Promise<T>,
   ): Promise<T> {
@@ -63,6 +65,16 @@ export class PgNodeBrokerStore implements NodeBrokerStore {
       client.release();
     }
   }
+}
+
+export async function probeNodeBrokerDatabase(database: Database, signal: AbortSignal): Promise<void> {
+  if(signal.aborted)throw signal.reason;
+  const pending=database.connect();let abandoned=false;
+  const client=await Promise.race([pending,new Promise<never>((_,reject)=>signal.addEventListener("abort",()=>{abandoned=true;reject(signal.reason);},{once:true}))]).catch((error)=>{if(abandoned)void pending.then(value=>value.release(true),()=>{});throw error;});
+  let released=false;const query=client.query("SELECT 1");
+  try{await Promise.race([query,new Promise((_,reject)=>signal.addEventListener("abort",()=>reject(signal.reason),{once:true}))]);}
+  catch(error){client.release(true);released=true;await query.catch(()=>{});throw error;}
+  finally{if(!released)client.release();}
 }
 
 class PgNodeBrokerTransaction implements NodeBrokerTransaction {
