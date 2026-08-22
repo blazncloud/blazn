@@ -152,8 +152,7 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 }
 
 func TestLinuxWithoutSecretServiceUsesProtectedStandaloneStore(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	store, err := newSystemStore("linux", &fakeRunner{})
+	store, err := newSystemStoreForOriginAtHome("linux", &fakeRunner{}, defaultAPIURL, t.TempDir())
 	if err != nil || store.Description() != "protected credential file" {
 		t.Fatalf("store=%T description=%q err=%v", store, store.Description(), err)
 	}
@@ -189,26 +188,44 @@ func TestSecretServiceBackendFailuresAreNotReportedAsMissingOrDeleted(t *testing
 }
 
 func TestSecretServiceProbeFallsBackToProtectedStore(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	runner := &fakeRunner{paths: map[string]bool{"secret-tool": true}, err: &commandError{message: "no session bus", exitCode: 1, stderr: true}}
-	store, err := newSystemStoreForOrigin("linux", runner, "https://example.test")
+	store, err := newSystemStoreForOriginAtHome("linux", runner, "https://example.test", t.TempDir())
 	if err != nil || store.Description() != "protected credential file" {
 		t.Fatalf("store=%T description=%q err=%v", store, store.Description(), err)
 	}
 }
 
 func TestCredentialStoresAreNamespacedByCanonicalOrigin(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	first, err := newProtectedFileStoreForOrigin("https://one.example")
+	home := t.TempDir()
+	first, err := newProtectedFileStoreForOriginAtHome("https://one.example", home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newProtectedFileStoreForOrigin("https://two.example")
+	second, err := newProtectedFileStoreForOriginAtHome("https://two.example", home)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.(*protectedFileStore).path == second.(*protectedFileStore).path {
 		t.Fatal("different origins share a credential path")
+	}
+}
+
+func TestProtectedCredentialPathIgnoresHomeAndXDGEnvironment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	first, err := newProtectedFileStoreForOriginAtHome("https://example.test", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	second, err := newProtectedFileStoreForOriginAtHome("https://example.test", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.(*protectedFileStore).path != second.(*protectedFileStore).path {
+		t.Fatalf("credential paths differ: %q %q", first.(*protectedFileStore).path, second.(*protectedFileStore).path)
 	}
 }
 
@@ -245,5 +262,30 @@ func TestProtectedFileStoreRoundTripAndRejectsUnsafeFiles(t *testing.T) {
 	}
 	if _, err := store.Get(); err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("unsafe symlink error = %v", err)
+	}
+}
+
+func TestProtectedFileDeleteSyncsParentDirectory(t *testing.T) {
+	store, err := newProtectedFileStoreAt(filepath.Join(t.TempDir(), "credentials"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put([]byte("session-secret")); err != nil {
+		t.Fatal(err)
+	}
+	fileStore := store.(*protectedFileStore)
+	var operation string
+	fileStore.syncHook = func(dir, gotOperation string) error {
+		if dir != fileStore.dir {
+			t.Fatalf("sync dir=%q want=%q", dir, fileStore.dir)
+		}
+		operation = gotOperation
+		return nil
+	}
+	if err := store.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if operation != "credential deletion" {
+		t.Fatalf("sync operation=%q", operation)
 	}
 }

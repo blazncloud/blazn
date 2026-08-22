@@ -128,3 +128,74 @@ func TestCredentialLockPathIgnoresXDGEnvironment(t *testing.T) {
 		t.Fatalf("lock paths differ: %q %q", first.(*fileCredentialLocker).path, second.(*fileCredentialLocker).path)
 	}
 }
+
+func TestPendingLoginFenceBlocksLiveOwnerAndReclaimsExpiry(t *testing.T) {
+	home := t.TempDir()
+	locker, err := newCredentialLockerAtHome("https://example.test", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first string
+	if err := locker.WithLock(context.Background(), func() error {
+		var err error
+		first, err = locker.ClaimLogin(time.Now(), time.Minute)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := locker.WithLock(context.Background(), func() error {
+		_, err := locker.ClaimLogin(time.Now(), time.Minute)
+		return err
+	}); !errors.Is(err, ErrLoginPending) {
+		t.Fatalf("duplicate pending login error = %v", err)
+	}
+	if err := locker.WithLock(context.Background(), func() error { return locker.ReleaseLogin(first) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := locker.WithLock(context.Background(), func() error {
+		_, err := locker.ClaimLogin(time.Now().Add(-time.Minute), time.Second)
+		if err != nil {
+			return err
+		}
+		_, err = locker.ClaimLogin(time.Now(), time.Minute)
+		return err
+	}); err != nil {
+		t.Fatalf("expired pending login was not reclaimed: %v", err)
+	}
+	_ = locker.WithLock(context.Background(), locker.CancelLogin)
+}
+
+func TestPendingLoginFenceReclaimsDeadProcess(t *testing.T) {
+	if os.Getenv("BLAZN_LOGIN_FENCE_HELPER") == "1" {
+		locker, err := newCredentialLockerAtHome("https://example.test", os.Getenv("BLAZN_LOGIN_FENCE_HOME"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := locker.WithLock(context.Background(), func() error {
+			_, err := locker.ClaimLogin(time.Now(), time.Minute)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	home := t.TempDir()
+	command := exec.Command(os.Args[0], "-test.run=^TestPendingLoginFenceReclaimsDeadProcess$")
+	command.Env = append(os.Environ(), "BLAZN_LOGIN_FENCE_HELPER=1", "BLAZN_LOGIN_FENCE_HOME="+home)
+	if err := command.Run(); err != nil {
+		t.Fatal(err)
+	}
+	locker, err := newCredentialLockerAtHome("https://example.test", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := locker.WithLock(context.Background(), func() error {
+		nonce, err := locker.ClaimLogin(time.Now(), time.Minute)
+		if err != nil {
+			return err
+		}
+		return locker.ReleaseLogin(nonce)
+	}); err != nil {
+		t.Fatalf("dead pending login was not reclaimed: %v", err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -91,6 +92,18 @@ func NewSystemStoreForOrigin(origin string) (CredentialStore, error) {
 }
 
 func newSystemStoreForOrigin(goos string, runner commandRunner, origin string) (CredentialStore, error) {
+	return newSystemStoreWithFallback(goos, runner, origin, func() (CredentialStore, error) {
+		return newProtectedFileStoreForOrigin(origin)
+	})
+}
+
+func newSystemStoreForOriginAtHome(goos string, runner commandRunner, origin, home string) (CredentialStore, error) {
+	return newSystemStoreWithFallback(goos, runner, origin, func() (CredentialStore, error) {
+		return newProtectedFileStoreForOriginAtHome(origin, home)
+	})
+}
+
+func newSystemStoreWithFallback(goos string, runner commandRunner, origin string, fallback func() (CredentialStore, error)) (CredentialStore, error) {
 	account := credentialAccountForOrigin(origin)
 	store := &systemStore{goos: goos, runner: runner, account: account}
 	var command string
@@ -104,13 +117,13 @@ func newSystemStoreForOrigin(goos string, runner commandRunner, origin string) (
 	}
 	if _, err := runner.LookPath(command); err != nil {
 		if goos == "linux" {
-			return newProtectedFileStoreForOrigin(origin)
+			return fallback()
 		}
 		return nil, fmt.Errorf("secure credential store %q is unavailable: %w", command, err)
 	}
 	if goos == "linux" {
 		if _, err := runner.Run("secret-tool", []string{"search", "--all", "service", credentialService}, nil); err != nil && !isMissingSecretToolItem(err) {
-			return newProtectedFileStoreForOrigin(origin)
+			return fallback()
 		}
 	}
 	return store, nil
@@ -122,8 +135,9 @@ func credentialAccountForOrigin(origin string) string {
 }
 
 type protectedFileStore struct {
-	dir  string
-	path string
+	dir      string
+	path     string
+	syncHook func(string, string) error
 }
 
 func newProtectedFileStore() (CredentialStore, error) {
@@ -131,14 +145,19 @@ func newProtectedFileStore() (CredentialStore, error) {
 }
 
 func newProtectedFileStoreForOrigin(origin string) (CredentialStore, error) {
-	base := os.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("locate credential data directory: %w", err)
-		}
-		base = filepath.Join(home, ".local", "share")
+	current, err := user.Current()
+	if err != nil {
+		return nil, fmt.Errorf("resolve current user for credential storage: %w", err)
 	}
+	return newProtectedFileStoreForOriginAtHome(origin, current.HomeDir)
+
+}
+
+func newProtectedFileStoreForOriginAtHome(origin, home string) (CredentialStore, error) {
+	if !filepath.IsAbs(home) {
+		return nil, errors.New("credential storage home must be absolute")
+	}
+	base := filepath.Join(home, ".local", "share")
 	return newProtectedFileStoreAtAccount(filepath.Join(base, "blazn", "credentials"), credentialAccountForOrigin(origin)+".json")
 }
 
@@ -255,7 +274,7 @@ func (s *protectedFileStore) Delete() error {
 	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove credential: %w", err)
 	}
-	return nil
+	return s.syncDirectory("credential deletion")
 }
 
 func (s *protectedFileStore) stagingPrefix() string {
@@ -295,13 +314,24 @@ func (s *protectedFileStore) reconcileStagingFiles() error {
 	if !removed {
 		return nil
 	}
-	directory, err := os.Open(s.dir)
+	return s.syncDirectory("credential staging reconciliation")
+}
+
+func (s *protectedFileStore) syncDirectory(operation string) error {
+	if s.syncHook != nil {
+		return s.syncHook(s.dir, operation)
+	}
+	return syncDirectory(s.dir, operation)
+}
+
+func syncDirectory(dir, operation string) error {
+	directory, err := os.Open(dir)
 	if err != nil {
-		return fmt.Errorf("open credential directory after reconciliation: %w", err)
+		return fmt.Errorf("open credential directory after %s: %w", operation, err)
 	}
 	defer directory.Close()
 	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync credential directory after reconciliation: %w", err)
+		return fmt.Errorf("sync credential directory after %s: %w", operation, err)
 	}
 	return nil
 }

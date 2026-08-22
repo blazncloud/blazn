@@ -88,7 +88,7 @@ type Service struct {
 	sleep             func(context.Context, time.Duration) error
 	pendingPrivateKey ed25519.PrivateKey
 	pendingChallenge  string
-	pendingRelease    func()
+	pendingLogin      string
 }
 
 func NewService(api API, store CredentialStore) *Service {
@@ -152,39 +152,28 @@ func NewDefaultService() (*Service, error) {
 func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Duration, error) {
 	lockCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	release, err := s.locker.Acquire(lockCtx)
-	if err != nil {
+	var loginNonce string
+	if err := s.locker.WithLock(lockCtx, func() error {
+		if err := s.ensureLoginAllowedLocked(ctx); err != nil {
+			return err
+		}
+		var err error
+		loginNonce, err = s.locker.ClaimLogin(s.now(), maxDeviceAuthorizationLifetime)
+		return err
+	}); err != nil {
 		return LoginStart{}, "", 0, err
 	}
-	releaseOnError := true
-	defer func() {
-		if releaseOnError {
-			release()
+	releaseFence := func(cause error) error {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if err := s.locker.WithLock(cleanupCtx, func() error { return s.locker.ReleaseLogin(loginNonce) }); err != nil {
+			return fmt.Errorf("%v; release pending login fence: %w", cause, err)
 		}
-	}()
-	if credentials, err := s.credentialsLocked(ctx); err == nil {
-		if _, currentErr := s.api.GetCurrentUser(ctx, credentials.AccessToken); currentErr == nil {
-			return LoginStart{}, "", 0, errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
-		} else if client.IsCode(currentErr, "session_revoked") {
-			refreshed, refreshErr := s.refreshCredentialsLocked(ctx, credentials)
-			if refreshErr == nil {
-				if _, retryErr := s.api.GetCurrentUser(ctx, refreshed.AccessToken); retryErr == nil {
-					return LoginStart{}, "", 0, errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
-				} else {
-					return LoginStart{}, "", 0, fmt.Errorf("verify existing Blazn session before login: %w", retryErr)
-				}
-			} else if !errors.Is(refreshErr, ErrNotFound) {
-				return LoginStart{}, "", 0, fmt.Errorf("safely replace existing Blazn session before login: %w", refreshErr)
-			}
-		} else {
-			return LoginStart{}, "", 0, fmt.Errorf("verify existing Blazn session before login: %w", currentErr)
-		}
-	} else if !errors.Is(err, ErrNotFound) {
-		return LoginStart{}, "", 0, fmt.Errorf("check existing Blazn session before login: %w", err)
+		return cause
 	}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		return LoginStart{}, "", 0, fmt.Errorf("generate device key: %w", err)
+		return LoginStart{}, "", 0, releaseFence(fmt.Errorf("generate device key: %w", err))
 	}
 	deviceName, err := os.Hostname()
 	if err != nil || deviceName == "" {
@@ -196,15 +185,14 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 		Platform:        runtime.GOOS + "/" + runtime.GOARCH,
 	})
 	if err != nil {
-		return LoginStart{}, "", 0, err
+		return LoginStart{}, "", 0, releaseFence(err)
 	}
 	if authorization.DeviceCode == "" || authorization.UserCode == "" || authorization.VerificationURI == "" || authorization.Challenge == "" || authorization.ExpiresIn <= 0 || authorization.Interval <= 0 || authorization.ExpiresIn > int(maxDeviceAuthorizationLifetime/time.Second) {
-		return LoginStart{}, "", 0, errors.New("API returned an incomplete device authorization")
+		return LoginStart{}, "", 0, releaseFence(errors.New("API returned an incomplete device authorization"))
 	}
 	s.pendingPrivateKey = privateKey
 	s.pendingChallenge = authorization.Challenge
-	s.pendingRelease = release
-	releaseOnError = false
+	s.pendingLogin = loginNonce
 	start := LoginStart{
 		UserCode:                authorization.UserCode,
 		VerificationURI:         authorization.VerificationURI,
@@ -214,13 +202,46 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 	return start, authorization.DeviceCode, time.Duration(authorization.Interval) * time.Second, nil
 }
 
-func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval time.Duration) (LoginResult, error) {
-	lockHeld := false
-	if s.pendingRelease != nil {
-		release := s.pendingRelease
-		s.pendingRelease = nil
-		defer release()
-		lockHeld = true
+func (s *Service) ensureLoginAllowedLocked(ctx context.Context) error {
+	if credentials, err := s.credentialsLocked(ctx); err == nil {
+		if _, currentErr := s.api.GetCurrentUser(ctx, credentials.AccessToken); currentErr == nil {
+			return errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
+		} else if client.IsCode(currentErr, "session_revoked") {
+			refreshed, refreshErr := s.refreshCredentialsLocked(ctx, credentials)
+			if refreshErr == nil {
+				if _, retryErr := s.api.GetCurrentUser(ctx, refreshed.AccessToken); retryErr == nil {
+					return errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
+				} else {
+					return fmt.Errorf("verify existing Blazn session before login: %w", retryErr)
+				}
+			} else if !errors.Is(refreshErr, ErrNotFound) {
+				return fmt.Errorf("safely replace existing Blazn session before login: %w", refreshErr)
+			}
+		} else {
+			return fmt.Errorf("verify existing Blazn session before login: %w", currentErr)
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("check existing Blazn session before login: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval time.Duration) (result LoginResult, resultErr error) {
+	loginNonce := s.pendingLogin
+	s.pendingLogin = ""
+	if loginNonce != "" {
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.locker.WithLock(cleanupCtx, func() error { return s.locker.ReleaseLogin(loginNonce) }); err != nil {
+				result = LoginResult{}
+				if resultErr == nil {
+					resultErr = fmt.Errorf("release pending login fence: %w", err)
+				} else {
+					resultErr = fmt.Errorf("%v; release pending login fence: %w", resultErr, err)
+				}
+			}
+		}()
 	}
 	if len(s.pendingPrivateKey) != ed25519.PrivateKeySize || s.pendingChallenge == "" {
 		return LoginResult{}, errors.New("device authorization state is missing; restart login")
@@ -240,16 +261,14 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 		session, err := s.api.ExchangeDeviceAuthorization(ctx, client.DeviceSessionRequest{DeviceCode: deviceCode, Proof: proof})
 		if err == nil {
 			var result LoginResult
-			if lockHeld {
-				// A successful BeginLogin retains the cross-process lock until this
-				// method returns. Tests and recovery callers without that state acquire
-				// the lock around finalization here.
-				result, err = s.finishLogin(ctx, session, s.pendingPrivateKey)
-				return result, err
-			}
 			entered := false
 			lockErr := s.locker.WithLock(ctx, func() error {
 				entered = true
+				if loginNonce != "" {
+					if err := s.locker.VerifyLogin(loginNonce, s.now()); err != nil {
+						return s.cleanupIssuedSession(ctx, session, s.pendingPrivateKey, false, fmt.Errorf("pending login fence was lost before finalization: %w", err))
+					}
+				}
 				var finishErr error
 				result, finishErr = s.finishLogin(ctx, session, s.pendingPrivateKey)
 				return finishErr
@@ -297,7 +316,12 @@ func (s *Service) CompleteLogin(ctx context.Context, deviceCode string, interval
 func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 	var result StatusResult
 	err := s.locker.WithLock(ctx, func() error {
-		credentials, err := s.credentialsLocked(ctx)
+		var current client.CurrentUser
+		credentials, err := s.withAccessRetryLocked(ctx, func(credentials Credentials) error {
+			var err error
+			current, err = s.api.GetCurrentUser(ctx, credentials.AccessToken)
+			return err
+		})
 		if errors.Is(err, ErrNotFound) {
 			result = StatusResult{Authenticated: false, Store: s.store.Description()}
 			return nil
@@ -305,22 +329,16 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 		if err != nil {
 			return err
 		}
-		current, err := s.api.GetCurrentUser(ctx, credentials.AccessToken)
 		if err != nil {
-			if client.IsCode(err, "access_expired") {
-				credentials, err = s.refreshCredentialsLocked(ctx, credentials)
-				if errors.Is(err, ErrNotFound) {
-					result = StatusResult{Authenticated: false, Store: s.store.Description()}
-					return nil
+			if client.IsCode(err, "session_revoked") {
+				if revokeErr := s.revokeSessionStable(ctx, credentials); revokeErr != nil {
+					return fmt.Errorf("session may be superseded; stable device revocation was not confirmed and local credentials were preserved: %w", revokeErr)
 				}
-				if err != nil {
-					return err
+				if deleteErr := s.store.Delete(); deleteErr != nil {
+					return deleteErr
 				}
-				current, err = s.api.GetCurrentUser(ctx, credentials.AccessToken)
-				if err == nil {
-					result = StatusResult{Authenticated: true, Store: s.store.Description(), User: &current.User, Device: &current.Device}
-					return nil
-				}
+				result = StatusResult{Authenticated: false, Store: s.store.Description()}
+				return nil
 			}
 			if isDefinitiveCredentialError(err) {
 				if deleteErr := s.store.Delete(); deleteErr != nil {
@@ -345,6 +363,9 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 	err := s.locker.WithLock(ctx, func() error {
 		credentials, err := s.credentialsLocked(ctx)
 		if errors.Is(err, ErrNotFound) {
+			if err := s.locker.CancelLogin(); err != nil {
+				return fmt.Errorf("cancel pending login: %w", err)
+			}
 			result = LogoutResult{Status: "logged_out", RemoteRevoked: true}
 			return nil
 		}
@@ -375,12 +396,11 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 func (s *Service) Devices(ctx context.Context) ([]client.Device, error) {
 	var items []client.Device
 	err := s.locker.WithLock(ctx, func() error {
-		credentials, err := s.credentialsLocked(ctx)
-		if err != nil {
+		_, err := s.withAccessRetryLocked(ctx, func(credentials Credentials) error {
+			devices, err := s.api.ListDevices(ctx, credentials.AccessToken)
+			items = devices.Items
 			return err
-		}
-		devices, err := s.api.ListDevices(ctx, credentials.AccessToken)
-		items = devices.Items
+		})
 		return err
 	})
 	return items, err
@@ -388,11 +408,10 @@ func (s *Service) Devices(ctx context.Context) ([]client.Device, error) {
 
 func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
 	return s.locker.WithLock(ctx, func() error {
-		credentials, err := s.credentialsLocked(ctx)
+		credentials, err := s.withAccessRetryLocked(ctx, func(credentials Credentials) error {
+			return s.api.RevokeDevice(ctx, credentials.AccessToken, deviceID)
+		})
 		if err != nil {
-			return err
-		}
-		if err := s.api.RevokeDevice(ctx, credentials.AccessToken, deviceID); err != nil {
 			return err
 		}
 		if deviceID == credentials.DeviceID {
@@ -400,6 +419,26 @@ func (s *Service) RevokeDevice(ctx context.Context, deviceID string) error {
 		}
 		return nil
 	})
+}
+
+func (s *Service) withAccessRetryLocked(ctx context.Context, action func(Credentials) error) (Credentials, error) {
+	credentials, err := s.credentialsLocked(ctx)
+	if err != nil {
+		return Credentials{}, err
+	}
+	if err := action(credentials); err != nil {
+		if !client.IsCode(err, "access_expired") {
+			return credentials, err
+		}
+		credentials, err = s.refreshCredentialsLocked(ctx, credentials)
+		if err != nil {
+			return Credentials{}, err
+		}
+		if err := action(credentials); err != nil {
+			return credentials, err
+		}
+	}
+	return credentials, nil
 }
 
 func (s *Service) credentialsLocked(ctx context.Context) (Credentials, error) {
