@@ -88,7 +88,11 @@ is running.
 If the Node prerequisite upgrade fails before promotion, keep the current
 release active and PostgreSQL running, follow the Node upgrade receipt's
 journaled rollback/source-restore procedure from the staged candidate, and do
-not continue this runbook.
+not continue this runbook. Rollback accepts the receipted `inputs-backed-up`,
+`role-ready`, or `environment-bound` partial phase; it transactionally removes
+an already-created broker role, retains exact keys, restores inputs
+idempotently, and refuses completion until the active prior source and
+configuration digests match.
 
 **Hold point B0:** the Node upgrade receipt is exactly `environment-bound`;
 broker authentication and its exact privilege matrix, key inventory, and

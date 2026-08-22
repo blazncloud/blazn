@@ -100,6 +100,21 @@ sudo jq -e '.phase=="inputs-backed-up"' "$sql_root/ownership/node-broker-upgrade
 run_upgrade "$sql_root" >"$sql_root/sql-retry.out"
 sudo jq -e '.phase=="complete"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
 
+partial_sql_root=$(fixture partial-inputs-backed-up)
+if run_upgrade "$partial_sql_root" '' 1 >"$partial_sql_root/upgrade.out" 2>"$partial_sql_root/upgrade.err"; then printf 'partial SQL failure unexpectedly passed\n' >&2; exit 1; fi
+run_rollback "$partial_sql_root" >"$partial_sql_root/rollback.out"
+sudo jq -e '.phase=="rolled-back"' "$partial_sql_root/ownership/node-broker-upgrade.json" >/dev/null
+[ ! -e "$partial_sql_root/role-ready" ]
+
+for partial_phase in role-ready environment-bound; do
+  partial_root=$(fixture "partial-$partial_phase")
+  if run_upgrade "$partial_root" "$partial_phase" >"$partial_root/upgrade.out" 2>"$partial_root/upgrade.err"; then printf 'partial phase fault unexpectedly passed: %s\n' "$partial_phase" >&2; exit 1; fi
+  run_rollback "$partial_root" >"$partial_root/rollback.out"
+  sudo jq -e '.phase=="rolled-back"' "$partial_root/ownership/node-broker-upgrade.json" >/dev/null
+  [ ! -e "$partial_root/role-ready" ]
+  sudo test ! -e "$partial_root/etc/node-broker"
+done
+
 deferred_root=$(fixture deferred-config)
 run_upgrade "$deferred_root" '' 0 1 >"$deferred_root/deferred.out"
 sudo jq -e '.phase=="environment-bound"' "$deferred_root/ownership/node-broker-upgrade.json" >/dev/null

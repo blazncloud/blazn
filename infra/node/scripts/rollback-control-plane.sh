@@ -27,7 +27,7 @@ fi
 assert_regular_file_owned_mode "$UPGRADE_RECEIPT" 0 600
 jq -e '.schemaVersion=="blazn.dev/node-broker-upgrade/v2" and .owner=="blazn-poc"' "$UPGRADE_RECEIPT" >/dev/null || die "Node upgrade receipt is invalid"
 phase=$(jq -er .phase "$UPGRADE_RECEIPT")
-case "$phase" in complete|rollback-started|role-removed|secrets-retained|environment-restored|build-restored|main-restored|source-restore-required) ;; rolled-back) printf 'Node broker prerequisite rollback is already complete\n'; exit 0 ;; *) die "rollback requires a completed or recovering Node upgrade" ;; esac
+case "$phase" in inputs-backed-up|role-ready|environment-bound|complete|rollback-started|role-removed|secrets-retained|environment-restored|build-restored|main-restored|source-restore-required) ;; rolled-back) printf 'Node broker prerequisite rollback is already complete\n'; exit 0 ;; *) die "rollback requires a receipted prerequisite phase or recovering Node upgrade" ;; esac
 
 sync_path() { sync -f "$1"; }
 write_phase() {
@@ -42,7 +42,7 @@ restore_file() {
   tmp=$target.tmp.$$; cp --preserve=mode,timestamps -- "$backup" "$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$target"; sync_path "$(dirname -- "$target")"
 }
 
-if [ "$phase" = complete ]; then
+if [ "$phase" = complete ] || [ "$phase" = inputs-backed-up ] || [ "$phase" = role-ready ] || [ "$phase" = environment-bound ]; then
   correlation=${BLAZN_CORRELATION_ID:-manual}
   case "$correlation" in ''|*[!a-zA-Z0-9._-]*) die "rollback correlation ID is invalid" ;; esac
   retained=$RETAIN_PARENT/node-broker-rollback-$correlation
