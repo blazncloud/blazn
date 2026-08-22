@@ -140,6 +140,9 @@ func (c *Client) GetWorkspace(ctx context.Context, accessToken, workspaceID stri
 
 func (c *Client) UpdateWorkspace(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request UpdateWorkspaceRequest) (WorkspaceEnvelope, error) {
 	var output WorkspaceEnvelope
+	if request.ExpectedVersion < 1 {
+		return output, fmt.Errorf("expected version must be at least 1")
+	}
 	err := c.workspaceDo(ctx, http.MethodPatch, workspaceResourcePath(workspaceID), accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
 	return output, err
 }
@@ -180,6 +183,9 @@ func (c *Client) ListWorkspaceMembers(ctx context.Context, accessToken, workspac
 
 func (c *Client) UpdateWorkspaceMember(ctx context.Context, accessToken, workspaceID, userID, idempotencyKey string, request UpdateMembershipRequest) (Membership, error) {
 	var output Membership
+	if request.ExpectedVersion < 1 {
+		return output, fmt.Errorf("expected version must be at least 1")
+	}
 	path := workspaceResourcePath(workspaceID) + "/members/" + url.PathEscape(userID)
 	err := c.workspaceDo(ctx, http.MethodPatch, path, accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
 	return output, err
