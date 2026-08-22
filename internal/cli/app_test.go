@@ -55,7 +55,7 @@ func TestJSONHelpIsDeterministic(t *testing.T) {
 	if code != ExitSuccess || first != second {
 		t.Fatalf("JSON help differs:\n%s\n%s", first, second)
 	}
-	const want = "{\"command\":\"blazn\",\"usage\":\"blazn [--output human|json] <command>\",\"summary\":\"Control Blazn from the command line.\",\"commands\":[{\"name\":\"doctor\",\"summary\":\"Run offline readiness checks\"},{\"name\":\"help\",\"summary\":\"Show help for a command\"},{\"name\":\"uninstall\",\"summary\":\"Remove a receipt-owned direct installation\"},{\"name\":\"version\",\"summary\":\"Show build and contract version information\"}]}\n"
+	const want = "{\"command\":\"blazn\",\"usage\":\"blazn [--output human|json] <command>\",\"summary\":\"Control Blazn from the command line.\",\"commands\":[{\"name\":\"auth\",\"summary\":\"Authenticate this device and manage sessions\"},{\"name\":\"doctor\",\"summary\":\"Run offline readiness checks\"},{\"name\":\"help\",\"summary\":\"Show help for a command\"},{\"name\":\"uninstall\",\"summary\":\"Remove a receipt-owned direct installation\"},{\"name\":\"version\",\"summary\":\"Show build and contract version information\"}]}\n"
 	if first != want {
 		t.Fatalf("JSON help = %q, want %q", first, want)
 	}
