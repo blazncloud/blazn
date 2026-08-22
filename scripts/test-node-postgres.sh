@@ -71,6 +71,7 @@ REVOKE ALL ON DATABASE blazn FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
 GRANT USAGE ON SCHEMA public TO blazn_runtime, blazn_bootstrap, blazn_node_broker;
+GRANT CONNECT ON DATABASE blazn TO blazn_runtime;
 SQL
 
 for migration in "$repo_root"/services/control-api/migrations/*.sql; do
