@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/openapi.json; DO NOT EDIT.
-// Contract SHA256: 9e36d86d26ce60d7fe7b34612c4af5548f62202c2cfbd56af669d4e6dcf6d0c7
+// Contract SHA256: 6606869bb793465081d66c6f84769ae872c1048623c4d755585cffaf6ce801a2
 
 package client
 
@@ -41,6 +41,11 @@ type RefreshSessionRequest struct {
 	RefreshToken string `json:"refreshToken"`
 	DeviceID     string `json:"deviceId"`
 	Proof        string `json:"proof"`
+}
+
+type RevokeSessionRequest struct {
+	DeviceID string `json:"deviceId"`
+	Proof    string `json:"proof"`
 }
 
 type Session struct {
@@ -153,7 +158,7 @@ func (c *Client) RefreshSession(ctx context.Context, request RefreshSessionReque
 	return output, err
 }
 
-func (c *Client) RevokeSession(ctx context.Context, request RefreshSessionRequest) error {
+func (c *Client) RevokeSession(ctx context.Context, request RevokeSessionRequest) error {
 	return c.do(ctx, http.MethodPost, "/v1/auth/sessions/revoke", "", request, nil, http.StatusNoContent)
 }
 
