@@ -99,7 +99,7 @@ sudo chmod 0700 "$partial/secrets/.m2-v2-upgrade-staging"
 sudo sh -c "printf 'postgresql://blazn_bootstrap:%064d@postgres:5432/blazn\\n' 1 >'$partial/secrets/.m2-v2-upgrade-staging/bootstrap-database-url'"
 sudo sh -c "printf 'blaznruntime%016d\\n' 2 >'$partial/secrets/.m2-v2-upgrade-staging/s3-runtime-access-key'"
 sudo sh -c "printf '%064d\\n' 3 >'$partial/secrets/.m2-v2-upgrade-staging/s3-runtime-secret-key'"
-sudo chmod 0444 "$partial/secrets/.m2-v2-upgrade-staging"/*
+sudo sh -c 'chmod 0444 "$1"/*' sh "$partial/secrets/.m2-v2-upgrade-staging"
 sudo ln "$partial/secrets/s3-access-key" "$partial/secrets/s3-root-access-key"
 run_upgrade "$partial" >"$partial/resumed.out"
 sudo jq -e '.phase == "identity-ready"' "$partial/ownership/control-plane-v2-upgrade.json" >/dev/null
