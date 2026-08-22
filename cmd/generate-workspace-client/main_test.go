@@ -39,7 +39,7 @@ func TestWorkspaceContractAndPinnedDigestMatchGenerator(t *testing.T) {
 }
 
 func TestWorkspaceValidatorRejectsHeaderAndPathDrift(t *testing.T) {
-	document, encoded := checkedInWorkspaceContract(t)
+	_, encoded := checkedInWorkspaceContract(t)
 	var changed map[string]any
 	if err := json.Unmarshal(encoded, &changed); err != nil {
 		t.Fatal(err)
