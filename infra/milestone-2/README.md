@@ -138,6 +138,10 @@ commands run through `setpriv --clear-groups --reset-env`. Cleanup deletes only
 accounts and homes that exactly match the root receipt. Hashed IP/account
 rate-limit rows remain subject to normal bounded expiry rather than unsafe
 plaintext matching or deletion of potentially shared IP state.
+Both OS-account cleanup and database-identity cleanup use root-owned progress
+intents. User, group, home, database, local-file, and final-receipt boundaries
+are recorded atomically; retries validate either the exact receipted object or
+the exact intended absent state before continuing.
 `verify-live-workspace.sh` proves cross-tenant denial through authenticated API
 calls; database-role SQL is not treated as tenant-isolation evidence.
 

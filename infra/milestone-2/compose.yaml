@@ -281,12 +281,27 @@ services:
       POC_IDENTITY_PROFILE_FILE: /run/secrets/poc_identity_profile
       POC_IDENTITY_USER_ID_FILE: /run/secrets/poc_identity_user_id
       POC_IDENTITY_WORKSPACES_FILE: /run/secrets/poc_identity_workspaces
+      POC_IDENTITY_CLEANUP_INTENT_FILE: /run/secrets/poc_identity_cleanup_intent
     secrets:
       - migration_database_url
       - poc_identity_password
       - poc_identity_profile
       - poc_identity_user_id
       - poc_identity_workspaces
+      - poc_identity_cleanup_intent
+    networks:
+      - control
+
+  poc-identity-verify-cleanup:
+    image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}
+    profiles: ["poc-identity"]
+    command: ["node", "dist/poc-identity-verify-cleanup.js"]
+    environment:
+      POC_IDENTITY_DATABASE_URL_FILE: /run/secrets/migration_database_url
+      POC_IDENTITY_CLEANUP_INTENT_FILE: /run/secrets/poc_identity_cleanup_intent
+    secrets:
+      - migration_database_url
+      - poc_identity_cleanup_intent
     networks:
       - control
 
@@ -329,3 +344,5 @@ secrets:
     file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/user-id
   poc_identity_workspaces:
     file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/workspaces.json
+  poc_identity_cleanup_intent:
+    file: ${BLAZN_POC_IDENTITY_CLEANUP_INTENT:-/var/lib/blazn/ownership/poc-second-identity-cleanup.json}

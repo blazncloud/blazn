@@ -191,6 +191,11 @@ reference outside the receipted IDs, refuses a user-B-owned workspace, deletes
 the exact `poc-company-*` resources, authorizations, devices, sessions, and user
 in one database transaction, removes the isolated credential home, and retains
 a redacted cleaned receipt.
+Cleanup is restartable: separate root receipts journal each OS user/group/home
+and the database/files/final-receipt phases. A retry accepts an absent target
+only when the matching cleanup intent authorized it, and independently verifies
+that the POC user, references, recorded workspaces, devices, sessions, and
+authorizations are absent before finalizing.
 Hashed authentication rate-limit rows are intentionally retained for the
 server's bounded expiry cleanup because IP-scoped rows may be shared and the
 account key includes a non-exported authorization ID; guessing or deleting by

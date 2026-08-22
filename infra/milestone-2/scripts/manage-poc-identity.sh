@@ -22,11 +22,14 @@ load_control_api_image "$ROOT_DIR"
 
 identity_root=${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}
 receipt=${BLAZN_POC_IDENTITY_RECEIPT:-/var/lib/blazn/ownership/poc-second-identity.json}
+identity_cleanup_intent=${BLAZN_POC_IDENTITY_CLEANUP_INTENT:-/var/lib/blazn/ownership/poc-second-identity-cleanup.json}
 active_release_receipt=${BLAZN_ACTIVE_RELEASE_RECEIPT:-/var/lib/blazn/ownership/active-release.json}
 require_absolute_path BLAZN_POC_IDENTITY_ROOT "$identity_root"
 require_absolute_path BLAZN_POC_IDENTITY_RECEIPT "$receipt"
+require_absolute_path BLAZN_POC_IDENTITY_CLEANUP_INTENT "$identity_cleanup_intent"
 assert_not_symlink_chain "$identity_root"
 assert_not_symlink_chain "$receipt"
+assert_not_symlink_chain "$identity_cleanup_intent"
 assert_regular_file_owned_mode "$active_release_receipt" 0 600
 release_digest=$(jq -er '.releaseDigest | select(test("^sha256:[a-f0-9]{64}$"))' "$active_release_receipt")
 
@@ -127,21 +130,76 @@ case $action in
   cleanup)
     "$SCRIPT_DIR/manage-poc-cli-users.sh" cleanup >/dev/null
     assert_regular_file_owned_mode "$receipt" 0 600
-    validate_inputs
-    jq -e --arg profile "sha256:$(sha256_file "$profile")" --arg password "sha256:$(sha256_file "$password")" --arg workspaces "sha256:$(sha256_file "$workspaces")" \
-      '.status=="active" and .profileDigest==$profile and .passwordDigest==$password and .workspacesDigest==$workspaces' "$receipt" >/dev/null || die "POC identity cleanup inputs differ from their receipt"
-    result_tmp=$identity_root/cleanup-result.tmp.$$
-    compose_run poc-identity-cleanup >"$result_tmp"
-    jq -e --arg userId "$(sed -n '1p' "$user_id_file")" '.status=="cleaned" and .userId==$userId' "$result_tmp" >/dev/null || die "POC identity cleanup returned an unexpected result"
-    cleanup_counts=$(jq -c '{workspaceCount,deviceCount,authorizationCount}' "$result_tmp")
-    unlink "$result_tmp"
-    result_tmp=
-    for file in "$profile" "$password" "$user_id_file" "$workspaces"; do unlink "$file"; done
-    rmdir "$identity_root"
+    if jq -e '.schemaVersion=="blazn.dev/poc-second-identity/v1" and .status=="cleaned"' "$receipt" >/dev/null 2>&1; then
+      [ ! -e "$identity_root" ] || die "cleaned POC identity receipt still has an identity directory"
+      if [ -e "$identity_cleanup_intent" ]; then
+        assert_regular_file_owned_mode "$identity_cleanup_intent" 0 600
+        jq -e '.schemaVersion=="blazn.dev/poc-second-identity-cleanup/v1" and .progress.db==true and .progress.files==true' "$identity_cleanup_intent" >/dev/null || die "cleaned POC identity has an incomplete cleanup intent"
+        result_tmp=$(dirname -- "$identity_cleanup_intent")/poc-cleanup-verify.tmp.$$
+        compose_run poc-identity-verify-cleanup >"$result_tmp"
+        jq -e --arg userId "$(jq -er .userId "$identity_cleanup_intent")" '.status=="absent" and .userId==$userId' "$result_tmp" >/dev/null || die "cleaned POC identity database absence check failed"
+        unlink "$result_tmp"; result_tmp=
+        unlink "$identity_cleanup_intent"
+      fi
+      printf 'POC second identity is already cleaned\n'
+      exit 0
+    fi
+    if [ ! -e "$identity_cleanup_intent" ]; then
+      validate_inputs
+      jq -e --arg profile "sha256:$(sha256_file "$profile")" --arg password "sha256:$(sha256_file "$password")" --arg workspaces "sha256:$(sha256_file "$workspaces")" \
+        '.status=="active" and .profileDigest==$profile and .passwordDigest==$password and .workspacesDigest==$workspaces' "$receipt" >/dev/null || die "POC identity cleanup inputs differ from their receipt"
+      intent_tmp=$identity_cleanup_intent.tmp.$$
+      jq -cn --arg receiptDigest "sha256:$(sha256_file "$receipt")" --arg userId "$(sed -n '1p' "$user_id_file")" \
+        --argjson workspaceIds "$(jq -c .workspaceIds "$workspaces")" --arg profileDigest "sha256:$(sha256_file "$profile")" \
+        --arg passwordDigest "sha256:$(sha256_file "$password")" --arg userIdDigest "sha256:$(sha256_file "$user_id_file")" \
+        --arg workspacesDigest "sha256:$(sha256_file "$workspaces")" --arg correlationId "$BLAZN_CORRELATION_ID" --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
+        '{schemaVersion:"blazn.dev/poc-second-identity-cleanup/v1",receiptDigest:$receiptDigest,userId:$userId,workspaceIds:$workspaceIds,fileDigests:{"profile.json":$profileDigest,password:$passwordDigest,"user-id":$userIdDigest,"workspaces.json":$workspacesDigest},correlationId:$correlationId,fencingToken:$fencingToken,progress:{db:false,files:false}}' >"$intent_tmp"
+      chmod 0600 "$intent_tmp"
+      mv -- "$intent_tmp" "$identity_cleanup_intent"
+    fi
+    assert_regular_file_owned_mode "$identity_cleanup_intent" 0 600
+    jq -e --arg receiptDigest "sha256:$(sha256_file "$receipt")" --arg userId "$(jq -er .userId "$receipt")" \
+      '.schemaVersion=="blazn.dev/poc-second-identity-cleanup/v1" and .receiptDigest==$receiptDigest and .userId==$userId' "$identity_cleanup_intent" >/dev/null || die "POC identity cleanup intent differs from its active receipt"
+    if [ "$(jq -r .progress.db "$identity_cleanup_intent")" != true ]; then
+      validate_inputs
+      result_tmp=$identity_root/cleanup-result.tmp.$$
+      compose_run poc-identity-cleanup >"$result_tmp"
+      jq -e --arg userId "$(jq -er .userId "$identity_cleanup_intent")" '(.status=="cleaned" or .status=="already-cleaned") and .userId==$userId' "$result_tmp" >/dev/null || die "POC identity cleanup returned an unexpected result"
+      cleanup_counts=$(jq -c '{workspaceCount,deviceCount,authorizationCount}' "$result_tmp")
+      unlink "$result_tmp"; result_tmp=
+      next=$identity_cleanup_intent.next.$$
+      jq --argjson cleanupCounts "$cleanup_counts" '.progress.db=true | .cleanupCounts=$cleanupCounts' "$identity_cleanup_intent" >"$next"
+      chmod 0600 "$next"; mv -- "$next" "$identity_cleanup_intent"
+      [ "${BLAZN_POC_IDENTITY_CLEANUP_FAILPOINT:-}" != after-db ] || die "injected POC identity cleanup failure after database commit"
+    else
+      result_tmp=$(dirname -- "$identity_cleanup_intent")/poc-cleanup-verify.tmp.$$
+      compose_run poc-identity-verify-cleanup >"$result_tmp"
+      jq -e --arg userId "$(jq -er .userId "$identity_cleanup_intent")" '.status=="absent" and .userId==$userId' "$result_tmp" >/dev/null || die "POC identity database absence check failed"
+      unlink "$result_tmp"; result_tmp=
+    fi
+    if [ "$(jq -r .progress.files "$identity_cleanup_intent")" != true ]; then
+      for file in "$profile" "$password" "$user_id_file" "$workspaces"; do
+        name=$(basename -- "$file")
+        if [ -e "$file" ]; then
+          assert_regular_file_owned_mode "$file" 0 444
+          expected=$(jq -er --arg name "$name" '.fileDigests[$name]' "$identity_cleanup_intent")
+          [ "$expected" = "sha256:$(sha256_file "$file")" ] || die "POC identity cleanup file differs from its intent: $name"
+          unlink "$file"
+        fi
+      done
+      if [ -e "$identity_root" ]; then assert_directory_owned_mode "$identity_root" 0 700; rmdir "$identity_root"; fi
+      next=$identity_cleanup_intent.next.$$
+      jq '.progress.files=true' "$identity_cleanup_intent" >"$next"
+      chmod 0600 "$next"; mv -- "$next" "$identity_cleanup_intent"
+      [ "${BLAZN_POC_IDENTITY_CLEANUP_FAILPOINT:-}" != after-files ] || die "injected POC identity cleanup failure after files"
+    fi
     receipt_tmp=$receipt.tmp.$$
+    cleanup_counts=$(jq -c '.cleanupCounts // {workspaceCount:0,deviceCount:0,authorizationCount:0}' "$identity_cleanup_intent")
     jq --arg cleanedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --argjson cleanupCounts "$cleanup_counts" '.status="cleaned" | .cleanedAt=$cleanedAt | .cleanupCounts=$cleanupCounts' "$receipt" >"$receipt_tmp"
     chmod 0600 "$receipt_tmp"
     mv -- "$receipt_tmp" "$receipt"
+    [ "${BLAZN_POC_IDENTITY_CLEANUP_FAILPOINT:-}" != after-receipt ] || die "injected POC identity cleanup failure after receipt"
+    unlink "$identity_cleanup_intent"
     printf 'POC second identity, devices, sessions, and recorded qualification workspaces cleaned\n'
     ;;
 esac

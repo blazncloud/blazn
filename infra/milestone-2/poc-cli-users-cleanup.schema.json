@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/cli-users-cleanup-v1.json",
+  "type": "object",
+  "required": ["schemaVersion", "receiptDigest", "owner", "second", "progress", "correlationId", "fencingToken"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/poc-cli-users-cleanup/v1" },
+    "receiptDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "progress": {
+      "type": "object",
+      "required": ["owner", "second"],
+      "properties": {
+        "owner": { "$ref": "#/$defs/progress" },
+        "second": { "$ref": "#/$defs/progress" }
+      }
+    },
+    "correlationId": { "type": "string", "minLength": 1 },
+    "fencingToken": { "type": "integer", "minimum": 1 }
+  },
+  "$defs": {
+    "progress": {
+      "type": "object",
+      "required": ["user", "group", "home"],
+      "properties": {
+        "user": { "type": "boolean" },
+        "group": { "type": "boolean" },
+        "home": { "type": "boolean" }
+      }
+    }
+  }
+}

@@ -107,27 +107,83 @@ case $action in
       getent passwd "$owner_name" >/dev/null 2>&1 && die "cleaned POC owner OS user still exists"
       getent passwd "$second_name" >/dev/null 2>&1 && die "cleaned POC second OS user still exists"
       [ ! -e "$users_root" ] || die "cleaned POC CLI users root still exists"
+      if [ -e "$intent" ]; then
+        assert_regular_file_owned_mode "$intent" 0 600
+        jq -e '.schemaVersion=="blazn.dev/poc-cli-users-cleanup/v1" and ([.progress.owner[],.progress.second[]] | all)' "$intent" >/dev/null || die "cleaned POC CLI receipt has an incomplete cleanup intent"
+        unlink "$intent"
+      fi
       printf 'POC CLI users are already cleaned\n'
       exit 0
     fi
-    validate_receipt
+    assert_regular_file_owned_mode "$receipt" 0 600
+    if [ ! -e "$intent" ]; then
+      validate_receipt
+      intent_tmp=$intent.tmp.$$
+      receipt_digest=sha256:$(sha256_file "$receipt")
+      jq -cn --arg receiptDigest "$receipt_digest" --argjson owner "$(jq -c .owner "$receipt")" --argjson second "$(jq -c .second "$receipt")" \
+        --arg correlationId "$BLAZN_CORRELATION_ID" --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
+        '{schemaVersion:"blazn.dev/poc-cli-users-cleanup/v1",receiptDigest:$receiptDigest,owner:$owner,second:$second,correlationId:$correlationId,fencingToken:$fencingToken,progress:{owner:{user:false,group:false,home:false},second:{user:false,group:false,home:false}}}' >"$intent_tmp"
+      chmod 0600 "$intent_tmp"
+      mv -- "$intent_tmp" "$intent"
+    fi
+    assert_regular_file_owned_mode "$intent" 0 600
+    jq -e --arg receiptDigest "sha256:$(sha256_file "$receipt")" --arg ownerName "$owner_name" --arg ownerHome "$owner_home" --arg secondName "$second_name" --arg secondHome "$second_home" \
+      '.schemaVersion=="blazn.dev/poc-cli-users-cleanup/v1" and .receiptDigest==$receiptDigest and .owner.name==$ownerName and .owner.home==$ownerHome and .second.name==$secondName and .second.home==$secondHome' "$intent" >/dev/null || die "POC CLI cleanup intent differs from its active receipt"
+
+    mark_progress() {
+      progress_role=$1; progress_step=$2
+      next=$intent.next.$$
+      jq --arg role "$progress_role" --arg step "$progress_step" '.progress[$role][$step]=true' "$intent" >"$next"
+      chmod 0600 "$next"
+      mv -- "$next" "$intent"
+      [ "${BLAZN_POC_CLI_CLEANUP_FAILPOINT:-}" != "after-$progress_role-$progress_step" ] || die "injected POC CLI cleanup failure after $progress_role $progress_step"
+    }
+
     for role in second owner; do
-      case $role in second) account_name=$second_name; account_home=$second_home ;; owner) account_name=$owner_name; account_home=$owner_home ;; esac
-      account_uid=$(id -u "$account_name")
-      if command -v pgrep >/dev/null 2>&1 && pgrep -u "$account_uid" >/dev/null 2>&1; then die "POC CLI user still owns a running process: $account_name"; fi
-      findmnt -rn --mountpoint "$account_home" >/dev/null 2>&1 && die "POC CLI home is a mountpoint"
-      if find "$account_home" -xdev \( -type l -o ! -type d ! -type f \) -print | grep . >/dev/null; then die "POC CLI home contains a link or special file"; fi
-      userdel "$account_name"
-      find "$account_home" -xdev -type f -delete
-      find "$account_home" -xdev -depth -type d -empty -delete
-      if getent group "$account_name" >/dev/null 2>&1; then groupdel "$account_name"; fi
-      getent passwd "$account_name" >/dev/null 2>&1 && die "POC CLI user remained after cleanup"
+      account_name=$(jq -er --arg role "$role" '.[$role].name' "$intent")
+      account_home=$(jq -er --arg role "$role" '.[$role].home' "$intent")
+      account_uid=$(jq -er --arg role "$role" '.[$role].uid' "$intent")
+      account_gid=$(jq -er --arg role "$role" '.[$role].gid' "$intent")
+      if [ "$(jq -r --arg role "$role" '.progress[$role].user' "$intent")" != true ]; then
+        if getent passwd "$account_name" >/dev/null 2>&1; then
+          ids=$(validate_account "$account_name" "$account_home")
+          [ "$ids" = "$account_uid:$account_gid" ] || die "POC CLI user changed during cleanup"
+          if command -v pgrep >/dev/null 2>&1 && pgrep -u "$account_uid" >/dev/null 2>&1; then die "POC CLI user still owns a running process: $account_name"; fi
+          userdel "$account_name"
+        fi
+        getent passwd "$account_name" >/dev/null 2>&1 && die "POC CLI user remained after cleanup"
+        mark_progress "$role" user
+      fi
+      if [ "$(jq -r --arg role "$role" '.progress[$role].group' "$intent")" != true ]; then
+        if group_record=$(getent group "$account_name" 2>/dev/null); then
+          IFS=: read -r group_name _group_password group_gid group_members <<EOF
+$group_record
+EOF
+          [ "$group_name" = "$account_name" ] && [ "$group_gid" = "$account_gid" ] && [ -z "$group_members" ] || die "POC CLI primary group changed during cleanup"
+          groupdel "$account_name"
+        fi
+        getent group "$account_name" >/dev/null 2>&1 && die "POC CLI group remained after cleanup"
+        mark_progress "$role" group
+      fi
+      if [ "$(jq -r --arg role "$role" '.progress[$role].home' "$intent")" != true ]; then
+        if [ -e "$account_home" ]; then
+          assert_directory_owned_mode "$account_home" "$account_uid" 700
+          findmnt -rn --mountpoint "$account_home" >/dev/null 2>&1 && die "POC CLI home is a mountpoint"
+          if find "$account_home" -xdev \( -type l -o ! -type d ! -type f \) -print | grep . >/dev/null; then die "POC CLI home contains a link or special file"; fi
+          find "$account_home" -xdev -type f -delete
+          find "$account_home" -xdev -depth -type d -empty -delete
+        fi
+        [ ! -e "$account_home" ] || die "POC CLI home remained after cleanup"
+        mark_progress "$role" home
+      fi
     done
-    rmdir "$users_root"
+    if [ -e "$users_root" ]; then assert_directory_owned_mode "$users_root" 0 711; rmdir "$users_root"; fi
     receipt_tmp=$receipt.tmp.$$
     jq --arg cleanedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.status="cleaned" | .cleanedAt=$cleanedAt' "$receipt" >"$receipt_tmp"
     chmod 0600 "$receipt_tmp"
     mv -- "$receipt_tmp" "$receipt"
+    [ "${BLAZN_POC_CLI_CLEANUP_FAILPOINT:-}" != after-receipt ] || die "injected POC CLI cleanup failure after receipt"
+    unlink "$intent"
     printf 'receipt-owned POC CLI users and homes cleaned\n'
     ;;
 esac

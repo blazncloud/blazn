@@ -38,6 +38,7 @@ case "$1:$2" in
         [ "${FAKE_FAIL_AFTER_OUTPUT:-0}" -eq 0 ] || exit 44
         ;;
       *"poc-identity-cleanup") printf '{"status":"cleaned","userId":"123e4567-e89b-42d3-a456-426614174099","workspaceCount":1,"deviceCount":1,"authorizationCount":1}\n' ;;
+      *"poc-identity-verify-cleanup") printf '{"status":"absent","userId":"123e4567-e89b-42d3-a456-426614174099"}\n' ;;
       *) printf 'unexpected Compose call: %s\n' "$*" >&2; exit 97 ;;
     esac
     ;;
@@ -74,9 +75,12 @@ run_manage() {
     BLAZN_CONTROL_API_BUILD_RECEIPT="$fixture/ownership/build.json" \
     BLAZN_ACTIVE_RELEASE_RECEIPT="$fixture/ownership/active-release.json" \
     BLAZN_POC_IDENTITY_ROOT="$fixture/identity" BLAZN_POC_IDENTITY_RECEIPT="$fixture/ownership/identity.json" \
+    BLAZN_POC_IDENTITY_CLEANUP_INTENT="$fixture/ownership/identity-cleanup.json" \
     BLAZN_POC_CLI_USERS_ROOT="$fixture/cli-users" BLAZN_POC_CLI_USERS_RECEIPT="$fixture/ownership/cli-users.json" \
     BLAZN_POC_CLI_USERS_INTENT="$fixture/ownership/cli-users-intent.json" \
     BLAZN_POC_OWNER_OS_USER="$owner_os" BLAZN_POC_SECOND_OS_USER="$second_os" \
+    BLAZN_POC_CLI_CLEANUP_FAILPOINT="${FAKE_POC_CLI_FAILPOINT:-}" \
+    BLAZN_POC_IDENTITY_CLEANUP_FAILPOINT="${FAKE_POC_IDENTITY_FAILPOINT:-}" \
     "$MANAGE" "$action" "$@"
 }
 
@@ -117,6 +121,20 @@ fi
 
 printf '123e4567-e89b-42d3-a456-426614174088\n' | run_manage record-workspace >"$fixture/record.out"
 sudo jq -e '.workspaceIds==["123e4567-e89b-42d3-a456-426614174088"]' "$fixture/identity/workspaces.json" >/dev/null
+for failpoint in after-second-user after-second-group after-second-home after-owner-user after-owner-group after-owner-home after-receipt; do
+  if FAKE_POC_CLI_FAILPOINT=$failpoint run_manage cleanup >"$fixture/$failpoint.out" 2>"$fixture/$failpoint.err"; then
+    printf 'POC CLI cleanup failpoint unexpectedly passed: %s\n' "$failpoint" >&2
+    exit 1
+  fi
+  grep -F 'injected POC CLI cleanup failure' "$fixture/$failpoint.err" >/dev/null
+done
+for failpoint in after-db after-files after-receipt; do
+  if FAKE_POC_IDENTITY_FAILPOINT=$failpoint run_manage cleanup >"$fixture/identity-$failpoint.out" 2>"$fixture/identity-$failpoint.err"; then
+    printf 'POC identity cleanup failpoint unexpectedly passed: %s\n' "$failpoint" >&2
+    exit 1
+  fi
+  grep -F 'injected POC identity cleanup failure' "$fixture/identity-$failpoint.err" >/dev/null
+done
 run_manage cleanup >"$fixture/cleanup.out"
 [ ! -e "$fixture/identity" ]
 [ ! -e "$fixture/cli-users" ]

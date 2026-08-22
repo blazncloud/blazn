@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/identity-cleanup-v1.json",
+  "type": "object",
+  "required": ["schemaVersion", "receiptDigest", "userId", "workspaceIds", "fileDigests", "progress", "correlationId", "fencingToken"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/poc-second-identity-cleanup/v1" },
+    "receiptDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "userId": { "type": "string", "format": "uuid" },
+    "workspaceIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "format": "uuid" } },
+    "fileDigests": { "type": "object" },
+    "progress": {
+      "type": "object",
+      "required": ["db", "files"],
+      "properties": { "db": { "type": "boolean" }, "files": { "type": "boolean" } }
+    },
+    "correlationId": { "type": "string", "minLength": 1 },
+    "fencingToken": { "type": "integer", "minimum": 1 }
+  }
+}
