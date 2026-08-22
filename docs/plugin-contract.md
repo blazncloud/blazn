@@ -7,7 +7,8 @@ owns installation, verification, activation, rollback, and dispatch.
 Milestone 1 defines one plugin, `social`, from the private
 `blazncloud/blazn-social` repository. Its canonical namespace is
 `blazn social ...`; approved aliases are `person`, `company`, `contact`,
-`connections`, `content`, and `post`.
+`connections`, `content`, `post`, `evidence`, `entity`, `data`, and
+`providers`.
 
 ## Missing plugin behavior
 
@@ -35,6 +36,10 @@ only the catalog-pinned repository assets, verifies the OpenSSH signature and
 signed checksums, validates the strict manifest and core compatibility, checks
 the single-member archive, and atomically activates a receipt-owned executable.
 GitHub release metadata is not a trust root.
+
+Social releases use the independently pinned `blazn-social-release` signing
+identity and namespace so compromise of one product's release key does not
+authorize releases for the other.
 
 ## Manifest
 

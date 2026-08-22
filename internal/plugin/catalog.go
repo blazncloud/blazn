@@ -28,10 +28,10 @@ var socialDefinition = Definition{
 	Repository:         "blazncloud/blazn-social",
 	Executable:         "blazn-social",
 	CanonicalCommand:   "social",
-	Aliases:            []string{"person", "company", "contact", "connections", "content", "post"},
-	SigningIdentity:    "blazn-release",
-	SignatureNamespace: "blazn-release",
-	AllowedSigner:      `blazn-release namespaces="blazn-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIItePt9Lyq9CrhFeJ8VUdmH559u1x3sSxEUnVk0zbGp blazn-poc-release-v2`,
+	Aliases:            []string{"person", "company", "contact", "connections", "content", "post", "evidence", "entity", "data", "providers"},
+	SigningIdentity:    "blazn-social-release",
+	SignatureNamespace: "blazn-social-release",
+	AllowedSigner:      `blazn-social-release namespaces="blazn-social-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5dgrZCi276ezBnP1qZBMvwK8bRBAzkXhC5nk/VC7uT blazn-social-release-v1`,
 }
 
 func DefaultCatalog() Catalog {

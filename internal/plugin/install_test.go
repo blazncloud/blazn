@@ -14,7 +14,7 @@ import (
 func TestCandidateHandshakeMustMatchSignedManifest(t *testing.T) {
 	directory := t.TempDir()
 	expected := validManifest("v1.0.0")
-	encoded := `{"schemaVersion":1,"name":"social","version":"v1.0.0","protocolVersion":1,"minimumCoreVersion":"v1.0.0","executable":"blazn-social","commands":["social","person","company","contact","connections","content","post"]}`
+	encoded := `{"schemaVersion":1,"name":"social","version":"v1.0.0","protocolVersion":1,"minimumCoreVersion":"v1.0.0","executable":"blazn-social","commands":["social","person","company","contact","connections","content","post","evidence","entity","data","providers"]}`
 	binary := filepath.Join(directory, "blazn-social")
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' '"+encoded+"'\n"), 0o700); err != nil {
 		t.Fatal(err)

@@ -4,7 +4,7 @@ import "testing"
 
 func TestDefaultCatalogResolvesCanonicalAndAliases(t *testing.T) {
 	catalog := DefaultCatalog()
-	for _, command := range []string{"social", "person", "company", "contact", "connections", "content", "post"} {
+	for _, command := range []string{"social", "person", "company", "contact", "connections", "content", "post", "evidence", "entity", "data", "providers"} {
 		definition, ok := catalog.Resolve(command)
 		if !ok || definition.Name != "social" {
 			t.Fatalf("Resolve(%q) = %#v, %v", command, definition, ok)

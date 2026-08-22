@@ -96,3 +96,24 @@ func TestStoreRejectsConcurrentPluginMutation(t *testing.T) {
 		t.Fatalf("concurrent operation err=%v", err)
 	}
 }
+
+func TestRollbackRejectsTamperedRetainedVersion(t *testing.T) {
+	store, err := NewStoreAt(filepath.Join(t.TempDir(), "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, _ := DefaultCatalog().Plugin("social")
+	if _, err := store.Activate(definition, validManifest("v1.0.0"), candidate(t, t.TempDir(), "one")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Activate(definition, validManifest("v1.1.0"), candidate(t, t.TempDir(), "two")); err != nil {
+		t.Fatal(err)
+	}
+	retained := filepath.Join(store.root, "social", "versions", "v1.0.0", "blazn-social")
+	if err := os.WriteFile(retained, []byte("tampered retained version"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Rollback("social"); err == nil {
+		t.Fatal("rollback trusted a retained binary whose digest no longer matched its immutable receipt")
+	}
+}

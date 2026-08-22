@@ -94,19 +94,35 @@ func Compatible(coreVersion string, manifest Manifest) error {
 	return nil
 }
 
-type version [3]int
+type version struct {
+	major      int
+	minor      int
+	patch      int
+	prerelease []versionIdentifier
+}
+
+type versionIdentifier struct {
+	value   string
+	number  int
+	numeric bool
+}
 
 func parseVersion(value string) (version, error) {
 	if !semanticVersion.MatchString(value) || strings.Contains(value, "..") {
 		return version{}, errors.New("expected semantic version")
 	}
 	value = strings.TrimPrefix(value, "v")
-	value = strings.SplitN(strings.SplitN(value, "+", 2)[0], "-", 2)[0]
-	parts := strings.Split(value, ".")
+	value = strings.SplitN(value, "+", 2)[0]
+	core := value
+	prerelease := ""
+	if separator := strings.IndexByte(value, '-'); separator >= 0 {
+		core, prerelease = value[:separator], value[separator+1:]
+	}
+	parts := strings.Split(core, ".")
 	if len(parts) != 3 {
 		return version{}, errors.New("expected semantic version")
 	}
-	var result version
+	numbers := [3]int{}
 	for i, part := range parts {
 		if part == "" || (len(part) > 1 && part[0] == '0') {
 			return version{}, errors.New("expected semantic version")
@@ -115,19 +131,79 @@ func parseVersion(value string) (version, error) {
 		if err != nil || number < 0 {
 			return version{}, errors.New("expected semantic version")
 		}
-		result[i] = number
+		numbers[i] = number
+	}
+	result := version{major: numbers[0], minor: numbers[1], patch: numbers[2]}
+	if prerelease != "" {
+		for _, identifier := range strings.Split(prerelease, ".") {
+			if identifier == "" {
+				return version{}, errors.New("expected semantic version")
+			}
+			parsed := versionIdentifier{value: identifier}
+			if number, err := strconv.Atoi(identifier); err == nil {
+				if len(identifier) > 1 && identifier[0] == '0' {
+					return version{}, errors.New("numeric prerelease identifiers cannot contain leading zeroes")
+				}
+				parsed.number, parsed.numeric = number, true
+			}
+			result.prerelease = append(result.prerelease, parsed)
+		}
 	}
 	return result, nil
 }
 
 func compareVersion(a, b version) int {
-	for i := range a {
-		if a[i] < b[i] {
+	left := [3]int{a.major, a.minor, a.patch}
+	right := [3]int{b.major, b.minor, b.patch}
+	for i := range left {
+		if left[i] < right[i] {
 			return -1
 		}
-		if a[i] > b[i] {
+		if left[i] > right[i] {
 			return 1
 		}
+	}
+	if len(a.prerelease) == 0 && len(b.prerelease) == 0 {
+		return 0
+	}
+	if len(a.prerelease) == 0 {
+		return 1
+	}
+	if len(b.prerelease) == 0 {
+		return -1
+	}
+	limit := len(a.prerelease)
+	if len(b.prerelease) < limit {
+		limit = len(b.prerelease)
+	}
+	for i := 0; i < limit; i++ {
+		leftIdentifier, rightIdentifier := a.prerelease[i], b.prerelease[i]
+		switch {
+		case leftIdentifier.numeric && rightIdentifier.numeric:
+			if leftIdentifier.number < rightIdentifier.number {
+				return -1
+			}
+			if leftIdentifier.number > rightIdentifier.number {
+				return 1
+			}
+		case leftIdentifier.numeric:
+			return -1
+		case rightIdentifier.numeric:
+			return 1
+		default:
+			if leftIdentifier.value < rightIdentifier.value {
+				return -1
+			}
+			if leftIdentifier.value > rightIdentifier.value {
+				return 1
+			}
+		}
+	}
+	if len(a.prerelease) < len(b.prerelease) {
+		return -1
+	}
+	if len(a.prerelease) > len(b.prerelease) {
+		return 1
 	}
 	return 0
 }

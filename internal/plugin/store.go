@@ -120,6 +120,7 @@ func (s *Store) Activate(definition Definition, manifest Manifest, binary string
 	if err != nil {
 		return Receipt{}, err
 	}
+	versionReceipt := Receipt{SchemaVersion: 1, Name: definition.Name, Version: manifest.Version, BinarySHA256: digest, Executable: manifest.Executable, Manifest: manifest}
 	previous := ""
 	if installed, err := s.Current(definition.Name); err == nil {
 		previous = installed.Receipt.Version
@@ -148,6 +149,9 @@ func (s *Store) Activate(definition Definition, manifest Manifest, binary string
 		if err := writeJSONAtomic(stage, "manifest.json", manifest); err != nil {
 			return Receipt{}, err
 		}
+		if err := writeJSONAtomic(stage, "version.json", versionReceipt); err != nil {
+			return Receipt{}, err
+		}
 		if err := os.Rename(stage, versionDir); err != nil {
 			return Receipt{}, err
 		}
@@ -159,8 +163,8 @@ func (s *Store) Activate(definition Definition, manifest Manifest, binary string
 		if err != nil || existingDigest != digest {
 			return Receipt{}, errors.New("plugin version already exists with different contents")
 		}
-		existingManifest, err := readManifest(filepath.Join(versionDir, "manifest.json"))
-		if err != nil || existingManifest.Name != manifest.Name || existingManifest.Version != manifest.Version {
+		existingReceipt, err := readReceipt(filepath.Join(versionDir, "version.json"))
+		if err != nil || existingReceipt.Name != manifest.Name || existingReceipt.Version != manifest.Version || existingReceipt.BinarySHA256 != digest {
 			return Receipt{}, errors.New("plugin version already exists with invalid metadata")
 		}
 	}
@@ -192,16 +196,23 @@ func (s *Store) Rollback(name string) (Receipt, error) {
 		return Receipt{}, errors.New("plugin has no rollback version")
 	}
 	previousDir := filepath.Join(s.root, name, "versions", previous)
-	previousManifest, err := readManifest(filepath.Join(previousDir, "manifest.json"))
+	previousReceipt, err := readReceipt(filepath.Join(previousDir, "version.json"))
 	if err != nil {
 		return Receipt{}, errors.New("plugin rollback metadata is unavailable")
 	}
-	previousPath := filepath.Join(previousDir, previousManifest.Executable)
+	if previousReceipt.Name != name || previousReceipt.Version != previous || previousReceipt.PreviousVersion != "" {
+		return Receipt{}, errors.New("plugin rollback metadata is inconsistent")
+	}
+	previousPath := filepath.Join(previousDir, previousReceipt.Executable)
 	digest, err := fileSHA256(previousPath)
 	if err != nil {
 		return Receipt{}, errors.New("plugin rollback version is unavailable")
 	}
-	receipt := Receipt{SchemaVersion: 1, Name: name, Version: previous, BinarySHA256: digest, Executable: previousManifest.Executable, PreviousVersion: installed.Receipt.Version, Manifest: previousManifest}
+	if digest != previousReceipt.BinarySHA256 {
+		return Receipt{}, errors.New("plugin rollback version differs from its immutable receipt")
+	}
+	receipt := previousReceipt
+	receipt.PreviousVersion = installed.Receipt.Version
 	if err := writeJSONAtomic(filepath.Join(s.root, name), "current.json", receipt); err != nil {
 		return Receipt{}, err
 	}
@@ -238,13 +249,31 @@ func (s *Store) acquireLock(name string) (func(), error) {
 		return nil, errors.New("plugin name is invalid")
 	}
 	path := filepath.Join(s.root, "."+name+".lock")
-	if err := os.Mkdir(path, 0o700); err != nil {
-		if errors.Is(err, os.ErrExist) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !ok || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
+		_ = file.Close()
+		return nil, errors.New("plugin lock file is unsafe")
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
 			return nil, errors.New("plugin operation is already in progress")
 		}
 		return nil, err
 	}
-	return func() { _ = os.Remove(path) }, nil
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
 
 func ensurePrivateDirectory(path string) error {

@@ -80,7 +80,12 @@ func (s *Service) List() []Status {
 		status := Status{Name: definition.Name, Repository: definition.Repository, Commands: commands}
 		installed, err := s.Store.Current(definition.Name)
 		if err == nil {
-			status.Installed, status.Healthy, status.Version = true, true, installed.Receipt.Version
+			status.Installed, status.Version = true, installed.Receipt.Version
+			if compatibilityErr := Compatible(s.CoreVersion, installed.Receipt.Manifest); compatibilityErr != nil {
+				status.Message = compatibilityErr.Error()
+			} else {
+				status.Healthy = true
+			}
 		} else if errors.Is(err, os.ErrNotExist) {
 			status.Message = "not installed"
 		} else {
@@ -97,6 +102,9 @@ func (s *Service) Remove(name string) error              { return s.Store.Remove
 func (s *Service) Run(ctx context.Context, definition Definition, args []string, format string, streams Stdio) (int, error) {
 	installed, err := s.Store.Current(definition.Name)
 	if err != nil {
+		return 0, err
+	}
+	if err := Compatible(s.CoreVersion, installed.Receipt.Manifest); err != nil {
 		return 0, err
 	}
 	forwarded := append([]string(nil), args...)

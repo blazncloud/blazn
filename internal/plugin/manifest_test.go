@@ -6,7 +6,7 @@ import (
 )
 
 func validManifest(version string) Manifest {
-	return Manifest{SchemaVersion: 1, Name: "social", Version: version, ProtocolVersion: 1, MinimumCoreVersion: "v1.0.0", Executable: "blazn-social", Commands: []string{"social", "person", "company", "contact", "connections", "content", "post"}}
+	return Manifest{SchemaVersion: 1, Name: "social", Version: version, ProtocolVersion: 1, MinimumCoreVersion: "v1.0.0", Executable: "blazn-social", Commands: []string{"social", "person", "company", "contact", "connections", "content", "post", "evidence", "entity", "data", "providers"}}
 }
 
 func TestManifestStrictDecodeAndCompatibility(t *testing.T) {
@@ -37,5 +37,20 @@ func TestManifestRejectsUnsafeExecutableAndDuplicateCommands(t *testing.T) {
 	manifest.Commands = append(manifest.Commands, "person")
 	if err := manifest.Validate(); err == nil {
 		t.Fatal("duplicate command accepted")
+	}
+}
+
+func TestCompatibilityHonorsSemanticPrereleasePrecedence(t *testing.T) {
+	manifest := validManifest("v1.2.0")
+	manifest.MinimumCoreVersion = "v1.0.0"
+	if err := Compatible("v1.0.0-alpha.1", manifest); err == nil {
+		t.Fatal("prerelease core accepted as the final minimum release")
+	}
+	manifest.MinimumCoreVersion = "v1.0.0-alpha.1"
+	if err := Compatible("v1.0.0-alpha.2", manifest); err != nil {
+		t.Fatalf("newer prerelease rejected: %v", err)
+	}
+	if _, err := parseVersion("v1.0.0-alpha.01"); err == nil {
+		t.Fatal("numeric prerelease identifier with a leading zero was accepted")
 	}
 }
