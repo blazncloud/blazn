@@ -195,16 +195,6 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          tag_created=0
-          cleanup_tag() {
-            if [[ "$tag_created" == 1 ]]; then
-              current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --jq .object.sha 2>/dev/null || true)
-              if [[ "$current" == "$SOURCE_SHA" ]]; then
-                gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$VERSION" >/dev/null || true
-              fi
-            fi
-          }
-          trap cleanup_tag EXIT
           gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" >/dev/null 2>&1 && {
             echo "tag already exists: $VERSION" >&2
             exit 1
@@ -212,13 +202,11 @@ jobs:
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f ref="refs/tags/$VERSION" \
             -f sha="$SOURCE_SHA" >/dev/null
-          tag_created=1
           gh release create "$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "Blazn $VERSION" \
             --generate-notes
-          tag_created=0
 
   post-promotion-smoke:
     if: inputs.mode == 'publish' && github.ref == 'refs/heads/main'
