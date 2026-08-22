@@ -11,12 +11,14 @@
 package proxycontract
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -871,11 +873,11 @@ func (e NormalizedError) Validate() error {
 	return nil
 }
 
-// ContractDigest returns the deterministic digest used by activation records.
-// Proxy contract values contain only JSON primitives whose encoding is identical
-// under encoding/json and RFC 8785 (integer numbers and no HTML-sensitive text).
+// ContractDigest returns the RFC 8785 canonical JSON digest used by activation
+// records. Activation schemas contain integer numbers; non-integer numbers are
+// rejected here instead of risking a non-canonical cross-runtime encoding.
 func ContractDigest(value any) (string, error) {
-	encoded, err := json.Marshal(value)
+	encoded, err := canonicalJSON(value)
 	if err != nil {
 		return "", err
 	}
@@ -901,6 +903,85 @@ func VerifyContractChecksum(value any, expected string) error {
 	}
 	if actual != expected {
 		return fmt.Errorf("checksum mismatch: got %s want %s", actual, expected)
+	}
+	return nil
+}
+func canonicalJSON(value any) ([]byte, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var decoded any
+	if err = decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	var output bytes.Buffer
+	if err = writeCanonical(&output, decoded); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+func writeCanonical(output *bytes.Buffer, value any) error {
+	switch typed := value.(type) {
+	case nil:
+		output.WriteString("null")
+	case bool:
+		if typed {
+			output.WriteString("true")
+		} else {
+			output.WriteString("false")
+		}
+	case string:
+		var encoded bytes.Buffer
+		encoder := json.NewEncoder(&encoded)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(typed); err != nil {
+			return err
+		}
+		text := strings.TrimSuffix(encoded.String(), "\n")
+		text = strings.ReplaceAll(text, `\u2028`, "\u2028")
+		text = strings.ReplaceAll(text, `\u2029`, "\u2029")
+		output.WriteString(text)
+	case json.Number:
+		if strings.ContainsAny(string(typed), ".eE") {
+			return errors.New("activation canonical JSON forbids non-integer numbers")
+		}
+		output.WriteString(string(typed))
+	case []any:
+		output.WriteByte('[')
+		for index, item := range typed {
+			if index > 0 {
+				output.WriteByte(',')
+			}
+			if err := writeCanonical(output, item); err != nil {
+				return err
+			}
+		}
+		output.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		output.WriteByte('{')
+		for index, key := range keys {
+			if index > 0 {
+				output.WriteByte(',')
+			}
+			if err := writeCanonical(output, key); err != nil {
+				return err
+			}
+			output.WriteByte(':')
+			if err := writeCanonical(output, typed[key]); err != nil {
+				return err
+			}
+		}
+		output.WriteByte('}')
+	default:
+		return fmt.Errorf("unsupported canonical JSON value %T", value)
 	}
 	return nil
 }
