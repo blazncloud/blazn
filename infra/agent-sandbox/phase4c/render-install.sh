@@ -35,6 +35,7 @@ awk '
 function reset_doc() { doc=""; kind=""; name=""; inmeta=0 }
 function emit_doc(    skip) {
   if (doc == "") return
+  if (inmeta && !has_annotations) doc = doc "  annotations:\n    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] "\n"
   skip = ((kind == "Role" && name == "agent-sandbox-controller") ||
           (kind == "RoleBinding" && name == "agent-sandbox-controller") ||
           (kind == "ClusterRole" && (name == "agent-sandbox-controller" || name == "agent-sandbox-controller-extensions")) ||
