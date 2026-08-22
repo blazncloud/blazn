@@ -95,6 +95,12 @@ with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-i
 restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host only
 ```
 
+For an existing installation or reviewed source update, run
+`build-control-api.sh` under the control-plane lock, review its source/image
+receipt, then run `update-receipt-config.sh` in a separate lock operation before
+starting the service. Startup rebuilds and verifies but never silently
+reconciles a changed image into the main receipt.
+
 The dependency installer places the pinned Compose plugin under the dedicated
 `/etc/blazn/docker-cli` configuration root. The systemd unit sets that exact
 `DOCKER_CONFIG`, and backup/verification scripts set it internally, avoiding a
