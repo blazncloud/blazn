@@ -22,6 +22,7 @@ CREATE TABLE nodes (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id, workspace_id),
+  UNIQUE (id, workspace_id, kubernetes_node_uid),
   CHECK ((kubernetes_cluster_id IS NOT NULL) = (kubernetes_node_name IS NOT NULL)
     AND (kubernetes_cluster_id IS NOT NULL) = (kubernetes_node_uid IS NOT NULL)
     AND (kubernetes_cluster_id IS NOT NULL) = (kubernetes_resource_version IS NOT NULL)),
@@ -192,7 +193,8 @@ CREATE TABLE node_operations (
   FOREIGN KEY (receipt_id, id, workspace_id, node_id, type)
     REFERENCES node_operation_receipts(id, operation_id, workspace_id, node_id, operation_type)
     DEFERRABLE INITIALLY DEFERRED,
-  CHECK ((status IN ('succeeded', 'failed', 'cancelled', 'partial', 'recovery_required')) = (completed_at IS NOT NULL))
+  CHECK ((status IN ('succeeded', 'failed', 'cancelled', 'partial', 'recovery_required')) = (completed_at IS NOT NULL)),
+  CHECK ((status IN ('succeeded', 'failed', 'cancelled', 'partial', 'recovery_required')) = (receipt_id IS NOT NULL))
 );
 
 ALTER TABLE node_operation_receipts ADD CONSTRAINT node_operation_receipt_operation_fk
@@ -235,7 +237,9 @@ CREATE TABLE node_join_issuances (
   FOREIGN KEY (enrollment_id, workspace_id) REFERENCES node_enrollments(id, workspace_id),
   FOREIGN KEY (plan_id, workspace_id, enrollment_id, node_id)
     REFERENCES node_install_plans(id, workspace_id, enrollment_id, node_id),
-  FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE
+  FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (node_id, workspace_id, joined_node_uid)
+    REFERENCES nodes(id, workspace_id, kubernetes_node_uid)
 );
 
 CREATE TABLE node_audit_events (
