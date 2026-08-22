@@ -158,6 +158,19 @@ func TestPluginHelpNeverInstalls(t *testing.T) {
 	}
 }
 
+func TestPluginCSVHelpNeverInstallsAndIsParseable(t *testing.T) {
+	for _, args := range [][]string{{"social", "--help", "--output=csv"}, {"person", "--help", "--output=csv"}} {
+		fake := &fakePlugins{}
+		app, stdout, stderr := pluginApp("yes\n", true, fake)
+		if code := app.Run(args); code != ExitSuccess {
+			t.Fatalf("args=%v code=%d", args, code)
+		}
+		if fake.installs != 0 || fake.runs != 0 || stderr.String() != "" || !strings.HasPrefix(stdout.String(), "command,usage,summary,subcommand,subcommand_summary\n") {
+			t.Fatalf("args=%v fake=%#v stdout=%q stderr=%q", args, fake, stdout, stderr)
+		}
+	}
+}
+
 func TestPluginCommandsRequireConfirmation(t *testing.T) {
 	fake := &fakePlugins{}
 	app, _, stderr := pluginApp("", false, fake)

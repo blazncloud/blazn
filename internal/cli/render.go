@@ -104,6 +104,23 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 	if format == OutputJSON || format == OutputJSONL {
 		return a.writeJSON(output)
 	}
+	if format == OutputCSV {
+		writer := csv.NewWriter(a.stdout)
+		_ = writer.Write([]string{"command", "usage", "summary", "subcommand", "subcommand_summary"})
+		if len(output.Commands) == 0 {
+			_ = writer.Write([]string{output.Command, output.Usage, output.Summary, "", ""})
+		} else {
+			for _, command := range output.Commands {
+				_ = writer.Write([]string{output.Command, output.Usage, output.Summary, command.Name, command.Summary})
+			}
+		}
+		writer.Flush()
+		if err := writer.Error(); err != nil {
+			fmt.Fprintf(a.stderr, "blazn: failed to write output: %v\n", err)
+			return ExitFailure
+		}
+		return ExitSuccess
+	}
 
 	fmt.Fprintln(a.stdout, output.Summary)
 	fmt.Fprintln(a.stdout)
