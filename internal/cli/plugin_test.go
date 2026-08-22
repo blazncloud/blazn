@@ -64,6 +64,30 @@ func TestMissingContentPluginApproveInstallsAndReplaysCanonicalCommand(t *testin
 	}
 }
 
+func TestMissingContentPluginDeclineDoesNotInstall(t *testing.T) {
+	fake := &fakePlugins{}
+	app, stdout, stderr := pluginApp("n\n", true, fake)
+	if code := app.Run([]string{"content", "doctor"}); code != ExitUnavailable {
+		t.Fatalf("code=%d", code)
+	}
+	if fake.installs != 0 || fake.runs != 0 || stdout.String() != "" || !strings.Contains(stderr.String(), "blazn-content") {
+		t.Fatalf("unexpected state: %#v stdout=%q stderr=%q", fake, stdout, stderr)
+	}
+}
+
+func TestContentPluginHelpNeverInstalls(t *testing.T) {
+	for _, args := range [][]string{{"content", "--help"}, {"image", "--help"}} {
+		fake := &fakePlugins{}
+		app, stdout, stderr := pluginApp("yes\n", true, fake)
+		if code := app.Run(args); code != ExitSuccess {
+			t.Fatalf("args=%v code=%d", args, code)
+		}
+		if fake.installs != 0 || fake.runs != 0 || !strings.Contains(stdout.String(), "signed content plugin") || stderr.String() != "" {
+			t.Fatalf("args=%v unexpected state: %#v stdout=%q stderr=%q", args, fake, stdout, stderr)
+		}
+	}
+}
+
 func TestMissingContentPluginMachineModeNamesExactInstall(t *testing.T) {
 	fake := &fakePlugins{}
 	app, stdout, _ := pluginApp("yes\n", true, fake)
