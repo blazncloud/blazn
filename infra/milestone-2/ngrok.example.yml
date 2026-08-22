@@ -1,12 +1,8 @@
 version: "3"
-tunnels:
-  blazn-api:
-    proto: http
-    addr: http://127.0.0.1:58080
-    domain: blazn.benpelo.com
-    schemes: [https]
+agent:
+  authtoken: REPLACE_WITH_DEDICATED_BLAZN_NGROK_TOKEN
 
-# This file deliberately exposes only the loopback API listener. PostgreSQL,
-# the S3 API, and the S3 administration console have no ngrok tunnel.
-# The ngrok service receives NGROK_AUTHTOKEN from its separate root-owned
-# service environment; ngrok config files do not perform shell interpolation.
+# Install as /etc/blazn/ngrok/ngrok.yml, root:blazn-ngrok mode 0640. The system
+# units pass the API-only upstream and URL explicitly. The authenticated traffic
+# policy is generated separately from a root-only secret and is never stored in
+# this template or passed in argv.

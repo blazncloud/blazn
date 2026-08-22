@@ -36,6 +36,7 @@ s3_root_access_key=blaznroot$(openssl rand -hex 8)
 s3_root_secret_key=$(openssl rand -hex 32)
 s3_runtime_access_key=blaznruntime$(openssl rand -hex 8)
 s3_runtime_secret_key=$(openssl rand -hex 32)
+proxy_auth_secret=$(openssl rand -hex 32)
 initial_password=$(openssl rand -hex 24)
 printf '%s\n' "$postgres_password" >"$SECRETS_ROOT/postgres-password"
 printf 'postgresql://%s:%s@postgres:5432/%s\n' \
@@ -48,10 +49,17 @@ printf '%s\n' "$s3_root_access_key" >"$SECRETS_ROOT/s3-root-access-key"
 printf '%s\n' "$s3_root_secret_key" >"$SECRETS_ROOT/s3-root-secret-key"
 printf '%s\n' "$s3_runtime_access_key" >"$SECRETS_ROOT/s3-runtime-access-key"
 printf '%s\n' "$s3_runtime_secret_key" >"$SECRETS_ROOT/s3-runtime-secret-key"
+printf '%s\n' "$proxy_auth_secret" >"$SECRETS_ROOT/proxy-auth-secret"
 printf '%s\n' "$initial_password" >"$SECRETS_ROOT/initial-password"
 # The parent directory is root-only. Compose bind-mounts only the named files;
 # mode 0444 lets explicitly configured non-root container users read them.
 chmod 0444 -- "$SECRETS_ROOT"/*
+
+"$SCRIPT_DIR/build-control-api.sh" >/dev/null
+CONTROL_API_BUILD_RECEIPT=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
+control_api_source=$(jq -er .sourceDigest "$CONTROL_API_BUILD_RECEIPT")
+control_api_image=$(jq -er .image "$CONTROL_API_BUILD_RECEIPT")
+control_api_image_id=$(jq -er .imageId "$CONTROL_API_BUILD_RECEIPT")
 
 config_digest=$(control_plane_config_digest "$ROOT_DIR")
 host=$(hostname)
@@ -70,11 +78,14 @@ jq -cn \
   --arg minioImage "$MINIO_IMAGE" \
   --arg minioMcImage "$MINIO_MC_IMAGE" \
   --arg configDigest "sha256:$config_digest" \
+  --arg controlApiSource "$control_api_source" \
+  --arg controlApiImage "$control_api_image" \
+  --arg controlApiImageId "$control_api_image_id" \
   --argjson postgresPort "${POSTGRES_PORT:-55432}" \
   --argjson s3Port "${S3_PORT:-59000}" \
   --argjson s3ConsolePort "${S3_CONSOLE_PORT:-59001}" \
   --argjson apiPort "${API_PORT:-58080}" \
-  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
+  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
   >"$receipt_tmp"
 chmod 0600 "$receipt_tmp"
 mv -- "$receipt_tmp" "$RECEIPT_PATH"

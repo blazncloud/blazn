@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/control-api-build-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sourceDigest", "image", "imageId", "builtAt"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/control-api-build/v1" },
+    "sourceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "image": { "const": "blazn-control-api:managed" },
+    "imageId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "builtAt": { "type": "string", "format": "date-time" }
+  }
+}

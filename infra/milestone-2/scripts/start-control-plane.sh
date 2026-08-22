@@ -13,5 +13,6 @@ export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
 assert_regular_file_owned_mode "$ENV_FILE" 0 600
 
+"$SCRIPT_DIR/build-control-api.sh"
 "$SCRIPT_DIR/preflight.sh" --deploy
 docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" up --detach --wait --remove-orphans

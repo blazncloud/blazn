@@ -127,6 +127,34 @@ sha256_file() {
   sha256sum "$1" | awk '{ print $1 }'
 }
 
+control_api_source_digest() {
+  infra_root=$1
+  repo_root=$(CDPATH='' cd -- "$infra_root/../.." && pwd)
+  (
+    cd "$repo_root"
+    export LC_ALL=C
+    {
+      printf '%s\0' \
+        services/control-api/Dockerfile \
+        services/control-api/package.json \
+        services/control-api/package-lock.json \
+        services/control-api/tsconfig.json
+      find services/control-api/src services/control-api/migrations packages/contracts -type f -print0
+    } | sort -z | xargs -0 sha256sum
+  ) | sha256sum | awk '{ print $1 }'
+}
+
+validate_control_api_build() {
+  infra_root=$1
+  build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
+  assert_regular_file_owned_mode "$build_receipt" 0 600
+  source_digest=sha256:$(control_api_source_digest "$infra_root")
+  image_id=$(docker image inspect blazn-control-api:managed --format '{{.Id}}') || die "managed control API image is unavailable"
+  jq -e --arg sourceDigest "$source_digest" --arg imageId "$image_id" \
+    '.schemaVersion == "blazn.dev/control-api-build/v1" and .image == "blazn-control-api:managed" and .sourceDigest == $sourceDigest and .imageId == $imageId' \
+    "$build_receipt" >/dev/null || die "control API build receipt does not match source and image"
+}
+
 control_plane_config_digest() {
   root=$1
   (
@@ -141,5 +169,6 @@ control_plane_config_digest() {
       systemd/blazn-control-plane.service \
       systemd/blazn-ngrok.service \
       systemd/blazn-ngrok-qualification.service
+    printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"
   ) | sha256sum | awk '{ print $1 }'
 }

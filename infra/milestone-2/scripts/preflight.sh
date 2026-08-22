@@ -108,6 +108,11 @@ if [ "$MODE" = deploy ]; then
   require_command docker
   require_command jq
   require_command sha256sum
+  validate_control_api_build "$ROOT_DIR"
+  control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
+  control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
+  control_api_image=$(jq -er .image "$control_api_build_receipt")
+  control_api_image_id=$(jq -er .imageId "$control_api_build_receipt")
   [ "${PUBLIC_URL:-}" = https://blazn.benpelo.com ] || die "PUBLIC_URL must be https://blazn.benpelo.com for the live POC deployment"
   [ -n "${BLAZN_INITIAL_LOGIN:-}" ] || die "BLAZN_INITIAL_LOGIN is required"
   [ "${BLAZN_INITIAL_LOGIN:-}" != admin@example.invalid ] || die "the placeholder BLAZN_INITIAL_LOGIN is forbidden for deployment"
@@ -129,6 +134,9 @@ if [ "$MODE" = deploy ]; then
     --arg backupSource "$BLAZN_BACKUP_SOURCE" \
     --arg backupFstype "$BLAZN_BACKUP_FSTYPE" \
     --arg configDigest "$config_digest" \
+    --arg controlApiSource "$control_api_source" \
+    --arg controlApiImage "$control_api_image" \
+    --arg controlApiImageId "$control_api_image_id" \
     --arg postgresImage "$POSTGRES_IMAGE" \
     --arg minioImage "$MINIO_IMAGE" \
     --arg minioMcImage "$MINIO_MC_IMAGE" \
@@ -140,11 +148,12 @@ if [ "$MODE" = deploy ]; then
      .owner == "blazn-poc" and .host == $host and
      .paths == {data:$data,backup:$backup,secrets:$secrets} and
      .backupMount == {target:$backupMount,source:$backupSource,fstype:$backupFstype} and
+     .controlApi == {sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId} and
      .ports == [$postgresPort,$s3Port,$s3ConsolePort,$apiPort] and
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key; do
+  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
     assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444
   done
 fi

@@ -26,6 +26,7 @@ for expected in \
   'PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}' \
   'TRUSTED_PROXY_CIDRS: 172.18.0.1/32' \
   'TRUSTED_PROXY_HOPS: "1"' \
+  'TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret' \
   'S3_ENDPOINT: http://object:9000' \
   'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
   'S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key'; do
@@ -36,6 +37,7 @@ for expected in \
 done
 grep -F 'subnet: 172.18.0.0/16' "$compose" >/dev/null
 grep -F 'gateway: 172.18.0.1' "$compose" >/dev/null
+grep -F 'image: blazn-control-api:managed' "$compose" >/dev/null
 
 # These strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
@@ -84,16 +86,11 @@ if grep -E 'SUPERUSER|CREATEDB|CREATEROLE|REPLICATION' "$ROOT_DIR/postgres-init/
   exit 1
 fi
 
-grep -F 'addr: http://127.0.0.1:58080' "$ngrok" >/dev/null
-grep -F 'domain: blazn.benpelo.com' "$ngrok" >/dev/null
+grep -F 'REPLACE_WITH_DEDICATED_BLAZN_NGROK_TOKEN' "$ngrok" >/dev/null
 # This is intentionally the literal shell-style interpolation token.
 # shellcheck disable=SC2016
 if grep -F '${NGROK_AUTHTOKEN}' "$ngrok" >/dev/null; then
   printf 'ngrok config incorrectly relies on shell interpolation\n' >&2
-  exit 1
-fi
-if grep -E '^[[:space:]]+addr:' "$ngrok" | grep -Ev 'http://127\.0\.0\.1:58080$' >/dev/null; then
-  printf 'ngrok config exposes a data-plane endpoint\n' >&2
   exit 1
 fi
 grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
@@ -107,6 +104,13 @@ if grep -F 'compose up' "$ROOT_DIR/scripts/run-control-plane.sh" >/dev/null; the
   exit 1
 fi
 grep -F 'up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
+build_script=$ROOT_DIR/scripts/build-control-api.sh
+grep -F 'docker compose' "$build_script" >/dev/null
+grep -F 'build api' "$build_script" >/dev/null
+grep -F 'docker image inspect blazn-control-api:managed' "$build_script" >/dev/null
+grep -F 'build-control-api.sh' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
+grep -F 'services/control-api/src services/control-api/migrations packages/contracts' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'controlApi' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
 grep -F 'Restart=on-failure' "$unit" >/dev/null
 if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
   printf 'Docker still owns a control-plane restart policy\n' >&2
@@ -114,6 +118,23 @@ if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
 fi
 grep -F -- '--url https://blazn.benpelo.com' "$ngrok_unit" >/dev/null
 grep -F 'with-public-origin-lock.sh permanent' "$ngrok_unit" >/dev/null
+grep -F '/usr/bin/setpriv --reuid=blazn-ngrok' "$ngrok_unit" >/dev/null
+grep -F -- '--traffic-policy-file /run/blazn-ngrok/traffic-policy.yml' "$ngrok_unit" >/dev/null
+grep -F 'prepare-ngrok-policy.sh' "$ngrok_unit" >/dev/null
+grep -F 'install-ngrok-user.sh --validate-only' "$ngrok_unit" >/dev/null
+if grep -F 'homeai.yml' "$ngrok_unit" >/dev/null; then
+  printf 'Blazn ngrok unit still depends on the existing HomeAI user config\n' >&2
+  exit 1
+fi
+policy_script=$ROOT_DIR/scripts/prepare-ngrok-policy.sh
+remove_line=$(grep -n 'type: remove-headers' "$policy_script" | cut -d: -f1)
+add_line=$(grep -n 'type: add-headers' "$policy_script" | cut -d: -f1)
+[ "$remove_line" -lt "$add_line" ] || { printf 'proxy-auth header is not removed before injection\n' >&2; exit 1; }
+grep -F 'x-blazn-proxy-authorization' "$policy_script" >/dev/null
+if grep -F 'proxy_auth_secret' "$ngrok_unit" >/dev/null; then
+  printf 'proxy authentication secret path leaked into ngrok argv\n' >&2
+  exit 1
+fi
 grep -F -- '--inspect=false' "$ngrok_unit" >/dev/null
 grep -F '127.0.0.1:58080' "$ngrok_unit" >/dev/null
 grep -F 'export DOCKER_CONFIG=' "$ROOT_DIR/scripts/backup.sh" >/dev/null

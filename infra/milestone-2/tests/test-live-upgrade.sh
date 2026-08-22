@@ -90,9 +90,9 @@ grep -F 'identity-ready' "$normal/run-1.out" >/dev/null
 sudo jq -e '.phase == "identity-ready" and .identityValidatedAt' "$normal/ownership/control-plane-v2-upgrade.json" >/dev/null
 [ "$(sudo sha256sum "$normal/secrets/s3-access-key" | awk '{print $1}')" = "$(sudo sha256sum "$normal/secrets/s3-root-access-key" | awk '{print $1}')" ]
 [ "$(sudo sha256sum "$normal/secrets/s3-secret-key" | awk '{print $1}')" = "$(sudo sha256sum "$normal/secrets/s3-root-secret-key" | awk '{print $1}')" ]
-before=$(sudo sha256sum "$normal/secrets/bootstrap-database-url" "$normal/secrets/s3-runtime-access-key" "$normal/secrets/s3-runtime-secret-key")
+before=$(sudo sha256sum "$normal/secrets/bootstrap-database-url" "$normal/secrets/s3-runtime-access-key" "$normal/secrets/s3-runtime-secret-key" "$normal/secrets/proxy-auth-secret")
 run_upgrade "$normal" >"$normal/run-2.out"
-after=$(sudo sha256sum "$normal/secrets/bootstrap-database-url" "$normal/secrets/s3-runtime-access-key" "$normal/secrets/s3-runtime-secret-key")
+after=$(sudo sha256sum "$normal/secrets/bootstrap-database-url" "$normal/secrets/s3-runtime-access-key" "$normal/secrets/s3-runtime-secret-key" "$normal/secrets/proxy-auth-secret")
 [ "$before" = "$after" ] || { printf 'idempotent retry changed generated secrets\n' >&2; exit 1; }
 if grep -E 'oldroot|postgresql://|[a-f0-9]{48,}' "$normal"/*.out >/dev/null; then
   printf 'live upgrade emitted secret material\n' >&2

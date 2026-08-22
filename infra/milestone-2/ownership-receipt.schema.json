@@ -10,6 +10,7 @@
     "createdAt",
     "paths",
     "backupMount",
+    "controlApi",
     "ports",
     "units",
     "images",
@@ -43,6 +44,16 @@
         "target": { "type": "string", "minLength": 1 },
         "source": { "type": "string", "minLength": 1 },
         "fstype": { "type": "string", "minLength": 1 }
+      }
+    },
+    "controlApi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceDigest", "image", "imageId"],
+      "properties": {
+        "sourceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "image": { "const": "blazn-control-api:managed" },
+        "imageId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
     },
     "units": {

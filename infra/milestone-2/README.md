@@ -15,8 +15,10 @@ environment, and a successful preflight. `preflight.sh --plan` is read-only.
   `127.0.0.1:59001`.
 - The API binds only to `127.0.0.1:58080` and is the sole ngrok target.
 - The Compose bridge is pinned to the existing `172.18.0.0/16` topology. The
-  API trusts forwarded identity only from gateway `172.18.0.1/32` with exactly
-  one proxy hop; all other peers are direct clients.
+  API accepts forwarded identity from gateway `172.18.0.1/32` only when exactly
+  one proxy hop and the dedicated ngrok authentication header both validate.
+  Missing, duplicate, or incorrect authentication is rejected before rate
+  accounting rather than sharing the bridge-gateway identity.
 - Containers share a private Compose bridge. Secret values are named files
   inside a root-only directory and only those files are mounted into their
   declared containers through Compose secrets; they are not ordinary resource
@@ -82,7 +84,9 @@ The intended installer-owned sequence is:
 ```text
 preflight.sh --plan
 with-control-plane-lock.sh dependency <correlation-id> auto install-compose-plugin.sh
+with-control-plane-lock.sh ngrok-user-install <correlation-id> auto install-ngrok-user.sh
 with-control-plane-lock.sh prepare <correlation-id> auto prepare-host.sh
+install dedicated `/etc/blazn/ngrok/ngrok.yml` as root:blazn-ngrok mode 0640
 install reviewed files and systemd unit
 systemctl enable --now blazn-control-plane.service
 health, migration, restart-idempotent bootstrap and object initialization, S3
@@ -102,6 +106,12 @@ migration, bootstrap, bucket initialization, and health complete. Its
 foreground process is monitor-only; systemd reacquires the same lock before
 stopping the exact project and restarting it after a failure.
 
+The API image is built under that same startup lock with the reviewed Compose
+build. Its source digest covers the Dockerfile, package manifests, TypeScript
+source, migrations, and public contracts. A root-owned build receipt binds that
+digest to the resulting Docker image ID and the main ownership receipt; startup
+refuses a stale, replaced, or unreconciled image.
+
 Every API deploy/restart, schema migration, PostgreSQL/object-store restart,
 backup promotion, and production-like restore must use the same
 `ben1-control-plane-mutation` lock. Ngrok activation additionally requires the
@@ -111,6 +121,17 @@ fencing token is passed to the foreground operation.
 Both ngrok units execute the public-origin wrapper as their foreground process,
 so the host-wide lock is held for the full tunnel lifetime rather than only for
 the `systemctl start` request.
+
+Blazn does not modify or reuse the existing HomeAI user tunnel. Its system units
+use a dedicated non-login `blazn-ngrok` account and a separate root-controlled
+ngrok configuration. Before dropping privileges, a root-only helper removes any
+client-supplied `x-blazn-proxy-authorization` header and writes a Traffic Policy
+that injects the 64-hex workspace secret. Only the policy-file path appears in
+ngrok argv; the generated file and directory are inaccessible to ordinary ben1
+users. This follows ngrok's documented `--traffic-policy-file` and ordered
+remove/add header actions:
+<https://ngrok.com/docs/agent/cli> and
+<https://ngrok.com/docs/traffic-policy/actions/add-headers>.
 
 `systemd/blazn-ngrok-qualification.service` is a temporary fallback for the
 POC test matrix when the requested custom hostname has not yet been reserved.
