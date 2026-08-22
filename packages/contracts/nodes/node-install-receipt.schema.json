@@ -3,7 +3,7 @@
   "$id": "https://blazn.benpelo.com/schemas/nodes/v1alpha1/node-install-receipt.json",
   "title": "Blazn NodeInstallReceipt",
   "type": "object", "additionalProperties": false,
-  "required": ["schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"],
+  "required": ["schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "nodeIdentityGeneration", "signerKind", "signerFingerprint", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"],
   "properties": {
     "schemaVersion": {"const": "nodes/v1alpha1"},
     "receiptId": {"type": "string", "format": "uuid"},
@@ -11,6 +11,9 @@
     "planDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "nodeId": {"type": "string", "format": "uuid"},
     "generation": {"type": "integer", "minimum": 1},
+    "nodeIdentityGeneration": {"type": "integer", "minimum": 1},
+    "signerKind": {"const": "node_identity"},
+    "signerFingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "state": {"enum": ["preparing", "installing", "joining", "verifying", "active", "rolling_back", "recovery_required", "removed"]},
     "currentStage": {"enum": ["authenticate", "preflight", "plan", "acquire", "install", "configure", "pre_register", "join", "service", "verify", "activate", "complete"]},
     "owner": {"type": "object", "additionalProperties": false, "required": ["uid", "pid", "processStartIdentity", "nonce"], "properties": {"uid": {"type": "integer", "minimum": 0}, "pid": {"type": "integer", "minimum": 1}, "processStartIdentity": {"type": "string", "minLength": 1}, "nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{32,128}$"}}},
@@ -45,5 +48,10 @@
     "signingKeyId": {"type": "string", "minLength": 1, "maxLength": 128},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
-  }
+  },
+  "allOf": [
+    {"if": {"properties": {"state": {"const": "active"}}, "required": ["state"]}, "then": {"properties": {"currentStage": {"const": "complete"}, "residues": {"maxItems": 0}, "mutations": {"items": {"properties": {"status": {"const": "applied"}}}}}}},
+    {"if": {"properties": {"state": {"const": "removed"}}, "required": ["state"]}, "then": {"properties": {"currentStage": {"const": "complete"}, "residues": {"maxItems": 0}, "mutations": {"items": {"properties": {"status": {"enum": ["restored", "removed"]}}}}}}},
+    {"if": {"properties": {"state": {"const": "recovery_required"}}, "required": ["state"]}, "then": {"properties": {"residues": {"minItems": 1}}}}
+  ]
 }

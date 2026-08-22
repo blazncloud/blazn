@@ -14,11 +14,12 @@ CREATE TABLE nodes (
   version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
   last_heartbeat_at timestamptz,
   offline_after timestamptz,
+  current_identity_generation bigint,
   current_capability_version bigint,
-  kubernetes_cluster_id text,
-  kubernetes_node_name text,
-  kubernetes_node_uid text,
-  kubernetes_resource_version text,
+  kubernetes_cluster_id text CHECK (kubernetes_cluster_id IS NULL OR char_length(kubernetes_cluster_id) BETWEEN 1 AND 128),
+  kubernetes_node_name text CHECK (kubernetes_node_name IS NULL OR char_length(kubernetes_node_name) BETWEEN 1 AND 253),
+  kubernetes_node_uid text CHECK (kubernetes_node_uid IS NULL OR char_length(kubernetes_node_uid) BETWEEN 1 AND 128),
+  kubernetes_resource_version text CHECK (kubernetes_resource_version IS NULL OR char_length(kubernetes_resource_version) BETWEEN 1 AND 128),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id, workspace_id),
@@ -26,7 +27,9 @@ CREATE TABLE nodes (
   CHECK ((kubernetes_cluster_id IS NOT NULL) = (kubernetes_node_name IS NOT NULL)
     AND (kubernetes_cluster_id IS NOT NULL) = (kubernetes_node_uid IS NOT NULL)
     AND (kubernetes_cluster_id IS NOT NULL) = (kubernetes_resource_version IS NOT NULL)),
-  CHECK (NOT agent_eligible OR (lifecycle_state = 'active' AND trust_state = 'verified' AND kubernetes_node_uid IS NOT NULL))
+  CHECK (NOT agent_eligible OR (lifecycle_state = 'active' AND trust_state = 'verified'
+    AND kubernetes_node_uid IS NOT NULL AND current_identity_generation IS NOT NULL
+    AND current_capability_version IS NOT NULL))
 );
 
 CREATE UNIQUE INDEX nodes_active_machine_idx ON nodes(workspace_id, machine_fingerprint) WHERE lifecycle_state <> 'removed';
@@ -88,6 +91,9 @@ CREATE TABLE node_identities (
 
 CREATE UNIQUE INDEX node_identities_one_active_idx ON node_identities(node_id) WHERE status = 'active';
 
+ALTER TABLE nodes ADD CONSTRAINT nodes_current_identity_fk
+  FOREIGN KEY (id, current_identity_generation) REFERENCES node_identities(node_id, generation) DEFERRABLE INITIALLY DEFERRED;
+
 CREATE TABLE node_capability_versions (
   id uuid PRIMARY KEY,
   node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -147,12 +153,16 @@ CREATE TABLE node_install_receipts (
   node_id uuid NOT NULL,
   plan_id uuid NOT NULL,
   receipt_digest char(64) NOT NULL UNIQUE CHECK (receipt_digest ~ '^[0-9a-f]{64}$'),
+  signer_kind text NOT NULL CHECK (signer_kind = 'node_identity'),
+  identity_generation bigint NOT NULL CHECK (identity_generation > 0),
+  signer_fingerprint char(64) NOT NULL CHECK (signer_fingerprint ~ '^[0-9a-f]{64}$'),
   signing_key_id text NOT NULL,
   signature text NOT NULL CHECK (signature ~ '^[A-Za-z0-9_-]{86}$'),
   payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
-  FOREIGN KEY (plan_id, workspace_id, node_id) REFERENCES node_install_plans(id, workspace_id, node_id)
+  FOREIGN KEY (plan_id, workspace_id, node_id) REFERENCES node_install_plans(id, workspace_id, node_id),
+  FOREIGN KEY (node_id, identity_generation) REFERENCES node_identities(node_id, generation)
 );
 
 CREATE TABLE node_operation_receipts (
@@ -162,12 +172,17 @@ CREATE TABLE node_operation_receipts (
   node_id uuid NOT NULL,
   operation_type text NOT NULL CHECK (operation_type IN ('pause', 'resume', 'label', 'cordon', 'uncordon', 'rotate_identity', 'repair', 'update', 'drain', 'remove')),
   receipt_digest char(64) NOT NULL UNIQUE CHECK (receipt_digest ~ '^[0-9a-f]{64}$'),
+  signer_kind text NOT NULL CHECK (signer_kind IN ('node_identity', 'control_plane')),
+  identity_generation bigint CHECK (identity_generation > 0),
+  signer_fingerprint char(64) NOT NULL CHECK (signer_fingerprint ~ '^[0-9a-f]{64}$'),
   signing_key_id text NOT NULL,
   signature text NOT NULL CHECK (signature ~ '^[A-Za-z0-9_-]{86}$'),
   payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (id, operation_id, workspace_id, node_id, operation_type),
-  FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE
+  CHECK ((signer_kind = 'node_identity') = (identity_generation IS NOT NULL)),
+  FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (node_id, identity_generation) REFERENCES node_identities(node_id, generation)
 );
 
 CREATE TABLE node_operations (
@@ -255,6 +270,7 @@ CREATE TABLE node_audit_events (
 
 GRANT SELECT, INSERT, UPDATE ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operation_receipts, node_operations, node_operation_events, node_audit_events TO blazn_runtime;
 GRANT SELECT ON TABLE node_join_issuances TO blazn_runtime;
+GRANT UPDATE (consumed_at, joined_node_uid) ON TABLE node_join_issuances TO blazn_runtime;
 GRANT SELECT ON TABLE nodes, node_enrollments, node_install_plans TO blazn_node_broker;
 GRANT SELECT, INSERT, UPDATE ON TABLE node_join_issuances TO blazn_node_broker;
 REVOKE ALL ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operation_receipts, node_operations, node_operation_events, node_join_issuances, node_audit_events FROM blazn_bootstrap;

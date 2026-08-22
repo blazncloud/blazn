@@ -101,7 +101,8 @@ An operator creates a short-lived enrollment with an explicit idempotency key.
 The token is derived with the root-owned
 `/etc/blazn/node-broker/secrets/enrollment-hmac-v1` key over
 `blazn-node-enrollment-v1\n<workspace-id>\n<enrollment-id>\n<principal-id>\n<idempotency-key>`.
-Only its SHA-256 hash and key ID are stored, so an authorized identical retry
+The token is unpadded base64url of the 32-byte HMAC-SHA256 output. Only its
+SHA-256 hash and key ID are stored, so an authorized identical retry
 reconstructs the same secret without persisting plaintext.
 
 The enrolling binary generates an Ed25519 key locally and sends its raw public
@@ -120,7 +121,10 @@ control-plane/datastore membership. The credential is delivered in a protected
 response body, held only in memory or a root-owned `0600` install journal, and
 is hashed in PostgreSQL. For response-loss replay it is also encrypted with
 AES-256-GCM under `/etc/blazn/node-broker/secrets/join-credential-v1`; the row
-stores key ID, nonce+ciphertext, request digest, and idempotency key. An
+stores key ID and `12-byte nonce || ciphertext || 16-byte tag`, request digest,
+and idempotency key. AAD is UTF-8
+`blazn-node-join-credential-v1\n<workspace-id>\n<enrollment-id>\n<plan-id>\n<node-id>\n<issuance-id>\n<idempotency-key>\n<request-digest>`.
+An
 authorized identical retry decrypts the same unconsumed, unexpired credential.
 After join, the node calls the consume endpoint; the control API atomically
 marks issuance/enrollment consumed and binds cluster ID, Node name, UID, and
@@ -137,6 +141,13 @@ pinned key ID, requires `issuedAt <= now < expiresAt`, and compares workspace,
 enrollment, node, hostname, machine fingerprint, node public-key fingerprint,
 platform, architecture, and idempotency key to trusted local input before any
 plan source, mutation, or rollback field is consumed.
+Verification also takes a locally configured trusted install profile. The
+profile—not the signed plan—defines exact allowed download/registry hosts and
+mutation roots for `ubuntu-26.04-amd64-worker/v1`,
+`existing-linux-worker-adopt/v1`, or `macos-lima-worker-adopt/v1`. URL host must
+equal the component `sourceHost`; redirects are revalidated. Targets may never
+be `/`, contain `..`, escape the profile roots, or traverse a symlink. Mutation
+kind/action/payload must match the schema's discriminated rules.
 
 The long-running service uses a renewable node identity, never the user's
 access/refresh token. Rotation overlaps old/new identities only for a bounded
@@ -165,7 +176,10 @@ content/version/snapshot locator, digest, mode, UID, and GID. `restore_prior`
 is invalid without it. Receipt digest is RFC 8785 JSON with `digest` and
 `signature` omitted; the node identity signs
 `blazn-node-install-receipt-v1\n<digest>` with Ed25519, and the server verifies
-that signature before accepting the completed installation.
+that signature before accepting the completed installation. Verification
+requires the trusted active Node identity key ID, generation, public-key
+fingerprint, and public key to exactly match the receipt; a generic keyring
+lookup is insufficient.
 
 ## Capabilities and local models
 
@@ -226,6 +240,12 @@ Its digest is `sha256:` plus lowercase SHA-256 over RFC 8785 canonical JSON with
 `blazn-node-operation-receipt-v1\n<digest>` with Ed25519; verification binds the
 signing key ID, node ID, workspace, operation ID/type, and expected Node version
 before the receipt may authorize any state or audit conclusion.
+Executed host actions use a `node_identity` signer bound to the exact active
+identity generation. Pre-dispatch failure, cancellation, unreachable daemon, or
+revoked-node recovery may use a `control_plane` signer bound to the pinned
+control-plane receipt key; that path cannot claim applied/restored host actions
+or ordinary success. Thus every terminal Operation has signed evidence even
+when the node cannot produce it.
 
 ## Acceptance evidence
 

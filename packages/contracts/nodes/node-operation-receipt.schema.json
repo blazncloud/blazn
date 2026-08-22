@@ -3,7 +3,7 @@
   "$id": "https://blazn.benpelo.com/schemas/nodes/v1alpha1/node-operation-receipt.json",
   "title": "Blazn NodeOperationReceipt",
   "type": "object", "additionalProperties": false,
-  "required": ["schemaVersion", "receiptId", "operationId", "nodeId", "workspaceId", "operationType", "expectedNodeVersion", "startedAt", "completedAt", "outcome", "kubernetesBefore", "kubernetesAfter", "actions", "residues", "signingKeyId", "digest", "signature"],
+  "required": ["schemaVersion", "receiptId", "operationId", "nodeId", "workspaceId", "operationType", "expectedNodeVersion", "startedAt", "completedAt", "outcome", "kubernetesBefore", "kubernetesAfter", "actions", "residues", "signerKind", "identityGeneration", "signerFingerprint", "signingKeyId", "digest", "signature"],
   "properties": {
     "schemaVersion": {"const": "nodes/v1alpha1"},
     "receiptId": {"type": "string", "format": "uuid"},
@@ -19,8 +19,17 @@
     "kubernetesAfter": {"oneOf": [{"$ref": "../nodes.openapi.json#/components/schemas/KubernetesBinding"}, {"type": "null"}]},
     "actions": {"type": "array", "maxItems": 4096, "items": {"type": "object", "additionalProperties": false, "required": ["ordinal", "kind", "target", "outcome"], "properties": {"ordinal": {"type": "integer", "minimum": 1}, "kind": {"enum": ["api", "kubernetes", "service", "identity", "filesystem"]}, "target": {"type": "string", "minLength": 1, "maxLength": 1024}, "outcome": {"enum": ["applied", "skipped", "restored", "failed", "residue"]}}}},
     "residues": {"type": "array", "maxItems": 4096, "items": {"type": "object", "additionalProperties": false, "required": ["target", "reasonCode", "safeMessage"], "properties": {"target": {"type": "string", "minLength": 1, "maxLength": 1024}, "reasonCode": {"type": "string", "pattern": "^[a-z0-9_]{1,64}$"}, "safeMessage": {"type": "string", "minLength": 1, "maxLength": 512}}}},
+    "signerKind": {"enum": ["node_identity", "control_plane"]},
+    "identityGeneration": {"type": ["integer", "null"], "minimum": 1},
+    "signerFingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "signingKeyId": {"type": "string", "minLength": 1, "maxLength": 128},
     "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
-  }
+  },
+  "allOf": [
+    {"if": {"properties": {"signerKind": {"const": "node_identity"}}, "required": ["signerKind"]}, "then": {"properties": {"identityGeneration": {"type": "integer", "minimum": 1}}}},
+    {"if": {"properties": {"signerKind": {"const": "control_plane"}}, "required": ["signerKind"]}, "then": {"properties": {"identityGeneration": {"type": "null"}, "outcome": {"enum": ["failed", "cancelled", "recovery_required"]}, "actions": {"items": {"properties": {"outcome": {"enum": ["skipped", "failed", "residue"]}}}}}}},
+    {"if": {"properties": {"outcome": {"const": "succeeded"}}, "required": ["outcome"]}, "then": {"properties": {"residues": {"maxItems": 0}, "actions": {"items": {"properties": {"outcome": {"enum": ["applied", "skipped", "restored"]}}}}}}},
+    {"if": {"properties": {"outcome": {"enum": ["partial", "recovery_required"]}}, "required": ["outcome"]}, "then": {"properties": {"residues": {"minItems": 1}}}}
+  ]
 }
