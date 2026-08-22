@@ -21,6 +21,16 @@
     "outcome": {"enum": ["success", "failed", "cancelled", "fallback"]},
     "reasonCode": {"enum": ["none", "connection_failure", "timeout_before_first_byte", "rate_limited", "upstream_5xx", "model_unavailable", "compatible_context_overflow", "unsupported_capability", "authentication_failed", "policy_denied", "cancelled", "fallback_selected"]},
     "latencyMs": {"type": "integer", "minimum": 0},
-    "usage": {"type": "object", "additionalProperties": false, "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}}
-  }
+    "usage": {"type": "object", "additionalProperties": false, "required": ["inputTokens", "outputTokens"], "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}}
+  },
+  "oneOf": [
+    {"properties": {"type": {"const": "request_started"}, "outcome": {"const": "success"}, "reasonCode": {"const": "none"}}, "not": {"required": ["usage"]}},
+    {"properties": {"type": {"const": "route_selected"}, "outcome": {"const": "success"}, "reasonCode": {"const": "none"}}, "not": {"required": ["usage"]}},
+    {"properties": {"type": {"const": "route_selected"}, "outcome": {"const": "fallback"}, "reasonCode": {"const": "fallback_selected"}}, "not": {"required": ["usage"]}},
+    {"properties": {"type": {"const": "attempt_finished"}, "outcome": {"const": "success"}, "reasonCode": {"const": "none"}}},
+    {"properties": {"type": {"const": "attempt_finished"}, "outcome": {"const": "failed"}, "reasonCode": {"enum": ["connection_failure", "timeout_before_first_byte", "rate_limited", "upstream_5xx", "model_unavailable", "compatible_context_overflow", "unsupported_capability", "authentication_failed", "policy_denied"]}}},
+    {"properties": {"type": {"const": "request_finished"}, "outcome": {"const": "success"}, "reasonCode": {"const": "none"}}},
+    {"properties": {"type": {"const": "request_finished"}, "outcome": {"const": "failed"}, "reasonCode": {"enum": ["connection_failure", "timeout_before_first_byte", "rate_limited", "upstream_5xx", "model_unavailable", "compatible_context_overflow", "unsupported_capability", "authentication_failed", "policy_denied"]}}},
+    {"properties": {"type": {"const": "request_cancelled"}, "outcome": {"const": "cancelled"}, "reasonCode": {"const": "cancelled"}}, "not": {"required": ["usage"]}}
+  ]
 }

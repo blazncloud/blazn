@@ -24,7 +24,13 @@ func testPolicy() proxycontract.Policy {
 }
 
 type harnessFixture struct {
-	Provenance struct{ Claim, CaptureStatus, Client, TargetVersion string } `json:"provenance"`
+	Provenance        struct{ Claim, CaptureStatus, Client, TargetVersion string } `json:"provenance"`
+	AcceptanceProfile struct {
+		SourceProtocol       string   `json:"sourceProtocol"`
+		DestinationProtocols []string `json:"destinationProtocols"`
+		Stream               bool     `json:"stream"`
+		StopSequences        bool     `json:"stopSequences"`
+	} `json:"acceptanceProfile"`
 	Activation struct {
 		Environment            map[string]string `json:"environment"`
 		EndpointPrecedence     []string          `json:"endpointPrecedence"`
@@ -56,6 +62,9 @@ func TestClaudeCode212ReproducibleHarnessShape(t *testing.T) {
 	if fixture.Provenance.Claim != "reproducible_harness_shape_only" || fixture.Provenance.CaptureStatus != "not_captured" || fixture.Provenance.TargetVersion != "2.1.212" {
 		t.Fatalf("fixture overclaims provenance: %#v", fixture.Provenance)
 	}
+	if fixture.AcceptanceProfile.SourceProtocol != "anthropic-messages" || fixture.AcceptanceProfile.Stream || fixture.AcceptanceProfile.StopSequences || !reflect.DeepEqual(fixture.AcceptanceProfile.DestinationProtocols, []string{"openai-chat", "openai-responses"}) {
+		t.Fatalf("invalid cross-protocol acceptance profile: %#v", fixture.AcceptanceProfile)
+	}
 	if fixture.Activation.Environment["ANTHROPIC_API_KEY"] != "<listener-token>" || fixture.Activation.Environment["ANTHROPIC_AUTH_TOKEN"] != "<listener-token>" || len(fixture.Activation.EndpointPrecedence) != 3 {
 		t.Fatal("fixture omitted endpoint credential precedence")
 	}
@@ -72,10 +81,10 @@ func TestClaudeCode212ReproducibleHarnessShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Protocol != proxycontract.ProtocolAnthropicMessages || got.ModelAlias != "company-assistant" || got.DataClass != proxycontract.DataCompany || !got.Stream {
+	if got.Protocol != proxycontract.ProtocolAnthropicMessages || got.ModelAlias != "company-assistant" || got.DataClass != proxycontract.DataCompany || got.Stream {
 		t.Fatalf("bad envelope: %#v", got)
 	}
-	if got.Limits.MaxOutputTokens != 2048 || got.Limits.DeadlineAt != "2026-08-22T12:00:30Z" || *got.Limits.Temperature != .2 || *got.Limits.TopP != .9 || !reflect.DeepEqual(got.Limits.Stop, []string{"<END>"}) {
+	if got.Limits.MaxOutputTokens != 2048 || got.Limits.DeadlineAt != "2026-08-22T12:00:30Z" || *got.Limits.Temperature != .2 || *got.Limits.TopP != .9 || len(got.Limits.Stop) != 0 {
 		t.Fatalf("bad limits: %#v", got.Limits)
 	}
 	if len(got.Blocks) != 6 {
@@ -94,12 +103,26 @@ func TestClaudeCode212ReproducibleHarnessShape(t *testing.T) {
 	if len(got.Tools) != 1 || got.Tools[0].Name != "read_file" || got.ToolChoice != proxycontract.ToolChoiceAuto {
 		t.Fatalf("bad tools: %#v", got.Tools)
 	}
-	if !reflect.DeepEqual(got.CapabilitiesRequired, []proxycontract.Capability{"text", "tools", "streaming"}) {
+	if !reflect.DeepEqual(got.CapabilitiesRequired, []proxycontract.Capability{"text", "tools"}) {
 		t.Fatalf("bad capabilities: %#v", got.CapabilitiesRequired)
+	}
+	policyFile, err := os.Open("../../../packages/contracts/proxy/fixtures/poc-policy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer policyFile.Close()
+	policy, err := proxycontract.DecodePolicy(policyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range policy.Routes {
+		if err := CheckCompatibility(got, route.DestinationProtocol); err != nil {
+			t.Fatalf("acceptance fixture has no compliant %s route: %v", route.DestinationProtocol, err)
+		}
 	}
 }
 
-func TestHarnessShapeResponseAndSSEPreserveStopSequence(t *testing.T) {
+func TestHarnessShapeResponseAndNativeSSECoverage(t *testing.T) {
 	fixture := loadHarnessFixture(t)
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	request, err := Normalize(bytes.NewReader(fixture.Request), testPolicy(), now, func() string { return requestID })
@@ -112,25 +135,28 @@ func TestHarnessShapeResponseAndSSEPreserveStopSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Metadata.StopSequence == nil || *decoded.Metadata.StopSequence != "<END>" {
-		t.Fatalf("lost stop sequence: %#v", decoded.Metadata)
+	if decoded.Metadata.StopReason != "end_turn" || decoded.Metadata.StopSequence != nil {
+		t.Fatalf("unexpected acceptance response metadata: %#v", decoded.Metadata)
 	}
-	if _, err := DecodeDestination(bytes.NewReader(fixture.NonstreamResponse), request, routeID); err == nil {
-		t.Fatal("metadata-free path must fail closed")
+	if _, err := DecodeDestination(bytes.NewReader(fixture.NonstreamResponse), request, routeID); err != nil {
+		t.Fatal(err)
 	}
 	var encoded bytes.Buffer
 	if err := adapter.WriteSourceResponse(&encoded, decoded); err != nil {
 		t.Fatal(err)
 	}
 	var source map[string]any
-	if json.Unmarshal(encoded.Bytes(), &source) != nil || source["stop_reason"] != "stop_sequence" || source["stop_sequence"] != "<END>" {
+	if json.Unmarshal(encoded.Bytes(), &source) != nil || source["stop_reason"] != "end_turn" || source["stop_sequence"] != nil {
 		t.Fatalf("stop metadata lost: %s", encoded.String())
 	}
+	nativeRequest := request
+	nativeRequest.Stream = true
+	nativeRequest.Limits.Stop = []string{"<END>"}
 	var transcript strings.Builder
 	for _, item := range fixture.SSETranscript {
 		fmt.Fprintf(&transcript, "event: %s\ndata: %s\n\n", item.Event, item.Data)
 	}
-	decoder := adapter.NewDestinationStream(strings.NewReader(transcript.String()), request)
+	decoder := adapter.NewDestinationStream(strings.NewReader(transcript.String()), nativeRequest)
 	events := []proxycontract.NormalizedStreamEvent{}
 	for {
 		event, done, err := decoder.NextContext(context.Background())
@@ -146,7 +172,7 @@ func TestHarnessShapeResponseAndSSEPreserveStopSequence(t *testing.T) {
 		t.Fatal("stream stop sequence lost")
 	}
 	var sourceStream bytes.Buffer
-	sourceEncoder := adapter.NewSourceStream(&sourceStream, request)
+	sourceEncoder := adapter.NewSourceStream(&sourceStream, nativeRequest)
 	if err := sourceEncoder.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -242,8 +268,8 @@ func TestNonStringToolResultAndLateSystemFailClosed(t *testing.T) {
 
 func TestAuthenticateAndStrip(t *testing.T) {
 	for name, header := range map[string]http.Header{
-		"api key": {"X-Api-Key": {"secret"}, "Proxy-Authorization": {"x"}},
-		"bearer":  {"Authorization": {"Bearer secret"}},
+		"api key": {"X-Api-Key": {"secret"}, "Proxy-Authorization": {"x"}, "Anthropic-Version": {AnthropicVersion}},
+		"bearer":  {"Authorization": {"Bearer secret"}, "Anthropic-Version": {AnthropicVersion}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := AuthenticateAndStrip(header, "secret"); err != nil {
@@ -253,9 +279,13 @@ func TestAuthenticateAndStrip(t *testing.T) {
 		})
 	}
 	for name, header := range map[string]http.Header{
-		"wrong":     {"X-Api-Key": {"wrong"}},
-		"ambiguous": {"X-Api-Key": {"secret"}, "Authorization": {"Bearer secret"}},
-		"beta":      {"X-Api-Key": {"secret"}, "Anthropic-Beta": {"prompt-caching-2024-07-31"}},
+		"wrong":              {"X-Api-Key": {"wrong"}, "Anthropic-Version": {AnthropicVersion}},
+		"ambiguous":          {"X-Api-Key": {"secret"}, "Authorization": {"Bearer secret"}, "Anthropic-Version": {AnthropicVersion}},
+		"malformed plus key": {"X-Api-Key": {"secret"}, "Authorization": {"Basic other"}, "Anthropic-Version": {AnthropicVersion}},
+		"beta":               {"X-Api-Key": {"secret"}, "Anthropic-Beta": {"prompt-caching-2024-07-31"}, "Anthropic-Version": {AnthropicVersion}},
+		"missing version":    {"X-Api-Key": {"secret"}},
+		"wrong version":      {"X-Api-Key": {"secret"}, "Anthropic-Version": {"2024-01-01"}},
+		"duplicate version":  {"X-Api-Key": {"secret"}, "Anthropic-Version": {AnthropicVersion, AnthropicVersion}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := AuthenticateAndStrip(header, "secret"); err == nil {

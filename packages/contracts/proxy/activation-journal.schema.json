@@ -4,7 +4,7 @@
   "title": "Blazn proxy activation journal",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "platform", "mode", "sessionIdentity", "policy", "binary", "listener", "environment", "rollbackActions", "createdAt", "updatedAt", "checksum"],
+  "required": ["schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "platform", "mode", "sessionIdentity", "policy", "binary", "listener", "environment", "ca", "rollbackActions", "createdAt", "updatedAt", "checksum"],
   "properties": {
     "schemaVersion": {"const": "proxy/v1alpha1"},
     "activationId": {"type": "string", "format": "uuid"},

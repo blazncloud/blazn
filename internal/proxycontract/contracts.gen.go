@@ -1,12 +1,12 @@
 // Code generated from packages/contracts/proxy; DO NOT EDIT.
-// activation-journal.schema.json SHA256: 995bb08935ae5d100ff186623fbd43042b438a09687d2049ebd956735fbfff48
-// activation-receipt.schema.json SHA256: b1e215804f849a48c9c148b163c715f375cc9ae3799859f00ff31056d7bcd0ba
-// event.schema.json SHA256: e61f1a558c744122c36427d692bbb9b7c7b620e84d75612b2e60e9c17d0310d3
+// activation-journal.schema.json SHA256: b5b75e0ae6ef54f645dfb6a1ec6743ff580cf6d91348566a30ebf3f63a710807
+// activation-receipt.schema.json SHA256: 93720291b499bc1af00a64957155666b6d88575733e9deb848adcdc76dcb7c5a
+// event.schema.json SHA256: d672f8ec2dd0eaab6200cb9a17b57f92fcef6e343f4ce9d7deb8aa4f09a2a704
 // normalized-error.schema.json SHA256: 3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c
-// normalized-request.schema.json SHA256: 98923667ba46cd8d3207cfcb3cd62d757e41b8f8d71bf78d5eec1b5dda284df1
+// normalized-request.schema.json SHA256: 2f1f41709c21e871c8d6e61333b493cf04d08070c59a48e1f908b262204237b4
 // normalized-response.schema.json SHA256: 90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87
-// normalized-stream-event.schema.json SHA256: 1e388ceb3a1a29f91540a9e9edc9854d54a987668713f1a0e1750987a5bb4b25
-// policy.schema.json SHA256: 6c9256aed4037a0a9a3bcec27fd25a8b090636ee87c0a762e1c2cdc85b35256e
+// normalized-stream-event.schema.json SHA256: 2be0990699fe1ae7de35627c997c2b23f6cb525d19c119b54ad65afec8707fea
+// policy.schema.json SHA256: 3f8925f6fbdf3fab9613a88c5ce7e97e2c7d0cac702e0180f67ea28c92d5f7b9
 
 package proxycontract
 
@@ -365,6 +365,8 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-
 var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var noncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
 var aliasPattern = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,128}$`)
+var nodeCredentialRefPattern = regexp.MustCompile(`^node-route://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$`)
+var vaultCredentialRefPattern = regexp.MustCompile(`^workspace-vault://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$`)
 
 func DecodePolicy(reader io.Reader) (Policy, error) {
 	value, raw, err := decodeStrict[Policy](reader)
@@ -394,6 +396,8 @@ func DecodeActivationJournal(reader io.Reader) (ActivationJournal, error) {
 		return value, err
 	}
 	for _, check := range []func() error{func() error {
+		return requiredPresentJSON(raw, "schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "platform", "mode", "sessionIdentity", "policy", "binary", "listener", "environment", "ca", "rollbackActions", "createdAt", "updatedAt", "checksum")
+	}, func() error {
 		return requiredJSON(raw, "schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "platform", "mode", "sessionIdentity", "policy", "binary", "listener", "environment", "rollbackActions", "createdAt", "updatedAt", "checksum")
 	}, func() error { return requiredNested(raw, "policy", "id", "version", "digest") }, func() error { return requiredNested(raw, "binary", "path", "digest") }, func() error {
 		return requiredNested(raw, "listener", "pid", "processStartIdentity", "executableIdentity", "address", "listenerKeyFingerprint")
@@ -414,6 +418,15 @@ func DecodeEvent(reader io.Reader) (Event, error) {
 	err = requiredJSON(raw, "eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "policy", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs")
 	if err == nil {
 		err = optionalNonNull(raw, "usage")
+	}
+	if err == nil {
+		var object map[string]json.RawMessage
+		err = json.Unmarshal(raw, &object)
+		if err == nil {
+			if _, ok := object["usage"]; ok {
+				err = requiredNested(raw, "usage", "inputTokens", "outputTokens")
+			}
+		}
 	}
 	if err != nil {
 		return value, err
@@ -480,6 +493,15 @@ func DecodeNormalizedStreamEvent(reader io.Reader) (NormalizedStreamEvent, error
 	err = requiredJSON(raw, "logicalRequestId", "sequence", "type")
 	if err == nil {
 		err = optionalNonNull(raw, "text", "callId", "toolName", "argumentsDelta", "usage", "finishReason", "error")
+	}
+	if err == nil {
+		var object map[string]json.RawMessage
+		err = json.Unmarshal(raw, &object)
+		if err == nil {
+			if _, ok := object["usage"]; ok {
+				err = requiredNested(raw, "usage", "inputTokens", "outputTokens")
+			}
+		}
 	}
 	if err == nil {
 		err = validateStreamEventJSON(raw)
@@ -736,7 +758,7 @@ func validateStreamEventJSON(raw json.RawMessage) error {
 	if err := json.Unmarshal(object["type"], &kind); err != nil {
 		return err
 	}
-	rules := map[string]unionRule{"response_start": {nil, []string{"text", "argumentsDelta", "error"}}, "text_delta": {[]string{"text"}, []string{"callId", "toolName", "argumentsDelta", "error"}}, "tool_call_start": {[]string{"callId", "toolName"}, []string{"text", "argumentsDelta", "error"}}, "tool_arguments_delta": {[]string{"callId", "argumentsDelta"}, []string{"text", "toolName", "error"}}, "usage": {[]string{"usage"}, []string{"text", "error"}}, "response_end": {[]string{"finishReason"}, []string{"text", "argumentsDelta", "error"}}, "error": {[]string{"error"}, []string{"text", "argumentsDelta", "finishReason"}}}
+	rules := map[string]unionRule{"response_start": {nil, []string{"text", "callId", "toolName", "argumentsDelta", "finishReason", "error"}}, "text_delta": {[]string{"text"}, []string{"callId", "toolName", "argumentsDelta", "usage", "finishReason", "error"}}, "tool_call_start": {[]string{"callId", "toolName"}, []string{"text", "argumentsDelta", "usage", "finishReason", "error"}}, "tool_arguments_delta": {[]string{"callId", "argumentsDelta"}, []string{"text", "toolName", "usage", "finishReason", "error"}}, "usage": {[]string{"usage"}, []string{"text", "callId", "toolName", "argumentsDelta", "finishReason", "error"}}, "response_end": {[]string{"finishReason"}, []string{"text", "callId", "toolName", "argumentsDelta", "usage", "error"}}, "error": {[]string{"error"}, []string{"text", "callId", "toolName", "argumentsDelta", "usage", "finishReason"}}}
 	rule, ok := rules[kind]
 	if !ok {
 		return nil
@@ -817,8 +839,15 @@ func (p Policy) Validate() error {
 }
 
 func (r Route) Validate() error {
-	if !uuidPattern.MatchString(r.ID) || !validDestination(r.DestinationClass) || len(r.SourceProtocols) < 1 || len(r.SourceProtocols) > 3 || duplicateStrings(protocolStrings(r.SourceProtocols)) || !allProtocols(r.SourceProtocols) || !validProtocol(r.DestinationProtocol) || len(r.Model) < 1 || len(r.Model) > 160 || !validBoundary(r.DataBoundary) || r.HealthTimeoutMS < 100 || r.HealthTimeoutMS > 30000 || len(r.CredentialRef) < 1 || len(r.CredentialRef) > 256 || !validCost(r.CostClass) {
+	if !uuidPattern.MatchString(r.ID) || !validDestination(r.DestinationClass) || len(r.SourceProtocols) < 1 || len(r.SourceProtocols) > 3 || duplicateStrings(protocolStrings(r.SourceProtocols)) || !allProtocols(r.SourceProtocols) || (r.DestinationProtocol != ProtocolOpenAIChat && r.DestinationProtocol != ProtocolOpenAIResponses) || len(r.Model) < 1 || len(r.Model) > 160 || !validBoundary(r.DataBoundary) || r.HealthTimeoutMS < 100 || r.HealthTimeoutMS > 30000 || len(r.CredentialRef) < 1 || len(r.CredentialRef) > 256 || !validCost(r.CostClass) {
 		return fmt.Errorf("route %q is invalid", r.ID)
+	}
+	if r.DestinationClass == DestinationLocalNode {
+		if !nodeCredentialRefPattern.MatchString(r.CredentialRef) {
+			return fmt.Errorf("route %q local credential reference is invalid", r.ID)
+		}
+	} else if !vaultCredentialRefPattern.MatchString(r.CredentialRef) {
+		return fmt.Errorf("route %q vault credential reference is invalid", r.ID)
 	}
 	if err := r.Endpoint.Validate(r.DestinationClass); err != nil {
 		return fmt.Errorf("route %q: %w", r.ID, err)
@@ -961,11 +990,29 @@ func (e Event) Validate() error {
 	if e.Usage != nil && (e.Usage.InputTokens < 0 || e.Usage.OutputTokens < 0) {
 		return errors.New("proxy event usage is invalid")
 	}
+	switch e.Type {
+	case EventRequestStarted:
+		if e.Outcome != OutcomeSuccess || e.ReasonCode != EventReasonNone || e.Usage != nil {
+			return errors.New("request_started event semantics are invalid")
+		}
+	case EventRouteSelected:
+		if e.Usage != nil || !((e.Outcome == OutcomeSuccess && e.ReasonCode == EventReasonNone) || (e.Outcome == OutcomeFallback && e.ReasonCode == EventReasonFallbackSelected)) {
+			return errors.New("route_selected event semantics are invalid")
+		}
+	case EventAttemptFinished, EventRequestFinished:
+		if !((e.Outcome == OutcomeSuccess && e.ReasonCode == EventReasonNone) || (e.Outcome == OutcomeFailed && validFailureEventReason(e.ReasonCode))) {
+			return errors.New("finished event semantics are invalid")
+		}
+	case EventRequestCancelled:
+		if e.Outcome != OutcomeCancelled || e.ReasonCode != EventReasonCancelled || e.Usage != nil {
+			return errors.New("request_cancelled event semantics are invalid")
+		}
+	}
 	return nil
 }
 
 func (r NormalizedRequest) Validate() error {
-	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || r.Tools == nil || r.CapabilitiesRequired == nil || (r.ToolChoice != "" && !validToolChoice(r.ToolChoice)) || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
+	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || r.Tools == nil || r.CapabilitiesRequired == nil || (r.ToolChoice != "" && !validToolChoice(r.ToolChoice)) || (r.ToolChoice == ToolChoiceRequired && len(r.Tools) == 0) || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
 		return errors.New("normalized request is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, r.Limits.DeadlineAt); err != nil {
@@ -990,10 +1037,12 @@ func (r NormalizedRequest) Validate() error {
 			return err
 		}
 	}
+	toolNames := map[string]bool{}
 	for _, tool := range r.Tools {
-		if len(tool.Name) < 1 || len(tool.Name) > 128 || len(tool.Description) > 4096 || tool.InputSchema == nil {
+		if len(tool.Name) < 1 || len(tool.Name) > 128 || len(tool.Description) > 4096 || tool.InputSchema == nil || toolNames[tool.Name] {
 			return errors.New("tool is invalid")
 		}
+		toolNames[tool.Name] = true
 	}
 	return nil
 }
@@ -1003,7 +1052,7 @@ func (b RequestBlock) Validate() error {
 	}
 	switch b.Type {
 	case "text":
-		if b.Text == nil || b.CallID != nil || b.ToolName != nil || b.Arguments != nil || b.Result != nil {
+		if b.Role == "tool" || b.Text == nil || b.CallID != nil || b.ToolName != nil || b.Arguments != nil || b.Result != nil {
 			return errors.New("text request block union is invalid")
 		}
 	case "tool_call":
@@ -1066,31 +1115,31 @@ func (e NormalizedStreamEvent) Validate() error {
 	}
 	switch e.Type {
 	case "response_start":
-		if e.Text != nil || e.ArgumentsDelta != nil || e.Error != nil {
+		if e.Text != nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.FinishReason != nil || e.Error != nil {
 			return errors.New("response_start union is invalid")
 		}
 	case "text_delta":
-		if e.Text == nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.Error != nil {
+		if e.Text == nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.Usage != nil || e.FinishReason != nil || e.Error != nil {
 			return errors.New("text_delta union is invalid")
 		}
 	case "tool_call_start":
-		if e.CallID == nil || e.ToolName == nil || e.Text != nil || e.ArgumentsDelta != nil || e.Error != nil {
+		if e.CallID == nil || e.ToolName == nil || e.Text != nil || e.ArgumentsDelta != nil || e.Usage != nil || e.FinishReason != nil || e.Error != nil {
 			return errors.New("tool_call_start union is invalid")
 		}
 	case "tool_arguments_delta":
-		if e.CallID == nil || e.ArgumentsDelta == nil || e.Text != nil || e.ToolName != nil || e.Error != nil {
+		if e.CallID == nil || e.ArgumentsDelta == nil || e.Text != nil || e.ToolName != nil || e.Usage != nil || e.FinishReason != nil || e.Error != nil {
 			return errors.New("tool_arguments_delta union is invalid")
 		}
 	case "usage":
-		if e.Usage == nil || e.Text != nil || e.Error != nil {
+		if e.Usage == nil || e.Text != nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.FinishReason != nil || e.Error != nil {
 			return errors.New("usage union is invalid")
 		}
 	case "response_end":
-		if e.FinishReason == nil || e.Text != nil || e.ArgumentsDelta != nil || e.Error != nil {
+		if e.FinishReason == nil || e.Text != nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.Usage != nil || e.Error != nil {
 			return errors.New("response_end union is invalid")
 		}
 	case "error":
-		if e.Error == nil || e.Text != nil || e.ArgumentsDelta != nil || e.FinishReason != nil {
+		if e.Error == nil || e.Text != nil || e.CallID != nil || e.ToolName != nil || e.ArgumentsDelta != nil || e.Usage != nil || e.FinishReason != nil {
 			return errors.New("error union is invalid")
 		}
 	}
@@ -1320,6 +1369,9 @@ func validOutcome(v EventOutcome) bool {
 }
 func validEventReason(v EventReasonCode) bool {
 	return v == EventReasonNone || v == EventReasonConnectionFailure || v == EventReasonTimeoutBeforeFirstByte || v == EventReasonRateLimited || v == EventReasonUpstream5xx || v == EventReasonModelUnavailable || v == EventReasonCompatibleContextOverflow || v == EventReasonUnsupportedCapability || v == EventReasonAuthenticationFailed || v == EventReasonPolicyDenied || v == EventReasonCancelled || v == EventReasonFallbackSelected
+}
+func validFailureEventReason(v EventReasonCode) bool {
+	return v == EventReasonConnectionFailure || v == EventReasonTimeoutBeforeFirstByte || v == EventReasonRateLimited || v == EventReasonUpstream5xx || v == EventReasonModelUnavailable || v == EventReasonCompatibleContextOverflow || v == EventReasonUnsupportedCapability || v == EventReasonAuthenticationFailed || v == EventReasonPolicyDenied
 }
 func validToolChoice(v ToolChoice) bool {
 	return v == ToolChoiceNone || v == ToolChoiceAuto || v == ToolChoiceRequired

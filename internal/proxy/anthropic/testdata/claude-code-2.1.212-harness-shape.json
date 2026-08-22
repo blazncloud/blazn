@@ -5,7 +5,14 @@
     "captureStatus": "not_captured",
     "client": "Claude Code",
     "targetVersion": "2.1.212",
-    "note": "This is a checked compatibility harness, not a byte-for-byte capture from Claude Code. Promotion to exact requires a redacted capture from the pinned client."
+    "note": "This is a checked compatibility harness, not a byte-for-byte capture from Claude Code. Exact redacted capture and live endpoint proof are separate acceptance evidence."
+  },
+  "acceptanceProfile": {
+    "sourceProtocol": "anthropic-messages",
+    "destinationProtocols": ["openai-chat", "openai-responses"],
+    "stream": false,
+    "stopSequences": false,
+    "note": "The POC lossless cross-protocol profile is non-streaming and does not use stop_sequences. Native Anthropic streaming and stop behavior is adapter-only coverage."
   },
   "activation": {
     "environment": {
@@ -54,8 +61,7 @@
     "tool_choice": {"type": "auto"},
     "temperature": 0.2,
     "top_p": 0.9,
-    "stop_sequences": ["<END>"],
-    "stream": true
+    "stream": false
   },
   "nonstreamResponse": {
     "id": "msg_fixture",
@@ -63,8 +69,8 @@
     "role": "assistant",
     "model": "claude-fixture",
     "content": [{"type": "text", "text": "Repository summary"}],
-    "stop_reason": "stop_sequence",
-    "stop_sequence": "<END>",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
     "usage": {"input_tokens": 41, "output_tokens": 5}
   },
   "sseTranscript": [
