@@ -1,7 +1,7 @@
 # Workspace live-integration qualification
 
 **Target:** ben1 control plane at `https://blazn.benpelo.com`  
-**Scope:** migration `003_workspaces.sql`, Workspace API/CLI, and two-user acceptance  
+**Scope:** Node broker prerequisites, migrations `003`–`005`, Workspace API/CLI, and two-user acceptance
 **Change model:** one operator, one serialized mutation at a time, controlled temporary identity
 
 This is a reviewed operator runbook, not an automatic deployment script. Stop at
@@ -61,6 +61,39 @@ Do not run Compose manually. Keep systemd as the sole restart owner. All ben1
 release stage/promotion, build, secret, receipt, backup, stop, and start mutations use the same
 `ben1-control-plane-mutation` wrapper and a recorded correlation ID.
 
+Before stopping or promoting, run the staged candidate's Node prerequisite
+upgrade while the current receipt-bound PostgreSQL container is still healthy.
+The current ben1 installation predates `nodeBroker`; combined preflight and
+migration `004` intentionally fail until this step succeeds.
+
+```sh
+candidate=/opt/blazn-releases/<full-commit>
+sudo "$candidate/infra/milestone-2/scripts/with-control-plane-env.sh" \
+  "$candidate/infra/milestone-2/scripts/with-control-plane-lock.sh" \
+  node-prereqs <correlation-id> auto \
+  "$candidate/infra/node/scripts/upgrade-control-plane.sh"
+```
+
+This transaction creates and verifies the restricted broker login and
+root-owned keys, writes the environment binding, rebuilds the candidate API,
+and reconciles the main config/source/build receipt. It may cause the old
+supervisor to stop after the receipt changes; that is expected only after the
+upgrade command itself returns success. Explicitly run `systemctl stop
+blazn-control-plane.service`, clear a failed unit state if necessary, and prove
+the unit is exactly `inactive` and no receipt-owned Compose container remains.
+Do not promote while it is `failed`, activating, deactivating, or any container
+is running.
+
+If the Node prerequisite upgrade fails before promotion, keep the current
+release active and PostgreSQL running, follow the Node upgrade receipt's
+journaled rollback/source-restore procedure from the staged candidate, and do
+not continue this runbook.
+
+**Hold point B0:** the Node upgrade receipt, broker authentication and exact
+privilege matrix, environment binding, main ownership receipt, API build
+receipt, and candidate config/source digests all match. PostgreSQL is then
+stopped cleanly with the rest of the old service.
+
 Stop `blazn-control-plane.service` and confirm it is fully inactive. Then invoke
 the staged candidate's `promote-release.sh FULL_COMMIT` under the exact lock.
 Promotion accepts only the exact `inactive` unit state and independently rejects
@@ -103,7 +136,8 @@ must now bind:
 
 Run `preflight.sh --deploy` through the same wrappers while the service remains
 stopped. It must reject an absent,
-mis-owned, malformed, rotated, or receipt-mismatched key.
+mis-owned, malformed, rotated, or receipt-mismatched Workspace or Node key,
+broker role, environment binding, creation journal, or receipt.
 
 **Hold point B:** both receipts validate, no secret was printed, and Compose
 configuration shows the named key mounted only into the long-running `api`
@@ -117,7 +151,8 @@ runs `api-migrate`, runs the restart-idempotent bootstrap and object initializer
 waits for API health, and verifies every API container image ID. Do not issue a
 second restart or Compose command while this operation is active.
 
-Verify migration `003` is recorded exactly once. Run
+Verify migrations `003`, `004`, and additive security migration `005` are each
+recorded exactly once. Run
 `preflight.sh --existing-deploy` through the validated environment and exact
 lock; unlike planning mode, it expects occupied receipt-bound loopback listeners
 and verifies service labels, health, image IDs, published bindings, key receipt,
@@ -215,6 +250,11 @@ failure. Preserve logs and incomplete staging evidence without secret values.
   restores and compares that release's systemd unit, and records the reverse
   promotion. Keep migration `003` because it is additive; never reconstruct a
   prior release from a mutable checkout.
+- Node broker prerequisites are additive after successful promotion. Do not
+  remove their role/keys while migrations `004`/`005`, encrypted issuances, or
+  Node data remain. A pre-promotion Node-upgrade failure uses the staged Node
+  rollback while the old PostgreSQL service is still running; a later
+  application rollback preserves the receipted Node prerequisite generation.
 - Never invent a down migration. Database restore is a separate, destructive
   recovery decision because it discards post-backup changes. First repeat the
   restore on ben4, enumerate the exact ben1 target and backup, obtain explicit

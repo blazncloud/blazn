@@ -116,6 +116,9 @@ printf '%s\n' '{"error":{"code":"permission_denied","message":"denied"},"exitCod
   | jq -e '(.error.code=="workspace_not_found" or .error.code=="forbidden")|not' >/dev/null
 grep -F 'with-control-plane-env.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'stage-release.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'infra/node/scripts/upgrade-control-plane.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'while the current receipt-bound PostgreSQL container is still healthy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
+grep -F 'Hold point B0' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 # This intentionally asserts literal shell variables in the promotion script.
 # shellcheck disable=SC2016
 grep -F 'cmp -s "$unit_source" "$installed_unit"' "$ROOT_DIR/scripts/promote-release.sh" >/dev/null
