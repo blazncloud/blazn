@@ -22,7 +22,7 @@ var clientTemplate []byte
 // clientTemplate. A contract change therefore cannot be accepted by merely
 // rerunning the generator; the validator and typed template must be reviewed
 // before this fingerprint is deliberately updated.
-const supportedContractSHA256 = "9e36d86d26ce60d7fe7b34612c4af5548f62202c2cfbd56af669d4e6dcf6d0c7"
+const supportedContractSHA256 = "6606869bb793465081d66c6f84769ae872c1048623c4d755585cffaf6ce801a2"
 
 type operation struct {
 	path        string
@@ -38,7 +38,7 @@ var operations = []operation{
 	{"/v1/auth/device/sessions", "post", "exchangeDeviceAuthorization", "DeviceSessionRequest", "200", "Session"},
 	{"/v1/auth/device/sessions", "post", "exchangeDeviceAuthorization", "DeviceSessionRequest", "428", "Error"},
 	{"/v1/auth/sessions/refresh", "post", "refreshSession", "RefreshSessionRequest", "200", "Session"},
-	{"/v1/auth/sessions/revoke", "post", "revokeSessionWithProof", "RefreshSessionRequest", "204", ""},
+	{"/v1/auth/sessions/revoke", "post", "revokeSessionWithProof", "RevokeSessionRequest", "204", ""},
 	{"/v1/auth/session", "delete", "deleteCurrentSession", "", "204", ""},
 	{"/v1/auth/me", "get", "getCurrentUser", "", "200", "CurrentUser"},
 	{"/v1/auth/devices", "get", "listDevices", "", "200", "DeviceList"},
@@ -50,6 +50,7 @@ var schemaFields = map[string][]string{
 	"DeviceAuthorization":        {"challenge", "deviceCode", "expiresIn", "interval", "userCode", "verificationUri", "verificationUriComplete"},
 	"DeviceSessionRequest":       {"deviceCode", "proof"},
 	"RefreshSessionRequest":      {"deviceId", "proof", "refreshToken"},
+	"RevokeSessionRequest":       {"deviceId", "proof"},
 	"Session":                    {"accessToken", "deviceId", "expiresIn", "refreshToken"},
 	"User":                       {"displayName", "email", "id", "status"},
 	"CurrentUser":                {"device", "user"},

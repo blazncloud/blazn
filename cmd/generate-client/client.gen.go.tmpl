@@ -42,6 +42,11 @@ type RefreshSessionRequest struct {
 	Proof        string `json:"proof"`
 }
 
+type RevokeSessionRequest struct {
+	DeviceID string `json:"deviceId"`
+	Proof    string `json:"proof"`
+}
+
 type Session struct {
 	AccessToken  string `json:"accessToken"`
 	RefreshToken string `json:"refreshToken"`
@@ -152,7 +157,7 @@ func (c *Client) RefreshSession(ctx context.Context, request RefreshSessionReque
 	return output, err
 }
 
-func (c *Client) RevokeSession(ctx context.Context, request RefreshSessionRequest) error {
+func (c *Client) RevokeSession(ctx context.Context, request RevokeSessionRequest) error {
 	return c.do(ctx, http.MethodPost, "/v1/auth/sessions/revoke", "", request, nil, http.StatusNoContent)
 }
 
