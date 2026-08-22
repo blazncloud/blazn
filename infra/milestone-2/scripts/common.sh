@@ -123,11 +123,11 @@ control_plane_config_digest() {
   root=$1
   (
     cd "$root"
+    export LC_ALL=C
     sha256sum \
       compose.yaml \
       postgres-init/01-roles.sh \
-      scripts/run-control-plane.sh \
-      scripts/with-public-origin-lock.sh \
+      scripts/*.sh \
       ngrok.example.yml \
       systemd/blazn-control-plane.service \
       systemd/blazn-ngrok.service \
