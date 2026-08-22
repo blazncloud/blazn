@@ -351,11 +351,20 @@ func DecodePolicy(reader io.Reader) (Policy, error) {
 	if err != nil {
 		return value, err
 	}
-	if err = requiredJSON(raw, "contentCapture", "requestLimits"); err == nil {
-		err = requiredNested(raw, "requestLimits", "streaming")
-	}
-	if err != nil {
-		return value, err
+	for _, check := range []func() error{func() error {
+		return requiredJSON(raw, "id", "version", "workspaceId", "protocols", "aliases", "routes", "requestLimits", "fallback", "contentCapture")
+	}, func() error {
+		return requiredNested(raw, "requestLimits", "maxContextTokens", "maxOutputTokens", "timeoutMs", "streaming", "maxCostClass")
+	}, func() error {
+		return requiredNested(raw, "fallback", "maxAttempts", "retryableReasons", "allowedBoundaryTransitions")
+	}, func() error {
+		return requiredMapNested(raw, "aliases", "routeIds", "dataClass", "allowedDestinationBoundaries")
+	}, func() error {
+		return requiredArrayNested(raw, "routes", "id", "destinationClass", "endpoint", "sourceProtocol", "destinationProtocol", "model", "capabilities", "acceptedDataClasses", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass")
+	}} {
+		if err = check(); err != nil {
+			return value, err
+		}
 	}
 	return value, value.Validate()
 }
@@ -364,22 +373,44 @@ func DecodeActivationJournal(reader io.Reader) (ActivationJournal, error) {
 	if err != nil {
 		return value, err
 	}
-	if err = requiredArrayNested(raw, "environment", "priorPresent"); err != nil {
-		return value, err
+	for _, check := range []func() error{func() error {
+		return requiredJSON(raw, "schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "platform", "mode", "sessionIdentity", "policy", "binary", "listener", "environment", "rollbackActions", "createdAt", "updatedAt", "checksum")
+	}, func() error { return requiredNested(raw, "policy", "id", "version", "digest") }, func() error { return requiredNested(raw, "binary", "path", "digest") }, func() error {
+		return requiredNested(raw, "listener", "pid", "processStartIdentity", "executableIdentity", "address", "listenerKeyFingerprint")
+	}, func() error {
+		return requiredArrayNested(raw, "environment", "name", "priorPresent", "desiredValueDigest", "activationMarker", "rollbackAction")
+	}, func() error { return requiredArrayNested(raw, "rollbackActions", "ordinal", "operation", "target") }} {
+		if err = check(); err != nil {
+			return value, err
+		}
 	}
 	return value, value.Validate()
 }
 func DecodeEvent(reader io.Reader) (Event, error) {
-	value, _, err := decodeStrict[Event](reader)
+	value, raw, err := decodeStrict[Event](reader)
 	if err != nil {
+		return value, err
+	}
+	if err = requiredJSON(raw, "eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "policy", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs"); err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeActivationReceipt(reader io.Reader) (ActivationReceipt, error) {
-	value, _, err := decodeStrict[ActivationReceipt](reader)
+	value, raw, err := decodeStrict[ActivationReceipt](reader)
 	if err != nil {
 		return value, err
+	}
+	for _, check := range []func() error{func() error {
+		return requiredJSON(raw, "schemaVersion", "activationId", "nonce", "generation", "ownerUid", "journalDigest", "policyDigest", "platform", "mode", "sessionIdentity", "binary", "listener", "publicationMechanism", "environment", "rollbackSummary", "activatedAt", "state", "checksum")
+	}, func() error { return requiredNested(raw, "binary", "path", "digest") }, func() error {
+		return requiredNested(raw, "listener", "pid", "processStartIdentity", "executableIdentity", "address", "listenerKeyFingerprint")
+	}, func() error {
+		return requiredArrayNested(raw, "environment", "name", "desiredValueDigest", "activationMarker")
+	}, func() error { return requiredArrayNested(raw, "rollbackSummary", "ordinal", "operation", "target") }} {
+		if err = check(); err != nil {
+			return value, err
+		}
 	}
 	return value, value.Validate()
 }
@@ -388,28 +419,44 @@ func DecodeNormalizedRequest(reader io.Reader) (NormalizedRequest, error) {
 	if err != nil {
 		return value, err
 	}
-	if err = requiredJSON(raw, "stream"); err != nil {
-		return value, err
+	for _, check := range []func() error{func() error {
+		return requiredJSON(raw, "logicalRequestId", "protocol", "modelAlias", "dataClass", "stream", "blocks", "tools", "limits", "capabilitiesRequired")
+	}, func() error { return requiredNested(raw, "limits", "maxOutputTokens", "deadlineAt") }, func() error { return requiredArrayNested(raw, "blocks", "role", "type") }, func() error { return requiredArrayNested(raw, "tools", "name", "inputSchema") }} {
+		if err = check(); err != nil {
+			return value, err
+		}
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedResponse(reader io.Reader) (NormalizedResponse, error) {
-	value, _, err := decodeStrict[NormalizedResponse](reader)
+	value, raw, err := decodeStrict[NormalizedResponse](reader)
+	if err != nil {
+		return value, err
+	}
+	if err = requiredJSON(raw, "logicalRequestId", "modelAlias", "routeId", "blocks", "finishReason", "usage"); err == nil {
+		err = requiredArrayNested(raw, "blocks", "type")
+	}
 	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedStreamEvent(reader io.Reader) (NormalizedStreamEvent, error) {
-	value, _, err := decodeStrict[NormalizedStreamEvent](reader)
+	value, raw, err := decodeStrict[NormalizedStreamEvent](reader)
 	if err != nil {
+		return value, err
+	}
+	if err = requiredJSON(raw, "logicalRequestId", "sequence", "type"); err != nil {
 		return value, err
 	}
 	return value, value.Validate()
 }
 func DecodeNormalizedError(reader io.Reader) (NormalizedError, error) {
-	value, _, err := decodeStrict[NormalizedError](reader)
+	value, raw, err := decodeStrict[NormalizedError](reader)
 	if err != nil {
+		return value, err
+	}
+	if err = requiredJSON(raw, "code", "retryClass", "safeMessage"); err != nil {
 		return value, err
 	}
 	return value, value.Validate()
@@ -468,6 +515,22 @@ func requiredArrayNested(raw json.RawMessage, parent string, names ...string) er
 	for i, entry := range entries {
 		if err := requiredJSON(entry, names...); err != nil {
 			return fmt.Errorf("%s[%d]: %w", parent, i, err)
+		}
+	}
+	return nil
+}
+func requiredMapNested(raw json.RawMessage, parent string, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(object[parent], &entries); err != nil {
+		return err
+	}
+	for key, entry := range entries {
+		if err := requiredJSON(entry, names...); err != nil {
+			return fmt.Errorf("%s[%q]: %w", parent, key, err)
 		}
 	}
 	return nil
