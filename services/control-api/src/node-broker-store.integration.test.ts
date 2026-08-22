@@ -21,6 +21,12 @@ const adminUrl = process.env.NODE_TEST_ADMIN_DATABASE_URL,
   brokerUrl = process.env.NODE_TEST_BROKER_DATABASE_URL,
   repoRoot = process.env.NODE_TEST_REPO_ROOT;
 
+test("PostgreSQL broker health discards failed clients and recovers on the same pool",{skip:!adminUrl||!brokerUrl},async()=>{
+  const admin=createDatabase(adminUrl!),broker=createDatabase(brokerUrl!),store=new PgNodeBrokerStore(broker);
+  try{await store.health!(AbortSignal.timeout(2_000));await admin.query("ALTER ROLE blazn_node_broker NOLOGIN");await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='blazn_node_broker'");await assert.rejects(store.health!(AbortSignal.timeout(2_000)));await admin.query("ALTER ROLE blazn_node_broker LOGIN");await store.health!(AbortSignal.timeout(2_000));}
+  finally{await admin.query("ALTER ROLE blazn_node_broker LOGIN").catch(()=>{});await broker.end();await admin.end();}
+});
+
 test(
   "PostgreSQL broker serializes issuance, replays ciphertext, and stores no plaintext",
   { skip: !adminUrl || !brokerUrl || !repoRoot },

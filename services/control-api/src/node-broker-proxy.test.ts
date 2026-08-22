@@ -21,3 +21,14 @@ test("loopback proxy rejects oversized requests and duplicate response headers",
 test("loopback proxy uses one overall deadline even while bytes trickle",async()=>{
   const server=createServer((_request,response)=>{response.writeHead(200,{"content-type":"application/json"});const timer=setInterval(()=>response.write(" "),5);response.on("close",()=>clearInterval(timer));});await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(8081,"127.0.0.1",resolve);});try{await assert.rejects(new LoopbackNodeBrokerProxy(25).issue({},"join-key-1","x".repeat(86),new AbortController().signal),/deadline/);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });
+
+test("loopback proxy enforces frozen success and error body boundaries",async()=>{
+  const cases=[
+    {status:200,body:{issuanceId:"44444444-4444-4444-8444-444444444444",credential:"x".repeat(43),expiresAt:"2029-02-30T00:00:00Z",clusterId:"cluster-a",workerOnly:true,replayed:false}},
+    {status:503,body:{code:"node_broker_unavailable",message:"x".repeat(1025),requestId:"r"}},
+    {status:503,body:{code:"node_broker_unavailable",message:"unavailable",requestId:""}},
+    {status:500,body:{code:"node_broker_unavailable",message:"unavailable",requestId:"r"}},
+  ];
+  for(const fixture of cases){const server=createServer((_request,response)=>{response.writeHead(fixture.status,{"content-type":"application/json"});response.end(JSON.stringify(fixture.body));});await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(8081,"127.0.0.1",resolve);});try{await assert.rejects(new LoopbackNodeBrokerProxy().issue({},"join-key-1","x".repeat(86),new AbortController().signal),/JSON/);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}}
+  const server=createServer((_request,response)=>{response.writeHead(503,{"content-type":"application/json"});response.end(JSON.stringify({code:"node_broker_unavailable",message:"x".repeat(1024),requestId:"r".repeat(128)}));});await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(8081,"127.0.0.1",resolve);});try{assert.equal((await new LoopbackNodeBrokerProxy().issue({},"join-key-1","x".repeat(86),new AbortController().signal)).status,503);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
+});

@@ -4,7 +4,7 @@ import { createDatabase } from "./db.js";
 import { readJoinCredentialKey } from "./node-broker-crypto.js";
 import { createNodeBrokerServer } from "./node-broker-http.js";
 import { NodeBrokerService } from "./node-broker-service.js";
-import { PgNodeBrokerStore } from "./node-broker-store.js";
+import { PgNodeBrokerStore, probeNodeBrokerDatabase } from "./node-broker-store.js";
 import type { WorkerCredentialIssuer } from "./node-broker-types.js";
 import { defaultMicroK8sIssuerSocket, UnixMicroK8sWorkerCredentialIssuer } from "./microk8s-worker-issuer.js";
 
@@ -19,7 +19,7 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Node broker port is invalid");
   const database = createDatabase(databaseUrl);
   try {
-    await database.query("BEGIN; SET LOCAL statement_timeout='1500ms'; SELECT 1; COMMIT;");
+    await probeNodeBrokerDatabase(database, AbortSignal.timeout(2_000));
     const startupKey = await readJoinCredentialKey(`${root}/join-credential-v1`);
     startupKey.fill(0);
     const service = new NodeBrokerService(new PgNodeBrokerStore(database), () => readJoinCredentialKey(`${root}/join-credential-v1`), resolvedIssuer);
