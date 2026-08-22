@@ -51,7 +51,7 @@ export class FileNodePlanSigner implements NodePlanSigner {
     if (!keyId || keyId.length > 128) throw new Error("node plan signing key ID is invalid");
   }
   async sign(unsignedPlan: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const normalized = { ...unsignedPlan, signingKeyId: this.keyId };
+    const normalized: Record<string, unknown> = { ...unsignedPlan, signingKeyId: this.keyId };
     delete normalized.digest; delete normalized.signature;
     const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
     const key = createPrivateKey(await readFile(this.privateKeyFile));
