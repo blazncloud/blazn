@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -23,9 +24,16 @@ func (noopCredentialLocker) WithLock(_ context.Context, action func() error) err
 type fileCredentialLocker struct{ path string }
 
 func newCredentialLocker(origin string) (CredentialLocker, error) {
-	home, err := os.UserHomeDir()
+	current, err := user.Current()
 	if err != nil {
-		return nil, fmt.Errorf("locate credential lock directory: %w", err)
+		return nil, fmt.Errorf("resolve current user for credential lock: %w", err)
+	}
+	return newCredentialLockerAtHome(origin, current.HomeDir)
+}
+
+func newCredentialLockerAtHome(origin, home string) (CredentialLocker, error) {
+	if !filepath.IsAbs(home) {
+		return nil, errors.New("credential lock home must be absolute")
 	}
 	base := filepath.Join(home, ".local", "share")
 	if !filepath.IsAbs(base) {
