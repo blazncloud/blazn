@@ -5,9 +5,9 @@ import "fmt"
 var (
 	version   = "dev"
 	commit    = "unknown"
-	buildDate = "unknown"
+	buildTime = "unknown"
 )
 
 func main() {
-	fmt.Printf("%s %s %s\n", version, commit, buildDate)
+	fmt.Printf("%s %s %s\n", version, commit, buildTime)
 }

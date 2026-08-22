@@ -21,8 +21,8 @@ BLAZN_SOURCE_ROOT, BLAZN_BUILD_PACKAGE, SOURCE_DATE_EPOCH.
 EOF
 }
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "${script_dir}/.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "${script_dir}/.." && pwd)
 source_root=${BLAZN_SOURCE_ROOT:-$repo_root}
 output_dir=${OUTPUT_DIR:-${repo_root}/dist}
 build_package=${BLAZN_BUILD_PACKAGE:-./cmd/blazn}
@@ -135,7 +135,7 @@ else
   mkdir -p -- "$output_dir"
 fi
 
-ldflags="-s -w -X main.version=${version} -X main.commit=${commit} -X main.buildDate=${build_date}"
+ldflags="-s -w -X main.version=${version} -X main.commit=${commit} -X main.buildTime=${build_date}"
 targets='darwin arm64
 linux amd64
 linux arm64'
@@ -163,12 +163,14 @@ printf '%s\n' "$targets" | while read -r target_os target_arch; do
   fi
 done
 
+printf '%s\n' "$version" >"${output_dir}/version.txt"
+
 (
   cd "$output_dir"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum blazn_*.tar.gz
+    sha256sum blazn_*.tar.gz version.txt
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 blazn_*.tar.gz
+    shasum -a 256 blazn_*.tar.gz version.txt
   else
     echo "sha256sum or shasum is required" >&2
     exit 1
