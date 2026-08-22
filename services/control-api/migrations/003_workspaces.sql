@@ -77,7 +77,7 @@ CREATE TABLE workspace_idempotency_receipts (
   response_status integer NOT NULL CHECK (response_status BETWEEN 200 AND 599),
   response_body jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (principal_id, workspace_id, operation, idempotency_key),
+  PRIMARY KEY (principal_id, operation, idempotency_key),
   CHECK (NOT workspace_json_contains_secret_key(response_body))
 );
 
