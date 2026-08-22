@@ -38,6 +38,7 @@ func (h *Handler) dispatch(ctx context.Context, request proxycontract.Normalized
 		resolved, err := h.config.Resolver.Resolve(ctx, route)
 		if err != nil {
 			last = &APIError{Code: "connection_failure", Message: "upstream route is unavailable", Status: 502, Retryable: true, Reason: proxycontract.ReasonConnectionFailure, Cause: err}
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonConnectionFailure, 0, nil)
 			continue
 		}
 		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
@@ -70,6 +71,9 @@ func (h *Handler) dispatch(ctx context.Context, request proxycontract.Normalized
 		started := h.config.Now()
 		response, err := client.Do(httpRequest)
 		if err != nil {
+			if ctx.Err() != nil {
+				return upstreamResult{}, &APIError{Code: "cancelled", Message: "request was cancelled", Status: 499, Retryable: false, Cause: ctx.Err()}
+			}
 			reason := proxycontract.ReasonConnectionFailure
 			code := "connection_failure"
 			if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
@@ -236,7 +240,7 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 	switch result.route.DestinationProtocol {
 	case proxycontract.ProtocolOpenAIChat:
 		var source chatResponse
-		if err := decodeStrictJSON(limited, &source); err != nil {
+		if err := decodeUpstreamJSON(limited, &source); err != nil {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid Chat response", 502, false)
 		}
 		if len(source.Choices) != 1 {
@@ -254,7 +258,7 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		response.Usage = proxycontract.Usage{InputTokens: source.Usage.PromptTokens, OutputTokens: source.Usage.CompletionTokens}
 	case proxycontract.ProtocolOpenAIResponses:
 		var source responsesResponse
-		if err := decodeStrictJSON(limited, &source); err != nil {
+		if err := decodeUpstreamJSON(limited, &source); err != nil {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid Responses payload", 502, false)
 		}
 		for _, item := range source.Output {
@@ -283,6 +287,18 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		return response, safeError("upstream_invalid_response", "upstream response failed normalization", 502, false)
 	}
 	return response, nil
+}
+
+func decodeUpstreamJSON(reader io.Reader, target any) error {
+	decoder := json.NewDecoder(reader)
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return errors.New("upstream response has trailing JSON data")
+	}
+	return nil
 }
 
 func mapFinish(value string) proxycontract.FinishReason {
@@ -354,6 +370,8 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 	scanner := bufio.NewScanner(result.response.Body)
 	scanner.Buffer(make([]byte, 4096), maxRequestBytes)
 	sequence := 0
+	normalizer := streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}}
+	encoder := sourceStreamEncoder{writer: writer, protocol: request.Protocol, alias: request.ModelAlias, toolIndexes: map[string]int{}}
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
@@ -368,13 +386,13 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 		if payload == "[DONE]" {
 			break
 		}
-		events, err := normalizeUpstreamEvent(result.route.DestinationProtocol, request.LogicalRequestID, sequence, []byte(payload))
+		events, err := normalizer.normalize(result.route.DestinationProtocol, request.LogicalRequestID, sequence, []byte(payload))
 		if err != nil {
 			return err
 		}
 		for _, event := range events {
 			sequence = event.Sequence + 1
-			if err := writeStreamEvent(writer, request.Protocol, request.ModelAlias, event); err != nil {
+			if err := encoder.write(event); err != nil {
 				return err
 			}
 			flusher.Flush()
@@ -386,12 +404,28 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 	return nil
 }
 
-func normalizeUpstreamEvent(protocol proxycontract.Protocol, requestID string, sequence int, payload []byte) ([]proxycontract.NormalizedStreamEvent, error) {
+type streamNormalizer struct {
+	toolIDs         map[int]string
+	toolNames       map[int]string
+	toolStarted     map[int]bool
+	responseCallIDs map[string]string
+}
+
+func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID string, sequence int, payload []byte) ([]proxycontract.NormalizedStreamEvent, error) {
 	if protocol == proxycontract.ProtocolOpenAIChat {
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content *string `json:"content"`
+					Content   *string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
@@ -409,6 +443,25 @@ func normalizeUpstreamEvent(protocol proxycontract.Protocol, requestID string, s
 				out = append(out, proxycontract.NormalizedStreamEvent{LogicalRequestID: requestID, Sequence: sequence, Type: "text_delta", Text: choice.Delta.Content})
 				sequence++
 			}
+			for _, call := range choice.Delta.ToolCalls {
+				if call.ID != "" {
+					n.toolIDs[call.Index] = call.ID
+				}
+				if call.Function.Name != "" {
+					n.toolNames[call.Index] = call.Function.Name
+				}
+				callID, name := n.toolIDs[call.Index], n.toolNames[call.Index]
+				if !n.toolStarted[call.Index] && callID != "" && name != "" {
+					n.toolStarted[call.Index] = true
+					out = append(out, proxycontract.NormalizedStreamEvent{LogicalRequestID: requestID, Sequence: sequence, Type: "tool_call_start", CallID: &callID, ToolName: &name})
+					sequence++
+				}
+				if call.Function.Arguments != "" && callID != "" {
+					delta := call.Function.Arguments
+					out = append(out, proxycontract.NormalizedStreamEvent{LogicalRequestID: requestID, Sequence: sequence, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &delta})
+					sequence++
+				}
+			}
 			if choice.FinishReason != nil {
 				finish := mapFinish(*choice.FinishReason)
 				out = append(out, proxycontract.NormalizedStreamEvent{LogicalRequestID: requestID, Sequence: sequence, Type: "response_end", FinishReason: &finish})
@@ -422,9 +475,16 @@ func normalizeUpstreamEvent(protocol proxycontract.Protocol, requestID string, s
 		return out, nil
 	}
 	var event struct {
-		Type     string `json:"type"`
-		Delta    string `json:"delta"`
-		Text     string `json:"text"`
+		Type   string `json:"type"`
+		Delta  string `json:"delta"`
+		Text   string `json:"text"`
+		ItemID string `json:"item_id"`
+		Item   *struct {
+			Type   string `json:"type"`
+			ID     string `json:"id"`
+			CallID string `json:"call_id"`
+			Name   string `json:"name"`
+		} `json:"item"`
 		Response *struct {
 			Usage struct {
 				InputTokens  int `json:"input_tokens"`
@@ -440,6 +500,32 @@ func normalizeUpstreamEvent(protocol proxycontract.Protocol, requestID string, s
 	case "response.output_text.delta":
 		text := event.Delta
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "text_delta", Text: &text}}, nil
+	case "response.output_item.added":
+		if event.Item == nil || event.Item.Type != "function_call" {
+			return nil, nil
+		}
+		callID := event.Item.CallID
+		if callID == "" {
+			callID = event.Item.ID
+		}
+		name := event.Item.Name
+		if callID == "" || name == "" {
+			return nil, errors.New("invalid Responses function-call start")
+		}
+		if event.Item.ID != "" {
+			n.responseCallIDs[event.Item.ID] = callID
+		}
+		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "tool_call_start", CallID: &callID, ToolName: &name}}, nil
+	case "response.function_call_arguments.delta":
+		callID := n.responseCallIDs[event.ItemID]
+		if callID == "" {
+			callID = event.ItemID
+		}
+		if callID == "" {
+			return nil, errors.New("invalid Responses function-call delta")
+		}
+		delta := event.Delta
+		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &delta}}, nil
 	case "response.completed":
 		usage := proxycontract.Usage{InputTokens: event.Response.Usage.InputTokens, OutputTokens: event.Response.Usage.OutputTokens}
 		finish := proxycontract.FinishReason("stop")
@@ -449,9 +535,17 @@ func normalizeUpstreamEvent(protocol proxycontract.Protocol, requestID string, s
 	}
 }
 
-func writeStreamEvent(writer io.Writer, protocol proxycontract.Protocol, alias string, event proxycontract.NormalizedStreamEvent) error {
+type sourceStreamEncoder struct {
+	writer        io.Writer
+	protocol      proxycontract.Protocol
+	alias         string
+	toolIndexes   map[string]int
+	nextToolIndex int
+}
+
+func (s *sourceStreamEncoder) write(event proxycontract.NormalizedStreamEvent) error {
 	var payload any
-	if protocol == proxycontract.ProtocolOpenAIChat {
+	if s.protocol == proxycontract.ProtocolOpenAIChat {
 		choice := map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": nil}
 		if event.Type == "text_delta" {
 			choice["delta"] = map[string]any{"content": *event.Text}
@@ -463,14 +557,27 @@ func writeStreamEvent(writer io.Writer, protocol proxycontract.Protocol, alias s
 			}
 			choice["finish_reason"] = finish
 		}
-		object := map[string]any{"id": "chatcmpl_" + event.LogicalRequestID, "object": "chat.completion.chunk", "model": alias, "choices": []any{choice}}
+		if event.Type == "tool_call_start" {
+			index := s.nextToolIndex
+			s.nextToolIndex++
+			s.toolIndexes[*event.CallID] = index
+			choice["delta"] = map[string]any{"tool_calls": []any{map[string]any{"index": index, "id": *event.CallID, "type": "function", "function": map[string]any{"name": *event.ToolName, "arguments": ""}}}}
+		}
+		if event.Type == "tool_arguments_delta" {
+			index, ok := s.toolIndexes[*event.CallID]
+			if !ok {
+				return errors.New("tool argument delta preceded tool start")
+			}
+			choice["delta"] = map[string]any{"tool_calls": []any{map[string]any{"index": index, "function": map[string]any{"arguments": *event.ArgumentsDelta}}}}
+		}
+		object := map[string]any{"id": "chatcmpl_" + event.LogicalRequestID, "object": "chat.completion.chunk", "model": s.alias, "choices": []any{choice}}
 		if event.Type == "usage" {
 			object["choices"] = []any{}
 			object["usage"] = map[string]any{"prompt_tokens": event.Usage.InputTokens, "completion_tokens": event.Usage.OutputTokens, "total_tokens": event.Usage.InputTokens + event.Usage.OutputTokens}
 		}
 		payload = object
 	} else {
-		kind := map[proxycontract.StreamEventType]string{"text_delta": "response.output_text.delta", "usage": "response.usage", "response_end": "response.completed"}[event.Type]
+		kind := map[proxycontract.StreamEventType]string{"text_delta": "response.output_text.delta", "tool_call_start": "response.output_item.added", "tool_arguments_delta": "response.function_call_arguments.delta", "usage": "response.usage", "response_end": "response.completed"}[event.Type]
 		payload = map[string]any{"type": kind, "sequence_number": event.Sequence}
 		if event.Text != nil {
 			payload.(map[string]any)["delta"] = *event.Text
@@ -478,11 +585,18 @@ func writeStreamEvent(writer io.Writer, protocol proxycontract.Protocol, alias s
 		if event.Usage != nil {
 			payload.(map[string]any)["usage"] = event.Usage
 		}
+		if event.Type == "tool_call_start" {
+			payload.(map[string]any)["item"] = map[string]any{"type": "function_call", "call_id": *event.CallID, "name": *event.ToolName}
+		}
+		if event.Type == "tool_arguments_delta" {
+			payload.(map[string]any)["item_id"] = *event.CallID
+			payload.(map[string]any)["delta"] = *event.ArgumentsDelta
+		}
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(writer, "data: %s\n\n", encoded)
+	_, err = fmt.Fprintf(s.writer, "data: %s\n\n", encoded)
 	return err
 }

@@ -163,6 +163,17 @@ func TestChatStreamingNormalizesSSEAndUsage(t *testing.T) {
 	}
 }
 
+func TestChatStreamingPreservesToolCalls(t *testing.T) {
+	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n"
+		return response(200, "text/event-stream", body), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"use tool"}],"stream":true,"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), `"id":"call_1"`) || !strings.Contains(record.Body.String(), `"name":"lookup"`) || !strings.Contains(record.Body.String(), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("tool stream %d: %s", record.Code, record.Body.String())
+	}
+}
+
 func TestListenerAuthenticationAndModels(t *testing.T) {
 	handler, _ := testHandler(t, func(proxycontract.Route, *http.Request) (*http.Response, error) {
 		t.Fatal("upstream should not run")
@@ -278,7 +289,11 @@ func TestLoadPolicyRequiresOwnerOnlyRegularFile(t *testing.T) {
 
 func TestCancellationPropagatesBeforeFirstByte(t *testing.T) {
 	started := make(chan struct{})
+	var calls atomic.Int32
 	handler, _ := testHandler(t, func(_ proxycontract.Route, incoming *http.Request) (*http.Response, error) {
+		if calls.Add(1) > 1 {
+			t.Fatal("cancellation triggered fallback")
+		}
 		close(started)
 		<-incoming.Context().Done()
 		return nil, incoming.Context().Err()
@@ -293,6 +308,9 @@ func TestCancellationPropagatesBeforeFirstByte(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
+		if calls.Load() != 1 {
+			t.Fatalf("calls=%d", calls.Load())
+		}
 	case <-time.After(time.Second):
 		t.Fatal("cancellation did not propagate")
 	}

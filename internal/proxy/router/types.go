@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sync/atomic"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 )
 
 const maxRequestBytes = 8 << 20
+
+var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type APIError struct {
 	Code      string
@@ -67,6 +70,9 @@ type Handler struct {
 func NewHandler(config Config) (*Handler, error) {
 	if config.ListenerToken == "" {
 		return nil, errors.New("listener token is required")
+	}
+	if !uuidRE.MatchString(config.ActivationID) {
+		return nil, errors.New("valid activation ID is required")
 	}
 	if config.Credentials == nil {
 		return nil, errors.New("credential provider is required")

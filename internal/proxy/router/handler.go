@@ -75,6 +75,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, err)
 		return
 	}
+	h.emit(normalized, routes[0], 1, proxycontract.EventRequestStarted, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
 	result, err := h.dispatch(request.Context(), normalized, routes)
 	if err != nil {
 		if errors.Is(request.Context().Err(), context.Canceled) {

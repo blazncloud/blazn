@@ -25,9 +25,6 @@ func LoadPolicy(path string) (proxycontract.Policy, string, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return zero, "", fmt.Errorf("POLICY_INVALID: policy must be a regular file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return zero, "", fmt.Errorf("POLICY_INVALID: policy must not be accessible by group or others")
-	}
 	f, err := os.Open(clean)
 	if err != nil {
 		return zero, "", fmt.Errorf("POLICY_INVALID: open: %w", err)
@@ -37,6 +34,9 @@ func LoadPolicy(path string) (proxycontract.Policy, string, error) {
 	if err != nil || !os.SameFile(info, openedInfo) {
 		return zero, "", fmt.Errorf("POLICY_INVALID: policy changed while opening")
 	}
+	if runtime.GOOS != "windows" && openedInfo.Mode().Perm()&0o077 != 0 {
+		return zero, "", fmt.Errorf("POLICY_INVALID: policy must not be accessible by group or others")
+	}
 	if err := verifyPolicyOwner(openedInfo); err != nil {
 		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
 	}
@@ -44,7 +44,7 @@ func LoadPolicy(path string) (proxycontract.Policy, string, error) {
 	if err != nil {
 		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
 	}
-	if info.Size() > maxPolicyBytes {
+	if openedInfo.Size() > maxPolicyBytes {
 		return zero, "", fmt.Errorf("POLICY_INVALID: policy exceeds %d bytes", maxPolicyBytes)
 	}
 	if err := validatePolicySemantics(policy); err != nil {
