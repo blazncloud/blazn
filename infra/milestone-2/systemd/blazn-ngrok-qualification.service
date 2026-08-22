@@ -17,4 +17,5 @@ ProtectSystem=strict
 ProtectHome=read-only
 RuntimeDirectory=blazn-ngrok
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 ReadWritePaths=-/run/lock/blazn-poc -/run/blazn-ngrok

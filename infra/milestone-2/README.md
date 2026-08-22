@@ -86,7 +86,8 @@ preflight.sh --plan
 with-control-plane-lock.sh dependency <correlation-id> auto install-compose-plugin.sh
 with-control-plane-lock.sh ngrok-user-install <correlation-id> auto install-ngrok-user.sh
 with-control-plane-lock.sh prepare <correlation-id> auto prepare-host.sh
-install dedicated `/etc/blazn/ngrok/ngrok.yml` as root:blazn-ngrok mode 0640
+install dedicated `/etc/blazn/ngrok` as root:blazn-ngrok mode 0750 and
+`ngrok.yml` as root:blazn-ngrok mode 0640
 install reviewed files and systemd unit
 systemctl enable --now blazn-control-plane.service
 health, migration, restart-idempotent bootstrap and object initialization, S3

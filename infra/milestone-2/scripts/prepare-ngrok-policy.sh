@@ -14,6 +14,9 @@ secret_file=${BLAZN_PROXY_AUTH_SECRET_FILE:-/etc/blazn/control-plane/secrets/pro
 config_file=${BLAZN_NGROK_CONFIG_FILE:-/etc/blazn/ngrok/ngrok.yml}
 policy_file=${BLAZN_NGROK_POLICY_FILE:-/run/blazn-ngrok/traffic-policy.yml}
 assert_regular_file_owned_mode "$secret_file" 0 444
+config_dir=$(dirname -- "$config_file")
+assert_directory_owned_mode "$config_dir" 0 750
+[ "$(stat -c '%G' "$config_dir")" = blazn-ngrok ] || die "dedicated ngrok config directory must be readable only by blazn-ngrok"
 if [ ! -f "$config_file" ] || [ -L "$config_file" ]; then
   die "dedicated ngrok config is unavailable"
 fi
