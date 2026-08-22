@@ -471,7 +471,7 @@ func writeSourceResponse(writer http.ResponseWriter, protocol proxycontract.Prot
 func prepareStream(result upstreamResult, request proxycontract.NormalizedRequest) (upstreamResult, error) {
 	scanner := bufio.NewScanner(result.response.Body)
 	scanner.Buffer(make([]byte, 4096), maxRequestBytes)
-	normalizer := &streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}}
+	normalizer := &streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}, reasoningItems: map[string]json.RawMessage{}}
 	for {
 		events, done, err := nextStreamEvents(scanner, normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
 		if err != nil {
@@ -602,6 +602,7 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 		flusher.Flush()
 		return encoder.usage, failure
 	}
+	encoder.reasoningItems = result.normalizer.orderedReasoningItems()
 	if err := encoder.finish(); err != nil {
 		return encoder.usage, err
 	}
@@ -617,6 +618,8 @@ type streamNormalizer struct {
 	sequence        int
 	started         bool
 	terminal        bool
+	reasoningItems  map[string]json.RawMessage
+	reasoningOrder  []string
 }
 
 func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID string, sequence int, payload []byte) ([]proxycontract.NormalizedStreamEvent, error) {
@@ -698,16 +701,11 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		return out, nil
 	}
 	var event struct {
-		Type   string `json:"type"`
-		Delta  string `json:"delta"`
-		Text   string `json:"text"`
-		ItemID string `json:"item_id"`
-		Item   *struct {
-			Type   string `json:"type"`
-			ID     string `json:"id"`
-			CallID string `json:"call_id"`
-			Name   string `json:"name"`
-		} `json:"item"`
+		Type     string          `json:"type"`
+		Delta    string          `json:"delta"`
+		Text     string          `json:"text"`
+		ItemID   string          `json:"item_id"`
+		Item     json.RawMessage `json:"item"`
 		Response *struct {
 			Usage *struct {
 				InputTokens  int `json:"input_tokens"`
@@ -738,19 +736,38 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		text := event.Delta
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "text_delta", Text: &text}}, nil
 	case "response.output_item.added":
-		if event.Item == nil || event.Item.Type != "function_call" {
+		var item struct {
+			Type   string `json:"type"`
+			ID     string `json:"id"`
+			CallID string `json:"call_id"`
+			Name   string `json:"name"`
+		}
+		if len(event.Item) == 0 || json.Unmarshal(event.Item, &item) != nil {
+			return nil, errors.New("invalid Responses output item")
+		}
+		if item.Type == "reasoning" {
+			if item.ID == "" {
+				return nil, errors.New("reasoning output item omitted id")
+			}
+			if _, ok := n.reasoningItems[item.ID]; !ok {
+				n.reasoningOrder = append(n.reasoningOrder, item.ID)
+			}
+			n.reasoningItems[item.ID] = append(json.RawMessage(nil), event.Item...)
 			return nil, nil
 		}
-		callID := event.Item.CallID
-		if callID == "" {
-			callID = event.Item.ID
+		if item.Type != "function_call" {
+			return nil, nil
 		}
-		name := event.Item.Name
+		callID := item.CallID
+		if callID == "" {
+			callID = item.ID
+		}
+		name := item.Name
 		if callID == "" || name == "" {
 			return nil, errors.New("invalid Responses function-call start")
 		}
-		if event.Item.ID != "" {
-			n.responseCallIDs[event.Item.ID] = callID
+		if item.ID != "" {
+			n.responseCallIDs[item.ID] = callID
 		}
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "tool_call_start", CallID: &callID, ToolName: &name}}, nil
 	case "response.function_call_arguments.delta":
@@ -763,6 +780,18 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		}
 		delta := event.Delta
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &delta}}, nil
+	case "response.output_item.done":
+		var item struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if len(event.Item) > 0 && json.Unmarshal(event.Item, &item) == nil && item.Type == "reasoning" && item.ID != "" {
+			if _, ok := n.reasoningItems[item.ID]; !ok {
+				n.reasoningOrder = append(n.reasoningOrder, item.ID)
+			}
+			n.reasoningItems[item.ID] = append(json.RawMessage(nil), event.Item...)
+		}
+		return nil, nil
 	case "response.completed":
 		if event.Response == nil {
 			return nil, errors.New("completed Responses event omitted response")
@@ -798,6 +827,14 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 	default:
 		return nil, nil
 	}
+}
+
+func (n *streamNormalizer) orderedReasoningItems() []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(n.reasoningOrder))
+	for _, id := range n.reasoningOrder {
+		out = append(out, append(json.RawMessage(nil), n.reasoningItems[id]...))
+	}
+	return out
 }
 
 func normalizeStreamFailure(code string) proxycontract.NormalizedError {
@@ -838,6 +875,7 @@ type sourceStreamEncoder struct {
 	textStarted     bool
 	textIndex       int
 	nextOutputIndex int
+	reasoningItems  []json.RawMessage
 }
 
 func (s *sourceStreamEncoder) emit(payload any) error {
@@ -990,6 +1028,21 @@ func (s *sourceStreamEncoder) finish() error {
 		if status == "incomplete" {
 			eventType = "response.incomplete"
 		}
+		for offset, raw := range s.reasoningItems {
+			var item map[string]any
+			if json.Unmarshal(raw, &item) != nil {
+				continue
+			}
+			index := s.nextOutputIndex + offset
+			if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
+				return err
+			}
+			s.sequence++
+			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
+				return err
+			}
+			s.sequence++
+		}
 		if s.textStarted {
 			messageID := "msg_" + s.requestID
 			if err := s.emit(map[string]any{"type": "response.output_text.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": s.textIndex, "content_index": 0, "text": s.text.String()}); err != nil {
@@ -1058,6 +1111,12 @@ func (s *sourceStreamEncoder) fail(err error) error {
 
 func (s *sourceStreamEncoder) responseObject(status string) map[string]any {
 	items := map[int]any{}
+	for offset, raw := range s.reasoningItems {
+		var item any
+		if json.Unmarshal(raw, &item) == nil {
+			items[s.nextOutputIndex+offset] = item
+		}
+	}
 	if s.text.Len() > 0 {
 		content := []any{map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}}
 		items[s.textIndex] = map[string]any{"id": "msg_" + s.requestID, "type": "message", "role": "assistant", "status": "completed", "content": content}

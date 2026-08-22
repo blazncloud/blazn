@@ -148,7 +148,7 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 	handler, _ := testHandler(t, func(route proxycontract.Route, incoming *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(incoming.Body)
 		calls = append(calls, upstreamCall{RouteID: route.ID, Path: incoming.URL.Path, Body: string(body)})
-		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"summary\\\":\\\"ok\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}}\n\ndata: [DONE]\n\n"
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"rs_out\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque-next-turn\"}}\n\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_out\",\"type\":\"reasoning\",\"summary\":[],\"encrypted_content\":\"opaque-next-turn\"}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"summary\\\":\\\"ok\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}}\n\ndata: [DONE]\n\n"
 		return response(200, "text/event-stream", stream), nil
 	}, nil)
 	record := request(handler, "/v1/responses", string(raw))
@@ -173,7 +173,7 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 		}
 		last = next
 	}
-	if !strings.Contains(stream, `"input_tokens":40`) || !strings.Contains(stream, `"status":"completed"`) {
+	if !strings.Contains(stream, `"input_tokens":40`) || !strings.Contains(stream, `"status":"completed"`) || !strings.Contains(stream, `"encrypted_content":"opaque-next-turn"`) {
 		t.Fatalf("completed response missing usage: %s", stream)
 	}
 }
