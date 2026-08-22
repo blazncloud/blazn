@@ -6,6 +6,23 @@ enrolled Node public key. Before issuance it independently verifies the stored
 plan signature and all workspace, enrollment, plan, Node, machine, public-key,
 cluster, worker-only, lifecycle, trust, expiry, and request-digest bindings.
 
+The public API reaches this process through a fixed loopback-only reverse
+route. `BLAZN_NODE_BROKER_LOOPBACK` accepts only `enabled` or `disabled`; there
+is no origin override. Only the closed JSON body, singular idempotency key, and
+singular Node proof are forwarded—never bearer credentials, cookies, proxy
+headers, or client address headers—and redirects are not followed. One overall
+deadline and both payload directions are bounded. Rate limiting occurs only at
+the public API, after proof/body validation, using its trusted-proxy-derived
+remote identity; the loopback broker has no shared-peer bucket.
+
+Enabled API startup is deliberately degraded rather than cyclic: the API may
+listen, but health returns broker-unavailable until the sidecar is live.
+Compose starts the sidecar after the API container is started (not healthy),
+then waits for API health before public/ngrok readiness. Before listening, the
+broker probes the helper protocol/MicroK8s readiness, database with a statement
+timeout, and AES key. Every later broker/API health request repeats all three
+probes, redacts failures, and observes recovery without an API restart.
+
 The database connection must use `blazn_node_broker`. That role can read only
 `nodes`, `node_enrollments`, and `node_install_plans`, and can mutate only
 `node_join_issuances`. Issuance serializes by Node, stores only a SHA-256 hash
