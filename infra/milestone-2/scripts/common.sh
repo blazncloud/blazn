@@ -37,6 +37,51 @@ assert_not_symlink_chain() {
   done
 }
 
+assert_directory_owned_mode() {
+  path=$1
+  expected_uid=$2
+  expected_mode=$3
+  [ -d "$path" ] && [ ! -L "$path" ] || die "expected a non-symlink directory: $path"
+  [ "$(stat -c '%u' "$path")" = "$expected_uid" ] || die "directory has unexpected owner: $path"
+  [ "$(stat -c '%a' "$path")" = "$expected_mode" ] || die "directory has unexpected mode: $path"
+}
+
+assert_regular_file_owned_mode() {
+  path=$1
+  expected_uid=$2
+  expected_mode=$3
+  [ -f "$path" ] && [ ! -L "$path" ] || die "expected a non-symlink regular file: $path"
+  [ "$(stat -c '%u' "$path")" = "$expected_uid" ] || die "file has unexpected owner: $path"
+  [ "$(stat -c '%a' "$path")" = "$expected_mode" ] || die "file has unexpected mode: $path"
+}
+
+assert_approved_backup_mount() {
+  backup_root=$1
+  backup_mount=${BLAZN_BACKUP_MOUNT:-}
+  backup_source=${BLAZN_BACKUP_SOURCE:-}
+  backup_fstype=${BLAZN_BACKUP_FSTYPE:-}
+  [ -n "$backup_mount" ] && [ -n "$backup_source" ] && [ -n "$backup_fstype" ] || \
+    die "BLAZN_BACKUP_MOUNT, BLAZN_BACKUP_SOURCE, and BLAZN_BACKUP_FSTYPE are required"
+  require_absolute_path BLAZN_BACKUP_MOUNT "$backup_mount"
+  require_command findmnt
+  require_command realpath
+  assert_not_symlink_chain "$backup_mount"
+  [ -d "$backup_mount" ] && [ ! -L "$backup_mount" ] || die "approved backup mountpoint is unavailable: $backup_mount"
+  canonical_mount=$(realpath -e "$backup_mount")
+  canonical_root=$(realpath -m "$backup_root")
+  case "$canonical_root" in
+    "$canonical_mount"/*) ;;
+    *) die "backup root is outside the approved mountpoint" ;;
+  esac
+  mount_record=$(findmnt -rn --mountpoint "$canonical_mount" -o TARGET,SOURCE,FSTYPE) || \
+    die "approved backup mountpoint is not actively mounted: $canonical_mount"
+  set -- $mount_record
+  [ "$#" -eq 3 ] || die "approved backup mount record is ambiguous"
+  [ "$1" = "$canonical_mount" ] || die "backup mount target does not match the approved mountpoint"
+  [ "$2" = "$backup_source" ] || die "backup mount source does not match the approved source"
+  [ "$3" = "$backup_fstype" ] || die "backup mount filesystem type does not match the approved type"
+}
+
 filesystem_device() {
   existing=$(nearest_existing_parent "$1")
   stat -c '%d' "$existing"
@@ -70,6 +115,8 @@ control_plane_config_digest() {
     sha256sum \
       compose.yaml \
       postgres-init/01-roles.sh \
+      scripts/run-control-plane.sh \
+      scripts/with-public-origin-lock.sh \
       ngrok.example.yml \
       systemd/blazn-control-plane.service \
       systemd/blazn-ngrok.service \

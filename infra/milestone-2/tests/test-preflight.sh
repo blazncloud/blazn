@@ -4,13 +4,13 @@ set -eu
 TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 tmp=${TMPDIR:-/tmp}/blazn-m2-preflight-$$
-mkdir -p -- "$tmp/bin"
+mkdir -p -- "$tmp/bin" "$tmp/backup-mount"
 trap 'rm -rf -- "$tmp"' EXIT HUP INT TERM
 
 cat >"$tmp/bin/stat" <<'EOF'
 #!/bin/sh
 case "$*" in
-  */mnt*|*/backup*) [ "${FAKE_SAME_DEVICE:-0}" = 1 ] && printf '101\n' || printf '202\n' ;;
+  */mnt*|*/backup*|*/mount*) [ "${FAKE_SAME_DEVICE:-0}" = 1 ] && printf '101\n' || printf '202\n' ;;
   *) printf '101\n' ;;
 esac
 EOF
@@ -28,13 +28,26 @@ if [ -n "${FAKE_LISTEN_PORT:-}" ]; then
   printf 'LISTEN 0 128 127.0.0.1:%s 0.0.0.0:*\n' "$FAKE_LISTEN_PORT"
 fi
 EOF
-chmod +x "$tmp/bin/stat" "$tmp/bin/df" "$tmp/bin/ss"
+cat >"$tmp/bin/realpath" <<'EOF'
+#!/bin/sh
+case "$1" in -e|-m) shift ;; esac
+printf '%s\n' "$1"
+EOF
+cat >"$tmp/bin/findmnt" <<'EOF'
+#!/bin/sh
+[ "${FAKE_MOUNT_MISSING:-0}" != 1 ] || exit 1
+printf '%s %s %s\n' "$BLAZN_BACKUP_MOUNT" "${FAKE_BACKUP_SOURCE:-$BLAZN_BACKUP_SOURCE}" "$BLAZN_BACKUP_FSTYPE"
+EOF
+chmod +x "$tmp/bin/stat" "$tmp/bin/df" "$tmp/bin/ss" "$tmp/bin/realpath" "$tmp/bin/findmnt"
 
 base_env() {
   env \
     PATH="$tmp/bin:$PATH" \
     BLAZN_DATA_ROOT=/srv/frontro/blazn-poc/control-plane \
-    BLAZN_BACKUP_ROOT=/mnt/blazn-poc-backup/control-plane \
+    BLAZN_BACKUP_ROOT="$tmp/backup-mount/control-plane" \
+    BLAZN_BACKUP_MOUNT="$tmp/backup-mount" \
+    BLAZN_BACKUP_SOURCE=backup.example:/srv/blazn-poc-backup \
+    BLAZN_BACKUP_FSTYPE=nfs4 \
     POSTGRES_IMAGE=postgres:17.6@sha256:0000000000000000000000000000000000000000000000000000000000000000 \
     MINIO_IMAGE=minio/minio:x@sha256:1111111111111111111111111111111111111111111111111111111111111111 \
     MINIO_MC_IMAGE=minio/mc:x@sha256:2222222222222222222222222222222222222222222222222222222222222222 \
@@ -44,6 +57,18 @@ base_env() {
 result=$(base_env "$ROOT_DIR/scripts/preflight.sh" --plan)
 printf '%s\n' "$result" | grep -F '"status":"ok"' >/dev/null
 printf '%s\n' "$result" | grep -F '"separateFilesystem":true' >/dev/null
+
+if FAKE_MOUNT_MISSING=1 base_env "$ROOT_DIR/scripts/preflight.sh" --plan >"$tmp/out" 2>"$tmp/err"; then
+  printf 'missing-backup-mount preflight unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'not actively mounted' "$tmp/err" >/dev/null
+
+if FAKE_BACKUP_SOURCE=wrong.example:/wrong base_env "$ROOT_DIR/scripts/preflight.sh" --plan >"$tmp/out" 2>"$tmp/err"; then
+  printf 'wrong-backup-source preflight unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'source does not match' "$tmp/err" >/dev/null
 
 if FAKE_SAME_DEVICE=1 base_env "$ROOT_DIR/scripts/preflight.sh" --plan >"$tmp/out" 2>"$tmp/err"; then
   printf 'same-filesystem preflight unexpectedly passed\n' >&2

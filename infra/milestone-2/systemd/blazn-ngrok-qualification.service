@@ -5,6 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/ngrok http 127.0.0.1:58080 --config %h/.config/ngrok/homeai.yml --inspect=false --log stdout --log-format json
+ExecStart=/opt/blazn/infra/milestone-2/scripts/with-public-origin-lock.sh qualification /usr/local/bin/ngrok http 127.0.0.1:58080 --config %h/.config/ngrok/homeai.yml --inspect=false --log stdout --log-format json
 Restart=on-failure
 RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/lock/blazn-poc

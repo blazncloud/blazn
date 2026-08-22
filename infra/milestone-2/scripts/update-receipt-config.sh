@@ -9,6 +9,9 @@ ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 [ "$(id -u)" -eq 0 ] || die "receipt reconciliation must run as root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "receipt reconciliation must run through with-control-plane-lock.sh"
 require_command jq
+backup_root=${BLAZN_BACKUP_ROOT:-}
+[ -n "$backup_root" ] || die "BLAZN_BACKUP_ROOT is required"
+assert_approved_backup_mount "$backup_root"
 
 receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
@@ -23,14 +26,21 @@ jq -e \
   --arg data "${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}" \
   --arg backup "${BLAZN_BACKUP_ROOT:-}" \
   --arg secrets "${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}" \
-  '.schemaVersion == "blazn.dev/control-plane-ownership/v1" and .owner == "blazn-poc" and .host == $host and .paths == {data:$data,backup:$backup,secrets:$secrets}' \
+  --arg backupMount "${BLAZN_BACKUP_MOUNT:-}" \
+  --arg backupSource "${BLAZN_BACKUP_SOURCE:-}" \
+  --arg backupFstype "${BLAZN_BACKUP_FSTYPE:-}" \
+  '.schemaVersion == "blazn.dev/control-plane-ownership/v1" and .owner == "blazn-poc" and .host == $host and .paths == {data:$data,backup:$backup,secrets:$secrets} and (.backupMount == null or .backupMount == {target:$backupMount,source:$backupSource,fstype:$backupFstype})' \
   "$receipt" >/dev/null || die "control-plane ownership receipt does not match this deployment"
 
 digest=sha256:$(control_plane_config_digest "$ROOT_DIR")
 tmp=$receipt.tmp.$$
 umask 077
-jq --arg digest "$digest" --arg updatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-  '.configDigest=$digest | .configUpdatedAt=$updatedAt' "$receipt" >"$tmp"
+jq --arg digest "$digest" \
+  --arg updatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  --arg backupMount "$BLAZN_BACKUP_MOUNT" \
+  --arg backupSource "$BLAZN_BACKUP_SOURCE" \
+  --arg backupFstype "$BLAZN_BACKUP_FSTYPE" \
+  '.configDigest=$digest | .configUpdatedAt=$updatedAt | .backupMount={target:$backupMount,source:$backupSource,fstype:$backupFstype}' "$receipt" >"$tmp"
 chmod 0600 "$tmp"
 mv -- "$tmp" "$receipt"
 printf 'updated control-plane receipt config digest to %s\n' "$digest"

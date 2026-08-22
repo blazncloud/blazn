@@ -6,15 +6,16 @@ Wants=network-online.target
 ConditionPathExists=/etc/blazn/control-plane/control-plane.env
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 EnvironmentFile=/etc/blazn/control-plane/control-plane.env
 Environment=DOCKER_CONFIG=/etc/blazn/docker-cli
 Environment=COMPOSE_BAKE=false
 WorkingDirectory=/opt/blazn/infra/milestone-2
 ExecStartPre=/opt/blazn/infra/milestone-2/scripts/preflight.sh --deploy
-ExecStart=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env up --detach --wait --remove-orphans
-ExecStop=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env stop
+ExecStart=/opt/blazn/infra/milestone-2/scripts/run-control-plane.sh
+ExecStopPost=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env stop
+Restart=on-failure
+RestartSec=5
 TimeoutStartSec=300
 TimeoutStopSec=120
 NoNewPrivileges=yes

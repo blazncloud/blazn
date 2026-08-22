@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/common.sh"
+
+[ "$(id -u)" -eq 0 ] || die "control-plane supervisor must run as root"
+require_command docker
+export DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}
+ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
+assert_regular_file_owned_mode "$ENV_FILE" 0 600
+
+compose() {
+  docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" "$@"
+}
+
+stop_project() {
+  trap - EXIT HUP INT TERM
+  compose stop >/dev/null 2>&1 || true
+}
+
+shutdown() {
+  stop_project
+  exit 0
+}
+
+trap stop_project EXIT
+trap shutdown HUP INT TERM
+compose up --detach --wait --remove-orphans
+
+while :; do
+  for service in postgres object api; do
+    container=$(compose ps -q "$service")
+    [ -n "$container" ] || die "required service has no container: $service"
+    state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container")
+    [ "$state" = "running healthy" ] || die "required service is not running and healthy: $service ($state)"
+  done
+  sleep 5
+done

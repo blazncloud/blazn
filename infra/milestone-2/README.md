@@ -27,19 +27,21 @@ The long-running TypeScript API contract is `GET /healthz` plus `PORT`,
 `S3_BUCKET`, `S3_ACCESS_KEY_FILE`, and `S3_SECRET_KEY_FILE`. It receives only
 the DML-only runtime database URL. A one-shot migration service receives the
 non-superuser schema-owner URL, then a one-shot bootstrap service receives the
-runtime URL and initial-login password. Neither elevated secret reaches the
+dedicated bootstrap URL and initial-login password. Neither elevated secret reaches the
 runtime API.
 
 Fresh PostgreSQL initialization creates three distinct identities: the
 container-only administrative user, `blazn_migration` as the non-superuser
-database/schema owner, and `blazn_runtime` with connect, schema usage, table
-DML, and sequence-use privileges only. Default privileges make future objects
-created by migrations available to runtime without granting runtime DDL.
+database/schema owner, `blazn_bootstrap` for the initial identity only, and
+`blazn_runtime` for request handling. Migration SQL grants table-specific
+operations to bootstrap and runtime; initialization does not grant blanket
+future-table DML.
 
 The object service has its own restart-idempotent one-shot initializer. It uses
-the pinned `mc` image to create the required bucket with `--ignore-existing`
-and verifies it before the API starts. The API then performs an authenticated
-signed `HeadBucket`, so a healthy process also proves its bucket access.
+the pinned `mc` image and root credential to create the required bucket and a
+bucket-scoped runtime identity. The API and backup tooling receive only that
+runtime identity. The API performs an authenticated signed `HeadBucket`, so a
+healthy process also proves its bucket access.
 
 ## Required decisions before a ben1 deployment
 
@@ -69,6 +71,8 @@ unit provide the reviewed separate backup failure domain: ben4 exports only the
 dedicated backup directory to ben1's private-LAN address, and ben1 mounts it with
 `nosuid,nodev,noexec`. These files are host-specific evidence, not portable
 defaults; a production deployment must provision independent durable storage.
+Preflight and every backup verify the exact active NFS mountpoint, source, and
+filesystem type so an unmounted `/mnt` directory can never receive a backup.
 
 The intended installer-owned sequence is:
 
@@ -86,13 +90,22 @@ restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host onl
 
 The dependency installer places the pinned Compose plugin under the dedicated
 `/etc/blazn/docker-cli` configuration root. The systemd unit sets that exact
-`DOCKER_CONFIG`, avoiding a user's Docker CLI configuration and plugins.
+`DOCKER_CONFIG`, and backup/verification scripts set it internally, avoiding a
+user's Docker CLI configuration and plugins.
+
+Systemd is the sole restart owner. Compose containers never restart themselves;
+the foreground supervisor checks the three long-running containers and their
+health, stops the exact project on failure, and lets systemd restart it.
 
 Every API deploy/restart, schema migration, PostgreSQL/object-store restart,
 backup promotion, and production-like restore must use the same
 `ben1-control-plane-mutation` lock. Ngrok activation additionally requires the
 separate `public-origin/blazn.benpelo.com` owner. The monotonically increasing
 fencing token is passed to the foreground operation.
+
+Both ngrok units execute the public-origin wrapper as their foreground process,
+so the host-wide lock is held for the full tunnel lifetime rather than only for
+the `systemctl start` request.
 
 `systemd/blazn-ngrok-qualification.service` is a temporary fallback for the
 POC test matrix when the requested custom hostname has not yet been reserved.
@@ -114,9 +127,14 @@ confirmation before deletion.
 - `verify-object-store.sh` uses a run-unique prefix, compares the uploaded and
   downloaded SHA-256 digest, deletes exactly that prefix, and proves no residue.
 - `backup.sh` creates a PostgreSQL custom-format dump, mirrors the object bucket,
+  compares authenticated bucket listings before and after the database/object export,
   writes a checksum manifest, and atomically promotes the staging directory.
+  Milestone 2 has no database object-metadata table, so this proves bucket
+  stability rather than cross-store referential consistency. The first such
+  schema must introduce an application-level snapshot barrier.
 - `restore-test.sh` refuses ben1 and any non-disposable target path, verifies all
-  backup checksums, restores to an isolated database, and retains evidence.
+  backup checksums, requires a canonical direct child of the restore directory,
+  restores to an isolated database, and retains evidence.
 
 Run the non-mutating test suite on Linux:
 

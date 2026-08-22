@@ -49,6 +49,7 @@ esac
 case "$DATA_ROOT/" in
   "$BACKUP_ROOT/"*) die "data root must not be inside the backup root" ;;
 esac
+assert_approved_backup_mount "$BACKUP_ROOT"
 
 for number in "$MIN_DATA_BYTES" "$MIN_BACKUP_BYTES" "$MIN_FREE_INODES"; do
   is_uint "$number" || die "capacity thresholds must be unsigned integers"
@@ -113,18 +114,20 @@ if [ "$MODE" = deploy ]; then
   [ -n "${BLAZN_INITIAL_DISPLAY_NAME:-}" ] || die "BLAZN_INITIAL_DISPLAY_NAME is required"
   DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli} docker compose version >/dev/null 2>&1 || die "Blazn-owned Docker Compose v2 is unavailable"
   require_command flock
-  [ -d "$DATA_ROOT/postgres" ] || die "prepared PostgreSQL directory is missing"
-  [ -d "$DATA_ROOT/objects" ] || die "prepared object directory is missing"
-  [ -d "$SECRETS_ROOT" ] || die "prepared secrets directory is missing"
-  [ -f "$RECEIPT_PATH" ] || die "ownership receipt is missing"
-  [ "$(stat -c '%u' "$RECEIPT_PATH")" -eq 0 ] || die "ownership receipt must be owned by root"
-  [ "$(stat -c '%a' "$RECEIPT_PATH")" = 600 ] || die "ownership receipt must have mode 0600"
+  assert_directory_owned_mode "$DATA_ROOT" 0 700
+  assert_directory_owned_mode "$DATA_ROOT/postgres" 999 700
+  assert_directory_owned_mode "$DATA_ROOT/objects" 1000 700
+  assert_directory_owned_mode "$SECRETS_ROOT" 0 700
+  assert_regular_file_owned_mode "$RECEIPT_PATH" 0 600
   config_digest=sha256:$(control_plane_config_digest "$ROOT_DIR")
   jq -e \
     --arg host "$(hostname)" \
     --arg data "$DATA_ROOT" \
     --arg backup "$BACKUP_ROOT" \
     --arg secrets "$SECRETS_ROOT" \
+    --arg backupMount "$BLAZN_BACKUP_MOUNT" \
+    --arg backupSource "$BLAZN_BACKUP_SOURCE" \
+    --arg backupFstype "$BLAZN_BACKUP_FSTYPE" \
     --arg configDigest "$config_digest" \
     --arg postgresImage "$POSTGRES_IMAGE" \
     --arg minioImage "$MINIO_IMAGE" \
@@ -136,15 +139,13 @@ if [ "$MODE" = deploy ]; then
     '.schemaVersion == "blazn.dev/control-plane-ownership/v1" and
      .owner == "blazn-poc" and .host == $host and
      .paths == {data:$data,backup:$backup,secrets:$secrets} and
+     .backupMount == {target:$backupMount,source:$backupSource,fstype:$backupFstype} and
      .ports == [$postgresPort,$s3Port,$s3ConsolePort,$apiPort] and
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password migration-database-url runtime-database-url initial-password s3-access-key s3-secret-key; do
-    [ -f "$SECRETS_ROOT/$secret" ] || die "required secret file is missing: $secret"
-    [ "$(stat -c '%u' "$SECRETS_ROOT/$secret")" -eq 0 ] || die "secret file must be owned by root: $secret"
-    mode=$(stat -c '%a' "$SECRETS_ROOT/$secret")
-    [ "$mode" = 444 ] || die "secret file must have mode 0444 inside the root-only secrets directory: $secret"
+  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key; do
+    assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444
   done
 fi
 
