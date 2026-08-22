@@ -9,14 +9,14 @@
     "schemaVersion": {"const": 1},
     "protocolVersion": {"const": 1},
     "invocationId": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-    "coreVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+    "coreVersion": {"type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$"},
     "outputFormat": {"enum": ["human", "json", "jsonl", "csv"]},
     "status": {"enum": ["selected", "unselected", "unavailable"]},
     "reasonCode": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,62}$"},
     "apiOrigin": {"type": "string", "format": "uri", "maxLength": 2048},
-    "userId": {"type": "string", "minLength": 1, "maxLength": 255},
-    "workspaceId": {"type": "string", "minLength": 1, "maxLength": 255},
-    "projectId": {"type": "string", "minLength": 1, "maxLength": 255}
+    "userId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"},
+    "workspaceId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"},
+    "projectId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$"}
   },
   "allOf": [
     {

@@ -79,6 +79,7 @@ func TestRuntimeContextRejectsUnsafeOrIncoherentValues(t *testing.T) {
 	tests := []func(*RuntimeContext){
 		func(value *RuntimeContext) { value.SchemaVersion = 2 },
 		func(value *RuntimeContext) { value.InvocationID = "bad" },
+		func(value *RuntimeContext) { value.CoreVersion = "v1\ninjected" },
 		func(value *RuntimeContext) { value.OutputFormat = "yaml" },
 		func(value *RuntimeContext) { value.Status = "unknown" },
 		func(value *RuntimeContext) { value.Status, value.ReasonCode = "unselected", "workspace_required" },
@@ -98,5 +99,13 @@ func TestRuntimeContextRejectsOversizedResourceIdentity(t *testing.T) {
 	context.WorkspaceID = strings.Repeat("w", 256)
 	if err := context.Validate(); err == nil {
 		t.Fatal("oversized Workspace identity passed")
+	}
+}
+
+func TestRuntimeContextRejectsControlCharactersInResourceIdentity(t *testing.T) {
+	context := validRuntimeContext(t)
+	context.WorkspaceID = "workspace-1\ninjected"
+	if err := context.Validate(); err == nil {
+		t.Fatal("Workspace identity with a newline passed")
 	}
 }

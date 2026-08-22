@@ -35,6 +35,8 @@ type RuntimeContext struct {
 
 var runtimeIdentifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 var invocationIdentifier = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var runtimeResourceIdentifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$`)
+var runtimeCoreVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$`)
 
 func NewRuntimeContext(coreVersion, outputFormat string) (RuntimeContext, error) {
 	random := make([]byte, 16)
@@ -56,7 +58,7 @@ func (c RuntimeContext) Validate() error {
 	if c.SchemaVersion != RuntimeContextSchema || c.ProtocolVersion != ProtocolVersion {
 		return errors.New("plugin runtime context version is unsupported")
 	}
-	if !invocationIdentifier.MatchString(c.InvocationID) || c.CoreVersion == "" || len(c.CoreVersion) > 128 {
+	if !invocationIdentifier.MatchString(c.InvocationID) || !runtimeCoreVersion.MatchString(c.CoreVersion) {
 		return errors.New("plugin runtime context identity is invalid")
 	}
 	switch c.OutputFormat {
@@ -89,8 +91,8 @@ func (c RuntimeContext) Validate() error {
 		}
 	}
 	for _, identifier := range []string{c.UserID, c.WorkspaceID, c.ProjectID} {
-		if len(identifier) > 255 {
-			return errors.New("plugin runtime context resource identity is too long")
+		if identifier != "" && !runtimeResourceIdentifier.MatchString(identifier) {
+			return errors.New("plugin runtime context resource identity is invalid")
 		}
 	}
 	encoded, err := json.Marshal(c)
