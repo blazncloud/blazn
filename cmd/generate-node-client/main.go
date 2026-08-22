@@ -348,7 +348,7 @@ func validateSharedNodeErrors(node, common map[string]any) error {
 		return fmt.Errorf("common Error status map is unavailable")
 	}
 	for code, commonStatus := range commonStatuses {
-		if nodeStatus, exists := nodeStatuses[code]; exists && nodeStatus != commonStatus {
+		if nodeStatus, exists := nodeStatuses[code]; !exists || nodeStatus != commonStatus {
 			return fmt.Errorf("shared error status differs for %s", code)
 		}
 	}

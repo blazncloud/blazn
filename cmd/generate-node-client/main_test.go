@@ -143,6 +143,17 @@ func TestNodeValidatorRejectsSharedStatusMismatch(t *testing.T) {
 	}
 }
 
+func TestNodeValidatorRejectsMissingCommonMiddlewareCode(t *testing.T) {
+	sources := checkedInSources(t)
+	nodeKey := filepath.Join("packages", "contracts", "nodes.openapi.json")
+	commonKey := filepath.Join("packages", "contracts", "openapi.json")
+	common := cloneDocument(t, sources[commonKey].doc)
+	at(common, "components", "schemas", "Error", "x-blazn-error-status").(map[string]any)["new_common_failure"] = float64(503)
+	if err := validateSharedNodeErrors(sources[nodeKey].doc, common); err == nil || !strings.Contains(err.Error(), "shared error status differs") {
+		t.Fatalf("missing common code error=%v", err)
+	}
+}
+
 func TestNodeValidatorRejectsMisnestedCapabilityModels(t *testing.T) {
 	sources := checkedInSources(t)
 	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
