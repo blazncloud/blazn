@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"reflect"
@@ -22,12 +23,50 @@ func testPolicy() proxycontract.Policy {
 	return proxycontract.Policy{Aliases: map[string]proxycontract.Alias{"company-assistant": {DataClass: proxycontract.DataCompany}}, RequestLimits: proxycontract.RequestLimits{MaxOutputTokens: 4096, TimeoutMS: 30000}}
 }
 
-func TestClaudeCode212FixtureNormalizesExactly(t *testing.T) {
-	body, err := os.Open("testdata/claude-code-2.1.212-messages.json")
+type harnessFixture struct {
+	Provenance struct{ Claim, CaptureStatus, Client, TargetVersion string } `json:"provenance"`
+	Activation struct {
+		Environment            map[string]string `json:"environment"`
+		EndpointPrecedence     []string          `json:"endpointPrecedence"`
+		ExpectedRequestHeaders map[string]string `json:"expectedRequestHeaders"`
+	} `json:"activation"`
+	Request           json.RawMessage `json:"request"`
+	NonstreamResponse json.RawMessage `json:"nonstreamResponse"`
+	SSETranscript     []struct {
+		Event string          `json:"event"`
+		Data  json.RawMessage `json:"data"`
+	} `json:"sseTranscript"`
+}
+
+func loadHarnessFixture(t *testing.T) harnessFixture {
+	t.Helper()
+	encoded, err := os.ReadFile("testdata/claude-code-2.1.212-harness-shape.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer body.Close()
+	var fixture harnessFixture
+	if json.Unmarshal(encoded, &fixture) != nil {
+		t.Fatal("invalid fixture")
+	}
+	return fixture
+}
+
+func TestClaudeCode212ReproducibleHarnessShape(t *testing.T) {
+	fixture := loadHarnessFixture(t)
+	if fixture.Provenance.Claim != "reproducible_harness_shape_only" || fixture.Provenance.CaptureStatus != "not_captured" || fixture.Provenance.TargetVersion != "2.1.212" {
+		t.Fatalf("fixture overclaims provenance: %#v", fixture.Provenance)
+	}
+	if fixture.Activation.Environment["ANTHROPIC_API_KEY"] != "<listener-token>" || fixture.Activation.Environment["ANTHROPIC_AUTH_TOKEN"] != "<listener-token>" || len(fixture.Activation.EndpointPrecedence) != 3 {
+		t.Fatal("fixture omitted endpoint credential precedence")
+	}
+	header := http.Header{"Authorization": {"Bearer listener"}, "Anthropic-Version": {fixture.Activation.ExpectedRequestHeaders["anthropic-version"]}}
+	if err := AuthenticateAndStrip(header, "listener"); err != nil {
+		t.Fatal(err)
+	}
+	if header.Get("Anthropic-Version") != "2023-06-01" {
+		t.Fatal("protocol version header was not retained")
+	}
+	body := bytes.NewReader(fixture.Request)
 	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	got, err := Normalize(body, testPolicy(), now, func() string { return requestID })
 	if err != nil {
@@ -57,6 +96,51 @@ func TestClaudeCode212FixtureNormalizesExactly(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.CapabilitiesRequired, []proxycontract.Capability{"text", "tools", "streaming"}) {
 		t.Fatalf("bad capabilities: %#v", got.CapabilitiesRequired)
+	}
+}
+
+func TestHarnessShapeResponseAndSSEPreserveStopSequence(t *testing.T) {
+	fixture := loadHarnessFixture(t)
+	now := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	request, err := Normalize(bytes.NewReader(fixture.Request), testPolicy(), now, func() string { return requestID })
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeID := "22222222-2222-4222-8222-222222222222"
+	response, metadata, err := DecodeDestinationDetailed(bytes.NewReader(fixture.NonstreamResponse), request, routeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.StopSequence == nil || *metadata.StopSequence != "<END>" {
+		t.Fatalf("lost stop sequence: %#v", metadata)
+	}
+	if _, err := DecodeDestination(bytes.NewReader(fixture.NonstreamResponse), request, routeID); err == nil {
+		t.Fatal("metadata-free path must fail closed")
+	}
+	var encoded bytes.Buffer
+	if err := WriteSourceResponseDetailed(&encoded, response, metadata); err != nil {
+		t.Fatal(err)
+	}
+	var source map[string]any
+	if json.Unmarshal(encoded.Bytes(), &source) != nil || source["stop_reason"] != "stop_sequence" || source["stop_sequence"] != "<END>" {
+		t.Fatalf("stop metadata lost: %s", encoded.String())
+	}
+	var transcript strings.Builder
+	for _, item := range fixture.SSETranscript {
+		fmt.Fprintf(&transcript, "event: %s\ndata: %s\n\n", item.Event, item.Data)
+	}
+	decoder := NewStreamDecoderForRequest(strings.NewReader(transcript.String()), request)
+	for {
+		_, done, err := decoder.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done {
+			break
+		}
+	}
+	if decoder.StopSequence() == nil || *decoder.StopSequence() != "<END>" {
+		t.Fatal("stream stop sequence lost")
 	}
 }
 
@@ -94,6 +178,30 @@ func TestStrictUnsupportedMatrix(t *testing.T) {
 				t.Fatal("expected rejection")
 			}
 		})
+	}
+}
+
+func TestForbiddenNamesRemainValidInsideUserData(t *testing.T) {
+	body := `{"model":"company-assistant","max_tokens":50,"messages":[{"role":"user","content":"go"},{"role":"assistant","content":[{"type":"tool_use","id":"call","name":"inspect","input":{"source":"s","image":"i","thinking":"t","cache_control":"c"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":"{\"source\":\"s\",\"image\":\"i\",\"thinking\":\"t\",\"cache_control\":\"c\"}"}]}],"tools":[{"name":"inspect","input_schema":{"type":"object","properties":{"source":{"type":"string"},"image":{"type":"string"},"thinking":{"type":"string"},"cache_control":{"type":"string"}}}}]}`
+	request, err := Normalize(strings.NewReader(body), testPolicy(), time.Now(), func() string { return requestID })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Blocks) != 3 || string(request.Blocks[1].Arguments) != `{"source":"s","image":"i","thinking":"t","cache_control":"c"}` {
+		t.Fatalf("user data changed: %#v", request.Blocks)
+	}
+}
+
+func TestNonStringToolResultAndLateSystemFailClosed(t *testing.T) {
+	body := `{"model":"company-assistant","max_tokens":10,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call","name":"inspect","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":{"source":"value"}}]}]}`
+	if _, err := Normalize(strings.NewReader(body), testPolicy(), time.Now(), func() string { return requestID }); err == nil {
+		t.Fatal("non-string result must be rejected")
+	}
+	text := "x"
+	request := proxycontract.NormalizedRequest{Blocks: []proxycontract.RequestBlock{{Role: "user", Type: "text", Text: &text}, {Role: "developer", Type: "text", Text: &text}}, Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 1}}
+	_, _, err := EncodeDestination(request, proxycontract.Route{DestinationProtocol: proxycontract.ProtocolAnthropicMessages})
+	if err == nil {
+		t.Fatal("late developer block must be rejected")
 	}
 }
 
@@ -197,6 +305,15 @@ func TestLocalCloudCompatibilityMatrix(t *testing.T) {
 	}
 }
 
+func TestStopSequenceCrossProtocolFailsClosed(t *testing.T) {
+	request := proxycontract.NormalizedRequest{Protocol: proxycontract.ProtocolAnthropicMessages, Limits: proxycontract.NormalizedLimits{Stop: []string{"END"}}}
+	for _, destination := range []proxycontract.Protocol{proxycontract.ProtocolOpenAIChat, proxycontract.ProtocolOpenAIResponses} {
+		if err := CheckCompatibility(request, destination); err == nil {
+			t.Fatalf("%s accepted lossy stop sequence", destination)
+		}
+	}
+}
+
 func TestDestinationResponseStrictness(t *testing.T) {
 	input := proxycontract.NormalizedRequest{LogicalRequestID: requestID, ModelAlias: "company-assistant"}
 	for name, body := range map[string]string{
@@ -255,7 +372,8 @@ func TestSourceStreamOrderAndCancellation(t *testing.T) {
 	callID, name, args := "toolu_1", "lookup", `{"q":"x"}`
 	usage := proxycontract.Usage{InputTokens: 7, OutputTokens: 3}
 	finish := proxycontract.FinishReason("tool_call")
-	for _, event := range []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Type: "response_start"}, {LogicalRequestID: requestID, Type: "text_delta", Text: &text}, {LogicalRequestID: requestID, Type: "tool_call_start", CallID: &callID, ToolName: &name}, {LogicalRequestID: requestID, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &args}, {LogicalRequestID: requestID, Type: "usage", Usage: &usage}, {LogicalRequestID: requestID, Type: "response_end", FinishReason: &finish}} {
+	for index, event := range []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Type: "response_start"}, {LogicalRequestID: requestID, Type: "text_delta", Text: &text}, {LogicalRequestID: requestID, Type: "tool_call_start", CallID: &callID, ToolName: &name}, {LogicalRequestID: requestID, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &args}, {LogicalRequestID: requestID, Type: "usage", Usage: &usage}, {LogicalRequestID: requestID, Type: "response_end", FinishReason: &finish}} {
+		event.Sequence = index
 		if err := s.Consume(event); err != nil {
 			t.Fatal(err)
 		}
@@ -296,6 +414,117 @@ func TestStreamRejectsOrderAndSupportsContextCancellation(t *testing.T) {
 	var api *Error
 	if !errors.As(err, &api) || api.Code != "cancelled" {
 		t.Fatalf("unexpected cancel: %v", err)
+	}
+}
+
+func TestBlockedStreamReadIsCancelled(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	decoder := NewStreamDecoder(reader, requestID)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, _, err := decoder.NextContext(ctx)
+	var api *Error
+	if !errors.As(err, &api) || api.Code != "cancelled" {
+		t.Fatalf("unexpected cancellation: %v", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("blocked read was not promptly unblocked")
+	}
+}
+
+func TestDestinationStreamStrictStateAndBounds(t *testing.T) {
+	start := `event: message_start\ndata: {"type":"message_start","message":{"id":"msg","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n`
+	for name, suffix := range map[string]string{
+		"post end":      `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\nevent: ping\ndata: {"type":"ping"}\n\n`,
+		"bad tool json": `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"tool","input":{}}}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{"}}\n\nevent: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stream := strings.ReplaceAll(start+suffix, `\n`, "\n")
+			decoder := NewStreamDecoder(strings.NewReader(stream), requestID)
+			for {
+				_, done, err := decoder.Next()
+				if err != nil {
+					return
+				}
+				if done {
+					t.Fatal("invalid stream accepted")
+				}
+			}
+		})
+	}
+	stream := strings.ReplaceAll(start, `\n`, "\n")
+	decoder := NewStreamDecoder(strings.NewReader(stream), requestID)
+	decoder.eventsRead = MaxStreamEvents
+	if _, _, err := decoder.Next(); err == nil {
+		t.Fatal("event limit was not enforced")
+	}
+}
+
+func TestSourceStreamStateMachineRejectsDuplicateAndPostEnd(t *testing.T) {
+	request := proxycontract.NormalizedRequest{LogicalRequestID: requestID, ModelAlias: "model"}
+	encoder := NewStreamEncoder(io.Discard, request)
+	_ = encoder.Start()
+	input := 0
+	usage := proxycontract.Usage{}
+	finish := proxycontract.FinishReason("stop")
+	start := proxycontract.NormalizedStreamEvent{LogicalRequestID: requestID, Sequence: input, Type: "response_start"}
+	if err := encoder.Consume(start); err != nil {
+		t.Fatal(err)
+	}
+	duplicate := start
+	duplicate.Sequence = 1
+	if err := encoder.Consume(duplicate); err == nil {
+		t.Fatal("duplicate start accepted")
+	}
+	encoder = NewStreamEncoder(io.Discard, request)
+	_ = encoder.Start()
+	events := []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: 0, Type: "response_start"}, {LogicalRequestID: requestID, Sequence: 1, Type: "usage", Usage: &usage}, {LogicalRequestID: requestID, Sequence: 2, Type: "response_end", FinishReason: &finish}}
+	for _, event := range events {
+		if err := encoder.Consume(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := encoder.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	late := "x"
+	if err := encoder.Consume(proxycontract.NormalizedStreamEvent{LogicalRequestID: requestID, Sequence: 3, Type: "text_delta", Text: &late}); err == nil {
+		t.Fatal("post-end event accepted")
+	}
+}
+
+func TestSourceStreamRejectsInvalidTransitions(t *testing.T) {
+	request := proxycontract.NormalizedRequest{LogicalRequestID: requestID, ModelAlias: "model"}
+	text, callID, name, badArgs := "x", "call", "tool", "{"
+	usage := proxycontract.Usage{}
+	finish := proxycontract.FinishReason("stop")
+	tests := map[string][]proxycontract.NormalizedStreamEvent{
+		"nonzero start":         {{LogicalRequestID: requestID, Sequence: 1, Type: "response_start"}},
+		"delta before start":    {{LogicalRequestID: requestID, Sequence: 0, Type: "text_delta", Text: &text}},
+		"tool args before call": {{LogicalRequestID: requestID, Sequence: 0, Type: "response_start"}, {LogicalRequestID: requestID, Sequence: 1, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &badArgs}},
+		"end before usage":      {{LogicalRequestID: requestID, Sequence: 0, Type: "response_start"}, {LogicalRequestID: requestID, Sequence: 1, Type: "response_end", FinishReason: &finish}},
+		"invalid tool json":     {{LogicalRequestID: requestID, Sequence: 0, Type: "response_start"}, {LogicalRequestID: requestID, Sequence: 1, Type: "tool_call_start", CallID: &callID, ToolName: &name}, {LogicalRequestID: requestID, Sequence: 2, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &badArgs}, {LogicalRequestID: requestID, Sequence: 3, Type: "usage", Usage: &usage}},
+		"sequence gap":          {{LogicalRequestID: requestID, Sequence: 0, Type: "response_start"}, {LogicalRequestID: requestID, Sequence: 2, Type: "usage", Usage: &usage}},
+	}
+	for testName, events := range tests {
+		t.Run(testName, func(t *testing.T) {
+			encoder := NewStreamEncoder(io.Discard, request)
+			_ = encoder.Start()
+			for index, event := range events {
+				err := encoder.Consume(event)
+				if index == len(events)-1 {
+					if err == nil {
+						t.Fatal("invalid transition accepted")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("setup event %d: %v", index, err)
+				}
+			}
+		})
 	}
 }
 

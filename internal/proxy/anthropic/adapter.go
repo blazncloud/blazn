@@ -158,8 +158,11 @@ func Normalize(body io.Reader, policy proxycontract.Policy, now time.Time, newID
 	if len(raw) > MaxRequestBytes {
 		return proxycontract.NormalizedRequest{}, &Error{Code: "invalid_request", Message: "request exceeds the body limit", Status: 413}
 	}
-	if forbiddenFeature(raw) {
-		return proxycontract.NormalizedRequest{}, unsupported("beta, prompt caching, thinking, computer-use, and multimodal content are unsupported")
+	var topLevel map[string]json.RawMessage
+	if json.Unmarshal(raw, &topLevel) == nil {
+		if _, present := topLevel["thinking"]; present {
+			return proxycontract.NormalizedRequest{}, unsupported("extended thinking is unsupported")
+		}
 	}
 	var source request
 	if err := decodeStrict(bytes.NewReader(raw), &source); err != nil {
@@ -205,6 +208,10 @@ func Normalize(body io.Reader, policy proxycontract.Policy, now time.Time, newID
 		}
 		parts, err := decodeContent(sourceMessage.Content)
 		if err != nil || len(parts) == 0 {
+			var api *Error
+			if errors.As(err, &api) {
+				return proxycontract.NormalizedRequest{}, api
+			}
 			return proxycontract.NormalizedRequest{}, invalid("message content must be text or supported content blocks")
 		}
 		for _, part := range parts {
@@ -216,6 +223,9 @@ func Normalize(body io.Reader, policy proxycontract.Policy, now time.Time, newID
 				text := part.Text
 				blocks = append(blocks, proxycontract.RequestBlock{Role: proxycontract.NormalizedRole(sourceMessage.Role), Type: "text", Text: &text})
 			case "tool_use":
+				if strings.HasPrefix(strings.ToLower(part.Name), "computer_") || strings.Contains(strings.ToLower(part.Name), "computer-use") {
+					return proxycontract.NormalizedRequest{}, unsupported("computer-use tools are unsupported")
+				}
 				if sourceMessage.Role != "assistant" || part.ID == "" || part.Name == "" || len(part.Input) == 0 || !isJSONObject(part.Input) {
 					return proxycontract.NormalizedRequest{}, invalid("tool_use requires assistant role, id, name, and object input")
 				}
@@ -314,9 +324,40 @@ func decodeContent(raw json.RawMessage) ([]contentBlock, error) {
 	}
 	parts := make([]contentBlock, 0, len(rawParts))
 	for _, rawPart := range rawParts {
+		var header map[string]json.RawMessage
+		if json.Unmarshal(rawPart, &header) != nil {
+			return nil, errors.New("invalid content block")
+		}
+		var kind string
+		_ = json.Unmarshal(header["type"], &kind)
+		if _, present := header["cache_control"]; present {
+			return nil, unsupported("prompt caching is unsupported")
+		}
+		switch kind {
+		case "image", "document", "thinking", "redacted_thinking", "server_tool_use", "web_search_tool_result", "computer_tool_result":
+			return nil, unsupported("multimodal, thinking, and computer-use content are unsupported")
+		}
 		var part contentBlock
 		if err := decodeStrict(bytes.NewReader(rawPart), &part); err != nil {
 			return nil, err
+		}
+		switch part.Type {
+		case "text":
+			if !hasExactKeys(rawPart, "type", "text") {
+				return nil, errors.New("invalid text block")
+			}
+		case "tool_use":
+			if !hasExactKeys(rawPart, "type", "id", "name", "input") {
+				return nil, errors.New("invalid tool_use block")
+			}
+		case "tool_result":
+			allowed := []string{"type", "tool_use_id", "content"}
+			if _, ok := header["is_error"]; ok {
+				allowed = append(allowed, "is_error")
+			}
+			if !hasExactKeys(rawPart, allowed...) {
+				return nil, errors.New("invalid tool_result block")
+			}
 		}
 		parts = append(parts, part)
 	}
@@ -339,44 +380,6 @@ func validateContentBlock(part contentBlock) error {
 		}
 	}
 	return nil
-}
-
-func forbiddenFeature(raw json.RawMessage) bool {
-	var root any
-	if json.Unmarshal(raw, &root) != nil {
-		return false
-	}
-	var visit func(any) bool
-	visit = func(value any) bool {
-		switch typed := value.(type) {
-		case []any:
-			for _, child := range typed {
-				if visit(child) {
-					return true
-				}
-			}
-		case map[string]any:
-			for key, child := range typed {
-				lower := strings.ToLower(key)
-				if lower == "cache_control" || lower == "thinking" || lower == "prompt_caching" || lower == "image" || lower == "source" {
-					return true
-				}
-				if lower == "type" || lower == "name" {
-					if text, ok := child.(string); ok {
-						kind := strings.ToLower(text)
-						if kind == "image" || kind == "document" || strings.Contains(kind, "thinking") || strings.HasPrefix(kind, "computer_") || strings.Contains(kind, "computer-use") {
-							return true
-						}
-					}
-				}
-				if visit(child) {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return visit(root)
 }
 
 func textContent(raw json.RawMessage) ([]string, error) {
@@ -402,10 +405,7 @@ func normalizeResult(raw json.RawMessage) (json.RawMessage, error) {
 		encoded, _ := json.Marshal(strings.Join(texts, ""))
 		return encoded, nil
 	}
-	if !json.Valid(raw) {
-		return nil, errors.New("invalid result")
-	}
-	return compact(raw), nil
+	return nil, errors.New("non-string tool result is not losslessly representable")
 }
 
 func decodeStrict(reader io.Reader, target any) error {
@@ -447,9 +447,13 @@ func EncodeDestination(input proxycontract.NormalizedRequest, route proxycontrac
 	}
 	system := []any{}
 	messages := []any{}
+	sawMessage := false
 	for index := 0; index < len(input.Blocks); {
 		block := input.Blocks[index]
 		if block.Role == "system" || block.Role == "developer" {
+			if sawMessage {
+				return nil, "", unsupported("late system or developer content is not representable by Anthropic Messages")
+			}
 			if block.Type != "text" {
 				return nil, "", unsupported("non-text system content is unsupported")
 			}
@@ -458,6 +462,7 @@ func EncodeDestination(input proxycontract.NormalizedRequest, route proxycontrac
 			continue
 		}
 		role := string(block.Role)
+		sawMessage = true
 		if role == "tool" {
 			role = "user"
 		}
@@ -532,6 +537,9 @@ func CheckCompatibility(input proxycontract.NormalizedRequest, destination proxy
 	if input.Protocol == proxycontract.ProtocolAnthropicMessages && input.Stream && destination != proxycontract.ProtocolAnthropicMessages {
 		return unsupported("cross-protocol streaming cannot preserve Anthropic input usage timing")
 	}
+	if input.Protocol == proxycontract.ProtocolAnthropicMessages && len(input.Limits.Stop) > 0 && destination != proxycontract.ProtocolAnthropicMessages {
+		return unsupported("cross-protocol routing cannot preserve the matched Anthropic stop_sequence")
+	}
 	switch destination {
 	case proxycontract.ProtocolOpenAIChat, proxycontract.ProtocolOpenAIResponses, proxycontract.ProtocolAnthropicMessages:
 		return nil
@@ -549,39 +557,66 @@ func resultContent(raw json.RawMessage) any {
 }
 
 type response struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
-	Role       string         `json:"role"`
-	Model      string         `json:"model"`
-	Content    []contentBlock `json:"content"`
-	StopReason string         `json:"stop_reason"`
-	StopSeq    *string        `json:"stop_sequence"`
-	Usage      usage          `json:"usage"`
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	Role       string            `json:"role"`
+	Model      string            `json:"model"`
+	Content    []json.RawMessage `json:"content"`
+	StopReason string            `json:"stop_reason"`
+	StopSeq    *string           `json:"stop_sequence"`
+	Usage      usage             `json:"usage"`
 }
 type usage struct {
 	InputTokens  int `json:"input_tokens"`
 	OutputTokens int `json:"output_tokens"`
 }
 
+type ResponseMetadata struct {
+	StopReason   string
+	StopSequence *string
+}
+
 func DecodeDestination(body io.Reader, input proxycontract.NormalizedRequest, routeID string) (proxycontract.NormalizedResponse, error) {
+	result, metadata, err := DecodeDestinationDetailed(body, input, routeID)
+	if err == nil && metadata.StopSequence != nil {
+		return proxycontract.NormalizedResponse{}, unsupported("matched Anthropic stop_sequence requires adapter metadata")
+	}
+	return result, err
+}
+
+func DecodeDestinationDetailed(body io.Reader, input proxycontract.NormalizedRequest, routeID string) (proxycontract.NormalizedResponse, ResponseMetadata, error) {
 	raw, err := io.ReadAll(io.LimitReader(body, MaxRequestBytes+1))
 	if err != nil || len(raw) > MaxRequestBytes {
-		return proxycontract.NormalizedResponse{}, upstream("upstream returned an invalid Anthropic Messages response")
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned an invalid Anthropic Messages response")
 	}
 	if !hasExactKeys(raw, "id", "type", "role", "model", "content", "stop_reason", "stop_sequence", "usage") {
-		return proxycontract.NormalizedResponse{}, upstream("upstream returned incomplete Anthropic message metadata")
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned incomplete Anthropic message metadata")
 	}
 	var source response
 	if err := decodeStrict(bytes.NewReader(raw), &source); err != nil || !hasExactKeys(source.UsageJSON(raw), "input_tokens", "output_tokens") {
-		return proxycontract.NormalizedResponse{}, upstream("upstream returned an invalid Anthropic Messages response")
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned an invalid Anthropic Messages response")
 	}
 	if source.Type != "message" || source.Role != "assistant" || source.ID == "" || source.Model == "" {
-		return proxycontract.NormalizedResponse{}, upstream("upstream returned invalid Anthropic message metadata")
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned invalid Anthropic message metadata")
 	}
 	blocks := make([]proxycontract.ResponseBlock, 0, len(source.Content))
-	for _, part := range source.Content {
+	sawTool := false
+	for _, rawPart := range source.Content {
+		var header struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rawPart, &header) != nil {
+			return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned invalid Anthropic content")
+		}
+		if header.Type == "text" && !hasExactKeys(rawPart, "type", "text") || header.Type == "tool_use" && !hasExactKeys(rawPart, "type", "id", "name", "input") {
+			return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned invalid Anthropic content keys")
+		}
+		var part contentBlock
+		if decodeStrict(bytes.NewReader(rawPart), &part) != nil {
+			return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned invalid Anthropic content")
+		}
 		if err := validateContentBlock(part); err != nil {
-			return proxycontract.NormalizedResponse{}, upstream("upstream returned invalid Anthropic content union")
+			return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned invalid Anthropic content union")
 		}
 		switch part.Type {
 		case "text":
@@ -589,22 +624,29 @@ func DecodeDestination(body io.Reader, input proxycontract.NormalizedRequest, ro
 			blocks = append(blocks, proxycontract.ResponseBlock{Type: "text", Text: &text})
 		case "tool_use":
 			if part.ID == "" || part.Name == "" || !isJSONObject(part.Input) {
-				return proxycontract.NormalizedResponse{}, upstream("upstream returned invalid tool_use content")
+				return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned invalid tool_use content")
 			}
 			blocks = append(blocks, proxycontract.ResponseBlock{Type: "tool_call", CallID: ptr(part.ID), ToolName: ptr(part.Name), Arguments: compact(part.Input)})
+			sawTool = true
 		default:
-			return proxycontract.NormalizedResponse{}, upstream("upstream returned unsupported Anthropic content")
+			return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream returned unsupported Anthropic content")
 		}
+	}
+	if (source.StopReason == "tool_use") != sawTool {
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("tool_use stop_reason contradicts response content")
+	}
+	if err := validateStopSequence(source.StopReason, source.StopSeq, input.Limits.Stop); err != nil {
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, err
 	}
 	finish, err := finishReason(source.StopReason)
 	if err != nil {
-		return proxycontract.NormalizedResponse{}, err
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, err
 	}
 	result := proxycontract.NormalizedResponse{LogicalRequestID: input.LogicalRequestID, ModelAlias: input.ModelAlias, RouteID: routeID, Blocks: blocks, FinishReason: finish, Usage: proxycontract.Usage{InputTokens: source.Usage.InputTokens, OutputTokens: source.Usage.OutputTokens}}
 	if err := result.Validate(); err != nil {
-		return proxycontract.NormalizedResponse{}, upstream("upstream response failed normalization")
+		return proxycontract.NormalizedResponse{}, ResponseMetadata{}, upstream("upstream response failed normalization")
 	}
-	return result, nil
+	return result, ResponseMetadata{StopReason: source.StopReason, StopSequence: source.StopSeq}, nil
 }
 
 func (response) UsageJSON(raw json.RawMessage) json.RawMessage {
@@ -628,7 +670,38 @@ func finishReason(reason string) (proxycontract.FinishReason, error) {
 	}
 }
 
+func validateStopSequence(reason string, sequence *string, requested []string) error {
+	if reason == "stop_sequence" {
+		if sequence == nil || *sequence == "" {
+			return upstream("stop_sequence reason omitted the matched sequence")
+		}
+		for _, candidate := range requested {
+			if candidate == *sequence {
+				return nil
+			}
+		}
+		return upstream("upstream reported an unrequested stop_sequence")
+	}
+	if sequence != nil {
+		return upstream("stop_sequence must be null for this stop_reason")
+	}
+	return nil
+}
+
 func WriteSourceResponse(writer io.Writer, input proxycontract.NormalizedResponse) error {
+	return WriteSourceResponseDetailed(writer, input, ResponseMetadata{})
+}
+
+func WriteSourceResponseDetailed(writer io.Writer, input proxycontract.NormalizedResponse, metadata ResponseMetadata) error {
+	if metadata.StopReason == "stop_sequence" && metadata.StopSequence == nil {
+		return unsupported("matched stop_sequence metadata is incomplete")
+	}
+	if metadata.StopReason != "" && metadata.StopReason != "stop_sequence" {
+		mapped, err := finishReason(metadata.StopReason)
+		if err != nil || mapped != input.FinishReason {
+			return unsupported("Anthropic stop metadata contradicts normalized finish reason")
+		}
+	}
 	content := make([]any, 0, len(input.Blocks))
 	for _, block := range input.Blocks {
 		switch block.Type {
@@ -641,10 +714,18 @@ func WriteSourceResponse(writer io.Writer, input proxycontract.NormalizedRespons
 		}
 	}
 	stop := map[proxycontract.FinishReason]string{"stop": "end_turn", "length": "max_tokens", "tool_call": "tool_use", "content_filter": "refusal"}[input.FinishReason]
+	stopSequence := any(nil)
+	if metadata.StopSequence != nil {
+		if input.FinishReason != "stop" || metadata.StopReason != "stop_sequence" {
+			return unsupported("Anthropic stop metadata contradicts normalized finish reason")
+		}
+		stop = "stop_sequence"
+		stopSequence = *metadata.StopSequence
+	}
 	if stop == "" {
 		return unsupported("normalized finish reason cannot be represented by Anthropic Messages")
 	}
-	return json.NewEncoder(writer).Encode(map[string]any{"id": "msg_" + input.LogicalRequestID, "type": "message", "role": "assistant", "model": input.ModelAlias, "content": content, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": input.Usage.InputTokens, "output_tokens": input.Usage.OutputTokens}})
+	return json.NewEncoder(writer).Encode(map[string]any{"id": "msg_" + input.LogicalRequestID, "type": "message", "role": "assistant", "model": input.ModelAlias, "content": content, "stop_reason": stop, "stop_sequence": stopSequence, "usage": map[string]any{"input_tokens": input.Usage.InputTokens, "output_tokens": input.Usage.OutputTokens}})
 }
 
 func WriteError(writer io.Writer, err error) error {
