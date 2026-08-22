@@ -161,6 +161,7 @@ BEGIN
   BEGIN
     INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signing_key_id,signature,payload) VALUES
       ('ffffffff-1111-4111-8111-111111111111','dddddddd-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','pause',repeat('7',64),'node-identity/v1',repeat('A',86),'{}');
+    SET CONSTRAINTS ALL IMMEDIATE;
     RAISE EXCEPTION 'cross-bound operation receipt accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
   BEGIN
