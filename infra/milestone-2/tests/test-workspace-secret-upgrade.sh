@@ -46,7 +46,7 @@ run_upgrade() {
 normal=$(fixture normal)
 run_upgrade "$normal" >"$normal/run-1.out"
 secret=$normal/secrets/workspace-invitation-hmac-v1
-[ "$(sudo wc -c <"$secret" | tr -d ' ')" = 65 ]
+[ "$(sudo wc -c "$secret" | awk '{print $1}')" = 65 ]
 sudo grep -Eq '^[a-f0-9]{64}$' "$secret"
 [ "$(sudo stat -c '%u:%a' "$secret")" = 0:444 ]
 sudo jq -e '.schemaVersion == "blazn.dev/workspace-secret-upgrade/v1" and (.secretDigest | test("^sha256:[a-f0-9]{64}$"))' \
