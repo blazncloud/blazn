@@ -1,0 +1,149 @@
+// Code generated from packages/contracts/projects.openapi.json; DO NOT EDIT.
+// Contract SHA256: f5d00176485165a83b62dbf25e42d1bccc82a61df4028b35a91396e2e9160598
+
+package client
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+)
+
+type ProjectStatus string
+
+const (
+	ProjectStatusActive   ProjectStatus = "active"
+	ProjectStatusArchived ProjectStatus = "archived"
+)
+
+type Project struct {
+	ID          string        `json:"id"`
+	WorkspaceID string        `json:"workspaceId"`
+	Slug        string        `json:"slug"`
+	Kind        string        `json:"kind"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Status      ProjectStatus `json:"status"`
+	Version     int           `json:"version"`
+	CreatedBy   string        `json:"createdBy"`
+	CreatedAt   string        `json:"createdAt"`
+	UpdatedAt   string        `json:"updatedAt"`
+}
+
+type ProjectEnvelope struct {
+	Project Project `json:"project"`
+}
+
+type ProjectList struct {
+	Items      []Project `json:"items"`
+	NextCursor *string   `json:"nextCursor"`
+}
+
+type CreateProjectRequest struct {
+	Name        string `json:"name"`
+	Slug        string `json:"slug,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type UpdateProjectRequest struct {
+	ExpectedVersion int            `json:"expectedVersion"`
+	Name            *string        `json:"name,omitempty"`
+	Description     *string        `json:"description,omitempty"`
+	Status          *ProjectStatus `json:"status,omitempty"`
+}
+
+type ProjectError = ErrorBody
+
+var projectUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+var projectSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
+var projectKind = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+func (c *Client) CreateProject(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request CreateProjectRequest) (ProjectEnvelope, error) {
+	var output ProjectEnvelope
+	path, err := projectCollectionPath(workspaceID)
+	if err != nil {
+		return output, err
+	}
+	if strings.TrimSpace(request.Name) == "" || len(request.Name) > 160 || (request.Slug != "" && !projectSlug.MatchString(request.Slug)) || (request.Kind != "" && !projectKind.MatchString(request.Kind)) || len(request.Description) > 4000 {
+		return output, fmt.Errorf("project create request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path, accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)
+	return output, err
+}
+
+func (c *Client) ListProjects(ctx context.Context, accessToken, workspaceID, status, cursor string) (ProjectList, error) {
+	var output ProjectList
+	path, err := projectCollectionPath(workspaceID)
+	if err != nil {
+		return output, err
+	}
+	if status != "" && status != "active" && status != "archived" && status != "all" {
+		return output, fmt.Errorf("project status filter is invalid")
+	}
+	if len(cursor) > 512 {
+		return output, fmt.Errorf("project cursor is invalid")
+	}
+	query := make(url.Values)
+	if status != "" {
+		query.Set("status", status)
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path, accessToken, "", query, nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) GetProject(ctx context.Context, accessToken, workspaceID, projectID string) (ProjectEnvelope, error) {
+	var output ProjectEnvelope
+	path, err := projectResourcePath(workspaceID, projectID)
+	if err != nil {
+		return output, err
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path, accessToken, "", nil, nil, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) UpdateProject(ctx context.Context, accessToken, workspaceID, projectID, idempotencyKey string, request UpdateProjectRequest) (ProjectEnvelope, error) {
+	var output ProjectEnvelope
+	path, err := projectResourcePath(workspaceID, projectID)
+	if err != nil {
+		return output, err
+	}
+	if request.ExpectedVersion < 1 || (request.Name == nil && request.Description == nil && request.Status == nil) {
+		return output, fmt.Errorf("project update request is invalid")
+	}
+	if request.Name != nil && (strings.TrimSpace(*request.Name) == "" || len(*request.Name) > 160) {
+		return output, fmt.Errorf("project name is invalid")
+	}
+	if request.Description != nil && len(*request.Description) > 4000 {
+		return output, fmt.Errorf("project description is invalid")
+	}
+	if request.Status != nil && *request.Status != ProjectStatusActive && *request.Status != ProjectStatusArchived {
+		return output, fmt.Errorf("project status is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPatch, path, accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+
+func projectCollectionPath(workspaceID string) (string, error) {
+	if !projectUUID.MatchString(workspaceID) {
+		return "", fmt.Errorf("workspace ID must be a UUID")
+	}
+	return workspaceResourcePath(workspaceID) + "/projects", nil
+}
+
+func projectResourcePath(workspaceID, projectID string) (string, error) {
+	collection, err := projectCollectionPath(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if !projectUUID.MatchString(projectID) {
+		return "", fmt.Errorf("project ID must be a UUID")
+	}
+	return collection + "/" + url.PathEscape(projectID), nil
+}
