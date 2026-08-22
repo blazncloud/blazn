@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-# shellcheck source=common.sh
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck disable=SC1091
 . "$SCRIPT_DIR/common.sh"
 
 [ "$#" -ge 4 ] || die "usage: with-control-plane-lock.sh PURPOSE CORRELATION_ID EXPECTED_TOKEN COMMAND [ARG...]"

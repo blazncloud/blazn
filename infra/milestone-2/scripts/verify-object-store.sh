@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-ROOT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-# shellcheck source=common.sh
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
+# shellcheck disable=SC1091
 . "$SCRIPT_DIR/common.sh"
 
 [ "$#" -eq 1 ] || die "usage: verify-object-store.sh RUN_ID"
