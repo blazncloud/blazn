@@ -208,15 +208,20 @@ export class NodeBrokerService {
         };
       });
     } catch (error) {
+      let recoveryError: unknown;
       const recovered = await this.recover(
         request,
         idempotencyKey,
         digest,
         key,
         proof,
-      ).catch(() => undefined);
+      ).catch((cause: unknown) => {
+        recoveryError = cause;
+        return undefined;
+      });
       if (recovered) return recovered;
       await this.compensate(intent);
+      if (recoveryError instanceof NodeHttpError) throw recoveryError;
       throw mapStoreError(error);
     }
   }
