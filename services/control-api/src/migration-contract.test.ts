@@ -33,3 +33,10 @@ test("node enrollment signing trust is immutable and relationally bound to plans
   assert.match(sql, /REVOKE UPDATE ON TABLE node_enrollments FROM blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT UPDATE \([^)]*plan_signing_(?:key_id|public_key|key_fingerprint)/);
 });
+
+test("Node broker can connect without receiving schema creation rights", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/007_node_broker_connect.sql"), "utf8");
+  assert.match(sql, /GRANT CONNECT ON DATABASE %I TO blazn_node_broker/);
+  assert.match(sql, /REVOKE CREATE ON SCHEMA public FROM blazn_node_broker/);
+});
