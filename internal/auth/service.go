@@ -511,7 +511,7 @@ func validateAuthAPIURL(value string) error {
 func canonicalAuthOrigin(value string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil {
-		return fmt.Errorf("parse API URL: %w", err)
+		return "", fmt.Errorf("parse API URL: %w", err)
 	}
 	if parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("authentication API URL must contain only scheme, host, and optional base path")
