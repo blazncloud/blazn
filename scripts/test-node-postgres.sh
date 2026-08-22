@@ -117,9 +117,9 @@ BEGIN
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 
-INSERT INTO node_enrollments(id,workspace_id,requested_name,mode,expected_platform,expected_architecture,token_hash,token_key_id,idempotency_key,created_by,expires_at) VALUES
-  ('55555555-5555-4555-8555-555555555555','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','worker-a','fresh','linux','amd64',repeat('c',64),'node-enrollment/v1','enroll-key-a','11111111-1111-4111-8111-111111111111',now()+interval '10 minutes'),
-  ('66666666-6666-4666-8666-666666666666','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','worker-b','fresh','linux','amd64',repeat('d',64),'node-enrollment/v1','enroll-key-b','22222222-2222-4222-8222-222222222222',now()+interval '10 minutes');
+INSERT INTO node_enrollments(id,workspace_id,requested_name,mode,expected_platform,expected_architecture,token_hash,token_key_id,idempotency_key,created_by,expires_at,plan_signing_key_id,plan_signing_public_key,plan_signing_key_fingerprint) VALUES
+  ('55555555-5555-4555-8555-555555555555','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','worker-a','fresh','linux','amd64',repeat('c',64),'node-enrollment/v1','enroll-key-a','11111111-1111-4111-8111-111111111111',now()+interval '10 minutes','node-plan/v1',repeat('P',43),repeat('e',64)),
+  ('66666666-6666-4666-8666-666666666666','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','worker-b','fresh','linux','amd64',repeat('d',64),'node-enrollment/v1','enroll-key-b','22222222-2222-4222-8222-222222222222',now()+interval '10 minutes','node-plan/v1',repeat('Q',43),repeat('d',64));
 
 INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,signing_key_id,generation,status,issued_at,expires_at) VALUES
   ('77777777-7777-4777-8777-777777777777','33333333-3333-4333-8333-333333333333',repeat('e',64),repeat('A',43),'node-identity/v1',1,'active',now(),now()+interval '1 hour'),

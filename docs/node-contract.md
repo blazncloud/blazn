@@ -110,6 +110,11 @@ The token is derived with the root-owned
 The token is unpadded base64url of the 32-byte HMAC-SHA256 output. Only its
 SHA-256 hash and key ID are stored, so an authorized identical retry
 reconstructs the same secret without persisting plaintext.
+The authenticated enrollment-creation response also returns the active plan
+signing key ID, raw Ed25519 public key, and SHA-256 fingerprint. The CLI verifies
+their consistency and pins that tuple in its origin/workspace credential state
+before the public token exchange. A plan is never trusted merely because it
+carries its own key ID.
 
 The enrolling binary generates an Ed25519 key locally and sends its raw public
 key plus a stable machine fingerprint over TLS. The raw 32-byte public key uses
@@ -156,10 +161,45 @@ be `/`, contain `..`, escape the profile roots, or traverse a symlink. Mutation
 kind/action/payload must match the schema's discriminated rules. Package and
 image mutations name a signed component; repository/registry origin, version,
 OCI reference, and digest must match that component and the local profile.
+Components declare one source class. `https` requires an approved source host
+and URL; packages/images additionally bind their repository or registry.
+`current_binary` means the already-authenticated running `blazn` binary
+installed by Milestone 1, and `embedded` means a digest-pinned service/config
+asset compiled into that binary. Neither class permits a URL, removing any
+bootstrap dependency on a private GitHub release or unreserved hostname.
+Before consuming mutations, the CLI measures its own executable and supplies
+the locally trusted version and SHA-256 to plan verification. The plan must
+contain exactly one root-owned `0755` `adopt_exact` mutation from that component
+to the service binary path and require `binary_digest` evidence. It must also
+contain exactly one manager-matching embedded service definition and require
+`service_active` evidence. Unit material and activation are separately
+receipted: a manager-matching `write` or `adopt_exact` mutation is followed by
+an ordered `enable` mutation whose rollback restores the prior activation
+state. Fresh hosts must install/write owned unit material; adopt profiles may
+also install an absent Blazn unit or adopt a preexisting exact one.
 Ubuntu/existing-Linux profiles require systemd, Linux image platform, the
 profile architecture, `blazn-node:blazn-node`, and approved apt/snap inputs;
 they reject launchd/brew. The macOS/Lima profile requires launchd, ARM64 Linux
 images, `root:wheel`, approved brew inputs, and rejects systemd/apt/snap.
+Fresh Linux creates/adopts the receipted `blazn-node` group and non-login user
+before assigning `/var/lib/blazn`; the service may not start against a
+root-only unwritable tree. The signed mutation binds fixed UID/GID values;
+creation rejects collisions and `adopt_exact` rejects any name, ID, group,
+home, or shell mismatch. The macOS profile embeds a digest-pinned Lima binding
+configuration naming the exact existing VM/worker and requires
+`lima_worker_binding` evidence before eligibility. Local profile trust pins the
+asset name, exact Application Support target, digest, VM name, and worker name;
+a generic embedded configuration is insufficient. The embedded asset is RFC
+8785 canonical JSON with `schemaVersion`, `clusterId`, `vmName`, and
+`workerName`; verification recomputes its SHA-256 from the locally trusted
+cluster/VM/worker tuple and compares it to the component and mutation digests.
+
+The enrollment row pins the plan-signing key ID, raw public key, and fingerprint
+at first creation. An idempotent enrollment replay and its later exchange return
+and use that original tuple even if the active signing key rotates; the private
+key remains server-side. Adding the required `planSigningKey` response member is
+an intentional pre-release `v1alpha1` contract correction: no published Node
+control-plane implementation predates it.
 
 The long-running service uses a renewable node identity, never the user's
 access/refresh token. Rotation overlaps old/new identities only for a bounded

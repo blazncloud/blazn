@@ -1,6 +1,6 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: 566c781b50ece53494e5c153085f5bb472aaabae8d729069de76782a3983217e
-// NodeInstallPlan SHA256: 111984c682128e09a2caba46d405feb848c34e65ded478dbc49d9e74a677341e
+// OpenAPI SHA256: 590e68d209c1db843a5107a7a48c904c4bb3c455f55b032715f298a62c1263eb
+// NodeInstallPlan SHA256: d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d
 // NodeInstallReceipt SHA256: cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
 
@@ -66,11 +66,18 @@ type CreateNodeEnrollmentRequest struct {
 type NodeError = ErrorBody
 
 type NodeEnrollmentSecret struct {
-	ID         string `json:"id"`
-	Token      string `json:"token"`
-	TokenKeyID string `json:"tokenKeyId"`
-	ExpiresAt  string `json:"expiresAt"`
-	Replayed   bool   `json:"replayed"`
+	ID             string             `json:"id"`
+	Token          string             `json:"token"`
+	TokenKeyID     string             `json:"tokenKeyId"`
+	PlanSigningKey NodePlanSigningKey `json:"planSigningKey"`
+	ExpiresAt      string             `json:"expiresAt"`
+	Replayed       bool               `json:"replayed"`
+}
+
+type NodePlanSigningKey struct {
+	KeyID       string `json:"keyId"`
+	PublicKey   string `json:"publicKey"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 type ExchangeNodeEnrollmentRequest struct {
@@ -321,10 +328,11 @@ type NodeRegistryTrust struct {
 type NodeInstallComponent struct {
 	Name             string `json:"name"`
 	ArtifactType     string `json:"artifactType"`
+	SourceClass      string `json:"sourceClass"`
 	Version          string `json:"version"`
 	Publisher        string `json:"publisher"`
-	SourceHost       string `json:"sourceHost"`
-	Source           string `json:"source"`
+	SourceHost       string `json:"sourceHost,omitempty"`
+	Source           string `json:"source,omitempty"`
 	RepositoryOrigin string `json:"repositoryOrigin,omitempty"`
 	RegistryHost     string `json:"registryHost,omitempty"`
 	OCIReference     string `json:"ociReference,omitempty"`
@@ -482,7 +490,20 @@ type NodeTrustedInstallProfile struct {
 	AllowedDownloadOrigins   []string
 	AllowedRegistryOrigins   []string
 	AllowedMutationRoots     []string
+	CurrentBinaryVersion     string
+	CurrentBinarySHA256      string
+	EmbeddedComponentSHA256  map[string]string
+	LimaBinding              *NodeTrustedLimaBinding
 	VerifyNoSymlinkTraversal func(string) error
+}
+
+type NodeTrustedLimaBinding struct {
+	ComponentName string
+	Target        string
+	SHA256        string
+	ClusterID     string
+	VMName        string
+	WorkerName    string
 }
 
 type NodeTrustedSigner struct {
@@ -556,6 +577,7 @@ var (
 	nodeHostnamePattern          = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 	nodeReceiptLocatorPattern    = regexp.MustCompile(`^receipt-backup://[A-Za-z0-9_-]{1,128}$`)
 	nodePackageTargetPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
+	nodeAccountNamePattern       = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	nodeSystemdTargetPattern     = regexp.MustCompile(`^/etc/systemd/system/[A-Za-z0-9_.@-]+\.service$`)
 	nodeSystemdUnitPattern       = regexp.MustCompile(`^[A-Za-z0-9_.@-]+\.service$`)
 	nodeLaunchdTargetPattern     = regexp.MustCompile(`^/Library/LaunchDaemons/[A-Za-z0-9_.-]+\.plist$`)
@@ -740,19 +762,32 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		}
 	}
 	for index, component := range plan.Components {
-		parsed, err := url.Parse(component.Source)
-		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !nodeHostnamePattern.MatchString(component.SourceHost) || err != nil || !validHTTPSURL(component.Source) || parsed.Hostname() != component.SourceHost || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
+		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || !oneOf(component.SourceClass, "https", "current_binary", "embedded") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
 			return fmt.Errorf("components[%d] is invalid", index)
+		}
+		if component.SourceClass == "https" {
+			parsed, err := url.Parse(component.Source)
+			if !nodeHostnamePattern.MatchString(component.SourceHost) || err != nil || !validHTTPSURL(component.Source) || parsed.Hostname() != component.SourceHost {
+				return fmt.Errorf("components[%d] HTTPS source binding is invalid", index)
+			}
+		} else if component.SourceHost != "" || component.Source != "" || component.RepositoryOrigin != "" || component.RegistryHost != "" || component.OCIReference != "" {
+			return fmt.Errorf("components[%d] local source has remote source metadata", index)
+		}
+		if component.SourceClass == "current_binary" && component.ArtifactType != "binary" {
+			return fmt.Errorf("components[%d] current binary source type is invalid", index)
+		}
+		if component.SourceClass == "embedded" && !oneOf(component.ArtifactType, "certificate", "configuration") {
+			return fmt.Errorf("components[%d] embedded source type is invalid", index)
 		}
 		switch component.ArtifactType {
 		case "package":
 			origin, originErr := nodeURLOrigin(component.RepositoryOrigin)
-			if originErr != nil || origin != component.RepositoryOrigin || component.RegistryHost != "" || component.OCIReference != "" {
+			if component.SourceClass != "https" || originErr != nil || origin != component.RepositoryOrigin || component.RegistryHost != "" || component.OCIReference != "" {
 				return fmt.Errorf("components[%d] package repository binding is invalid", index)
 			}
 		case "image":
 			registryOrigin, registryHost, registryErr := nodeOCIRegistryOrigin(component.OCIReference)
-			if !nodeHostnamePattern.MatchString(component.RegistryHost) || !nodeImageTargetPattern.MatchString(component.OCIReference) || component.RepositoryOrigin != "" || registryErr != nil || registryOrigin == "" || registryHost != component.RegistryHost || !strings.HasSuffix(component.OCIReference, "@sha256:"+component.SHA256) {
+			if component.SourceClass != "https" || !nodeHostnamePattern.MatchString(component.RegistryHost) || !nodeImageTargetPattern.MatchString(component.OCIReference) || component.RepositoryOrigin != "" || registryErr != nil || registryOrigin == "" || registryHost != component.RegistryHost || !strings.HasSuffix(component.OCIReference, "@sha256:"+component.SHA256) {
 				return fmt.Errorf("components[%d] image registry binding is invalid", index)
 			}
 		default:
@@ -770,6 +805,9 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	}
 	if !oneOf(plan.NodeService.Manager, "systemd", "launchd") || len(plan.NodeService.UnitName) < 1 || len(plan.NodeService.UnitName) > 256 || !strings.HasPrefix(plan.NodeService.BinaryPath, "/") || len(plan.NodeService.RunAsUser) < 1 || len(plan.NodeService.RunAsUser) > 128 || len(plan.NodeService.RunAsGroup) < 1 || len(plan.NodeService.RunAsGroup) > 128 || !nodeHashPattern.MatchString(plan.NodeService.DefinitionSHA256) {
 		return fmt.Errorf("node service is invalid")
+	}
+	if (plan.NodeService.Manager == "systemd" && !nodeSystemdUnitPattern.MatchString(plan.NodeService.UnitName)) || (plan.NodeService.Manager == "launchd" && (!strings.Contains(plan.NodeService.UnitName, ".") || strings.HasSuffix(plan.NodeService.UnitName, ".plist"))) {
+		return fmt.Errorf("node service unit name is invalid for its manager")
 	}
 	if len(plan.Labels) > 64 || len(plan.Taints) > 16 {
 		return fmt.Errorf("plan labels or taints exceed limits")
@@ -805,7 +843,7 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		return err
 	}
 	for _, validation := range plan.ValidationTests {
-		if !oneOf(validation, "binary_digest", "service_active", "node_identity", "cluster_ca", "worker_only", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility") {
+		if !oneOf(validation, "binary_digest", "service_account", "service_active", "node_identity", "cluster_ca", "worker_only", "lima_worker_binding", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility") {
 			return fmt.Errorf("validation test is invalid")
 		}
 	}
@@ -1006,7 +1044,7 @@ func DecodeNodeInstallPlan(reader io.Reader) (NodeInstallPlan, error) {
 	if err := requireNodeArrayFields(raw, "registryTrust", "hostname", "caBundleSha256"); err != nil {
 		return plan, err
 	}
-	if err := requireNodeArrayFields(raw, "components", "name", "artifactType", "version", "publisher", "sourceHost", "source", "sha256", "ownership"); err != nil {
+	if err := requireNodeArrayFields(raw, "components", "name", "artifactType", "sourceClass", "version", "publisher", "sha256", "ownership"); err != nil {
 		return plan, err
 	}
 	if err := requireNodeArrayFields(raw, "taints", "key", "value", "effect"); err != nil {
@@ -1355,8 +1393,16 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		}
 	}
 	for _, component := range plan.Components {
-		if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
-			return err
+		if component.SourceClass == "current_binary" && (profile.CurrentBinaryVersion == "" || component.Version != profile.CurrentBinaryVersion || !nodeHashPattern.MatchString(profile.CurrentBinarySHA256) || component.SHA256 != profile.CurrentBinarySHA256) {
+			return fmt.Errorf("current binary component %q does not match the locally measured executable", component.Name)
+		}
+		if component.SourceClass == "embedded" && (profile.EmbeddedComponentSHA256 == nil || profile.EmbeddedComponentSHA256[component.Name] != component.SHA256) {
+			return fmt.Errorf("embedded component %q is not locally trusted", component.Name)
+		}
+		if component.SourceClass == "https" {
+			if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
+				return err
+			}
 		}
 		if component.ArtifactType == "package" && !nodeOriginAllowed(component.RepositoryOrigin, profile.AllowedDownloadOrigins) {
 			return fmt.Errorf("package component %q repository origin is not trusted", component.Name)
@@ -1384,6 +1430,9 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		if err := profile.VerifyNoSymlinkTraversal(target); err != nil {
 			return fmt.Errorf("install target %q traverses an untrusted link: %w", target, err)
 		}
+	}
+	if plan.InstallProfile == "macos-lima-worker-adopt/v1" && !nodeHasTrustedEmbeddedLimaBinding(plan, profile.LimaBinding) {
+		return fmt.Errorf("macOS Lima binding does not match locally trusted VM and worker material")
 	}
 	return nil
 }
@@ -1649,6 +1698,28 @@ func validatePlanMutations(mutations []NodeInstallMutation) error {
 
 func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 	switch mutation.Kind {
+	case "group":
+		var desired struct {
+			Name   string `json:"name"`
+			GID    int64  `json:"gid"`
+			System bool   `json:"system"`
+		}
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || mutation.Mode != 0 || mutation.UID != 0 || desired.GID < 1 || mutation.GID != desired.GID || !desired.System {
+			return fmt.Errorf("group action or payload is invalid")
+		}
+	case "user":
+		var desired struct {
+			Name   string `json:"name"`
+			Group  string `json:"group"`
+			UID    int64  `json:"uid"`
+			GID    int64  `json:"gid"`
+			Home   string `json:"home"`
+			Shell  string `json:"shell"`
+			System bool   `json:"system"`
+		}
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || !nodeAccountNamePattern.MatchString(desired.Group) || mutation.Mode != 0 || desired.UID < 1 || desired.GID < 1 || mutation.UID != desired.UID || mutation.GID != desired.GID || desired.Home != "/var/lib/blazn" || !oneOf(desired.Shell, "/usr/sbin/nologin", "/sbin/nologin") || !desired.System {
+			return fmt.Errorf("user action or payload is invalid")
+		}
 	case "package":
 		var desired struct {
 			Manager       string `json:"manager"`
@@ -1663,12 +1734,12 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 			SourceComponent string `json:"sourceComponent"`
 			ContentSHA256   string `json:"contentSha256"`
 		}
-		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderChildAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
+		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderChildAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn", "/Library/Application Support/Blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
 			return fmt.Errorf("file action or payload is invalid")
 		}
 	case "directory":
 		var desired struct{}
-		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodePathUnderAny(mutation.Target, []string{"/etc/blazn", "/var/lib/blazn", "/opt/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil {
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodePathUnderAny(mutation.Target, []string{"/etc/blazn", "/var/lib/blazn", "/opt/blazn", "/Library/Application Support/Blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil {
 			return fmt.Errorf("directory action or payload is invalid")
 		}
 	case "systemd_unit":
@@ -1752,13 +1823,37 @@ func validateNodeMutationComponentBinding(plan NodeInstallPlan, mutation NodeIns
 		if component.ArtifactType != "image" || mutation.Target != component.OCIReference || component.RegistryHost == "" || !strings.HasSuffix(mutation.Target, "@sha256:"+component.SHA256) {
 			return fmt.Errorf("image mutation does not match its signed component")
 		}
-	default:
-		_ = plan
+	case "file":
+		contentSHA256, _ := mutation.Desired["contentSha256"].(string)
+		if !oneOf(component.ArtifactType, "binary", "configuration") || contentSHA256 != component.SHA256 || mutation.DesiredDigest != "sha256:"+component.SHA256 || (component.ArtifactType == "binary" && component.SourceClass != "current_binary") || (component.ArtifactType == "configuration" && component.SourceClass != "embedded") {
+			return fmt.Errorf("file mutation does not match its signed component")
+		}
+		if component.ArtifactType == "binary" && mutation.Target != plan.NodeService.BinaryPath {
+			return fmt.Errorf("current binary may only populate the node service binary path")
+		}
+		if mutation.Target == plan.NodeService.BinaryPath && component.ArtifactType != "binary" {
+			return fmt.Errorf("node service binary is not bound to the authenticated current binary")
+		}
+	case "certificate":
+		contentSHA256, _ := mutation.Desired["contentSha256"].(string)
+		if component.ArtifactType != "certificate" || contentSHA256 != component.SHA256 || mutation.DesiredDigest != "sha256:"+component.SHA256 {
+			return fmt.Errorf("certificate mutation does not match its signed component")
+		}
+	case "systemd_unit", "launchd_unit":
+		if component.ArtifactType != "configuration" || component.SourceClass != "embedded" || mutation.DesiredDigest != "sha256:"+component.SHA256 || component.SHA256 != plan.NodeService.DefinitionSHA256 {
+			return fmt.Errorf("service mutation does not match its embedded signed definition")
+		}
 	}
 	return nil
 }
 
 func validateNodeProfileSemantics(plan NodeInstallPlan) error {
+	if !nodeHasValidation(plan.ValidationTests, "binary_digest") || !nodeHasServiceBinary(plan) {
+		return fmt.Errorf("node service binary lacks an authenticated current-binary mutation")
+	}
+	if !nodeHasValidation(plan.ValidationTests, "service_active") || !nodeHasServiceDefinition(plan) {
+		return fmt.Errorf("node service lacks exactly one embedded manager definition")
+	}
 	wantImagePlatform := "linux/amd64"
 	if plan.Target.Architecture == NodeArchARM64 {
 		wantImagePlatform = "linux/arm64"
@@ -1782,6 +1877,11 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 				return fmt.Errorf("Linux profile image architecture is invalid")
 			}
 		}
+		if plan.InstallProfile == "ubuntu-26.04-amd64-worker/v1" {
+			if !nodeHasValidation(plan.ValidationTests, "service_account") || !nodeHasFreshServiceAccount(plan) {
+				return fmt.Errorf("fresh Linux profile lacks receipted service account setup")
+			}
+		}
 	case "macos-lima-worker-adopt/v1":
 		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "root" || plan.NodeService.RunAsGroup != "wheel" || plan.Rollback.BackupRootClass != "macos_library_application_support" {
 			return fmt.Errorf("macOS profile service identity is invalid")
@@ -1797,10 +1897,148 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 				return fmt.Errorf("macOS profile image architecture is invalid")
 			}
 		}
+		if !nodeHasValidation(plan.ValidationTests, "lima_worker_binding") || !nodeHasEmbeddedLimaBinding(plan) {
+			return fmt.Errorf("macOS profile lacks embedded Lima worker binding")
+		}
 	default:
 		return fmt.Errorf("install profile is invalid")
 	}
 	return nil
+}
+
+func nodeHasServiceBinary(plan NodeInstallPlan) bool {
+	components := make(map[string]NodeInstallComponent, len(plan.Components))
+	for _, component := range plan.Components {
+		components[component.Name] = component
+	}
+	count := 0
+	for _, mutation := range plan.Mutations {
+		component := components[nodeMutationSourceComponent(mutation)]
+		if mutation.Kind == "file" && mutation.Target == plan.NodeService.BinaryPath && component.ArtifactType == "binary" && component.SourceClass == "current_binary" && component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Mode == 0755 && mutation.UID == 0 && mutation.GID == 0 && mutation.Desired["contentSha256"] == component.SHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+			count++
+		}
+	}
+	return count == 1
+}
+
+func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
+	components := make(map[string]NodeInstallComponent, len(plan.Components))
+	for _, component := range plan.Components {
+		components[component.Name] = component
+	}
+	wantedKind, wantedTarget := "systemd_unit", "/etc/systemd/system/"+plan.NodeService.UnitName
+	if plan.NodeService.Manager == "launchd" {
+		wantedKind, wantedTarget = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist"
+	}
+	definitionCount, enableCount, managerMutationCount, definitionOrdinal, enableOrdinal := 0, 0, 0, int64(0), int64(0)
+	for _, mutation := range plan.Mutations {
+		component := components[nodeMutationSourceComponent(mutation)]
+		if mutation.Kind == wantedKind {
+			managerMutationCount++
+		}
+		managerIdentity := mutation.Desired["unitName"] == plan.NodeService.UnitName
+		if plan.NodeService.Manager == "launchd" {
+			managerIdentity = mutation.Desired["label"] == plan.NodeService.UnitName
+		}
+		ownershipCoherent := (component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Rollback == "leave_and_report") || (component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned")
+		if plan.Mode == NodeModeFresh {
+			ownershipCoherent = component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned"
+		}
+		materialBound := mutation.Kind == wantedKind && mutation.Target == wantedTarget && managerIdentity && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256
+		if materialBound && ownershipCoherent && mutation.Mode == 0644 {
+			definitionCount++
+			definitionOrdinal = mutation.Ordinal
+		}
+		if materialBound && mutation.Action == "enable" && mutation.Rollback == "restore_prior" && mutation.Mode == 0 {
+			enableCount++
+			enableOrdinal = mutation.Ordinal
+		}
+	}
+	if definitionCount != 1 || enableCount != 1 || managerMutationCount != 2 {
+		return false
+	}
+	return enableOrdinal > definitionOrdinal
+}
+
+func nodeHasValidation(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeHasFreshServiceAccount(plan NodeInstallPlan) bool {
+	groupOrdinal, userOrdinal, dataOrdinal := int64(0), int64(0), int64(0)
+	groupGID, userUID, userGID, dataUID, dataGID, dataMode := int64(0), int64(0), int64(0), int64(0), int64(0), int64(0)
+	for _, mutation := range plan.Mutations {
+		switch {
+		case mutation.Kind == "group" && mutation.Target == plan.NodeService.RunAsGroup:
+			groupOrdinal = mutation.Ordinal
+			groupGID = mutation.GID
+		case mutation.Kind == "user" && mutation.Target == plan.NodeService.RunAsUser && mutation.Desired["group"] == plan.NodeService.RunAsGroup:
+			userOrdinal = mutation.Ordinal
+			userUID, userGID = mutation.UID, mutation.GID
+		case mutation.Kind == "directory" && mutation.Target == "/var/lib/blazn":
+			dataOrdinal = mutation.Ordinal
+			dataUID, dataGID, dataMode = mutation.UID, mutation.GID, mutation.Mode
+		}
+	}
+	return groupOrdinal > 0 && userOrdinal > groupOrdinal && dataOrdinal > userOrdinal && groupGID == userGID && userUID > 0 && dataUID == userUID && dataGID == userGID && dataMode&0300 == 0300
+}
+
+func nodeHasEmbeddedLimaBinding(plan NodeInstallPlan) bool {
+	for _, component := range plan.Components {
+		if component.Name != "lima-worker-binding" || component.ArtifactType != "configuration" || component.SourceClass != "embedded" {
+			continue
+		}
+		for _, mutation := range plan.Mutations {
+			if mutation.Kind == "file" && mutation.Target == "/Library/Application Support/Blazn/lima-worker-binding.json" && nodeMutationSourceComponent(mutation) == component.Name && mutation.Desired["contentSha256"] == component.SHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodeHasTrustedEmbeddedLimaBinding(plan NodeInstallPlan, binding *NodeTrustedLimaBinding) bool {
+	if binding == nil || binding.ComponentName != "lima-worker-binding" || binding.Target != "/Library/Application Support/Blazn/lima-worker-binding.json" || binding.ClusterID != plan.Cluster.ID || binding.VMName == "" || binding.WorkerName == "" {
+		return false
+	}
+	expectedSHA256, err := NodeLimaBindingSHA256(*binding)
+	if err != nil || binding.SHA256 != expectedSHA256 {
+		return false
+	}
+	components := make(map[string]NodeInstallComponent, len(plan.Components))
+	for _, component := range plan.Components {
+		components[component.Name] = component
+	}
+	for _, mutation := range plan.Mutations {
+		if mutation.Kind != "file" || mutation.Target != binding.Target || nodeMutationSourceComponent(mutation) != binding.ComponentName {
+			continue
+		}
+		component := components[nodeMutationSourceComponent(mutation)]
+		if component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == binding.SHA256 && mutation.Desired["contentSha256"] == binding.SHA256 && mutation.DesiredDigest == "sha256:"+binding.SHA256 {
+			return true
+		}
+	}
+	return false
+}
+
+func NodeLimaBindingSHA256(binding NodeTrustedLimaBinding) (string, error) {
+	payload := struct {
+		SchemaVersion string `json:"schemaVersion"`
+		ClusterID     string `json:"clusterId"`
+		VMName        string `json:"vmName"`
+		WorkerName    string `json:"workerName"`
+	}{"blazn.dev/lima-worker-binding/v1", binding.ClusterID, binding.VMName, binding.WorkerName}
+	canonical, err := nodeCanonicalJSON(payload)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func nodeHasParentTraversal(value string) bool {
@@ -1839,7 +2077,7 @@ func nodePathUnderChildAny(target string, roots []string) bool {
 }
 
 func nodeMutationKinds() []string {
-	return []string{"package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"}
+	return []string{"group", "user", "package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"}
 }
 
 func validPlatform(value NodePlatform) bool {
@@ -1857,6 +2095,14 @@ func validNodeOperationType(value NodeOperationType) bool {
 func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {
 	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != NodeEnrollmentTokenKeyID {
 		return fmt.Errorf("node enrollment response is invalid")
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(secret.PlanSigningKey.PublicKey)
+	if len(secret.PlanSigningKey.KeyID) < 1 || len(secret.PlanSigningKey.KeyID) > 128 || err != nil || len(publicKey) != ed25519.PublicKeySize || !nodeDigestPattern.MatchString(secret.PlanSigningKey.Fingerprint) {
+		return fmt.Errorf("node enrollment plan signing key is invalid")
+	}
+	fingerprint, err := NodePublicKeyFingerprint(ed25519.PublicKey(publicKey))
+	if err != nil || !nodeSecureEqual(fingerprint, secret.PlanSigningKey.Fingerprint) {
+		return fmt.Errorf("node enrollment plan signing key fingerprint mismatch")
 	}
 	if _, err := time.Parse(time.RFC3339, secret.ExpiresAt); err != nil {
 		return fmt.Errorf("node enrollment expiresAt is invalid")
