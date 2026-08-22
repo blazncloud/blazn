@@ -21,7 +21,7 @@ import { WorkspaceService } from "./workspace-service.js";
 import { PgWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceHttpError } from "./workspace-types.js";
 import { OidcClient, type OidcIdentity } from "./oidc.js";
-import { oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest } from "./oidc-state.js";
+import { oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, stateMatches } from "./oidc-state.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
@@ -189,6 +189,7 @@ async function oidcCallback(request: IncomingMessage, response: ServerResponse, 
   if (!oidcClient || !oidcKey) throw new HttpError("not_found", "social identity is not configured");
   try {
     const transaction = oidcTransactionFromRequest(request, oidcKey);
+    if (!stateMatches(transaction.state, url.searchParams.get("state") ?? "")) throw new Error("identity callback state is invalid");
     const identity = await oidcClient.callback(url, transaction);
     await enforceLimit(database, "oidc-callback", `${identity.issuer}:${identity.subject}`, 20, 15 * 60);
     await approveOidcIdentity(transaction, identity);
@@ -242,6 +243,10 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
+    if (contentType.startsWith("application/x-www-form-urlencoded")) {
+      sendHtml(response, 403, renderAuthResult("Sign-in was rejected", "The email or password could not be verified. No device was authorized.", false));
+      return;
+    }
     throw error;
   } finally {
     client.release();
