@@ -26,6 +26,7 @@ CREATE TABLE workspace_invitations (
   id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   token_hash char(64) NOT NULL UNIQUE CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  token_key_id text NOT NULL CHECK (token_key_id = 'workspace-invitation-hmac/v1'),
   role text NOT NULL CHECK (role IN ('administrator', 'operator', 'member', 'viewer')),
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')),
   version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
@@ -35,19 +36,48 @@ CREATE TABLE workspace_invitations (
   accepted_by uuid REFERENCES users(id),
   accepted_at timestamptz,
   CHECK (expires_at > created_at),
-  CHECK ((status = 'accepted' AND accepted_by IS NOT NULL AND accepted_at IS NOT NULL) OR status <> 'accepted')
+  CHECK ((status = 'accepted') = (accepted_by IS NOT NULL AND accepted_at IS NOT NULL))
 );
+
+CREATE FUNCTION workspace_json_contains_secret_key(value jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
+DECLARE
+  entry record;
+  normalized_key text;
+BEGIN
+  IF jsonb_typeof(value) = 'object' THEN
+    FOR entry IN SELECT key, value AS child FROM jsonb_each(value) LOOP
+      normalized_key := regexp_replace(lower(entry.key), '[^a-z0-9]', '', 'g');
+      IF normalized_key IN ('token', 'invitetoken', 'accesstoken', 'refreshtoken', 'authorization', 'password', 'secret', 'credential') THEN
+        RETURN true;
+      END IF;
+      IF workspace_json_contains_secret_key(entry.child) THEN
+        RETURN true;
+      END IF;
+    END LOOP;
+  ELSIF jsonb_typeof(value) = 'array' THEN
+    FOR entry IN SELECT value AS child FROM jsonb_array_elements(value) LOOP
+      IF workspace_json_contains_secret_key(entry.child) THEN
+        RETURN true;
+      END IF;
+    END LOOP;
+  END IF;
+  RETURN false;
+END;
+$$;
 
 CREATE TABLE workspace_idempotency_receipts (
   principal_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   operation text NOT NULL,
+  target_key text NOT NULL CHECK (char_length(target_key) BETWEEN 1 AND 256),
   idempotency_key text NOT NULL CHECK (char_length(idempotency_key) BETWEEN 8 AND 128),
   request_digest char(64) NOT NULL CHECK (request_digest ~ '^[0-9a-f]{64}$'),
   response_status integer NOT NULL CHECK (response_status BETWEEN 200 AND 599),
   response_body jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (principal_id, operation, idempotency_key),
-  CHECK (NOT (response_body ? 'inviteToken') AND NOT (response_body ? 'token'))
+  PRIMARY KEY (principal_id, workspace_id, operation, idempotency_key),
+  CHECK (NOT workspace_json_contains_secret_key(response_body))
 );
 
 CREATE TABLE workspace_audit_events (
@@ -59,7 +89,7 @@ CREATE TABLE workspace_audit_events (
   invitation_id uuid REFERENCES workspace_invitations(id),
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (NOT (payload ? 'inviteToken') AND NOT (payload ? 'token'))
+  CHECK (NOT workspace_json_contains_secret_key(payload))
 );
 
 CREATE INDEX workspace_memberships_user_active_idx ON workspace_memberships(user_id, workspace_id) WHERE status = 'active';

@@ -72,9 +72,20 @@ Rules:
   response.
 - Invitation tokens are stored only as SHA-256 hashes and never appear in
   list/get/audit/idempotency records. Create retries deterministically rederive
-  the same token using a root-owned workspace invitation HMAC key.
+  the same token using HMAC-SHA-256 and the root-owned 32-byte key stored as
+  64 lowercase hex characters at
+  `/etc/blazn/control-plane/secrets/workspace-invitation-hmac-v1`.
+- The invitation key ID is `workspace-invitation-hmac/v1`. The canonical HMAC
+  input is UTF-8
+  `blazn-workspace-invite-v1\n<workspace-uuid>\n<invitation-uuid>\n<idempotency-key>`;
+  UUIDs use lowercase canonical form. The token is the unpadded base64url HMAC
+  output and `token_hash` is its lowercase SHA-256 hex digest. Rotation requires
+  retaining the old key until every invitation using that key ID is terminal.
 - Invitation acceptance, membership insertion, invitation consumption, and
   audit insertion are one locked transaction.
+- Idempotency receipts bind principal, workspace, operation, target identity,
+  key, and request digest. Membership authorization is re-evaluated before a
+  stored response is replayed; removal makes prior receipts inaccessible.
 - Member removal closes active workspace streams and rejects reconnect without
   revoking the user's global device session.
 
@@ -122,7 +133,8 @@ local context, and `7` unavailable API/auth store/network.
 Migration `003_workspaces.sql` adds workspaces, memberships, invitations,
 idempotency receipts, and redacted audit events. UUIDs avoid sequence grants.
 `blazn_runtime` receives explicit operations only; `blazn_bootstrap` receives
-no workspace-table access.
+no workspace-table access. A recursive JSONB guard rejects token, authorization,
+password, secret, and credential key namespaces at every nesting depth.
 
 The session proves identity. An active membership authorizes workspace access.
 Invitation tokens are bounded bearer capabilities for one workspace, role,
