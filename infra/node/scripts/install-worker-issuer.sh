@@ -25,7 +25,7 @@ sha(){ sha256sum "$1" | awk '{print $1}'; }
 sync_path(){ sync -f "$1"; }
 validate_key(){
   key=$1; [ -f "$key" ] && [ ! -L "$key" ] && [ "$(stat -c '%u:%a' "$key")" = 0:400 ] || die "issuer key is unsafe"
-  [ "$(wc -c <"$key" | tr -d ' ')" = 43 ] && LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$key" || die "issuer key encoding is invalid"
+  if [ "$(wc -c <"$key" | tr -d ' ')" != 43 ] || ! LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$key"; then die "issuer key encoding is invalid"; fi
   decoded=$ROOT/.decoded-key.$$
   { tr '_-' '/+' <"$key"; printf '='; } | openssl base64 -d -A >"$decoded" 2>/dev/null || { rm -f -- "$decoded"; die "issuer key cannot be decoded"; }
   [ "$(wc -c <"$decoded" | tr -d ' ')" = 32 ] || { rm -f -- "$decoded"; die "issuer key entropy length is invalid"; }

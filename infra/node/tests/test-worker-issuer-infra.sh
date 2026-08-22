@@ -15,6 +15,7 @@ trap cleanup EXIT HUP INT TERM
 helper=$top/helper
 printf '#!/bin/sh\nexit 0\n' >"$helper"; chmod 0755 "$helper"
 systemctl=$top/systemctl
+# shellcheck disable=SC2016 -- variables belong to the generated fake.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$BLAZN_TEST_LOG"\n' >"$systemctl"; chmod 0755 "$systemctl"
 tmpfiles=$top/tmpfiles
 printf '#!/bin/sh\nexit 0\n' >"$tmpfiles"; chmod 0755 "$tmpfiles"
@@ -41,7 +42,7 @@ for fault in initialized secret-created config-bound files-installed service-sta
   [ "$(sudo stat -c '%u:%a' "$root/etc/issuer/issuer-hmac-v1")" = 0:400 ]
   [ "$(sudo sh -c 'wc -c <"$1"' sh "$root/etc/issuer/issuer-hmac-v1" | tr -d ' ')" = 43 ]
   sudo cmp "$root/etc/issuer/issuer-hmac-v1" "$root/ownership/recovery/issuer-hmac-v1"
-  ! sudo grep -F "$(sudo sed -n '1p' "$root/etc/issuer/issuer-hmac-v1")" "$root/ownership/issuer.json" "$root/ownership/recovery/inventory.json" >/dev/null
+  if sudo grep -F "$(sudo sed -n '1p' "$root/etc/issuer/issuer-hmac-v1")" "$root/ownership/issuer.json" "$root/ownership/recovery/inventory.json" >/dev/null; then printf 'issuer secret leaked into evidence\n' >&2; exit 1; fi
   sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$root/systemctl.log" "$ROLLBACK" >/dev/null
   sudo jq -e '.phase=="rolled-back" and .rollback.retainedRecovery==true and .rollback.groupRetained==true' "$root/ownership/issuer.json" >/dev/null
   sudo test -f "$root/ownership/recovery/issuer-hmac-v1"
@@ -51,7 +52,7 @@ done
 grep -F 'source: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
 grep -F 'target: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
 grep -F 'network_mode: "service:api"' "$COMPOSE" >/dev/null
-! sed -n '/  node-broker:/,/^  [a-z]/p' "$COMPOSE" | grep -E '/var/snap/microk8s|kubeconfig|docker.sock' >/dev/null
+if sed -n '/  node-broker:/,/^  [a-z]/p' "$COMPOSE" | grep -E '/var/snap/microk8s|kubeconfig|docker.sock' >/dev/null; then printf 'node broker has an unreviewed host capability\n' >&2; exit 1; fi
 trap - EXIT HUP INT TERM
 cleanup
 printf 'worker issuer journal, secret encoding, and narrow Compose boundary passed\n'
