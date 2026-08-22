@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 [ "$(id -u)" -eq 0 ] || die "release staging must run as root"
-[ -n "${BLAZN_FENCING_TOKEN:-}" ] && [ -n "${BLAZN_CORRELATION_ID:-}" ] || die "release staging must run through with-control-plane-lock.sh"
+if [ -z "${BLAZN_FENCING_TOKEN:-}" ] || [ -z "${BLAZN_CORRELATION_ID:-}" ]; then die "release staging must run through with-control-plane-lock.sh"; fi
 [ "$#" -eq 2 ] || die "usage: stage-release.sh SOURCE_CHECKOUT EXPECTED_COMMIT"
 source_checkout=$1
 expected_commit=$2
@@ -41,7 +41,7 @@ if [ -e "$final" ] || [ -e "$receipt" ]; then
     chmod 0600 "$recovery"
     mv -- "$recovery" "$receipt"
   fi
-  [ -d "$final" ] && [ -f "$receipt" ] || die "partial versioned release state exists"
+  if [ ! -d "$final" ] || [ ! -f "$receipt" ]; then die "partial versioned release state exists"; fi
   verify_versioned_release "$final" "$receipt"
   printf 'versioned release is already staged\n'
   exit 0
@@ -49,7 +49,7 @@ fi
 
 stage=$release_root/.staging-$expected_commit-$$
 archive=$release_root/.archive-$expected_commit-$$.tar
-[ ! -e "$stage" ] && [ ! -e "$archive" ] || die "release staging path collision"
+if [ -e "$stage" ] || [ -e "$archive" ]; then die "release staging path collision"; fi
 cleanup() {
   [ ! -f "$archive" ] || unlink "$archive"
   if [ -d "$stage" ]; then

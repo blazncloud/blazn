@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 [ "$(id -u)" -eq 0 ] || die "release promotion must run as root"
-[ -n "${BLAZN_FENCING_TOKEN:-}" ] && [ -n "${BLAZN_CORRELATION_ID:-}" ] || die "release promotion must run through with-control-plane-lock.sh"
+if [ -z "${BLAZN_FENCING_TOKEN:-}" ] || [ -z "${BLAZN_CORRELATION_ID:-}" ]; then die "release promotion must run through with-control-plane-lock.sh"; fi
 [ "$#" -eq 1 ] || die "usage: promote-release.sh RELEASE_ID"
 release_id=$1
 case $release_id in ''|*[!a-zA-Z0-9._-]*) die "release ID contains unsupported characters" ;; esac

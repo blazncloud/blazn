@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 [ "$(id -u)" -eq 0 ] || die "live Workspace qualification must run as root"
-[ -n "${BLAZN_FENCING_TOKEN:-}" ] && [ -n "${BLAZN_CORRELATION_ID:-}" ] || die "live Workspace qualification must run through with-control-plane-lock.sh"
+if [ -z "${BLAZN_FENCING_TOKEN:-}" ] || [ -z "${BLAZN_CORRELATION_ID:-}" ]; then die "live Workspace qualification must run through with-control-plane-lock.sh"; fi
 [ "$#" -eq 2 ] || die "usage: verify-live-workspace.sh CLI API_URL"
 cli=$1
 api=${2%/}

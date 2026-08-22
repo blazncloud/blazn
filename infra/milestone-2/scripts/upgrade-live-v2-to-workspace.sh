@@ -6,7 +6,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 [ "$(id -u)" -eq 0 ] || die "workspace secret upgrade must run as root"
-[ -n "${BLAZN_FENCING_TOKEN:-}" ] && [ -n "${BLAZN_CORRELATION_ID:-}" ] || die "workspace secret upgrade must run through with-control-plane-lock.sh"
+if [ -z "${BLAZN_FENCING_TOKEN:-}" ] || [ -z "${BLAZN_CORRELATION_ID:-}" ]; then die "workspace secret upgrade must run through with-control-plane-lock.sh"; fi
 require_command jq
 require_command openssl
 require_command sha256sum

@@ -7,7 +7,7 @@ ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 . "$SCRIPT_DIR/common.sh"
 
 [ "$(id -u)" -eq 0 ] || die "POC identity management must run as root"
-[ -n "${BLAZN_FENCING_TOKEN:-}" ] && [ -n "${BLAZN_CORRELATION_ID:-}" ] || die "POC identity management must run through with-control-plane-lock.sh"
+if [ -z "${BLAZN_FENCING_TOKEN:-}" ] || [ -z "${BLAZN_CORRELATION_ID:-}" ]; then die "POC identity management must run through with-control-plane-lock.sh"; fi
 [ "$#" -eq 1 ] || die "usage: manage-poc-identity.sh provision|record-workspace|cleanup"
 action=$1
 case $action in provision|record-workspace|cleanup) ;; *) die "unsupported POC identity action" ;; esac
