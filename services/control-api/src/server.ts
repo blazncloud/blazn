@@ -2,21 +2,34 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db.js";
-import { HttpError, jsonBody, requiredString, sendJson } from "./http.js";
+import { HttpError, jsonBody, requiredSecret, requiredString, sendJson } from "./http.js";
 import { enforceLimit, remoteIdentity } from "./limits.js";
 import { randomToken, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
+import { verifyBucket } from "./s3.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
-const activeStreams = new Map<string, ServerResponse>();
+const activeStreams = new Map<string, Set<ServerResponse>>();
 
 function closeStream(sessionId: string): void {
-  const stream = activeStreams.get(sessionId);
-  if (stream && !stream.destroyed) {
-    stream.write(`event: revoked\nid: ${Date.now()}\ndata: {}\n\n`);
-    stream.end();
+  const streams = activeStreams.get(sessionId);
+  for (const stream of streams ?? []) {
+    if (!stream.destroyed) {
+      stream.write(`event: revoked\nid: ${Date.now()}\ndata: {}\n\n`);
+      stream.end();
+    }
   }
   activeStreams.delete(sessionId);
+}
+
+function registerStream(sessionId: string, response: ServerResponse): void {
+  const streams = activeStreams.get(sessionId) ?? new Set<ServerResponse>();
+  streams.add(response);
+  activeStreams.set(sessionId, streams);
+  response.on("close", () => {
+    streams.delete(response);
+    if (streams.size === 0) activeStreams.delete(sessionId);
+  });
 }
 
 interface AuthenticatedSession {
@@ -36,7 +49,7 @@ async function authenticate(request: IncomingMessage): Promise<AuthenticatedSess
       FROM sessions s JOIN users u ON u.id = s.user_id JOIN devices d ON d.id = s.device_id
       WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.access_expires_at > now() AND d.revoked_at IS NULL AND d.user_id = s.user_id`, [tokenHash(header.slice(7))]);
   const row = result.rows[0];
-  if (!row) throw new HttpError(401, "session_invalid", "the session is expired or revoked");
+  if (!row) throw new HttpError(401, "session_revoked", "the session is expired or revoked");
   await database.query("UPDATE devices SET last_seen_at = now() WHERE id = $1", [row.device_id]);
   return { sessionId: row.session_id, userId: row.user_id, deviceId: row.device_id, email: row.email, displayName: row.display_name };
 }
@@ -45,11 +58,16 @@ async function health(response: ServerResponse): Promise<void> {
   await database.query("SELECT 1");
   const result = await fetch(`${config.s3Endpoint.replace(/\/$/, "")}/minio/health/live`, { signal: AbortSignal.timeout(2_000) });
   if (!result.ok) throw new HttpError(503, "object_storage_unavailable", "object storage is unavailable");
+  try {
+    await verifyBucket(config.s3Endpoint, config.s3Region, config.s3Bucket, config.s3AccessKey, config.s3SecretKey);
+  } catch {
+    throw new HttpError(503, "object_storage_unavailable", "object storage credentials or required bucket are unavailable");
+  }
   sendJson(response, 200, { status: "ok", database: "ok", objectStorage: "ok" });
 }
 
 async function startDeviceAuthorization(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  enforceLimit("device-start", remoteIdentity(request), 20, 60_000);
+  await enforceLimit(database, "device-start", remoteIdentity(request), 20, 60);
   const body = await jsonBody(request);
   const deviceName = requiredString(body, "deviceName", 128);
   const platform = requiredString(body, "platform", 64);
@@ -107,9 +125,9 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
   const body = contentType.startsWith("application/x-www-form-urlencoded") ? await formBody(request) : await jsonBody(request);
   const code = requiredString(body, "user_code", 16).toUpperCase();
   const email = requiredString(body, "email", 254).toLowerCase();
-  const password = requiredString(body, "password", 1024);
-  enforceLimit("device-approve-ip", remoteIdentity(request), 20, 15 * 60_000);
-  enforceLimit("device-approve-login", email, 10, 15 * 60_000);
+  const password = requiredSecret(body, "password", 1024);
+  await enforceLimit(database, "device-approve-ip", remoteIdentity(request), 20, 15 * 60);
+  await enforceLimit(database, "device-approve-login", email, 10, 15 * 60);
   const client = await database.connect();
   try {
     await client.query("BEGIN");
@@ -187,7 +205,7 @@ async function refreshSession(request: IncomingMessage, response: ServerResponse
     const result = await client.query<{ session_id: string; public_key: string }>(`SELECT s.id AS session_id, d.public_key FROM sessions s JOIN devices d ON d.id=s.device_id
       WHERE s.device_id=$1 AND s.refresh_token_hash=$2 AND s.revoked_at IS NULL AND s.refresh_expires_at > now() AND d.revoked_at IS NULL AND d.user_id=s.user_id FOR UPDATE`, [deviceId, tokenHash(refreshToken)]);
     const session = result.rows[0];
-    if (!session) throw new HttpError(401, "refresh_invalid", "refresh credential is expired or revoked");
+    if (!session) throw new HttpError(401, "session_revoked", "refresh credential is expired or revoked");
     const canonical = `blazn-refresh-v1\n${deviceId}\n${tokenHash(refreshToken)}`;
     if (!verifyDeviceProof(session.public_key, canonical, signature)) throw new HttpError(403, "device_proof_invalid", "device proof could not be verified");
     const nextAccess = randomToken();
@@ -215,7 +233,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const session = await authenticate(request);
     const device = await database.query<{ id: string; name: string; platform: string; created_at: Date; last_seen_at: Date }>("SELECT id, name, platform, created_at, last_seen_at FROM devices WHERE id=$1 AND user_id=$2", [session.deviceId, session.userId]);
     const row = device.rows[0];
-    if (!row) throw new HttpError(401, "session_invalid", "the session device is unavailable");
+    if (!row) throw new HttpError(401, "session_revoked", "the session device is unavailable");
     return sendJson(response, 200, { user: { id: session.userId, email: session.email, displayName: session.displayName, status: "active" }, device: { id: row.id, name: row.name, platform: row.platform, status: "active", createdAt: row.created_at.toISOString(), lastUsedAt: row.last_seen_at.toISOString() } });
   }
   if (request.method === "DELETE" && url.pathname === "/v1/auth/session") {
@@ -246,8 +264,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const session = await authenticate(request);
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
     response.write(`event: ready\nid: ${Date.now()}\ndata: ${JSON.stringify({ sessionId: session.sessionId })}\n\n`);
-    activeStreams.set(session.sessionId, response);
-    response.on("close", () => activeStreams.delete(session.sessionId));
+    registerStream(session.sessionId, response);
     void (async () => {
       while (!response.destroyed && !response.writableEnded) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -260,7 +277,9 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
           }
         } catch {
           response.end();
-          activeStreams.delete(session.sessionId);
+          const streams = activeStreams.get(session.sessionId);
+          streams?.delete(response);
+          if (streams?.size === 0) activeStreams.delete(session.sessionId);
           break;
         }
       }
@@ -278,7 +297,10 @@ const server = createServer((request, response) => {
   response.setHeader("x-request-id", requestId);
   route(request, response).catch((error: unknown) => {
     const httpError = error instanceof HttpError ? error : new HttpError(500, "internal_error", "request failed");
-    if (!response.headersSent) sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
+    if (!response.headersSent) {
+      if (httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
+      sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
+    }
     else response.end();
     if (!(error instanceof HttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });
   }).finally(() => {
@@ -303,5 +325,11 @@ async function shutdown(): Promise<void> {
   clearTimeout(deadline);
   await database.end();
 }
-process.on("SIGTERM", () => void shutdown().finally(() => process.exit(0)));
-process.on("SIGINT", () => void shutdown().finally(() => process.exit(0)));
+function handleSignal(): void {
+  void shutdown().then(() => process.exit(0)).catch((error: unknown) => {
+    console.error("control-api shutdown failed", { error: error instanceof Error ? error.name : "unknown" });
+    process.exit(1);
+  });
+}
+process.on("SIGTERM", handleSignal);
+process.on("SIGINT", handleSignal);

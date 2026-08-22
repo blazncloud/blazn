@@ -26,6 +26,8 @@ export interface Config {
   refreshTtlSeconds: number;
   deviceCodeTtlSeconds: number;
   s3Endpoint: string;
+  s3Region: string;
+  s3Bucket: string;
   s3AccessKey: string;
   s3SecretKey: string;
 }
@@ -44,6 +46,8 @@ export function loadConfig(): Config {
     refreshTtlSeconds: boundedInteger("REFRESH_TTL_SECONDS", 60 * 60 * 24 * 30, 3600, 60 * 60 * 24 * 90),
     deviceCodeTtlSeconds: boundedInteger("DEVICE_CODE_TTL_SECONDS", 600, 60, 1800),
     s3Endpoint,
+    s3Region: process.env.S3_REGION ?? "us-east-1",
+    s3Bucket: process.env.S3_BUCKET ?? "blazn-poc",
     s3AccessKey: valueOrFile("S3_ACCESS_KEY"),
     s3SecretKey: valueOrFile("S3_SECRET_KEY"),
   };

@@ -57,3 +57,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS sessions_user_device_idx ON sessions(user_id, device_id);
 CREATE INDEX IF NOT EXISTS device_authorizations_expiry_idx ON device_authorizations(expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_rate_limits (
+  key text PRIMARY KEY,
+  window_start timestamptz NOT NULL,
+  count integer NOT NULL CHECK (count > 0)
+);

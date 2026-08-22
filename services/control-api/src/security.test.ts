@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { passwordRecord, randomToken, secretMatches, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
+import { passwordRecord, randomToken, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
 
 test("tokens are random and only hashes are retained", () => {
   const first = randomToken();
@@ -39,9 +39,4 @@ test("device proofs require the matching key and canonical message", () => {
   assert.equal(verifyDeviceProof(publicKey, canonical, signature), true);
   assert.equal(verifyDeviceProof(publicKey, `${canonical}-changed`, signature), false);
   assert.equal(verifyDeviceProof("invalid", canonical, signature), false);
-});
-
-test("bootstrap secrets compare by digest", () => {
-  assert.equal(secretMatches("one secret", "one secret"), true);
-  assert.equal(secretMatches("one secret", "another secret"), false);
 });

@@ -26,7 +26,7 @@ export function sendJson(response: ServerResponse, status: number, body: unknown
 }
 
 export class HttpError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
+  constructor(readonly status: number, readonly code: string, message: string, readonly retryAfter?: number) {
     super(message);
   }
 }
@@ -37,4 +37,12 @@ export function requiredString(body: Record<string, unknown>, key: string, max =
     throw new HttpError(400, "invalid_request", `${key} must be a non-empty string of at most ${max} characters`);
   }
   return value.trim();
+}
+
+export function requiredSecret(body: Record<string, unknown>, key: string, max = 1024): string {
+  const value = body[key];
+  if (typeof value !== "string" || value.length === 0 || value.length > max) {
+    throw new HttpError(400, "invalid_request", `${key} must be a non-empty string of at most ${max} characters`);
+  }
+  return value;
 }

@@ -39,9 +39,3 @@ export function verifyDeviceProof(publicKey: string, canonical: string, signatur
     return false;
   }
 }
-
-export function secretMatches(actual: string, expected: string): boolean {
-  const actualDigest = Buffer.from(tokenHash(actual), "hex");
-  const expectedDigest = Buffer.from(tokenHash(expected), "hex");
-  return timingSafeEqual(actualDigest, expectedDigest);
-}
