@@ -186,7 +186,12 @@ func (a *Adapter) Create(ctx context.Context, request CreateRequest) (SandboxRec
 	if err := a.verifyRuntimeClass(ctx, request); err != nil {
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
-	manifest := render(request)
+	canonicalArtifacts, artifactDigest, err := CanonicalArtifactContract(request.Artifacts)
+	if err != nil {
+		return SandboxRecord{}, OperationReceipt{}, err
+	}
+	request.Artifacts = canonicalArtifacts
+	manifest := render(request, artifactDigest)
 	var created kubeSandbox
 	if err := a.call(ctx, http.MethodPost, a.collectionPath(), nil, manifest, &created, "application/json"); err != nil {
 		return SandboxRecord{}, OperationReceipt{}, err
@@ -204,6 +209,10 @@ func (a *Adapter) Create(ctx context.Context, request CreateRequest) (SandboxRec
 	}
 	if record.RuntimeClassName != request.RuntimeClassName || !contains(record.Finalizers, CleanupFinalizer) {
 		err := adapterError(ErrBackend, 502, "backend did not preserve runtime or cleanup boundary", nil)
+		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+	}
+	if record.ArtifactContractDigest != artifactDigest || !sameArtifactExports(record.Artifacts, canonicalArtifacts) {
+		err := adapterError(ErrBackend, 502, "backend did not preserve artifact contract", nil)
 		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
 	}
 	receipt, err := NewReceipt(request.RequestID, OperationCreate, record, nil, a.now())
@@ -387,8 +396,8 @@ func (a *Adapter) Watch(ctx context.Context, workspaceID, ownerID, resourceVersi
 	return events, errors, nil
 }
 
-func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string) (OperationReceipt, error) {
-	if !requestPattern.MatchString(requestID) || uid == "" || resourceVersion == "" {
+func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion, artifactContractDigest string) (OperationReceipt, error) {
+	if !requestPattern.MatchString(requestID) || uid == "" || resourceVersion == "" || !digestPattern.MatchString(artifactContractDigest) {
 		return OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "delete precondition is invalid", nil)
 	}
 	record, err := a.Get(ctx, workspaceID, ownerID, name)
@@ -397,6 +406,9 @@ func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, n
 	}
 	if record.UID != uid || record.ResourceVersion != resourceVersion {
 		return OperationReceipt{}, adapterError(ErrResourceVersionStale, 409, "delete precondition does not match", nil)
+	}
+	if record.ArtifactContractDigest != artifactContractDigest {
+		return OperationReceipt{}, adapterError(ErrConflict, 409, "artifact contract precondition does not match", nil)
 	}
 	body := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": uid, "resourceVersion": resourceVersion}}
 	if err := a.call(ctx, http.MethodDelete, a.resourcePath(name), nil, body, nil, "application/json"); err != nil {
@@ -407,9 +419,13 @@ func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, n
 	return NewReceipt(requestID, OperationDelete, record, nil, a.now())
 }
 
-func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string) (OperationReceipt, error) {
+func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string, expectedArtifacts []ArtifactExport, artifactContractDigest string) (OperationReceipt, error) {
 	if !requestPattern.MatchString(requestID) {
 		return OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "finalize request ID is invalid", nil)
+	}
+	canonicalExpected, expectedDigest, err := CanonicalArtifactContract(expectedArtifacts)
+	if err != nil || artifactContractDigest != expectedDigest {
+		return OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "trusted artifact contract precondition is invalid", err)
 	}
 	record, err := a.Get(ctx, workspaceID, ownerID, name)
 	if err != nil {
@@ -417,6 +433,9 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	}
 	if record.UID != uid || record.ResourceVersion != resourceVersion || !record.Deleting || !contains(record.Finalizers, CleanupFinalizer) {
 		return OperationReceipt{}, adapterError(ErrCleanupIncomplete, 409, "sandbox is not ready for receipted cleanup", nil)
+	}
+	if record.ArtifactContractDigest != artifactContractDigest || !sameArtifactExports(record.Artifacts, canonicalExpected) {
+		return OperationReceipt{}, adapterError(ErrConflict, 409, "persisted artifact contract differs from trusted precondition", nil)
 	}
 	artifacts, err := a.exporter.Export(ctx, record, record.Artifacts)
 	if err != nil {
@@ -450,7 +469,7 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	return NewReceipt(requestID, OperationFinalize, updatedRecord, artifacts, a.now())
 }
 
-func render(request CreateRequest) kubeSandbox {
+func render(request CreateRequest, artifactContractDigest string) kubeSandbox {
 	labels := map[string]string{ManagedLabel: "true", WorkspaceLabel: request.WorkspaceID, OwnerLabel: request.OwnerID, SandboxIDLabel: request.Name}
 	podLabels := cloneMap(labels)
 	podLabels[QueueLabel] = QueueName
@@ -458,6 +477,7 @@ func render(request CreateRequest) kubeSandbox {
 	if encoded, err := json.Marshal(request.Artifacts); err == nil {
 		annotations["sandboxes.blazn.dev/artifact-exports"] = string(encoded)
 	}
+	annotations["sandboxes.blazn.dev/artifact-contract-digest"] = artifactContractDigest
 	return kubeSandbox{
 		APIVersion: APIVersion, Kind: Kind,
 		Metadata: kubeMetadata{Name: request.Name, Namespace: Namespace, Labels: labels, Annotations: annotations, Finalizers: []string{CleanupFinalizer}},
@@ -478,14 +498,17 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 	if object.APIVersion != APIVersion || object.Kind != Kind || object.Metadata.Namespace != Namespace || !dnsLabelPattern.MatchString(object.Metadata.Name) || object.Metadata.UID == "" || object.Metadata.ResourceVersion == "" {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend Sandbox identity is invalid", nil)
 	}
+	artifactValue, artifactDigest := object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"], object.Metadata.Annotations["sandboxes.blazn.dev/artifact-contract-digest"]
 	artifacts := []ArtifactExport{}
-	if value := object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"]; value != "" {
-		if len(value) > 32768 || json.Unmarshal([]byte(value), &artifacts) != nil {
-			return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract is invalid", nil)
-		}
+	if artifactValue == "" || len(artifactValue) > 32768 || json.Unmarshal([]byte(artifactValue), &artifacts) != nil {
+		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract is invalid", nil)
 	}
 	if err := validateArtifactExports(artifacts); err != nil {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract violates the frozen export boundary", err)
+	}
+	canonicalArtifacts, computedDigest, err := CanonicalArtifactContract(artifacts)
+	if err != nil || artifactDigest != computedDigest {
+		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract digest is invalid", err)
 	}
 	trustLevel := TrustLevel(object.Metadata.Annotations["sandboxes.blazn.dev/trust-level"])
 	if trustLevel != TrustApprovedPOC && trustLevel != TrustUntrusted {
@@ -497,7 +520,7 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 		Generation: object.Metadata.Generation, WorkspaceID: object.Metadata.Labels[WorkspaceLabel], OwnerID: object.Metadata.Labels[OwnerLabel],
 		QueueName: object.Spec.PodTemplate.Metadata.Labels[QueueLabel], RuntimeClassName: object.Spec.PodTemplate.Spec.RuntimeClassName,
 		TrustLevel: trustLevel, State: state,
-		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: artifacts, Labels: cloneMap(object.Metadata.Labels),
+		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: canonicalArtifacts, ArtifactContractDigest: artifactDigest, Labels: cloneMap(object.Metadata.Labels),
 	}, nil
 }
 
@@ -664,4 +687,18 @@ func cloneMap(input map[string]string) map[string]string {
 		output[key] = value
 	}
 	return output
+}
+
+func sameArtifactExports(left, right []ArtifactExport) bool {
+	leftCanonical, leftDigest, leftErr := CanonicalArtifactContract(left)
+	rightCanonical, rightDigest, rightErr := CanonicalArtifactContract(right)
+	if leftErr != nil || rightErr != nil || leftDigest != rightDigest || len(leftCanonical) != len(rightCanonical) {
+		return false
+	}
+	for index := range leftCanonical {
+		if leftCanonical[index] != rightCanonical[index] {
+			return false
+		}
+	}
+	return true
 }

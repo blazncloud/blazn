@@ -256,14 +256,14 @@ func TestDeleteFinalizeExportsBeforeRemovingFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleteReceipt, err := adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion)
+	deleteReceipt, err := adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion, record.ArtifactContractDigest)
 	if err != nil || deleteReceipt.Operation != OperationDelete || deleteReceipt.State != StateStopping {
 		t.Fatalf("delete receipt=%#v err=%v", deleteReceipt, err)
 	}
 	fake.mu.Lock()
 	deleting := fake.object
 	fake.mu.Unlock()
-	finalReceipt, err := adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion)
+	finalReceipt, err := adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion, record.Artifacts, record.ArtifactContractDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,14 +283,14 @@ func TestFinalizeRetainsFinalizerOnArtifactFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion)
+	_, err = adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion, record.ArtifactContractDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fake.mu.Lock()
 	deleting := fake.object
 	fake.mu.Unlock()
-	_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion)
+	_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion, record.Artifacts, record.ArtifactContractDigest)
 	assertCode(t, err, ErrArtifactExport)
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
@@ -314,13 +314,13 @@ func TestFinalizeRejectsAdmissionFinalizerOrUIDRewrite(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion); err != nil {
+			if _, err := adapter.Delete(context.Background(), "request-delete-1", "workspace-a", "owner-a", "sandbox-a", record.UID, record.ResourceVersion, record.ArtifactContractDigest); err != nil {
 				t.Fatal(err)
 			}
 			fake.mu.Lock()
 			deleting := fake.object
 			fake.mu.Unlock()
-			_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion)
+			_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion, record.Artifacts, record.ArtifactContractDigest)
 			assertCode(t, err, ErrCleanupIncomplete)
 		})
 	}
@@ -330,7 +330,7 @@ func TestMutatedArtifactAnnotationNeverReachesExporter(t *testing.T) {
 	fake := newFakeAPI(t)
 	exporter := &fakeExporter{}
 	adapter := testAdapter(t, fake, exporter)
-	_, _, err := adapter.Create(context.Background(), testCreate())
+	record, _, err := adapter.Create(context.Background(), testCreate())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,10 +339,84 @@ func TestMutatedArtifactAnnotationNeverReachesExporter(t *testing.T) {
 	fake.object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"] = `[{"name":"result","path":"/etc/passwd","mediaType":"text/plain","required":false}]`
 	deleting := fake.object
 	fake.mu.Unlock()
-	_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion)
+	_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion, record.Artifacts, record.ArtifactContractDigest)
 	assertCode(t, err, ErrBackend)
 	if exporter.calls != 0 {
 		t.Fatalf("mutated artifact contract reached exporter calls=%d", exporter.calls)
+	}
+}
+
+func TestArtifactSuppressionCannotSatisfyTrustedFinalizePrecondition(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]string)
+		code   ErrorCode
+	}{
+		{"annotation removed", func(annotations map[string]string) {
+			delete(annotations, "sandboxes.blazn.dev/artifact-exports")
+			delete(annotations, "sandboxes.blazn.dev/artifact-contract-digest")
+		}, ErrBackend},
+		{"empty list", func(annotations map[string]string) {
+			_, digest, _ := CanonicalArtifactContract(nil)
+			annotations["sandboxes.blazn.dev/artifact-exports"] = "[]"
+			annotations["sandboxes.blazn.dev/artifact-contract-digest"] = digest
+		}, ErrConflict},
+		{"required flipped", func(annotations map[string]string) {
+			artifacts := []ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.txt", MediaType: "text/plain", Required: false}}
+			canonical, digest, _ := CanonicalArtifactContract(artifacts)
+			encoded, _ := json.Marshal(canonical)
+			annotations["sandboxes.blazn.dev/artifact-exports"] = string(encoded)
+			annotations["sandboxes.blazn.dev/artifact-contract-digest"] = digest
+		}, ErrConflict},
+		{"duplicate added", func(annotations map[string]string) {
+			annotations["sandboxes.blazn.dev/artifact-exports"] = `[{"name":"result","path":"/workspace/artifacts/result.txt","mediaType":"text/plain","required":true},{"name":"result","path":"/workspace/artifacts/result.txt","mediaType":"text/plain","required":true}]`
+		}, ErrBackend},
+		{"digest changed", func(annotations map[string]string) {
+			annotations["sandboxes.blazn.dev/artifact-contract-digest"] = "sha256:" + strings.Repeat("d", 64)
+		}, ErrBackend},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			exporter := &fakeExporter{}
+			adapter := testAdapter(t, fake, exporter)
+			record, _, err := adapter.Create(context.Background(), testCreate())
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake.mu.Lock()
+			fake.object.Metadata.DeletionTimestamp = "2026-08-22T12:00:00Z"
+			testCase.mutate(fake.object.Metadata.Annotations)
+			deleting := fake.object
+			fake.mu.Unlock()
+			_, err = adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion, record.Artifacts, record.ArtifactContractDigest)
+			assertCode(t, err, testCase.code)
+			if exporter.calls != 0 {
+				t.Fatalf("suppressed contract reached exporter calls=%d", exporter.calls)
+			}
+		})
+	}
+}
+
+func TestArtifactReorderingUsesCanonicalTrustedSet(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	request.Artifacts = append(request.Artifacts, ArtifactExport{Name: "logs", Path: "/workspace/artifacts/logs.txt", MediaType: "text/plain"})
+	exporter := &fakeExporter{receipts: []ArtifactReceipt{{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/workspace-a/sandboxes/sandbox-a/artifacts/result", SHA256: "sha256:" + strings.Repeat("b", 64), Size: 1, ExportedAt: "2026-08-22T12:00:01Z"}}}
+	adapter := testAdapter(t, fake, exporter)
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.object.Metadata.DeletionTimestamp = "2026-08-22T12:00:00Z"
+	reversed := []ArtifactExport{record.Artifacts[1], record.Artifacts[0]}
+	encoded, _ := json.Marshal(reversed)
+	fake.object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"] = string(encoded)
+	deleting := fake.object
+	fake.mu.Unlock()
+	if _, err := adapter.Finalize(context.Background(), "request-finalize-1", "workspace-a", "owner-a", "sandbox-a", deleting.Metadata.UID, deleting.Metadata.ResourceVersion, record.Artifacts, record.ArtifactContractDigest); err != nil {
+		t.Fatal(err)
 	}
 }
 

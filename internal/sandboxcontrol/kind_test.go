@@ -51,11 +51,11 @@ func TestDisposableKindLifecycle(t *testing.T) {
 			return
 		}
 		if !current.Deleting {
-			_, _ = adapter.Delete(cleanupCtx, "kind-cleanup-delete-"+name, request.WorkspaceID, request.OwnerID, name, current.UID, current.ResourceVersion)
+			_, _ = adapter.Delete(cleanupCtx, "kind-cleanup-delete-"+name, request.WorkspaceID, request.OwnerID, name, current.UID, current.ResourceVersion, current.ArtifactContractDigest)
 			current, _ = adapter.Get(cleanupCtx, request.WorkspaceID, request.OwnerID, name)
 		}
 		if current.Deleting && contains(current.Finalizers, CleanupFinalizer) {
-			_, _ = adapter.Finalize(cleanupCtx, "kind-cleanup-final-"+name, request.WorkspaceID, request.OwnerID, name, current.UID, current.ResourceVersion)
+			_, _ = adapter.Finalize(cleanupCtx, "kind-cleanup-final-"+name, request.WorkspaceID, request.OwnerID, name, current.UID, current.ResourceVersion, current.Artifacts, current.ArtifactContractDigest)
 		}
 	})
 	deadline := time.Now().Add(2 * time.Minute)
@@ -84,7 +84,7 @@ func TestDisposableKindLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.Delete(ctx, "kind-delete-"+name, request.WorkspaceID, request.OwnerID, name, current.UID, current.ResourceVersion); err != nil {
+	if _, err := adapter.Delete(ctx, "kind-delete-"+name, request.WorkspaceID, request.OwnerID, name, current.UID, current.ResourceVersion, current.ArtifactContractDigest); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -101,7 +101,7 @@ func TestDisposableKindLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	finalReceipt, err := adapter.Finalize(ctx, "kind-finalize-"+name, request.WorkspaceID, request.OwnerID, name, deleting.UID, deleting.ResourceVersion)
+	finalReceipt, err := adapter.Finalize(ctx, "kind-finalize-"+name, request.WorkspaceID, request.OwnerID, name, deleting.UID, deleting.ResourceVersion, deleting.Artifacts, deleting.ArtifactContractDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

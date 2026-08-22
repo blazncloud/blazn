@@ -10,6 +10,8 @@ jq -e '
   .properties.namespace.const == "blazn-poc-sandboxes" and
   .properties.queueName.const == "blazn-poc" and
   .properties.operation.enum == ["create","delete","finalize"] and
+  (.required | index("artifactContractDigest")) != null and
+  (.properties.artifactContractDigest.pattern | length) > 0 and
   (.properties.state.enum | sort) == (["pending","queued","starting","ready","failed","stopping","deleted"] | sort) and
   ."x-blazn-error-status" == {
     "sandbox_invalid_request":400,"sandbox_identity_boundary":404,"sandbox_queue_required":502,

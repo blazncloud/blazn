@@ -133,21 +133,22 @@ type SandboxStatus struct {
 }
 
 type SandboxRecord struct {
-	Name             string            `json:"name"`
-	Namespace        string            `json:"namespace"`
-	UID              string            `json:"uid"`
-	ResourceVersion  string            `json:"resourceVersion"`
-	Generation       int64             `json:"generation"`
-	WorkspaceID      string            `json:"workspaceId"`
-	OwnerID          string            `json:"ownerId"`
-	QueueName        string            `json:"queueName"`
-	RuntimeClassName string            `json:"runtimeClassName,omitempty"`
-	TrustLevel       TrustLevel        `json:"trustLevel"`
-	State            SandboxState      `json:"state"`
-	Deleting         bool              `json:"deleting"`
-	Finalizers       []string          `json:"finalizers"`
-	Artifacts        []ArtifactExport  `json:"artifacts"`
-	Labels           map[string]string `json:"labels"`
+	Name                   string            `json:"name"`
+	Namespace              string            `json:"namespace"`
+	UID                    string            `json:"uid"`
+	ResourceVersion        string            `json:"resourceVersion"`
+	Generation             int64             `json:"generation"`
+	WorkspaceID            string            `json:"workspaceId"`
+	OwnerID                string            `json:"ownerId"`
+	QueueName              string            `json:"queueName"`
+	RuntimeClassName       string            `json:"runtimeClassName,omitempty"`
+	TrustLevel             TrustLevel        `json:"trustLevel"`
+	State                  SandboxState      `json:"state"`
+	Deleting               bool              `json:"deleting"`
+	Finalizers             []string          `json:"finalizers"`
+	Artifacts              []ArtifactExport  `json:"artifacts"`
+	ArtifactContractDigest string            `json:"artifactContractDigest"`
+	Labels                 map[string]string `json:"labels"`
 }
 
 type Operation string
@@ -159,22 +160,23 @@ const (
 )
 
 type OperationReceipt struct {
-	SchemaVersion   string            `json:"schemaVersion"`
-	ReceiptID       string            `json:"receiptId"`
-	RequestID       string            `json:"requestId"`
-	Operation       Operation         `json:"operation"`
-	Namespace       string            `json:"namespace"`
-	Name            string            `json:"name"`
-	UID             string            `json:"uid"`
-	ResourceVersion string            `json:"resourceVersion"`
-	WorkspaceID     string            `json:"workspaceId"`
-	OwnerID         string            `json:"ownerId"`
-	QueueName       string            `json:"queueName"`
-	RuntimeClass    string            `json:"runtimeClass,omitempty"`
-	State           SandboxState      `json:"state"`
-	Artifacts       []ArtifactReceipt `json:"artifacts"`
-	ObservedAt      string            `json:"observedAt"`
-	Digest          string            `json:"digest"`
+	SchemaVersion          string            `json:"schemaVersion"`
+	ReceiptID              string            `json:"receiptId"`
+	RequestID              string            `json:"requestId"`
+	Operation              Operation         `json:"operation"`
+	Namespace              string            `json:"namespace"`
+	Name                   string            `json:"name"`
+	UID                    string            `json:"uid"`
+	ResourceVersion        string            `json:"resourceVersion"`
+	WorkspaceID            string            `json:"workspaceId"`
+	OwnerID                string            `json:"ownerId"`
+	QueueName              string            `json:"queueName"`
+	RuntimeClass           string            `json:"runtimeClass,omitempty"`
+	State                  SandboxState      `json:"state"`
+	Artifacts              []ArtifactReceipt `json:"artifacts"`
+	ArtifactContractDigest string            `json:"artifactContractDigest"`
+	ObservedAt             string            `json:"observedAt"`
+	Digest                 string            `json:"digest"`
 }
 
 type WatchEvent struct {
@@ -265,7 +267,7 @@ func validateRuntime(request CreateRequest, runtimes map[string]RuntimeCapabilit
 }
 
 func ValidateReceipt(receipt OperationReceipt) error {
-	if receipt.SchemaVersion != ReceiptSchema || !requestPattern.MatchString(receipt.RequestID) || receipt.ReceiptID != receipt.RequestID+":"+string(receipt.Operation) || !dnsLabelPattern.MatchString(receipt.Name) || receipt.Namespace != Namespace || receipt.UID == "" || receipt.ResourceVersion == "" || !dnsLabelPattern.MatchString(receipt.WorkspaceID) || !dnsLabelPattern.MatchString(receipt.OwnerID) || receipt.QueueName != QueueName || !digestPattern.MatchString(receipt.Digest) {
+	if receipt.SchemaVersion != ReceiptSchema || !requestPattern.MatchString(receipt.RequestID) || receipt.ReceiptID != receipt.RequestID+":"+string(receipt.Operation) || !dnsLabelPattern.MatchString(receipt.Name) || receipt.Namespace != Namespace || receipt.UID == "" || receipt.ResourceVersion == "" || !dnsLabelPattern.MatchString(receipt.WorkspaceID) || !dnsLabelPattern.MatchString(receipt.OwnerID) || receipt.QueueName != QueueName || !digestPattern.MatchString(receipt.ArtifactContractDigest) || !digestPattern.MatchString(receipt.Digest) {
 		return fmt.Errorf("sandbox adapter receipt identity is invalid")
 	}
 	if receipt.Operation != OperationCreate && receipt.Operation != OperationDelete && receipt.Operation != OperationFinalize {
@@ -301,7 +303,7 @@ func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, ar
 		Operation: operation, Namespace: sandbox.Namespace, Name: sandbox.Name, UID: sandbox.UID,
 		ResourceVersion: sandbox.ResourceVersion, WorkspaceID: sandbox.WorkspaceID, OwnerID: sandbox.OwnerID,
 		QueueName: sandbox.QueueName, RuntimeClass: sandbox.RuntimeClassName, State: sandbox.State,
-		Artifacts: append([]ArtifactReceipt(nil), artifacts...), ObservedAt: now.UTC().Format(time.RFC3339Nano),
+		Artifacts: append([]ArtifactReceipt(nil), artifacts...), ArtifactContractDigest: sandbox.ArtifactContractDigest, ObservedAt: now.UTC().Format(time.RFC3339Nano),
 	}
 	sort.Slice(receipt.Artifacts, func(i, j int) bool { return receipt.Artifacts[i].Name < receipt.Artifacts[j].Name })
 	digest, err := receiptDigest(receipt)
@@ -310,6 +312,20 @@ func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, ar
 	}
 	receipt.Digest = digest
 	return receipt, nil
+}
+
+func CanonicalArtifactContract(artifacts []ArtifactExport) ([]ArtifactExport, string, error) {
+	canonical := append([]ArtifactExport(nil), artifacts...)
+	if err := validateArtifactExports(canonical); err != nil {
+		return nil, "", err
+	}
+	sort.Slice(canonical, func(i, j int) bool { return canonical[i].Name < canonical[j].Name })
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return nil, "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return canonical, "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 func receiptDigest(receipt OperationReceipt) (string, error) {

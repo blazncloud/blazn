@@ -19,7 +19,9 @@ administrator kubeconfig on behalf of callers, or fall back to unmanaged Pods.
   content-addressed receipt at the deterministic
   `workspaces/<workspace>/sandboxes/<sandbox>/artifacts/<name>` key. Export
   failure or a mutated persisted export annotation leaves the finalizer in
-  place.
+  place. Durable orchestration state supplies the canonical requested export
+  list and its SHA-256 as a delete/finalize precondition; mutable Kubernetes
+  annotations are evidence to compare, never the source of authority.
 - Delete uses exact UID and resourceVersion preconditions with foreground
   propagation. Finalizer removal uses the latest resourceVersion.
 
