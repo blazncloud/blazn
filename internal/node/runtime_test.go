@@ -32,6 +32,12 @@ func TestProductionNodePathsSeparateServiceAndPrivilegedState(t *testing.T) {
 	if linux.ServiceStateRoot == linux.RootStateRoot || mac.ServiceStateRoot == mac.RootStateRoot {
 		t.Fatal("service-owned and privileged Node state roots overlap")
 	}
+	if linux.InstallAuthorityPath() != "/var/lib/blazn-node-root/install-authority.json" || linux.InstallWALPath() != "/var/lib/blazn-node-root/install-wal.json" || linux.InstallReceiptPath() != "/var/lib/blazn-node-root/install-receipt.json" || linux.InstallBackupRoot() != "/var/lib/blazn-node-root/install-backups" {
+		t.Fatalf("linux privileged paths=%#v", linux)
+	}
+	if mac.InstallAuthorityPath() != "/Library/Application Support/BlaznNodeRoot/install-authority.json" || mac.InstallWALPath() != "/Library/Application Support/BlaznNodeRoot/install-wal.json" || mac.InstallReceiptPath() != "/Library/Application Support/BlaznNodeRoot/install-receipt.json" || mac.InstallBackupRoot() != "/Library/Application Support/BlaznNodeRoot/install-backups" {
+		t.Fatalf("mac privileged paths=%#v", mac)
+	}
 }
 
 func TestBootstrapAuthorizationNeverSerializesOrFormatsToken(t *testing.T) {

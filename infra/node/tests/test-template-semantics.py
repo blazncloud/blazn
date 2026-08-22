@@ -101,6 +101,10 @@ for profile_id, mode, platform, architecture in cases:
     if errors:
         detail = "\n".join(f"{list(error.path)}: {error.message}" for error in errors)
         raise AssertionError(f"{profile_id} does not render to NodeInstallPlan:\n{detail}")
+    expected_class = "macos_node_root" if platform == "macos" else "linux_node_root"
+    expected_prefix = "/Library/Application Support/BlaznNodeRoot/install-backups/" if platform == "macos" else "/var/lib/blazn-node-root/install-backups/"
+    if rendered["rollback"]["backupRootClass"] != expected_class or not rendered["rollback"]["backupRoot"].startswith(expected_prefix):
+        raise AssertionError(f"{profile_id}/{architecture} does not use its distinct privileged root-state tree")
     rendered_plans.append({"name": profile_id, "plan": rendered, "wantValid": True})
 
 invalid_semantics = copy.deepcopy(rendered_plans[0]["plan"])

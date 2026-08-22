@@ -2,6 +2,7 @@ package node
 
 import (
 	"errors"
+	"path/filepath"
 	"runtime"
 
 	"github.com/KingJammin/blazn/internal/client"
@@ -21,6 +22,19 @@ type ProductionNodePaths struct {
 	ServiceStateRoot string
 	RootStateRoot    string
 	ProfileRoot      string
+}
+
+func (p ProductionNodePaths) InstallAuthorityPath() string {
+	return filepath.Join(p.RootStateRoot, "install-authority.json")
+}
+func (p ProductionNodePaths) InstallWALPath() string {
+	return filepath.Join(p.RootStateRoot, "install-wal.json")
+}
+func (p ProductionNodePaths) InstallReceiptPath() string {
+	return filepath.Join(p.RootStateRoot, "install-receipt.json")
+}
+func (p ProductionNodePaths) InstallBackupRoot() string {
+	return filepath.Join(p.RootStateRoot, "install-backups")
 }
 
 func NodeProductionPaths(platform client.NodePlatform) (ProductionNodePaths, error) {
