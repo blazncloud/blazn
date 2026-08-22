@@ -351,7 +351,10 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 		if err != nil {
 			return fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
 		}
-		if stableErr := s.revokeSessionStable(ctx, credentials); stableErr == nil {
+		if _, supported := s.api.(StableDeviceSessionRevoker); supported {
+			if stableErr := s.revokeSessionStable(ctx, credentials); stableErr != nil {
+				return fmt.Errorf("stable device-bound session revocation failed; local session preserved: %w", stableErr)
+			}
 			// Stable device proof does not depend on the current refresh-token
 			// generation, so response loss and rotation cannot orphan the session.
 		} else {

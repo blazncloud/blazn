@@ -307,7 +307,7 @@ func TestPostExchangeStoreFailureAttemptsCleanupAndRetainsOnCleanupFailure(t *te
 	service := testService(api, store)
 	privateKey := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
 	_, err := service.finishLogin(context.Background(), client.Session{AccessToken: "access", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresIn: 300}, privateKey)
-	if err == nil || store.put != 2 || len(store.value) == 0 || api.deleted != 1 || api.revokeSessions != 1 {
+	if err == nil || store.put != 2 || len(store.value) == 0 || api.deleted != 1 || api.stableRevokes != 1 {
 		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
 	}
 }
@@ -354,11 +354,11 @@ func TestBeginLoginCleansRevokedStoredSessionBeforeReplacement(t *testing.T) {
 	}
 }
 
-func TestStatusRefreshesAfterUnexpectedAccessRevocation(t *testing.T) {
+func TestStatusRefreshesAfterAccessExpiry(t *testing.T) {
 	api := &fakeAPI{
 		session:     client.Session{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 300, DeviceID: "dev-1"},
 		current:     client.CurrentUser{User: client.User{ID: "user-1"}, Device: client.Device{ID: "dev-1"}},
-		currentErrs: []error{&client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}}, nil},
+		currentErrs: []error{&client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "access_expired"}}, nil},
 	}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	status, err := testService(api, store).Status(context.Background())
