@@ -8,6 +8,12 @@ import { randomToken, sessionRevokePayload, tokenHash, userCode, verifyDevicePro
 import { sessionAccessError } from "./session-state.js";
 import { verifyBucket } from "./s3.js";
 import { readInvitationKey } from "./workspace-crypto.js";
+import { FileNodePlanSigner, readNodeEnrollmentKey } from "./node-crypto.js";
+import { NodeHttpRouter } from "./node-http.js";
+import { TemplateNodePlanFactory } from "./node-plan.js";
+import { NodeService } from "./node-service.js";
+import { PgNodeStore } from "./node-store.js";
+import { nodeErrorBody, NodeHttpError } from "./node-types.js";
 import { WorkspaceHttpRouter } from "./workspace-http.js";
 import { WorkspaceService } from "./workspace-service.js";
 import { PgWorkspaceStore } from "./workspace-store.js";
@@ -19,6 +25,13 @@ const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
+const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
+const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
+const nodeRouter = new NodeHttpRouter(new NodeService(
+  new PgNodeStore(database),
+  () => readNodeEnrollmentKey(process.env.NODE_ENROLLMENT_HMAC_FILE ?? `${nodeSecretsRoot}/enrollment-hmac-v1`),
+  new TemplateNodePlanFactory(process.env.NODE_INSTALL_PLAN_TEMPLATE_FILE ?? "/etc/blazn/node-plan/node-install-plan-template-v1.json", nodePlanSigner),
+));
 
 function closeStream(sessionId: string): void {
   const streams = activeStreams.get(sessionId);
@@ -341,6 +354,12 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     })();
     return;
   }
+  if (nodeRouter.matches(url.pathname)) {
+    return nodeRouter.handle(request, response, url, async () => {
+      const session = await authenticate(request);
+      return { userId: session.userId, email: session.email, displayName: session.displayName };
+    });
+  }
   if (workspaceRouter.matches(url.pathname)) {
     const session = await authenticate(request);
     const principal = { userId: session.userId, email: session.email, displayName: session.displayName };
@@ -359,13 +378,13 @@ const server = createServer((request, response) => {
   const requestId = randomUUID();
   response.setHeader("x-request-id", requestId);
   route(request, response).catch((error: unknown) => {
-    const httpError = error instanceof HttpError || error instanceof WorkspaceHttpError ? error : new HttpError("internal_error", "request failed");
+    const httpError = error instanceof HttpError || error instanceof WorkspaceHttpError || error instanceof NodeHttpError ? error : new HttpError("internal_error", "request failed");
     if (!response.headersSent) {
       if ("retryAfter" in httpError && httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
-      sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
+      sendJson(response, httpError.status, httpError instanceof NodeHttpError ? nodeErrorBody(httpError, requestId) : { code: httpError.code, message: httpError.message, requestId });
     }
     else response.end();
-    if (!(error instanceof HttpError) && !(error instanceof WorkspaceHttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });
+    if (!(error instanceof HttpError) && !(error instanceof WorkspaceHttpError) && !(error instanceof NodeHttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });
   }).finally(() => {
     if (process.env.NODE_ENV !== "test") console.info("control-api request", { method: request.method, path: request.url?.split("?")[0], status: response.statusCode, duration_ms: Date.now() - started });
   });
