@@ -65,6 +65,15 @@ type CreateNodeEnrollmentRequest struct {
 
 type NodeError = ErrorBody
 
+var nodeErrorHTTPStatuses = map[string]int{
+NODE_ERROR_STATUSES
+}
+
+func NodeErrorHTTPStatus(code string) (int, bool) {
+	status, ok := nodeErrorHTTPStatuses[code]
+	return status, ok
+}
+
 type NodeEnrollmentSecret struct {
 	ID             string             `json:"id"`
 	Token          string             `json:"token"`

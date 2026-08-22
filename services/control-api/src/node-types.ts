@@ -47,6 +47,7 @@ export const NODE_ERROR_STATUS = {
   identity_rejected: 403, idempotency_conflict: 409, internal_error: 500, invalid_json: 400,
   invalid_public_key: 400, invalid_request: 400, join_credential_consumed: 410, join_credential_invalid: 400,
   membership_required: 403, method_not_allowed: 405, node_not_found: 404, not_found: 404,
+  node_broker_unavailable: 503,
   object_storage_unavailable: 503, permission_denied: 403, proxy_auth_invalid: 403, rate_limited: 429,
   request_too_large: 413, session_revoked: 401, slow_down: 429, state_conflict: 409,
   unauthorized: 401, version_conflict: 409,

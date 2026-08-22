@@ -1,5 +1,5 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: 7a5db0900aa7954b846af74080d4cdee2c500aa1edb766e54d9691bf64dbe953
+// OpenAPI SHA256: 73c3703e8715a841ed6a1c7cfb6b6b296449b43978108c9665025dc825a213b0
 // NodeInstallPlan SHA256: d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d
 // NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
@@ -64,6 +64,53 @@ type CreateNodeEnrollmentRequest struct {
 }
 
 type NodeError = ErrorBody
+
+var nodeErrorHTTPStatuses = map[string]int{
+	"access_expired":             401,
+	"authorization_capacity":     503,
+	"authorization_not_found":    404,
+	"authorization_pending":      428,
+	"capability_digest_invalid":  400,
+	"device_not_found":           404,
+	"device_proof_invalid":       403,
+	"device_revoked":             401,
+	"enrollment_consumed":        410,
+	"enrollment_expired":         410,
+	"enrollment_invalid":         400,
+	"enrollment_not_found":       404,
+	"expired_token":              400,
+	"forwarded_identity_invalid": 400,
+	"heartbeat_replay":           409,
+	"heartbeat_skew":             400,
+	"idempotency_conflict":       409,
+	"identity_rejected":          403,
+	"internal_error":             500,
+	"invalid_json":               400,
+	"invalid_public_key":         400,
+	"invalid_request":            400,
+	"join_credential_consumed":   410,
+	"join_credential_invalid":    400,
+	"membership_required":        403,
+	"method_not_allowed":         405,
+	"node_broker_unavailable":    503,
+	"node_not_found":             404,
+	"not_found":                  404,
+	"object_storage_unavailable": 503,
+	"permission_denied":          403,
+	"proxy_auth_invalid":         403,
+	"rate_limited":               429,
+	"request_too_large":          413,
+	"session_revoked":            401,
+	"slow_down":                  429,
+	"state_conflict":             409,
+	"unauthorized":               401,
+	"version_conflict":           409,
+}
+
+func NodeErrorHTTPStatus(code string) (int, bool) {
+	status, ok := nodeErrorHTTPStatuses[code]
+	return status, ok
+}
 
 type NodeEnrollmentSecret struct {
 	ID             string             `json:"id"`
