@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/sandbox-control-adapter-receipt-v1.json",
+  "title": "Blazn Sandbox Control Adapter Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "receiptId", "requestId", "operation", "namespace", "name", "uid", "resourceVersion", "workspaceId", "ownerId", "queueName", "state", "artifacts", "artifactContractDigest", "observedAt", "digest"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.dev/sandbox-adapter-receipt/v1"},
+    "receiptId": {"type": "string", "minLength": 15, "maxLength": 137},
+    "requestId": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{8,128}$"},
+    "operation": {"enum": ["create", "delete", "finalize"]},
+    "namespace": {"const": "blazn-poc-sandboxes"},
+    "name": {"$ref": "#/$defs/dnsLabel"},
+    "uid": {"type": "string", "minLength": 1, "maxLength": 128},
+    "resourceVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+    "workspaceId": {"$ref": "#/$defs/dnsLabel"},
+    "ownerId": {"$ref": "#/$defs/dnsLabel"},
+    "queueName": {"const": "blazn-poc"},
+    "runtimeClass": {"type": "string", "minLength": 1, "maxLength": 63},
+    "state": {"enum": ["pending", "queued", "starting", "ready", "failed", "stopping", "deleted"]},
+    "artifacts": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/artifact"}},
+    "artifactContractDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"operation": {"const": "delete"}}, "required": ["operation"]}, "then": {"properties": {"state": {"const": "stopping"}}}},
+    {"if": {"properties": {"operation": {"const": "finalize"}}, "required": ["operation"]}, "then": {"properties": {"state": {"const": "deleted"}}}},
+    {"if": {"properties": {"operation": {"const": "create"}}, "required": ["operation"]}, "then": {"properties": {"state": {"enum": ["pending", "queued", "starting", "ready", "failed"]}}}}
+  ],
+  "$defs": {
+    "dnsLabel": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"},
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "name", "objectKey", "sha256", "size", "exportedAt"],
+      "properties": {
+        "schemaVersion": {"const": "blazn.dev/sandbox-artifact/v1"},
+        "name": {"$ref": "#/$defs/dnsLabel"},
+        "objectKey": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "size": {"type": "integer", "minimum": 0},
+        "exportedAt": {"type": "string", "format": "date-time"}
+      }
+    }
+  },
+  "x-blazn-error-status": {
+    "sandbox_invalid_request": 400,
+    "sandbox_identity_boundary": 404,
+    "sandbox_queue_required": 502,
+    "sandbox_runtime_untrusted": 403,
+    "sandbox_conflict": 409,
+    "sandbox_not_found": 404,
+    "sandbox_backend_failure": 502,
+    "sandbox_artifact_export_failed": 502,
+    "sandbox_cleanup_incomplete": 409,
+    "sandbox_resource_version_stale": 409
+  }
+}
