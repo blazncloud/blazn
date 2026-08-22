@@ -125,8 +125,9 @@ the new names, stages and atomically links newly generated bootstrap/runtime
 credentials, and reconciles the restricted `blazn_bootstrap` role through the
 exact running PostgreSQL service. Its separate digest-only upgrade receipt makes
 power-loss retries deterministic and never replaces the main ownership receipt.
-After migration `002` applies explicit table grants, the operator reconciles the
-main receipt in a separate reviewed lock operation.
+Migration `002` must revoke v1's persisted default table/sequence privileges,
+revoke existing broad table grants, and then apply explicit table grants. The
+operator reconciles the main receipt in a separate reviewed lock operation.
 
 ## Evidence and tests
 
