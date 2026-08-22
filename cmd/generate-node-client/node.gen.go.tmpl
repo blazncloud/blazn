@@ -1935,7 +1935,7 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 		if plan.NodeService.Manager == "launchd" {
 			managerIdentity = mutation.Desired["label"] == plan.NodeService.UnitName
 		}
-		ownershipCoherent := component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Rollback == "leave_and_report"
+		ownershipCoherent := (component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Rollback == "leave_and_report") || (component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned")
 		if plan.Mode == NodeModeFresh {
 			ownershipCoherent = component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned"
 		}

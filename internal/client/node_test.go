@@ -185,6 +185,15 @@ func TestServiceBinaryRequiresRootExecutableMetadata(t *testing.T) {
 	}
 }
 
+func TestAdoptProfileMayInstallAbsentServiceUnit(t *testing.T) {
+	plan := validNodeInstallPlan()
+	plan.Components[1].Ownership = "install"
+	plan.Mutations[1].Action, plan.Mutations[1].Rollback = "write", "remove_if_owned"
+	if err := ValidateNodeInstallPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 	plan := validNodeInstallPlan()
 	plan.InstallProfile, plan.Target.Platform, plan.Target.Architecture = "macos-lima-worker-adopt/v1", NodePlatformMacOS, NodeArchARM64
@@ -203,6 +212,15 @@ func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"lima-worker-binding": binding.SHA256, "service-definition": testHash}, LimaBinding: &binding, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err != nil {
 		t.Fatal(err)
+	}
+	for index := range plan.Components {
+		if plan.Components[index].Name == "service-definition" {
+			plan.Components[index].Ownership = "install"
+		}
+	}
+	plan.Mutations[len(plan.Mutations)-1].Action, plan.Mutations[len(plan.Mutations)-1].Rollback = "write", "remove_if_owned"
+	if err := ValidateNodeInstallPlan(plan); err != nil {
+		t.Fatalf("mac adopt profile could not install absent service unit: %v", err)
 	}
 	wrongVM := binding
 	wrongVM.VMName = "other-worker"
@@ -235,8 +253,8 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 		{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/config", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
 		{Ordinal: 1, Kind: "certificate", Action: "write", Target: "/etc/blazn/ca.pem", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
 		{Ordinal: 1, Kind: "directory", Action: "create", Target: "/opt/blazn", Desired: map[string]any{}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
-		{Ordinal: 1, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "kubernetes"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, Rollback: "restore_prior"},
-		{Ordinal: 1, Kind: "launchd_unit", Action: "adopt_exact", Target: "/Library/LaunchDaemons/com.blazn.node.plist", Desired: map[string]any{"label": "com.blazn.node", "sourceComponent": "kubernetes"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, Rollback: "restore_prior"},
+		{Ordinal: 1, Kind: "systemd_unit", Action: "adopt_exact", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "kubernetes"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, Rollback: "leave_and_report"},
+		{Ordinal: 1, Kind: "launchd_unit", Action: "adopt_exact", Target: "/Library/LaunchDaemons/com.blazn.node.plist", Desired: map[string]any{"label": "com.blazn.node", "sourceComponent": "kubernetes"}, DesiredDigest: "sha256:" + testHash, Mode: 0644, Rollback: "leave_and_report"},
 		{Ordinal: 1, Kind: "image", Action: "pull", Target: "registry.example.test/blazn/node@sha256:" + testHash, Desired: map[string]any{"platform": "linux/amd64", "componentName": "node-image"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
 		{Ordinal: 1, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
 		{Ordinal: 1, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
