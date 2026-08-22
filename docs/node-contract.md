@@ -78,6 +78,11 @@ The broker has read-only access to the Node, enrollment, and signed-plan rows
 needed for verification, plus select/insert/update on join issuances. It has no
 membership, user, credential, capability, operation, or general Node mutation
 privilege.
+Migration `004_nodes.sql` must not be applied live until the separate Node
+infrastructure PR has created an authenticated `blazn_node_broker` login,
+root-owned database URL and encryption/HMAC key files, granted database CONNECT
+and schema USAGE, and passed its positive/negative privilege test. The migration
+fails closed if that prerequisite role is absent.
 
 Operator authorization occurs before idempotency replay. The same
 `(principal, operation, idempotency-key)` cannot create different resources;
@@ -92,9 +97,18 @@ the prefix on output. No unvalidated string conversion is permitted.
 
 ## Enrollment and identity
 
-An operator creates a short-lived enrollment. Only its SHA-256 hash is stored.
-The enrolling binary generates an Ed25519 key locally and sends the public-key
-fingerprint plus a stable machine fingerprint over TLS. The server binds the
+An operator creates a short-lived enrollment with an explicit idempotency key.
+The token is derived with the root-owned
+`/etc/blazn/node-broker/secrets/enrollment-hmac-v1` key over
+`blazn-node-enrollment-v1\n<workspace-id>\n<enrollment-id>\n<principal-id>\n<idempotency-key>`.
+Only its SHA-256 hash and key ID are stored, so an authorized identical retry
+reconstructs the same secret without persisting plaintext.
+
+The enrolling binary generates an Ed25519 key locally and sends its raw public
+key plus a stable machine fingerprint over TLS. The raw 32-byte public key uses
+unpadded base64url. Its fingerprint is lowercase SHA-256 over those raw bytes;
+PostgreSQL stores the 64 hex characters and API/plan values render
+`sha256:<hex>`. The server persists both and binds the
 enrollment to that machine and returns a signed
 [`NodeInstallPlan`](../packages/contracts/nodes/node-install-plan.schema.json).
 
@@ -104,7 +118,13 @@ workspace/operator approval, unconsumed enrollment, machine fingerprint, node
 public key, expected cluster, and worker-only profile. It cannot issue
 control-plane/datastore membership. The credential is delivered in a protected
 response body, held only in memory or a root-owned `0600` install journal, and
-is hashed in PostgreSQL. Consumption and Node UID binding are transactional.
+is hashed in PostgreSQL. For response-loss replay it is also encrypted with
+AES-256-GCM under `/etc/blazn/node-broker/secrets/join-credential-v1`; the row
+stores key ID, nonce+ciphertext, request digest, and idempotency key. An
+authorized identical retry decrypts the same unconsumed, unexpired credential.
+After join, the node calls the consume endpoint; the control API atomically
+marks issuance/enrollment consumed and binds cluster ID, Node name, UID, and
+resourceVersion before enabling work.
 
 Plan canonicalization is RFC 8785 JSON with `digest` and `signature` omitted.
 `digest` is `sha256:` plus its lowercase SHA-256; `signature` is unpadded
@@ -112,6 +132,11 @@ base64url Ed25519 over the UTF-8 bytes
 `blazn-node-install-plan-v1\n<digest>`. The CLI pins an approved signing-key ID
 and public key before trusting any plan field, including source URLs or rollback
 targets.
+`VerifyNodeInstallPlan` recomputes this digest, verifies Ed25519 against the
+pinned key ID, requires `issuedAt <= now < expiresAt`, and compares workspace,
+enrollment, node, hostname, machine fingerprint, node public-key fingerprint,
+platform, architecture, and idempotency key to trusted local input before any
+plan source, mutation, or rollback field is consumed.
 
 The long-running service uses a renewable node identity, never the user's
 access/refresh token. Rotation overlaps old/new identities only for a bounded
@@ -135,6 +160,12 @@ fsynced, compare-and-set, and receipt-owned. Repair/update/uninstall acquire a
 host lifecycle lock, reconcile an exact journal generation, and refuse
 ambiguous ownership. Uninstall preserves unrelated Kubernetes/runtime/user
 state and emits `RECOVERY_REQUIRED` rather than broad cleanup.
+Every pre-existing value has protected receipt-local rollback material: a
+content/version/snapshot locator, digest, mode, UID, and GID. `restore_prior`
+is invalid without it. Receipt digest is RFC 8785 JSON with `digest` and
+`signature` omitted; the node identity signs
+`blazn-node-install-receipt-v1\n<digest>` with Ed25519, and the server verifies
+that signature before accepting the completed installation.
 
 ## Capabilities and local models
 
@@ -142,8 +173,11 @@ Capability snapshots are immutable, versioned, digest-bound, and accepted only
 from the active node identity with a strictly increasing heartbeat sequence.
 They include:
 
-- OS/architecture, CPU, memory, disk, accelerators, labels, limits, and health.
-- Kubernetes cluster/Node UID/resourceVersion and sandbox backend/RuntimeClass.
+- Host OS/architecture/capacity and worker OS/architecture/allocatable capacity
+  separately. A Mac host reports macOS/ARM64 while its Lima worker reports
+  Linux/ARM64 and Kubernetes allocatable values.
+- Kubernetes cluster/Node UID/resourceVersion, labels, limits, health, sandbox
+  backends, and RuntimeClasses.
 - Local model routes: stable route ID, display name, exact model identifier,
   protocol, loopback or authenticated-tunnel endpoint, context/output limits,
   capabilities, health, concurrency, and data boundary.
@@ -164,6 +198,10 @@ Reconnect reconciles desired state before the node becomes agent-eligible.
 The proof is unpadded base64url Ed25519 over RFC 8785 canonical JSON of the
 request body prefixed by `blazn-node-heartbeat-v1\n`; join issuance uses the
 same rule with prefix `blazn-node-join-v1\n`.
+Capability digest is exactly `sha256:` plus lowercase SHA-256 over
+`blazn-node-capability-v1\n` followed by RFC 8785 canonical JSON of the complete
+capability. Heartbeat verification recomputes it before checking the signed
+request and never trusts the supplied digest alone.
 
 ## Kubernetes and lifecycle safety
 
@@ -177,6 +215,12 @@ same rule with prefix `blazn-node-join-v1\n`.
   `remove` revokes identity and binding after workloads are gone or returns a
   structured partial result.
 - Shared-cluster changes use the fenced cluster mutation lock and one operator.
+
+Every lifecycle operation ends with a signed
+[`NodeOperationReceipt`](../packages/contracts/nodes/node-operation-receipt.schema.json)
+containing before/after Kubernetes binding, ordered exact actions, terminal
+outcome, and residues. Ambiguous cleanup is `partial` or `recovery_required`,
+never ordinary success.
 
 ## Acceptance evidence
 
