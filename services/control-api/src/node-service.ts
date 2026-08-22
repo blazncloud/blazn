@@ -105,7 +105,7 @@ export class NodeService {
   async consumeJoin(issuanceId:string,idempotencyKey:string,input:{nodeId:string;enrollmentId:string;planId:string;joinedNodeUid:string;joinedNodeName:string;resourceVersion:string;clusterId:string},proof:string):Promise<NodeView>{
     validIdempotency(idempotencyKey);
     validUuid(issuanceId,"issuanceId"); for(const field of ["nodeId","enrollmentId","planId"] as const) validUuid(input[field],field); validateBinding({clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion});
-    return this.store.transaction(async tx=>{const identity=await tx.activeIdentity(input.nodeId,true);if(!identity||!verifyNodeProof(identity.publicKey,"blazn-node-join-v1",input,proof))throw new NodeHttpError("identity_rejected","node proof could not be verified");
+    return this.store.transaction(async tx=>{const identity=await tx.activeIdentity(input.nodeId,true);if(!identity||identity.trustState==="revoked"||identity.lifecycleState==="removed"||!verifyNodeProof(identity.publicKey,"blazn-node-join-v1",input,proof))throw new NodeHttpError("identity_rejected","node identity is not active or proof could not be verified");
       return tx.consumeJoin({issuanceId,nodeId:input.nodeId,enrollmentId:input.enrollmentId,planId:input.planId,clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion,idempotencyKey,requestDigest:requestDigest({issuanceId,...input})});}).catch(mapStoreError);
   }
 }

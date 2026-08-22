@@ -49,6 +49,8 @@ test("operation checks version, role, state, and exact destructive binding",asyn
   await assert.rejects(()=>service.createOperation(principal,nodeId,"wrong-vers",{type:"pause",expectedVersion:3,parameters:{}}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="version_conflict");
 });
 
+test("join consumption rejects revoked trust and removed lifecycle",async()=>{const pair=generateKeyPairSync("ed25519");const publicKey=pair.publicKey.export({format:"jwk"}).x!;const body={nodeId,enrollmentId:"55555555-5555-4555-8555-555555555555",planId:"66666666-6666-4666-8666-666666666666",joinedNodeUid:"uid-a",joinedNodeName:"node-a",resourceVersion:"1",clusterId:"cluster-a"};const proof=sign(null,Buffer.from(`blazn-node-join-v1\n${canonicalJson(body)}`),pair.privateKey).toString("base64url");for(const state of [{trustState:"revoked",lifecycleState:"active"},{trustState:"verified",lifecycleState:"removed"}]){let consumed=false;const tx=baseTx({activeIdentity:async()=>({nodeId,workspaceId,generation:1,publicKey,publicKeyFingerprint:"a".repeat(64),signingKeyId:"node/v1",nodeVersion:1,...state}),consumeJoin:async()=>{consumed=true;throw new Error("unexpected consume");}});const service=new NodeService(store(tx),async()=>Buffer.alloc(32),planFactory);await assert.rejects(()=>service.consumeJoin("77777777-7777-4777-8777-777777777777","consume-key",body,proof),(e:unknown)=>e instanceof NodeHttpError&&e.code==="identity_rejected");assert.equal(consumed,false);}});
+
 function store(tx:NodeTransaction):NodeStore{return{transaction:async action=>action(tx)}}
 function baseTx(overrides:Partial<NodeTransaction>):NodeTransaction{
   const unsupported=async()=>{throw new Error("unexpected fake transaction method")};

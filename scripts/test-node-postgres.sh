@@ -35,6 +35,7 @@ fi
 docker network create "$network" >/dev/null
 created_network=true
 docker run -d --name "$postgres" --network "$network" \
+  -p 127.0.0.1::5432 \
   -e POSTGRES_DB=blazn -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$admin_password" \
   "$postgres_image" >/dev/null
 created_postgres=true
@@ -323,5 +324,23 @@ expect_denied "SET ROLE blazn_runtime; SELECT credential_key_id FROM node_join_i
 expect_denied "SET ROLE blazn_runtime; SELECT * FROM node_join_issuances;" runtime_select_all
 expect_denied "SET ROLE blazn_runtime; UPDATE node_join_issuances SET credential_ciphertext=decode(repeat('bb',29),'hex');" runtime_ciphertext_update
 expect_denied "SET ROLE blazn_bootstrap; SELECT * FROM nodes;" bootstrap_node_read
+
+runtime_password=node-runtime-ci
+psql_admin <<SQL
+ALTER ROLE blazn_runtime LOGIN PASSWORD '$runtime_password';
+SQL
+postgres_endpoint=$(docker port "$postgres" 5432/tcp)
+case "$postgres_endpoint" in 127.0.0.1:[0-9]*) ;; *) printf 'disposable PostgreSQL published an unsafe endpoint\n' >&2; exit 1 ;; esac
+postgres_port=${postgres_endpoint##*:}
+case "$postgres_port" in ''|*[!0-9]*) printf 'disposable PostgreSQL port is invalid\n' >&2; exit 1 ;; esac
+
+(
+  cd "$repo_root/services/control-api"
+  npm ci >/dev/null
+  npm run build >/dev/null
+  NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@127.0.0.1:$postgres_port/blazn" \
+    NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@127.0.0.1:$postgres_port/blazn" \
+    node --test dist/node-store.integration.test.js
+)
 
 printf 'Node PostgreSQL 17.6 qualification passed\n'
