@@ -3,10 +3,8 @@
 package auth
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"os/exec"
 	"time"
 
@@ -23,33 +21,10 @@ func runPasswordPrompt(name string, args []string, secret []byte) error {
 		return fmt.Errorf("start Keychain prompt: %w", err)
 	}
 	defer terminal.Close()
-	_ = terminal.SetReadDeadline(time.Now().Add(5 * time.Second))
-	prompt := make([]byte, 0, 1024)
-	buffer := make([]byte, 256)
-	for len(prompt) < 4096 {
-		count, readErr := terminal.Read(buffer)
-		if count > 0 {
-			prompt = append(prompt, buffer[:count]...)
-			if bytes.Contains(bytes.ToLower(prompt), []byte("password")) {
-				break
-			}
-		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				_ = command.Wait()
-				return errors.New("Keychain prompt exited before requesting the credential")
-			}
-			_ = command.Process.Kill()
-			_ = command.Wait()
-			return errors.New("Keychain prompt did not become ready")
-		}
-	}
-	if !bytes.Contains(bytes.ToLower(prompt), []byte("password")) {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		return errors.New("Keychain prompt exceeded its output limit")
-	}
-	_ = terminal.SetReadDeadline(time.Time{})
+	// Input written to the PTY is buffered until security reaches its prompt.
+	// Do not read terminal output: some macOS releases do not emit a prompt,
+	// and not reading also ensures a terminal echo can never enter our logs.
+	time.Sleep(100 * time.Millisecond)
 	value := append(append([]byte(nil), secret...), '\n')
 	if _, err := terminal.Write(value); err != nil {
 		_ = command.Process.Kill()
