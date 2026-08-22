@@ -119,7 +119,7 @@ for fault in rollback-started role-removed secrets-retained environment-restored
   run_upgrade "$root" >"$root/upgrade.out"
   if run_rollback "$root" "$fault" >"$root/rollback-first.out" 2>"$root/rollback-first.err"; then printf 'rollback fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected rollback fault after $fault" "$root/rollback-first.err" >/dev/null
-  if ! run_rollback "$root" >"$root/rollback-retry.out" 2>"$root/rollback-retry.err"; then sudo sed -n '1,120p' "$root/rollback-retry.err" >&2; exit 1; fi
+  if ! run_rollback "$root" >"$root/rollback-retry.out" 2>"$root/rollback-retry.err"; then sudo tail -80 "$root/rollback-retry.err" >&2; exit 1; fi
   sudo jq -e '(.nodeBroker|not)' "$root/ownership/control-plane.json" >/dev/null
   sudo jq -e '.phase=="rolled-back"' "$root/ownership/node-broker-upgrade.json" >/dev/null
   [ ! -e "$root/etc/node-broker" ] && [ -d "$root/ownership/node-broker-rollback-rollback" ] || { printf 'rollback retention state is invalid\n' >&2; exit 1; }
