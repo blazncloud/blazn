@@ -22,16 +22,16 @@ active=${BLAZN_ACTIVE_RELEASE_PATH:-/opt/blazn}
 active_receipt=${BLAZN_ACTIVE_RELEASE_RECEIPT:-/var/lib/blazn/ownership/active-release.json}
 intent=${BLAZN_RELEASE_PROMOTION_INTENT:-/var/lib/blazn/ownership/release-promotion-intent.json}
 installed_unit=${BLAZN_SYSTEMD_UNIT_PATH:-/etc/systemd/system/blazn-control-plane.service}
-candidate=$release_root/$release_id
+release_candidate=$release_root/$release_id
 candidate_receipt=$receipt_root/$release_id.json
 for path in "$release_root" "$receipt_root" "$active" "$active_receipt" "$intent"; do assert_not_symlink_chain "$(dirname -- "$path")"; done
-verify_managed_release "$candidate" "$candidate_receipt"
+verify_managed_release "$release_candidate" "$candidate_receipt"
 
-if [ -L "$active" ] && [ "$(readlink -f "$active")" = "$candidate" ] && [ -f "$active_receipt" ] && [ ! -e "$intent" ]; then
+if [ -L "$active" ] && [ "$(readlink -f "$active")" = "$release_candidate" ] && [ -f "$active_receipt" ] && [ ! -e "$intent" ]; then
   assert_regular_file_owned_mode "$active_receipt" 0 600
   jq -e --arg activeId "$release_id" --arg releaseDigest "$(jq -er .releaseDigest "$candidate_receipt")" \
     '.schemaVersion == "blazn.dev/active-release/v1" and .activeId == $activeId and .releaseDigest == $releaseDigest' "$active_receipt" >/dev/null || die "active release receipt disagrees with the active link"
-  cmp -s "$candidate/infra/milestone-2/systemd/blazn-control-plane.service" "$installed_unit" || die "installed systemd unit differs from the active release"
+  cmp -s "$release_candidate/infra/milestone-2/systemd/blazn-control-plane.service" "$installed_unit" || die "installed systemd unit differs from the active release"
   printf 'release %s is already active\n' "$release_id"
   exit 0
 fi
@@ -63,9 +63,9 @@ else
     findmnt -rn --mountpoint "$active" >/dev/null 2>&1 && die "legacy active release must not be a mountpoint"
     if find "$active" -xdev \( -type l -o ! -type d ! -type f \) -print | grep . >/dev/null; then die "legacy active release contains a link or special file"; fi
     legacy_manifest_tmp=$receipt_root/.legacy-manifest-$$
-    (cd "$active"; find . -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) >"$legacy_manifest_tmp"
+    legacy_digest=$(release_tree_digest "$active")
+    printf 'sha256:%s\n' "$legacy_digest" >"$legacy_manifest_tmp"
     chmod 0600 "$legacy_manifest_tmp"
-    legacy_digest=$(sha256_file "$legacy_manifest_tmp")
     previous_id=legacy-$(printf '%.16s' "$legacy_digest")
     adopt_path=$release_root/$previous_id
     legacy_manifest=$receipt_root/$previous_id.sha256
@@ -89,7 +89,7 @@ else
       chmod 0600 "$legacy_receipt_tmp"
       mv -- "$legacy_receipt_tmp" "$receipt_root/$previous_id.json"
     fi
-    (cd "$active"; sha256sum -c "$legacy_manifest" >/dev/null) || die "legacy active release changed while preparing adoption"
+    [ "$(sed -n '1p' "$legacy_manifest")" = "sha256:$(release_tree_digest "$active")" ] || die "legacy active release changed while preparing adoption"
   elif [ -e "$active" ]; then
     die "active release path is neither a directory nor a managed link"
   fi
@@ -115,16 +115,16 @@ fi
 [ "${BLAZN_PROMOTION_FAILPOINT:-}" != after-adopt ] || die "injected promotion failure after legacy adoption"
 
 active_target=$(readlink -f "$active" 2>/dev/null || true)
-if [ "$active_target" != "$candidate" ]; then
+if [ "$active_target" != "$release_candidate" ]; then
   [ ! -e "$active" ] || [ -L "$active" ] || die "promotion intent did not reconcile the active path"
   link_tmp=$(dirname -- "$active")/.blazn-active-$$
   [ ! -e "$link_tmp" ] || die "active release temporary link exists"
-  ln -s "$candidate" "$link_tmp"
+  ln -s "$release_candidate" "$link_tmp"
   mv -Tf -- "$link_tmp" "$active"
 fi
 [ "${BLAZN_PROMOTION_FAILPOINT:-}" != after-link ] || die "injected promotion failure after active-link swap"
 
-unit_source=$candidate/infra/milestone-2/systemd/blazn-control-plane.service
+unit_source=$release_candidate/infra/milestone-2/systemd/blazn-control-plane.service
 unit_tmp=$(dirname -- "$installed_unit")/.blazn-control-plane.service.$$
 install -o root -g root -m 0644 "$unit_source" "$unit_tmp"
 mv -- "$unit_tmp" "$installed_unit"
@@ -139,6 +139,6 @@ jq -cn --arg activeId "$release_id" --arg previousId "$previous_id" --arg releas
 chmod 0600 "$active_tmp"
 mv -- "$active_tmp" "$active_receipt"
 unlink "$intent"
-verify_managed_release "$candidate" "$candidate_receipt"
-[ "$(readlink -f "$active")" = "$candidate" ] || die "active release link changed after promotion"
+verify_managed_release "$release_candidate" "$candidate_receipt"
+[ "$(readlink -f "$active")" = "$release_candidate" ] || die "active release link changed after promotion"
 printf 'promoted release %s; previous release preserved as %s\n' "$release_id" "${previous_id:-none}"

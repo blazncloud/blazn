@@ -235,21 +235,38 @@ verify_versioned_release() {
   release=$1
   receipt=$2
   assert_directory_owned_mode "$release" 0 555
-  assert_regular_file_owned_mode "$release/.blazn-release-files.sha256" 0 444
+  assert_regular_file_owned_mode "$release/.blazn-release-tree.sha256" 0 444
   assert_regular_file_owned_mode "$receipt" 0 600
-  manifest_digest=sha256:$(sha256_file "$release/.blazn-release-files.sha256")
+  manifest_digest=$(sed -n '1p' "$release/.blazn-release-tree.sha256")
+  case $manifest_digest in sha256:????????????????????????????????????????????????????????????????) ;; *) die "versioned release tree digest is invalid" ;; esac
   jq -e --arg path "$release" --arg manifestDigest "$manifest_digest" \
     '.schemaVersion == "blazn.dev/release/v1" and .path == $path and .manifestDigest == $manifestDigest and (.releaseDigest | test("^sha256:[a-f0-9]{64}$"))' \
     "$receipt" >/dev/null || die "versioned release receipt is invalid: $release"
-  (
-    cd "$release"
-    sha256sum -c .blazn-release-files.sha256 >/dev/null
-  ) || die "versioned release file manifest failed: $release"
+  [ "$manifest_digest" = "sha256:$(release_tree_digest "$release")" ] || die "versioned release tree digest failed: $release"
   expected_source=$(jq -er .controlApiSourceDigest "$receipt")
   expected_config=$(jq -er .controlPlaneConfigDigest "$receipt")
   [ "$expected_source" = "sha256:$(control_api_source_digest "$release/infra/milestone-2")" ] || die "versioned release API/migration source digest changed"
   [ "$expected_config" = "sha256:$(control_plane_config_digest "$release/infra/milestone-2")" ] || die "versioned release control-plane config digest changed"
 }
+
+release_tree_digest() (
+  release_root_path=$1
+  require_command tar
+  list=$(mktemp /tmp/blazn-release-list.XXXXXX)
+  archive=$(mktemp /tmp/blazn-release-archive.XXXXXX)
+  cleanup_release_digest() { unlink "$list" "$archive" 2>/dev/null || true; }
+  trap cleanup_release_digest HUP INT TERM
+  (
+    cd "$release_root_path"
+    find . -mindepth 1 ! -name '.blazn-release.json' ! -name '.blazn-release-tree.sha256' -print0 | LC_ALL=C sort -z >"$list"
+    tar --null --no-recursion --files-from="$list" --format=posix --pax-option=delete=atime,delete=ctime \
+      --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' -cf "$archive"
+  )
+  digest=$(sha256_file "$archive")
+  cleanup_release_digest
+  trap - HUP INT TERM
+  printf '%s\n' "$digest"
+)
 
 verify_legacy_release() {
   release=$1
@@ -258,14 +275,12 @@ verify_legacy_release() {
   assert_regular_file_owned_mode "$receipt" 0 600
   manifest=$(jq -er .manifestPath "$receipt")
   assert_regular_file_owned_mode "$manifest" 0 600
-  manifest_digest=sha256:$(sha256_file "$manifest")
+  manifest_digest=$(sed -n '1p' "$manifest")
+  case $manifest_digest in sha256:????????????????????????????????????????????????????????????????) ;; *) die "legacy release tree digest is invalid" ;; esac
   jq -e --arg path "$release" --arg manifestDigest "$manifest_digest" --arg manifestPath "$manifest" \
     '.schemaVersion == "blazn.dev/legacy-release/v1" and .path == $path and .manifestPath == $manifestPath and .manifestDigest == $manifestDigest and (.releaseDigest | test("^sha256:[a-f0-9]{64}$"))' \
     "$receipt" >/dev/null || die "legacy release receipt is invalid: $release"
-  (
-    cd "$release"
-    sha256sum -c "$manifest" >/dev/null
-  ) || die "legacy release file manifest failed: $release"
+  [ "$manifest_digest" = "sha256:$(release_tree_digest "$release")" ] || die "legacy release tree digest failed: $release"
 }
 
 verify_managed_release() {

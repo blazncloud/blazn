@@ -49,11 +49,9 @@ fi
 
 stage=$release_root/.staging-$expected_commit-$$
 archive=$release_root/.archive-$expected_commit-$$.tar
-manifest_tmp=$release_root/.manifest-$expected_commit-$$
-[ ! -e "$stage" ] && [ ! -e "$archive" ] && [ ! -e "$manifest_tmp" ] || die "release staging path collision"
+[ ! -e "$stage" ] && [ ! -e "$archive" ] || die "release staging path collision"
 cleanup() {
   [ ! -f "$archive" ] || unlink "$archive"
-  [ ! -f "$manifest_tmp" ] || unlink "$manifest_tmp"
   if [ -d "$stage" ]; then
     find "$stage" -xdev -type f -delete
     find "$stage" -xdev -depth -type d -empty -delete
@@ -67,15 +65,16 @@ unlink "$archive"
 if find "$stage" -xdev \( -type l -o ! -type d ! -type f \) -print | grep . >/dev/null; then
   die "release archive contains a link or special file"
 fi
-(
-  cd "$stage"
-  find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
-) >"$manifest_tmp"
-mv -- "$manifest_tmp" "$stage/.blazn-release-files.sha256"
 control_api_source=sha256:$(control_api_source_digest "$stage/infra/milestone-2")
 control_plane_config=sha256:$(control_plane_config_digest "$stage/infra/milestone-2")
 unit_digest=sha256:$(sha256_file "$stage/infra/milestone-2/systemd/blazn-control-plane.service")
-manifest_digest=sha256:$(sha256_file "$stage/.blazn-release-files.sha256")
+find "$stage" -xdev -type f -perm /111 -exec chmod 0555 {} +
+find "$stage" -xdev -type f ! -perm /111 -exec chmod 0444 {} +
+find "$stage" -xdev -type d -exec chmod 0555 {} +
+chown -R 0:0 "$stage"
+manifest_digest=sha256:$(release_tree_digest "$stage")
+printf '%s\n' "$manifest_digest" >"$stage/.blazn-release-tree.sha256"
+chmod 0444 "$stage/.blazn-release-tree.sha256"
 release_digest=sha256:$(printf '%s\n%s\n%s\n%s\n' "$expected_commit" "$tree" "$manifest_digest" "$control_plane_config" | sha256sum | awk '{print $1}')
 receipt_tmp=$receipt.tmp.$$
 jq -cn --arg id "$expected_commit" --arg commit "$expected_commit" --arg tree "$tree" --arg path "$final" \
@@ -86,10 +85,6 @@ jq -cn --arg id "$expected_commit" --arg commit "$expected_commit" --arg tree "$
 chmod 0600 "$receipt_tmp"
 cp -- "$receipt_tmp" "$stage/.blazn-release.json"
 chmod 0444 "$stage/.blazn-release.json"
-find "$stage" -xdev -type f -perm /111 -exec chmod 0555 {} +
-find "$stage" -xdev -type f ! -perm /111 -exec chmod 0444 {} +
-find "$stage" -xdev -type d -exec chmod 0555 {} +
-chown -R 0:0 "$stage"
 mv -- "$stage" "$final"
 mv -- "$receipt_tmp" "$receipt"
 verify_versioned_release "$final" "$receipt"
