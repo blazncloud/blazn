@@ -46,6 +46,7 @@ install_once() {
     BLAZN_DIST_URL="file://$dist_root" \
     BLAZN_VERSION="$version" \
     BLAZN_INSTALL_DIR="$install_dir" \
+    BLAZN_SHELL_PROFILE="$test_root/shell-profile" \
     BLAZN_ALLOWED_SIGNERS="$allowed_signers" \
     BLAZN_SIGNING_FINGERPRINT="$fingerprint" \
       sh

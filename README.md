@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/KingJammin/blazn/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/KingJammin/blazn/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/KingJammin/blazn/releases/tag/v0.1.0-poc.2"><img alt="Release v0.1.0-poc.2" src="https://img.shields.io/badge/release-v0.1.0--poc.2-f97316.svg"></a>
+  <a href="https://github.com/KingJammin/blazn/releases/tag/v0.1.0-poc.3"><img alt="Release v0.1.0-poc.3" src="https://img.shields.io/badge/release-v0.1.0--poc.3-f97316.svg"></a>
   <img alt="Go 1.26.2 or newer" src="https://img.shields.io/badge/go-%3E%3D1.26.2-101010.svg">
 </p>
 
@@ -37,15 +37,14 @@ The installer requires an immutable version and verifies the signed checksum man
 
 ```bash
 curl -fsSL \
-  https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.2/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.2 sh
+  https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.3 sh
 ```
 
-The default destination is `~/.local/bin`. If that directory is not already on your `PATH`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
+The default destination is `~/.local/bin`. When needed, the installer adds that
+directory to the detected zsh, bash, or POSIX shell profile, so new terminals
+can invoke `blazn` directly. Set `BLAZN_NO_PATH_UPDATE=1` when a managed
+environment owns shell configuration.
 
 Verify the installation and run offline diagnostics:
 

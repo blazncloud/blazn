@@ -21,16 +21,22 @@ The initial CLI includes:
 
 ## Intended public installation
 
-After an approved public distribution origin is available:
+Install the current public release with:
 
 ```bash
-curl -fsSL https://<public-origin>/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.1 sh
+curl -fsSL https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.3/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.3 sh
 ```
 
 `BLAZN_VERSION` is intentionally required for Milestone 1 so every install resolves an immutable release.
 
-The installer defaults to `$HOME/.local/bin` and does not edit shell or application configuration. Override the destination with `BLAZN_INSTALL_DIR`.
+The installer defaults to `$HOME/.local/bin`. If that directory is not already
+on `PATH`, it adds one idempotent entry to the user's zsh, bash, or POSIX shell
+profile. The entry applies to new terminals; an installer subprocess cannot
+change the environment of the shell that launched it. Set
+`BLAZN_NO_PATH_UPDATE=1` for managed environments that own shell configuration,
+or use `BLAZN_SHELL_PROFILE` to select an explicit POSIX profile. Override the
+destination with `BLAZN_INSTALL_DIR`.
 
 ## Release trust
 
@@ -110,12 +116,9 @@ The signed candidate was installed through a curl pipe into an isolated prefix, 
 
 The disposable guest was removed after qualification. The shared `frontro-agent-worker` VM was not modified.
 
-## Remaining publication gate
+## Publication status
 
-`KingJammin/blazn` is currently private and `blazn.benpelo.com` is not yet published. The implementation and controlled signed-origin tests are complete, but an anonymous internet curl command requires one approved public channel:
-
-- Public Blazn releases.
-- A separate public distribution repository.
-- Signed assets hosted at `blazn.benpelo.com` or another approved public origin.
-
-Repository visibility and public DNS are not changed automatically by this milestone.
+`KingJammin/blazn` and its signed GitHub release assets are public. The
+anonymous curl command above is the approved distribution path. A custom domain
+or package-manager channel can be added later without changing the signed asset
+contract.
