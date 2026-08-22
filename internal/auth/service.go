@@ -171,8 +171,23 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 			release()
 		}
 	}()
-	if _, err := s.credentialsLocked(ctx); err == nil {
-		return LoginStart{}, "", 0, errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
+	if credentials, err := s.credentialsLocked(ctx); err == nil {
+		if _, currentErr := s.api.GetCurrentUser(ctx, credentials.AccessToken); currentErr == nil {
+			return LoginStart{}, "", 0, errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
+		} else if client.IsCode(currentErr, "session_revoked") {
+			refreshed, refreshErr := s.refreshCredentialsLocked(ctx, credentials)
+			if refreshErr == nil {
+				if _, retryErr := s.api.GetCurrentUser(ctx, refreshed.AccessToken); retryErr == nil {
+					return LoginStart{}, "", 0, errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
+				} else {
+					return LoginStart{}, "", 0, fmt.Errorf("verify existing Blazn session before login: %w", retryErr)
+				}
+			} else if !errors.Is(refreshErr, ErrNotFound) {
+				return LoginStart{}, "", 0, fmt.Errorf("safely replace existing Blazn session before login: %w", refreshErr)
+			}
+		} else {
+			return LoginStart{}, "", 0, fmt.Errorf("verify existing Blazn session before login: %w", currentErr)
+		}
 	} else if !errors.Is(err, ErrNotFound) {
 		return LoginStart{}, "", 0, fmt.Errorf("check existing Blazn session before login: %w", err)
 	}
