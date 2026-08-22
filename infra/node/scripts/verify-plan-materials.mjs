@@ -80,7 +80,7 @@ for (const id of profileIds) {
     if (["group", "user"].includes(mutation.kind) && mutation.desiredDigest !== `sha256:${sha256(canonical(mutation.desired))}`) fail(`${id} service-account desired digest is not canonical`);
   }
   const mac = id === "macos-lima-worker-adopt/v1";
-  if ((mac ? profile.nodeService.manager !== "launchd" : profile.nodeService.manager !== "systemd") || (mac ? profile.nodeService.runAsGroup !== "wheel" : profile.nodeService.runAsGroup !== "blazn-node")) fail(`${id} service boundary drifted`);
+  if ((mac ? profile.nodeService.manager !== "launchd" : profile.nodeService.manager !== "systemd") || (mac ? profile.nodeService.runAsUser !== "_blazn-node" || profile.nodeService.runAsGroup !== "_blazn-node" : profile.nodeService.runAsUser !== "blazn-node" || profile.nodeService.runAsGroup !== "blazn-node")) fail(`${id} service boundary drifted`);
   const forbiddenKinds = mac ? ["systemd_unit", "package"] : ["launchd_unit"];
   if (profile.mutations.some((mutation) => forbiddenKinds.includes(mutation.kind))) fail(`${id} contains a cross-platform mutation`);
   if (!mac) {

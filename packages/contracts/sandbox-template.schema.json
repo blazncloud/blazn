@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/contracts/sandbox-template.schema.json",
+  "title": "Blazn SandboxTemplate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "blazn.dev/v1alpha1"},
+    "kind": {"const": "SandboxTemplate"},
+    "metadata": {
+      "type": "object", "additionalProperties": false, "required": ["name"],
+      "properties": {"name": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", "maxLength": 63}}
+    },
+    "spec": {"$ref": "#/$defs/spec"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "image": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$", "maxLength": 512},
+    "quantity": {"type": "string", "pattern": "^(?:[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?|0\\.[0-9]+)$", "maxLength": 32},
+    "resources": {
+      "type": "object", "additionalProperties": false, "required": ["requests", "limits"],
+      "properties": {
+        "requests": {"$ref": "#/$defs/resourceSet"},
+        "limits": {"$ref": "#/$defs/resourceSet"}
+      }
+    },
+    "resourceSet": {
+      "type": "object", "additionalProperties": false, "required": ["cpu", "memory", "ephemeralStorage"],
+      "properties": {"cpu": {"$ref": "#/$defs/quantity"}, "memory": {"$ref": "#/$defs/quantity"}, "ephemeralStorage": {"$ref": "#/$defs/quantity"}}
+    },
+    "variant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "platform", "architecture", "imageIndex", "imageDigest", "command", "resources", "placementProfile"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", "maxLength": 63},
+        "platform": {"const": "linux"},
+        "architecture": {"enum": ["amd64", "arm64"]},
+        "imageIndex": {"$ref": "#/$defs/image"},
+        "imageDigest": {"$ref": "#/$defs/image"},
+        "command": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+        "resources": {"$ref": "#/$defs/resources"},
+        "placementProfile": {"enum": ["poc-linux-amd64-v1", "poc-mac-arm64-v1"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"architecture": {"const": "amd64"}}, "required": ["architecture"]}, "then": {"properties": {"placementProfile": {"const": "poc-linux-amd64-v1"}}}},
+        {"if": {"properties": {"architecture": {"const": "arm64"}}, "required": ["architecture"]}, "then": {"properties": {"placementProfile": {"const": "poc-mac-arm64-v1"}}}}
+      ]
+    },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["name", "url", "destination", "writable"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", "maxLength": 63},
+        "url": {"type": "string", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+(?:\\.git)?$", "maxLength": 2048},
+        "destination": {"type": "string", "pattern": "^/workspace/src(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._-]+)+$", "maxLength": 512},
+        "writable": {"type": "boolean"}
+      }
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["name", "path", "mediaType", "required"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", "maxLength": 63},
+        "path": {"type": "string", "pattern": "^/workspace/artifacts(?:/(?!\\.{1,2}(?:/|$))[A-Za-z0-9._-]+)+$", "maxLength": 512},
+        "mediaType": {"type": "string", "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$", "maxLength": 128},
+        "required": {"type": "boolean"}
+      }
+    },
+    "spec": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "description", "policyProfile", "isolation", "expiresInSeconds", "networkProfile", "variants"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "policyProfile": {"const": "poc-restricted-v1"},
+        "isolation": {"const": "approved-non-sensitive-poc"},
+        "expiresInSeconds": {"type": "integer", "minimum": 60, "maximum": 7200},
+        "networkProfile": {"const": "default-deny-v1"},
+        "variants": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/variant"}},
+        "repositories": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/repository"}},
+        "artifacts": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/artifact"}}
+      }
+    }
+  },
+  "x-blazn-invariants": {
+    "canonicalization": "RFC8785/JCS over the fully resolved spec object",
+    "contentDigest": "sha256 of canonical UTF-8 bytes, rendered as sha256:<lowercase-hex>",
+    "uniqueVariantArchitecture": true,
+    "uniqueTemplateVersion": true,
+    "uniqueTemplateDigest": true,
+    "sourceCommitRequiredAtSandboxCreate": true,
+    "forbiddenRuntimeInputs": ["hostPath", "privileged", "capabilities.add", "serviceAccountName", "nodeSelector", "tolerations", "runtimeClassName", "secrets", "env", "volumes", "podTemplate", "mutableImageTag", "unrestrictedEgress"]
+  }
+}

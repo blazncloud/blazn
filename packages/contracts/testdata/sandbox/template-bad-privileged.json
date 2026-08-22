@@ -1,0 +1,15 @@
+{
+  "apiVersion": "blazn.dev/v1alpha1",
+  "kind": "SandboxTemplate",
+  "metadata": {"name": "unsafe"},
+  "spec": {
+    "version": "1",
+    "description": "must be rejected",
+    "policyProfile": "poc-restricted-v1",
+    "isolation": "approved-non-sensitive-poc",
+    "expiresInSeconds": 900,
+    "networkProfile": "default-deny-v1",
+    "privileged": true,
+    "variants": []
+  }
+}

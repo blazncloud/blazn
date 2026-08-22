@@ -84,7 +84,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 			},
 		}
 	case "node":
-		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|heartbeat [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll, root-authorize, and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}}}
+		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|repair|uninstall|heartbeat|serve [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll, root-authorize, and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "repair", Summary: "Reconcile an active receipt using a current authorized plan"}, {Name: "uninstall", Summary: "Remove Node-owned state and restore receipt-captured prior values"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}, {Name: "serve", Summary: "Run the token-free Node heartbeat daemon"}}}
 	case "plugins":
 		output = helpOutput{Command: "plugins", Usage: "blazn plugins list|doctor|install|rollback|remove [NAME] [--yes]", Summary: "Install and manage signed allowlisted Blazn plugins.", Commands: []helpCommand{{Name: "list", Summary: "List allowlisted plugins"}, {Name: "doctor", Summary: "Validate installed plugin receipts"}, {Name: "install", Summary: "Install a signed plugin release"}, {Name: "rollback", Summary: "Activate the previous installed version"}, {Name: "remove", Summary: "Remove a receipt-owned plugin"}}}
 	default:

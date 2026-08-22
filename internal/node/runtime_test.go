@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +43,224 @@ func TestProductionNodePathsSeparateServiceAndPrivilegedState(t *testing.T) {
 	}
 	if mac.InstallAuthorityPath() != "/Library/Application Support/BlaznNodeRoot/install-authority.json" || mac.InstallWALPath() != "/Library/Application Support/BlaznNodeRoot/install-wal.json" || mac.InstallReceiptPath() != "/Library/Application Support/BlaznNodeRoot/install-receipt.json" || mac.InstallBackupRoot() != "/Library/Application Support/BlaznNodeRoot/install-backups" {
 		t.Fatalf("mac privileged paths=%#v", mac)
+	}
+}
+
+func TestProductionRuntimeSeparatesServiceAndInstallerState(t *testing.T) {
+	paths := ProductionNodePaths{ServiceStateRoot: "/service-state", RootStateRoot: "/root-state", ProfileRoot: "/root-profiles"}
+	runtime, err := newProductionCommandRuntime(&mockAPI{}, "access", "v1", &countingJoinCoordinator{}, fixedCapability{}, nil, paths, defaultRootBinaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceState, serviceOK := runtime.State.(FileStateStore)
+	installerState, installerOK := runtime.InstallerState.(*PrivilegedInstallState)
+	identityStore, identityOK := runtime.Identities.(FileIdentityStore)
+	if !serviceOK || !installerOK || !identityOK || serviceState.Root != paths.ServiceStateRoot || installerState.Local.(FileStateStore).Root != paths.ServiceStateRoot || identityStore.Path != filepath.Join(paths.ServiceStateRoot, "identity.json") || runtime.TrustedProfileRoot != paths.ProfileRoot {
+		t.Fatalf("runtime paths: service=%#v installer=%#v identity=%#v profile=%q", runtime.State, runtime.InstallerState, runtime.Identities, runtime.TrustedProfileRoot)
+	}
+	_, err = newProductionCommandRuntime(&mockAPI{}, "access", "v1", &countingJoinCoordinator{}, fixedCapability{}, nil, ProductionNodePaths{ServiceStateRoot: "/same", RootStateRoot: "/same", ProfileRoot: "/profiles"}, defaultRootBinaryPath)
+	if err == nil {
+		t.Fatal("overlapping service and privileged roots were accepted")
+	}
+}
+
+func TestDaemonRuntimeStartsAndHeartbeatsFromServiceStateWithoutUserToken(t *testing.T) {
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Path != "/v1/node-service/heartbeats" || request.Header.Get("Authorization") != "" || request.Header.Get("X-Blazn-Node-Proof") == "" {
+			t.Errorf("unexpected daemon request")
+		}
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	root := testRoot(t)
+	paths := ProductionNodePaths{ServiceStateRoot: filepath.Join(root, "service"), RootStateRoot: filepath.Join(root, "privileged"), ProfileRoot: filepath.Join(root, "profiles")}
+	identities := FileIdentityStore{Path: filepath.Join(paths.ServiceStateRoot, "identity.json")}
+	identity, err := identities.LoadOrCreate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := installPlan()
+	plan.ExpiresAt = "2026-08-22T13:00:00Z"
+	state := FileStateStore{Root: paths.ServiceStateRoot}
+	if err := state.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: server.URL, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, UpdatedAt: plan.IssuedAt}); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newProductionDaemonCommandRuntime(paths, "v-test", server.Client(), fixedCapability{capability: testCapability()})
+	if err != nil || runtime.AccessToken != "" || runtime.Service != nil || runtime.Daemon == nil {
+		t.Fatalf("runtime=%#v err=%v", runtime, err)
+	}
+	runtime.Daemon.now = func() time.Time { return time.Date(2026, 8, 22, 12, 30, 0, 0, time.UTC) }
+	if _, err := runtime.Heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestFileStateRejectsTrailingJSON(t *testing.T) {
+	root := filepath.Join(testRoot(t), "state")
+	store := FileStateStore{Root: root}
+	if err := store.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: EnrollmentPin{SchemaVersion: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "runtime.json")
+	value, _ := os.ReadFile(path)
+	if err := os.WriteFile(path, append(value, []byte("{}")...), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadRuntime(); err == nil {
+		t.Fatal("trailing runtime JSON was accepted")
+	}
+}
+
+func TestAuthorizedOwnershipTransitionPreservesPrivateDaemonState(t *testing.T) {
+	root := filepath.Join(testRoot(t), "service")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	uid, gid := int(currentUID()), os.Getgid()
+	if err := transitionPrivateStateOwnership(root, uid, gid, map[int64]bool{int64(uid): true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transitionPrivateStateOwnership(root, uid, gid, map[int64]bool{int64(uid): true}); err != nil {
+		t.Fatalf("idempotent transition: %v", err)
+	}
+	for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+		info, err := os.Lstat(filepath.Join(root, name))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("%s info=%v err=%v", name, info, err)
+		}
+	}
+}
+
+func TestSystemBinaryPromotionRequiresMatchingActiveNodeReceipt(t *testing.T) {
+	value := []byte("old-root-binary")
+	sum := sha256.Sum256(value)
+	receipt := client.NodeInstallReceipt{State: "active", Binary: client.NodeReceiptBinary{Path: defaultRootBinaryPath, Digest: "sha256:" + fmt.Sprintf("%x", sum)}}
+	if !receiptOwnsSystemBinary(receipt, value) {
+		t.Fatal("matching receipt ownership was rejected")
+	}
+	receipt.Binary.Digest = "sha256:" + testHash
+	if receiptOwnsSystemBinary(receipt, value) {
+		t.Fatal("mismatched receipt authorized binary replacement")
+	}
+	receipt.Binary.Digest = "sha256:" + fmt.Sprintf("%x", sum)
+	receipt.State = "removed"
+	if !receiptOwnsSystemBinary(receipt, value) {
+		t.Fatal("archived removed receipt did not retain binary ownership")
+	}
+}
+
+func TestDaemonSudoPolicyAllowsOnlyFixedObservationSubcommand(t *testing.T) {
+	plan := installPlan()
+	plan.NodeService.RunAsUser = "blazn-node"
+	policy := string(nodeObservationPolicy(plan))
+	if !strings.Contains(policy, "NOPASSWD: /usr/local/bin/blazn node-root-observe\n") || strings.Contains(policy, " node-root-helper") || strings.Contains(policy, "*") {
+		t.Fatalf("policy=%q", policy)
+	}
+}
+
+func TestPrivilegedStatePropagatesLifecycleCancellation(t *testing.T) {
+	seenCancelled := false
+	client := functionPrivilegedClient(func(ctx context.Context, _ RootRequest) (RootResponse, error) {
+		seenCancelled = errors.Is(ctx.Err(), context.Canceled)
+		return RootResponse{OK: true}, nil
+	})
+	state := &PrivilegedInstallState{Client: client, Local: &memoryState{}, Platform: "linux"}
+	state.BindPlan(installPlan())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	state.BindContext(ctx)
+	if err := state.SaveWAL(InstallWAL{SchemaVersion: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if !seenCancelled {
+		t.Fatal("privileged state discarded lifecycle cancellation")
+	}
+}
+
+func TestProductionCapabilityUsesPersistedVerifiedBinding(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{"gvisor"}, SandboxBackends: []string{"kubernetes-agent-sandbox"}, ReasonCodes: []string{}}
+	capability, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capability.Worker.KubernetesBinding != *authorization.KubernetesBinding || capability.Host.Platform != plan.Target.Platform || capability.Host.Architecture != plan.Target.Architecture || capability.Worker.AllocatableCPUMillis != plan.Target.MinCPU*1000 {
+		t.Fatalf("capability=%#v", capability)
+	}
+	state.runtime.KubernetesBinding = nil
+	if _, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background()); err == nil {
+		t.Fatal("capability accepted missing verified binding")
+	}
+}
+
+type fixedLiveObserver struct {
+	observation LiveNodeObservation
+	err         error
+}
+
+func (f fixedLiveObserver) Observe(context.Context, client.NodeInstallPlan, client.KubernetesBinding) (LiveNodeObservation, error) {
+	return f.observation, f.err
+}
+
+func TestProductionCapabilityDegradesAndRejectsIdentityMismatch(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{"worker_observation_failed"}}
+	capability, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background())
+	if err != nil || capability.Host.Health.Status != "degraded" || len(capability.Host.Health.ReasonCodes) < 2 {
+		t.Fatalf("capability=%#v err=%v", capability, err)
+	}
+	observation.Binding.NodeUID = "replacement"
+	if _, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background()); err == nil {
+		t.Fatal("replacement Kubernetes identity was accepted")
+	}
+}
+
+func TestAgentSandboxControllerAvailabilityRequiresObservedAvailableGeneration(t *testing.T) {
+	for name, fixture := range map[string]struct {
+		value string
+		want  bool
+	}{
+		"available": {value: `{"metadata":{"generation":4},"status":{"observedGeneration":4,"availableReplicas":1}}`, want: true},
+		"stale":     {value: `{"metadata":{"generation":4},"status":{"observedGeneration":3,"availableReplicas":1}}`},
+		"zero":      {value: `{"metadata":{"generation":4},"status":{"observedGeneration":4,"availableReplicas":0}}`},
+		"missing":   {value: `{}`},
+		"malformed": {value: `{`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := agentSandboxControllerAvailable([]byte(fixture.value)); got != fixture.want {
+				t.Fatalf("available=%v want=%v fixture=%s", got, fixture.want, fixture.value)
+			}
+		})
+	}
+}
+
+func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
+	materials := ProductionEmbeddedMaterials()
+	for name, want := range map[string]string{"blazn-node-systemd": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
+		sum := sha256.Sum256(materials[name])
+		if fmt.Sprintf("%x", sum) != want {
+			t.Fatalf("material %s digest=%x", name, sum)
+		}
+	}
+	if !strings.Contains(string(materials["blazn-node-systemd"]), "User=blazn-node\nGroup=blazn-node\nExecStart=/usr/local/bin/blazn node serve") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>UserName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>GroupName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<string>node</string><string>serve</string>") {
+		t.Fatal("installed service units do not execute node serve under the dedicated identity")
+	}
+	if DefaultRootHelperPath != defaultRootBinaryPath || RootHelperSubcommand != "node-root-helper" {
+		t.Fatalf("helper path=%q subcommand=%q", DefaultRootHelperPath, RootHelperSubcommand)
 	}
 }
 
@@ -389,8 +610,273 @@ func TestRollbackStopsImmediatelyWhenWALPersistenceFails(t *testing.T) {
 		t.Fatalf("rollback=%v wal=%v receipt=%#v err=%v", platform.rolledBack, state.hasWAL, state.receipt, err)
 	}
 	receipt, err := installer.Recover(context.Background(), plan, meta, identity)
-	if err != nil || receipt.State != "removed" || len(platform.rolledBack) != 2 || state.hasWAL {
-		t.Fatalf("repeat receipt=%#v rollback=%v wal=%v err=%v", receipt, platform.rolledBack, state.hasWAL, err)
+	if err != nil || receipt.State != "removed" || len(platform.rolledBack) != 2 || !state.hasWAL || state.wal.Checkpoint != "cleanup_pending" || state.wal.TerminalReceipt == nil || !sameJSON(*state.wal.TerminalReceipt, receipt) || state.receipt.ReceiptID != "" {
+		t.Fatalf("repeat receipt=%#v rollback=%v wal=%#v rootReceipt=%#v err=%v", receipt, platform.rolledBack, state.wal, state.receipt, err)
+	}
+}
+
+func TestNodeRepairUninstallAndReinstallLifecycle(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	installed, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil || installed.State != "active" {
+		t.Fatalf("install=%#v err=%v", installed, err)
+	}
+	repaired, err := installer.Repair(context.Background(), plan, meta, identity)
+	if err != nil || repaired.State != "active" || repaired.Generation != installed.Generation+1 {
+		t.Fatalf("repair=%#v err=%v", repaired, err)
+	}
+	removed, err := installer.Uninstall(context.Background(), plan, meta, identity, false)
+	if err != nil || removed.State != "removed" || len(platform.rolledBack) != len(plan.Mutations) {
+		t.Fatalf("uninstall=%#v rollback=%#v err=%v", removed, platform.rolledBack, err)
+	}
+	if !state.hasWAL || state.wal.TerminalReceipt == nil || state.receipt.State != "active" {
+		t.Fatal("uninstall published removed before cleanup")
+	}
+	if err := state.SaveReceipt(removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RemoveWAL(); err != nil {
+		t.Fatal(err)
+	}
+	reinstalled, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil || reinstalled.State != "active" {
+		t.Fatalf("reinstall=%#v err=%v", reinstalled, err)
+	}
+}
+
+func TestFailedRepairRestoresOriginalReceiptAndUninstallEvidence(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.failAt = platform.applyCalls + 1
+	returned, repairErr := installer.Repair(context.Background(), plan, meta, identity)
+	if repairErr == nil {
+		t.Fatal("failed repair succeeded")
+	}
+	if returned.State != "active" || !sameJSON(state.receipt, original) || state.hasWAL {
+		t.Fatalf("returned=%#v receipt=%#v wal=%v", returned, state.receipt, state.hasWAL)
+	}
+	removed, err := installer.Uninstall(context.Background(), plan, meta, identity, false)
+	if err != nil || removed.State != "removed" {
+		t.Fatalf("uninstall after failed repair=%#v err=%v", removed, err)
+	}
+}
+
+func TestCrashedRepairRecoveryRestoresOriginalActiveReceipt(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &original, ReceiptID: original.ReceiptID, Generation: original.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair_mutation_1", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, ServicePrior: ServicePriorState{Enabled: original.Service.PriorEnabled, Active: original.Service.PriorActive}, Mutations: []client.NodeReceiptMutation{{Ordinal: plan.Mutations[0].Ordinal, Kind: plan.Mutations[0].Kind, Target: plan.Mutations[0].Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: plan.Mutations[0].DesiredDigest, Status: "pending"}}, CreatedAt: original.CreatedAt, UpdatedAt: original.UpdatedAt}
+	if err := state.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := installer.Recover(context.Background(), plan, meta, identity)
+	if err != nil || !sameJSON(recovered, original) || !sameJSON(state.receipt, original) || state.hasWAL || platform.finalized == 0 {
+		t.Fatalf("recovered=%#v receipt=%#v wal=%v finalized=%d err=%v", recovered, state.receipt, state.hasWAL, platform.finalized, err)
+	}
+}
+
+func TestRepairRecoveryCarriesResiduesAcrossRetries(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.rollbackErr = errors.New("native rollback blocked")
+	mutation := plan.Mutations[0]
+	legacy := client.NodeReceiptResidue{Target: "legacy", ReasonCode: "legacy_residue", SafeMessage: "existing residue"}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &original, ReceiptID: original.ReceiptID, Generation: original.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair_mutation_1", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: "pending"}}, Residues: []client.NodeReceiptResidue{legacy}, CreatedAt: original.CreatedAt, UpdatedAt: original.UpdatedAt}
+	if err := state.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("repair residue reported success")
+	}
+	first := state.wal
+	if !state.hasWAL || first.Checkpoint != "repair_recovery_required" || len(first.Residues) != 2 || !sameJSON(state.receipt, original) {
+		t.Fatalf("first wal=%#v receipt=%#v", first, state.receipt)
+	}
+	platform.rollbackErr = nil
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("repeated repair residue reported success")
+	}
+	if !state.hasWAL || len(state.wal.Residues) != 2 || !sameJSON(state.wal.Residues[0], legacy) || !sameJSON(state.receipt, original) {
+		t.Fatalf("retry wal=%#v receipt=%#v", state.wal, state.receipt)
+	}
+}
+
+func TestRepairResidueStatusAndEvidencePersistAtomicallyAcrossCrash(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &persistResidueFaultState{memoryState: &memoryState{}}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.rollbackErr = errors.New("rollback blocked")
+	mutation := plan.Mutations[0]
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &original, ReceiptID: original.ReceiptID, Generation: original.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair_mutation_1", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: "pending"}}, CreatedAt: original.CreatedAt, UpdatedAt: original.UpdatedAt}
+	if err := state.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("post-save crash was not surfaced")
+	}
+	if !state.hasWAL || state.wal.Mutations[0].Status != "residue" || len(state.wal.Residues) != 1 || !sameJSON(state.receipt, original) {
+		t.Fatalf("atomic persisted wal=%#v receipt=%#v", state.wal, state.receipt)
+	}
+	platform.rollbackErr = nil
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("persisted residue disappeared on retry")
+	}
+	if !state.hasWAL || state.wal.Checkpoint != "repair_recovery_required" || len(state.wal.Residues) != 1 || !sameJSON(state.receipt, original) {
+		t.Fatalf("retry wal=%#v receipt=%#v", state.wal, state.receipt)
+	}
+}
+
+func TestInstallRecoveryHonorsJoinAndPublicationCheckpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name, checkpoint, status, wantState string
+		abortErr                            error
+	}{{"issue", "join_intent", "pending", "removed", nil}, {"join", "join", "pending", "removed", nil}, {"binding_quarantined", "binding", "pending", "recovery_required", errors.New("quarantined")}, {"consume", "broker_consume", "applied", "active", nil}, {"consumed", "broker_consumed", "applied", "active", nil}, {"verify", "verify", "applied", "active", nil}, {"receipt", "receipt", "applied", "active", nil}} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := testIdentity(t)
+			plan := installPlan()
+			meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+			state := &memoryState{}
+			platform := &checkpointPlatform{mockPlatform: &mockPlatform{failAt: -1}, abortErr: tc.abortErr}
+			installer := NewInstaller(platform, state)
+			installer.uid = func() int64 { return 0 }
+			installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+			mutation := plan.Mutations[0]
+			wal := InstallWAL{SchemaVersion: 1, Lifecycle: "install", ReceiptID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Generation: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "install", Checkpoint: tc.checkpoint, Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: tc.status}}, CreatedAt: plan.IssuedAt, UpdatedAt: plan.IssuedAt}
+			if err := state.CreateWAL(wal); err != nil {
+				t.Fatal(err)
+			}
+			receipt, err := installer.Recover(context.Background(), plan, meta, identity)
+			if tc.wantState == "recovery_required" {
+				if err == nil {
+					t.Fatal("quarantined join reported success")
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if receipt.State != tc.wantState || platform.reconciled != 1 {
+				t.Fatalf("receipt=%#v reconciled=%d err=%v", receipt, platform.reconciled, err)
+			}
+			if tc.wantState == "active" && len(platform.rolledBack) != 0 {
+				t.Fatalf("forward checkpoint rolled back: %#v", platform.rolledBack)
+			}
+			if tc.wantState == "removed" && (platform.finalized != 0 || !state.hasWAL || state.wal.TerminalReceipt == nil) {
+				t.Fatal("removed recovery finalized a deleted service identity or lost cleanup WAL")
+			}
+		})
+	}
+}
+
+func TestUninstallCleanupJournalResumesLinuxAndMacCrashPoints(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	basePlan := authorization.Expected.Plan
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	issued, _ := time.Parse(time.RFC3339, basePlan.IssuedAt)
+	installer.now = func() time.Time { return issued.Add(time.Minute) }
+	if _, err := installer.Install(context.Background(), basePlan, authorization.Expected.Identity, identity); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := installer.Uninstall(context.Background(), basePlan, authorization.Expected.Identity, identity, false)
+	if err != nil || terminal.State != "removed" || !state.hasWAL || state.receipt.State != "active" {
+		t.Fatalf("terminal=%#v wal=%v active=%#v err=%v", terminal, state.hasWAL, state.receipt, err)
+	}
+	baseWAL := state.wal
+	for _, platformName := range []client.NodePlatform{client.NodePlatformLinux, client.NodePlatformMacOS} {
+		for _, failure := range []struct {
+			operation  RootOperation
+			checkpoint string
+		}{{RootRemoveSupport, ""}, {RootSaveWAL, "cleanup_support_removed"}, {RootSaveWAL, "cleanup_local_state_removed"}, {RootSaveReceipt, ""}, {RootRemoveWAL, ""}} {
+			name := string(platformName) + "/" + string(failure.operation) + failure.checkpoint
+			t.Run(name, func(t *testing.T) {
+				plan := basePlan
+				plan.Target.Platform = platformName
+				root := filepath.Join(testRoot(t), "service")
+				if err := os.Mkdir(root, 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+					if err := os.WriteFile(filepath.Join(root, file), []byte(file), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store := FileStateStore{Root: root}
+				journal := UninstallCleanupJournal{SchemaVersion: 1, Plan: plan, Receipt: terminal, CreatedAt: plan.IssuedAt}
+				if err := store.CreateUninstallCleanup(journal); err != nil {
+					t.Fatal(err)
+				}
+				wal := baseWAL
+				wal.TerminalReceipt = &terminal
+				wal.Checkpoint = "cleanup_pending"
+				fake := &cleanupPrivileged{wal: &wal, receipt: &state.receipt, failOperation: failure.operation, failCheckpoint: failure.checkpoint}
+				runtime := &CommandRuntime{State: store, CleanupClient: fake}
+				_, ok, firstErr := runtime.resumePendingUninstallCleanup(context.Background())
+				if !ok || firstErr == nil {
+					t.Fatalf("injected crash was not observed: ok=%v err=%v", ok, firstErr)
+				}
+				_, ok, secondErr := runtime.resumePendingUninstallCleanup(context.Background())
+				if !ok || secondErr != nil {
+					t.Fatalf("cleanup did not resume: ok=%v err=%v", ok, secondErr)
+				}
+				if fake.wal != nil || fake.receipt == nil || !sameJSON(*fake.receipt, terminal) {
+					t.Fatalf("root terminal state wal=%#v receipt=%#v", fake.wal, fake.receipt)
+				}
+				if _, err := store.LoadUninstallCleanup(); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("cleanup journal remains: %v", err)
+				}
+				for _, file := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+					if _, err := os.Stat(filepath.Join(root, file)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("local state remains: %s err=%v", file, err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -498,6 +984,23 @@ type faultState struct {
 	failAt int
 	saves  int
 }
+type persistResidueFaultState struct {
+	*memoryState
+	failed bool
+}
+
+func (s *persistResidueFaultState) SaveWAL(v InstallWAL) error {
+	s.memoryState.SaveWAL(v)
+	if !s.failed && len(v.Residues) > 0 {
+		for _, mutation := range v.Mutations {
+			if mutation.Status == "residue" {
+				s.failed = true
+				return errors.New("injected crash after atomic residue WAL save")
+			}
+		}
+	}
+	return nil
+}
 
 func (f *faultState) SaveWAL(v InstallWAL) error {
 	f.saves++
@@ -557,8 +1060,76 @@ type mockPlatform struct {
 	rolledBack    []int64
 	prior         *PriorState
 	verifyErr     error
+	rollbackErr   error
+	finalized     int
 	authorizeErr  error
 	authorization *BootstrapAuthorization
+}
+type bindingMockPlatform struct {
+	*mockPlatform
+	binding *client.KubernetesBinding
+}
+type checkpointPlatform struct {
+	*mockPlatform
+	reconcileErr, abortErr error
+	reconciled             int
+}
+
+func (p *checkpointPlatform) ReconcileRecovery(context.Context, client.NodeInstallPlan) error {
+	p.reconciled++
+	return p.reconcileErr
+}
+func (p *checkpointPlatform) AbortIncompleteJoin(context.Context, client.NodeInstallPlan) error {
+	return p.abortErr
+}
+
+type cleanupPrivileged struct {
+	wal            *InstallWAL
+	receipt        *client.NodeInstallReceipt
+	failOperation  RootOperation
+	failCheckpoint string
+	failed         bool
+}
+
+func (c *cleanupPrivileged) Call(_ context.Context, request RootRequest) (RootResponse, error) {
+	matchesOperation := c.failCheckpoint == "" && request.Operation == c.failOperation
+	matchesCheckpoint := request.Operation == RootSaveWAL && c.failCheckpoint != "" && request.WAL != nil && request.WAL.Checkpoint == c.failCheckpoint
+	if !c.failed && (matchesOperation || matchesCheckpoint) {
+		c.failed = true
+		return RootResponse{}, errors.New("injected cleanup crash")
+	}
+	switch request.Operation {
+	case RootLoadWAL:
+		if c.wal == nil {
+			return RootResponse{ErrorCode: "not_found"}, nil
+		}
+		copy := *c.wal
+		return RootResponse{WAL: &copy}, nil
+	case RootSaveWAL:
+		copy := *request.WAL
+		c.wal = &copy
+	case RootRemoveWAL:
+		c.wal = nil
+	case RootSaveReceipt:
+		copy := *request.Receipt
+		c.receipt = &copy
+	case RootLoadReceipt:
+		if c.receipt == nil {
+			return RootResponse{ErrorCode: "not_found"}, nil
+		}
+		copy := *c.receipt
+		return RootResponse{Receipt: &copy}, nil
+	case RootRemoveSupport:
+	}
+	return RootResponse{OK: true}, nil
+}
+
+func (p *bindingMockPlatform) KubernetesBinding() *client.KubernetesBinding {
+	if p.binding == nil {
+		return nil
+	}
+	value := *p.binding
+	return &value
 }
 
 func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
@@ -585,9 +1156,36 @@ func (m *mockPlatform) Apply(_ context.Context, mutation client.NodeInstallMutat
 }
 func (m *mockPlatform) Rollback(_ context.Context, mutation client.NodeInstallMutation, _ PriorState) error {
 	m.rolledBack = append(m.rolledBack, mutation.Ordinal)
-	return nil
+	return m.rollbackErr
 }
 func (m *mockPlatform) Verify(context.Context, client.NodeInstallPlan) error { return m.verifyErr }
+func (m *mockPlatform) FinalizeServiceState(context.Context, client.NodeInstallPlan) error {
+	m.finalized++
+	return nil
+}
+
+func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
+	state := &memoryState{}
+	installer := NewInstaller(platform, state)
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected}
+	service := NewService(api, fixedIdentity{identity}, state, installer)
+	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
+	service.now = func() time.Time { return when }
+	profile := trustedBootstrapProfile(authorization.Expected.Plan)
+	result, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: authorization.Expected.Plan.WorkspaceID, IdempotencyKey: authorization.Expected.Plan.IdempotencyKey, Name: authorization.Expected.Plan.Hostname, Mode: authorization.Expected.Plan.Mode, Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, MachineFingerprint: authorization.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
+	if err != nil || !result.Installed || state.runtime.KubernetesBinding == nil {
+		t.Fatalf("result=%#v binding=%#v err=%v", result, state.runtime.KubernetesBinding, err)
+	}
+	plan := authorization.Expected.Plan
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}})
+	daemon.now = func() time.Time { return when }
+	if _, err := daemon.Heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testRoot(t *testing.T) string {
 	t.Helper()
@@ -612,6 +1210,11 @@ func testIdentity(t *testing.T) Identity {
 }
 
 func validBootstrapAuthorization(t *testing.T) (BootstrapAuthorization, Identity) {
+	authorization, identity, _ := validBootstrapAuthorizationWithSigner(t)
+	return authorization, identity
+}
+
+func validBootstrapAuthorizationWithSigner(t *testing.T) (BootstrapAuthorization, Identity, Identity) {
 	t.Helper()
 	nodeIdentity := testIdentity(t)
 	nodeFingerprint := mustFingerprint(t, nodeIdentity)
@@ -634,7 +1237,7 @@ func validBootstrapAuthorization(t *testing.T) (BootstrapAuthorization, Identity
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(planSigner.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	return BootstrapAuthorization{EnrollmentID: plan.EnrollmentID, Token: strings.Repeat("s", 43), MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodeIdentity.PublicBase64(), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "7"}, PlanSigningKey: client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: planSigner.PublicBase64(), Fingerprint: planFingerprint}, Expected: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: nodeFingerprint, IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, ProfileID: plan.InstallProfile, ProfilePath: "/etc/blazn/node/profiles/existing-linux-worker-adopt.json"}, nodeIdentity
+	return BootstrapAuthorization{EnrollmentID: plan.EnrollmentID, Token: strings.Repeat("s", 43), MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodeIdentity.PublicBase64(), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "7"}, PlanSigningKey: client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: planSigner.PublicBase64(), Fingerprint: planFingerprint}, Expected: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: nodeFingerprint, IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, ProfileID: plan.InstallProfile, ProfilePath: "/etc/blazn/node/profiles/existing-linux-worker-adopt.json"}, nodeIdentity, planSigner
 }
 
 func trustedBootstrapProfile(plan client.NodeInstallPlan) client.NodeTrustedInstallProfile {

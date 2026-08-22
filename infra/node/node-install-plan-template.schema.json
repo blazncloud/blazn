@@ -1675,10 +1675,10 @@
                   "const": "/usr/local/bin/blazn"
                 },
                 "runAsUser": {
-                  "const": "root"
+                  "const": "_blazn-node"
                 },
                 "runAsGroup": {
-                  "const": "wheel"
+                  "const": "_blazn-node"
                 }
               }
             },
