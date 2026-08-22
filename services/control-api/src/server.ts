@@ -85,7 +85,7 @@ async function activationPage(response: ServerResponse, code: string): Promise<v
   const device = authorization.rows[0];
   if (!device) throw new HttpError(404, "authorization_not_found", "authorization code is invalid or expired");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Authorize Blazn</title></head><body><main><h1>Authorize Blazn CLI</h1><p>Device: <strong>${escapeHtml(device.device_name)}</strong></p><p>Platform: ${escapeHtml(device.platform)}</p><p>Confirm that this code matches the CLI before continuing.</p><form method="post" action="/v1/auth/device/approve"><label>Code <input name="user_code" value="${escaped}" readonly required></label><label>Account login <input name="email" type="email" autocomplete="username" required></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button>Authorize this device</button></form></main></body></html>`;
-  response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" });
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
   response.end(html);
 }
 
@@ -154,7 +154,11 @@ async function exchangeDeviceCode(request: IncomingMessage, response: ServerResp
     await client.query("UPDATE device_authorizations SET last_polled_at = now(), poll_count = poll_count + 1 WHERE id = $1", [authorization.id]);
     const canonical = `blazn-device-session-v1\n${code}\n${authorization.challenge}`;
     if (!verifyDeviceProof(authorization.public_key, canonical, signature)) throw new HttpError(403, "device_proof_invalid", "device proof could not be verified");
-    if (!authorization.approved_user_id) throw new HttpError(428, "authorization_pending", "waiting for browser authorization");
+    if (!authorization.approved_user_id) {
+      await client.query("COMMIT");
+      sendJson(response, 428, { code: "authorization_pending", message: "waiting for browser authorization", requestId: response.getHeader("x-request-id") });
+      return;
+    }
     const deviceId = randomUUID();
     const sessionId = randomUUID();
     const token = randomToken();
