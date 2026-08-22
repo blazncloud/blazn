@@ -64,7 +64,12 @@ func (i *GitHubInstaller) Install(ctx context.Context, definition Definition, co
 	if _, err := i.runner.Run(ctx, gh, "auth", "status"); err != nil {
 		return Receipt{}, errors.New("GitHub authentication is required; run 'gh auth login'")
 	}
-	tagOutput, err := i.runner.Run(ctx, gh, "release", "view", "--repo", definition.Repository, "--json", "tagName")
+	requestedTag := strings.TrimSpace(os.Getenv("BLAZN_PLUGIN_VERSION"))
+	releaseArgs, err := releaseViewArgs(definition, requestedTag)
+	if err != nil {
+		return Receipt{}, err
+	}
+	tagOutput, err := i.runner.Run(ctx, gh, releaseArgs...)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("find latest signed plugin release: %w", err)
 	}
@@ -73,6 +78,9 @@ func (i *GitHubInstaller) Install(ctx context.Context, definition Definition, co
 	}
 	if err := json.Unmarshal(tagOutput, &release); err != nil || release.TagName == "" {
 		return Receipt{}, errors.New("GitHub returned invalid plugin release metadata")
+	}
+	if requestedTag != "" && release.TagName != requestedTag {
+		return Receipt{}, errors.New("GitHub returned a different plugin release than requested")
 	}
 	temp, err := os.MkdirTemp("", "blazn-plugin-install-*")
 	if err != nil {
@@ -139,8 +147,20 @@ func (i *GitHubInstaller) Install(ctx context.Context, definition Definition, co
 	return store.Activate(definition, manifest, binary)
 }
 
+func releaseViewArgs(definition Definition, requestedTag string) ([]string, error) {
+	args := []string{"release", "view"}
+	if requestedTag != "" {
+		if _, err := parseVersion(requestedTag); err != nil {
+			return nil, errors.New("BLAZN_PLUGIN_VERSION must be a semantic release tag")
+		}
+		args = append(args, requestedTag)
+	}
+	return append(args, "--repo", definition.Repository, "--json", "tagName"), nil
+}
+
 func smokeTestCandidate(ctx context.Context, binary string, expected Manifest) error {
 	command := exec.CommandContext(ctx, binary, "__plugin", "describe", "--json")
+	command.Env = pluginEnvironment(os.Environ())
 	var stdout bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = io.Discard

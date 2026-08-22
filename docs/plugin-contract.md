@@ -41,6 +41,11 @@ signed checksums, validates the strict manifest and core compatibility, checks
 the single-member archive, and atomically activates a receipt-owned executable.
 GitHub release metadata is not a trust root.
 
+Set `BLAZN_PLUGIN_VERSION` to an exact semantic release tag when a reproducible
+installation or qualification run must not follow the latest release. The
+installer fails closed if GitHub returns a different tag; signatures,
+checksums, manifest compatibility, and the candidate handshake remain required.
+
 Social and Content releases use independently pinned `blazn-social-release`
 and `blazn-content-release` signing identities and namespaces. Compromise of
 one plugin's release key does not authorize releases for the other.

@@ -11,12 +11,29 @@ import (
 	"testing"
 )
 
+func TestReleaseViewArgsCanPinExactPluginVersion(t *testing.T) {
+	latest, err := releaseViewArgs(socialDefinition, "")
+	if err != nil || strings.Join(latest, " ") != "release view --repo blazncloud/blazn-social --json tagName" {
+		t.Fatalf("latest args=%v err=%v", latest, err)
+	}
+	exact, err := releaseViewArgs(socialDefinition, "v0.1.0")
+	if err != nil || strings.Join(exact, " ") != "release view v0.1.0 --repo blazncloud/blazn-social --json tagName" {
+		t.Fatalf("exact args=%v err=%v", exact, err)
+	}
+	if _, err := releaseViewArgs(socialDefinition, "latest; unsafe"); err == nil {
+		t.Fatal("unsafe plugin version override accepted")
+	}
+}
+
 func TestCandidateHandshakeMustMatchSignedManifest(t *testing.T) {
+	t.Setenv("GH_TOKEN", "installer-secret")
+	t.Setenv("BLAZN_PLUGIN_VERSION", "v1.0.0")
 	directory := t.TempDir()
 	expected := validManifest("v1.0.0")
 	encoded := `{"schemaVersion":1,"name":"social","version":"v1.0.0","protocolVersion":1,"minimumCoreVersion":"v1.0.0","executable":"blazn-social","commands":["social","person","company","contact","connections","content","post","evidence","entity","data","providers"]}`
 	binary := filepath.Join(directory, "blazn-social")
-	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' '"+encoded+"'\n"), 0o700); err != nil {
+	fixture := "#!/bin/sh\n[ -z \"${GH_TOKEN:-}\" ]\n[ -z \"${BLAZN_PLUGIN_VERSION:-}\" ]\nprintf '%s\\n' '" + encoded + "'\n"
+	if err := os.WriteFile(binary, []byte(fixture), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := smokeTestCandidate(context.Background(), binary, expected); err != nil {

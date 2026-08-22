@@ -3,8 +3,25 @@ package plugin
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestPluginEnvironmentRemovesInstallerCredentials(t *testing.T) {
+	filtered := pluginEnvironment([]string{
+		"PATH=/usr/bin",
+		"GH_TOKEN=secret",
+		"GITHUB_TOKEN=secret",
+		"GH_ENTERPRISE_TOKEN=secret",
+		"GITHUB_ENTERPRISE_TOKEN=secret",
+		"BLAZN_PLUGIN_VERSION=v0.1.0",
+		"HUNTER_API_KEY=provider-secret",
+	})
+	joined := strings.Join(filtered, "\n")
+	if joined != "PATH=/usr/bin\nHUNTER_API_KEY=provider-secret" {
+		t.Fatalf("unexpected plugin environment: %q", joined)
+	}
+}
 
 type countingRunner struct{ calls int }
 
