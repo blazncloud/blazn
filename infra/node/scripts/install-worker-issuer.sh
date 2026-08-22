@@ -24,16 +24,16 @@ BROKER_UID=${BLAZN_NODE_BROKER_UID:?set the receipt-bound node broker UID}
 TEST_MODE=${BLAZN_ISSUER_INFRA_TEST_MODE:-0}
 case "$BROKER_UID" in ''|*[!0-9]*|0) die "broker UID must be a positive integer" ;; esac
 for path in "$SOURCE" "$ROOT" "$BINARY" "$UNIT" "$TMPFILES" "$RECEIPT" "$RECOVERY" "$ENV_FILE" "$MAIN_RECEIPT"; do case "$path" in /*) ;; *) die "all issuer paths must be absolute" ;; esac; done
-[ -f "$SOURCE" ] && [ ! -L "$SOURCE" ] || die "helper binary source is unavailable or linked"
+if [ ! -f "$SOURCE" ] || [ -L "$SOURCE" ]; then die "helper binary source is unavailable or linked"; fi
 case "$SOURCE_DIGEST" in sha256:*) digest_value=${SOURCE_DIGEST#sha256:}; case "$digest_value" in ''|*[!0-9a-f]*) die "helper digest is invalid" ;; esac; [ "${#digest_value}" -eq 64 ] || die "helper digest length is invalid" ;; *) die "helper digest is invalid" ;; esac
 [ "sha256:$(sha256sum "$SOURCE" | awk '{print $1}')" = "$SOURCE_DIGEST" ] || die "helper binary source differs from reviewed digest"
-[ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] && [ "$(stat -c '%u:%a:%h' "$ENV_FILE")" = 0:600:1 ] || die "control-plane environment is unsafe"
-[ -f "$MAIN_RECEIPT" ] && [ ! -L "$MAIN_RECEIPT" ] && [ "$(stat -c '%u:%a:%h' "$MAIN_RECEIPT")" = 0:600:1 ] || die "main ownership receipt is unsafe"
+if [ ! -f "$ENV_FILE" ] || [ -L "$ENV_FILE" ] || [ "$(stat -c '%u:%a:%h' "$ENV_FILE")" != 0:600:1 ]; then die "control-plane environment is unsafe"; fi
+if [ ! -f "$MAIN_RECEIPT" ] || [ -L "$MAIN_RECEIPT" ] || [ "$(stat -c '%u:%a:%h' "$MAIN_RECEIPT")" != 0:600:1 ]; then die "main ownership receipt is unsafe"; fi
 
 sha(){ sha256sum "$1" | awk '{print $1}'; }
 sync_path(){ sync -f "$1"; }
 validate_key(){
-  key=$1; [ -f "$key" ] && [ ! -L "$key" ] && [ "$(stat -c '%u:%a:%h' "$key")" = 0:400:1 ] || die "issuer key is unsafe"
+  key=$1; if [ ! -f "$key" ] || [ -L "$key" ] || [ "$(stat -c '%u:%a:%h' "$key")" != 0:400:1 ]; then die "issuer key is unsafe"; fi
   if [ "$(wc -c <"$key" | tr -d ' ')" != 43 ] || ! LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$key"; then die "issuer key encoding is invalid"; fi
   decoded_bytes=$({ tr '_-' '/+' <"$key"; printf '='; } | openssl base64 -d -A 2>/dev/null | wc -c | tr -d ' ')
   [ "$decoded_bytes" = 32 ] || die "issuer key entropy length is invalid"
@@ -115,7 +115,7 @@ if [ ! -e "$RECEIPT" ]; then
     --arg unit "$UNIT" --arg tmpfiles "$TMPFILES" --arg env "$ENV_FILE" --arg envBackup "$RECOVERY/control-plane.env" --arg envPrior "sha256:$(sha "$ENV_FILE")" --arg ownership "$MAIN_RECEIPT" --arg ownershipBackup "$RECOVERY/control-plane.json" --arg ownershipPrior "sha256:$(sha "$MAIN_RECEIPT")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-infra/v1",owner:"blazn-poc",host:$host,phase:"initialized",createdAt:$createdAt,binary:{path:$binary,digest:("sha256:"+("0"*64)),uid:0,mode:"0755"},config:{path:$config,digest:("sha256:"+("0"*64)),uid:0,mode:"0400"},unit:{path:$unit,digest:("sha256:"+("0"*64)),uid:0,mode:"0644"},tmpfiles:{path:$tmpfiles,digest:("sha256:"+("0"*64)),uid:0,mode:"0644"},environment:{path:$env,backupPath:$envBackup,priorDigest:$envPrior,digest:("sha256:"+("0"*64))},ownership:{path:$ownership,backupPath:$ownershipBackup,priorDigest:$ownershipPrior},secret:{path:$secret,digest:("sha256:"+("0"*64)),encoding:"base64url-unpadded",decodedBytes:32},socket:{path:"/run/blazn/microk8s-worker-issuer.sock",uid:0,gid:$brokerGid,mode:"0660",brokerGroup:"blazn-node-broker"},microk8s:{version:"v1.35.6",revision:$revision,gid:$microGid,tokenFile:"/var/snap/microk8s/current/credentials/cluster-tokens.txt"},recovery:{root:$recovery,inventoryDigest:$inventoryDigest},brokerUid:$brokerUid,brokerGroupCreated:$groupCreated,liveJoinBlocked:true}' >"$tmp"
   chmod 0600 "$tmp"; sync_path "$tmp"; ln -- "$tmp" "$RECEIPT" || { rm -f -- "$tmp"; die "receipt appeared concurrently"; }; rm -f -- "$tmp"; sync_path "$(dirname -- "$RECEIPT")"; fault initialized
 fi
-[ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] && [ "$(stat -c '%u:%a:%h' "$RECEIPT")" = 0:600:1 ] || die "issuer receipt is unsafe"
+if [ ! -f "$RECEIPT" ] || [ -L "$RECEIPT" ] || [ "$(stat -c '%u:%a:%h' "$RECEIPT")" != 0:600:1 ]; then die "issuer receipt is unsafe"; fi
 jq -e --arg host "$(hostname)" --argjson uid "$BROKER_UID" --argjson gid "$BROKER_GID" --argjson mgid "$MICROK8S_GID" '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .owner=="blazn-poc" and .host==$host and .brokerUid==$uid and .socket.gid==$gid and .microk8s.gid==$mgid' "$RECEIPT" >/dev/null || die "issuer receipt binding differs"
 [ "$(jq -er .sourceDigest "$RECOVERY/inventory.json")" = "$SOURCE_DIGEST" ] || die "recovery inventory source digest differs from reviewed helper"
 
@@ -160,11 +160,11 @@ if [ "$current" = files-installed ]; then
   if [ "$TEST_MODE" != 1 ]; then
     "$SYSTEMCTL" is-active --quiet blazn-microk8s-worker-issuer.service || die "issuer service is not active"
     [ "$(stat -c '%u:%g:%a:%F' /run/blazn)" = "0:$BROKER_GID:750:directory" ] || die "issuer socket parent differs from receipt"
-    [ -S /run/blazn/microk8s-worker-issuer.sock ] && [ ! -L /run/blazn/microk8s-worker-issuer.sock ] || die "issuer socket is unavailable or linked"
+    if [ ! -S /run/blazn/microk8s-worker-issuer.sock ] || [ -L /run/blazn/microk8s-worker-issuer.sock ]; then die "issuer socket is unavailable or linked"; fi
     [ "$(stat -c '%u:%g:%a:%h' /run/blazn/microk8s-worker-issuer.sock)" = "0:$BROKER_GID:660:1" ] || die "issuer socket metadata differs from receipt"
     [ "$(stat -c '%u:%g:%a:%F' /var/snap/microk8s/current/credentials)" = "0:$MICROK8S_GID:770:directory" ] || die "MicroK8s credential directory is unsafe"
     token_file=/var/snap/microk8s/current/credentials/cluster-tokens.txt
-    if [ -e "$token_file" ]; then [ -f "$token_file" ] && [ ! -L "$token_file" ] && [ "$(stat -c '%u:%g:%a:%h' "$token_file")" = "0:$MICROK8S_GID:660:1" ] || die "MicroK8s token file is unsafe"; fi
+    if [ -e "$token_file" ] && { [ ! -f "$token_file" ] || [ -L "$token_file" ] || [ "$(stat -c '%u:%g:%a:%h' "$token_file")" != "0:$MICROK8S_GID:660:1" ]; }; then die "MicroK8s token file is unsafe"; fi
   fi
   phase service-started; current=service-started; fault service-started
 fi
