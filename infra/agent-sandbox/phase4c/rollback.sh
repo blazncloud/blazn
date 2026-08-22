@@ -57,7 +57,7 @@ cleanup() {
   find "$post" -xdev -depth -type d -empty -delete
 }
 trap cleanup EXIT HUP INT TERM
-kubectl api-resources -o wide >"$post/api-resources.txt"
+kubectl api-resources -o wide | LC_ALL=C sort >"$post/api-resources.txt"
 kubectl get crd -o name | LC_ALL=C sort | grep -E '(agents\.x-k8s\.io|kueue\.x-k8s\.io)' >"$post/relevant-crds.txt" || :
 kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration,validatingadmissionpolicy,validatingadmissionpolicybinding -o name | LC_ALL=C sort | grep -E '(agent-sandbox|kueue|blazn)' >"$post/relevant-admission.txt" || :
 kubectl get runtimeclass -o json | jq -S 'del(.metadata.resourceVersion,.metadata.managedFields)' >"$post/runtimeclasses.json"

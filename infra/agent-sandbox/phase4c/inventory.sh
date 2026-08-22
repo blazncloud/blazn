@@ -46,7 +46,7 @@ if kubectl get sandboxes.agents.x-k8s.io -A -o name >/dev/null 2>&1; then
   }
 fi
 
-kubectl api-resources -o wide >"$evidence/api-resources.txt"
+kubectl api-resources -o wide | LC_ALL=C sort >"$evidence/api-resources.txt"
 kubectl get crd -o name | LC_ALL=C sort | grep -E '(agents\.x-k8s\.io|kueue\.x-k8s\.io)' >"$evidence/relevant-crds.txt" || :
 kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration,validatingadmissionpolicy,validatingadmissionpolicybinding -o name | LC_ALL=C sort | grep -E '(agent-sandbox|kueue|blazn)' >"$evidence/relevant-admission.txt" || :
 kubectl get runtimeclass -o json | jq -S 'del(.metadata.resourceVersion,.metadata.managedFields)' >"$evidence/runtimeclasses.json"
