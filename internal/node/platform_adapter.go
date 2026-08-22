@@ -275,9 +275,14 @@ func (a *PlatformAdapter) AbortIncompleteJoin(ctx context.Context, plan client.N
 	if a.joined != nil {
 		request := a.request(RootQuarantineJoin, plan, 0)
 		request.Join = a.joined
-		if _, err := a.Privileged.Call(ctx, request); err != nil {
+		response, err := a.Privileged.Call(ctx, request)
+		if err != nil {
 			return err
 		}
+		if response.KubernetesBinding == nil || response.KubernetesBinding.NodeUID != a.joined.ExpectedNodeUID {
+			return errors.New("quarantine response lost exact joined UID")
+		}
+		a.joined.ExpectedResourceVersion = response.KubernetesBinding.ResourceVersion
 		return errors.New("joined worker remains quarantined for explicit recovery")
 	}
 	_, err := a.Privileged.Call(ctx, a.request(RootAbortJoin, plan, 0))

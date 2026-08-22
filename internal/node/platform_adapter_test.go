@@ -463,6 +463,40 @@ func TestClusterMutationUsesAtomicResourceVersionCAS(t *testing.T) {
 	}
 }
 
+func TestQuarantineAtomicallyAddsMissingBootstrapTaint(t *testing.T) {
+	plan := testJoinPlan("linux")
+	plan.Mutations = []client.NodeInstallMutation{{Ordinal: 1, Kind: "taint", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash}}
+	binding := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	gets := 0
+	patched := false
+	commands := scriptedExecutor{run: func(path string, args []string, _ []byte) ([]byte, error) {
+		if path != "/snap/bin/microk8s.kubectl" {
+			return nil, errors.New("unexpected command")
+		}
+		if args[0] == "get" {
+			gets++
+			if gets == 1 {
+				return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"7","labels":{}},"spec":{"taints":[]}}`), nil
+			}
+			return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"8","labels":{}},"spec":{"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}]}}`), nil
+		}
+		if args[0] == "patch" {
+			patched = true
+			if !strings.Contains(args[5], `"path":"/metadata/uid","value":"uid-1"`) || !strings.Contains(args[5], `"path":"/metadata/resourceVersion","value":"7"`) || !strings.Contains(args[5], `"key":"blazn.dev/bootstrap"`) || !strings.Contains(args[5], `"value":"pending"`) || !strings.Contains(args[5], `"effect":"NoSchedule"`) {
+				t.Fatalf("patch=%s", args[5])
+			}
+			return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"8"}}`), nil
+		}
+		return nil, errors.New("unexpected operation")
+	}}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).quarantineJoinedNode(context.Background(), plan, binding); err != nil {
+		t.Fatal(err)
+	}
+	if !patched || binding.ExpectedResourceVersion != "8" {
+		t.Fatalf("patched=%v binding=%#v", patched, binding)
+	}
+}
+
 func TestKubernetesQuantitiesAreStrict(t *testing.T) {
 	if cpu, err := parseCPUQuantity("3500m"); err != nil || cpu != 3500 {
 		t.Fatalf("cpu=%d err=%v", cpu, err)

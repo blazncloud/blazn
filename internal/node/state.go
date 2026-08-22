@@ -49,11 +49,19 @@ type InstallWAL struct {
 	Stage           string                       `json:"stage"`
 	Checkpoint      string                       `json:"checkpoint"`
 	OriginalReceipt *client.NodeInstallReceipt   `json:"originalReceipt,omitempty"`
+	TerminalReceipt *client.NodeInstallReceipt   `json:"terminalReceipt,omitempty"`
 	Owner           client.NodeReceiptOwner      `json:"owner"`
 	ServicePrior    ServicePriorState            `json:"servicePrior"`
 	Mutations       []client.NodeReceiptMutation `json:"mutations"`
+	Residues        []client.NodeReceiptResidue  `json:"residues,omitempty"`
 	CreatedAt       string                       `json:"createdAt"`
 	UpdatedAt       string                       `json:"updatedAt"`
+}
+type UninstallCleanupJournal struct {
+	SchemaVersion int                       `json:"schemaVersion"`
+	Plan          client.NodeInstallPlan    `json:"plan"`
+	Receipt       client.NodeInstallReceipt `json:"receipt"`
+	CreatedAt     string                    `json:"createdAt"`
 }
 
 type StateStore interface {
@@ -158,6 +166,39 @@ func (s FileStateStore) LoadReceipt() (client.NodeInstallReceipt, error) {
 		err = client.ValidateNodeInstallReceipt(v)
 	}
 	return v, err
+}
+func (s FileStateStore) SaveUninstallCleanup(v UninstallCleanupJournal) error {
+	return s.write("uninstall-cleanup.json", v)
+}
+func (s FileStateStore) CreateUninstallCleanup(v UninstallCleanupJournal) error {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	err = writePrivateCreate(filepath.Join(s.Root, "uninstall-cleanup.json"), encoded)
+	if errors.Is(err, os.ErrExist) {
+		existing, loadErr := s.LoadUninstallCleanup()
+		if loadErr == nil && sameJSON(existing, v) {
+			return nil
+		}
+	}
+	return err
+}
+func (s FileStateStore) LoadUninstallCleanup() (UninstallCleanupJournal, error) {
+	var v UninstallCleanupJournal
+	err := s.read("uninstall-cleanup.json", 1<<20, &v)
+	validPlatform := v.Plan.Target.Platform == client.NodePlatformLinux || v.Plan.Target.Platform == client.NodePlatformMacOS
+	if err == nil && (v.SchemaVersion != 1 || !validPlatform || client.ValidateNodeInstallReceipt(v.Receipt) != nil || v.Receipt.State != "removed" || v.Receipt.PlanID != v.Plan.PlanID || v.Receipt.PlanDigest != v.Plan.Digest) {
+		err = errors.New("uninstall cleanup journal is invalid")
+	}
+	return v, err
+}
+func (s FileStateStore) RemoveUninstallCleanup() error {
+	err := os.Remove(filepath.Join(s.Root, "uninstall-cleanup.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (s FileStateStore) write(name string, v any) error {

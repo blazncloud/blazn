@@ -291,6 +291,22 @@ func validExpiredWALTransition(authority RootInstallAuthority, current, next Ins
 	if validateAuthorityWAL(authority, next) != nil || current.Lifecycle != next.Lifecycle || current.ReceiptID != next.ReceiptID || current.Generation != next.Generation || current.PlanID != next.PlanID || current.PlanDigest != next.PlanDigest || current.NodeID != next.NodeID || !sameJSON(current.OriginalReceipt, next.OriginalReceipt) || !sameJSON(current.Owner, next.Owner) || !sameJSON(current.ServicePrior, next.ServicePrior) || current.CreatedAt != next.CreatedAt {
 		return false
 	}
+	if current.TerminalReceipt != nil && !sameJSON(current.TerminalReceipt, next.TerminalReceipt) {
+		return false
+	}
+	if current.TerminalReceipt == nil && next.TerminalReceipt != nil {
+		if next.TerminalReceipt.State != "removed" || verifyAuthorityReceipt(authority, *next.TerminalReceipt, "removed") != nil || !terminalReceiptMatchesWAL(*next.TerminalReceipt, next) {
+			return false
+		}
+	}
+	if len(next.Residues) < len(current.Residues) {
+		return false
+	}
+	for index := range current.Residues {
+		if !sameJSON(current.Residues[index], next.Residues[index]) {
+			return false
+		}
+	}
 	stageRank := map[string]int{"preflight": 0, "install": 1, "configure": 2, "complete": 3}
 	currentRank, currentOK := stageRank[current.Stage]
 	nextRank, nextOK := stageRank[next.Stage]
@@ -301,6 +317,9 @@ func validExpiredWALTransition(authority RootInstallAuthority, current, next Ins
 		return false
 	}
 	if !validWALCheckpoint(next.Checkpoint, authority.Plan) {
+		return false
+	}
+	if !monotonicWALCheckpoint(current, next) {
 		return false
 	}
 	if len(next.Mutations) < len(current.Mutations) || len(next.Mutations) > len(current.Mutations)+1 {
@@ -345,7 +364,7 @@ func validWALStatusTransition(before, after string) bool {
 }
 func validWALCheckpoint(value string, plan client.NodeInstallPlan) bool {
 	switch value {
-	case "", "join_intent", "join", "binding", "broker_consume", "broker_consumed", "verify", "receipt", "repair", "uninstall":
+	case "", "join_intent", "join", "binding", "broker_consume", "broker_consumed", "verify", "receipt", "repair", "repair_recovery_required", "uninstall", "cleanup_pending", "cleanup_support_removed", "cleanup_local_state_removed":
 		return true
 	}
 	const prefix = "repair_mutation_"
@@ -358,6 +377,36 @@ func validWALCheckpoint(value string, plan client.NodeInstallPlan) bool {
 	}
 	_, err = mutationByOrdinal(plan, ordinal)
 	return err == nil
+}
+func monotonicWALCheckpoint(current, next InstallWAL) bool {
+	if current.Checkpoint == next.Checkpoint {
+		return true
+	}
+	if cleanupCheckpointRank(current.Checkpoint) > 0 || cleanupCheckpointRank(next.Checkpoint) > 0 {
+		return cleanupCheckpointRank(next.Checkpoint) >= cleanupCheckpointRank(current.Checkpoint) && cleanupCheckpointRank(next.Checkpoint) > 0
+	}
+	if current.Lifecycle == "repair" {
+		rank := func(value string) int {
+			switch value {
+			case "repair":
+				return 1
+			case "verify":
+				return 10000
+			case "receipt":
+				return 10001
+			case "repair_recovery_required":
+				return 10002
+			}
+			if strings.HasPrefix(value, "repair_mutation_") {
+				number, _ := strconv.Atoi(strings.TrimPrefix(value, "repair_mutation_"))
+				return 100 + number
+			}
+			return 0
+		}
+		return rank(next.Checkpoint) >= rank(current.Checkpoint)
+	}
+	rank := map[string]int{"": 0, "join_intent": 1, "join": 2, "binding": 3, "broker_consume": 4, "broker_consumed": 5, "verify": 6, "receipt": 7}
+	return rank[next.Checkpoint] >= rank[current.Checkpoint]
 }
 func terminalReceiptMatchesWAL(receipt client.NodeInstallReceipt, wal InstallWAL) bool {
 	return receipt.ReceiptID == wal.ReceiptID && receipt.Generation == wal.Generation && receipt.PlanID == wal.PlanID && receipt.PlanDigest == wal.PlanDigest && receipt.NodeID == wal.NodeID && sameJSON(receipt.Mutations, wal.Mutations)

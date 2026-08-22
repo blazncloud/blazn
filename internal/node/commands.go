@@ -35,6 +35,7 @@ type CommandRuntime struct {
 	TrustedProfileRoot string
 	PlatformFactory    func(client.NodeTrustedInstallProfile) (Platform, error)
 	PrepareState       func(context.Context) error
+	CleanupClient      PrivilegedClient
 }
 
 func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOptions) (EnrollResult, error) {
@@ -90,6 +91,9 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	return c.Service.Enroll(ctx, EnrollOptions{AccessToken: c.AccessToken, WorkspaceID: options.WorkspaceID, IdempotencyKey: options.RequestID, Name: options.Name, Mode: options.Mode, Platform: platform, Architecture: architecture, MachineFingerprint: options.MachineFingerprint, KubernetesBinding: options.KubernetesBinding, Profile: profile, ProfilePath: options.ProfileFile}, true)
 }
 func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt, error) {
+	if receipt, ok, err := c.resumePendingUninstallCleanup(ctx); ok || err != nil {
+		return receipt, err
+	}
 	if c.State == nil || c.Identities == nil {
 		return client.NodeInstallReceipt{}, errors.New("node recovery dependencies are unavailable")
 	}
@@ -132,6 +136,9 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 		return client.NodeInstallReceipt{}, errors.New("node recovery installer is unavailable")
 	}
 	receipt, err := c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+	if err == nil && receipt.State == "removed" {
+		err = c.beginAndResumeUninstallCleanup(ctx, state.Exchange.Plan, receipt)
+	}
 	return receipt, err
 }
 
@@ -151,6 +158,9 @@ func (c *CommandRuntime) Repair(ctx context.Context) (client.NodeInstallReceipt,
 }
 
 func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime bool) (client.NodeInstallReceipt, error) {
+	if receipt, ok, err := c.resumePendingUninstallCleanup(ctx); ok || err != nil {
+		return receipt, err
+	}
 	state, identity, profile, err := c.lifecycleContext(ctx, false)
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
@@ -162,29 +172,124 @@ func (c *CommandRuntime) Uninstall(ctx context.Context, removeManagedRuntime boo
 	if err != nil {
 		return receipt, err
 	}
-	if remover, ok := c.Installer.platform.(interface {
-		RemoveServiceSupport(context.Context, client.NodeInstallPlan) error
-	}); ok {
-		if err := remover.RemoveServiceSupport(ctx, state.Exchange.Plan); err != nil {
-			return receipt, err
+	if receipt.State == "removed" {
+		err = c.beginAndResumeUninstallCleanup(ctx, state.Exchange.Plan, receipt)
+	}
+	return receipt, err
+}
+
+func (c *CommandRuntime) beginAndResumeUninstallCleanup(ctx context.Context, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt) error {
+	store, ok := c.State.(FileStateStore)
+	if !ok {
+		return errors.New("node cleanup requires file-backed service state")
+	}
+	journal := UninstallCleanupJournal{SchemaVersion: 1, Plan: plan, Receipt: receipt, CreatedAt: nowString(time.Now())}
+	if err := store.CreateUninstallCleanup(journal); err != nil {
+		return err
+	}
+	return c.resumeUninstallCleanup(ctx, store, journal)
+}
+func (c *CommandRuntime) resumePendingUninstallCleanup(ctx context.Context) (client.NodeInstallReceipt, bool, error) {
+	store, ok := c.State.(FileStateStore)
+	if !ok {
+		return client.NodeInstallReceipt{}, false, nil
+	}
+	if c.PrepareState != nil {
+		if err := c.PrepareState(ctx); err != nil {
+			return client.NodeInstallReceipt{}, true, err
 		}
 	}
-	if store, ok := c.State.(FileStateStore); ok {
-		for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
-			path := filepath.Join(store.Root, name)
-			info, statErr := os.Lstat(path)
-			if errors.Is(statErr, os.ErrNotExist) {
-				continue
-			}
-			if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-				return receipt, errors.New("node service-state cleanup encountered an unsafe entry")
-			}
-			if removeErr := os.Remove(path); removeErr != nil {
-				return receipt, removeErr
-			}
+	journal, err := store.LoadUninstallCleanup()
+	if errors.Is(err, os.ErrNotExist) {
+		return client.NodeInstallReceipt{}, false, nil
+	}
+	if err != nil {
+		return client.NodeInstallReceipt{}, true, err
+	}
+	return journal.Receipt, true, c.resumeUninstallCleanup(ctx, store, journal)
+}
+func (c *CommandRuntime) resumeUninstallCleanup(ctx context.Context, store FileStateStore, journal UninstallCleanupJournal) error {
+	platform := "linux"
+	if journal.Plan.Target.Platform == client.NodePlatformMacOS {
+		platform = "macos"
+	}
+	cleanupClient := c.CleanupClient
+	if cleanupClient == nil {
+		cleanupClient = PipePrivilegedClient{HelperPath: DefaultRootHelperPath, UseSudo: currentUID() != 0, Timeout: 2 * time.Minute}
+	}
+	privileged := &PrivilegedInstallState{Client: cleanupClient, Local: store, Platform: platform}
+	privileged.BindPlan(journal.Plan)
+	privileged.BindContext(ctx)
+	defer privileged.BindContext(nil)
+	wal, err := privileged.LoadWAL()
+	if errors.Is(err, os.ErrNotExist) {
+		receipt, receiptErr := privileged.LoadReceipt()
+		if receiptErr == nil && sameJSON(receipt, journal.Receipt) {
+			return store.RemoveUninstallCleanup()
+		}
+		return errors.New("uninstall cleanup lost its root WAL")
+	}
+	if err != nil {
+		return err
+	}
+	if wal.TerminalReceipt == nil || !sameJSON(*wal.TerminalReceipt, journal.Receipt) || cleanupCheckpointRank(wal.Checkpoint) < 1 {
+		return errors.New("uninstall cleanup journal differs from root WAL")
+	}
+	if cleanupCheckpointRank(wal.Checkpoint) < 2 {
+		request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootRemoveSupport, Platform: platform, Plan: journal.Plan}
+		if _, err := privileged.Client.Call(ctx, request); err != nil {
+			return err
+		}
+		wal.Checkpoint = "cleanup_support_removed"
+		wal.UpdatedAt = nowString(time.Now())
+		if err := privileged.SaveWAL(wal); err != nil {
+			return err
 		}
 	}
-	return receipt, nil
+	if cleanupCheckpointRank(wal.Checkpoint) < 3 {
+		if err := removeLocalNodeState(store); err != nil {
+			return err
+		}
+		wal.Checkpoint = "cleanup_local_state_removed"
+		wal.UpdatedAt = nowString(time.Now())
+		if err := privileged.SaveWAL(wal); err != nil {
+			return err
+		}
+	}
+	if err := privileged.SaveReceipt(journal.Receipt); err != nil {
+		return err
+	}
+	if err := privileged.RemoveWAL(); err != nil {
+		return err
+	}
+	return store.RemoveUninstallCleanup()
+}
+func cleanupCheckpointRank(value string) int {
+	switch value {
+	case "cleanup_pending":
+		return 1
+	case "cleanup_support_removed":
+		return 2
+	case "cleanup_local_state_removed":
+		return 3
+	}
+	return 0
+}
+func removeLocalNodeState(store FileStateStore) error {
+	for _, name := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+		path := filepath.Join(store.Root, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("node service-state cleanup encountered an unsafe entry")
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *CommandRuntime) lifecycleContext(ctx context.Context, requireCurrent bool) (RuntimeState, Identity, client.NodeTrustedInstallProfile, error) {

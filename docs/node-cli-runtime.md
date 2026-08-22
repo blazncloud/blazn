@@ -68,6 +68,14 @@ non-secret broker issuance ID and reconcile issue, host join, root binding,
 broker consumption, verification, and receipt publication. An exact joined UID
 that cannot be removed remains bootstrap-tainted and is reported as a
 `recovery_required` quarantine residue.
+Residues are cumulative WAL evidence and survive every recovery retry. Before
+reporting an uninstall or rolled-back install as removed, the runtime writes a
+token-free service-state cleanup journal containing the verified plan and
+pre-signed terminal receipt, removes the observation policy and private local
+identity/runtime/pin state through idempotent checkpoints, publishes the root
+receipt, and only then deletes the root WAL and local journal. A joined worker
+that survives rollback is atomically re-tainted with the exact bootstrap
+`NoSchedule` taint under UID/resourceVersion CAS before quarantine is reported.
 
 The concrete isolated HTTP replay and root-owned authority persistence are
 implemented by the privileged Linux/macOS adapter milestone. This contract

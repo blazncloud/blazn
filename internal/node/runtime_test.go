@@ -610,8 +610,8 @@ func TestRollbackStopsImmediatelyWhenWALPersistenceFails(t *testing.T) {
 		t.Fatalf("rollback=%v wal=%v receipt=%#v err=%v", platform.rolledBack, state.hasWAL, state.receipt, err)
 	}
 	receipt, err := installer.Recover(context.Background(), plan, meta, identity)
-	if err != nil || receipt.State != "removed" || len(platform.rolledBack) != 2 || state.hasWAL {
-		t.Fatalf("repeat receipt=%#v rollback=%v wal=%v err=%v", receipt, platform.rolledBack, state.hasWAL, err)
+	if err != nil || receipt.State != "removed" || len(platform.rolledBack) != 2 || !state.hasWAL || state.wal.Checkpoint != "cleanup_pending" || state.wal.TerminalReceipt == nil || !sameJSON(*state.wal.TerminalReceipt, receipt) || state.receipt.ReceiptID != "" {
+		t.Fatalf("repeat receipt=%#v rollback=%v wal=%#v rootReceipt=%#v err=%v", receipt, platform.rolledBack, state.wal, state.receipt, err)
 	}
 }
 
@@ -635,6 +635,15 @@ func TestNodeRepairUninstallAndReinstallLifecycle(t *testing.T) {
 	removed, err := installer.Uninstall(context.Background(), plan, meta, identity, false)
 	if err != nil || removed.State != "removed" || len(platform.rolledBack) != len(plan.Mutations) {
 		t.Fatalf("uninstall=%#v rollback=%#v err=%v", removed, platform.rolledBack, err)
+	}
+	if !state.hasWAL || state.wal.TerminalReceipt == nil || state.receipt.State != "active" {
+		t.Fatal("uninstall published removed before cleanup")
+	}
+	if err := state.SaveReceipt(removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.RemoveWAL(); err != nil {
+		t.Fatal(err)
 	}
 	reinstalled, err := installer.Install(context.Background(), plan, meta, identity)
 	if err != nil || reinstalled.State != "active" {
@@ -692,6 +701,42 @@ func TestCrashedRepairRecoveryRestoresOriginalActiveReceipt(t *testing.T) {
 	}
 }
 
+func TestRepairRecoveryCarriesResiduesAcrossRetries(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 1, 0, 0, time.UTC) }
+	original, err := installer.Install(context.Background(), plan, meta, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform.rollbackErr = errors.New("native rollback blocked")
+	mutation := plan.Mutations[0]
+	legacy := client.NodeReceiptResidue{Target: "legacy", ReasonCode: "legacy_residue", SafeMessage: "existing residue"}
+	wal := InstallWAL{SchemaVersion: 1, Lifecycle: "repair", OriginalReceipt: &original, ReceiptID: original.ReceiptID, Generation: original.Generation + 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "configure", Checkpoint: "repair_mutation_1", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "test", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: mutation.Ordinal, Kind: mutation.Kind, Target: mutation.Target, PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: mutation.DesiredDigest, Status: "pending"}}, Residues: []client.NodeReceiptResidue{legacy}, CreatedAt: original.CreatedAt, UpdatedAt: original.UpdatedAt}
+	if err := state.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("repair residue reported success")
+	}
+	first := state.wal
+	if !state.hasWAL || first.Checkpoint != "repair_recovery_required" || len(first.Residues) != 2 || !sameJSON(state.receipt, original) {
+		t.Fatalf("first wal=%#v receipt=%#v", first, state.receipt)
+	}
+	platform.rollbackErr = nil
+	if _, err := installer.Recover(context.Background(), plan, meta, identity); err == nil {
+		t.Fatal("repeated repair residue reported success")
+	}
+	if !state.hasWAL || len(state.wal.Residues) != 2 || !sameJSON(state.wal.Residues[0], legacy) || !sameJSON(state.receipt, original) {
+		t.Fatalf("retry wal=%#v receipt=%#v", state.wal, state.receipt)
+	}
+}
+
 func TestInstallRecoveryHonorsJoinAndPublicationCheckpoints(t *testing.T) {
 	for _, tc := range []struct {
 		name, checkpoint, status, wantState string
@@ -725,10 +770,79 @@ func TestInstallRecoveryHonorsJoinAndPublicationCheckpoints(t *testing.T) {
 			if tc.wantState == "active" && len(platform.rolledBack) != 0 {
 				t.Fatalf("forward checkpoint rolled back: %#v", platform.rolledBack)
 			}
-			if tc.wantState == "removed" && platform.finalized == 0 {
-				t.Fatal("removed recovery deleted WAL before finalization")
+			if tc.wantState == "removed" && (platform.finalized != 0 || !state.hasWAL || state.wal.TerminalReceipt == nil) {
+				t.Fatal("removed recovery finalized a deleted service identity or lost cleanup WAL")
 			}
 		})
+	}
+}
+
+func TestUninstallCleanupJournalResumesLinuxAndMacCrashPoints(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	basePlan := authorization.Expected.Plan
+	state := &memoryState{}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.uid = func() int64 { return 0 }
+	issued, _ := time.Parse(time.RFC3339, basePlan.IssuedAt)
+	installer.now = func() time.Time { return issued.Add(time.Minute) }
+	if _, err := installer.Install(context.Background(), basePlan, authorization.Expected.Identity, identity); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := installer.Uninstall(context.Background(), basePlan, authorization.Expected.Identity, identity, false)
+	if err != nil || terminal.State != "removed" || !state.hasWAL || state.receipt.State != "active" {
+		t.Fatalf("terminal=%#v wal=%v active=%#v err=%v", terminal, state.hasWAL, state.receipt, err)
+	}
+	baseWAL := state.wal
+	for _, platformName := range []client.NodePlatform{client.NodePlatformLinux, client.NodePlatformMacOS} {
+		for _, failure := range []struct {
+			operation  RootOperation
+			checkpoint string
+		}{{RootRemoveSupport, ""}, {RootSaveWAL, "cleanup_support_removed"}, {RootSaveWAL, "cleanup_local_state_removed"}, {RootSaveReceipt, ""}, {RootRemoveWAL, ""}} {
+			name := string(platformName) + "/" + string(failure.operation) + failure.checkpoint
+			t.Run(name, func(t *testing.T) {
+				plan := basePlan
+				plan.Target.Platform = platformName
+				root := filepath.Join(testRoot(t), "service")
+				if err := os.Mkdir(root, 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, file := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+					if err := os.WriteFile(filepath.Join(root, file), []byte(file), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				store := FileStateStore{Root: root}
+				journal := UninstallCleanupJournal{SchemaVersion: 1, Plan: plan, Receipt: terminal, CreatedAt: plan.IssuedAt}
+				if err := store.CreateUninstallCleanup(journal); err != nil {
+					t.Fatal(err)
+				}
+				wal := baseWAL
+				wal.TerminalReceipt = &terminal
+				wal.Checkpoint = "cleanup_pending"
+				fake := &cleanupPrivileged{wal: &wal, receipt: &state.receipt, failOperation: failure.operation, failCheckpoint: failure.checkpoint}
+				runtime := &CommandRuntime{State: store, CleanupClient: fake}
+				_, ok, firstErr := runtime.resumePendingUninstallCleanup(context.Background())
+				if !ok || firstErr == nil {
+					t.Fatalf("injected crash was not observed: ok=%v err=%v", ok, firstErr)
+				}
+				_, ok, secondErr := runtime.resumePendingUninstallCleanup(context.Background())
+				if !ok || secondErr != nil {
+					t.Fatalf("cleanup did not resume: ok=%v err=%v", ok, secondErr)
+				}
+				if fake.wal != nil || fake.receipt == nil || !sameJSON(*fake.receipt, terminal) {
+					t.Fatalf("root terminal state wal=%#v receipt=%#v", fake.wal, fake.receipt)
+				}
+				if _, err := store.LoadUninstallCleanup(); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("cleanup journal remains: %v", err)
+				}
+				for _, file := range []string{"identity.json", "runtime.json", "enrollment-pin.json"} {
+					if _, err := os.Stat(filepath.Join(root, file)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("local state remains: %s err=%v", file, err)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -916,6 +1030,47 @@ func (p *checkpointPlatform) ReconcileRecovery(context.Context, client.NodeInsta
 }
 func (p *checkpointPlatform) AbortIncompleteJoin(context.Context, client.NodeInstallPlan) error {
 	return p.abortErr
+}
+
+type cleanupPrivileged struct {
+	wal            *InstallWAL
+	receipt        *client.NodeInstallReceipt
+	failOperation  RootOperation
+	failCheckpoint string
+	failed         bool
+}
+
+func (c *cleanupPrivileged) Call(_ context.Context, request RootRequest) (RootResponse, error) {
+	matchesOperation := c.failCheckpoint == "" && request.Operation == c.failOperation
+	matchesCheckpoint := request.Operation == RootSaveWAL && c.failCheckpoint != "" && request.WAL != nil && request.WAL.Checkpoint == c.failCheckpoint
+	if !c.failed && (matchesOperation || matchesCheckpoint) {
+		c.failed = true
+		return RootResponse{}, errors.New("injected cleanup crash")
+	}
+	switch request.Operation {
+	case RootLoadWAL:
+		if c.wal == nil {
+			return RootResponse{ErrorCode: "not_found"}, nil
+		}
+		copy := *c.wal
+		return RootResponse{WAL: &copy}, nil
+	case RootSaveWAL:
+		copy := *request.WAL
+		c.wal = &copy
+	case RootRemoveWAL:
+		c.wal = nil
+	case RootSaveReceipt:
+		copy := *request.Receipt
+		c.receipt = &copy
+	case RootLoadReceipt:
+		if c.receipt == nil {
+			return RootResponse{ErrorCode: "not_found"}, nil
+		}
+		copy := *c.receipt
+		return RootResponse{Receipt: &copy}, nil
+	case RootRemoveSupport:
+	}
+	return RootResponse{OK: true}, nil
 }
 
 func (p *bindingMockPlatform) KubernetesBinding() *client.KubernetesBinding {

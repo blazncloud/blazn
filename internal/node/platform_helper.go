@@ -329,7 +329,15 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		binding, err := e.reconcileRootJoinRecovery(ctx, request.Plan)
 		return RootResponse{KubernetesBinding: binding}, err
 	case RootQuarantineJoin:
-		return RootResponse{}, e.verifyQuarantinedJoin(ctx, request.Plan, request.Join)
+		if err := e.quarantineJoinedNode(ctx, request.Plan, request.Join); err != nil {
+			return RootResponse{}, err
+		}
+		observed, err := e.observeNode(ctx, request.Plan, request.Join.ExpectedNodeName)
+		if err != nil {
+			return RootResponse{}, err
+		}
+		binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
+		return RootResponse{KubernetesBinding: binding}, err
 	case RootVerify:
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	case RootFinalizeState:
@@ -1693,6 +1701,31 @@ func (e NativeRootEngine) verifyQuarantinedJoin(ctx context.Context, plan client
 		}
 	}
 	return errors.New("joined worker is not safely quarantined")
+}
+func (e NativeRootEngine) quarantineJoinedNode(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
+	parts := strings.Split(plan.Cluster.BootstrapTaint, ":")
+	if len(parts) != 2 {
+		return errors.New("bootstrap quarantine taint is invalid")
+	}
+	keyValue := strings.SplitN(parts[0], "=", 2)
+	if len(keyValue) != 2 {
+		return errors.New("bootstrap quarantine taint is invalid")
+	}
+	var mutation *client.NodeInstallMutation
+	for index := range plan.Mutations {
+		candidate := &plan.Mutations[index]
+		if candidate.Kind == "taint" && candidate.Target == keyValue[0] && stringValue(candidate.Desired["value"]) == keyValue[1] && stringValue(candidate.Desired["effect"]) == parts[1] {
+			mutation = candidate
+			break
+		}
+	}
+	if mutation == nil {
+		return errors.New("signed plan lacks exact bootstrap quarantine mutation")
+	}
+	if err := e.applyClusterMutation(ctx, plan, *mutation, binding, false); err != nil {
+		return err
+	}
+	return e.verifyQuarantinedJoin(ctx, plan, binding)
 }
 
 func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, labels map[string]string, taints []struct {
