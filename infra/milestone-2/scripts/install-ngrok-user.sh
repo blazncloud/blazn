@@ -21,6 +21,24 @@ if ! getent passwd blazn-ngrok >/dev/null 2>&1; then
   useradd --system --gid blazn-ngrok --home-dir /nonexistent --shell /usr/sbin/nologin blazn-ngrok
 fi
 
+config_parent=${BLAZN_CONFIG_ROOT:-/etc/blazn}
+require_absolute_path BLAZN_CONFIG_ROOT "$config_parent"
+assert_not_symlink_chain "$config_parent"
+if [ ! -e "$config_parent" ]; then
+  [ "$mode" = install ] || die "Blazn configuration root is not installed"
+  install -d -o root -g blazn-ngrok -m 0710 "$config_parent"
+elif [ "$mode" = install ]; then
+  if [ ! -d "$config_parent" ] || [ -L "$config_parent" ]; then
+    die "Blazn configuration root is unsafe"
+  fi
+  chown root:blazn-ngrok "$config_parent"
+  chmod 0710 "$config_parent"
+fi
+if [ ! -d "$config_parent" ] || [ -L "$config_parent" ]; then
+  die "Blazn configuration root is unsafe"
+fi
+[ "$(stat -c '%U:%G:%a' "$config_parent")" = root:blazn-ngrok:710 ] || die "Blazn configuration root must be root:blazn-ngrok mode 0710"
+
 group_name=$(id -gn blazn-ngrok)
 home=$(getent passwd blazn-ngrok | awk -F: '{print $6}')
 shell=$(getent passwd blazn-ngrok | awk -F: '{print $7}')

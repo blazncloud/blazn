@@ -129,6 +129,7 @@ grep -F -- '--url https://blazn.benpelo.com' "$ngrok_unit" >/dev/null
 grep -F 'with-public-origin-lock.sh permanent' "$ngrok_unit" >/dev/null
 grep -F '/usr/bin/setpriv --reuid=blazn-ngrok --regid=blazn-ngrok --clear-groups' "$ngrok_unit" >/dev/null
 grep -F 'unreviewed supplementary group memberships' "$ROOT_DIR/scripts/install-ngrok-user.sh" >/dev/null
+grep -F 'root:blazn-ngrok:710' "$ROOT_DIR/scripts/install-ngrok-user.sh" >/dev/null
 grep -F -- '--traffic-policy-file /etc/blazn/ngrok/traffic-policy.yml' "$ngrok_unit" >/dev/null
 grep -F 'prepare-ngrok-policy.sh' "$ngrok_unit" >/dev/null
 grep -F 'install-ngrok-user.sh --validate-only' "$ngrok_unit" >/dev/null
