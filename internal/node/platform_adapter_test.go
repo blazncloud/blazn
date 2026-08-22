@@ -461,7 +461,7 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 		t.Fatal(err)
 	}
 	profilePath := filepath.Join(profileRoot, "adopt.json")
-	profileFile := TrustedProfileFile{SchemaVersion: 1, ID: plan.InstallProfile, ControlPlaneOrigin: server.URL, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedDownloadHostSuffixes: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}}
+	profileFile := TrustedProfileFile{SchemaVersion: 1, ID: plan.InstallProfile, ControlPlaneOrigin: server.URL, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedDownloadHostSuffixes: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn-node-root/install-backups"}, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}}
 	profileBytes, _ := json.Marshal(profileFile)
 	if err := os.WriteFile(profilePath, profileBytes, 0600); err != nil {
 		t.Fatal(err)
