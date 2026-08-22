@@ -345,4 +345,4 @@ secrets:
   poc_identity_workspaces:
     file: ${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}/workspaces.json
   poc_identity_cleanup_intent:
-    file: ${BLAZN_POC_IDENTITY_CLEANUP_INTENT:-/var/lib/blazn/ownership/poc-second-identity-cleanup.json}
+    file: ${BLAZN_POC_IDENTITY_CLEANUP_RUNTIME:-/var/lib/blazn/ownership/poc-second-identity-cleanup.runtime.json}

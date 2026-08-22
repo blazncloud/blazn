@@ -76,6 +76,7 @@ run_manage() {
     BLAZN_ACTIVE_RELEASE_RECEIPT="$fixture/ownership/active-release.json" \
     BLAZN_POC_IDENTITY_ROOT="$fixture/identity" BLAZN_POC_IDENTITY_RECEIPT="$fixture/ownership/identity.json" \
     BLAZN_POC_IDENTITY_CLEANUP_INTENT="$fixture/ownership/identity-cleanup.json" \
+    BLAZN_POC_IDENTITY_CLEANUP_RUNTIME="$fixture/ownership/identity-cleanup.runtime.json" \
     BLAZN_POC_CLI_USERS_ROOT="$fixture/cli-users" BLAZN_POC_CLI_USERS_RECEIPT="$fixture/ownership/cli-users.json" \
     BLAZN_POC_CLI_USERS_INTENT="$fixture/ownership/cli-users-intent.json" \
     BLAZN_POC_OWNER_OS_USER="$owner_os" BLAZN_POC_SECOND_OS_USER="$second_os" \
@@ -128,6 +129,8 @@ for failpoint in after-second-user after-second-group after-second-home after-ow
   fi
   grep -F 'injected POC CLI cleanup failure' "$fixture/$failpoint.err" >/dev/null
 done
+[ -e "$fixture/ownership/identity-cleanup.runtime.json" ]
+[ "$(sudo stat -c %a "$fixture/ownership/identity-cleanup.runtime.json")" = 444 ]
 for failpoint in after-db after-files after-receipt; do
   if FAKE_POC_IDENTITY_FAILPOINT=$failpoint run_manage cleanup >"$fixture/identity-$failpoint.out" 2>"$fixture/identity-$failpoint.err"; then
     printf 'POC identity cleanup failpoint unexpectedly passed: %s\n' "$failpoint" >&2
@@ -138,9 +141,13 @@ done
 run_manage cleanup >"$fixture/cleanup.out"
 [ ! -e "$fixture/identity" ]
 [ ! -e "$fixture/cli-users" ]
+[ ! -e "$fixture/ownership/identity-cleanup.runtime.json" ]
 getent passwd "$owner_os" >/dev/null 2>&1 && exit 1
 getent passwd "$second_os" >/dev/null 2>&1 && exit 1
 sudo jq -e '.status=="cleaned" and .cleanupCounts.workspaceCount==1' "$fixture/ownership/identity.json" >/dev/null
+sudo sh -euc 'printf "stale-runtime-copy\n" >"$1"; chown 0:0 "$1"; chmod 0444 "$1"' sh "$fixture/ownership/identity-cleanup.runtime.json"
+run_manage cleanup >"$fixture/cleaned-retry.out"
+[ ! -e "$fixture/ownership/identity-cleanup.runtime.json" ]
 [ "$(root_store_digest)" = "$root_before" ] || { printf 'existing root Blazn state changed during POC CLI qualification test\n' >&2; exit 1; }
 
 trap - EXIT HUP INT TERM

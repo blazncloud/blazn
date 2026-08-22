@@ -23,13 +23,16 @@ load_control_api_image "$ROOT_DIR"
 identity_root=${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}
 receipt=${BLAZN_POC_IDENTITY_RECEIPT:-/var/lib/blazn/ownership/poc-second-identity.json}
 identity_cleanup_intent=${BLAZN_POC_IDENTITY_CLEANUP_INTENT:-/var/lib/blazn/ownership/poc-second-identity-cleanup.json}
+identity_cleanup_runtime=${BLAZN_POC_IDENTITY_CLEANUP_RUNTIME:-/var/lib/blazn/ownership/poc-second-identity-cleanup.runtime.json}
 active_release_receipt=${BLAZN_ACTIVE_RELEASE_RECEIPT:-/var/lib/blazn/ownership/active-release.json}
 require_absolute_path BLAZN_POC_IDENTITY_ROOT "$identity_root"
 require_absolute_path BLAZN_POC_IDENTITY_RECEIPT "$receipt"
 require_absolute_path BLAZN_POC_IDENTITY_CLEANUP_INTENT "$identity_cleanup_intent"
+require_absolute_path BLAZN_POC_IDENTITY_CLEANUP_RUNTIME "$identity_cleanup_runtime"
 assert_not_symlink_chain "$identity_root"
 assert_not_symlink_chain "$receipt"
 assert_not_symlink_chain "$identity_cleanup_intent"
+assert_not_symlink_chain "$identity_cleanup_runtime"
 assert_regular_file_owned_mode "$active_release_receipt" 0 600
 release_digest=$(jq -er '.releaseDigest | select(test("^sha256:[a-f0-9]{64}$"))' "$active_release_receipt")
 
@@ -57,6 +60,19 @@ validate_inputs() {
 
 compose_run() {
   service=$1
+  case $service in
+    poc-identity-cleanup|poc-identity-verify-cleanup)
+      assert_regular_file_owned_mode "$identity_cleanup_intent" 0 600
+      runtime_tmp=$identity_cleanup_runtime.tmp.$$
+      [ ! -e "$runtime_tmp" ] || die "POC identity runtime cleanup intent staging path exists"
+      cp -- "$identity_cleanup_intent" "$runtime_tmp"
+      chown 0:0 "$runtime_tmp"
+      chmod 0444 "$runtime_tmp"
+      [ "$(sha256_file "$runtime_tmp")" = "$(sha256_file "$identity_cleanup_intent")" ] || die "runtime cleanup intent copy differs from protected intent"
+      mv -- "$runtime_tmp" "$identity_cleanup_runtime"
+      assert_regular_file_owned_mode "$identity_cleanup_runtime" 0 444
+      ;;
+  esac
   docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" --profile poc-identity run --rm -T "$service"
 }
 
@@ -141,6 +157,10 @@ case $action in
         unlink "$result_tmp"; result_tmp=
         unlink "$identity_cleanup_intent"
       fi
+      if [ -e "$identity_cleanup_runtime" ]; then
+        assert_regular_file_owned_mode "$identity_cleanup_runtime" 0 444
+        unlink "$identity_cleanup_runtime"
+      fi
       printf 'POC second identity is already cleaned\n'
       exit 0
     fi
@@ -200,6 +220,8 @@ case $action in
     mv -- "$receipt_tmp" "$receipt"
     [ "${BLAZN_POC_IDENTITY_CLEANUP_FAILPOINT:-}" != after-receipt ] || die "injected POC identity cleanup failure after receipt"
     unlink "$identity_cleanup_intent"
+    assert_regular_file_owned_mode "$identity_cleanup_runtime" 0 444
+    unlink "$identity_cleanup_runtime"
     printf 'POC second identity, devices, sessions, and recorded qualification workspaces cleaned\n'
     ;;
 esac
