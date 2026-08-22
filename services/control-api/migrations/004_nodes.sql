@@ -47,7 +47,7 @@ CREATE TABLE node_enrollments (
   machine_binding char(64) CHECK (machine_binding ~ '^[0-9a-f]{64}$'),
   node_public_key text CHECK (node_public_key ~ '^[A-Za-z0-9_-]{43}$'),
   node_public_key_fingerprint char(64) CHECK (node_public_key_fingerprint ~ '^[0-9a-f]{64}$'),
-  consumed_by_node_id uuid REFERENCES nodes(id),
+  consumed_by_node_id uuid,
   exchanged_at timestamptz,
   consumed_at timestamptz,
   revoked_at timestamptz,
@@ -64,7 +64,8 @@ CREATE TABLE node_enrollments (
   CHECK (status NOT IN ('exchanged', 'consumed') OR exchanged_at IS NOT NULL),
   CHECK (status <> 'pending' OR exchanged_at IS NULL),
   CHECK ((status = 'consumed') = (consumed_at IS NOT NULL)),
-  CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+  CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+  FOREIGN KEY (consumed_by_node_id, workspace_id) REFERENCES nodes(id, workspace_id)
 );
 
 CREATE TABLE node_identities (
@@ -128,6 +129,8 @@ CREATE TABLE node_install_plans (
   accepted_at timestamptz,
   revoked_at timestamptz,
   UNIQUE (id, workspace_id),
+  UNIQUE (id, workspace_id, node_id),
+  UNIQUE (id, workspace_id, enrollment_id, node_id),
   UNIQUE (approved_by, idempotency_key),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
   FOREIGN KEY (enrollment_id, workspace_id) REFERENCES node_enrollments(id, workspace_id),
@@ -148,11 +151,12 @@ CREATE TABLE node_install_receipts (
   payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
-  FOREIGN KEY (plan_id, workspace_id) REFERENCES node_install_plans(id, workspace_id)
+  FOREIGN KEY (plan_id, workspace_id, node_id) REFERENCES node_install_plans(id, workspace_id, node_id)
 );
 
 CREATE TABLE node_operation_receipts (
   id uuid PRIMARY KEY,
+  operation_id uuid NOT NULL UNIQUE,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   node_id uuid NOT NULL,
   operation_type text NOT NULL CHECK (operation_type IN ('pause', 'resume', 'label', 'cordon', 'uncordon', 'rotate_identity', 'repair', 'update', 'drain', 'remove')),
@@ -161,6 +165,7 @@ CREATE TABLE node_operation_receipts (
   signature text NOT NULL CHECK (signature ~ '^[A-Za-z0-9_-]{86}$'),
   payload jsonb NOT NULL CHECK (NOT workspace_json_contains_secret_key(payload)),
   created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (id, operation_id, workspace_id, node_id, operation_type),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE
 );
 
@@ -177,14 +182,23 @@ CREATE TABLE node_operations (
   parameters jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (NOT workspace_json_contains_secret_key(parameters)),
   result jsonb CHECK (result IS NULL OR NOT workspace_json_contains_secret_key(result)),
   error jsonb CHECK (error IS NULL OR NOT workspace_json_contains_secret_key(error)),
-  receipt_id uuid REFERENCES node_operation_receipts(id),
+  receipt_id uuid,
   created_at timestamptz NOT NULL DEFAULT now(),
   started_at timestamptz,
   completed_at timestamptz,
   UNIQUE (requested_by, type, idempotency_key),
+  UNIQUE (id, workspace_id, node_id, type),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (receipt_id, id, workspace_id, node_id, type)
+    REFERENCES node_operation_receipts(id, operation_id, workspace_id, node_id, operation_type)
+    DEFERRABLE INITIALLY DEFERRED,
   CHECK ((status IN ('succeeded', 'failed', 'cancelled', 'partial', 'recovery_required')) = (completed_at IS NOT NULL))
 );
+
+ALTER TABLE node_operation_receipts ADD CONSTRAINT node_operation_receipt_operation_fk
+  FOREIGN KEY (operation_id, workspace_id, node_id, operation_type)
+  REFERENCES node_operations(id, workspace_id, node_id, type)
+  DEFERRABLE INITIALLY DEFERRED;
 
 CREATE TABLE node_operation_events (
   id uuid PRIMARY KEY,
@@ -219,7 +233,8 @@ CREATE TABLE node_join_issuances (
   CHECK ((consumed_at IS NOT NULL) = (joined_node_uid IS NOT NULL)),
   UNIQUE (node_id, idempotency_key),
   FOREIGN KEY (enrollment_id, workspace_id) REFERENCES node_enrollments(id, workspace_id),
-  FOREIGN KEY (plan_id, workspace_id) REFERENCES node_install_plans(id, workspace_id),
+  FOREIGN KEY (plan_id, workspace_id, enrollment_id, node_id)
+    REFERENCES node_install_plans(id, workspace_id, enrollment_id, node_id),
   FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id) ON DELETE CASCADE
 );
 
