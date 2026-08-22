@@ -104,7 +104,10 @@ grep -F '127.0.0.1:58080' "$ngrok_unit" >/dev/null
 grep -F 'export DOCKER_CONFIG=' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'export DOCKER_CONFIG=' "$ROOT_DIR/scripts/verify-object-store.sh" >/dev/null
 grep -F 'assert_approved_backup_mount' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+# These assertions intentionally match literal shell variables in preflight.
+# shellcheck disable=SC2016
 grep -F 'assert_directory_owned_mode "$SECRETS_ROOT" 0 700' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
+# shellcheck disable=SC2016
 grep -F 'assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
 grep -F 'objects.before.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'objects.after.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
