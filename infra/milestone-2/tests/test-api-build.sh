@@ -119,4 +119,4 @@ grep -F 'already resolves to different content' "$swap/err" >/dev/null
 
 trap - EXIT HUP INT TERM
 cleanup
-printf 'API build stable, TOCTOU, and immutable-tag swap tests passed\n'
+printf 'API build stable, TOCTOU, immutable-tag swap, and container-mismatch tests passed\n'
