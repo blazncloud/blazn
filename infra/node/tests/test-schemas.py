@@ -56,8 +56,9 @@ jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
     "nodeBroker": node_value,
     "nodePlan": plan_value,
 })
-jsonschema.Draft202012Validator(metadata).validate({
-    "schemaVersion": "blazn.dev/control-plane-backup/v2",
+metadata_validator = jsonschema.Draft202012Validator(metadata)
+metadata_value = {
+    "schemaVersion": "blazn.dev/control-plane-backup/v3",
     "correlationId": "test",
     "fencingToken": 1,
     "createdAt": "20260822T080000Z",
@@ -72,6 +73,10 @@ jsonschema.Draft202012Validator(metadata).validate({
     "secretDigests": {"workspace-invitation-hmac-v1": digest},
     "nodeBrokerReceiptDigest": digest,
     "nodePlanReceiptDigest": digest,
-})
+}
+metadata_validator.validate(metadata_value)
+v2_metadata_value = {**metadata_value, "schemaVersion": "blazn.dev/control-plane-backup/v2"}
+del v2_metadata_value["nodePlanReceiptDigest"]
+metadata_validator.validate(v2_metadata_value)
 jsonschema.Draft202012Validator(template).validate(json.loads((root / "templates" / "node-install-plan-template-v1.json").read_text()))
 print("Node JSON Schemas and external references validated")

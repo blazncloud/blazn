@@ -41,12 +41,24 @@ for (const id of profileIds) {
   const profile = template.profiles[id];
   exact(profile, profileKeys, `profile ${id}`);
   if (profile.cluster.workerOnly !== true || profile.cluster.joinCredentialEndpoint !== "/v1/node-service/join-credentials" || profile.cluster.bootstrapTaint !== "blazn.dev/bootstrap=pending:NoSchedule") fail(`${id} is not worker-only`);
-  if (JSON.stringify(profile.validationTests) !== JSON.stringify(validation)) fail(`${id} validation gate drifted`);
+  const wantedValidation = id === "ubuntu-26.04-amd64-worker/v1"
+    ? ["binary_digest", "service_account", ...validation.slice(1)]
+    : id === "macos-lima-worker-adopt/v1"
+      ? [...validation.slice(0, 5), "lima_worker_binding", ...validation.slice(5)]
+      : validation;
+  if (JSON.stringify(profile.validationTests) !== JSON.stringify(wantedValidation)) fail(`${id} validation gate drifted`);
   if (!Array.isArray(profile.components) || profile.components.length === 0 || !Array.isArray(profile.mutations) || profile.mutations.length === 0) fail(`${id} is incomplete`);
   const names = new Set(profile.components.map((component) => component.name));
+  if (names.size !== profile.components.length) fail(`${id} has duplicate component names`);
   for (const component of profile.components) {
-    const url = new URL(component.source);
-    if (url.protocol !== "https:" || url.hostname !== component.sourceHost || !/^[a-f0-9]{64}$/.test(component.sha256)) fail(`${id} has an unbound component`);
+    if (!/^[a-f0-9]{64}$/.test(component.sha256)) fail(`${id} has an invalid component digest`);
+    if (component.sourceClass === "https") {
+      const url = new URL(component.source);
+      if (url.protocol !== "https:" || url.hostname !== component.sourceHost) fail(`${id} has an unbound HTTPS component`);
+    } else if (!["current_binary", "embedded"].includes(component.sourceClass)
+      || ["sourceHost", "source", "repositoryOrigin", "registryHost", "ociReference"].some((key) => key in component)) {
+      fail(`${id} has invalid local component provenance`);
+    }
   }
   const ordinals = profile.mutations.map((mutation) => mutation.ordinal);
   if (new Set(ordinals).size !== ordinals.length || ordinals.some((ordinal, index) => ordinal !== index + 1)) fail(`${id} mutation ordinals are not contiguous`);
@@ -61,9 +73,23 @@ for (const id of profileIds) {
   if (profile.mutations.some((mutation) => forbiddenKinds.includes(mutation.kind))) fail(`${id} contains a cross-platform mutation`);
 }
 
-const [systemd, launchd] = await Promise.all([readFile(`${sourceTemplates}/blazn-node.service`), readFile(`${sourceTemplates}/com.blazn.node.plist`)]);
+const [systemd, launchd, limaText] = await Promise.all([
+  readFile(`${sourceTemplates}/blazn-node.service`),
+  readFile(`${sourceTemplates}/com.blazn.node.plist`),
+  readFile(`${sourceTemplates}/lima-worker-binding.json`, "utf8"),
+]);
 if (sha256(systemd) !== template.profiles["ubuntu-26.04-amd64-worker/v1"].nodeService.definitionSha256 || sha256(systemd) !== template.profiles["existing-linux-worker-adopt/v1"].nodeService.definitionSha256) fail("systemd definition digest drifted");
 if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].nodeService.definitionSha256) fail("launchd definition digest drifted");
+const lima = JSON.parse(limaText);
+exact(lima, ["schemaVersion", "clusterId", "vmName", "workerName"], "Lima worker binding");
+if (lima.schemaVersion !== "blazn.dev/lima-worker-binding/v1" || lima.clusterId !== template.profiles["macos-lima-worker-adopt/v1"].cluster.id || typeof lima.vmName !== "string" || lima.vmName.length === 0 || typeof lima.workerName !== "string" || lima.workerName.length === 0) fail("Lima worker identity drifted");
+const canonicalLima = JSON.stringify(Object.fromEntries(Object.keys(lima).sort().map((key) => [key, lima[key]])));
+const limaSha256 = sha256(canonicalLima);
+const macProfile = template.profiles["macos-lima-worker-adopt/v1"];
+const limaComponents = macProfile.components.filter((component) => component.name === "lima-worker-binding");
+const limaMutations = macProfile.mutations.filter((mutation) => mutation.kind === "file" && mutation.target === "/Library/Application Support/Blazn/lima-worker-binding.json");
+if (limaComponents.length !== 1 || limaComponents[0].artifactType !== "configuration" || limaComponents[0].sourceClass !== "embedded" || limaComponents[0].sha256 !== limaSha256) fail("Lima worker component is not bound to its canonical asset");
+if (limaMutations.length !== 1 || limaMutations[0].desired?.sourceComponent !== "lima-worker-binding" || limaMutations[0].desired?.contentSha256 !== limaSha256 || limaMutations[0].desiredDigest !== `sha256:${limaSha256}`) fail("Lima worker mutation is not bound to its canonical asset");
 for (const path of [privateFile, metadataFile, templateFile]) {
   const info = await stat(path);
   if (!info.isFile()) fail(`${path} is not a regular file`);

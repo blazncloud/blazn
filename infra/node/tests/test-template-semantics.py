@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 import copy
 import json
+import os
 import pathlib
+import subprocess
+import tempfile
+import textwrap
 
 try:
     import jsonschema
@@ -12,8 +16,47 @@ except ImportError:
 root = pathlib.Path(__file__).resolve().parents[1]
 repo = root.parents[1]
 bundle = json.loads((root / "templates" / "node-install-plan-template-v1.json").read_text())
+template_schema = json.loads((root / "node-install-plan-template.schema.json").read_text())
 plan_schema = json.loads((repo / "packages" / "contracts" / "nodes" / "node-install-plan.schema.json").read_text())
-validator = jsonschema.Draft202012Validator(plan_schema, format_checker=jsonschema.FormatChecker())
+format_checker = jsonschema.FormatChecker()
+template_validator = jsonschema.Draft202012Validator(template_schema, format_checker=format_checker)
+plan_validator = jsonschema.Draft202012Validator(plan_schema, format_checker=format_checker)
+
+profile_fields = (
+    "cluster",
+    "registryTrust",
+    "components",
+    "nodeService",
+    "labels",
+    "taints",
+    "resourceBounds",
+    "mutations",
+    "validationTests",
+    "rollback",
+)
+for field in profile_fields:
+    if template_schema["$defs"][field] != plan_schema["properties"][field]:
+        raise AssertionError(f"template $defs/{field} drifted from NodeInstallPlan.properties.{field}")
+template_validator.validate(bundle)
+
+
+def assert_template_rejected(value, label):
+    if template_validator.is_valid(value):
+        raise AssertionError(f"template schema accepted {label}")
+
+
+not_closed = copy.deepcopy(bundle)
+not_closed["profiles"]["ubuntu-26.04-amd64-worker/v1"]["cluster"]["unexpected"] = True
+assert_template_rejected(not_closed, "an unknown nested cluster field")
+missing_source_class = copy.deepcopy(bundle)
+del missing_source_class["profiles"]["ubuntu-26.04-amd64-worker/v1"]["components"][0]["sourceClass"]
+assert_template_rejected(missing_source_class, "a component without sourceClass")
+extra_profile = copy.deepcopy(bundle)
+extra_profile["profiles"]["unexpected/v1"] = copy.deepcopy(
+    extra_profile["profiles"]["existing-linux-worker-adopt/v1"]
+)
+assert_template_rejected(extra_profile, "a fourth profile")
+
 dynamic = {
     "schemaVersion": "nodes/v1alpha1",
     "planId": "11111111-1111-4111-8111-111111111111",
@@ -35,6 +78,7 @@ cases = {
     "existing-linux-worker-adopt/v1": ("adopt", "linux", "amd64"),
     "macos-lima-worker-adopt/v1": ("adopt", "macos", "arm64"),
 }
+rendered_plans = []
 for profile_id, (mode, platform, architecture) in cases.items():
     rendered = copy.deepcopy(bundle["profiles"][profile_id])
     rendered.update(dynamic)
@@ -51,8 +95,83 @@ for profile_id, (mode, platform, architecture) in cases.items():
             "minDiskBytes": 10737418240,
         },
     })
-    errors = sorted(validator.iter_errors(rendered), key=lambda error: list(error.path))
+    errors = sorted(plan_validator.iter_errors(rendered), key=lambda error: list(error.path))
     if errors:
         detail = "\n".join(f"{list(error.path)}: {error.message}" for error in errors)
         raise AssertionError(f"{profile_id} does not render to NodeInstallPlan:\n{detail}")
-print("all frozen Node plan profiles render against NodeInstallPlan")
+    rendered_plans.append({"name": profile_id, "plan": rendered, "wantValid": True})
+
+invalid_semantics = copy.deepcopy(rendered_plans[0]["plan"])
+invalid_semantics["mutations"] = [
+    mutation for mutation in invalid_semantics["mutations"]
+    if not (mutation["kind"] == "systemd_unit" and mutation["action"] == "enable")
+]
+rendered_plans.append({
+    "name": "fresh profile without service enable",
+    "plan": invalid_semantics,
+    "wantValid": False,
+})
+
+go_source = textwrap.dedent(
+    """\\
+    package main
+
+    import (
+        "bytes"
+        "encoding/json"
+        "fmt"
+        "os"
+
+        client "github.com/KingJammin/blazn/internal/client"
+    )
+
+    type testCase struct {
+        Name      string          `json:"name"`
+        Plan      json.RawMessage `json:"plan"`
+        WantValid bool            `json:"wantValid"`
+    }
+
+    func main() {
+        var cases []testCase
+        if err := json.NewDecoder(os.Stdin).Decode(&cases); err != nil {
+            panic(err)
+        }
+        for _, test := range cases {
+            _, err := client.DecodeNodeInstallPlan(bytes.NewReader(test.Plan))
+            if test.WantValid && err != nil {
+                panic(fmt.Sprintf("%s rejected by generated validator: %v", test.Name, err))
+            }
+            if !test.WantValid && err == nil {
+                panic(fmt.Sprintf("%s accepted by generated validator", test.Name))
+            }
+        }
+    }
+    """
+)
+go_env = os.environ.copy()
+go_env.update({
+    "GOPROXY": "off",
+    "GOSUMDB": "off",
+    "GOTOOLCHAIN": "local",
+    "GOWORK": "off",
+    "GOFLAGS": "-mod=readonly",
+})
+with tempfile.TemporaryDirectory(prefix=".node-plan-validator-", dir=repo) as temp_dir:
+    helper = pathlib.Path(temp_dir) / "main.go"
+    helper.write_text(go_source)
+    result = subprocess.run(
+        ["go", "run", helper],
+        cwd=repo,
+        env=go_env,
+        input=json.dumps(rendered_plans),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+if result.returncode != 0:
+    raise AssertionError(
+        "generated Node API validator gate failed with network access disabled:\n"
+        + result.stdout
+        + result.stderr
+    )
+print("all frozen Node plan profiles pass the closed schema and generated API validator")
