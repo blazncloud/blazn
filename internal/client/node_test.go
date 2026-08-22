@@ -230,7 +230,11 @@ func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 			plan.Components[index].Ownership = "install"
 		}
 	}
-	plan.Mutations[len(plan.Mutations)-1].Action, plan.Mutations[len(plan.Mutations)-1].Rollback = "write", "remove_if_owned"
+	for index := range plan.Mutations {
+		if plan.Mutations[index].Kind == "launchd_unit" && plan.Mutations[index].Action != "enable" {
+			plan.Mutations[index].Action, plan.Mutations[index].Rollback = "write", "remove_if_owned"
+		}
+	}
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatalf("mac adopt profile could not install absent service unit: %v", err)
 	}
