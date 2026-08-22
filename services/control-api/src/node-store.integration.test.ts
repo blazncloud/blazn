@@ -5,7 +5,7 @@ import { createDatabase } from "./db.js";
 import { NodeService } from "./node-service.js";
 import { PgNodeStore } from "./node-store.js";
 import { NodeHttpError } from "./node-types.js";
-import { canonicalJson, renderedDigest } from "./node-crypto.js";
+import { canonicalJson, publicKeyFingerprint, renderedDigest } from "./node-crypto.js";
 
 const adminUrl=process.env.NODE_TEST_ADMIN_DATABASE_URL;
 const runtimeUrl=process.env.NODE_TEST_RUNTIME_DATABASE_URL;
@@ -17,7 +17,7 @@ test("PostgreSQL serializes enrollment replay and isolates workspaces",{skip:!ad
     await admin.query("INSERT INTO workspaces(id,slug,name,created_by) VALUES($1,$2,'Node Test',$3),($4,$5,'Other',$6)",[workspaceId,`node-${userId.slice(0,8)}`,userId,otherWorkspaceId,`other-${outsiderId.slice(0,8)}`,outsiderId]);
     await admin.query("INSERT INTO workspace_memberships(workspace_id,user_id,role) VALUES($1,$2,'operator'),($3,$4,'owner'),($3,$2,'viewer')",[workspaceId,userId,otherWorkspaceId,outsiderId]);
     const signer=generateKeyPairSync("ed25519");
-    const planFactory={signingKey:async()=>({keyId:"test/v1",publicKey:"A".repeat(43),fingerprint:`sha256:${"a".repeat(64)}`}),create:async(c:{planId:string;nodeId:string;enrollment:{id:string;workspaceId:string;idempotencyKey:string;createdBy:string;requestedName:string}})=>({schemaVersion:"nodes/v1alpha1",planId:c.planId,nodeId:c.nodeId,enrollmentId:c.enrollment.id,workspaceId:c.enrollment.workspaceId,idempotencyKey:c.enrollment.idempotencyKey,approvedBy:c.enrollment.createdBy,approvedAt:"2026-08-22T12:00:00.000Z",hostname:c.enrollment.requestedName,mode:"fresh",installProfile:"ubuntu-26.04-amd64-worker/v1",issuedAt:"2026-08-22T12:00:00.000Z",expiresAt:"2026-08-22T12:15:00.000Z",signingKeyId:"test/v1",digest:`sha256:${c.planId.replaceAll("-","").padEnd(64,"0")}`,signature:"a".repeat(86)})};
+    const signingPublicKey="A".repeat(43);const planFactory={signingKey:async()=>({keyId:"test/v1",publicKey:signingPublicKey,fingerprint:`sha256:${publicKeyFingerprint(signingPublicKey)}`}),create:async(c:{planId:string;nodeId:string;enrollment:{id:string;workspaceId:string;idempotencyKey:string;createdBy:string;requestedName:string}})=>({schemaVersion:"nodes/v1alpha1",planId:c.planId,nodeId:c.nodeId,enrollmentId:c.enrollment.id,workspaceId:c.enrollment.workspaceId,idempotencyKey:c.enrollment.idempotencyKey,approvedBy:c.enrollment.createdBy,approvedAt:"2026-08-22T12:00:00.000Z",hostname:c.enrollment.requestedName,mode:"fresh",installProfile:"ubuntu-26.04-amd64-worker/v1",issuedAt:"2026-08-22T12:00:00.000Z",expiresAt:"2026-08-22T12:15:00.000Z",signingKeyId:"test/v1",digest:`sha256:${c.planId.replaceAll("-","").padEnd(64,"0")}`,signature:"a".repeat(86)})};
     const service=new NodeService(new PgNodeStore(runtime),async()=>Buffer.alloc(32,9),planFactory,()=>new Date("2026-08-22T12:00:00Z"));const principal={userId,email:"operator@example.test",displayName:"Operator"};
     const [first,second]=await Promise.all([service.createEnrollment(principal,workspaceId,"parallel-key",{name:"ben-fresh",mode:"fresh",platform:"linux",architecture:"amd64"}),service.createEnrollment(principal,workspaceId,"parallel-key",{name:"ben-fresh",mode:"fresh",platform:"linux",architecture:"amd64"})]);
     assert.equal(first.id,second.id);assert.equal(first.token,second.token);assert.equal([first.replayed,second.replayed].filter(Boolean).length,1);

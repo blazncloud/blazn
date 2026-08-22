@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalJson, enrollmentToken, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex, verifyNodeProof } from "./node-crypto.js";
 import type { NodePlanFactory } from "./node-plan.js";
 import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction } from "./node-store.js";
-import { nodeRoleAllows, NodeHttpError, type KubernetesBinding, type NodeArchitecture, type NodeEvent, type NodeOperationType, type NodeOperationView, type NodePlatform, type NodePrincipal, type NodeView } from "./node-types.js";
+import { nodeRoleAllows, NodeHttpError, type KubernetesBinding, type NodeArchitecture, type NodeEvent, type NodeOperationType, type NodeOperationView, type NodePlanSigningKey, type NodePlatform, type NodePrincipal, type NodeView } from "./node-types.js";
 
 export interface CreateEnrollmentInput { name: string; mode: "fresh" | "adopt"; platform: NodePlatform; architecture?: NodeArchitecture }
 export interface ExchangeEnrollmentInput { token: string; machineFingerprint: string; nodePublicKey: string; platform: NodePlatform; architecture: NodeArchitecture; kubernetesBinding?: KubernetesBinding }
@@ -15,14 +15,15 @@ export class NodeService {
     validIdempotency(idempotencyKey); validName(input.name); validPlatform(input.platform); if (input.architecture) validArchitecture(input.architecture);
     if (input.mode !== "fresh" && input.mode !== "adopt") invalid("mode is invalid");
     if (input.mode === "fresh" && (input.platform !== "linux" || (input.architecture && input.architecture !== "amd64"))) invalid("fresh POC enrollment requires linux/amd64");
-    const digest = requestDigest(input); const [key, planSigningKey] = await Promise.all([this.enrollmentKey(), this.planFactory.signingKey()]);
+    const digest = requestDigest(input); const key = await this.enrollmentKey();
     return this.store.transaction(async (tx) => {
       await tx.lockIdempotency(principal.userId,"node.enrollment.create",idempotencyKey);
       await authorize(tx,principal,workspaceId,true,true);
       const receipt=await tx.getIdempotency(principal.userId,"node.enrollment.create",idempotencyKey);
-      if(receipt){ verifyReceipt(receipt,workspaceId,`workspace:${workspaceId}`,digest); const stored=receipt.responseBody as {id:string;tokenKeyId:"node-enrollment/v1";planSigningKey:{keyId:string;publicKey:string;fingerprint:string};expiresAt:string}; return {...stored,token:enrollmentToken(key,workspaceId,stored.id,principal.userId,idempotencyKey),replayed:true}; }
+      if(receipt){ verifyReceipt(receipt,workspaceId,`workspace:${workspaceId}`,digest); const stored=receipt.responseBody as {id:string;tokenKeyId:"node-enrollment/v1";planSigningKey:NodePlanSigningKey;expiresAt:string};const enrollment=await tx.enrollmentById(stored.id);if(!enrollment||!sameSigningKey(enrollment.planSigningKey,stored.planSigningKey))throw new Error("enrollment signing trust does not match its idempotency receipt");return {...stored,token:enrollmentToken(key,workspaceId,stored.id,principal.userId,idempotencyKey),replayed:true}; }
+      const planSigningKey=validSigningKey(await this.planFactory.signingKey());
       const id=randomUUID(); const expiresAt=new Date(this.now().getTime()+15*60_000); const token=enrollmentToken(key,workspaceId,id,principal.userId,idempotencyKey);
-      await tx.insertEnrollment({id,workspaceId,name:input.name.trim(),mode:input.mode,platform:input.platform,architecture:input.architecture??null,tokenHash:sha256Hex(token),idempotencyKey,createdBy:principal.userId,expiresAt});
+      await tx.insertEnrollment({id,workspaceId,name:input.name.trim(),mode:input.mode,platform:input.platform,architecture:input.architecture??null,tokenHash:sha256Hex(token),idempotencyKey,createdBy:principal.userId,planSigningKey,expiresAt});
       const stored={id,tokenKeyId:"node-enrollment/v1" as const,planSigningKey,expiresAt:expiresAt.toISOString()};
       await tx.putIdempotency(principal.userId,"node.enrollment.create",idempotencyKey,{workspaceId,targetKey:`workspace:${workspaceId}`,requestDigest:digest,responseStatus:201,responseBody:stored});
       return {...stored,token,replayed:false};
@@ -47,6 +48,7 @@ export class NodeService {
         const replay=await tx.planByEnrollment(enrollment.id); if(!replay) throw new Error("exchanged enrollment has no plan"); return replay;
       }
       if(enrollment.status!=="pending") throw new NodeHttpError("enrollment_consumed","enrollment is no longer exchangeable");
+      const configuredSigningKey=validSigningKey(await this.planFactory.signingKey());if(!sameSigningKey(configuredSigningKey,enrollment.planSigningKey))throw new Error("configured Node plan signer does not match enrollment-pinned trust");
       const issuedAt=this.now(),expiresAt=new Date(issuedAt.getTime()+15*60_000),nodeId=randomUUID(),planId=randomUUID();
       const plan=await this.planFactory.create({planId,nodeId,enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,nodePublicKeyFingerprint:fingerprint,issuedAt,expiresAt});
       const digest=requiredRenderedDigest(plan.digest,"plan digest"); const signature=requiredSignature(plan.signature); const signingKeyId=requiredText(plan.signingKeyId,"signingKeyId",128);
@@ -122,6 +124,8 @@ function validateBinding(v:KubernetesBinding){for(const [k,max] of [["clusterId"
 function requiredRenderedDigest(v:unknown,name:string):string{if(typeof v!=="string"||!/^sha256:[0-9a-f]{64}$/.test(v))throw new Error(`${name} is invalid`);return v;}
 function requiredSignature(v:unknown):string{if(typeof v!=="string"||!/^[A-Za-z0-9_-]{86}$/.test(v))throw new Error("plan signature is invalid");return v;}
 function requiredText(v:unknown,name:string,max:number):string{if(typeof v!=="string"||!v||v.length>max)throw new Error(`${name} is invalid`);return v;}
+function validSigningKey(v:NodePlanSigningKey):NodePlanSigningKey{requiredText(v.keyId,"plan signing key ID",128);if(!/^[A-Za-z0-9_-]{43}$/.test(v.publicKey))throw new Error("plan signing public key is invalid");if(v.fingerprint!==`sha256:${publicKeyFingerprint(v.publicKey)}`)throw new Error("plan signing key fingerprint is inconsistent");return v;}
+function sameSigningKey(a:NodePlanSigningKey,b:NodePlanSigningKey):boolean{return a.keyId===b.keyId&&a.publicKey===b.publicKey&&a.fingerprint===b.fingerprint;}
 function validateHeartbeat(v:HeartbeatInput){validUuid(v.nodeId,"nodeId");if(!Number.isSafeInteger(v.identityGeneration)||v.identityGeneration<1)invalid("identityGeneration is invalid");if(typeof v.bootId!=="string"||!v.bootId||v.bootId.length>128)invalid("bootId is invalid");if(!Number.isSafeInteger(v.sequence)||v.sequence<0)invalid("sequence is invalid");if(!Number.isFinite(Date.parse(v.sentAt)))invalid("sentAt is invalid");requiredRenderedDigest(v.capabilityDigest,"capabilityDigest");if(!v.capability||typeof v.capability!=="object"||Array.isArray(v.capability))invalid("capability is invalid");}
 function rejectSecrets(value:unknown):void{if(Array.isArray(value)){for(const item of value)rejectSecrets(item);return;}if(value&&typeof value==="object"){for(const [key,child] of Object.entries(value)){const n=key.toLowerCase().replace(/[^a-z0-9]/g,"");if(["token","invitetoken","accesstoken","refreshtoken","authorization","password","secret","credential"].includes(n))invalid("capability contains a forbidden secret field");rejectSecrets(child);}}}
 function validateCapability(c:Record<string,unknown>):void{

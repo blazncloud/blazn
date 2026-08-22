@@ -1,23 +1,24 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
-import { canonicalJson, enrollmentToken, renderedDigest } from "./node-crypto.js";
+import { canonicalJson, enrollmentToken, publicKeyFingerprint, renderedDigest, sha256Hex } from "./node-crypto.js";
 import { NodeService, type HeartbeatInput } from "./node-service.js";
 import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction } from "./node-store.js";
 import { NodeHttpError } from "./node-types.js";
 
 const workspaceId="11111111-1111-4111-8111-111111111111",userId="22222222-2222-4222-8222-222222222222",nodeId="33333333-3333-4333-8333-333333333333";
 const principal={userId,email:"operator@example.test",displayName:"Operator"};
-const planSigningKey={keyId:"test/v1",publicKey:"A".repeat(43),fingerprint:`sha256:${"a".repeat(64)}`};
+const signingPublicKey="A".repeat(43);const planSigningKey={keyId:"test/v1",publicKey:signingPublicKey,fingerprint:`sha256:${publicKeyFingerprint(signingPublicKey)}`};
 const planFactory={signingKey:async()=>planSigningKey,create:async()=>({digest:`sha256:${"a".repeat(64)}`,signature:"b".repeat(86),signingKeyId:"test/v1"})};
 
 test("enrollment is authorized before replay and reconstructs no stored secret",async()=>{
-  const key=Buffer.alloc(32,7);let authorized=true;const receipts=new Map<string,NodeIdempotencyReceipt>();let insertedTokenHash="";let enrollmentId="";
+  const key=Buffer.alloc(32,7);let authorized=true;const receipts=new Map<string,NodeIdempotencyReceipt>();let insertedTokenHash="";let enrollmentId="";let insertedEnrollment:Parameters<NodeTransaction["insertEnrollment"]>[0]|undefined;
   const tx=baseTx({
     authority:async()=>authorized?{workspaceId,role:"operator",workspaceStatus:"active"}:undefined,
     getIdempotency:async(_p,_o,k)=>receipts.get(k),
     putIdempotency:async(_p,_o,k,r)=>{receipts.set(k,r);},
-    insertEnrollment:async(v)=>{insertedTokenHash=v.tokenHash;enrollmentId=v.id;},
+    insertEnrollment:async(v)=>{insertedEnrollment=v;insertedTokenHash=v.tokenHash;enrollmentId=v.id;},
+    enrollmentById:async()=>insertedEnrollment?{id:insertedEnrollment.id,workspaceId:insertedEnrollment.workspaceId,requestedName:insertedEnrollment.name,mode:insertedEnrollment.mode as "fresh",expectedPlatform:insertedEnrollment.platform as "linux",expectedArchitecture:"amd64",tokenHash:insertedEnrollment.tokenHash,tokenKeyId:"node-enrollment/v1",idempotencyKey:insertedEnrollment.idempotencyKey,createdBy:insertedEnrollment.createdBy,planSigningKey:insertedEnrollment.planSigningKey,expiresAt:insertedEnrollment.expiresAt,status:"pending",machineBinding:null,nodePublicKey:null,nodePublicKeyFingerprint:null,consumedByNodeId:null,version:1}:undefined,
   });
   const service=new NodeService(store(tx),async()=>key,planFactory,()=>new Date("2026-08-22T12:00:00Z"));
   const first=await service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"});
@@ -28,6 +29,8 @@ test("enrollment is authorized before replay and reconstructs no stored secret",
   authorized=false;
   await assert.rejects(()=>service.createEnrollment(principal,workspaceId,"same-key-1",{name:"ben-new",mode:"fresh",platform:"linux",architecture:"amd64"}),(e:unknown)=>e instanceof NodeHttpError&&e.code==="membership_required");
 });
+
+test("enrollment exchange fails closed when the configured plan signer differs from pinned trust",async()=>{const token="t".repeat(43),pair=generateKeyPairSync("ed25519"),nodePublicKey=pair.publicKey.export({format:"jwk"}).x!;let plans=0;const enrollment={id:"44444444-4444-4444-8444-444444444444",workspaceId,requestedName:"ben-new",mode:"fresh" as const,expectedPlatform:"linux" as const,expectedArchitecture:"amd64" as const,tokenHash:sha256Hex(token),tokenKeyId:"node-enrollment/v1" as const,idempotencyKey:"exchange-key",createdBy:userId,planSigningKey,expiresAt:new Date("2026-08-22T12:15:00Z"),status:"pending" as const,machineBinding:null,nodePublicKey:null,nodePublicKeyFingerprint:null,consumedByNodeId:null,version:1};const rotatedPublicKey="B".repeat(43);const factory={signingKey:async()=>({keyId:"test/v2",publicKey:rotatedPublicKey,fingerprint:`sha256:${publicKeyFingerprint(rotatedPublicKey)}`}),create:async()=>{plans++;return{};}};const service=new NodeService(store(baseTx({enrollmentById:async()=>enrollment})),async()=>Buffer.alloc(32),factory,()=>new Date("2026-08-22T12:00:00Z"));await assert.rejects(()=>service.exchangeEnrollment(enrollment.id,{token,machineFingerprint:"c".repeat(64),nodePublicKey,platform:"linux",architecture:"amd64"}),/configured Node plan signer does not match enrollment-pinned trust/);assert.equal(plans,0);});
 
 test("heartbeat verifies identity, digest, sequence, and recursively rejects secrets",async()=>{
   const pair=generateKeyPairSync("ed25519");const jwk=pair.publicKey.export({format:"jwk"});const publicKey=jwk.x!;let prior:Awaited<ReturnType<NodeTransaction["heartbeatState"]>>;let writes=0;

@@ -6,6 +6,7 @@ export type NodeArchitecture = "amd64" | "arm64";
 export type NodeOperationType = "pause" | "resume" | "label" | "cordon" | "uncordon" | "rotate_identity" | "repair" | "update" | "drain" | "remove";
 
 export interface KubernetesBinding { clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string }
+export interface NodePlanSigningKey { keyId: string; publicKey: string; fingerprint: string }
 export interface NodeIdentityView { generation: number; publicKeyFingerprint: string; status: "active" | "rotating" | "revoked" | "expired"; issuedAt: string; expiresAt: string }
 export interface NodeView {
   id: string; workspaceId: string; name: string; kind: "personal" | "shared" | "managed";
@@ -21,6 +22,7 @@ export interface EnrollmentRecord {
   id: string; workspaceId: string; requestedName: string; mode: "fresh" | "adopt";
   expectedPlatform: NodePlatform; expectedArchitecture: NodeArchitecture | null;
   tokenHash: string; tokenKeyId: "node-enrollment/v1"; idempotencyKey: string;
+  planSigningKey: NodePlanSigningKey;
   createdBy: string; expiresAt: Date; status: "pending" | "exchanged" | "consumed" | "expired" | "revoked";
   machineBinding: string | null; nodePublicKey: string | null; nodePublicKeyFingerprint: string | null;
   consumedByNodeId: string | null; version: number;

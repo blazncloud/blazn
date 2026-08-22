@@ -1,6 +1,6 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import type { Database } from "./db.js";
-import type { EnrollmentRecord, KubernetesBinding, NodeEvent, NodeOperationType, NodeOperationView, NodeView } from "./node-types.js";
+import type { EnrollmentRecord, KubernetesBinding, NodeEvent, NodeOperationType, NodeOperationView, NodePlanSigningKey, NodeView } from "./node-types.js";
 
 export interface NodeIdempotencyReceipt { workspaceId: string; targetKey: string; requestDigest: string; responseStatus: number; responseBody: unknown }
 export interface NodeAuthority { workspaceId: string; role: "owner" | "administrator" | "operator" | "member" | "viewer"; workspaceStatus: string }
@@ -13,7 +13,7 @@ export interface NodeTransaction {
   getIdempotency(principalId: string, operation: string, key: string): Promise<NodeIdempotencyReceipt | undefined>;
   putIdempotency(principalId: string, operation: string, key: string, receipt: NodeIdempotencyReceipt): Promise<void>;
   authority(workspaceId: string, userId: string, lockWorkspace?: boolean): Promise<NodeAuthority | undefined>;
-  insertEnrollment(input: { id: string; workspaceId: string; name: string; mode: string; platform: string; architecture: string | null; tokenHash: string; idempotencyKey: string; createdBy: string; expiresAt: Date }): Promise<void>;
+  insertEnrollment(input: { id: string; workspaceId: string; name: string; mode: string; platform: string; architecture: string | null; tokenHash: string; idempotencyKey: string; createdBy: string; planSigningKey: NodePlanSigningKey; expiresAt: Date }): Promise<void>;
   enrollmentById(id: string, lock?: boolean): Promise<EnrollmentRecord | undefined>;
   planByEnrollment(enrollmentId: string): Promise<Record<string, unknown> | undefined>;
   createExchangedNode(input: { nodeId: string; identityId: string; enrollment: EnrollmentRecord; architecture: string; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<void>;
@@ -58,9 +58,9 @@ class PgNodeTransaction implements NodeTransaction {
     const result = await this.client.query(`SELECT w.id AS workspace_id,w.status AS workspace_status,m.role FROM workspaces w JOIN workspace_memberships m ON m.workspace_id=w.id WHERE w.id=$1 AND m.user_id=$2 AND m.status='active'${lockWorkspace ? " FOR UPDATE OF w" : ""}`, [workspaceId, userId]);
     const row = result.rows[0]; return row ? { workspaceId: row.workspace_id, workspaceStatus: row.workspace_status, role: row.role } : undefined;
   }
-  async insertEnrollment(input: { id: string; workspaceId: string; name: string; mode: string; platform: string; architecture: string | null; tokenHash: string; idempotencyKey: string; createdBy: string; expiresAt: Date }): Promise<void> {
-    await this.client.query(`INSERT INTO node_enrollments(id,workspace_id,requested_name,mode,expected_platform,expected_architecture,token_hash,token_key_id,idempotency_key,created_by,expires_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7,'node-enrollment/v1',$8,$9,$10)`, [input.id,input.workspaceId,input.name,input.mode,input.platform,input.architecture,input.tokenHash,input.idempotencyKey,input.createdBy,input.expiresAt]);
+  async insertEnrollment(input: { id: string; workspaceId: string; name: string; mode: string; platform: string; architecture: string | null; tokenHash: string; idempotencyKey: string; createdBy: string; planSigningKey: NodePlanSigningKey; expiresAt: Date }): Promise<void> {
+    await this.client.query(`INSERT INTO node_enrollments(id,workspace_id,requested_name,mode,expected_platform,expected_architecture,token_hash,token_key_id,idempotency_key,created_by,plan_signing_key_id,plan_signing_public_key,plan_signing_key_fingerprint,expires_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,'node-enrollment/v1',$8,$9,$10,$11,$12,$13)`, [input.id,input.workspaceId,input.name,input.mode,input.platform,input.architecture,input.tokenHash,input.idempotencyKey,input.createdBy,input.planSigningKey.keyId,input.planSigningKey.publicKey,input.planSigningKey.fingerprint.slice(7),input.expiresAt]);
   }
   async enrollmentById(id: string, lock = false): Promise<EnrollmentRecord | undefined> {
     const result = await this.client.query(`SELECT * FROM node_enrollments WHERE id=$1${lock ? " FOR UPDATE" : ""}`, [id]);
@@ -147,5 +147,5 @@ class PgNodeTransaction implements NodeTransaction {
 
 function nodeSelect():string{return `SELECT n.*,i.generation AS identity_generation,i.public_key_fingerprint,i.status AS identity_status,i.issued_at AS identity_issued_at,i.expires_at AS identity_expires_at FROM nodes n LEFT JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation`}
 function nodeRow(r:QueryResultRow):NodeView{return {id:r.id,workspaceId:r.workspace_id,name:r.name,kind:r.kind,platform:r.host_platform,architecture:r.host_architecture,lifecycleState:r.lifecycle_state,trustState:r.trust_state,agentEligible:r.agent_eligible,version:Number(r.version),capabilityVersion:r.current_capability_version===null?null:Number(r.current_capability_version),identity:r.identity_generation===null?null:{generation:Number(r.identity_generation),publicKeyFingerprint:`sha256:${r.public_key_fingerprint.trim()}`,status:r.identity_status,issuedAt:r.identity_issued_at.toISOString(),expiresAt:r.identity_expires_at.toISOString()},kubernetesBinding:r.kubernetes_node_uid===null?null:{clusterId:r.kubernetes_cluster_id,nodeName:r.kubernetes_node_name,nodeUid:r.kubernetes_node_uid,resourceVersion:r.kubernetes_resource_version},createdAt:r.created_at.toISOString(),updatedAt:r.updated_at.toISOString()}}
-function enrollmentRow(r:QueryResultRow):EnrollmentRecord{return{id:r.id,workspaceId:r.workspace_id,requestedName:r.requested_name,mode:r.mode,expectedPlatform:r.expected_platform,expectedArchitecture:r.expected_architecture,tokenHash:r.token_hash.trim(),tokenKeyId:r.token_key_id,idempotencyKey:r.idempotency_key,createdBy:r.created_by,expiresAt:r.expires_at,status:r.status,machineBinding:r.machine_binding?.trim()??null,nodePublicKey:r.node_public_key,nodePublicKeyFingerprint:r.node_public_key_fingerprint?.trim()??null,consumedByNodeId:r.consumed_by_node_id,version:Number(r.version)}}
+function enrollmentRow(r:QueryResultRow):EnrollmentRecord{return{id:r.id,workspaceId:r.workspace_id,requestedName:r.requested_name,mode:r.mode,expectedPlatform:r.expected_platform,expectedArchitecture:r.expected_architecture,tokenHash:r.token_hash.trim(),tokenKeyId:r.token_key_id,idempotencyKey:r.idempotency_key,createdBy:r.created_by,planSigningKey:{keyId:r.plan_signing_key_id,publicKey:r.plan_signing_public_key.trim(),fingerprint:`sha256:${r.plan_signing_key_fingerprint.trim()}`},expiresAt:r.expires_at,status:r.status,machineBinding:r.machine_binding?.trim()??null,nodePublicKey:r.node_public_key,nodePublicKeyFingerprint:r.node_public_key_fingerprint?.trim()??null,consumedByNodeId:r.consumed_by_node_id,version:Number(r.version)}}
 function operationRow(r:QueryResultRow):NodeOperationView{return{id:r.id,nodeId:r.node_id,type:r.type,status:r.status,expectedNodeVersion:Number(r.expected_node_version),result:r.result,error:r.error,receipt:null,createdAt:r.created_at.toISOString()}}

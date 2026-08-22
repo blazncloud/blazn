@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { EnrollmentRecord, NodeArchitecture } from "./node-types.js";
+import type { EnrollmentRecord, NodeArchitecture, NodePlanSigningKey } from "./node-types.js";
 import type { NodePlanSigner } from "./node-crypto.js";
 import { NODE_INSTALL_PROFILES, type NodeInstallProfile, validateSignedNodeInstallPlan } from "./node-plan-validator.js";
 
@@ -9,14 +9,14 @@ export interface NodePlanContext {
 }
 
 export interface NodePlanFactory {
-  signingKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;
+  signingKey(): Promise<NodePlanSigningKey>;
   create(context: NodePlanContext): Promise<Record<string, unknown>>;
 }
 
 export class TemplateNodePlanFactory implements NodePlanFactory {
   constructor(private readonly templateFile: string, private readonly signer: NodePlanSigner) {}
 
-  signingKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }> { return this.signer.publicKey(); }
+  signingKey(): Promise<NodePlanSigningKey> { return this.signer.publicKey(); }
 
   async create(context: NodePlanContext): Promise<Record<string, unknown>> {
     const parsed: unknown = JSON.parse(await readFile(this.templateFile, "utf8"));
