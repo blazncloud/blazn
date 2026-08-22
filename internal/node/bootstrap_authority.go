@@ -155,6 +155,15 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 
 func DecodeRootInstallAuthority(encoded []byte) (RootInstallAuthority, error) {
 	var authority RootInstallAuthority
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 11 {
+		return authority, errors.New("root install authority fields are invalid")
+	}
+	for _, name := range []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "profileId", "profileSha256", "controlPlaneOrigin", "authorizedAt", "digest"} {
+		if fields[name] == nil {
+			return RootInstallAuthority{}, errors.New("root install authority fields are incomplete")
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&authority); err != nil {

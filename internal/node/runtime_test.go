@@ -108,6 +108,12 @@ func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
 	if _, err := DecodeRootInstallAuthority(withToken); err == nil {
 		t.Fatal("token-like unknown root-authority field was accepted")
 	}
+	delete(unknown, "enrollmentToken")
+	delete(unknown, "kubernetesBinding")
+	missingBinding, _ := json.Marshal(unknown)
+	if _, err := DecodeRootInstallAuthority(missingBinding); err == nil {
+		t.Fatal("root authority with an omitted nullable binding was accepted")
+	}
 	tamperedBinding := authority
 	bindingCopy := *authority.KubernetesBinding
 	bindingCopy.NodeUID = "substituted-uid"
