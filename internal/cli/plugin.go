@@ -33,7 +33,7 @@ func (a *App) runPlugin(format OutputFormat, definition pluginpkg.Definition, ar
 		if !errors.Is(err, os.ErrNotExist) {
 			return a.writeError(format, ExitUnavailable, "plugin_unhealthy", err.Error())
 		}
-		if format == OutputJSON || !a.stdinTTY() {
+		if format != OutputHuman || !a.stdinTTY() {
 			return a.writeError(format, ExitUnavailable, "plugin_required", fmt.Sprintf("command requires the %s plugin; install with 'blazn plugins install %s --yes'", definition.Name, definition.Name))
 		}
 		fmt.Fprintf(a.stderr, "The command requires the %s plugin.\nInstall %s from %s? [y/N] ", definition.Name, definition.Name, definition.Repository)
