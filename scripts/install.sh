@@ -83,18 +83,33 @@ blazn_process_start() {
   if [ -r "/proc/$blazn_process_pid/stat" ]; then
     sed 's/^.*) //' "/proc/$blazn_process_pid/stat" | awk '{print $20}'
   else
-    ps -p "$blazn_process_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}'
+    LC_ALL=C TZ=UTC ps -p "$blazn_process_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}'
   fi
 }
 
-blazn_write_lock_owner() {
+blazn_acquire_lock() {
   blazn_owner_start=$(blazn_process_start "$$")
   [ -n "$blazn_owner_start" ] || blazn_die "could not determine installer process identity"
+  blazn_lock_candidate="$blazn_install_dir/.blazn-lock-owner.$$"
+  [ ! -e "$blazn_lock_candidate" ] || blazn_die "stale lock candidate exists at $blazn_lock_candidate"
   {
     printf 'pid=%s\n' "$$"
     printf 'start=%s\n' "$blazn_owner_start"
-  } > "$blazn_lock_owner" || blazn_die "could not write lifecycle lock owner"
-  chmod 0600 "$blazn_lock_owner"
+  } > "$blazn_lock_candidate" || blazn_die "could not write lifecycle lock candidate"
+  chmod 0600 "$blazn_lock_candidate"
+  if ln "$blazn_lock_candidate" "$blazn_lock_file" 2>/dev/null; then
+    rm -f "$blazn_lock_candidate"
+    blazn_lock_candidate=""
+    blazn_lock_owned=1
+    return 0
+  fi
+  rm -f "$blazn_lock_candidate"
+  blazn_lock_candidate=""
+  if [ ! -e "$blazn_lock_file" ]; then
+    blazn_die "could not create lifecycle lock at $blazn_lock_file"
+  fi
+  blazn_recover_stale_lock
+  blazn_acquire_lock
 }
 
 blazn_write_journal() {
@@ -108,16 +123,16 @@ blazn_write_journal() {
 }
 
 blazn_recover_stale_lock() {
-  [ -d "$blazn_lock_dir" ] && [ ! -L "$blazn_lock_dir" ] || \
-    blazn_die "lifecycle lock path is not a real directory: $blazn_lock_dir"
+  [ -f "$blazn_lock_file" ] && [ ! -L "$blazn_lock_file" ] || \
+    blazn_die "lifecycle lock path is not a regular file: $blazn_lock_file"
 
-  if [ -f "$blazn_lock_owner" ] && [ ! -L "$blazn_lock_owner" ]; then
-    blazn_owner_pid=$(blazn_receipt_value "$blazn_lock_owner" pid 2>/dev/null || true)
-    blazn_owner_start=$(blazn_receipt_value "$blazn_lock_owner" start 2>/dev/null || true)
+  if [ -f "$blazn_lock_file" ] && [ ! -L "$blazn_lock_file" ]; then
+    blazn_owner_pid=$(blazn_receipt_value "$blazn_lock_file" pid 2>/dev/null || true)
+    blazn_owner_start=$(blazn_receipt_value "$blazn_lock_file" start 2>/dev/null || true)
     if [ -n "$blazn_owner_pid" ] && [ -n "$blazn_owner_start" ] && kill -0 "$blazn_owner_pid" 2>/dev/null; then
       blazn_live_start=$(blazn_process_start "$blazn_owner_pid" 2>/dev/null || true)
       if [ "$blazn_live_start" = "$blazn_owner_start" ]; then
-        blazn_die "another Blazn install or uninstall operation owns $blazn_lock_dir"
+        blazn_die "another Blazn install or uninstall operation owns $blazn_lock_file"
       fi
     fi
   fi
@@ -159,10 +174,13 @@ blazn_recover_stale_lock() {
         ;;
       uninstall_preparing)
         if [ -f "$blazn_destination" ]; then
-          [ ! -e "$blazn_receipt" ] || blazn_die "stale uninstall has both active and staged receipts"
-          [ -f "$blazn_uninstall_receipt" ] && [ ! -L "$blazn_uninstall_receipt" ] || \
-            blazn_die "stale uninstall is missing its recoverable receipt"
-          mv "$blazn_uninstall_receipt" "$blazn_receipt" || blazn_die "could not restore stale uninstall receipt"
+          if [ -f "$blazn_receipt" ] && [ ! -e "$blazn_uninstall_receipt" ]; then
+            : # Crash occurred before receipt staging; the owned pair is intact.
+          elif [ ! -e "$blazn_receipt" ] && [ -f "$blazn_uninstall_receipt" ] && [ ! -L "$blazn_uninstall_receipt" ]; then
+            mv "$blazn_uninstall_receipt" "$blazn_receipt" || blazn_die "could not restore stale uninstall receipt"
+          else
+            blazn_die "stale uninstall receipt state is ambiguous"
+          fi
         else
           rm -f "$blazn_uninstall_receipt"
         fi
@@ -176,8 +194,7 @@ blazn_recover_stale_lock() {
     blazn_die "stale lifecycle lock has transaction files but no valid journal"
   fi
 
-  rm -f "$blazn_lock_owner" "$blazn_lock_journal"
-  rmdir "$blazn_lock_dir" || blazn_die "could not remove reconciled lifecycle lock"
+  rm -f "$blazn_lock_file" "$blazn_lock_journal"
 }
 
 blazn_test_checkpoint() {
@@ -190,9 +207,20 @@ blazn_test_checkpoint() {
   esac
 }
 
+blazn_restore_file() {
+  blazn_restore_kind=$1
+  blazn_restore_source=$2
+  blazn_restore_destination=$3
+  if [ "${BLAZN_ALLOW_INSECURE_TEST_ORIGIN:-}" = "1" ] && [ "${BLAZN_TEST_FAIL_RESTORE:-}" = "$blazn_restore_kind" ]; then
+    return 1
+  fi
+  mv "$blazn_restore_source" "$blazn_restore_destination"
+}
+
 blazn_cleanup() {
   [ "${blazn_cleanup_done:-0}" = "0" ] || return 0
   blazn_cleanup_done=1
+  blazn_recovery_failed=0
   if [ "${blazn_install_in_progress:-0}" = "1" ]; then
     if [ "${blazn_new_binary_installed:-0}" = "1" ] && [ -n "${blazn_destination:-}" ]; then
       rm -f "$blazn_destination" 2>/dev/null || true
@@ -201,12 +229,16 @@ blazn_cleanup() {
       rm -f "$blazn_receipt" 2>/dev/null || true
     fi
     if [ -n "${blazn_backup_binary:-}" ] && [ -f "$blazn_backup_binary" ]; then
-      mv "$blazn_backup_binary" "$blazn_destination" 2>/dev/null || \
+      if ! blazn_restore_file binary "$blazn_backup_binary" "$blazn_destination" 2>/dev/null; then
         blazn_err "could not restore prior binary from $blazn_backup_binary"
+        blazn_recovery_failed=1
+      fi
     fi
     if [ -n "${blazn_backup_receipt:-}" ] && [ -f "$blazn_backup_receipt" ]; then
-      mv "$blazn_backup_receipt" "$blazn_receipt" 2>/dev/null || \
+      if ! blazn_restore_file receipt "$blazn_backup_receipt" "$blazn_receipt" 2>/dev/null; then
         blazn_err "could not restore prior receipt from $blazn_backup_receipt"
+        blazn_recovery_failed=1
+      fi
     fi
   fi
   if [ -n "${blazn_stage_binary:-}" ]; then
@@ -228,11 +260,17 @@ blazn_cleanup() {
     rmdir "$blazn_tmp_dir/extract" 2>/dev/null || true
     rmdir "$blazn_tmp_dir" 2>/dev/null || true
   fi
-  if [ "${blazn_lock_owned:-0}" = "1" ] && [ -n "${blazn_lock_dir:-}" ]; then
-    rm -f "${blazn_lock_owner:-}" "${blazn_lock_journal:-}" 2>/dev/null || true
-    rmdir "$blazn_lock_dir" 2>/dev/null || \
-      blazn_err "could not remove lifecycle lock $blazn_lock_dir"
+  if [ "${blazn_lock_owned:-0}" = "1" ] && [ -n "${blazn_lock_file:-}" ]; then
+    if [ "$blazn_recovery_failed" = "1" ]; then
+      blazn_err "preserving lifecycle lock and journal for recovery"
+    else
+      rm -f "${blazn_lock_file:-}" "${blazn_lock_journal:-}" 2>/dev/null || \
+        blazn_err "could not remove lifecycle lock or journal"
+    fi
     blazn_lock_owned=0
+  fi
+  if [ -n "${blazn_lock_candidate:-}" ]; then
+    rm -f "$blazn_lock_candidate" 2>/dev/null || true
   fi
 }
 
@@ -241,6 +279,7 @@ blazn_command_required tar
 blazn_command_required ssh-keygen
 blazn_command_required awk
 blazn_command_required grep
+blazn_command_required ln
 blazn_command_required mktemp
 blazn_command_required ps
 
@@ -398,23 +437,14 @@ mkdir -p "$blazn_install_dir" || blazn_die "could not create $blazn_install_dir"
 
 blazn_destination="$blazn_install_dir/blazn"
 blazn_receipt="$blazn_install_dir/.blazn-install-receipt"
-blazn_lock_dir="$blazn_install_dir/.blazn-install.lock"
-blazn_lock_owner="$blazn_lock_dir/owner"
-blazn_lock_journal="$blazn_lock_dir/journal"
+blazn_lock_file="$blazn_install_dir/.blazn-install.lock"
+blazn_lock_journal="$blazn_install_dir/.blazn-install.journal"
 blazn_stage_binary="$blazn_install_dir/.blazn.new"
 blazn_stage_receipt="$blazn_install_dir/.blazn-receipt.new"
 blazn_backup_binary="$blazn_install_dir/.blazn.backup"
 blazn_backup_receipt="$blazn_install_dir/.blazn-receipt.backup"
 blazn_uninstall_receipt="$blazn_install_dir/.blazn-uninstall-receipt"
-if ! mkdir "$blazn_lock_dir" 2>/dev/null; then
-  if [ ! -e "$blazn_lock_dir" ]; then
-    blazn_die "could not create lifecycle lock at $blazn_lock_dir"
-  fi
-  blazn_recover_stale_lock
-  mkdir "$blazn_lock_dir" 2>/dev/null || blazn_die "could not acquire reconciled lifecycle lock"
-fi
-blazn_lock_owned=1
-blazn_write_lock_owner
+blazn_acquire_lock
 [ ! -L "$blazn_destination" ] || blazn_die "refusing to replace a symbolic-link destination"
 [ ! -L "$blazn_receipt" ] || blazn_die "refusing to replace a symbolic-link receipt"
 

@@ -128,14 +128,17 @@ func configPermissionsCheck() DoctorCheck {
 		check.Remediation = "replace it with a private user-owned directory after preserving authorized data"
 		return check
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	return evaluateConfigSecurity(check, info.Mode().Perm(), info.Sys(), uint32(os.Geteuid()))
+}
+
+func evaluateConfigSecurity(check DoctorCheck, permissions os.FileMode, systemInfo any, effectiveUID uint32) DoctorCheck {
+	if permissions&0o077 != 0 {
 		check.Severity = "warning"
 		check.Status = "warn"
-		check.Message = fmt.Sprintf("Blazn configuration directory permissions are %04o", info.Mode().Perm())
+		check.Message = fmt.Sprintf("Blazn configuration directory permissions are %04o", permissions)
 		check.Remediation = "restrict the Blazn configuration directory to mode 0700"
-		return check
 	}
-	knownOwner, matchingOwner := configOwnerMatches(info.Sys(), uint32(os.Geteuid()))
+	knownOwner, matchingOwner := configOwnerMatches(systemInfo, effectiveUID)
 	if !knownOwner {
 		check.Severity = "warning"
 		check.Status = "warn"

@@ -118,6 +118,18 @@ run_installer_missing_command() {
     sh "$test_repo_root/scripts/install.sh"
 }
 
+run_installer_restore_fault() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
+  BLAZN_TEST_FAIL_STEP=after-backup \
+  BLAZN_TEST_FAIL_RESTORE=$1 \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
 inode_of() {
   if [ "$test_os" = "darwin" ]; then
     stat -f '%i' "$1"
@@ -130,7 +142,7 @@ process_start_of() {
   if [ -r "/proc/$1/stat" ]; then
     sed 's/^.*) //' "/proc/$1/stat" | awk '{print $20}'
   else
-    ps -p "$1" -o lstart= | awk '{$1=$1; print}'
+    LC_ALL=C TZ=UTC ps -p "$1" -o lstart= | awk '{$1=$1; print}'
   fi
 }
 
@@ -255,6 +267,17 @@ for fault in kill-after-backup kill-after-binary-install; do
 done
 pass "SIGKILL residue is reconciled on the next installer run"
 
+prepare_upgrade_state
+if run_installer_restore_fault binary >"$test_root/restore-failure.out" 2>&1; then
+  fail "injected backup restore failure unexpectedly succeeded"
+fi
+[ -f "$test_install/.blazn-install.lock" ] || fail "restore failure did not preserve lifecycle lock"
+[ -f "$test_install/.blazn-install.journal" ] || fail "restore failure did not preserve recovery journal"
+[ -f "$test_install/.blazn.backup" ] || fail "restore failure did not preserve binary backup"
+run_installer >"$test_root/recover-restore-failure.out"
+[ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "restore-failure recovery did not install candidate"
+pass "restore failure preserves and later reconciles recovery metadata"
+
 cp "$test_release/SHA256SUMS.sig" "$test_root/good-signature"
 rm "$test_release/SHA256SUMS.sig"
 if run_installer >"$test_root/missing-signature.out" 2>&1; then
@@ -269,17 +292,35 @@ fi
 grep -q 'required command not found: ssh-keygen' "$test_root/missing-verifier.out" || fail "missing verifier failure is explicit"
 pass "missing signature verifier is rejected"
 
-mkdir "$test_install/.blazn-install.lock"
+stale_owner="$test_install/.blazn-stale-owner"
+{
+  printf 'pid=99999999\n'
+  printf 'start=stale\n'
+} > "$stale_owner"
+ln "$stale_owner" "$test_install/.blazn-install.lock"
+rm "$stale_owner"
+{
+  printf 'state=uninstall_preparing\n'
+  printf 'had_binary=1\n'
+  printf 'had_receipt=1\n'
+} > "$test_install/.blazn-install.journal"
+run_installer >"$test_root/recover-uninstall-prestage.out"
+[ -f "$test_install/blazn" ] && [ -f "$test_install/.blazn-install-receipt" ] || fail "pre-stage uninstall recovery damaged owned pair"
+[ ! -e "$test_install/.blazn-install.lock" ] && [ ! -e "$test_install/.blazn-install.journal" ] || fail "pre-stage uninstall recovery left lock state"
+pass "pre-stage uninstall crash reconciles as a no-op"
+
+active_lock_candidate="$test_install/.blazn-active-lock-owner"
 {
   printf 'pid=%s\n' "$$"
   printf 'start=%s\n' "$(process_start_of "$$")"
-} > "$test_install/.blazn-install.lock/owner"
+} > "$active_lock_candidate"
+ln "$active_lock_candidate" "$test_install/.blazn-install.lock"
+rm "$active_lock_candidate"
 if run_installer >"$test_root/lifecycle-lock.out" 2>&1; then
   fail "concurrent lifecycle lock was ignored"
 fi
 grep -q 'another Blazn install or uninstall' "$test_root/lifecycle-lock.out" || fail "lifecycle lock failure is explicit"
-rm "$test_install/.blazn-install.lock/owner"
-rmdir "$test_install/.blazn-install.lock"
+rm "$test_install/.blazn-install.lock"
 pass "concurrent lifecycle operation is rejected"
 
 cat > "$test_root/payload/blazn" <<'EOF'
@@ -300,4 +341,4 @@ grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fai
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
-printf '1..16\n'
+printf '1..18\n'

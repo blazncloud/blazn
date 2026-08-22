@@ -173,12 +173,12 @@ func TestUninstallCommandReportsRemovedWithResidue(t *testing.T) {
 	var stderr bytes.Buffer
 	app := New(&stdout, &stderr, testBuild)
 	app.uninstall = func() (UninstallResult, error) {
-		return UninstallResult{Command: "uninstall", Status: "removed_with_residue", Path: "/tmp/bin/blazn", ConfigPreserved: true, Residue: "/tmp/bin/.receipt.removing"}, nil
+		return UninstallResult{Command: "uninstall", Status: "removed_with_residue", Path: "/tmp/bin/blazn", ConfigPreserved: true, Residues: []string{"/tmp/bin/.receipt.removing"}}, nil
 	}
 	if code := app.Run([]string{"uninstall", "--yes", "--output=json"}); code != ExitFailure {
 		t.Fatalf("partial uninstall code=%d want=%d", code, ExitFailure)
 	}
-	if !strings.Contains(stdout.String(), `"status":"removed_with_residue"`) || !strings.Contains(stdout.String(), `"residue":"/tmp/bin/.receipt.removing"`) {
+	if !strings.Contains(stdout.String(), `"status":"removed_with_residue"`) || !strings.Contains(stdout.String(), `"residues":["/tmp/bin/.receipt.removing"]`) {
 		t.Fatalf("partial uninstall JSON=%q", stdout.String())
 	}
 }
@@ -264,13 +264,13 @@ func TestRunUninstallAtReportsReceiptResidueAfterBinaryRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error after material uninstall: %v", err)
 	}
-	if result.Status != "removed_with_residue" || result.Residue == "" {
+	if result.Status != "removed_with_residue" || len(result.Residues) != 1 {
 		t.Fatalf("result=%#v", result)
 	}
 	if _, err := os.Stat(executable); !os.IsNotExist(err) {
 		t.Fatalf("binary should be removed, err=%v", err)
 	}
-	if _, err := os.Stat(result.Residue); err != nil {
+	if _, err := os.Stat(result.Residues[0]); err != nil {
 		t.Fatalf("expected staged receipt residue: %v", err)
 	}
 }
@@ -333,14 +333,48 @@ func TestRunUninstallAtReportsFailedWithResidueWhenRestoreFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected structured residue result, got %v", err)
 	}
-	if result.Status != "failed_with_residue" || result.Residue == "" {
+	if result.Status != "failed_with_residue" || len(result.Residues) != 1 {
 		t.Fatalf("result=%#v", result)
 	}
 	if _, err := os.Stat(executable); err != nil {
 		t.Fatalf("binary should remain after failed removal: %v", err)
 	}
-	if _, err := os.Stat(result.Residue); err != nil {
+	if _, err := os.Stat(result.Residues[0]); err != nil {
 		t.Fatalf("staged receipt residue missing: %v", err)
+	}
+}
+
+func TestRunUninstallAtPreservesMultipleResidues(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "blazn")
+	content := []byte("standalone-binary")
+	if err := os.WriteFile(executable, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	receipt := filepath.Join(dir, installReceiptName)
+	if err := os.WriteFile(receipt, []byte(fmt.Sprintf("version=v1.2.3\nbinary_sha256=%x\n", digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultUninstallOps
+	ops.remove = func(path string) error {
+		switch filepath.Base(path) {
+		case ".blazn-uninstall-receipt", ".blazn-install.lock":
+			return errors.New("injected cleanup failure")
+		default:
+			return os.Remove(path)
+		}
+	}
+	result, err := runUninstallAtWithOps(executable, ops)
+	if err != nil {
+		t.Fatalf("expected structured residue result, got %v", err)
+	}
+	if result.Status != "removed_with_residue" || len(result.Residues) != 2 {
+		t.Fatalf("result=%#v", result)
+	}
+	if filepath.Base(result.Residues[0]) != ".blazn-uninstall-receipt" || filepath.Base(result.Residues[1]) != ".blazn-install.lock" {
+		t.Fatalf("residues=%v", result.Residues)
 	}
 }
 
@@ -369,5 +403,13 @@ func TestConfigOwnerMatches(t *testing.T) {
 	known, matches = configOwnerMatches(struct{}{}, 1001)
 	if known || matches {
 		t.Fatalf("unknown metadata: known=%v matches=%v", known, matches)
+	}
+}
+
+func TestConfigOwnershipFailureOverridesPermissiveModeWarning(t *testing.T) {
+	base := DoctorCheck{Name: "config.permissions", Severity: "info", Status: "pass", Message: "private", Remediation: "none"}
+	check := evaluateConfigSecurity(base, 0o755, &syscall.Stat_t{Uid: 2000}, 1000)
+	if check.Status != "fail" || check.Severity != "error" || !strings.Contains(check.Message, "owned by another user") {
+		t.Fatalf("check=%#v", check)
 	}
 }

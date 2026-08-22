@@ -17,20 +17,20 @@ import (
 const installReceiptName = ".blazn-install-receipt"
 
 type UninstallResult struct {
-	Command         string `json:"command"`
-	Status          string `json:"status"`
-	Path            string `json:"path"`
-	ConfigPreserved bool   `json:"configPreserved"`
-	Residue         string `json:"residue,omitempty"`
+	Command         string   `json:"command"`
+	Status          string   `json:"status"`
+	Path            string   `json:"path"`
+	ConfigPreserved bool     `json:"configPreserved"`
+	Residues        []string `json:"residues,omitempty"`
 }
 
 type uninstallOps struct {
-	mkdir  func(string, os.FileMode) error
+	link   func(string, string) error
 	rename func(string, string) error
 	remove func(string) error
 }
 
-var defaultUninstallOps = uninstallOps{mkdir: os.Mkdir, rename: os.Rename, remove: os.Remove}
+var defaultUninstallOps = uninstallOps{link: os.Link, rename: os.Rename, remove: os.Remove}
 
 func RunUninstall() (UninstallResult, error) {
 	executable, err := os.Executable()
@@ -58,26 +58,47 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 	}
 
 	directory := filepath.Dir(executable)
-	lockDir := filepath.Join(directory, ".blazn-install.lock")
-	if err := ops.mkdir(lockDir, 0o700); err != nil {
-		if os.IsExist(err) {
-			return UninstallResult{}, fmt.Errorf("another or stale Blazn install or uninstall operation owns %s; rerun the signed installer to reconcile stale state", lockDir)
-		}
-		return UninstallResult{}, fmt.Errorf("create lifecycle lock %s: %w", lockDir, err)
+	lockFile := filepath.Join(directory, ".blazn-install.lock")
+	lockJournal := filepath.Join(directory, ".blazn-install.journal")
+	startIdentity, err := processStartIdentity(os.Getpid())
+	if err != nil {
+		return UninstallResult{}, fmt.Errorf("determine uninstall process identity: %w", err)
 	}
+	lockCandidate := filepath.Join(directory, fmt.Sprintf(".blazn-lock-owner.%d", os.Getpid()))
+	candidateFile, err := os.OpenFile(lockCandidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return UninstallResult{}, fmt.Errorf("write lifecycle lock candidate: %w", err)
+	}
+	if _, err := fmt.Fprintf(candidateFile, "pid=%d\nstart=%s\n", os.Getpid(), startIdentity); err != nil {
+		_ = candidateFile.Close()
+		_ = os.Remove(lockCandidate)
+		return UninstallResult{}, fmt.Errorf("write lifecycle lock candidate: %w", err)
+	}
+	if err := candidateFile.Close(); err != nil {
+		_ = os.Remove(lockCandidate)
+		return UninstallResult{}, fmt.Errorf("close lifecycle lock candidate: %w", err)
+	}
+	if err := ops.link(lockCandidate, lockFile); err != nil {
+		_ = ops.remove(lockCandidate)
+		if os.IsExist(err) {
+			return UninstallResult{}, fmt.Errorf("another or stale Blazn install or uninstall operation owns %s; rerun the signed installer to reconcile stale state", lockFile)
+		}
+		return UninstallResult{}, fmt.Errorf("create lifecycle lock %s: %w", lockFile, err)
+	}
+	_ = ops.remove(lockCandidate)
 	lockOwned := true
-	lockOwner := filepath.Join(lockDir, "owner")
-	lockJournal := filepath.Join(lockDir, "journal")
 	defer func() {
 		if !lockOwned {
 			return
 		}
-		_ = ops.remove(lockOwner)
 		_ = ops.remove(lockJournal)
-		if err := ops.remove(lockDir); err != nil {
-			if result.Status == "removed" {
-				result.Status = "removed_with_residue"
-				result.Residue = lockDir
+		if err := ops.remove(lockFile); err != nil {
+			if result.Status != "" {
+				if result.Status == "removed" {
+					result.Status = "removed_with_residue"
+				}
+				result.Residues = append(result.Residues, lockFile)
+				resultErr = nil
 				return
 			}
 			if resultErr == nil {
@@ -85,13 +106,6 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 			}
 		}
 	}()
-	startIdentity, err := processStartIdentity(os.Getpid())
-	if err != nil {
-		return UninstallResult{}, fmt.Errorf("determine uninstall process identity: %w", err)
-	}
-	if err := os.WriteFile(lockOwner, []byte(fmt.Sprintf("pid=%d\nstart=%s\n", os.Getpid(), startIdentity)), 0o600); err != nil {
-		return UninstallResult{}, fmt.Errorf("write lifecycle lock owner: %w", err)
-	}
 	if err := os.WriteFile(lockJournal, []byte("state=uninstall_preparing\nhad_binary=1\nhad_receipt=1\n"), 0o600); err != nil {
 		return UninstallResult{}, fmt.Errorf("write uninstall journal: %w", err)
 	}
@@ -149,7 +163,7 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 				Status:          "failed_with_residue",
 				Path:            executable,
 				ConfigPreserved: true,
-				Residue:         stagedReceipt,
+				Residues:        []string{stagedReceipt},
 			}, nil
 		}
 		return UninstallResult{}, fmt.Errorf("remove executable: %w", err)
@@ -157,7 +171,7 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 	result = UninstallResult{Command: "uninstall", Status: "removed", Path: executable, ConfigPreserved: true}
 	if err := ops.remove(stagedReceipt); err != nil {
 		result.Status = "removed_with_residue"
-		result.Residue = stagedReceipt
+		result.Residues = []string{stagedReceipt}
 		return result, nil
 	}
 
@@ -180,7 +194,9 @@ func processStartIdentity(pid int) (string, error) {
 		}
 		return fields[19], nil
 	}
-	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	command := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=")
+	command.Env = append(os.Environ(), "LC_ALL=C", "TZ=UTC")
+	output, err := command.Output()
 	if err != nil {
 		return "", err
 	}
@@ -245,7 +261,7 @@ func (a *App) writeUninstall(format OutputFormat) int {
 	fmt.Fprintf(a.stdout, "Removed %s\n", result.Path)
 	fmt.Fprintln(a.stdout, "Blazn configuration and cache were preserved.")
 	if result.Status != "removed" {
-		fmt.Fprintf(a.stderr, "blazn: uninstall completed with residue at %s\n", result.Residue)
+		fmt.Fprintf(a.stderr, "blazn: uninstall completed with residue at %s\n", strings.Join(result.Residues, ", "))
 		return ExitFailure
 	}
 	return ExitSuccess
