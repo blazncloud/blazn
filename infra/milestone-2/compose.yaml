@@ -35,12 +35,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: 256
     deploy:
       resources:
         limits:
           cpus: "1.00"
           memory: 1536M
+          pids: 256
     networks:
       - control
 
@@ -71,12 +71,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: 256
     deploy:
       resources:
         limits:
           cpus: "1.00"
           memory: 1536M
+          pids: 256
     networks:
       - control
 
@@ -106,12 +106,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: 128
     deploy:
       resources:
         limits:
           cpus: "0.50"
           memory: 512M
+          pids: 128
     networks:
       - control
 
@@ -137,12 +137,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: 128
     deploy:
       resources:
         limits:
           cpus: "0.50"
           memory: 512M
+          pids: 128
     networks:
       - control
 
@@ -186,12 +186,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    pids_limit: 256
     deploy:
       resources:
         limits:
           cpus: "1.00"
           memory: 1024M
+          pids: 256
     networks:
       - control
 
