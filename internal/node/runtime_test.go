@@ -19,7 +19,7 @@ import (
 const testHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func TestFileIdentityStoreCreatesPrivateStableKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "private", "identity.json")
+	path := filepath.Join(testRoot(t), "private", "identity.json")
 	store := FileIdentityStore{Path: path, Now: func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }}
 	first, err := store.LoadOrCreate()
 	if err != nil {
@@ -39,7 +39,7 @@ func TestFileIdentityStoreCreatesPrivateStableKey(t *testing.T) {
 }
 
 func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
-	root := t.TempDir()
+	root := testRoot(t)
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestCompletedWALRecoveryNeverRollsBackActiveInstall(t *testing.T) {
 }
 
 func TestFileWALCreateIsExclusive(t *testing.T) {
-	store := FileStateStore{Root: filepath.Join(t.TempDir(), "state")}
+	store := FileStateStore{Root: filepath.Join(testRoot(t), "state")}
 	wal := InstallWAL{SchemaVersion: 1, PlanID: "plan-a"}
 	if err := store.CreateWAL(wal); err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestFileWALCreateIsExclusive(t *testing.T) {
 }
 
 func TestInstallLockAndPrivateStateRejectConcurrentOrLinkedOwners(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "state")
+	root := filepath.Join(testRoot(t), "state")
 	store := FileStateStore{Root: root}
 	release, err := store.AcquireInstallLock()
 	if err != nil {
@@ -183,7 +183,7 @@ func TestRollbackStopsImmediatelyWhenWALPersistenceFails(t *testing.T) {
 }
 
 func TestEnrollmentPinIsCreateOnceAndRejectsTrustReplacement(t *testing.T) {
-	store := FileStateStore{Root: filepath.Join(t.TempDir(), "state")}
+	store := FileStateStore{Root: filepath.Join(testRoot(t), "state")}
 	pin := EnrollmentPin{SchemaVersion: 1, EnrollmentID: "11111111-1111-4111-8111-111111111111", PlanSigningKey: client.NodePlanSigningKey{KeyID: "plan/v1", PublicKey: strings.Repeat("A", 43), Fingerprint: "sha256:" + testHash}}
 	if err := store.Pin(pin); err != nil {
 		t.Fatal(err)
@@ -365,6 +365,19 @@ func (m *mockPlatform) Rollback(_ context.Context, mutation client.NodeInstallMu
 	return nil
 }
 func (*mockPlatform) Verify(context.Context, client.NodeInstallPlan) error { return nil }
+
+func testRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(resolved, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
 
 func testIdentity(t *testing.T) Identity {
 	t.Helper()
