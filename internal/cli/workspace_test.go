@@ -16,8 +16,8 @@ type fakeWorkspaceCommands struct {
 	joinedToken, workspaceValue, requestID string
 	joinResult                             workspacepkg.JoinResult
 	joinErr                                error
-	selection                             workspacepkg.Selection
-	selectionErr                          error
+	selection                              workspacepkg.Selection
+	selectionErr                           error
 }
 
 func (f *fakeWorkspaceCommands) CurrentSelection(context.Context) (workspacepkg.Selection, error) {
