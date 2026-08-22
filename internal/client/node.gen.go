@@ -322,6 +322,7 @@ var (
 	nodeIdempotencyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
 	nodeLabelPattern       = regexp.MustCompile(`^blazn\.dev/[a-z0-9][a-z0-9._-]{0,62}$`)
 	nodeVersionPattern     = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$`)
+	nodeReasonCodePattern  = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 )
 
 func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) error {
@@ -370,6 +371,10 @@ func validKubernetesMutation(parameters KubernetesMutationParameters) bool {
 }
 
 func decodeClosedNodeObject(encoded []byte, output any) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &object); err != nil || object == nil {
+		return fmt.Errorf("parameters must be a JSON object")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(encoded))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(output); err != nil {
@@ -380,6 +385,68 @@ func decodeClosedNodeObject(encoded []byte, output any) error {
 		return fmt.Errorf("parameters must contain exactly one JSON object")
 	}
 	return nil
+}
+
+func ValidateNodeCapability(capability NodeCapability) error {
+	if capability.Version < 1 || !validPlatform(capability.Platform) || !validArchitecture(capability.Architecture) || capability.CPU < 1 || capability.MemoryBytes < 1 || capability.DiskBytes < 1 {
+		return fmt.Errorf("node capability resources are invalid")
+	}
+	if len(capability.Accelerators) > 16 || len(capability.Labels) > 64 || capability.Limits.MaxConcurrentSandboxes < 0 || capability.Limits.MaxConcurrentSandboxes > 1024 || capability.Limits.MaxConcurrentAgents < 0 || capability.Limits.MaxConcurrentAgents > 1024 {
+		return fmt.Errorf("node capability limits are invalid")
+	}
+	for index, accelerator := range capability.Accelerators {
+		if len(accelerator.Kind) < 1 || len(accelerator.Kind) > 128 || accelerator.Count < 1 {
+			return fmt.Errorf("accelerators[%d] is invalid", index)
+		}
+	}
+	for key, value := range capability.Labels {
+		if !nodeLabelPattern.MatchString(key) || len(value) > 128 {
+			return fmt.Errorf("node capability label %q is invalid", key)
+		}
+	}
+	if !oneOf(capability.Health.Status, "healthy", "degraded", "unavailable") || len(capability.Health.ReasonCodes) > 16 || duplicateNodeStrings(capability.Health.ReasonCodes) {
+		return fmt.Errorf("node capability health is invalid")
+	}
+	for _, reason := range capability.Health.ReasonCodes {
+		if !nodeReasonCodePattern.MatchString(reason) {
+			return fmt.Errorf("node capability reason code is invalid")
+		}
+	}
+	for name, values := range map[string][]string{"sandboxBackends": capability.SandboxBackends, "runtimeClasses": capability.RuntimeClasses} {
+		if duplicateNodeStrings(values) {
+			return fmt.Errorf("%s contains duplicates", name)
+		}
+		for _, value := range values {
+			if len(value) > 128 {
+				return fmt.Errorf("%s value is too long", name)
+			}
+		}
+	}
+	if len(capability.LocalModels) > 32 {
+		return fmt.Errorf("local model limit exceeded")
+	}
+	for index, model := range capability.LocalModels {
+		if !nodeUUIDPattern.MatchString(model.RouteID) || len(model.DisplayName) < 1 || len(model.DisplayName) > 128 || len(model.Model) < 1 || len(model.Model) > 160 || !oneOf(model.Protocol, "openai-chat", "openai-responses") || !oneOf(model.EndpointClass, "loopback", "authenticated_node_tunnel") || len(model.Capabilities) < 1 || duplicateNodeStrings(model.Capabilities) || model.DataBoundary != "local" || model.MaxConcurrency < 1 || model.MaxContextTokens < 1 || model.MaxOutputTokens < 1 {
+			return fmt.Errorf("localModels[%d] is invalid", index)
+		}
+		for _, value := range model.Capabilities {
+			if !oneOf(value, "text", "tools", "structured_output", "streaming") {
+				return fmt.Errorf("localModels[%d] capability is invalid", index)
+			}
+		}
+	}
+	return nil
+}
+
+func duplicateNodeStrings(values []string) bool {
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			return true
+		}
+		seen[value] = struct{}{}
+	}
+	return false
 }
 
 func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
@@ -672,15 +739,21 @@ func (c *Client) CreateNodeOperation(ctx context.Context, accessToken, nodeID, i
 }
 
 func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, heartbeat NodeHeartbeat) error {
-	if nodeProof == "" || heartbeat.IdentityGeneration < 1 || heartbeat.Sequence < 0 || !nodeDigestPattern.MatchString(heartbeat.CapabilityDigest) {
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(heartbeat.NodeID) || heartbeat.IdentityGeneration < 1 || len(heartbeat.BootID) < 1 || len(heartbeat.BootID) > 128 || heartbeat.Sequence < 0 || !nodeDigestPattern.MatchString(heartbeat.CapabilityDigest) {
 		return fmt.Errorf("node heartbeat is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, heartbeat.SentAt); err != nil {
+		return fmt.Errorf("node heartbeat sentAt is invalid")
+	}
+	if err := ValidateNodeCapability(heartbeat.Capability); err != nil {
+		return fmt.Errorf("node heartbeat capability: %w", err)
 	}
 	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
 }
 
 func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof string, request JoinCredentialRequest) (JoinCredential, error) {
 	var output JoinCredential
-	if nodeProof == "" || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeHashPattern.MatchString(request.NodePublicKeyFingerprint) {
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(request.EnrollmentID) || !nodeUUIDPattern.MatchString(request.PlanID) || !nodeUUIDPattern.MatchString(request.NodeID) || !nodeDigestPattern.MatchString(request.PlanDigest) || !nodeHashPattern.MatchString(request.MachineFingerprint) || !nodeHashPattern.MatchString(request.NodePublicKeyFingerprint) {
 		return output, fmt.Errorf("join credential request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/join-credentials", "", nodeProof, "", request, &output, http.StatusOK)
