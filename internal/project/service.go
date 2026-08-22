@@ -64,13 +64,13 @@ func (s *Service) Create(ctx context.Context, name, slug, kind, description, req
 	})
 }
 
-func (s *Service) List(ctx context.Context, status string) (client.ProjectList, error) {
+func (s *Service) List(ctx context.Context, status, cursor string) (client.ProjectList, error) {
 	selection, session, err := s.selection(ctx)
 	if err != nil {
 		return client.ProjectList{}, err
 	}
 	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ProjectList, error) {
-		return s.api.ListProjects(ctx, current.AccessToken, selection.WorkspaceID, status, "")
+		return s.api.ListProjects(ctx, current.AccessToken, selection.WorkspaceID, status, cursor)
 	})
 }
 
@@ -83,9 +83,15 @@ func (s *Service) Use(ctx context.Context, value string) (client.ProjectEnvelope
 	if err != nil {
 		return client.ProjectEnvelope{}, err
 	}
+	if selection.WorkspaceID != project.Project.WorkspaceID {
+		return client.ProjectEnvelope{}, errors.New("Workspace selection changed while selecting the Project; retry")
+	}
 	selection, session, err := s.selection(ctx)
 	if err != nil {
 		return client.ProjectEnvelope{}, err
+	}
+	if selection.WorkspaceID != project.Project.WorkspaceID {
+		return client.ProjectEnvelope{}, errors.New("Workspace selection changed while updating the Project; retry")
 	}
 	selection.ProjectID = project.Project.ID
 	selection.SelectedAt = s.now().UTC()
@@ -133,7 +139,10 @@ func (s *Service) resolve(ctx context.Context, value string) (client.ProjectEnve
 		})
 	}
 	cursor := ""
-	for page := 0; page < 1000; page++ {
+	for page := 0; ; page++ {
+		if page >= 1000 {
+			return client.ProjectEnvelope{}, errors.New("Project slug resolution exceeded the pagination limit")
+		}
 		projects, err := withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ProjectList, error) {
 			return s.api.ListProjects(ctx, current.AccessToken, selection.WorkspaceID, "all", cursor)
 		})

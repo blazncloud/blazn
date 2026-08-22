@@ -15,7 +15,7 @@ const cliProjectTestWorkspaceID = "00000000-0000-4000-8000-000000000001"
 const cliProjectTestProjectID = "00000000-0000-4000-8000-000000000002"
 
 type fakeProjectCommands struct {
-	createdName, requestID, status, value string
+	createdName, requestID, status, cursor, value string
 	changes                               projectpkg.Update
 	version                               int
 	selection                             workspacepkg.Selection
@@ -26,9 +26,10 @@ func (f *fakeProjectCommands) Create(_ context.Context, name, _slug, _kind, _des
 	f.createdName, f.requestID = name, requestID
 	return client.ProjectEnvelope{Project: projectFixture()}, f.err
 }
-func (f *fakeProjectCommands) List(_ context.Context, status string) (client.ProjectList, error) {
-	f.status = status
-	return client.ProjectList{Items: []client.Project{projectFixture()}}, f.err
+func (f *fakeProjectCommands) List(_ context.Context, status, cursor string) (client.ProjectList, error) {
+	f.status, f.cursor = status, cursor
+	next := "next-page"
+	return client.ProjectList{Items: []client.Project{projectFixture()}, NextCursor: &next}, f.err
 }
 func (f *fakeProjectCommands) Get(_ context.Context, value string) (client.ProjectEnvelope, error) {
 	f.value = value
@@ -71,7 +72,7 @@ func TestProjectCreateRequiresRequestIDAndRendersJSON(t *testing.T) {
 func TestProjectListUseGetAndEdit(t *testing.T) {
 	fake := &fakeProjectCommands{}
 	app, stdout, _ := projectApp(fake)
-	if code := app.Run([]string{"project", "list", "--status", "all"}); code != ExitSuccess || fake.status != "all" || !strings.Contains(stdout.String(), "launch-video") {
+	if code := app.Run([]string{"project", "list", "--status", "all", "--cursor", "page-1"}); code != ExitSuccess || fake.status != "all" || fake.cursor != "page-1" || !strings.Contains(stdout.String(), "launch-video") || !strings.Contains(stdout.String(), "Next cursor: next-page") {
 		t.Fatalf("list code=%d output=%q fake=%#v", code, stdout.String(), fake)
 	}
 	app, _, _ = projectApp(fake)
@@ -85,6 +86,14 @@ func TestProjectListUseGetAndEdit(t *testing.T) {
 	app, _, _ = projectApp(fake)
 	if code := app.Run([]string{"project", "edit", "launch-video", "--description", "", "--status", "archived", "--expected-version", "1", "--request-id", "request-update-1"}); code != ExitSuccess || fake.version != 1 || fake.changes.Description == nil || *fake.changes.Description != "" || fake.changes.Status == nil || *fake.changes.Status != client.ProjectStatusArchived {
 		t.Fatalf("edit code=%d fake=%#v", code, fake)
+	}
+}
+
+func TestProjectFlagsRejectFlagShapedValues(t *testing.T) {
+	fake := &fakeProjectCommands{}
+	app, _, stderr := projectApp(fake)
+	if code := app.Run([]string{"project", "edit", "launch-video", "--description", "--status"}); code != ExitUsage || fake.changes.Description != nil || stderr.Len() == 0 {
+		t.Fatalf("code=%d fake=%#v stderr=%q", code, fake, stderr.String())
 	}
 }
 

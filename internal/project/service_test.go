@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,19 @@ type memoryContexts struct {
 	selection workspacepkg.Selection
 	saved     workspacepkg.Selection
 }
+
+type changingContexts struct {
+	selections []workspacepkg.Selection
+	loads      int
+	saved      bool
+}
+
+func (c *changingContexts) Load(string, string) (workspacepkg.Selection, error) {
+	selection := c.selections[c.loads]
+	c.loads++
+	return selection, nil
+}
+func (c *changingContexts) Save(workspacepkg.Selection) error { c.saved = true; return nil }
 
 func (m *memoryContexts) Load(origin, userID string) (workspacepkg.Selection, error) {
 	if m.selection.WorkspaceID == "" {
@@ -71,6 +85,18 @@ func TestProjectUsePagesUntilSlugIsFound(t *testing.T) {
 	selected, err := NewService(api, &fakeSessions{}, contexts).Use(context.Background(), "launch-video")
 	if err != nil || selected.Project.ID != testProjectID || contexts.saved.ProjectID != testProjectID {
 		t.Fatalf("selected=%#v saved=%#v err=%v", selected, contexts.saved, err)
+	}
+}
+
+func TestProjectUseRejectsWorkspaceSelectionRace(t *testing.T) {
+	otherWorkspaceID := "00000000-0000-4000-8000-000000000099"
+	contexts := &changingContexts{selections: []workspacepkg.Selection{
+		{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: testWorkspaceID, SelectedAt: time.Now().UTC()},
+		{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: otherWorkspaceID, SelectedAt: time.Now().UTC()},
+	}}
+	service := NewService(&fakeAPI{}, &fakeSessions{}, contexts)
+	if _, err := service.Use(context.Background(), testProjectID); err == nil || !strings.Contains(err.Error(), "Workspace selection changed") || contexts.saved {
+		t.Fatalf("saved=%v err=%v", contexts.saved, err)
 	}
 }
 func (f *fakeAPI) GetProject(_ context.Context, accessToken, workspaceID, projectID string) (client.ProjectEnvelope, error) {
@@ -131,7 +157,7 @@ func TestProjectGetRefreshesAccessAndRequiresSelections(t *testing.T) {
 		t.Fatalf("missing Project err=%v", err)
 	}
 	contexts.selection = workspacepkg.Selection{}
-	if _, err := service.List(context.Background(), "active"); !errors.Is(err, workspacepkg.ErrNoContext) {
+	if _, err := service.List(context.Background(), "active", ""); !errors.Is(err, workspacepkg.ErrNoContext) {
 		t.Fatalf("missing Workspace err=%v", err)
 	}
 }

@@ -14,7 +14,7 @@ import (
 
 type projectCommands interface {
 	Create(context.Context, string, string, string, string, string) (client.ProjectEnvelope, error)
-	List(context.Context, string) (client.ProjectList, error)
+	List(context.Context, string, string) (client.ProjectList, error)
 	Get(context.Context, string) (client.ProjectEnvelope, error)
 	Use(context.Context, string) (client.ProjectEnvelope, error)
 	Update(context.Context, string, string, int, projectpkg.Update) (client.ProjectEnvelope, error)
@@ -39,7 +39,7 @@ func (a *App) runProject(format OutputFormat, args []string) int {
 		result, err := commands.Create(ctx, pos[0], flags["slug"], flags["kind"], flags["description"], flags["request-id"])
 		return a.writeProjectEnvelope(format, result, err, "created")
 	case "list":
-		pos, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"status": false})
+		pos, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"status": false, "cursor": false})
 		if err != nil || len(pos) != 0 {
 			return a.projectUsage(format, errors.New("project list accepts only --status active|archived|all"))
 		}
@@ -47,7 +47,10 @@ func (a *App) runProject(format OutputFormat, args []string) int {
 		if err != nil {
 			return a.projectUsage(format, err)
 		}
-		result, err := commands.List(ctx, status)
+		if len(flags["cursor"]) > 512 {
+			return a.projectUsage(format, errors.New("project cursor must contain at most 512 characters"))
+		}
+		result, err := commands.List(ctx, status, flags["cursor"])
 		return a.writeProjectList(format, result, err)
 	case "get":
 		if len(args) > 2 || (len(args) == 2 && strings.HasPrefix(args[1], "--")) {
@@ -120,6 +123,9 @@ func projectPositionalsAndFlags(args []string, count int, allowed map[string]boo
 			}
 			index++
 			value = args[index]
+			if strings.HasPrefix(value, "--") {
+				return nil, nil, nil, fmt.Errorf("--%s requires a value", name)
+			}
 		}
 		allowEmpty, ok := allowed[name]
 		if !ok || (!allowEmpty && value == "") || present[name] {
@@ -185,6 +191,9 @@ func (a *App) writeProjectList(format OutputFormat, result client.ProjectList, e
 	}
 	for _, project := range result.Items {
 		fmt.Fprintf(a.stdout, "%-36s %-24s %-12s %-10s %s\n", project.ID, project.Slug, project.Kind, project.Status, project.Name)
+	}
+	if result.NextCursor != nil {
+		fmt.Fprintf(a.stdout, "Next cursor: %s\n", *result.NextCursor)
 	}
 	return ExitSuccess
 }
