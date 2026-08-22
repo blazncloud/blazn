@@ -22,15 +22,15 @@ const (
 type RuntimeContext struct {
 	SchemaVersion   int    `json:"schemaVersion"`
 	ProtocolVersion int    `json:"protocolVersion"`
-	InvocationID   string `json:"invocationId"`
-	CoreVersion    string `json:"coreVersion"`
-	OutputFormat   string `json:"outputFormat"`
-	Status         string `json:"status"`
-	ReasonCode     string `json:"reasonCode,omitempty"`
-	APIOrigin      string `json:"apiOrigin,omitempty"`
-	UserID         string `json:"userId,omitempty"`
-	WorkspaceID    string `json:"workspaceId,omitempty"`
-	ProjectID      string `json:"projectId,omitempty"`
+	InvocationID    string `json:"invocationId"`
+	CoreVersion     string `json:"coreVersion"`
+	OutputFormat    string `json:"outputFormat"`
+	Status          string `json:"status"`
+	ReasonCode      string `json:"reasonCode,omitempty"`
+	APIOrigin       string `json:"apiOrigin,omitempty"`
+	UserID          string `json:"userId,omitempty"`
+	WorkspaceID     string `json:"workspaceId,omitempty"`
+	ProjectID       string `json:"projectId,omitempty"`
 }
 
 var runtimeIdentifier = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
@@ -44,11 +44,11 @@ func NewRuntimeContext(coreVersion, outputFormat string) (RuntimeContext, error)
 	return RuntimeContext{
 		SchemaVersion:   RuntimeContextSchema,
 		ProtocolVersion: ProtocolVersion,
-		InvocationID:   hex.EncodeToString(random),
-		CoreVersion:    coreVersion,
-		OutputFormat:   outputFormat,
-		Status:         "unavailable",
-		ReasonCode:     "workspace_context_unavailable",
+		InvocationID:    hex.EncodeToString(random),
+		CoreVersion:     coreVersion,
+		OutputFormat:    outputFormat,
+		Status:          "unavailable",
+		ReasonCode:      "workspace_context_unavailable",
 	}, nil
 }
 

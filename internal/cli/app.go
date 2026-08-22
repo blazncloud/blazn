@@ -45,17 +45,17 @@ type BuildInfo struct {
 }
 
 type App struct {
-	stdout      io.Writer
-	stderr      io.Writer
-	build       BuildInfo
-	doctor      func() DoctorReport
-	uninstall   func() (UninstallResult, error)
-	auth        func() (authCommands, error)
-	openBrowser func(string) error
-	workspace   func() (workspaceCommands, error)
-	node        func(bool) (nodeCommands, error)
-	stdin       io.Reader
-	stdinTTY    func() bool
+	stdout        io.Writer
+	stderr        io.Writer
+	build         BuildInfo
+	doctor        func() DoctorReport
+	uninstall     func() (UninstallResult, error)
+	auth          func() (authCommands, error)
+	openBrowser   func(string) error
+	workspace     func() (workspaceCommands, error)
+	node          func(bool) (nodeCommands, error)
+	stdin         io.Reader
+	stdinTTY      func() bool
 	plugins       pluginCommands
 	pluginContext func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
 }
