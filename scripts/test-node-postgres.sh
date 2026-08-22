@@ -17,15 +17,27 @@ case "$network:$postgres" in
 esac
 
 cleanup() {
-  docker rm -f "$postgres" >/dev/null 2>&1 || true
-  docker network rm "$network" >/dev/null 2>&1 || true
+	if [ "$created_postgres" = true ]; then
+		docker rm -f "$postgres" >/dev/null 2>&1 || true
+	fi
+	if [ "$created_network" = true ]; then
+		docker network rm "$network" >/dev/null 2>&1 || true
+	fi
 }
+created_network=false
+created_postgres=false
 trap cleanup EXIT HUP INT TERM
 
+if docker network inspect "$network" >/dev/null 2>&1 || docker container inspect "$postgres" >/dev/null 2>&1; then
+	printf 'refusing to reuse pre-existing disposable PostgreSQL resources\n' >&2
+	exit 1
+fi
 docker network create "$network" >/dev/null
+created_network=true
 docker run -d --name "$postgres" --network "$network" \
   -e POSTGRES_DB=blazn -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD="$admin_password" \
   "$postgres_image" >/dev/null
+created_postgres=true
 
 ready=false
 stable_checks=0
