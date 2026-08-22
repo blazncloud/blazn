@@ -127,6 +127,19 @@ func TestFileWALCreateIsExclusive(t *testing.T) {
 	}
 }
 
+func TestEnrollmentPinIsCreateOnceAndRejectsTrustReplacement(t *testing.T) {
+	store := FileStateStore{Root: filepath.Join(t.TempDir(), "state")}
+	pin := EnrollmentPin{SchemaVersion: 1, EnrollmentID: "11111111-1111-4111-8111-111111111111", PlanSigningKey: client.NodePlanSigningKey{KeyID: "plan/v1", PublicKey: strings.Repeat("A", 43), Fingerprint: "sha256:" + testHash}}
+	if err := store.Pin(pin); err != nil {
+		t.Fatal(err)
+	}
+	tampered := pin
+	tampered.PlanSigningKey.KeyID = "plan/v2"
+	if err := store.Pin(tampered); err == nil {
+		t.Fatal("pinned plan signer was replaced")
+	}
+}
+
 func TestDaemonSignsCanonicalHeartbeatAndAdvancesSequence(t *testing.T) {
 	identity := testIdentity(t)
 	plan := installPlan()
@@ -212,7 +225,19 @@ type memoryState struct {
 	receipt client.NodeInstallReceipt
 }
 
-func (m *memoryState) Pin(v EnrollmentPin) error          { m.pin = v; return nil }
+func (m *memoryState) Pin(v EnrollmentPin) error {
+	if m.pin.EnrollmentID != "" && !samePin(m.pin, v) {
+		return errors.New("pin conflict")
+	}
+	m.pin = v
+	return nil
+}
+func (m *memoryState) LoadPin() (EnrollmentPin, error) {
+	if m.pin.EnrollmentID == "" {
+		return EnrollmentPin{}, os.ErrNotExist
+	}
+	return m.pin, nil
+}
 func (m *memoryState) SaveRuntime(v RuntimeState) error   { m.runtime = v; return nil }
 func (m *memoryState) LoadRuntime() (RuntimeState, error) { return m.runtime, nil }
 func (m *memoryState) SaveWAL(v InstallWAL) error         { m.wal = v; m.hasWAL = true; return nil }

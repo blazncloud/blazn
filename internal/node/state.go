@@ -18,6 +18,7 @@ type EnrollmentPin struct {
 	Hostname           string                    `json:"hostname"`
 	MachineFingerprint string                    `json:"machineFingerprint"`
 	ProfileID          string                    `json:"profileId"`
+	ProfilePath        string                    `json:"profilePath"`
 	PlanSigningKey     client.NodePlanSigningKey `json:"planSigningKey"`
 	PinnedAt           string                    `json:"pinnedAt"`
 }
@@ -45,6 +46,7 @@ type InstallWAL struct {
 
 type StateStore interface {
 	Pin(EnrollmentPin) error
+	LoadPin() (EnrollmentPin, error)
 	SaveRuntime(RuntimeState) error
 	LoadRuntime() (RuntimeState, error)
 	SaveWAL(InstallWAL) error
@@ -57,7 +59,40 @@ type StateStore interface {
 
 type FileStateStore struct{ Root string }
 
-func (s FileStateStore) Pin(v EnrollmentPin) error        { return s.write("enrollment-pin.json", v) }
+func (s FileStateStore) Pin(v EnrollmentPin) error {
+	existing, err := s.LoadPin()
+	if err == nil {
+		if !samePin(existing, v) {
+			return errors.New("node enrollment is already pinned to different trust")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if !filepath.IsAbs(s.Root) {
+		return errors.New("node state root must be absolute")
+	}
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if err := writePrivateCreate(filepath.Join(s.Root, "enrollment-pin.json"), encoded); err != nil {
+		if existing, readErr := s.LoadPin(); readErr == nil && samePin(existing, v) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+func (s FileStateStore) LoadPin() (EnrollmentPin, error) {
+	var v EnrollmentPin
+	err := s.read("enrollment-pin.json", 32<<10, &v)
+	if err == nil && (v.SchemaVersion != 1 || v.EnrollmentID == "" || v.PlanSigningKey.KeyID == "") {
+		err = errors.New("node enrollment pin is invalid")
+	}
+	return v, err
+}
 func (s FileStateStore) SaveRuntime(v RuntimeState) error { return s.write("runtime.json", v) }
 func (s FileStateStore) LoadRuntime() (RuntimeState, error) {
 	var v RuntimeState
@@ -126,3 +161,6 @@ func (s FileStateStore) read(name string, limit int64, v any) error {
 }
 
 func nowString(now time.Time) string { return now.UTC().Format(time.RFC3339Nano) }
+func samePin(a, b EnrollmentPin) bool {
+	return a.SchemaVersion == b.SchemaVersion && a.WorkspaceID == b.WorkspaceID && a.EnrollmentID == b.EnrollmentID && a.IdempotencyKey == b.IdempotencyKey && a.Hostname == b.Hostname && a.MachineFingerprint == b.MachineFingerprint && a.ProfileID == b.ProfileID && a.ProfilePath == b.ProfilePath && a.PlanSigningKey == b.PlanSigningKey
+}

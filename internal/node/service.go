@@ -31,6 +31,7 @@ type EnrollOptions struct {
 	MachineFingerprint string
 	KubernetesBinding  *client.KubernetesBinding
 	Profile            client.NodeTrustedInstallProfile
+	ProfilePath        string
 }
 
 type EnrollResult struct {
@@ -66,7 +67,7 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if err != nil {
 		return EnrollResult{}, err
 	}
-	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: options.WorkspaceID, EnrollmentID: secret.ID, IdempotencyKey: options.IdempotencyKey, Hostname: options.Name, MachineFingerprint: options.MachineFingerprint, ProfileID: options.Profile.ID, PlanSigningKey: secret.PlanSigningKey, PinnedAt: nowString(s.now())}
+	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: options.WorkspaceID, EnrollmentID: secret.ID, IdempotencyKey: options.IdempotencyKey, Hostname: options.Name, MachineFingerprint: options.MachineFingerprint, ProfileID: options.Profile.ID, ProfilePath: options.ProfilePath, PlanSigningKey: secret.PlanSigningKey, PinnedAt: nowString(s.now())}
 	if err := s.state.Pin(pin); err != nil {
 		return EnrollResult{}, fmt.Errorf("persist pinned plan signer before exchange: %w", err)
 	}
