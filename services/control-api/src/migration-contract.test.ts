@@ -22,3 +22,12 @@ test("auth migration grants only the reviewed bootstrap and runtime operations",
   for (const grant of grants) assert.ok(migration.includes(grant), `missing least-privilege SQL: ${grant}`);
   assert.doesNotMatch(migration, /GRANT\s+(?:ALL|SELECT, INSERT, UPDATE, DELETE)\s+ON\s+(?:ALL TABLES|TABLE users)\s+TO blazn_runtime/i);
 });
+
+test("node enrollment signing trust is immutable and relationally bound to plans", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/006_node_plan_signing_trust.sql"), "utf8");
+  assert.match(sql, /requires zero pre-contract node enrollments/);
+  assert.match(sql, /plan_signing_public_key char\(43\) NOT NULL/);
+  assert.match(sql, /plan_signing_key_fingerprint char\(64\) NOT NULL/);
+  assert.match(sql, /FOREIGN KEY \(enrollment_id, signing_key_id\)[\s\S]*REFERENCES node_enrollments\(id, plan_signing_key_id\)/);
+});

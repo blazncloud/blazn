@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -22,7 +23,7 @@ var nodeTemplate []byte
 const (
 	openAPISHA256          = "590e68d209c1db843a5107a7a48c904c4bb3c455f55b032715f298a62c1263eb"
 	commonOpenAPISHA256    = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
-	planSHA256             = "5f706b6a10e7bd7d5c610295c0b49c880eb3bfa289443fc6018abacd7d318c32"
+	planSHA256             = "d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d"
 	receiptSHA256          = "cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4"
 	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
 )
@@ -116,6 +117,11 @@ func loadSources(root string) (map[string]source, error) {
 }
 
 func validateSources(sources map[string]source, template string) error {
+	for path := range sources {
+		if err := validateRecursiveRefs(sources, path, sources[path].doc, map[string]bool{}); err != nil {
+			return fmt.Errorf("%s references: %w", path, err)
+		}
+	}
 	openAPI := sources[filepath.Join("packages", "contracts", "nodes.openapi.json")].doc
 	if err := validateOpenAPI(openAPI); err != nil {
 		return err
@@ -155,6 +161,80 @@ func validateSources(sources map[string]source, template string) error {
 		}
 	}
 	return nil
+}
+
+func validateRecursiveRefs(sources map[string]source, sourcePath string, value any, seen map[string]bool) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		if ref, ok := typed["$ref"].(string); ok {
+			targetPath, fragment := sourcePath, ref
+			if before, after, found := strings.Cut(ref, "#"); found {
+				fragment = "#" + after
+				if before != "" {
+					targetPath = filepath.Clean(filepath.Join(filepath.Dir(sourcePath), before))
+				}
+			} else if ref != "" {
+				targetPath, fragment = filepath.Clean(filepath.Join(filepath.Dir(sourcePath), ref)), ""
+			}
+			targetSource, ok := sources[targetPath]
+			if !ok {
+				return fmt.Errorf("unloaded external ref %q resolves to %q", ref, targetPath)
+			}
+			key := targetPath + fragment
+			if !seen[key] {
+				seen[key] = true
+				target, err := resolveJSONPointer(targetSource.doc, fragment)
+				if err != nil {
+					return fmt.Errorf("ref %q: %w", ref, err)
+				}
+				if err := validateRecursiveRefs(sources, targetPath, target, seen); err != nil {
+					return err
+				}
+			}
+		}
+		for _, child := range typed {
+			if err := validateRecursiveRefs(sources, sourcePath, child, seen); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := validateRecursiveRefs(sources, sourcePath, child, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func resolveJSONPointer(document any, fragment string) (any, error) {
+	if fragment == "" || fragment == "#" {
+		return document, nil
+	}
+	if !strings.HasPrefix(fragment, "#/") {
+		return nil, fmt.Errorf("unsupported JSON pointer %q", fragment)
+	}
+	current := document
+	for _, raw := range strings.Split(strings.TrimPrefix(fragment, "#/"), "/") {
+		part := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
+		switch typed := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = typed[part]
+			if !ok {
+				return nil, fmt.Errorf("JSON pointer member %q is absent", part)
+			}
+		case []any:
+			index, err := strconv.Atoi(part)
+			if err != nil || index < 0 || index >= len(typed) {
+				return nil, fmt.Errorf("JSON pointer index %q is invalid", part)
+			}
+			current = typed[index]
+		default:
+			return nil, fmt.Errorf("JSON pointer descends through a scalar at %q", part)
+		}
+	}
+	return current, nil
 }
 
 func validateOpenAPI(document map[string]any) error {

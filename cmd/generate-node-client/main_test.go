@@ -132,6 +132,17 @@ func TestNodeValidatorRejectsUnresolvedRecursiveLocalReference(t *testing.T) {
 	}
 }
 
+func TestNodeValidatorRejectsUnresolvedExternalReference(t *testing.T) {
+	sources := checkedInSources(t)
+	key := filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json")
+	changed := cloneDocument(t, sources[key].doc)
+	changed["$defs"] = map[string]any{"missing": map[string]any{"$ref": "missing.schema.json#/definitions/value"}}
+	sources[key] = source{path: key, digest: sources[key].digest, doc: changed}
+	if err := validateRecursiveRefs(sources, key, changed, map[string]bool{}); err == nil || !strings.Contains(err.Error(), "unloaded external ref") {
+		t.Fatalf("unresolved external reference error=%v", err)
+	}
+}
+
 func TestNodeValidatorRejectsSharedStatusMismatch(t *testing.T) {
 	sources := checkedInSources(t)
 	nodeKey := filepath.Join("packages", "contracts", "nodes.openapi.json")

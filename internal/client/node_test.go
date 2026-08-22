@@ -26,17 +26,22 @@ func validNodeInstallPlan() NodeInstallPlan {
 	return NodeInstallPlan{
 		SchemaVersion: NodeSchemaVersion,
 		PlanID:        testUUIDA, NodeID: testUUIDB, EnrollmentID: testUUIDC, WorkspaceID: testUUIDD,
-		IdempotencyKey: "install-key-1", ApprovedBy: testUUIDA, ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: NodeModeFresh, InstallProfile: "ubuntu-26.04-amd64-worker/v1",
+		IdempotencyKey: "install-key-1", ApprovedBy: testUUIDA, ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: NodeModeAdopt, InstallProfile: "existing-linux-worker-adopt/v1",
 		Cluster:       NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, APIServer: "https://cluster.example.test", KubernetesVersion: "v1.36.1", JoinCredentialEndpoint: "/v1/node-service/join-credentials", BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash, RegistryEndpoints: []string{"https://registry.example.test"}},
 		Target:        NodeInstallTarget{Platform: NodePlatformLinux, Architecture: NodeArchAMD64, MachineFingerprint: testHash, NodePublicKeyFingerprint: "sha256:" + testHash, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240},
 		RegistryTrust: []NodeRegistryTrust{},
-		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
+		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}},
 		NodeService:   NodeInstallService{Manager: "systemd", UnitName: "blazn-node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash},
 		Labels:        map[string]string{"blazn.dev/pool": "default"}, Taints: []NodeTaint{}, ResourceBounds: NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
-		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/node", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "remove_if_owned"}},
+		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"}},
 		ValidationTests: []string{"binary_digest", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
 		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
 	}
+}
+
+func addAuthenticatedServiceBinary(plan *NodeInstallPlan) {
+	plan.Components = append(plan.Components, NodeInstallComponent{Name: "blazn-current", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"})
+	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: int64(len(plan.Mutations) + 1), Kind: "file", Action: "adopt_exact", Target: plan.NodeService.BinaryPath, Desired: map[string]any{"sourceComponent": "blazn-current", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"})
 }
 
 func validNodeCapability() NodeCapability {
@@ -68,7 +73,7 @@ func TestValidateNodeInstallPlanSafetyAndMutationUniqueness(t *testing.T) {
 
 func TestNodeInstallComponentSourceClassesAreClosed(t *testing.T) {
 	plan := validNodeInstallPlan()
-	plan.Components[0] = NodeInstallComponent{Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}
+	plan.Components[0] = NodeInstallComponent{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +82,11 @@ func TestNodeInstallComponentSourceClassesAreClosed(t *testing.T) {
 		t.Fatal("local component with remote source passed")
 	}
 	plan = validNodeInstallPlan()
-	plan.Components[0].SourceClass = "embedded"
+	plan.Components[0] = NodeInstallComponent{Name: "config", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}
+	plan.Mutations[0].Target = "/etc/blazn/config"
+	plan.Mutations[0].Desired["sourceComponent"] = "config"
+	plan.Components = append(plan.Components, NodeInstallComponent{Name: "kubernetes", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"})
+	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: 2, Kind: "file", Action: "adopt_exact", Target: "/usr/local/bin/blazn", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0755, UID: 0, GID: 0, Rollback: "leave_and_report"})
 	plan.Components[0].Source = ""
 	plan.Components[0].SourceHost = ""
 	if err := ValidateNodeInstallPlan(plan); err != nil {
@@ -87,8 +96,8 @@ func TestNodeInstallComponentSourceClassesAreClosed(t *testing.T) {
 
 func TestNodeServiceAccountMutationsAreClosed(t *testing.T) {
 	for _, mutation := range []NodeInstallMutation{
-		{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "system": true}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
-		{Ordinal: 1, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "group": "blazn-node", "home": "/var/lib/blazn", "shell": "/usr/sbin/nologin", "system": true}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "gid": 991, "system": true}, DesiredDigest: "sha256:" + testHash, Mode: 0, UID: 0, GID: 991, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "group": "blazn-node", "uid": 991, "gid": 991, "home": "/var/lib/blazn", "shell": "/usr/sbin/nologin", "system": true}, DesiredDigest: "sha256:" + testHash, Mode: 0, UID: 991, GID: 991, Rollback: "remove_if_owned"},
 	} {
 		plan := validNodeInstallPlan()
 		plan.Mutations = []NodeInstallMutation{mutation}
@@ -136,6 +145,12 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 			plan.Components = []NodeInstallComponent{{Name: "containerd", ArtifactType: "package", SourceClass: "https", Version: "1.2.3", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/containerd", RepositoryOrigin: "https://packages.example.test", SHA256: testHash, Ownership: "install"}}
 		case "image":
 			plan.Components = []NodeInstallComponent{{Name: "node-image", ArtifactType: "image", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/node-image", RegistryHost: "registry.example.test", OCIReference: mutation.Target, SHA256: testHash, Ownership: "install"}}
+		case "file":
+			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "install"}}
+		case "certificate":
+			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "certificate", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "install"}}
+		case "systemd_unit":
+			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "install"}}
 		case "launchd_unit":
 			plan.InstallProfile = "macos-lima-worker-adopt/v1"
 			plan.Mode = NodeModeAdopt
@@ -144,7 +159,11 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 			plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "wheel", DefinitionSHA256: testHash}
 			plan.Rollback.BackupRootClass = "macos_library_application_support"
 			plan.Rollback.BackupRoot = "/Library/Application Support/Blazn/install-backups/receipt-1"
+			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "lima-worker-binding", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}}
+			plan.ValidationTests = append(plan.ValidationTests, "lima_worker_binding")
+			plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: 2, Kind: "file", Action: "adopt_exact", Target: "/Library/Application Support/Blazn/lima-worker-binding.json", Desired: map[string]any{"sourceComponent": "lima-worker-binding", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "leave_and_report"})
 		}
+		addAuthenticatedServiceBinary(&plan)
 		if err := ValidateNodeInstallPlan(plan); err != nil {
 			t.Fatalf("kind=%s valid mutation error=%v", mutation.Kind, err)
 		}
@@ -397,6 +416,7 @@ func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testi
 	plan := validNodeInstallPlan()
 	plan.Components = []NodeInstallComponent{{Name: "containerd", ArtifactType: "package", SourceClass: "https", Version: "1.2.3", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/containerd", RepositoryOrigin: "https://packages.example.test", SHA256: testHash, Ownership: "install"}}
 	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "package", Action: "install", Target: "containerd", Desired: map[string]any{"manager": "apt", "version": "1.2.3", "componentName": "containerd"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}}
+	addAuthenticatedServiceBinary(&plan)
 	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/var/lib/blazn/install-backups"}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err == nil {
 		t.Fatal("untrusted package repository passed")
@@ -414,6 +434,7 @@ func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testi
 	plan = validNodeInstallPlan()
 	plan.Components = []NodeInstallComponent{{Name: "node-image", ArtifactType: "image", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/node-image", RegistryHost: "registry.example.test", OCIReference: imageRef, SHA256: testHash, Ownership: "install"}}
 	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "image", Action: "pull", Target: imageRef, Desired: map[string]any{"platform": "linux/amd64", "componentName": "node-image"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}}
+	addAuthenticatedServiceBinary(&plan)
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatal(err)
 	}

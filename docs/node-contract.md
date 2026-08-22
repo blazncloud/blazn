@@ -173,9 +173,18 @@ they reject launchd/brew. The macOS/Lima profile requires launchd, ARM64 Linux
 images, `root:wheel`, approved brew inputs, and rejects systemd/apt/snap.
 Fresh Linux creates/adopts the receipted `blazn-node` group and non-login user
 before assigning `/var/lib/blazn`; the service may not start against a
-root-only unwritable tree. The macOS profile embeds a digest-pinned Lima binding
+root-only unwritable tree. The signed mutation binds fixed UID/GID values;
+creation rejects collisions and `adopt_exact` rejects any name, ID, group,
+home, or shell mismatch. The macOS profile embeds a digest-pinned Lima binding
 configuration naming the exact existing VM/worker and requires
 `lima_worker_binding` evidence before eligibility.
+
+The enrollment row pins the plan-signing key ID, raw public key, and fingerprint
+at first creation. An idempotent enrollment replay and its later exchange return
+and use that original tuple even if the active signing key rotates; the private
+key remains server-side. Adding the required `planSigningKey` response member is
+an intentional pre-release `v1alpha1` contract correction: no published Node
+control-plane implementation predates it.
 
 The long-running service uses a renewable node identity, never the user's
 access/refresh token. Rotation overlaps old/new identities only for a bounded

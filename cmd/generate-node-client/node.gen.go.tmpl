@@ -490,7 +490,17 @@ type NodeTrustedInstallProfile struct {
 	AllowedDownloadOrigins   []string
 	AllowedRegistryOrigins   []string
 	AllowedMutationRoots     []string
+	EmbeddedComponentSHA256  map[string]string
+	LimaBinding              *NodeTrustedLimaBinding
 	VerifyNoSymlinkTraversal func(string) error
+}
+
+type NodeTrustedLimaBinding struct {
+	ComponentName string
+	Target        string
+	SHA256        string
+	VMName        string
+	WorkerName    string
 }
 
 type NodeTrustedSigner struct {
@@ -760,6 +770,12 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		} else if component.SourceHost != "" || component.Source != "" || component.RepositoryOrigin != "" || component.RegistryHost != "" || component.OCIReference != "" {
 			return fmt.Errorf("components[%d] local source has remote source metadata", index)
 		}
+		if component.SourceClass == "current_binary" && component.ArtifactType != "binary" {
+			return fmt.Errorf("components[%d] current binary source type is invalid", index)
+		}
+		if component.SourceClass == "embedded" && !oneOf(component.ArtifactType, "certificate", "configuration") {
+			return fmt.Errorf("components[%d] embedded source type is invalid", index)
+		}
 		switch component.ArtifactType {
 		case "package":
 			origin, originErr := nodeURLOrigin(component.RepositoryOrigin)
@@ -779,6 +795,11 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	}
 	componentNames := make(map[string]NodeInstallComponent, len(plan.Components))
 	for _, component := range plan.Components {
+		if component.SourceClass == "embedded" {
+			if profile.EmbeddedComponentSHA256 == nil || profile.EmbeddedComponentSHA256[component.Name] != component.SHA256 {
+				return fmt.Errorf("embedded component %q is not locally trusted", component.Name)
+			}
+		}
 		if _, exists := componentNames[component.Name]; exists {
 			return fmt.Errorf("component name %q is duplicated", component.Name)
 		}
@@ -1403,6 +1424,9 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 			return fmt.Errorf("install target %q traverses an untrusted link: %w", target, err)
 		}
 	}
+	if plan.InstallProfile == "macos-lima-worker-adopt/v1" && !nodeHasTrustedEmbeddedLimaBinding(plan, profile.LimaBinding) {
+		return fmt.Errorf("macOS Lima binding does not match locally trusted VM and worker material")
+	}
 	return nil
 }
 
@@ -1670,20 +1694,23 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 	case "group":
 		var desired struct {
 			Name   string `json:"name"`
+			GID    int64  `json:"gid"`
 			System bool   `json:"system"`
 		}
-		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || !desired.System {
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || mutation.Mode != 0 || mutation.UID != 0 || desired.GID < 1 || mutation.GID != desired.GID || !desired.System {
 			return fmt.Errorf("group action or payload is invalid")
 		}
 	case "user":
 		var desired struct {
 			Name   string `json:"name"`
 			Group  string `json:"group"`
+			UID    int64  `json:"uid"`
+			GID    int64  `json:"gid"`
 			Home   string `json:"home"`
 			Shell  string `json:"shell"`
 			System bool   `json:"system"`
 		}
-		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || !nodeAccountNamePattern.MatchString(desired.Group) || desired.Home != "/var/lib/blazn" || !oneOf(desired.Shell, "/usr/sbin/nologin", "/sbin/nologin") || !desired.System {
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || !nodeAccountNamePattern.MatchString(desired.Group) || mutation.Mode != 0 || desired.UID < 1 || desired.GID < 1 || mutation.UID != desired.UID || mutation.GID != desired.GID || desired.Home != "/var/lib/blazn" || !oneOf(desired.Shell, "/usr/sbin/nologin", "/sbin/nologin") || !desired.System {
 			return fmt.Errorf("user action or payload is invalid")
 		}
 	case "package":
@@ -1705,7 +1732,7 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 		}
 	case "directory":
 		var desired struct{}
-		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodePathUnderAny(mutation.Target, []string{"/etc/blazn", "/var/lib/blazn", "/opt/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil {
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodePathUnderAny(mutation.Target, []string{"/etc/blazn", "/var/lib/blazn", "/opt/blazn", "/Library/Application Support/Blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil {
 			return fmt.Errorf("directory action or payload is invalid")
 		}
 	case "systemd_unit":
@@ -1787,13 +1814,34 @@ func validateNodeMutationComponentBinding(plan NodeInstallPlan, mutation NodeIns
 		if component.ArtifactType != "image" || mutation.Target != component.OCIReference || component.RegistryHost == "" || !strings.HasSuffix(mutation.Target, "@sha256:"+component.SHA256) {
 			return fmt.Errorf("image mutation does not match its signed component")
 		}
-	default:
-		_ = plan
+	case "file":
+		contentSHA256, _ := mutation.Desired["contentSha256"].(string)
+		if !oneOf(component.ArtifactType, "binary", "configuration") || contentSHA256 != component.SHA256 || mutation.DesiredDigest != "sha256:"+component.SHA256 || (component.ArtifactType == "binary" && component.SourceClass != "current_binary") || (component.ArtifactType == "configuration" && component.SourceClass != "embedded") {
+			return fmt.Errorf("file mutation does not match its signed component")
+		}
+		if component.ArtifactType == "binary" && mutation.Target != plan.NodeService.BinaryPath {
+			return fmt.Errorf("current binary may only populate the node service binary path")
+		}
+		if mutation.Target == plan.NodeService.BinaryPath && component.ArtifactType != "binary" {
+			return fmt.Errorf("node service binary is not bound to the authenticated current binary")
+		}
+	case "certificate":
+		contentSHA256, _ := mutation.Desired["contentSha256"].(string)
+		if component.ArtifactType != "certificate" || contentSHA256 != component.SHA256 || mutation.DesiredDigest != "sha256:"+component.SHA256 {
+			return fmt.Errorf("certificate mutation does not match its signed component")
+		}
+	case "systemd_unit", "launchd_unit":
+		if component.ArtifactType != "configuration" || component.SourceClass != "embedded" || mutation.DesiredDigest != "sha256:"+component.SHA256 || component.SHA256 != plan.NodeService.DefinitionSHA256 {
+			return fmt.Errorf("service mutation does not match its embedded signed definition")
+		}
 	}
 	return nil
 }
 
 func validateNodeProfileSemantics(plan NodeInstallPlan) error {
+	if !nodeHasValidation(plan.ValidationTests, "binary_digest") || !nodeHasServiceBinary(plan) {
+		return fmt.Errorf("node service binary lacks an authenticated current-binary mutation")
+	}
 	wantImagePlatform := "linux/amd64"
 	if plan.Target.Architecture == NodeArchARM64 {
 		wantImagePlatform = "linux/arm64"
@@ -1817,6 +1865,11 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 				return fmt.Errorf("Linux profile image architecture is invalid")
 			}
 		}
+		if plan.InstallProfile == "ubuntu-26.04-amd64-worker/v1" {
+			if !nodeHasValidation(plan.ValidationTests, "service_account") || !nodeHasFreshServiceAccount(plan) {
+				return fmt.Errorf("fresh Linux profile lacks receipted service account setup")
+			}
+		}
 	case "macos-lima-worker-adopt/v1":
 		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "root" || plan.NodeService.RunAsGroup != "wheel" || plan.Rollback.BackupRootClass != "macos_library_application_support" {
 			return fmt.Errorf("macOS profile service identity is invalid")
@@ -1832,10 +1885,90 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 				return fmt.Errorf("macOS profile image architecture is invalid")
 			}
 		}
+		if !nodeHasValidation(plan.ValidationTests, "lima_worker_binding") || !nodeHasEmbeddedLimaBinding(plan) {
+			return fmt.Errorf("macOS profile lacks embedded Lima worker binding")
+		}
 	default:
 		return fmt.Errorf("install profile is invalid")
 	}
 	return nil
+}
+
+func nodeHasServiceBinary(plan NodeInstallPlan) bool {
+	components := make(map[string]NodeInstallComponent, len(plan.Components))
+	for _, component := range plan.Components {
+		components[component.Name] = component
+	}
+	count := 0
+	for _, mutation := range plan.Mutations {
+		component := components[nodeMutationSourceComponent(mutation)]
+		if mutation.Kind == "file" && mutation.Target == plan.NodeService.BinaryPath && component.ArtifactType == "binary" && component.SourceClass == "current_binary" && component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Desired["contentSha256"] == component.SHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+			count++
+		}
+	}
+	return count == 1
+}
+
+func nodeHasValidation(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeHasFreshServiceAccount(plan NodeInstallPlan) bool {
+	groupOrdinal, userOrdinal, dataOrdinal := int64(0), int64(0), int64(0)
+	groupGID, userUID, userGID, dataUID, dataGID, dataMode := int64(0), int64(0), int64(0), int64(0), int64(0), int64(0)
+	for _, mutation := range plan.Mutations {
+		switch {
+		case mutation.Kind == "group" && mutation.Target == plan.NodeService.RunAsGroup:
+			groupOrdinal = mutation.Ordinal
+			groupGID = mutation.GID
+		case mutation.Kind == "user" && mutation.Target == plan.NodeService.RunAsUser && mutation.Desired["group"] == plan.NodeService.RunAsGroup:
+			userOrdinal = mutation.Ordinal
+			userUID, userGID = mutation.UID, mutation.GID
+		case mutation.Kind == "directory" && mutation.Target == "/var/lib/blazn":
+			dataOrdinal = mutation.Ordinal
+			dataUID, dataGID, dataMode = mutation.UID, mutation.GID, mutation.Mode
+		}
+	}
+	return groupOrdinal > 0 && userOrdinal > groupOrdinal && dataOrdinal > userOrdinal && groupGID == userGID && userUID > 0 && dataUID == userUID && dataGID == userGID && dataMode&0300 == 0300
+}
+
+func nodeHasEmbeddedLimaBinding(plan NodeInstallPlan) bool {
+	for _, component := range plan.Components {
+		if component.Name != "lima-worker-binding" || component.ArtifactType != "configuration" || component.SourceClass != "embedded" {
+			continue
+		}
+		for _, mutation := range plan.Mutations {
+			if mutation.Kind == "file" && mutation.Target == "/Library/Application Support/Blazn/lima-worker-binding.json" && nodeMutationSourceComponent(mutation) == component.Name && mutation.Desired["contentSha256"] == component.SHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func nodeHasTrustedEmbeddedLimaBinding(plan NodeInstallPlan, binding *NodeTrustedLimaBinding) bool {
+	if binding == nil || binding.ComponentName == "" || binding.Target != "/Library/Application Support/Blazn/lima-worker-binding.json" || !nodeHashPattern.MatchString(binding.SHA256) || binding.VMName == "" || binding.WorkerName == "" {
+		return false
+	}
+	components := make(map[string]NodeInstallComponent, len(plan.Components))
+	for _, component := range plan.Components {
+		components[component.Name] = component
+	}
+	for _, mutation := range plan.Mutations {
+		if mutation.Kind != "file" || mutation.Target != binding.Target || nodeMutationSourceComponent(mutation) != binding.ComponentName {
+			continue
+		}
+		component := components[nodeMutationSourceComponent(mutation)]
+		if component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == binding.SHA256 && mutation.Desired["contentSha256"] == binding.SHA256 && mutation.DesiredDigest == "sha256:"+binding.SHA256 {
+			return true
+		}
+	}
+	return false
 }
 
 func nodeHasParentTraversal(value string) bool {
