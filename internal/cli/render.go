@@ -1,6 +1,10 @@
 package cli
 
-import "fmt"
+import (
+	"encoding/csv"
+	"fmt"
+	"strconv"
+)
 
 type helpOutput struct {
 	Command  string        `json:"command"`
@@ -29,6 +33,8 @@ var rootCommands = []helpCommand{
 	{Name: "doctor", Summary: "Run offline readiness checks"},
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
+	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
+	{Name: "social", Summary: "Search public entities and manage social content (plugin)"},
 	{Name: "uninstall", Summary: "Remove a receipt-owned direct installation"},
 	{Name: "version", Summary: "Show build and contract version information"},
 	{Name: "workspace", Summary: "Create, select, and manage workspaces"},
@@ -79,12 +85,41 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		}
 	case "node":
 		output = helpOutput{Command: "node", Usage: "blazn node enroll|recover|repair|uninstall|heartbeat|serve [options]", Summary: "Operate the signed Node install and daemon runtime.", Commands: []helpCommand{{Name: "enroll", Summary: "Enroll, root-authorize, and transactionally install this host"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "repair", Summary: "Reconcile an active receipt using a current authorized plan"}, {Name: "uninstall", Summary: "Remove Node-owned state and restore receipt-captured prior values"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}, {Name: "serve", Summary: "Run the token-free Node heartbeat daemon"}}}
+	case "plugins":
+		output = helpOutput{Command: "plugins", Usage: "blazn plugins list|doctor|install|rollback|remove [NAME] [--yes]", Summary: "Install and manage signed allowlisted Blazn plugins.", Commands: []helpCommand{{Name: "list", Summary: "List allowlisted plugins"}, {Name: "doctor", Summary: "Validate installed plugin receipts"}, {Name: "install", Summary: "Install a signed plugin release"}, {Name: "rollback", Summary: "Activate the previous installed version"}, {Name: "remove", Summary: "Remove a receipt-owned plugin"}}}
 	default:
+		if a.plugins != nil {
+			if definition, ok := a.plugins.Resolve(topic); ok {
+				commands := make([]helpCommand, 0, len(definition.Aliases))
+				for _, alias := range definition.Aliases {
+					commands = append(commands, helpCommand{Name: alias, Summary: "Run the " + alias + " command through " + definition.Name})
+				}
+				output = helpOutput{Command: definition.CanonicalCommand, Usage: "blazn " + definition.CanonicalCommand + " <command> [options]", Summary: "Commands provided by the signed " + definition.Name + " plugin.", Commands: commands}
+				break
+			}
+		}
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown help topic %q", topic))
 	}
 
-	if format == OutputJSON {
+	if format == OutputJSON || format == OutputJSONL {
 		return a.writeJSON(output)
+	}
+	if format == OutputCSV {
+		writer := csv.NewWriter(a.stdout)
+		_ = writer.Write([]string{"command", "usage", "summary", "subcommand", "subcommand_summary"})
+		if len(output.Commands) == 0 {
+			_ = writer.Write([]string{output.Command, output.Usage, output.Summary, "", ""})
+		} else {
+			for _, command := range output.Commands {
+				_ = writer.Write([]string{output.Command, output.Usage, output.Summary, command.Name, command.Summary})
+			}
+		}
+		writer.Flush()
+		if err := writer.Error(); err != nil {
+			fmt.Fprintf(a.stderr, "blazn: failed to write output: %v\n", err)
+			return ExitFailure
+		}
+		return ExitSuccess
 	}
 
 	fmt.Fprintln(a.stdout, output.Summary)
@@ -100,7 +135,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 }
 
 func (a *App) writeVersion(format OutputFormat) int {
-	if format == OutputJSON {
+	if format == OutputJSON || format == OutputJSONL {
 		return a.writeJSON(a.build)
 	}
 	fmt.Fprintf(a.stdout, "blazn %s\n", a.build.Version)
@@ -112,9 +147,20 @@ func (a *App) writeVersion(format OutputFormat) int {
 }
 
 func (a *App) writeError(format OutputFormat, exitCode int, code, message string) int {
-	if format == OutputJSON {
+	if format == OutputJSON || format == OutputJSONL {
 		if result := a.writeJSON(errorOutput{Error: commandError{Code: code, Message: message}, ExitCode: exitCode}); result != ExitSuccess {
 			return result
+		}
+		return exitCode
+	}
+	if format == OutputCSV {
+		writer := csv.NewWriter(a.stdout)
+		_ = writer.Write([]string{"status", "error_code", "error_message", "exit_code"})
+		_ = writer.Write([]string{"error", code, message, strconv.Itoa(exitCode)})
+		writer.Flush()
+		if err := writer.Error(); err != nil {
+			fmt.Fprintf(a.stderr, "blazn: failed to write output: %v\n", err)
+			return ExitFailure
 		}
 		return exitCode
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
 	nodepkg "github.com/blazncloud/blazn/internal/node"
+	pluginpkg "github.com/blazncloud/blazn/internal/plugin"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
 )
 
@@ -29,6 +30,8 @@ type OutputFormat string
 const (
 	OutputHuman OutputFormat = "human"
 	OutputJSON  OutputFormat = "json"
+	OutputJSONL OutputFormat = "jsonl"
+	OutputCSV   OutputFormat = "csv"
 )
 
 type BuildInfo struct {
@@ -52,6 +55,17 @@ type App struct {
 	node        func(bool) (nodeCommands, error)
 	stdin       io.Reader
 	stdinTTY    func() bool
+	plugins     pluginCommands
+}
+
+type pluginCommands interface {
+	Resolve(string) (pluginpkg.Definition, bool)
+	Installed(string) (pluginpkg.Installed, error)
+	Install(context.Context, string) (pluginpkg.Receipt, error)
+	List() []pluginpkg.Status
+	Rollback(string) (pluginpkg.Receipt, error)
+	Remove(string) error
+	Run(context.Context, pluginpkg.Definition, []string, string, pluginpkg.Stdio) (int, error)
 }
 
 var defaultNodeCommandFactory = newDefaultNodeCommands
@@ -72,6 +86,11 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 	if build.GOARCH == "" {
 		build.GOARCH = runtime.GOARCH
 	}
+	pluginService, pluginErr := pluginpkg.NewService(build.Version)
+	var plugins pluginCommands
+	if pluginErr == nil {
+		plugins = pluginService
+	}
 	return &App{
 		stdout:    stdout,
 		stderr:    stderr,
@@ -86,6 +105,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
 		stdin:       os.Stdin,
 		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		plugins:     plugins,
 	}
 }
 
@@ -101,6 +121,18 @@ func (a *App) Run(args []string) int {
 
 	command := positional[0]
 	rest := positional[1:]
+	if format == OutputJSONL || format == OutputCSV {
+		if a.plugins != nil {
+			if definition, ok := a.plugins.Resolve(command); ok {
+				pluginArgs := positional
+				if command == definition.CanonicalCommand {
+					pluginArgs = rest
+				}
+				return a.runPlugin(format, definition, pluginArgs)
+			}
+		}
+		return a.writeError(OutputHuman, ExitUsage, "usage", fmt.Sprintf("--output %s is supported only by plugin commands", format))
+	}
 	switch command {
 	case nodepkg.RootObserveSubcommand:
 		if format != OutputHuman || len(rest) != 0 {
@@ -173,7 +205,18 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(format, rest)
 	case "node":
 		return a.runNode(format, rest)
+	case "plugins":
+		return a.runPlugins(format, rest)
 	default:
+		if a.plugins != nil {
+			if definition, ok := a.plugins.Resolve(command); ok {
+				pluginArgs := positional
+				if command == definition.CanonicalCommand {
+					pluginArgs = rest
+				}
+				return a.runPlugin(format, definition, pluginArgs)
+			}
+		}
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
 	}
 }
@@ -186,7 +229,7 @@ func parseGlobalOptions(args []string) (OutputFormat, []string, error) {
 		switch {
 		case arg == "--output":
 			if i+1 >= len(args) {
-				return format, nil, fmt.Errorf("--output requires human or json")
+				return format, nil, fmt.Errorf("--output requires human, json, jsonl, or csv")
 			}
 			i++
 			value, err := outputFormat(args[i])
@@ -209,10 +252,10 @@ func parseGlobalOptions(args []string) (OutputFormat, []string, error) {
 
 func outputFormat(value string) (OutputFormat, error) {
 	switch OutputFormat(value) {
-	case OutputHuman, OutputJSON:
+	case OutputHuman, OutputJSON, OutputJSONL, OutputCSV:
 		return OutputFormat(value), nil
 	default:
-		return OutputHuman, fmt.Errorf("invalid --output value %q; expected human or json", value)
+		return OutputHuman, fmt.Errorf("invalid --output value %q; expected human, json, jsonl, or csv", value)
 	}
 }
 
