@@ -63,6 +63,9 @@ release stage/promotion, build, secret, receipt, backup, stop, and start mutatio
 
 Stop `blazn-control-plane.service` and confirm it is fully inactive. Then invoke
 the staged candidate's `promote-release.sh FULL_COMMIT` under the exact lock.
+Promotion accepts only the exact `inactive` unit state and independently rejects
+any still-running container labelled as the receipt-owned `blazn-m2` Compose
+project; `failed` is not treated as stopped.
 The promotion first adopts a legacy `/opt/blazn` directory into a checksummed,
 read-only prior release, writes a retryable promotion intent, atomically swaps
 the `/opt/blazn` symlink, installs and byte-compares the candidate systemd unit,
@@ -135,7 +138,8 @@ receipt-owned, non-login OS accounts with distinct passwd homes, UIDs, primary
 groups, and no supplementary groups. Qualification invokes each CLI with
 `setpriv --clear-groups --reset-env`, so Go's `os/user.Current()` resolves a
 different real home and credential store for user A and user B. Environment
-overrides are not treated as a credential boundary.
+overrides are not treated as a credential boundary; inherited DBus and XDG
+session variables are removed so both accounts use their own protected store.
 
 Run `verify-live-workspace.sh /path/to/blazn https://blazn.benpelo.com` through
 the same environment and lock. It authenticates user A and user B into separate

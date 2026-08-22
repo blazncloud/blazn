@@ -15,6 +15,7 @@ require_command sha256sum
 require_command systemctl
 require_command findmnt
 require_command install
+require_command docker
 
 release_root=${BLAZN_RELEASE_ROOT:-/opt/blazn-releases}
 receipt_root=${BLAZN_RELEASE_RECEIPT_ROOT:-/var/lib/blazn/ownership/releases}
@@ -38,6 +39,11 @@ fi
 
 state=$(systemctl is-active blazn-control-plane.service 2>/dev/null || true)
 [ "$state" = inactive ] || die "control-plane service must be exactly inactive before release promotion (state=$state)"
+project_containers=$(docker ps -aq --filter label=com.docker.compose.project=blazn-m2)
+for container in $project_containers; do
+  running=$(docker inspect --format '{{.State.Running}}' "$container")
+  [ "$running" = false ] || die "receipt-bound Compose project still has a running container: $container"
+done
 [ "$(stat -c '%d' "$release_root")" = "$(stat -c '%d' "$(dirname -- "$active")")" ] || die "active and versioned releases must share a filesystem for atomic promotion"
 require_absolute_path BLAZN_SYSTEMD_UNIT_PATH "$installed_unit"
 assert_not_symlink_chain "$installed_unit"

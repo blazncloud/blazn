@@ -56,8 +56,8 @@ for spec in "$owner_name:$owner_uid:$owner_gid:$owner_home" "$second_name:$secon
   assert_directory_owned_mode "$home" "$uid" 700
 done
 
-owner_cli() { setpriv --reuid="$owner_uid" --regid="$owner_gid" --clear-groups --reset-env env BLAZN_API_URL="$api" "$cli" "$@"; }
-second_cli() { setpriv --reuid="$second_uid" --regid="$second_gid" --clear-groups --reset-env env BLAZN_API_URL="$api" "$cli" "$@"; }
+owner_cli() { setpriv --reuid="$owner_uid" --regid="$owner_gid" --clear-groups --reset-env env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR -u XDG_DATA_HOME BLAZN_API_URL="$api" "$cli" "$@"; }
+second_cli() { setpriv --reuid="$second_uid" --regid="$second_gid" --clear-groups --reset-env env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR -u XDG_DATA_HOME BLAZN_API_URL="$api" "$cli" "$@"; }
 
 login_identity() {
   which_identity=$1

@@ -31,7 +31,16 @@ cat >"$top/bin/findmnt" <<'EOF'
 #!/bin/sh
 exit 1
 EOF
-chmod 0755 "$top/bin/systemctl" "$top/bin/findmnt"
+cat >"$top/bin/docker" <<'EOF'
+#!/bin/sh
+set -eu
+case "$1:$2" in
+  ps:-aq) [ "${FAKE_PROJECT_RUNNING:-0}" -eq 0 ] || printf 'synthetic-running-container\n' ;;
+  inspect:--format) printf '%s\n' "${FAKE_PROJECT_RUNNING:-false}" ;;
+  *) exit 97 ;;
+esac
+EOF
+chmod 0755 "$top/bin/systemctl" "$top/bin/findmnt" "$top/bin/docker"
 
 cp "$REPO_ROOT/infra/milestone-2/systemd/blazn-control-plane.service" "$top/active/infra/milestone-2/systemd/blazn-control-plane.service"
 printf 'legacy payload\n' >"$top/active/legacy.txt"
@@ -53,11 +62,17 @@ common_env "$STAGE" "$REPO_ROOT" "$commit" >"$top/stage-retry.out"
 [ -d "$top/releases/$commit" ]
 sudo jq -e --arg commit "$commit" '.commit==$commit and (.releaseDigest|test("^sha256:[a-f0-9]{64}$"))' "$top/receipts/$commit.json" >/dev/null
 
-if common_env env FAKE_SYSTEMD_STATE=failed "$PROMOTE" "$commit" >"$top/failed-running.out" 2>"$top/failed-running.err"; then
+if common_env env FAKE_SYSTEMD_STATE=failed FAKE_PROJECT_RUNNING=true "$PROMOTE" "$commit" >"$top/failed-running.out" 2>"$top/failed-running.err"; then
   printf 'failed unit with a potentially running Compose project unexpectedly promoted\n' >&2
   exit 1
 fi
 grep -F 'must be exactly inactive' "$top/failed-running.err" >/dev/null
+[ -d "$top/active" ] && [ ! -e "$top/promotion-intent.json" ]
+if common_env env FAKE_PROJECT_RUNNING=true "$PROMOTE" "$commit" >"$top/inactive-running.out" 2>"$top/inactive-running.err"; then
+  printf 'inactive unit with a running receipt-bound container unexpectedly promoted\n' >&2
+  exit 1
+fi
+grep -F 'still has a running container' "$top/inactive-running.err" >/dev/null
 [ -d "$top/active" ] && [ ! -e "$top/promotion-intent.json" ]
 
 if common_env env BLAZN_PROMOTION_FAILPOINT=after-adopt "$PROMOTE" "$commit" >"$top/fault.out" 2>"$top/fault.err"; then
