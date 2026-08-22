@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/openapi.json; DO NOT EDIT.
-// Contract SHA256: 255975f130aeeab11aa3b9169fa2836d6ed0c28347d04fa6bf6209fcef6d1d4e
+// Contract SHA256: 9e36d86d26ce60d7fe7b34612c4af5548f62202c2cfbd56af669d4e6dcf6d0c7
 
 package client
 
@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -82,6 +83,7 @@ type ErrorBody struct {
 
 type APIError struct {
 	StatusCode int
+	RetryAfter int
 	Body       ErrorBody
 }
 
@@ -116,7 +118,21 @@ func New(baseURL string, httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	return &Client{baseURL: parsed, http: httpClient}, nil
+	clientCopy := *httpClient
+	previousRedirect := clientCopy.CheckRedirect
+	clientCopy.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if !strings.EqualFold(request.URL.Scheme, parsed.Scheme) || !strings.EqualFold(request.URL.Host, parsed.Host) {
+			return errors.New("refusing cross-origin API redirect")
+		}
+		if previousRedirect != nil {
+			return previousRedirect(request, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &Client{baseURL: parsed, http: &clientCopy}, nil
 }
 
 func (c *Client) CreateDeviceAuthorization(ctx context.Context, request DeviceAuthorizationRequest) (DeviceAuthorization, error) {
@@ -135,6 +151,10 @@ func (c *Client) RefreshSession(ctx context.Context, request RefreshSessionReque
 	var output Session
 	err := c.do(ctx, http.MethodPost, "/v1/auth/sessions/refresh", "", request, &output, http.StatusOK)
 	return output, err
+}
+
+func (c *Client) RevokeSession(ctx context.Context, request RefreshSessionRequest) error {
+	return c.do(ctx, http.MethodPost, "/v1/auth/sessions/revoke", "", request, nil, http.StatusNoContent)
 }
 
 func (c *Client) DeleteCurrentSession(ctx context.Context, accessToken string) error {
@@ -193,7 +213,11 @@ func (c *Client) do(ctx context.Context, method, path, token string, input, outp
 		if err := json.NewDecoder(limited).Decode(&apiError); err != nil && err != io.EOF {
 			apiError.Message = http.StatusText(response.StatusCode)
 		}
-		return &APIError{StatusCode: response.StatusCode, Body: apiError}
+		retryAfter := 0
+		if value, parseErr := strconv.Atoi(response.Header.Get("Retry-After")); parseErr == nil && value > 0 && value <= 300 {
+			retryAfter = value
+		}
+		return &APIError{StatusCode: response.StatusCode, RetryAfter: retryAfter, Body: apiError}
 	}
 	if output == nil || success == http.StatusNoContent {
 		_, err = io.Copy(io.Discard, limited)
