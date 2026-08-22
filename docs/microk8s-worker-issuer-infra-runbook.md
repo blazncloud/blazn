@@ -7,7 +7,8 @@ this qualification to `ben1` or shared MicroK8s.
 
 Before installation, hold the serialized control-plane lock and record merged
 source/helper/ownership-receipt digests, broker UID and pre-provisioned empty
-dedicated broker group/GID, MicroK8s v1.35.6
+dedicated `blazn-node-broker` account/group/GID (primary group only,
+`/nonexistent`, `/usr/sbin/nologin`, no UID/GID collision), MicroK8s v1.35.6
 revision 9072 or 9075, `microk8s` GID, and zero active bootstrap issuances.
 Confirm HomeAI is outside the Compose project and rollback targets. Refuse
 managed paths without the issuer receipt, links, or missing operator
