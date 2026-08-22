@@ -342,7 +342,7 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 		t.Fatalf("pod=%#v", pod)
 	}
 	security := pod.Spec.Containers[0].SecurityContext
-	if security["allowPrivilegeEscalation"] != false || security["readOnlyRootFilesystem"] != true || pod.Spec.Containers[0].Image != testImage {
+	if security["allowPrivilegeEscalation"] != false || security["readOnlyRootFilesystem"] != true || pod.Spec.SecurityContext["runAsUser"] != float64(65532) && pod.Spec.SecurityContext["runAsUser"] != int64(65532) || pod.Spec.Containers[0].Image != testImage {
 		t.Fatalf("container=%#v", pod.Spec.Containers[0])
 	}
 }
