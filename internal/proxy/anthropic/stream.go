@@ -55,7 +55,6 @@ type StreamDecoder struct {
 	sequence       int
 	started        bool
 	terminal       bool
-	awaitEOF       bool
 	messageDelta   bool
 	blocks         map[int]contentBlock
 	closed         map[int]bool
@@ -67,6 +66,7 @@ type StreamDecoder struct {
 	eventsRead     int
 	requestedStops []string
 	stopSequence   *string
+	stopReason     string
 	sawTool        bool
 }
 
@@ -96,6 +96,10 @@ func (d *StreamDecoder) StopSequence() *string {
 	return &value
 }
 
+func (d *StreamDecoder) Metadata() ResponseMetadata {
+	return ResponseMetadata{StopReason: d.stopReason, StopSequence: d.StopSequence()}
+}
+
 // Next returns one normalized event. done is true only after a valid
 // message_stop has been consumed. It rejects missing, duplicate, and reordered
 // Anthropic events, so cross-protocol adapters never repair a lossy stream.
@@ -123,16 +127,9 @@ func (d *StreamDecoder) NextContext(ctx context.Context) (event proxycontract.No
 				return event, false, cancelled(ctx.Err())
 			}
 			if errors.Is(readErr, io.EOF) {
-				if d.awaitEOF {
-					d.terminal = true
-					return event, true, nil
-				}
 				return event, false, upstream("Anthropic stream ended without message_stop")
 			}
 			return event, false, &Error{Code: "connection_failure", Message: "upstream stream failed", Status: 502, Retryable: true, Cause: readErr}
-		}
-		if d.awaitEOF {
-			return event, false, upstream("Anthropic stream contained an event after message_stop")
 		}
 		d.bytesRead += consumed
 		d.eventsRead++
@@ -295,6 +292,7 @@ func (d *StreamDecoder) NextContext(ctx context.Context) (event proxycontract.No
 				value := *delta.StopSequence
 				d.stopSequence = &value
 			}
+			d.stopReason = *delta.StopReason
 			finish, finishErr := finishReason(*delta.StopReason)
 			if finishErr != nil {
 				return event, false, finishErr
@@ -317,8 +315,11 @@ func (d *StreamDecoder) NextContext(ctx context.Context) (event proxycontract.No
 			if !d.started || !d.messageDelta || len(d.pending) > 0 {
 				return event, false, upstream("message_stop is out of order")
 			}
-			d.awaitEOF = true
-			continue
+			d.terminal = true
+			if d.closer != nil {
+				_ = d.closer.Close()
+			}
+			return event, true, nil
 		case "error":
 			if len(envelope.Error) == 0 {
 				return event, false, upstream("invalid Anthropic error event")
@@ -439,6 +440,7 @@ type StreamEncoder struct {
 	usage             *proxycontract.Usage
 	finish            *proxycontract.FinishReason
 	stopSequence      *string
+	stopReason        string
 	haveInputSequence bool
 	lastInputSequence int
 	inputEvents       int
@@ -460,6 +462,18 @@ func (s *StreamEncoder) SetStopSequence(value *string) {
 	}
 	copy := *value
 	s.stopSequence = &copy
+}
+
+func (s *StreamEncoder) SetMetadata(metadata ResponseMetadata) error {
+	if metadata.StopReason == "stop_sequence" && metadata.StopSequence == nil {
+		return errors.New("matched stop_sequence metadata is incomplete")
+	}
+	if metadata.StopReason != "stop_sequence" && metadata.StopSequence != nil {
+		return errors.New("stop_sequence contradicts stop reason")
+	}
+	s.stopReason = metadata.StopReason
+	s.SetStopSequence(metadata.StopSequence)
+	return nil
 }
 
 func (s *StreamEncoder) Start() error {
@@ -619,6 +633,12 @@ func (s *StreamEncoder) Finish() error {
 	}
 	if stop == "" {
 		return errors.New("finish reason cannot be represented by Anthropic")
+	}
+	if s.stopReason != "" && s.stopReason != "stop_sequence" {
+		mapped, err := finishReason(s.stopReason)
+		if err != nil || mapped != *s.finish {
+			return errors.New("stream stop metadata contradicts finish reason")
+		}
 	}
 	if (*s.finish == "tool_call") != s.toolStarted {
 		return errors.New("tool_call finish reason contradicts streamed content")

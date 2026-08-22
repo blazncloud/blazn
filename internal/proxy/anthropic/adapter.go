@@ -5,6 +5,7 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -45,10 +46,24 @@ func upstream(message string) error {
 type Adapter interface {
 	Normalize(io.Reader, proxycontract.Policy, time.Time, func() string) (proxycontract.NormalizedRequest, error)
 	EncodeDestination(proxycontract.NormalizedRequest, proxycontract.Route) ([]byte, string, error)
-	DecodeDestination(io.Reader, proxycontract.NormalizedRequest, string) (proxycontract.NormalizedResponse, error)
-	NewDestinationStream(io.Reader, string) *StreamDecoder
-	WriteSourceResponse(io.Writer, proxycontract.NormalizedResponse) error
-	NewSourceStream(io.Writer, proxycontract.NormalizedRequest) *StreamEncoder
+	DecodeDestination(io.Reader, proxycontract.NormalizedRequest, string) (DecodedResponse, error)
+	NewDestinationStream(io.Reader, proxycontract.NormalizedRequest) DestinationStream
+	WriteSourceResponse(io.Writer, DecodedResponse) error
+	NewSourceStream(io.Writer, proxycontract.NormalizedRequest) SourceStream
+}
+
+type DestinationStream interface {
+	NextContext(context.Context) (proxycontract.NormalizedStreamEvent, bool, error)
+	Metadata() ResponseMetadata
+}
+
+type SourceStream interface {
+	Start() error
+	Consume(proxycontract.NormalizedStreamEvent) error
+	SetMetadata(ResponseMetadata) error
+	Finish() error
+	Error(error) error
+	Cancel() error
 }
 
 type MessagesAdapter struct{}
@@ -59,16 +74,17 @@ func (MessagesAdapter) Normalize(body io.Reader, policy proxycontract.Policy, no
 func (MessagesAdapter) EncodeDestination(request proxycontract.NormalizedRequest, route proxycontract.Route) ([]byte, string, error) {
 	return EncodeDestination(request, route)
 }
-func (MessagesAdapter) DecodeDestination(body io.Reader, request proxycontract.NormalizedRequest, routeID string) (proxycontract.NormalizedResponse, error) {
-	return DecodeDestination(body, request, routeID)
+func (MessagesAdapter) DecodeDestination(body io.Reader, request proxycontract.NormalizedRequest, routeID string) (DecodedResponse, error) {
+	response, metadata, err := DecodeDestinationDetailed(body, request, routeID)
+	return DecodedResponse{Normalized: response, Metadata: metadata}, err
 }
-func (MessagesAdapter) NewDestinationStream(body io.Reader, requestID string) *StreamDecoder {
-	return NewStreamDecoder(body, requestID)
+func (MessagesAdapter) NewDestinationStream(body io.Reader, request proxycontract.NormalizedRequest) DestinationStream {
+	return NewStreamDecoderForRequest(body, request)
 }
-func (MessagesAdapter) WriteSourceResponse(writer io.Writer, response proxycontract.NormalizedResponse) error {
-	return WriteSourceResponse(writer, response)
+func (MessagesAdapter) WriteSourceResponse(writer io.Writer, response DecodedResponse) error {
+	return WriteSourceResponseDetailed(writer, response.Normalized, response.Metadata)
 }
-func (MessagesAdapter) NewSourceStream(writer io.Writer, request proxycontract.NormalizedRequest) *StreamEncoder {
+func (MessagesAdapter) NewSourceStream(writer io.Writer, request proxycontract.NormalizedRequest) SourceStream {
 	return NewStreamEncoder(writer, request)
 }
 
@@ -314,6 +330,9 @@ func normalizeToolChoice(raw json.RawMessage, tools map[string]bool) (proxycontr
 }
 
 func decodeContent(raw json.RawMessage) ([]contentBlock, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, errors.New("content cannot be null")
+	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		return []contentBlock{{Type: "text", Text: text}}, nil
@@ -387,6 +406,9 @@ func textContent(raw json.RawMessage) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(parts) == 0 {
+		return nil, errors.New("content blocks cannot be empty")
+	}
 	values := make([]string, 0, len(parts))
 	for _, part := range parts {
 		if part.Type != "text" || validateContentBlock(part) != nil {
@@ -399,7 +421,7 @@ func textContent(raw json.RawMessage) ([]string, error) {
 
 func normalizeResult(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return json.RawMessage(`""`), nil
+		return nil, errors.New("tool result content cannot be null")
 	}
 	if texts, err := textContent(raw); err == nil {
 		encoded, _ := json.Marshal(strings.Join(texts, ""))
@@ -482,7 +504,11 @@ func EncodeDestination(input proxycontract.NormalizedRequest, route proxycontrac
 			case "tool_call":
 				parts = append(parts, map[string]any{"type": "tool_use", "id": *current.CallID, "name": *current.ToolName, "input": json.RawMessage(current.Arguments)})
 			case "tool_result":
-				parts = append(parts, map[string]any{"type": "tool_result", "tool_use_id": *current.CallID, "content": resultContent(current.Result)})
+				content, err := resultContent(current.Result)
+				if err != nil {
+					return nil, "", err
+				}
+				parts = append(parts, map[string]any{"type": "tool_result", "tool_use_id": *current.CallID, "content": content})
 			default:
 				return nil, "", unsupported("normalized block cannot be represented by Anthropic Messages")
 			}
@@ -548,12 +574,15 @@ func CheckCompatibility(input proxycontract.NormalizedRequest, destination proxy
 	}
 }
 
-func resultContent(raw json.RawMessage) any {
+func resultContent(raw json.RawMessage) (any, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, unsupported("normalized null tool result is not representable by Anthropic Messages")
+	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
-		return text
+		return text, nil
 	}
-	return string(compact(raw))
+	return nil, unsupported("normalized non-string tool result is not losslessly representable by Anthropic Messages")
 }
 
 type response struct {
@@ -574,6 +603,11 @@ type usage struct {
 type ResponseMetadata struct {
 	StopReason   string
 	StopSequence *string
+}
+
+type DecodedResponse struct {
+	Normalized proxycontract.NormalizedResponse
+	Metadata   ResponseMetadata
 }
 
 func DecodeDestination(body io.Reader, input proxycontract.NormalizedRequest, routeID string) (proxycontract.NormalizedResponse, error) {

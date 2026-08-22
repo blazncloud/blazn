@@ -107,18 +107,19 @@ func TestHarnessShapeResponseAndSSEPreserveStopSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	routeID := "22222222-2222-4222-8222-222222222222"
-	response, metadata, err := DecodeDestinationDetailed(bytes.NewReader(fixture.NonstreamResponse), request, routeID)
+	var adapter Adapter = MessagesAdapter{}
+	decoded, err := adapter.DecodeDestination(bytes.NewReader(fixture.NonstreamResponse), request, routeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metadata.StopSequence == nil || *metadata.StopSequence != "<END>" {
-		t.Fatalf("lost stop sequence: %#v", metadata)
+	if decoded.Metadata.StopSequence == nil || *decoded.Metadata.StopSequence != "<END>" {
+		t.Fatalf("lost stop sequence: %#v", decoded.Metadata)
 	}
 	if _, err := DecodeDestination(bytes.NewReader(fixture.NonstreamResponse), request, routeID); err == nil {
 		t.Fatal("metadata-free path must fail closed")
 	}
 	var encoded bytes.Buffer
-	if err := WriteSourceResponseDetailed(&encoded, response, metadata); err != nil {
+	if err := adapter.WriteSourceResponse(&encoded, decoded); err != nil {
 		t.Fatal(err)
 	}
 	var source map[string]any
@@ -129,18 +130,39 @@ func TestHarnessShapeResponseAndSSEPreserveStopSequence(t *testing.T) {
 	for _, item := range fixture.SSETranscript {
 		fmt.Fprintf(&transcript, "event: %s\ndata: %s\n\n", item.Event, item.Data)
 	}
-	decoder := NewStreamDecoderForRequest(strings.NewReader(transcript.String()), request)
+	decoder := adapter.NewDestinationStream(strings.NewReader(transcript.String()), request)
+	events := []proxycontract.NormalizedStreamEvent{}
 	for {
-		_, done, err := decoder.Next()
+		event, done, err := decoder.NextContext(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
 		if done {
 			break
 		}
+		events = append(events, event)
 	}
-	if decoder.StopSequence() == nil || *decoder.StopSequence() != "<END>" {
+	if decoder.Metadata().StopSequence == nil || *decoder.Metadata().StopSequence != "<END>" {
 		t.Fatal("stream stop sequence lost")
+	}
+	var sourceStream bytes.Buffer
+	sourceEncoder := adapter.NewSourceStream(&sourceStream, request)
+	if err := sourceEncoder.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if err := sourceEncoder.Consume(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sourceEncoder.SetMetadata(decoder.Metadata()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceEncoder.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sourceStream.String(), `"stop_reason":"stop_sequence"`) {
+		t.Fatalf("adapter stream lost metadata: %s", sourceStream.String())
 	}
 }
 
@@ -197,11 +219,24 @@ func TestNonStringToolResultAndLateSystemFailClosed(t *testing.T) {
 	if _, err := Normalize(strings.NewReader(body), testPolicy(), time.Now(), func() string { return requestID }); err == nil {
 		t.Fatal("non-string result must be rejected")
 	}
+	nullBody := `{"model":"company-assistant","max_tokens":10,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"call","name":"inspect","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":null}]}]}`
+	if _, err := Normalize(strings.NewReader(nullBody), testPolicy(), time.Now(), func() string { return requestID }); err == nil {
+		t.Fatal("null tool result must be rejected")
+	}
 	text := "x"
 	request := proxycontract.NormalizedRequest{Blocks: []proxycontract.RequestBlock{{Role: "user", Type: "text", Text: &text}, {Role: "developer", Type: "text", Text: &text}}, Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 1}}
 	_, _, err := EncodeDestination(request, proxycontract.Route{DestinationProtocol: proxycontract.ProtocolAnthropicMessages})
 	if err == nil {
 		t.Fatal("late developer block must be rejected")
+	}
+	callID := "call"
+	request = proxycontract.NormalizedRequest{Blocks: []proxycontract.RequestBlock{{Role: "tool", Type: "tool_result", CallID: &callID, Result: json.RawMessage(`{"value":1}`)}}, Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 1}}
+	if _, _, err := EncodeDestination(request, proxycontract.Route{DestinationProtocol: proxycontract.ProtocolAnthropicMessages}); err == nil {
+		t.Fatal("normalized object tool result must be rejected")
+	}
+	request.Blocks[0].Result = json.RawMessage("null")
+	if _, _, err := EncodeDestination(request, proxycontract.Route{DestinationProtocol: proxycontract.ProtocolAnthropicMessages}); err == nil {
+		t.Fatal("normalized null tool result must be rejected")
 	}
 }
 
@@ -243,7 +278,7 @@ func assertCredentialsStripped(t *testing.T, header http.Header) {
 func TestCrossProtocolEncodeDecodeIsLossless(t *testing.T) {
 	text := "hello"
 	callID, name := "call_1", "lookup"
-	input := proxycontract.NormalizedRequest{LogicalRequestID: requestID, Protocol: proxycontract.ProtocolOpenAIResponses, ModelAlias: "company-assistant", DataClass: "company", Blocks: []proxycontract.RequestBlock{{Role: "developer", Type: "text", Text: &text}, {Role: "assistant", Type: "tool_call", CallID: &callID, ToolName: &name, Arguments: json.RawMessage(`{"q":"x"}`)}, {Role: "tool", Type: "tool_result", CallID: &callID, Result: json.RawMessage(`{"answer":1}`)}}, Tools: []proxycontract.Tool{{Name: name, InputSchema: map[string]any{"type": "object"}}}, ToolChoice: "required", Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 50, DeadlineAt: "2026-08-22T12:00:30Z", Stop: []string{"done"}}, CapabilitiesRequired: []proxycontract.Capability{"text", "tools"}}
+	input := proxycontract.NormalizedRequest{LogicalRequestID: requestID, Protocol: proxycontract.ProtocolOpenAIResponses, ModelAlias: "company-assistant", DataClass: "company", Blocks: []proxycontract.RequestBlock{{Role: "developer", Type: "text", Text: &text}, {Role: "assistant", Type: "tool_call", CallID: &callID, ToolName: &name, Arguments: json.RawMessage(`{"q":"x"}`)}, {Role: "tool", Type: "tool_result", CallID: &callID, Result: json.RawMessage(`"{\"answer\":1}"`)}}, Tools: []proxycontract.Tool{{Name: name, InputSchema: map[string]any{"type": "object"}}}, ToolChoice: "required", Limits: proxycontract.NormalizedLimits{MaxOutputTokens: 50, DeadlineAt: "2026-08-22T12:00:30Z", Stop: []string{"done"}}, CapabilitiesRequired: []proxycontract.Capability{"text", "tools"}}
 	route := proxycontract.Route{DestinationProtocol: proxycontract.ProtocolAnthropicMessages, Model: "claude-test"}
 	body, path, err := EncodeDestination(input, route)
 	if err != nil {
@@ -437,7 +472,6 @@ func TestBlockedStreamReadIsCancelled(t *testing.T) {
 func TestDestinationStreamStrictStateAndBounds(t *testing.T) {
 	start := `event: message_start\ndata: {"type":"message_start","message":{"id":"msg","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n`
 	for name, suffix := range map[string]string{
-		"post end":      `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\nevent: ping\ndata: {"type":"ping"}\n\n`,
 		"bad tool json": `event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call","name":"tool","input":{}}}\n\nevent: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{"}}\n\nevent: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -459,6 +493,30 @@ func TestDestinationStreamStrictStateAndBounds(t *testing.T) {
 	decoder.eventsRead = MaxStreamEvents
 	if _, _, err := decoder.Next(); err == nil {
 		t.Fatal("event limit was not enforced")
+	}
+}
+
+func TestMessageStopClosesLingeringBody(t *testing.T) {
+	reader, writer := io.Pipe()
+	stream := strings.ReplaceAll(`event: message_start\ndata: {"type":"message_start","message":{"id":"msg","type":"message","role":"assistant","content":[],"model":"m","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\nevent: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n`, `\n`, "\n")
+	writeDone := make(chan error, 1)
+	go func() { _, err := io.WriteString(writer, stream); writeDone <- err }()
+	decoder := NewStreamDecoder(reader, requestID)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	for {
+		_, done, err := decoder.NextContext(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done {
+			break
+		}
+	}
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("message_stop did not close lingering body")
 	}
 }
 
