@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strings"
 )
 
 type ProjectStatus string
@@ -67,7 +68,7 @@ func (c *Client) CreateProject(ctx context.Context, accessToken, workspaceID, id
 	if err != nil {
 		return output, err
 	}
-	if request.Name == "" || len(request.Name) > 160 || (request.Slug != "" && !projectSlug.MatchString(request.Slug)) || (request.Kind != "" && !projectKind.MatchString(request.Kind)) || len(request.Description) > 4000 {
+	if strings.TrimSpace(request.Name) == "" || len(request.Name) > 160 || (request.Slug != "" && !projectSlug.MatchString(request.Slug)) || (request.Kind != "" && !projectKind.MatchString(request.Kind)) || len(request.Description) > 4000 {
 		return output, fmt.Errorf("project create request is invalid")
 	}
 	err = c.workspaceDo(ctx, http.MethodPost, path, accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)
@@ -116,7 +117,7 @@ func (c *Client) UpdateProject(ctx context.Context, accessToken, workspaceID, pr
 	if request.ExpectedVersion < 1 || (request.Name == nil && request.Description == nil && request.Status == nil) {
 		return output, fmt.Errorf("project update request is invalid")
 	}
-	if request.Name != nil && (*request.Name == "" || len(*request.Name) > 160) {
+	if request.Name != nil && (strings.TrimSpace(*request.Name) == "" || len(*request.Name) > 160) {
 		return output, fmt.Errorf("project name is invalid")
 	}
 	if request.Description != nil && len(*request.Description) > 4000 {

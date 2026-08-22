@@ -52,4 +52,12 @@ func TestProjectGeneratorRejectsOperationAndSchemaDrift(t *testing.T) {
 			t.Fatal("missing tenant field passed")
 		}
 	})
+	t.Run("required", func(t *testing.T) {
+		document := load()
+		schema := valueAt(document, "components", "schemas", "Project").(map[string]any)
+		schema["required"] = []any{"id"}
+		if err := validate(document, string(projectTemplate)); err == nil {
+			t.Fatal("required tenant fields drift passed")
+		}
+	})
 }

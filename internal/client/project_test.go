@@ -79,6 +79,9 @@ func TestProjectClientRejectsInvalidInputsBeforeNetwork(t *testing.T) {
 	if _, err := api.CreateProject(ctx, "token", "not-a-uuid", "project-create-1", CreateProjectRequest{Name: "Project"}); err == nil {
 		t.Fatal("invalid Workspace ID passed")
 	}
+	if _, err := api.CreateProject(ctx, "token", projectTestWorkspaceID, "project-create-1", CreateProjectRequest{Name: "   "}); err == nil {
+		t.Fatal("whitespace-only Project name passed")
+	}
 	if _, err := api.GetProject(ctx, "token", projectTestWorkspaceID, "not-a-uuid"); err == nil {
 		t.Fatal("invalid Project ID passed")
 	}

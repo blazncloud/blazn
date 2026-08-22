@@ -37,6 +37,15 @@ var schemaFields = map[string][]string{
 	"ProjectError":         {"code", "message", "requestId"},
 }
 
+var schemaRequired = map[string][]string{
+	"Project":              {"createdAt", "createdBy", "description", "id", "kind", "name", "slug", "status", "updatedAt", "version", "workspaceId"},
+	"ProjectEnvelope":      {"project"},
+	"ProjectList":          {"items", "nextCursor"},
+	"CreateProjectRequest": {"name"},
+	"UpdateProjectRequest": {"expectedVersion"},
+	"ProjectError":         {"code", "message", "requestId"},
+}
+
 func main() {
 	check := flag.Bool("check", false, "fail if the checked-in Project client differs")
 	flag.Parse()
@@ -125,6 +134,19 @@ func validate(document map[string]any, template string) error {
 		got := keys(properties)
 		if strings.Join(got, ",") != strings.Join(fields, ",") {
 			return fmt.Errorf("Project schema %s fields=%v want %v", name, got, fields)
+		}
+		required, _ := schema["required"].([]any)
+		requiredNames := make([]string, 0, len(required))
+		for _, value := range required {
+			field, ok := value.(string)
+			if !ok {
+				return fmt.Errorf("Project schema %s has a non-string required field", name)
+			}
+			requiredNames = append(requiredNames, field)
+		}
+		sort.Strings(requiredNames)
+		if strings.Join(requiredNames, ",") != strings.Join(schemaRequired[name], ",") {
+			return fmt.Errorf("Project schema %s required=%v want %v", name, requiredNames, schemaRequired[name])
 		}
 	}
 	for _, marker := range []string{"func (c *Client) CreateProject", "func (c *Client) ListProjects", "func (c *Client) GetProject", "func (c *Client) UpdateProject", "type ProjectError = ErrorBody"} {
