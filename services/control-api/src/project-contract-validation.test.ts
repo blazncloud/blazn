@@ -29,8 +29,8 @@ test("Project schemas reject secrets, unknown fields, and update no-ops", async 
   const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> } };
   const ajv = new Ajv2020({ strict: true, allErrors: true });
   addFormats(ajv);
-  const create = ajv.compile(document.components.schemas.CreateProjectRequest);
-  const update = ajv.compile(document.components.schemas.UpdateProjectRequest);
+  const create = ajv.compile(document.components.schemas.CreateProjectRequest!);
+  const update = ajv.compile(document.components.schemas.UpdateProjectRequest!);
   assert.equal(create({ name: "Launch Video", kind: "content", description: "Campaign assets" }), true);
   assert.equal(create({ name: "Launch", apiKey: "must-not-pass" }), false);
   assert.equal(update({ expectedVersion: 1 }), false);
@@ -42,7 +42,7 @@ test("Project response requires immutable ownership and version fields", async (
   const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> } };
   const ajv = new Ajv2020({ strict: true, allErrors: true });
   addFormats(ajv);
-  const validate = ajv.compile(document.components.schemas.Project);
+  const validate = ajv.compile(document.components.schemas.Project!);
   const project = {
     id: "00000000-0000-4000-8000-000000000002",
     workspaceId: "00000000-0000-4000-8000-000000000001",
