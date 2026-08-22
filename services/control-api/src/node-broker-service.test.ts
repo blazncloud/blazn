@@ -4,22 +4,441 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { brokerRequestDigest, openJoinCredential } from "./node-broker-crypto.js";
+import {
+  brokerRequestDigest,
+  openJoinCredential,
+} from "./node-broker-crypto.js";
 import { canonicalJson, publicKeyFingerprint } from "./node-crypto.js";
 import { NodeBrokerService } from "./node-broker-service.js";
-import type { NewJoinIssuance, NodeBrokerStore, NodeBrokerTransaction } from "./node-broker-store.js";
-import type { BrokerBinding, JoinCredentialRequest, StoredJoinIssuance, WorkerCredentialIssuer } from "./node-broker-types.js";
+import type {
+  BrokerIssuanceIntent,
+  NewJoinIssuance,
+  NodeBrokerStore,
+  NodeBrokerTransaction,
+} from "./node-broker-store.js";
+import type {
+  BrokerBinding,
+  JoinCredentialRequest,
+  StoredJoinIssuance,
+  WorkerCredentialIssuer,
+} from "./node-broker-types.js";
 import { FileNodePlanSigner } from "./node-crypto.js";
 import { TemplateNodePlanFactory } from "./node-plan.js";
 import type { EnrollmentRecord } from "./node-types.js";
 import { NodeHttpError } from "./node-types.js";
 
-test("broker atomically issues, encrypts, and deterministically replays one worker credential",async()=>{const f=await fixture();try{let existing:StoredJoinIssuance|undefined,issued=0;const issuer:WorkerCredentialIssuer={issue:async input=>{issued++;assert.equal(input.workerOnly,true);assert.equal(input.bootstrapTaint,"blazn.dev/bootstrap=pending:NoSchedule");return{credential:"j".repeat(43),clusterId:input.clusterId,clusterHealthy:true,workerOnly:true,expiresAt:new Date("2029-01-01T00:04:00.000Z"),revoke:async()=>{throw new Error("unexpected revoke");}};}};const store=fakeStore(f.binding,()=>existing,(v)=>{existing=v;});const service=new NodeBrokerService(store,async()=>Buffer.alloc(32,4),issuer,()=>new Date("2029-01-01T00:00:00.000Z"));const first=await service.issue("join-key-1",f.request,f.proof);const replay=await service.issue("join-key-1",f.request,f.proof);assert.equal(first.credential,"j".repeat(43));assert.equal(first.workerOnly,true);assert.equal(first.replayed,false);assert.equal(replay.replayed,true);assert.equal(replay.credential,first.credential);assert.equal(issued,1);assert.ok(existing);assert.equal(JSON.stringify(existing).includes(first.credential),false);assert.equal(openJoinCredential(Buffer.alloc(32,4),existing!.credentialCiphertext,{workspaceId:existing!.workspaceId,enrollmentId:existing!.enrollmentId,planId:existing!.planId,nodeId:existing!.nodeId,issuanceId:existing!.id,idempotencyKey:existing!.idempotencyKey,requestDigest:existing!.requestDigest}),first.credential);await assert.rejects(()=>service.issue("other-key",f.request,f.proof),(e:unknown)=>e instanceof NodeHttpError&&e.code==="idempotency_conflict");}finally{await f.cleanup();}});
+test("broker atomically issues, encrypts, and deterministically replays one worker credential", async () => {
+  const f = await fixture();
+  try {
+    let existing: StoredJoinIssuance | undefined,
+      issued = 0;
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => {
+        issued++;
+        assert.equal(input.workerOnly, true);
+        assert.equal(
+          input.bootstrapTaint,
+          "blazn.dev/bootstrap=pending:NoSchedule",
+        );
+        return {
+          providerHandle: input.issuanceId,
+          credential: "j".repeat(43),
+          clusterId: input.clusterId,
+          clusterHealthy: true,
+          workerOnly: true,
+          expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+        };
+      },
+      revoke: async () => {},
+    };
+    const store = fakeStore(
+      f.binding,
+      () => existing,
+      (v) => {
+        existing = v;
+      },
+    );
+    const service = new NodeBrokerService(
+      store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    const first = await service.issue("join-key-1", f.request, f.proof);
+    const replay = await service.issue("join-key-1", f.request, f.proof);
+    assert.equal(first.credential, "j".repeat(43));
+    assert.equal(first.workerOnly, true);
+    assert.equal(first.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.credential, first.credential);
+    assert.equal(issued, 1);
+    assert.ok(existing);
+    assert.equal(JSON.stringify(existing).includes(first.credential), false);
+    assert.equal(
+      openJoinCredential(Buffer.alloc(32, 4), existing!.credentialCiphertext, {
+        workspaceId: existing!.workspaceId,
+        enrollmentId: existing!.enrollmentId,
+        planId: existing!.planId,
+        nodeId: existing!.nodeId,
+        issuanceId: existing!.id,
+        idempotencyKey: existing!.idempotencyKey,
+        requestDigest: existing!.requestDigest,
+      }),
+      first.credential,
+    );
+    await assert.rejects(
+      () => service.issue("other-key", f.request, f.proof),
+      (e: unknown) =>
+        e instanceof NodeHttpError && e.code === "idempotency_conflict",
+    );
+  } finally {
+    await f.cleanup();
+  }
+});
 
-test("broker rejects invalid proof and compensates a provider credential when persistence fails",async()=>{const f=await fixture();try{let revoked=0,inserted=0;const issuer:WorkerCredentialIssuer={issue:async input=>({credential:"k".repeat(43),clusterId:input.clusterId,clusterHealthy:true,workerOnly:true,expiresAt:new Date("2029-01-01T00:04:00.000Z"),revoke:async()=>{revoked++;}})};const store=fakeStore(f.binding,()=>undefined,()=>{inserted++;throw Object.assign(new Error("insert failed"),{code:"XX000"});});const service=new NodeBrokerService(store,async()=>Buffer.alloc(32,4),issuer,()=>new Date("2029-01-01T00:00:00.000Z"));await assert.rejects(()=>service.issue("join-key-1",f.request,"x".repeat(86)),(e:unknown)=>e instanceof NodeHttpError&&e.code==="identity_rejected");assert.equal(inserted,0);await assert.rejects(()=>service.issue("join-key-1",f.request,f.proof),/insert failed/);assert.equal(inserted,1);assert.equal(revoked,1);}finally{await f.cleanup();}});
+test("broker rejects invalid proof and compensates a provider credential when persistence fails", async () => {
+  const f = await fixture();
+  try {
+    let revoked = 0,
+      inserted = 0;
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => ({
+        providerHandle: input.issuanceId,
+        credential: "k".repeat(43),
+        clusterId: input.clusterId,
+        clusterHealthy: true,
+        workerOnly: true,
+        expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+      }),
+      revoke: async () => {
+        revoked++;
+      },
+    };
+    const store = fakeStore(
+      f.binding,
+      () => undefined,
+      () => {
+        inserted++;
+        throw Object.assign(new Error("insert failed"), { code: "XX000" });
+      },
+    );
+    const service = new NodeBrokerService(
+      store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, "x".repeat(86)),
+      (e: unknown) =>
+        e instanceof NodeHttpError && e.code === "identity_rejected",
+    );
+    assert.equal(inserted, 0);
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, f.proof),
+      /insert failed/,
+    );
+    assert.equal(inserted, 1);
+    assert.equal(revoked, 2);
+  } finally {
+    await f.cleanup();
+  }
+});
 
-test("broker rejects a provider response that does not prove worker-only cluster health",async()=>{const f=await fixture();try{let revoked=0;const issuer={issue:async(input:{clusterId:string})=>({credential:"k".repeat(43),clusterId:input.clusterId,clusterHealthy:false,workerOnly:false,expiresAt:new Date("2029-01-01T00:04:00.000Z"),revoke:async()=>{revoked++;}})} as unknown as WorkerCredentialIssuer,service=new NodeBrokerService(fakeStore(f.binding,()=>undefined,()=>{throw new Error("unexpected insert");}),async()=>Buffer.alloc(32,4),issuer,()=>new Date("2029-01-01T00:00:00.000Z"));await assert.rejects(()=>service.issue("join-key-1",f.request,f.proof),(e:unknown)=>e instanceof NodeHttpError&&e.code==="join_credential_invalid");assert.equal(revoked,1);}finally{await f.cleanup();}});
+test("broker rejects a provider response that does not prove worker-only cluster health", async () => {
+  const f = await fixture();
+  try {
+    let revoked = 0;
+    const issuer = {
+        issue: async (input: { clusterId: string }) => ({
+          providerHandle: "invalid-handle",
+          credential: "k".repeat(43),
+          clusterId: input.clusterId,
+          clusterHealthy: false,
+          workerOnly: false,
+          expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+        }),
+        revoke: async () => {
+          revoked++;
+        },
+      } as unknown as WorkerCredentialIssuer,
+      service = new NodeBrokerService(
+        fakeStore(
+          f.binding,
+          () => undefined,
+          () => {
+            throw new Error("unexpected insert");
+          },
+        ),
+        async () => Buffer.alloc(32, 4),
+        issuer,
+        1_000,
+      );
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, f.proof),
+      (e: unknown) =>
+        e instanceof NodeHttpError && e.code === "join_credential_invalid",
+    );
+    assert.equal(revoked, 2);
+  } finally {
+    await f.cleanup();
+  }
+});
 
-function fakeStore(binding:BrokerBinding,get:()=>StoredJoinIssuance|undefined,insert:(v:NewJoinIssuance)=>void):NodeBrokerStore{const approvedBy=String(binding.canonicalPlan.approvedBy),complete={...binding,databaseNow:new Date("2029-01-01T00:00:00.000Z"),enrollmentCreatedBy:approvedBy,planApprovedBy:approvedBy,nodeMachineFingerprint:binding.machineFingerprint};return{transaction:async action=>action({lockNode:async()=>{},binding:async()=>complete,issuance:async()=>get(),insertIssuance:async v=>insert(v)} as NodeBrokerTransaction)};}
+test("durable intent recovers after persistence and provider revocation both fail", async () => {
+  const f = await fixture();
+  try {
+    const durable = durableStore(f.binding);
+    let revokeCalls = 0;
+    const handles: string[] = [];
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => {
+        handles.push(input.issuanceId);
+        return {
+          providerHandle: input.issuanceId,
+          credential: "m".repeat(43),
+          clusterId: input.clusterId,
+          clusterHealthy: true,
+          workerOnly: true,
+          expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+        };
+      },
+      revoke: async () => {
+        revokeCalls++;
+        if (revokeCalls === 2) throw new Error("injected revoke failure");
+      },
+    };
+    const service = new NodeBrokerService(
+      durable.store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    durable.failInsert.value = true;
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, f.proof),
+      /injected persistence failure/,
+    );
+    assert.equal(durable.intent()?.status, "revoke_required");
+    durable.failInsert.value = false;
+    const recovered = await service.issue("join-key-1", f.request, f.proof);
+    assert.equal(recovered.credential, "m".repeat(43));
+    assert.equal(handles.length, 2);
+    assert.equal(handles[0], handles[1]);
+    assert.equal(durable.intent()?.status, "completed");
+  } finally {
+    await f.cleanup();
+  }
+});
 
-async function fixture(){const root=await mkdtemp(path.join(os.tmpdir(),"blazn-broker-test-")),pair=generateKeyPairSync("ed25519"),der=pair.privateKey.export({format:"der",type:"pkcs8"}),keyFile=path.join(root,"seed");await writeFile(keyFile,`${der.subarray(der.length-32).toString("base64url")}\n`);const signer=new FileNodePlanSigner("control-plane-node-plan/v1",keyFile),planSigningKey=await signer.publicKey(),nodePair=generateKeyPairSync("ed25519"),nodePublicKey=nodePair.publicKey.export({format:"jwk"}).x!,nodePublicKeyFingerprint=`sha256:${publicKeyFingerprint(nodePublicKey)}`,workspaceId="11111111-1111-4111-8111-111111111111",enrollmentId="22222222-2222-4222-8222-222222222222",planId="33333333-3333-4333-8333-333333333333",nodeId="44444444-4444-4444-8444-444444444444",machineFingerprint="a".repeat(64),enrollment:EnrollmentRecord={id:enrollmentId,workspaceId,requestedName:"worker-a",mode:"fresh",expectedPlatform:"linux",expectedArchitecture:"amd64",tokenHash:"b".repeat(64),tokenKeyId:"node-enrollment/v1",idempotencyKey:"enroll-key-1",createdBy:"55555555-5555-4555-8555-555555555555",planSigningKey,expiresAt:new Date("2029-01-01T00:15:00.000Z"),status:"exchanged",machineBinding:machineFingerprint,nodePublicKey,nodePublicKeyFingerprint:nodePublicKeyFingerprint.slice(7),consumedByNodeId:null,version:2};const factory=new TemplateNodePlanFactory(path.resolve("../../infra/node/templates/node-install-plan-template-v1.json"),signer),plan=await factory.create({planId,nodeId,enrollment,architecture:"amd64",machineFingerprint,nodePublicKeyFingerprint:nodePublicKeyFingerprint.slice(7),issuedAt:new Date("2029-01-01T00:00:00.000Z"),expiresAt:new Date("2029-01-01T00:15:00.000Z")}),request:JoinCredentialRequest={enrollmentId,planId,planDigest:String(plan.digest),nodeId,machineFingerprint,nodePublicKeyFingerprint},proof=sign(null,Buffer.from(`blazn-node-join-v1\n${canonicalJson(request)}`),nodePair.privateKey).toString("base64url"),binding:BrokerBinding={workspaceId,enrollmentId,enrollmentStatus:"exchanged",enrollmentExpiresAt:enrollment.expiresAt,nodePublicKey,nodePublicKeyFingerprint,machineFingerprint,nodeId,nodeLifecycleState:"installing",nodeTrustState:"verifying",planId,planDigest:String(plan.digest),planStatus:"issued",planExpiresAt:new Date(String(plan.expiresAt)),canonicalPlan:plan,planSigningKeyId:planSigningKey.keyId,planSigningPublicKey:planSigningKey.publicKey};return{request,proof,binding,cleanup:()=>rm(root,{recursive:true})};}
+test("provider deadline aborts outside database transactions and leaves recoverable intent", async () => {
+  const f = await fixture();
+  try {
+    let revokeCalls = 0;
+    const durable = durableStore(f.binding);
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (_input, signal) =>
+        new Promise((_resolve, reject) => {
+          assert.equal(durable.inTransaction(), false);
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+      revoke: async () => {
+        revokeCalls++;
+      },
+    };
+    const service = new NodeBrokerService(
+      durable.store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      10,
+    );
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, f.proof),
+      /deadline exceeded/,
+    );
+    assert.equal(revokeCalls, 2);
+    assert.equal(durable.intent()?.status, "revoked");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+function fakeStore(
+  binding: BrokerBinding,
+  get: () => StoredJoinIssuance | undefined,
+  insert: (v: NewJoinIssuance) => void,
+): NodeBrokerStore {
+  let intent: import("./node-broker-store.js").BrokerIssuanceIntent | undefined;
+  const approvedBy = String(binding.canonicalPlan.approvedBy),
+    complete = {
+      ...binding,
+      databaseNow: new Date("2029-01-01T00:00:00.000Z"),
+      enrollmentCreatedBy: approvedBy,
+      planApprovedBy: approvedBy,
+      nodeMachineFingerprint: binding.machineFingerprint,
+    };
+  return {
+    transaction: async (action) =>
+      action({
+        lockNode: async () => {},
+        lockBinding: async () => true,
+        binding: async () => complete,
+        issuance: async () => get(),
+        intent: async () => intent,
+        insertIntent: async (value) => {
+          intent = value;
+        },
+        setIntentStatus: async (_id, status) => {
+          if (!intent) throw new Error("intent missing");
+          intent = { ...intent, status };
+        },
+        insertIssuance: async (v) => insert(v),
+      } as NodeBrokerTransaction),
+  };
+}
+
+function durableStore(binding: BrokerBinding) {
+  let intent: BrokerIssuanceIntent | undefined;
+  let existing: StoredJoinIssuance | undefined;
+  let active = false;
+  const failInsert = { value: false };
+  const approvedBy = String(binding.canonicalPlan.approvedBy);
+  const complete = {
+    ...binding,
+    databaseNow: new Date("2029-01-01T00:00:00.000Z"),
+    enrollmentCreatedBy: approvedBy,
+    planApprovedBy: approvedBy,
+    nodeMachineFingerprint: binding.machineFingerprint,
+  };
+  const store: NodeBrokerStore = {
+    transaction: async (action) => {
+      active = true;
+      try {
+        return await action({
+          lockNode: async () => {},
+          lockBinding: async () => true,
+          binding: async () => complete,
+          issuance: async () => existing,
+          intent: async () => intent,
+          insertIntent: async (value) => {
+            intent = value;
+          },
+          setIntentStatus: async (_id, status) => {
+            if (!intent) throw new Error("intent missing");
+            intent = { ...intent, status };
+          },
+          insertIssuance: async (value) => {
+            if (failInsert.value)
+              throw new Error("injected persistence failure");
+            existing = value;
+          },
+        });
+      } finally {
+        active = false;
+      }
+    },
+  };
+  return {
+    store,
+    failInsert,
+    intent: () => intent,
+    inTransaction: () => active,
+  };
+}
+
+async function fixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "blazn-broker-test-")),
+    pair = generateKeyPairSync("ed25519"),
+    der = pair.privateKey.export({ format: "der", type: "pkcs8" }),
+    keyFile = path.join(root, "seed");
+  await writeFile(
+    keyFile,
+    `${der.subarray(der.length - 32).toString("base64url")}\n`,
+  );
+  const signer = new FileNodePlanSigner("control-plane-node-plan/v1", keyFile),
+    planSigningKey = await signer.publicKey(),
+    nodePair = generateKeyPairSync("ed25519"),
+    nodePublicKey = nodePair.publicKey.export({ format: "jwk" }).x!,
+    nodePublicKeyFingerprint = `sha256:${publicKeyFingerprint(nodePublicKey)}`,
+    workspaceId = "11111111-1111-4111-8111-111111111111",
+    enrollmentId = "22222222-2222-4222-8222-222222222222",
+    planId = "33333333-3333-4333-8333-333333333333",
+    nodeId = "44444444-4444-4444-8444-444444444444",
+    machineFingerprint = "a".repeat(64),
+    enrollment: EnrollmentRecord = {
+      id: enrollmentId,
+      workspaceId,
+      requestedName: "worker-a",
+      mode: "fresh",
+      expectedPlatform: "linux",
+      expectedArchitecture: "amd64",
+      tokenHash: "b".repeat(64),
+      tokenKeyId: "node-enrollment/v1",
+      idempotencyKey: "enroll-key-1",
+      createdBy: "55555555-5555-4555-8555-555555555555",
+      planSigningKey,
+      expiresAt: new Date("2029-01-01T00:15:00.000Z"),
+      status: "exchanged",
+      machineBinding: machineFingerprint,
+      nodePublicKey,
+      nodePublicKeyFingerprint: nodePublicKeyFingerprint.slice(7),
+      consumedByNodeId: null,
+      version: 2,
+    };
+  const factory = new TemplateNodePlanFactory(
+      path.resolve(
+        "../../infra/node/templates/node-install-plan-template-v1.json",
+      ),
+      signer,
+    ),
+    plan = await factory.create({
+      planId,
+      nodeId,
+      enrollment,
+      architecture: "amd64",
+      machineFingerprint,
+      nodePublicKeyFingerprint: nodePublicKeyFingerprint.slice(7),
+      issuedAt: new Date("2029-01-01T00:00:00.000Z"),
+      expiresAt: new Date("2029-01-01T00:15:00.000Z"),
+    }),
+    request: JoinCredentialRequest = {
+      enrollmentId,
+      planId,
+      planDigest: String(plan.digest),
+      nodeId,
+      machineFingerprint,
+      nodePublicKeyFingerprint,
+    },
+    proof = sign(
+      null,
+      Buffer.from(`blazn-node-join-v1\n${canonicalJson(request)}`),
+      nodePair.privateKey,
+    ).toString("base64url"),
+    binding: BrokerBinding = {
+      workspaceId,
+      enrollmentId,
+      enrollmentStatus: "exchanged",
+      enrollmentExpiresAt: enrollment.expiresAt,
+      nodePublicKey,
+      nodePublicKeyFingerprint,
+      machineFingerprint,
+      nodeId,
+      nodeLifecycleState: "installing",
+      nodeTrustState: "verifying",
+      planId,
+      planDigest: String(plan.digest),
+      planStatus: "issued",
+      planExpiresAt: new Date(String(plan.expiresAt)),
+      canonicalPlan: plan,
+      planSigningKeyId: planSigningKey.keyId,
+      planSigningPublicKey: planSigningKey.publicKey,
+    };
+  return {
+    request,
+    proof,
+    binding,
+    cleanup: () => rm(root, { recursive: true }),
+  };
+}

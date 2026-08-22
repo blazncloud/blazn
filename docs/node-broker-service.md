@@ -14,7 +14,12 @@ response-loss retry. The key ID is `node-join-credential/v1`; the AAD is the
 frozen value in `docs/node-contract.md`. Provider credentials are compensated
 if database persistence fails.
 
-The `WorkerCredentialIssuer` boundary is deliberately narrow. A provider must
+The `WorkerCredentialIssuer` boundary is deliberately narrow. The broker first
+commits a deterministic issuance intent whose UUID is also the provider handle.
+A provider must treat issue and revoke as idempotent for that handle, honor the
+supplied `AbortSignal`, and never continue issuing after its deadline. Pending
+or `revoke_required` intents are revoked before retry, so a crash or ambiguous
+database commit cannot leave an untracked live credential. A provider must
 prove the expected cluster is healthy and return a short-lived, worker-only
 credential for the expected Node name and bootstrap taint. Arbitrary commands,
 admin kubeconfigs, and user or management tokens are outside this interface.

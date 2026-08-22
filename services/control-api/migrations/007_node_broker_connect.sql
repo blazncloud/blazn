@@ -8,3 +8,20 @@ END
 $$;
 
 REVOKE CREATE ON SCHEMA public FROM blazn_node_broker;
+REVOKE INSERT, UPDATE ON TABLE node_join_issuances FROM blazn_node_broker;
+GRANT INSERT (
+  id,
+  workspace_id,
+  enrollment_id,
+  plan_id,
+  node_id,
+  node_public_key_fingerprint,
+  machine_fingerprint,
+  credential_hash,
+  credential_ciphertext,
+  credential_key_id,
+  idempotency_key,
+  request_digest,
+  issued_at,
+  expires_at
+) ON TABLE node_join_issuances TO blazn_node_broker;

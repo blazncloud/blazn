@@ -39,4 +39,17 @@ test("Node broker can connect without receiving schema creation rights", async (
   const sql = await readFile(path.resolve(here, "../migrations/007_node_broker_connect.sql"), "utf8");
   assert.match(sql, /GRANT CONNECT ON DATABASE %I TO blazn_node_broker/);
   assert.match(sql, /REVOKE CREATE ON SCHEMA public FROM blazn_node_broker/);
+  assert.match(sql, /REVOKE INSERT, UPDATE ON TABLE node_join_issuances FROM blazn_node_broker/);
+  assert.match(sql, /GRANT INSERT \([\s\S]*credential_ciphertext[\s\S]*expires_at[\s\S]*\) ON TABLE node_join_issuances TO blazn_node_broker/);
+  assert.doesNotMatch(sql, /GRANT INSERT \([^)]*(?:consumed_at|revoked_at|joined_node_uid)/);
+});
+
+test("Node broker durable intents and row-lock function are narrowly granted", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/008_node_broker_intents.sql"), "utf8");
+  assert.match(sql, /provider_handle text NOT NULL CHECK \(provider_handle = id::text\)/);
+  assert.match(sql, /status IN \('pending', 'revoke_required', 'completed', 'revoked'\)/);
+  assert.match(sql, /FOR UPDATE OF e,p,n/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION node_broker_lock_join_binding/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION node_broker_lock_join_binding/);
 });

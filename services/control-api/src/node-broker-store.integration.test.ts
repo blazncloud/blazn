@@ -152,20 +152,21 @@ test(
           issue: async (input) => {
             issues++;
             return {
+              providerHandle: input.issuanceId,
               credential,
               clusterId: input.clusterId,
               clusterHealthy: true,
               workerOnly: true,
               expiresAt: new Date(Date.now() + Math.min(240, input.ttlSeconds) * 1000),
-              revoke: async () => {},
             };
           },
+          revoke: async () => {},
         },
         service = new NodeBrokerService(
           new PgNodeBrokerStore(broker),
           async () => Buffer.alloc(32, 7),
           issuer,
-          () => new Date("2029-01-01T00:00:00.000Z"),
+          1_000,
         );
       const race = await Promise.all([
         service.issue("broker-join-key", request, proof),

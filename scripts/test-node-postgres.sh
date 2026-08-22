@@ -97,9 +97,9 @@ BEGIN
       'nodes', 'node_enrollments', 'node_identities', 'node_capability_versions',
       'node_heartbeat_state', 'node_install_plans', 'node_install_receipts',
       'node_operation_receipts', 'node_operations', 'node_operation_events',
-      'node_join_issuances', 'node_audit_events'
+      'node_join_issuances', 'node_join_issuance_intents', 'node_audit_events'
     ]);
-  IF table_count <> 12 THEN RAISE EXCEPTION 'Node table count is %, want 12', table_count; END IF;
+  IF table_count <> 13 THEN RAISE EXCEPTION 'Node table count is %, want 13', table_count; END IF;
 END $$;
 
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
@@ -272,6 +272,9 @@ SELECT has_table_privilege('blazn_node_broker','nodes','SELECT') AS broker_nodes
        has_table_privilege('blazn_node_broker','node_enrollments','SELECT') AS broker_enrollment_read,
        has_table_privilege('blazn_node_broker','node_install_plans','SELECT') AS broker_plan_read,
        has_table_privilege('blazn_node_broker','node_join_issuances','INSERT') AS broker_issue,
+       has_column_privilege('blazn_node_broker','node_join_issuances','id','INSERT') AS broker_issue_id,
+       has_column_privilege('blazn_node_broker','node_join_issuances','joined_node_uid','INSERT') AS broker_issue_joined_uid,
+       has_table_privilege('blazn_node_broker','node_join_issuances','UPDATE') AS broker_issue_update,
        has_table_privilege('blazn_node_broker','nodes','UPDATE') AS broker_node_update,
        has_table_privilege('blazn_node_broker','users','SELECT') AS broker_user_read,
        has_table_privilege('blazn_runtime','node_join_issuances','INSERT') AS runtime_issue,
@@ -294,7 +297,10 @@ BEGIN
   IF NOT has_table_privilege('blazn_node_broker','nodes','SELECT')
     OR NOT has_table_privilege('blazn_node_broker','node_enrollments','SELECT')
     OR NOT has_table_privilege('blazn_node_broker','node_install_plans','SELECT')
-    OR NOT has_table_privilege('blazn_node_broker','node_join_issuances','INSERT')
+    OR has_table_privilege('blazn_node_broker','node_join_issuances','INSERT')
+    OR NOT has_column_privilege('blazn_node_broker','node_join_issuances','id','INSERT')
+    OR has_column_privilege('blazn_node_broker','node_join_issuances','joined_node_uid','INSERT')
+    OR has_table_privilege('blazn_node_broker','node_join_issuances','UPDATE')
     OR has_table_privilege('blazn_node_broker','nodes','UPDATE')
     OR has_table_privilege('blazn_node_broker','users','SELECT')
     OR has_table_privilege('blazn_runtime','node_join_issuances','INSERT')
@@ -323,6 +329,8 @@ expect_denied "SET ROLE blazn_node_broker; UPDATE nodes SET name='changed';" bro
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM users;" broker_user_read
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_capability_versions;" broker_capability_read
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_operations;" broker_operation_read
+expect_denied "SET ROLE blazn_node_broker; UPDATE node_join_issuances SET credential_hash=repeat('f',64);" broker_issuance_update
+expect_denied "SET ROLE blazn_node_broker; INSERT INTO node_join_issuances(joined_node_uid) VALUES('uid');" broker_issuance_unreviewed_insert
 expect_denied "SET ROLE blazn_runtime; INSERT INTO node_join_issuances DEFAULT VALUES;" runtime_issue
 expect_denied "SET ROLE blazn_runtime; SELECT credential_hash FROM node_join_issuances;" runtime_select_hash
 expect_denied "SET ROLE blazn_runtime; SELECT credential_ciphertext FROM node_join_issuances;" runtime_select_ciphertext

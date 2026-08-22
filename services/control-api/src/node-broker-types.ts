@@ -17,6 +17,7 @@ export interface JoinCredentialResponse {
 }
 
 export interface WorkerCredentialIssueRequest {
+  issuanceId: string;
   clusterId: string;
   expectedNodeName: string;
   bootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule";
@@ -25,16 +26,20 @@ export interface WorkerCredentialIssueRequest {
 }
 
 export interface IssuedWorkerCredential {
+  providerHandle: string;
   credential: string;
   clusterId: string;
   clusterHealthy: true;
   workerOnly: true;
   expiresAt: Date;
-  revoke(): Promise<void>;
 }
 
 export interface WorkerCredentialIssuer {
-  issue(request: WorkerCredentialIssueRequest): Promise<IssuedWorkerCredential>;
+  issue(
+    request: WorkerCredentialIssueRequest,
+    signal: AbortSignal,
+  ): Promise<IssuedWorkerCredential>;
+  revoke(providerHandle: string, signal: AbortSignal): Promise<void>;
 }
 
 export interface BrokerBinding {
