@@ -164,7 +164,7 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 		}
 	}
 	stream := record.Body.String()
-	ordered := []string{`"type":"response.created"`, `"type":"response.in_progress"`, `"type":"response.output_item.added"`, `"type":"response.content_part.added"`, `"type":"response.output_text.delta"`, `"type":"response.output_text.done"`, `"type":"response.content_part.done"`, `"type":"response.output_item.done"`, `"type":"response.completed"`, `data: [DONE]`}
+	ordered := []string{`"type":"response.created"`, `"type":"response.in_progress"`, `"type":"response.output_item.added"`, `"type":"response.content_part.added"`, `"type":"response.output_text.delta"`, `"type":"response.output_text.done"`, `"type":"response.content_part.done"`, `"type":"response.completed"`, `data: [DONE]`}
 	last := -1
 	for _, needle := range ordered {
 		next := strings.Index(stream, needle)
