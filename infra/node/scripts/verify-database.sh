@@ -71,7 +71,11 @@ if [ "$mode" = post-migration ]; then
     has_table_privilege(current_user, format('public.%I', table_name), 'TRUNCATE') || ',' ||
     has_table_privilege(current_user, format('public.%I', table_name), 'REFERENCES') || ',' ||
     has_table_privilege(current_user, format('public.%I', table_name), 'TRIGGER'), ';' order by table_name)
-    from information_schema.tables where table_schema='public' and table_name like 'node_%' or table_schema='public' and table_name='nodes'")
+    from (values
+      ('nodes'), ('node_enrollments'), ('node_identities'), ('node_capability_versions'),
+      ('node_heartbeat_state'), ('node_install_plans'), ('node_install_receipts'),
+      ('node_operation_receipts'), ('node_operations'), ('node_operation_events'),
+      ('node_join_issuances'), ('node_audit_events')) as expected_tables(table_name)")
   required='node_audit_events=false,false,false,false,false,false,false;node_capability_versions=false,false,false,false,false,false,false;node_enrollments=true,false,false,false,false,false,false;node_heartbeat_state=false,false,false,false,false,false,false;node_identities=false,false,false,false,false,false,false;node_install_plans=true,false,false,false,false,false,false;node_install_receipts=false,false,false,false,false,false,false;node_join_issuances=true,true,true,false,false,false,false;node_operation_events=false,false,false,false,false,false,false;node_operation_receipts=false,false,false,false,false,false,false;node_operations=false,false,false,false,false,false,false;nodes=true,false,false,false,false,false,false'
   [ "$expected" = "$required" ] || {
     printf 'node broker table privilege matrix differs from migration 004: %s\n' "$expected" >&2
