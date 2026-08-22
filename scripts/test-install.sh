@@ -202,7 +202,7 @@ if run_installer >"$test_root/unowned.out" 2>&1; then
   fail "unreceipted existing binary was replaced"
 fi
 grep -q 'not owned by a valid direct-install receipt' "$test_root/unowned.out" || fail "unowned binary failure is explicit"
-[ "$($test_install/blazn)" = "blazn test v1.2.3" ] || fail "unowned binary changed"
+[ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "unowned binary changed"
 cp "$test_root/owned-receipt" "$test_install/.blazn-install-receipt"
 pass "unreceipted existing binary is refused"
 
@@ -222,7 +222,7 @@ prepare_upgrade_state() {
 }
 
 assert_upgrade_rolled_back() {
-  [ "$($test_install/blazn)" = "blazn test v1.2.3" ] || fail "$1 changed the prior binary"
+  [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "$1 changed the prior binary"
   grep -q '^version=v1.2.2$' "$test_install/.blazn-install-receipt" || fail "$1 did not restore the prior receipt"
 }
 
@@ -273,7 +273,7 @@ if run_installer >"$test_root/version-mismatch.out" 2>&1; then
   fail "downloaded version mismatch was accepted"
 fi
 grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fail "version mismatch failure is explicit"
-[ "$($test_install/blazn)" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
+[ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
 printf '1..15\n'
