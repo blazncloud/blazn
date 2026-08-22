@@ -1,0 +1,118 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Blazn Workspace API Overlay", "version": "v1alpha1"},
+  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "security": [{"bearerAuth": []}],
+  "paths": {
+    "/v1/workspaces": {
+      "post": {
+        "operationId": "createWorkspace",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceRequest"}}}},
+        "responses": {"201": {"description": "Workspace created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceEnvelope"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      },
+      "get": {
+        "operationId": "listWorkspaces",
+        "parameters": [{"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Accessible workspaces", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceList"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}": {
+      "get": {
+        "operationId": "getWorkspace", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+        "responses": {"200": {"description": "Workspace", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceEnvelope"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      },
+      "patch": {
+        "operationId": "updateWorkspace", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceRequest"}}}},
+        "responses": {"200": {"description": "Workspace updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceEnvelope"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/invitations": {
+      "post": {
+        "operationId": "createWorkspaceInvitation", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateInvitationRequest"}}}},
+        "responses": {"201": {"description": "One-time invitation created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InvitationCreated"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      },
+      "get": {
+        "operationId": "listWorkspaceInvitations", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Workspace invitations without bearer tokens", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/InvitationList"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/invitations/{invitationId}": {
+      "delete": {
+        "operationId": "revokeWorkspaceInvitation",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/InvitationId"}, {"$ref": "#/components/parameters/ExpectedVersion"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "responses": {"200": {"description": "Invitation revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MutationResult"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspace-invitations/accept": {
+      "post": {
+        "operationId": "acceptWorkspaceInvitation", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AcceptInvitationRequest"}}}},
+        "responses": {"200": {"description": "Invitation accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceEnvelope"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/members": {
+      "get": {
+        "operationId": "listWorkspaceMembers", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Workspace members", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MembershipList"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/members/{userId}": {
+      "patch": {
+        "operationId": "updateWorkspaceMember", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/UserId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateMembershipRequest"}}}},
+        "responses": {"200": {"description": "Membership updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Membership"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      },
+      "delete": {
+        "operationId": "removeWorkspaceMember", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/UserId"}, {"$ref": "#/components/parameters/ExpectedVersion"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "responses": {"200": {"description": "Member removed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MutationResult"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/membership": {
+      "delete": {
+        "operationId": "leaveWorkspace", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ExpectedVersion"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "responses": {"200": {"description": "Workspace left", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MutationResult"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/events": {
+      "get": {
+        "operationId": "streamWorkspaceEvents", "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"name": "Last-Event-ID", "in": "header", "required": false, "schema": {"type": "string", "maxLength": 128}}],
+        "responses": {"200": {"description": "Reauthorized workspace event stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "default": {"$ref": "#/components/responses/WorkspaceError"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {"bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "opaque"}},
+    "responses": {
+      "WorkspaceError": {"description": "Documented workspace or common error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceError"}}}}
+    },
+    "parameters": {
+      "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "InvitationId": {"name": "invitationId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "UserId": {"name": "userId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 128}},
+      "ExpectedVersion": {"name": "expectedVersion", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 1}},
+      "Cursor": {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "maxLength": 512}}
+    },
+    "schemas": {
+      "WorkspaceError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"], "x-blazn-error-status": {"workspace_not_found": 404, "workspace_slug_conflict": 409, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invitation_invalid": 400, "invitation_expired": 410, "invitation_consumed": 410, "invitation_revoked": 410, "last_owner": 409, "access_expired": 401, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428, "device_not_found": 404, "device_proof_invalid": 403, "device_revoked": 401, "expired_token": 400, "forwarded_identity_invalid": 400, "identity_rejected": 403, "internal_error": 500, "invalid_json": 400, "invalid_public_key": 400, "invalid_request": 400, "method_not_allowed": 405, "not_found": 404, "object_storage_unavailable": 503, "proxy_auth_invalid": 403, "rate_limited": 429, "request_too_large": 413, "session_revoked": 401, "slow_down": 429, "unauthorized": 401}, "properties": {"code": {"type": "string", "enum": ["workspace_not_found", "workspace_slug_conflict", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invitation_invalid", "invitation_expired", "invitation_consumed", "invitation_revoked", "last_owner", "access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending", "device_not_found", "device_proof_invalid", "device_revoked", "expired_token", "forwarded_identity_invalid", "identity_rejected", "internal_error", "invalid_json", "invalid_public_key", "invalid_request", "method_not_allowed", "not_found", "object_storage_unavailable", "proxy_auth_invalid", "rate_limited", "request_too_large", "session_revoked", "slow_down", "unauthorized"]}, "message": {"type": "string", "minLength": 1, "maxLength": 1024}, "requestId": {"type": "string", "minLength": 1, "maxLength": 128}}},
+      "Role": {"type": "string", "enum": ["owner", "administrator", "operator", "member", "viewer"]},
+      "Workspace": {"type": "object", "additionalProperties": false, "required": ["id", "slug", "name", "status", "version", "currentUserRole", "createdAt", "updatedAt"], "properties": {"id": {"type": "string", "format": "uuid"}, "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"}, "name": {"type": "string", "minLength": 1, "maxLength": 160}, "status": {"type": "string", "enum": ["active", "archived"]}, "version": {"type": "integer", "minimum": 1}, "currentUserRole": {"$ref": "#/components/schemas/Role"}, "createdAt": {"type": "string", "format": "date-time"}, "updatedAt": {"type": "string", "format": "date-time"}}},
+      "WorkspaceEnvelope": {"type": "object", "additionalProperties": false, "required": ["workspace"], "properties": {"workspace": {"$ref": "#/components/schemas/Workspace"}}},
+      "WorkspaceList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Workspace"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
+      "CreateWorkspaceRequest": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 160}, "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$"}}},
+      "UpdateWorkspaceRequest": {"type": "object", "additionalProperties": false, "required": ["name", "expectedVersion"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 160}, "expectedVersion": {"type": "integer", "minimum": 1}}},
+      "Invitation": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "role", "status", "version", "createdAt", "expiresAt"], "properties": {"id": {"type": "string", "format": "uuid"}, "workspaceId": {"type": "string", "format": "uuid"}, "role": {"$ref": "#/components/schemas/Role"}, "status": {"type": "string", "enum": ["pending", "accepted", "revoked", "expired"]}, "version": {"type": "integer", "minimum": 1}, "createdAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"}}},
+      "InvitationCreated": {"type": "object", "additionalProperties": false, "required": ["invitation", "inviteToken"], "properties": {"invitation": {"$ref": "#/components/schemas/Invitation"}, "inviteToken": {"type": "string", "minLength": 32, "maxLength": 512}}},
+      "InvitationList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Invitation"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
+      "CreateInvitationRequest": {"type": "object", "additionalProperties": false, "required": ["role", "expiresIn"], "properties": {"role": {"type": "string", "enum": ["administrator", "operator", "member", "viewer"]}, "expiresIn": {"type": "integer", "minimum": 300, "maximum": 604800}}},
+      "AcceptInvitationRequest": {"type": "object", "additionalProperties": false, "required": ["inviteToken"], "properties": {"inviteToken": {"type": "string", "minLength": 32, "maxLength": 512}}},
+      "Membership": {"type": "object", "additionalProperties": false, "required": ["workspaceId", "user", "role", "status", "version", "joinedAt"], "properties": {"workspaceId": {"type": "string", "format": "uuid"}, "user": {"$ref": "./openapi.json#/components/schemas/User"}, "role": {"$ref": "#/components/schemas/Role"}, "status": {"type": "string", "enum": ["active", "removed"]}, "version": {"type": "integer", "minimum": 1}, "joinedAt": {"type": "string", "format": "date-time"}, "removedAt": {"type": "string", "format": "date-time"}}},
+      "MembershipList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Membership"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
+      "UpdateMembershipRequest": {"type": "object", "additionalProperties": false, "required": ["role", "expectedVersion"], "properties": {"role": {"type": "string", "enum": ["administrator", "operator", "member", "viewer"]}, "expectedVersion": {"type": "integer", "minimum": 1}}},
+      "MutationResult": {"type": "object", "additionalProperties": false, "required": ["status", "workspaceId", "version"], "properties": {"status": {"type": "string", "enum": ["revoked", "removed", "left"]}, "workspaceId": {"type": "string", "format": "uuid"}, "userId": {"type": "string", "format": "uuid"}, "invitationId": {"type": "string", "format": "uuid"}, "version": {"type": "integer", "minimum": 1}}}
+    }
+  }
+}
