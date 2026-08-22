@@ -55,9 +55,15 @@ docker run -d --name "$container" \
   "$image" >/dev/null
 
 attempt=0
-until docker exec "$container" pg_isready -U blazn_restore -d blazn_restore >/dev/null 2>&1; do
+stable=0
+while [ "$stable" -lt 3 ]; do
   attempt=$((attempt + 1))
   [ "$attempt" -lt 60 ] || die "isolated restore PostgreSQL did not become healthy"
+  if docker exec "$container" psql -v ON_ERROR_STOP=1 -U blazn_restore -d blazn_restore -Atqc 'select 1' >/dev/null 2>&1; then
+    stable=$((stable + 1))
+  else
+    stable=0
+  fi
   sleep 1
 done
 
