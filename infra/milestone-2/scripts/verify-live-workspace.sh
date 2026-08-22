@@ -14,13 +14,18 @@ api=${2%/}
 case $api in https://*) ;; *) die "live Workspace API URL must use HTTPS" ;; esac
 require_command curl
 require_command jq
+require_command getent
+require_command setpriv
 
 owner_login=${BLAZN_INITIAL_LOGIN:-}
 owner_password=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}/initial-password
 identity_root=${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}
+identity_receipt=${BLAZN_POC_IDENTITY_RECEIPT:-/var/lib/blazn/ownership/poc-second-identity.json}
+cli_users_receipt=${BLAZN_POC_CLI_USERS_RECEIPT:-/var/lib/blazn/ownership/poc-cli-users.json}
 second_profile=$identity_root/profile.json
 second_password=$identity_root/password
 for file in "$owner_password" "$second_profile" "$second_password"; do assert_regular_file_owned_mode "$file" 0 444; done
+for file in "$identity_receipt" "$cli_users_receipt"; do assert_regular_file_owned_mode "$file" 0 600; done
 [ -n "$owner_login" ] || die "BLAZN_INITIAL_LOGIN is required"
 second_login=$(jq -er '.login | select(type=="string")' "$second_profile")
 
@@ -28,13 +33,11 @@ work=$(mktemp -d /tmp/blazn-workspace-live.XXXXXX)
 case $work in /tmp/blazn-workspace-live.*) ;; *) die "unsafe Workspace qualification path" ;; esac
 login_pid=
 owner_home=
-owner_data=
 second_home=
-second_data=
 cleanup() {
   [ -z "$login_pid" ] || kill "$login_pid" 2>/dev/null || true
-  if [ -n "$owner_home" ] && [ -n "$owner_data" ]; then owner_cli auth logout >/dev/null 2>&1 || true; fi
-  if [ -n "$second_home" ] && [ -n "$second_data" ]; then second_cli auth logout >/dev/null 2>&1 || true; fi
+  if [ -n "$owner_home" ]; then owner_cli auth logout >/dev/null 2>&1 || true; fi
+  if [ -n "$second_home" ]; then second_cli auth logout >/dev/null 2>&1 || true; fi
   if [ -d "$work" ] && [ ! -L "$work" ]; then
     find "$work" -xdev -type f -delete
     find "$work" -xdev -depth -type d -empty -delete
@@ -42,16 +45,19 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 umask 077
-mkdir "$work/owner-home" "$work/owner-data"
-owner_home=$work/owner-home
-owner_data=$work/owner-data
-second_home=$identity_root/home
-second_data=$identity_root/data
-assert_directory_owned_mode "$second_home" 0 700
-assert_directory_owned_mode "$second_data" 0 700
+owner_name=$(jq -er .owner.name "$cli_users_receipt"); owner_uid=$(jq -er .owner.uid "$cli_users_receipt"); owner_gid=$(jq -er .owner.gid "$cli_users_receipt"); owner_home=$(jq -er .owner.home "$cli_users_receipt")
+second_name=$(jq -er .second.name "$cli_users_receipt"); second_uid=$(jq -er .second.uid "$cli_users_receipt"); second_gid=$(jq -er .second.gid "$cli_users_receipt"); second_home=$(jq -er .second.home "$cli_users_receipt")
+[ "$owner_uid" != "$second_uid" ] || die "qualification CLI OS users share a UID"
+for spec in "$owner_name:$owner_uid:$owner_gid:$owner_home" "$second_name:$second_uid:$second_gid:$second_home"; do
+  name=${spec%%:*}; rest=${spec#*:}; uid=${rest%%:*}; rest=${rest#*:}; gid=${rest%%:*}; home=${rest#*:}
+  passwd_record=$(getent passwd "$name") || die "qualification CLI OS user is absent"
+  [ "$(printf '%s\n' "$passwd_record" | cut -d: -f3)" = "$uid" ] && [ "$(printf '%s\n' "$passwd_record" | cut -d: -f4)" = "$gid" ] && [ "$(printf '%s\n' "$passwd_record" | cut -d: -f6)" = "$home" ] || die "qualification CLI OS user differs from its receipt"
+  [ "$(id -G "$name")" = "$gid" ] || die "qualification CLI OS user has supplementary groups"
+  assert_directory_owned_mode "$home" "$uid" 700
+done
 
-owner_cli() { HOME="$owner_home" XDG_DATA_HOME="$owner_data" BLAZN_API_URL="$api" "$cli" "$@"; }
-second_cli() { HOME="$second_home" XDG_DATA_HOME="$second_data" BLAZN_API_URL="$api" "$cli" "$@"; }
+owner_cli() { setpriv --reuid="$owner_uid" --regid="$owner_gid" --clear-groups --reset-env env BLAZN_API_URL="$api" "$cli" "$@"; }
+second_cli() { setpriv --reuid="$second_uid" --regid="$second_gid" --clear-groups --reset-env env BLAZN_API_URL="$api" "$cli" "$@"; }
 
 login_identity() {
   which_identity=$1
@@ -83,8 +89,13 @@ login_identity() {
 
 login_identity owner "$owner_login" "$owner_password"
 login_identity second "$second_login" "$second_password"
-owner_cli --output json auth status | jq -e '.authenticated==true' >/dev/null
-second_cli --output json auth status | jq -e '.authenticated==true' >/dev/null
+owner_cli --output json auth status >"$work/owner-status.json"
+second_cli --output json auth status >"$work/second-status.json"
+owner_user_id=$(jq -er '.user.id | select(type=="string")' "$work/owner-status.json")
+second_user_id=$(jq -er '.user.id | select(type=="string")' "$work/second-status.json")
+receipted_second_user_id=$(jq -er '.userId | select(type=="string")' "$identity_receipt")
+[ "$second_user_id" = "$receipted_second_user_id" ] || die "second CLI authenticated as a user other than the receipted POC identity"
+[ "$owner_user_id" != "$second_user_id" ] || die "owner and second CLI authenticated as the same user"
 
 suffix=$(printf '%s' "$BLAZN_CORRELATION_ID" | sha256sum | awk '{print substr($1,1,12)}')
 slug_a=poc-company-$suffix-a

@@ -130,14 +130,21 @@ data.
 
 Provision the controlled user B through the validated environment and exact
 lock with `manage-poc-identity.sh provision`. It is retryable after interruption,
-stores no plaintext credential in argv, logs, or receipts, and creates separate
-root-controlled `HOME` and `XDG_DATA_HOME` directories.
+stores no plaintext credential in argv, logs, or receipts, and creates two
+receipt-owned, non-login OS accounts with distinct passwd homes, UIDs, primary
+groups, and no supplementary groups. Qualification invokes each CLI with
+`setpriv --clear-groups --reset-env`, so Go's `os/user.Current()` resolves a
+different real home and credential store for user A and user B. Environment
+overrides are not treated as a credential boundary.
 
 Run `verify-live-workspace.sh /path/to/blazn https://blazn.benpelo.com` through
 the same environment and lock. It authenticates user A and user B into separate
 credential homes, creates two uniquely named `poc-company-*` workspaces, streams
 the one-time token directly between CLI processes, records the exact workspace
 IDs for cleanup, and makes all isolation decisions through the public API.
+Before creating work, it proves user B's authenticated API user ID equals the
+receipted POC identity and differs from user A; retained output contains only
+redacted success evidence.
 
 Then verify:
 
@@ -180,6 +187,10 @@ reference outside the receipted IDs, refuses a user-B-owned workspace, deletes
 the exact `poc-company-*` resources, authorizations, devices, sessions, and user
 in one database transaction, removes the isolated credential home, and retains
 a redacted cleaned receipt.
+Hashed authentication rate-limit rows are intentionally retained for the
+server's bounded expiry cleanup because IP-scoped rows may be shared and the
+account key includes a non-exported authorization ID; guessing or deleting by
+plaintext login would not be exact cleanup.
 
 ## 7. Rollback boundary
 

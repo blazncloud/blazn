@@ -37,7 +37,7 @@ if [ -L "$active" ] && [ "$(readlink -f "$active")" = "$release_candidate" ] && 
 fi
 
 state=$(systemctl is-active blazn-control-plane.service 2>/dev/null || true)
-case $state in inactive|failed|unknown|'') ;; *) die "control-plane service must be fully stopped before release promotion (state=$state)" ;; esac
+[ "$state" = inactive ] || die "control-plane service must be exactly inactive before release promotion (state=$state)"
 [ "$(stat -c '%d' "$release_root")" = "$(stat -c '%d' "$(dirname -- "$active")")" ] || die "active and versioned releases must share a filesystem for atomic promotion"
 require_absolute_path BLAZN_SYSTEMD_UNIT_PATH "$installed_unit"
 assert_not_symlink_chain "$installed_unit"

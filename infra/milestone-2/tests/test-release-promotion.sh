@@ -22,7 +22,7 @@ cat >"$top/bin/systemctl" <<'EOF'
 #!/bin/sh
 set -eu
 case "$1" in
-  is-active) printf 'inactive\n'; exit 3 ;;
+  is-active) printf '%s\n' "${FAKE_SYSTEMD_STATE:-inactive}"; exit 3 ;;
   daemon-reload) exit 0 ;;
   *) exit 97 ;;
 esac
@@ -52,6 +52,13 @@ common_env "$STAGE" "$REPO_ROOT" "$commit" >"$top/stage.out"
 common_env "$STAGE" "$REPO_ROOT" "$commit" >"$top/stage-retry.out"
 [ -d "$top/releases/$commit" ]
 sudo jq -e --arg commit "$commit" '.commit==$commit and (.releaseDigest|test("^sha256:[a-f0-9]{64}$"))' "$top/receipts/$commit.json" >/dev/null
+
+if common_env env FAKE_SYSTEMD_STATE=failed "$PROMOTE" "$commit" >"$top/failed-running.out" 2>"$top/failed-running.err"; then
+  printf 'failed unit with a potentially running Compose project unexpectedly promoted\n' >&2
+  exit 1
+fi
+grep -F 'must be exactly inactive' "$top/failed-running.err" >/dev/null
+[ -d "$top/active" ] && [ ! -e "$top/promotion-intent.json" ]
 
 if common_env env BLAZN_PROMOTION_FAILPOINT=after-adopt "$PROMOTE" "$commit" >"$top/fault.out" 2>"$top/fault.err"; then
   printf 'release adoption failpoint unexpectedly passed\n' >&2

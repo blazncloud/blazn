@@ -8,8 +8,19 @@ command -v sudo >/dev/null 2>&1 || { printf 'POC identity tests skipped: sudo un
 sudo -n true >/dev/null 2>&1 || { printf 'POC identity tests skipped: passwordless sudo unavailable\n'; exit 0; }
 
 top=${TMPDIR:-/tmp}/blazn-poc-identity-test-$$
+owner_os=bzpo$$
+second_os=bzps$$
 mkdir "$top" "$top/bin"
 cleanup() {
+  for account in "$owner_os" "$second_os"; do
+    if record=$(getent passwd "$account" 2>/dev/null); then
+      home=$(printf '%s\n' "$record" | cut -d: -f6)
+      case $home in "$top"/*) ;; *) printf 'refusing cleanup of unexpected test account home\n' >&2; return 1 ;; esac
+      sudo userdel "$account" >/dev/null 2>&1 || true
+      if [ -d "$home" ] && [ ! -L "$home" ]; then sudo find "$home" -xdev -type f -delete; sudo find "$home" -xdev -depth -type d -empty -delete; fi
+      if sudo getent group "$account" >/dev/null 2>&1; then sudo groupdel "$account" >/dev/null 2>&1 || true; fi
+    fi
+  done
   sudo find "$top" -xdev -type f -delete
   sudo find "$top" -xdev -depth -type d -empty -delete
 }
@@ -26,7 +37,7 @@ case "$1:$2" in
         printf '{"status":"existing","userId":"123e4567-e89b-42d3-a456-426614174099"}\n'
         [ "${FAKE_FAIL_AFTER_OUTPUT:-0}" -eq 0 ] || exit 44
         ;;
-      *"poc-identity-cleanup") printf '{"status":"cleaned","userId":"123e4567-e89b-42d3-a456-426614174099","workspaceCount":1,"deviceCount":1,"authorizationCount":1,"rateLimitCount":1}\n' ;;
+      *"poc-identity-cleanup") printf '{"status":"cleaned","userId":"123e4567-e89b-42d3-a456-426614174099","workspaceCount":1,"deviceCount":1,"authorizationCount":1}\n' ;;
       *) printf 'unexpected Compose call: %s\n' "$*" >&2; exit 97 ;;
     esac
     ;;
@@ -63,8 +74,21 @@ run_manage() {
     BLAZN_CONTROL_API_BUILD_RECEIPT="$fixture/ownership/build.json" \
     BLAZN_ACTIVE_RELEASE_RECEIPT="$fixture/ownership/active-release.json" \
     BLAZN_POC_IDENTITY_ROOT="$fixture/identity" BLAZN_POC_IDENTITY_RECEIPT="$fixture/ownership/identity.json" \
+    BLAZN_POC_CLI_USERS_ROOT="$fixture/cli-users" BLAZN_POC_CLI_USERS_RECEIPT="$fixture/ownership/cli-users.json" \
+    BLAZN_POC_CLI_USERS_INTENT="$fixture/ownership/cli-users-intent.json" \
+    BLAZN_POC_OWNER_OS_USER="$owner_os" BLAZN_POC_SECOND_OS_USER="$second_os" \
     "$MANAGE" "$action" "$@"
 }
+
+root_store_digest() {
+  sudo sh -euc '
+    path=/root/.local/share/blazn
+    if [ ! -e "$path" ]; then printf "absent\n"; exit; fi
+    [ -d "$path" ] && [ ! -L "$path" ]
+    find "$path" -xdev -type f -print0 | sort -z | xargs -0 -r sha256sum | sha256sum | cut -d" " -f1
+  '
+}
+root_before=$(root_store_digest)
 
 if FAKE_FAIL_AFTER_OUTPUT=1 run_manage provision >"$fixture/fault.out" 2>"$fixture/fault.err"; then
   printf 'post-database provision fault unexpectedly passed\n' >&2
@@ -73,6 +97,15 @@ fi
 [ -d "$fixture/identity" ] && [ ! -e "$fixture/ownership/identity.json" ]
 run_manage provision >"$fixture/provision.out"
 sudo jq -e '.status=="active" and .userId=="123e4567-e89b-42d3-a456-426614174099" and (.passwordDigest|test("^sha256:[a-f0-9]{64}$"))' "$fixture/ownership/identity.json" >/dev/null
+sudo jq -e --arg owner "$owner_os" --arg second "$second_os" '.status=="active" and .owner.name==$owner and .second.name==$second and .owner.uid != .second.uid and .owner.home != .second.home' "$fixture/ownership/cli-users.json" >/dev/null
+owner_uid=$(sudo jq -r .owner.uid "$fixture/ownership/cli-users.json"); owner_gid=$(sudo jq -r .owner.gid "$fixture/ownership/cli-users.json"); owner_home=$(sudo jq -r .owner.home "$fixture/ownership/cli-users.json")
+second_uid=$(sudo jq -r .second.uid "$fixture/ownership/cli-users.json"); second_gid=$(sudo jq -r .second.gid "$fixture/ownership/cli-users.json"); second_home=$(sudo jq -r .second.home "$fixture/ownership/cli-users.json")
+sudo setpriv --reuid="$owner_uid" --regid="$owner_gid" --clear-groups --reset-env sh -euc '[ "$HOME" = "$1" ]; mkdir -p "$HOME/.local/share/blazn/credentials"; printf owner >"$HOME/.local/share/blazn/credentials/probe"' sh "$owner_home"
+sudo setpriv --reuid="$second_uid" --regid="$second_gid" --clear-groups --reset-env sh -euc '[ "$HOME" = "$1" ]; mkdir -p "$HOME/.local/share/blazn/credentials"; printf second >"$HOME/.local/share/blazn/credentials/probe"' sh "$second_home"
+[ "$(sudo cat "$owner_home/.local/share/blazn/credentials/probe")" = owner ]
+[ "$(sudo cat "$second_home/.local/share/blazn/credentials/probe")" = second ]
+[ "$(sudo stat -c %u "$owner_home/.local/share/blazn/credentials/probe")" = "$owner_uid" ]
+[ "$(sudo stat -c %u "$second_home/.local/share/blazn/credentials/probe")" = "$second_uid" ]
 before=$(sudo sha256sum "$fixture/identity/password")
 run_manage provision >"$fixture/retry.out"
 after=$(sudo sha256sum "$fixture/identity/password")
@@ -84,10 +117,13 @@ fi
 
 printf '123e4567-e89b-42d3-a456-426614174088\n' | run_manage record-workspace >"$fixture/record.out"
 sudo jq -e '.workspaceIds==["123e4567-e89b-42d3-a456-426614174088"]' "$fixture/identity/workspaces.json" >/dev/null
-sudo sh -c 'printf credential >"$1/data/session.v1"' sh "$fixture/identity"
 run_manage cleanup >"$fixture/cleanup.out"
 [ ! -e "$fixture/identity" ]
+[ ! -e "$fixture/cli-users" ]
+getent passwd "$owner_os" >/dev/null 2>&1 && exit 1
+getent passwd "$second_os" >/dev/null 2>&1 && exit 1
 sudo jq -e '.status=="cleaned" and .cleanupCounts.workspaceCount==1' "$fixture/ownership/identity.json" >/dev/null
+[ "$(root_store_digest)" = "$root_before" ] || { printf 'existing root Blazn state changed during POC CLI qualification test\n' >&2; exit 1; }
 
 trap - EXIT HUP INT TERM
 cleanup

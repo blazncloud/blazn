@@ -73,6 +73,7 @@ tar -C "$repo_root" -cf - services/control-api packages/contracts | docker run -
     npm run build
     printf "%s\n" "$WORKSPACE_MIGRATION_DATABASE_URL" >/tmp/migration-database-url
     MIGRATION_DATABASE_URL_FILE=/tmp/migration-database-url node dist/migrate.js
+    node -e "const {Client}=require(\"pg\"); const c=new Client({connectionString:process.env.WORKSPACE_MIGRATION_DATABASE_URL}); c.connect().then(()=>c.query(\"INSERT INTO auth_rate_limits(key,window_start,count) VALUES(\$1,now(),1)\",[\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"])).then(()=>c.end())"
     node --test dist/workspace-store.integration.test.js
     printf "%s\n" "$POC_BOOTSTRAP_DATABASE_URL" >/tmp/bootstrap-database-url
     printf "%s\n" "$WORKSPACE_MIGRATION_DATABASE_URL" >/tmp/poc-cleanup-database-url
@@ -86,3 +87,7 @@ tar -C "$repo_root" -cf - services/control-api packages/contracts | docker run -
     POC_IDENTITY_ACTION=cleanup POC_IDENTITY_DATABASE_URL_FILE=/tmp/poc-cleanup-database-url POC_IDENTITY_PASSWORD_FILE=/tmp/poc-password POC_IDENTITY_PROFILE_FILE=/tmp/poc-profile.json POC_IDENTITY_USER_ID_FILE=/tmp/poc-user-id POC_IDENTITY_WORKSPACES_FILE=/tmp/poc-workspaces.json node dist/poc-identity.js >/tmp/poc-cleanup.json
     node -e "const fs=require(\"fs\"); const value=JSON.parse(fs.readFileSync(\"/tmp/poc-cleanup.json\")); if(value.status!==\"cleaned\"||value.workspaceCount!==0)process.exit(1)"
   '
+
+rate_limit_count=$(docker exec -e PGPASSWORD="$admin_password" "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d blazn -Atqc \
+  "select count(*) from auth_rate_limits where key='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'")
+[ "$rate_limit_count" = 1 ] || { printf 'hashed authentication rate-limit evidence was unexpectedly deleted by POC cleanup\n' >&2; exit 1; }

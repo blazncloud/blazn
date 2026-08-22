@@ -34,8 +34,6 @@ profile=$identity_root/profile.json
 password=$identity_root/password
 user_id_file=$identity_root/user-id
 workspaces=$identity_root/workspaces.json
-credential_home=$identity_root/home
-credential_data=$identity_root/data
 result_tmp=
 cleanup_temp() {
   [ -z "$result_tmp" ] || [ ! -e "$result_tmp" ] || unlink "$result_tmp"
@@ -61,6 +59,7 @@ compose_run() {
 
 case $action in
   provision)
+    "$SCRIPT_DIR/manage-poc-cli-users.sh" provision >/dev/null
     if [ -e "$receipt" ]; then
       assert_regular_file_owned_mode "$receipt" 0 600
       jq -e --arg releaseDigest "$release_digest" '.schemaVersion == "blazn.dev/poc-second-identity/v1" and .status == "active" and .releaseDigest == $releaseDigest' "$receipt" >/dev/null || die "existing POC identity receipt is not active for this release"
@@ -76,12 +75,8 @@ case $action in
       exit 0
     fi
     umask 077
-    if [ ! -e "$identity_root" ]; then mkdir -p -- "$identity_root" "$credential_home" "$credential_data"; fi
+    if [ ! -e "$identity_root" ]; then mkdir -p -- "$identity_root"; fi
     assert_directory_owned_mode "$identity_root" 0 700
-    for tree in "$credential_home" "$credential_data"; do
-      if [ ! -e "$tree" ]; then mkdir "$tree"; chmod 0700 "$tree"; fi
-      assert_directory_owned_mode "$tree" 0 700
-    done
     mkdir -p -- "$(dirname -- "$receipt")"
     chmod 0700 "$(dirname -- "$receipt")"
     if [ ! -e "$profile" ]; then jq -cn --arg login "${BLAZN_POC_SECOND_LOGIN:-poc-second@blazn.invalid}" --arg displayName "${BLAZN_POC_SECOND_DISPLAY_NAME:-Blazn POC Second User}" '{login:$login,displayName:$displayName}' >"$profile"; fi
@@ -130,6 +125,7 @@ case $action in
     printf 'recorded one qualification workspace for exact cleanup\n'
     ;;
   cleanup)
+    "$SCRIPT_DIR/manage-poc-cli-users.sh" cleanup >/dev/null
     assert_regular_file_owned_mode "$receipt" 0 600
     validate_inputs
     jq -e --arg profile "sha256:$(sha256_file "$profile")" --arg password "sha256:$(sha256_file "$password")" --arg workspaces "sha256:$(sha256_file "$workspaces")" \
@@ -137,15 +133,9 @@ case $action in
     result_tmp=$identity_root/cleanup-result.tmp.$$
     compose_run poc-identity-cleanup >"$result_tmp"
     jq -e --arg userId "$(sed -n '1p' "$user_id_file")" '.status=="cleaned" and .userId==$userId' "$result_tmp" >/dev/null || die "POC identity cleanup returned an unexpected result"
-    cleanup_counts=$(jq -c '{workspaceCount,deviceCount,authorizationCount,rateLimitCount}' "$result_tmp")
+    cleanup_counts=$(jq -c '{workspaceCount,deviceCount,authorizationCount}' "$result_tmp")
     unlink "$result_tmp"
     result_tmp=
-    for tree in "$credential_home" "$credential_data"; do
-      assert_directory_owned_mode "$tree" 0 700
-      find "$tree" -xdev \( -type l -o ! -type d ! -type f \) -print | grep . >/dev/null && die "credential home contains a link or special file"
-      find "$tree" -xdev -type f -delete
-      find "$tree" -xdev -depth -type d -empty -delete
-    done
     for file in "$profile" "$password" "$user_id_file" "$workspaces"; do unlink "$file"; done
     rmdir "$identity_root"
     receipt_tmp=$receipt.tmp.$$

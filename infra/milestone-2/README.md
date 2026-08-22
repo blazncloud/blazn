@@ -129,9 +129,15 @@ loopback binding, health state, API image ID, and source-matching systemd unit.
 
 The second Workspace qualification identity is created only by
 `manage-poc-identity.sh`. It reuses the API's scrypt implementation through the
-receipt-bound API image, keeps its password/profile and CLI home root-controlled,
+receipt-bound API image, keeps its password/profile root-controlled,
 records exact qualification workspace IDs, and performs transactional cleanup
 of those workspaces plus the identity's authorizations, devices, and sessions.
+Two separate receipt-owned, non-login OS users provide the actual CLI boundary:
+each has a distinct passwd home/UID and zero supplementary groups, and CLI
+commands run through `setpriv --clear-groups --reset-env`. Cleanup deletes only
+accounts and homes that exactly match the root receipt. Hashed IP/account
+rate-limit rows remain subject to normal bounded expiry rather than unsafe
+plaintext matching or deletion of potentially shared IP state.
 `verify-live-workspace.sh` proves cross-tenant denial through authenticated API
 calls; database-role SQL is not treated as tenant-isolation evidence.
 

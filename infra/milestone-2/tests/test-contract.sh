@@ -98,6 +98,16 @@ grep -F 'POC_IDENTITY_ACTION: provision' "$compose" >/dev/null
 grep -F 'POC_IDENTITY_ACTION: cleanup' "$compose" >/dev/null
 grep -F 'passwordRecord' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
 grep -F 'workspace reference outside the exact cleanup inventory' "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null
+if grep -F "LIKE 'device-approve-account" "$ROOT_DIR/../../services/control-api/src/poc-identity.ts" >/dev/null; then
+  printf 'POC cleanup incorrectly treats hashed rate-limit keys as plaintext\n' >&2
+  exit 1
+fi
+grep -F 'setpriv --reuid=' "$ROOT_DIR/scripts/verify-live-workspace.sh" >/dev/null
+grep -F -- '--clear-groups --reset-env' "$ROOT_DIR/scripts/verify-live-workspace.sh" >/dev/null
+grep -F 'second CLI authenticated as a user other than the receipted POC identity' "$ROOT_DIR/scripts/verify-live-workspace.sh" >/dev/null
+grep -F 'POC CLI users share a UID' "$ROOT_DIR/scripts/manage-poc-cli-users.sh" >/dev/null
+grep -F 'POC CLI user has supplementary groups' "$ROOT_DIR/scripts/manage-poc-cli-users.sh" >/dev/null
+grep -F 'must be exactly inactive' "$ROOT_DIR/scripts/promote-release.sh" >/dev/null
 grep -F 'preflight.sh --existing-deploy' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 grep -F 'verify-live-workspace.sh' "$ROOT_DIR/workspace-live-integration-runbook.md" >/dev/null
 printf '%s\n' '{"error":{"code":"workspace_not_found","message":"not found"},"exitCode":1}' \

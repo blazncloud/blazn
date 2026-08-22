@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/cli-users-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "owner", "second", "createdAt", "fencingToken", "correlationId"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/poc-cli-users/v1" },
+    "status": { "enum": ["active", "cleaned"] },
+    "owner": { "$ref": "#/$defs/account" },
+    "second": { "$ref": "#/$defs/account" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "fencingToken": { "type": "integer", "minimum": 1 },
+    "correlationId": { "type": "string", "minLength": 1 },
+    "cleanedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "uid", "gid", "home"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "uid": { "type": "integer", "minimum": 1 },
+        "gid": { "type": "integer", "minimum": 1 },
+        "home": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

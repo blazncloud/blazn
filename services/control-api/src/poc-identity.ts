@@ -73,11 +73,10 @@ try {
       }
       const authorizations = await client.query("DELETE FROM device_authorizations WHERE approved_user_id=$1", [userId]);
       const devices = await client.query("DELETE FROM devices WHERE user_id=$1", [userId]);
-      const rateLimits = await client.query("DELETE FROM auth_rate_limits WHERE key LIKE 'device-approve-account:%:' || $1", [login]);
       const removed = await client.query("DELETE FROM users WHERE id=$1 AND email=$2", [userId, login]);
       if (removed.rowCount !== 1) throw new Error("POC identity cleanup did not delete exactly one user");
       await client.query("COMMIT");
-      process.stdout.write(JSON.stringify({ status: "cleaned", userId, workspaceCount: allowed.size, deviceCount: devices.rowCount ?? 0, authorizationCount: authorizations.rowCount ?? 0, rateLimitCount: rateLimits.rowCount ?? 0 }) + "\n");
+      process.stdout.write(JSON.stringify({ status: "cleaned", userId, workspaceCount: allowed.size, deviceCount: devices.rowCount ?? 0, authorizationCount: authorizations.rowCount ?? 0 }) + "\n");
     } else {
       throw new Error("unsupported POC identity action");
     }
