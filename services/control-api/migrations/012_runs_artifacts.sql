@@ -23,6 +23,8 @@ CREATE TABLE runs (
   completed_at timestamptz,
   error_code text CHECK (error_code IS NULL OR error_code ~ '^[a-z][a-z0-9_]{0,62}$'),
   FOREIGN KEY (project_id, workspace_id) REFERENCES projects(id, workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (node_id, workspace_id) REFERENCES nodes(id, workspace_id),
+  FOREIGN KEY (sandbox_id, workspace_id) REFERENCES sandboxes(id, workspace_id),
   UNIQUE (id, workspace_id, project_id),
   CHECK (cardinality(output_names) <= 1000 AND run_output_names_valid(output_names)),
   CHECK ((status = 'queued' AND started_at IS NULL AND completed_at IS NULL) OR
@@ -150,6 +152,8 @@ GRANT SELECT, INSERT ON TABLE run_events TO blazn_runtime;
 GRANT SELECT, INSERT ON TABLE run_receipts TO blazn_runtime;
 GRANT SELECT, INSERT, UPDATE ON TABLE artifacts TO blazn_runtime;
 GRANT SELECT, INSERT ON TABLE run_input_artifacts TO blazn_runtime;
+REVOKE ALL ON FUNCTION validate_run_receipt_consistency() FROM PUBLIC;
+REVOKE ALL ON FUNCTION run_output_names_valid(text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION validate_run_receipt_consistency() TO blazn_runtime;
 GRANT EXECUTE ON FUNCTION run_output_names_valid(text[]) TO blazn_runtime;
 REVOKE DELETE ON TABLE runs, run_events, run_receipts, artifacts, run_input_artifacts FROM blazn_runtime;

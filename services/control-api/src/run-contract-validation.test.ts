@@ -56,6 +56,8 @@ test("Run migration binds every resource to Project tenant and denies runtime de
   const sql = await readFile(migration, "utf8");
   assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\) REFERENCES projects\(id, workspace_id\) ON DELETE CASCADE/);
   assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, project_id\) REFERENCES runs\(id, workspace_id, project_id\)/);
+  assert.match(sql, /FOREIGN KEY \(node_id, workspace_id\) REFERENCES nodes\(id, workspace_id\)/);
+  assert.match(sql, /FOREIGN KEY \(sandbox_id, workspace_id\) REFERENCES sandboxes\(id, workspace_id\)/);
   assert.match(sql, /FOREIGN KEY \(artifact_id, workspace_id, project_id\) REFERENCES artifacts\(id, workspace_id, project_id\)/);
   assert.match(sql, /UNIQUE \(run_id, ordinal\)/);
   assert.match(sql, /run_output_names_valid\(output_names\)/);
@@ -64,6 +66,8 @@ test("Run migration binds every resource to Project tenant and denies runtime de
   assert.match(sql, /CREATE CONSTRAINT TRIGGER runs_receipt_consistency_from_receipt/);
   assert.match(sql, /terminal Run requires a receipt/);
   assert.match(sql, /Run receipt does not match terminal Run/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION validate_run_receipt_consistency\(\) FROM PUBLIC/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION run_output_names_valid\(text\[\]\) FROM PUBLIC/);
   assert.match(sql, /object_key !~ '\[\?#@\]'/);
   assert.match(sql, /REVOKE DELETE ON TABLE runs, run_events, run_receipts, artifacts, run_input_artifacts FROM blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT[^;]*DELETE[^;]*TO blazn_runtime/);
