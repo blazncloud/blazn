@@ -28,6 +28,8 @@ jobs:
         run: make check-generated
       - name: Check generated workspace API client
         run: make check-workspace-generated
+      - name: Check generated Node API client and signed models
+        run: make check-node-generated
       - name: Check generated proxy contracts
         run: make check-proxy-generated
       - name: Run unit tests
@@ -50,6 +52,13 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Verify workspace persistence with the restricted runtime role
         run: ./scripts/test-workspace-postgres.sh
+
+  node-postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Verify Node persistence and broker least privilege
+        run: ./scripts/test-node-postgres.sh
 
   infrastructure:
     runs-on: ubuntu-latest
