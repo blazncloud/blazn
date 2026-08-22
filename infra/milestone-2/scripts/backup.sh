@@ -15,9 +15,15 @@ esac
 
 require_command docker
 require_command sha256sum
+require_command cmp
+require_command sort
+export DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 [ -n "$BACKUP_ROOT" ] || die "BLAZN_BACKUP_ROOT is required"
+require_absolute_path BLAZN_BACKUP_ROOT "$BACKUP_ROOT"
+assert_not_symlink_chain "$BACKUP_ROOT"
+assert_approved_backup_mount "$BACKUP_ROOT"
 [ "$(filesystem_device "$BACKUP_ROOT")" != "$(filesystem_device "$DATA_ROOT")" ] || die "backup destination shares the data filesystem"
 
 timestamp=$(date -u '+%Y%m%dT%H%M%SZ')
@@ -37,14 +43,30 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+capture_object_manifest() {
+  destination=$1
+  docker compose -f "$ROOT_DIR/compose.yaml" --profile tools run --rm -T object-client \
+    'access=$(cat /run/secrets/s3_runtime_access_key); secret=$(cat /run/secrets/s3_runtime_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; mc ls --recursive --json "blazn/$1"' \
+    -- "${S3_BUCKET:-blazn-poc}" | LC_ALL=C sort >"$destination"
+}
+
+# M2 has no database-to-object metadata yet. This stability barrier proves that
+# the bucket did not change across the database dump and object export. A future
+# object metadata schema must replace it with an application-level snapshot.
+capture_object_manifest "$staging/objects.before.jsonl"
+
 docker compose -f "$ROOT_DIR/compose.yaml" exec -T postgres \
   pg_dump --format=custom --no-owner --no-privileges -U blazn_migration "${POSTGRES_DB:-blazn}" \
   >"$staging/postgres.dump"
 
 docker compose -f "$ROOT_DIR/compose.yaml" --profile tools run --rm \
   -v "$staging/objects:/backup" object-client \
-  'access=$(cat /run/secrets/s3_access_key); secret=$(cat /run/secrets/s3_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; mc mirror --overwrite "blazn/$1" /backup' \
+  'access=$(cat /run/secrets/s3_runtime_access_key); secret=$(cat /run/secrets/s3_runtime_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; mc mirror --overwrite "blazn/$1" /backup' \
   -- "${S3_BUCKET:-blazn-poc}"
+
+capture_object_manifest "$staging/objects.after.jsonl"
+cmp -s "$staging/objects.before.jsonl" "$staging/objects.after.jsonl" || \
+  die "object bucket changed during backup; incomplete staging evidence was retained"
 
 manifest_tmp=$staging.sha256.$$
 (

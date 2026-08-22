@@ -3,7 +3,7 @@ name: blazn-m2
 services:
   postgres:
     image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
-    restart: unless-stopped
+    restart: "no"
     user: "999:999"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-blazn}
@@ -12,6 +12,7 @@ services:
     secrets:
       - postgres_password
       - migration_database_url
+      - bootstrap_database_url
       - runtime_database_url
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-55432}:5432"
@@ -46,15 +47,15 @@ services:
 
   object:
     image: ${MINIO_IMAGE:?set MINIO_IMAGE to the reviewed immutable digest}
-    restart: unless-stopped
+    restart: "no"
     user: "1000:1000"
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
-      MINIO_ROOT_USER_FILE: /run/secrets/s3_access_key
-      MINIO_ROOT_PASSWORD_FILE: /run/secrets/s3_secret_key
+      MINIO_ROOT_USER_FILE: /run/secrets/s3_root_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/s3_root_secret_key
     secrets:
-      - s3_access_key
-      - s3_secret_key
+      - s3_root_access_key
+      - s3_root_secret_key
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${S3_PORT:-59000}:9000"
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${S3_CONSOLE_PORT:-59001}:9001"
@@ -87,8 +88,8 @@ services:
     environment:
       MC_CONFIG_DIR: /tmp/mc
     secrets:
-      - s3_access_key
-      - s3_secret_key
+      - s3_runtime_access_key
+      - s3_runtime_secret_key
     networks:
       - control
 
@@ -99,14 +100,26 @@ services:
       MC_CONFIG_DIR: /tmp/mc
     command:
       - |
-        access=$$(cat /run/secrets/s3_access_key)
-        secret=$$(cat /run/secrets/s3_secret_key)
-        mc alias set blazn http://object:9000 "$$access" "$$secret" >/dev/null
+        root_access=$$(cat /run/secrets/s3_root_access_key)
+        root_secret=$$(cat /run/secrets/s3_root_secret_key)
+        runtime_access=$$(cat /run/secrets/s3_runtime_access_key)
+        runtime_secret=$$(cat /run/secrets/s3_runtime_secret_key)
+        mc alias set blazn http://object:9000 "$$root_access" "$$root_secret" >/dev/null
         mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}" >/dev/null
+        printf '%s\n' \
+          '{"Version":"2012-10-17","Statement":[' \
+          '{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::${S3_BUCKET:-blazn-poc}"]},' \
+          '{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::${S3_BUCKET:-blazn-poc}/*"]}' \
+          ']}' > /tmp/runtime-policy.json
+        mc admin policy create blazn blazn-runtime /tmp/runtime-policy.json >/dev/null
+        mc admin user add blazn "$$runtime_access" "$$runtime_secret" >/dev/null
+        mc admin policy attach blazn blazn-runtime --user "$$runtime_access" >/dev/null
         mc stat "blazn/${S3_BUCKET:-blazn-poc}" >/dev/null
     secrets:
-      - s3_access_key
-      - s3_secret_key
+      - s3_root_access_key
+      - s3_root_secret_key
+      - s3_runtime_access_key
+      - s3_runtime_secret_key
     depends_on:
       object:
         condition: service_healthy
@@ -159,7 +172,7 @@ services:
       BLAZN_INITIAL_LOGIN: ${BLAZN_INITIAL_LOGIN:?set BLAZN_INITIAL_LOGIN}
       BLAZN_INITIAL_DISPLAY_NAME: ${BLAZN_INITIAL_DISPLAY_NAME:?set BLAZN_INITIAL_DISPLAY_NAME}
     secrets:
-      - source: runtime_database_url
+      - source: bootstrap_database_url
         target: bootstrap_database_url
       - source: initial_password
         target: initial_password
@@ -186,7 +199,7 @@ services:
   api:
     build:
       context: ../../services/control-api
-    restart: unless-stopped
+    restart: "no"
     environment:
       PORT: "8080"
       BIND_ADDRESS: 0.0.0.0
@@ -195,12 +208,12 @@ services:
       S3_ENDPOINT: http://object:9000
       S3_REGION: ${S3_REGION:-us-east-1}
       S3_BUCKET: ${S3_BUCKET:-blazn-poc}
-      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
-      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key
     secrets:
       - runtime_database_url
-      - s3_access_key
-      - s3_secret_key
+      - s3_runtime_access_key
+      - s3_runtime_secret_key
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-58080}:8080"
     depends_on:
@@ -241,11 +254,17 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/postgres-password
   migration_database_url:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/migration-database-url
+  bootstrap_database_url:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/bootstrap-database-url
   runtime_database_url:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/runtime-database-url
   initial_password:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/initial-password
-  s3_access_key:
-    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-access-key
-  s3_secret_key:
-    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-secret-key
+  s3_root_access_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-root-access-key
+  s3_root_secret_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-root-secret-key
+  s3_runtime_access_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-access-key
+  s3_runtime_secret_key:
+    file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-secret-key

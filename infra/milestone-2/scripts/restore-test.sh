@@ -10,6 +10,7 @@ backup=$1
 target=$2
 require_absolute_path BACKUP_DIRECTORY "$backup"
 require_absolute_path EMPTY_RESTORE_ROOT "$target"
+require_command realpath
 assert_not_symlink_chain "$backup"
 assert_not_symlink_chain "$target"
 [ -d "$backup" ] || die "backup directory does not exist"
@@ -17,10 +18,16 @@ assert_not_symlink_chain "$target"
 
 live_host=${BLAZN_LIVE_HOST:-ben1}
 [ "$(hostname -s)" != "$live_host" ] || die "restore tests are forbidden on the live control-plane host"
-case "$target" in
-  /var/tmp/blazn-restore/*) ;;
-  *) die "restore root must be a unique child of /var/tmp/blazn-restore" ;;
+restore_parent=/var/tmp/blazn-restore
+[ -d "$restore_parent" ] && [ ! -L "$restore_parent" ] || die "restore parent must be a real directory: $restore_parent"
+canonical_parent=$(realpath -e "$restore_parent")
+target_parent=$(realpath -e "$(dirname -- "$target")")
+[ "$target_parent" = "$canonical_parent" ] || die "restore root must be a direct child of $canonical_parent"
+target_name=$(basename -- "$target")
+case "$target_name" in
+  ''|.|..|*[!a-zA-Z0-9._-]*) die "restore root name contains unsupported characters" ;;
 esac
+[ "$target" = "$canonical_parent/$target_name" ] || die "restore root must use its canonical direct-child path"
 
 require_command docker
 require_command sha256sum

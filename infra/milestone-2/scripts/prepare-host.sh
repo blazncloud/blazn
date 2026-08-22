@@ -30,17 +30,24 @@ chown 1000:1000 -- "$DATA_ROOT/objects"
 
 postgres_password=$(openssl rand -hex 32)
 migration_password=$(openssl rand -hex 32)
+bootstrap_password=$(openssl rand -hex 32)
 runtime_password=$(openssl rand -hex 32)
-s3_access_key=blazn$(openssl rand -hex 8)
-s3_secret_key=$(openssl rand -hex 32)
+s3_root_access_key=blaznroot$(openssl rand -hex 8)
+s3_root_secret_key=$(openssl rand -hex 32)
+s3_runtime_access_key=blaznruntime$(openssl rand -hex 8)
+s3_runtime_secret_key=$(openssl rand -hex 32)
 initial_password=$(openssl rand -hex 24)
 printf '%s\n' "$postgres_password" >"$SECRETS_ROOT/postgres-password"
 printf 'postgresql://%s:%s@postgres:5432/%s\n' \
   blazn_migration "$migration_password" "${POSTGRES_DB:-blazn}" >"$SECRETS_ROOT/migration-database-url"
 printf 'postgresql://%s:%s@postgres:5432/%s\n' \
+  blazn_bootstrap "$bootstrap_password" "${POSTGRES_DB:-blazn}" >"$SECRETS_ROOT/bootstrap-database-url"
+printf 'postgresql://%s:%s@postgres:5432/%s\n' \
   blazn_runtime "$runtime_password" "${POSTGRES_DB:-blazn}" >"$SECRETS_ROOT/runtime-database-url"
-printf '%s\n' "$s3_access_key" >"$SECRETS_ROOT/s3-access-key"
-printf '%s\n' "$s3_secret_key" >"$SECRETS_ROOT/s3-secret-key"
+printf '%s\n' "$s3_root_access_key" >"$SECRETS_ROOT/s3-root-access-key"
+printf '%s\n' "$s3_root_secret_key" >"$SECRETS_ROOT/s3-root-secret-key"
+printf '%s\n' "$s3_runtime_access_key" >"$SECRETS_ROOT/s3-runtime-access-key"
+printf '%s\n' "$s3_runtime_secret_key" >"$SECRETS_ROOT/s3-runtime-secret-key"
 printf '%s\n' "$initial_password" >"$SECRETS_ROOT/initial-password"
 # The parent directory is root-only. Compose bind-mounts only the named files;
 # mode 0444 lets explicitly configured non-root container users read them.
@@ -56,6 +63,9 @@ jq -cn \
   --arg data "$DATA_ROOT" \
   --arg backup "$BACKUP_ROOT" \
   --arg secrets "$SECRETS_ROOT" \
+  --arg backupMount "$BLAZN_BACKUP_MOUNT" \
+  --arg backupSource "$BLAZN_BACKUP_SOURCE" \
+  --arg backupFstype "$BLAZN_BACKUP_FSTYPE" \
   --arg postgresImage "$POSTGRES_IMAGE" \
   --arg minioImage "$MINIO_IMAGE" \
   --arg minioMcImage "$MINIO_MC_IMAGE" \
@@ -64,7 +74,7 @@ jq -cn \
   --argjson s3Port "${S3_PORT:-59000}" \
   --argjson s3ConsolePort "${S3_CONSOLE_PORT:-59001}" \
   --argjson apiPort "${API_PORT:-58080}" \
-  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
+  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
   >"$receipt_tmp"
 chmod 0600 "$receipt_tmp"
 mv -- "$receipt_tmp" "$RECEIPT_PATH"

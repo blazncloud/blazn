@@ -9,6 +9,7 @@
     "host",
     "createdAt",
     "paths",
+    "backupMount",
     "ports",
     "units",
     "images",
@@ -34,6 +35,16 @@
       "uniqueItems": true,
       "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
     },
+    "backupMount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "source", "fstype"],
+      "properties": {
+        "target": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "fstype": { "type": "string", "minLength": 1 }
+      }
+    },
     "units": {
       "type": "array",
       "uniqueItems": true,
@@ -45,6 +56,7 @@
       "uniqueItems": true,
       "items": { "type": "string", "pattern": "@sha256:[a-f0-9]{64}$" }
     },
-    "configDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "configDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "configUpdatedAt": { "type": "string", "format": "date-time" }
   }
 }

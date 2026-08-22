@@ -13,6 +13,7 @@ case "$run_id" in
 esac
 require_command docker
 require_command sha256sum
+export DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}
 
 work=${TMPDIR:-/tmp}/blazn-object-test-$run_id-$$
 [ ! -e "$work" ] || die "object-test path already exists"
@@ -29,7 +30,7 @@ trap cleanup EXIT HUP INT TERM
 
 docker compose -f "$ROOT_DIR/compose.yaml" --profile tools run --rm \
   -v "$work:/fixture" object-client \
-  'access=$(cat /run/secrets/s3_access_key); secret=$(cat /run/secrets/s3_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; prefix="$1/object-verification/$2"; mc cp /fixture/input/payload.txt "blazn/$prefix/payload.txt" >/dev/null; mc cp "blazn/$prefix/payload.txt" /fixture/output/payload.txt >/dev/null; mc rm --recursive --force "blazn/$prefix" >/dev/null; mc ls --recursive "blazn/$prefix" >/tmp/residue 2>/dev/null || true; [ ! -s /tmp/residue ]' \
+  'access=$(cat /run/secrets/s3_runtime_access_key); secret=$(cat /run/secrets/s3_runtime_secret_key); mc alias set blazn http://object:9000 "$access" "$secret" >/dev/null; prefix="$1/object-verification/$2"; mc cp /fixture/input/payload.txt "blazn/$prefix/payload.txt" >/dev/null; mc cp "blazn/$prefix/payload.txt" /fixture/output/payload.txt >/dev/null; mc rm --recursive --force "blazn/$prefix" >/dev/null; mc ls --recursive "blazn/$prefix" >/tmp/residue 2>/dev/null || true; [ ! -s /tmp/residue ]' \
   -- "${S3_BUCKET:-blazn-poc}" "$run_id"
 
 actual=$(sha256_file "$work/output/payload.txt")

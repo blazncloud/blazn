@@ -25,8 +25,8 @@ for expected in \
   'DATABASE_URL_FILE: /run/secrets/runtime_database_url' \
   'PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:58080}' \
   'S3_ENDPOINT: http://object:9000' \
-  'S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key' \
-  'S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key'; do
+  'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
+  'S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key'; do
   grep -F "$expected" "$compose" >/dev/null || {
     printf 'compose contract is missing: %s\n' "$expected" >&2
     exit 1
@@ -40,6 +40,8 @@ for expected in \
   'MC_CONFIG_DIR: /tmp/mc' \
   'mc mb --ignore-existing "blazn/${S3_BUCKET:-blazn-poc}"' \
   'mc stat "blazn/${S3_BUCKET:-blazn-poc}"' \
+  'mc admin policy create blazn blazn-runtime' \
+  'mc admin user add blazn "$$runtime_access" "$$runtime_secret"' \
   'object-init:' \
   'condition: service_completed_successfully' \
   'blazn.dev/restart-idempotent: "true"'; do
@@ -56,7 +58,7 @@ runtime_api=$(awk '
 ' "$compose")
 printf '%s\n' "$runtime_api" | grep -F 'object-init:' >/dev/null
 printf '%s\n' "$runtime_api" | grep -F 'condition: service_completed_successfully' >/dev/null
-for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_INITIAL_PASSWORD_FILE migration_database_url initial_password; do
+for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_INITIAL_PASSWORD_FILE migration_database_url bootstrap_database_url initial_password s3_root_access_key s3_root_secret_key; do
   if printf '%s\n' "$runtime_api" | grep -F "$forbidden" >/dev/null; then
     printf 'runtime API receives a privileged bootstrap/migration secret: %s\n' "$forbidden" >&2
     exit 1
@@ -65,7 +67,11 @@ done
 
 grep -F 'CREATE ROLE blazn_migration' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'CREATE ROLE blazn_runtime' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
-grep -F 'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO blazn_runtime' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
+grep -F 'CREATE ROLE blazn_bootstrap' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
+if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null; then
+  printf 'database initialization grants broad future-table privileges\n' >&2
+  exit 1
+fi
 if grep -E 'SUPERUSER|CREATEDB|CREATEROLE|REPLICATION' "$ROOT_DIR/postgres-init/01-roles.sh" | grep -v 'NO' >/dev/null; then
   printf 'restricted database roles receive an administrative capability\n' >&2
   exit 1
@@ -85,9 +91,46 @@ if grep -E '^[[:space:]]+addr:' "$ngrok" | grep -Ev 'http://127\.0\.0\.1:58080$'
 fi
 grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
 grep -F 'Environment=COMPOSE_BAKE=false' "$unit" >/dev/null
+grep -F 'ExecStart=/opt/blazn/infra/milestone-2/scripts/run-control-plane.sh' "$unit" >/dev/null
+grep -F 'Restart=on-failure' "$unit" >/dev/null
+if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
+  printf 'Docker still owns a control-plane restart policy\n' >&2
+  exit 1
+fi
 grep -F -- '--url https://blazn.benpelo.com' "$ngrok_unit" >/dev/null
+grep -F 'with-public-origin-lock.sh permanent' "$ngrok_unit" >/dev/null
 grep -F -- '--inspect=false' "$ngrok_unit" >/dev/null
 grep -F '127.0.0.1:58080' "$ngrok_unit" >/dev/null
+grep -F 'export DOCKER_CONFIG=' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'export DOCKER_CONFIG=' "$ROOT_DIR/scripts/verify-object-store.sh" >/dev/null
+grep -F 'assert_approved_backup_mount' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'assert_directory_owned_mode "$SECRETS_ROOT" 0 700' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
+grep -F 'assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
+grep -F 'objects.before.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'objects.after.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'configUpdatedAt' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
+grep -F 'with-public-origin-lock.sh qualification' "$ROOT_DIR/systemd/blazn-ngrok-qualification.service" >/dev/null
+
+boundary_tmp=${TMPDIR:-/tmp}/blazn-restore-boundary-$$
+restore_parent_created=0
+if [ ! -d /var/tmp/blazn-restore ]; then
+  mkdir /var/tmp/blazn-restore
+  restore_parent_created=1
+fi
+mkdir "$boundary_tmp"
+cleanup_boundary() {
+  rm -f "$boundary_tmp/out" "$boundary_tmp/err"
+  rmdir "$boundary_tmp" 2>/dev/null || true
+  [ "$restore_parent_created" -eq 0 ] || rmdir /var/tmp/blazn-restore 2>/dev/null || true
+}
+trap cleanup_boundary EXIT HUP INT TERM
+if "$ROOT_DIR/scripts/restore-test.sh" "$boundary_tmp" "/var/tmp/blazn-restore/../blazn-restore-escape-$$" >"$boundary_tmp/out" 2>"$boundary_tmp/err"; then
+  printf 'restore traversal boundary unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'direct child' "$boundary_tmp/err" >/dev/null
+cleanup_boundary
+trap - EXIT HUP INT TERM
 
 for script in "$ROOT_DIR"/scripts/*.sh "$ROOT_DIR"/postgres-init/*.sh "$ROOT_DIR"/tests/*.sh; do
   sh -n "$script"
