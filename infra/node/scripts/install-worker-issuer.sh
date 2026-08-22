@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 umask 077
+export LC_ALL=C
 
 die(){ printf 'blazn-worker-issuer-infra: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
@@ -64,6 +65,7 @@ else
   [ -n "$MICROK8S_GID" ] || die "MicroK8s group is unavailable"
   current=$(readlink /snap/microk8s/current) || die "MicroK8s current revision is unavailable"
   MICROK8S_REVISION=${current##*/}
+  grep -Fx 'version: v1.35.6' /snap/microk8s/current/meta/snap.yaml >/dev/null || die "MicroK8s version is unsupported"
   SYSTEMCTL=systemctl
   TMPFILES_CMD=systemd-tmpfiles
 fi
@@ -126,6 +128,15 @@ if [ "$current" = files-installed ]; then
   "$TMPFILES_CMD" --create "$TMPFILES"
   "$SYSTEMCTL" daemon-reload
   "$SYSTEMCTL" enable --now blazn-microk8s-worker-issuer.service
+  if [ "$TEST_MODE" != 1 ]; then
+    "$SYSTEMCTL" is-active --quiet blazn-microk8s-worker-issuer.service || die "issuer service is not active"
+    [ "$(stat -c '%u:%g:%a:%F' /run/blazn)" = "0:$BROKER_GID:750:directory" ] || die "issuer socket parent differs from receipt"
+    [ -S /run/blazn/microk8s-worker-issuer.sock ] && [ ! -L /run/blazn/microk8s-worker-issuer.sock ] || die "issuer socket is unavailable or linked"
+    [ "$(stat -c '%u:%g:%a:%h' /run/blazn/microk8s-worker-issuer.sock)" = "0:$BROKER_GID:660:1" ] || die "issuer socket metadata differs from receipt"
+    [ "$(stat -c '%u:%g:%a:%F' /var/snap/microk8s/current/credentials)" = "0:$MICROK8S_GID:770:directory" ] || die "MicroK8s credential directory is unsafe"
+    token_file=/var/snap/microk8s/current/credentials/cluster-tokens.txt
+    if [ -e "$token_file" ]; then [ -f "$token_file" ] && [ ! -L "$token_file" ] && [ "$(stat -c '%u:%g:%a:%h' "$token_file")" = "0:$MICROK8S_GID:660:1" ] || die "MicroK8s token file is unsafe"; fi
+  fi
   phase service-started; current=service-started; fault service-started
 fi
 if [ "$current" = service-started ]; then phase complete; current=complete; fault complete; fi

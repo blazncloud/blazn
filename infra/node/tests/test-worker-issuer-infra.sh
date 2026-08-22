@@ -46,7 +46,7 @@ for fault in recovery-created initialized secret-created config-bound files-inst
   sudo grep -Fx 'BLAZN_NODE_BROKER_UID=65532' "$root/control-plane.env" >/dev/null
   sudo grep -Fx 'BLAZN_NODE_BROKER_GID=65531' "$root/control-plane.env" >/dev/null
   if sudo grep -F "$(sudo sed -n '1p' "$root/etc/issuer/issuer-hmac-v1")" "$root/ownership/issuer.json" "$root/ownership/recovery/inventory.json" >/dev/null; then printf 'issuer secret leaked into evidence\n' >&2; exit 1; fi
-  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$root/systemctl.log" "$ROLLBACK" >/dev/null
+  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$root/systemctl.log" "$ROLLBACK" >/dev/null
   sudo jq -e '.phase=="rolled-back" and .rollback.retainedRecovery==true and .rollback.groupRetained==true' "$root/ownership/issuer.json" >/dev/null
   sudo test -f "$root/ownership/recovery/issuer-hmac-v1"
   sudo test ! -e "$root/usr/libexec/issuer"
@@ -57,7 +57,11 @@ done
 grep -F 'source: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
 grep -F 'target: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
 grep -F 'network_mode: "service:api"' "$COMPOSE" >/dev/null
+grep -F 'BLAZN_NODE_BROKER_LOOPBACK: ${BLAZN_NODE_BROKER_LOOPBACK:-disabled}' "$COMPOSE" >/dev/null
+grep -A2 -F '      api:' "$COMPOSE" | grep -F 'condition: service_started' >/dev/null
 if sed -n '/  node-broker:/,/^  [a-z]/p' "$COMPOSE" | grep -E '/var/snap/microk8s|kubeconfig|docker.sock' >/dev/null; then printf 'node broker has an unreviewed host capability\n' >&2; exit 1; fi
+if sed -n '/  api:/,/^  [a-z]/p' "$COMPOSE" | grep -E 'node_broker_database_url|node_broker_join_credential|issuer-hmac|microk8s-worker-issuer.sock' >/dev/null; then printf 'API container received a broker/provider secret\n' >&2; exit 1; fi
+for script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do grep -F -- '--profile node-broker' "$TEST_DIR/../../milestone-2/scripts/$script" >/dev/null; done
 trap - EXIT HUP INT TERM
 cleanup
 printf 'worker issuer journal, secret encoding, and narrow Compose boundary passed\n'

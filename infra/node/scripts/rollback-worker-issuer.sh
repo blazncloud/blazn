@@ -6,6 +6,7 @@ die(){ printf 'blazn-worker-issuer-rollback: %s\n' "$*" >&2; exit 1; }
 for command_name in jq sha256sum stat sync; do command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"; done
 RECEIPT=${BLAZN_ISSUER_RECEIPT_PATH:-/var/lib/blazn/ownership/microk8s-worker-issuer.json}
 SYSTEMCTL=${BLAZN_ISSUER_TEST_SYSTEMCTL:-systemctl}
+if [ "${BLAZN_ISSUER_INFRA_TEST_MODE:-0}" != 1 ]; then command -v docker >/dev/null 2>&1 || die "docker is required"; if docker ps -q --filter label=com.docker.compose.project=blazn-m2 --filter label=com.docker.compose.service=node-broker | grep . >/dev/null; then die "Node broker sidecar must be stopped before issuer rollback"; fi; fi
 [ -f "$RECEIPT" ] && [ ! -L "$RECEIPT" ] && [ "$(stat -c '%u:%a' "$RECEIPT")" = 0:600 ] || die "issuer receipt is unsafe"
 jq -e '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .owner=="blazn-poc" and (.phase=="complete" or .phase=="rollback-started" or .phase=="service-stopped" or .phase=="files-restored" or .phase=="rolled-back")' "$RECEIPT" >/dev/null || die "issuer receipt cannot be rolled back"
 sha(){ sha256sum "$1" | awk '{print $1}'; }
