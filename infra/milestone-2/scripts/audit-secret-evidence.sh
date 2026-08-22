@@ -20,7 +20,7 @@ trap cleanup EXIT HUP INT TERM
 {
   journalctl -u blazn-control-plane.service -u blazn-ngrok-qualification.service --no-pager
   docker compose -f "$ROOT_DIR/compose.yaml" --env-file /etc/blazn/control-plane/control-plane.env logs --no-color
-  ps eww -ax
+  ps axeww
   for receipt in /var/lib/blazn/ownership/*.json; do
     [ -f "$receipt" ] || continue
     printf 'receipt=%s\n' "$receipt"
