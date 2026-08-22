@@ -24,7 +24,7 @@ approval='not-applicable'
 runtime_admission=''
 create_principal=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}')
 [ -n "$create_principal" ] || { printf 'authenticated creator principal is required\n' >&2; exit 1; }
-case "$create_principal" in *"'"*|*'"'*|*\\*|*'\n'*) printf 'creator principal cannot be safely rendered\n' >&2; exit 1 ;; esac
+case "$create_principal" in *[!A-Za-z0-9_:@./-]*) printf 'creator principal cannot be safely rendered\n' >&2; exit 1 ;; esac
 if [ -n "${BLAZN_RUNTIME_CLASS:-}" ]; then
   case "$BLAZN_RUNTIME_CLASS" in *[!a-z0-9.-]*|'') printf 'invalid RuntimeClass name\n' >&2; exit 1 ;; esac
   : "${BLAZN_EXPECTED_RUNTIME_HANDLER:?set the reviewed RuntimeClass handler}"

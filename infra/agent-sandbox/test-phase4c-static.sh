@@ -70,6 +70,7 @@ grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
 grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'cmp "$pre/$file" "$post/$file"' "$PHASE4C/rollback.sh" >/dev/null
+# shellcheck disable=SC2016
 grep -F 'phase4c_write_phase "$transaction" rollback-intent' "$PHASE4C/rollback.sh" >/dev/null
 grep -F 'sha256sum -c input.sha256' "$PHASE4C/lib.sh" >/dev/null
 if grep -E 'kubectl (apply|create|delete|edit|label|patch|replace|scale)' "$PHASE4C/inventory.sh" >/dev/null; then exit 1; fi

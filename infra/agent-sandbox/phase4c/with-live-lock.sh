@@ -42,5 +42,5 @@ mv "$tmp" "$fence_path"
 
 export BLAZN_FENCING_TOKEN=$token
 export BLAZN_LIVE_CLUSTER_LOCK_HELD="token:$token"
-export BLAZN_LIVE_CLUSTER_LOCK_ID=$lock_id
+export BLAZN_LIVE_CLUSTER_LOCK_ID="$lock_id"
 exec "$@"

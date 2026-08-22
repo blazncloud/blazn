@@ -86,7 +86,7 @@ phase4c_start_uid_proxy() {
   attempt=0
   while [ ! -S "$phase4c_proxy_socket" ]; do
     attempt=$((attempt + 1))
-    [ "$attempt" -lt 50 ] && kill -0 "$phase4c_proxy_pid" 2>/dev/null || { printf 'private Kubernetes API proxy did not start\n' >&2; return 1; }
+    if [ "$attempt" -ge 50 ] || ! kill -0 "$phase4c_proxy_pid" 2>/dev/null; then printf 'private Kubernetes API proxy did not start\n' >&2; return 1; fi
     sleep 0.1
   done
   chmod 0600 "$phase4c_proxy_socket"
