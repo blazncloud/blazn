@@ -128,7 +128,7 @@ func TestResponsesTranslatesToLocalChatAndReturnsResponsesShape(t *testing.T) {
 		upstreamBody = string(body)
 		return response(200, "application/json", `{"id":"chat_1","choices":[{"message":{"content":"local answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`), nil
 	}, nil)
-	record := request(handler, "/v1/responses", `{"model":"company-assistant","instructions":"be concise","input":"hello","max_output_tokens":24}`)
+	record := request(handler, "/v1/responses", `{"model":"company-assistant","instructions":"be concise","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],"max_output_tokens":24}`)
 	if record.Code != 200 || !strings.Contains(record.Body.String(), `"object":"response"`) || !strings.Contains(record.Body.String(), "local answer") {
 		t.Fatalf("response %d %s", record.Code, record.Body.String())
 	}
@@ -148,6 +148,18 @@ func TestNoFallbackAfterSuccessfulHeadersOrResponseBytes(t *testing.T) {
 	}, nil)
 	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"hello"}]}`)
 	if record.Code != 502 || calls.Load() != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", record.Code, calls.Load(), record.Body.String())
+	}
+}
+
+func TestDestinationAuthenticationFailureDoesNotFallback(t *testing.T) {
+	var calls atomic.Int32
+	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return response(401, "application/json", `{"error":"bad credential"}`), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"hello"}]}`)
+	if record.Code != 502 || calls.Load() != 1 || !strings.Contains(record.Body.String(), "credential_unavailable") {
 		t.Fatalf("status=%d calls=%d body=%s", record.Code, calls.Load(), record.Body.String())
 	}
 }

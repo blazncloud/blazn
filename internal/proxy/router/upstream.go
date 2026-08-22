@@ -87,8 +87,15 @@ func (h *Handler) dispatch(ctx context.Context, request proxycontract.Normalized
 		if response.StatusCode >= 400 {
 			retryReason, retryable := classifyStatus(response.StatusCode)
 			_ = response.Body.Close()
-			last = &APIError{Code: string(retryReason), Message: "upstream rejected the request", Status: safeUpstreamStatus(response.StatusCode), Retryable: retryable, Reason: retryReason}
-			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, eventReason(retryReason), h.config.Now().Sub(started), nil)
+			code, reasonCode := string(retryReason), eventReason(retryReason)
+			if retryReason == "" {
+				code, reasonCode = "invalid_request", proxycontract.EventReasonPolicyDenied
+			}
+			if response.StatusCode == 401 || response.StatusCode == 403 {
+				code, reasonCode = "credential_unavailable", proxycontract.EventReasonAuthenticationFailed
+			}
+			last = &APIError{Code: code, Message: "upstream rejected the request", Status: safeUpstreamStatus(response.StatusCode), Retryable: retryable, Reason: retryReason}
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonCode, h.config.Now().Sub(started), nil)
 			continue
 		}
 		return upstreamResult{response: response, route: route, attempt: attempt + 1}, nil
@@ -131,6 +138,9 @@ func safeUpstreamStatus(status int) int {
 		return 429
 	}
 	if status >= 500 {
+		return 502
+	}
+	if status == 401 || status == 403 {
 		return 502
 	}
 	return 400
@@ -242,6 +252,9 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 		var source chatResponse
 		if err := decodeUpstreamJSON(limited, &source); err != nil {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid Chat response", 502, false)
+		}
+		if source.Status != "completed" && source.Status != "incomplete" {
+			return response, safeError("upstream_invalid_response", "upstream Responses request did not complete", 502, false)
 		}
 		if len(source.Choices) != 1 {
 			return response, safeError("upstream_invalid_response", "upstream returned an invalid choice count", 502, false)

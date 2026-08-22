@@ -139,12 +139,15 @@ func normalizeChat(body io.Reader, policy proxycontract.Policy, now time.Time) (
 			blocks = append(blocks, proxycontract.RequestBlock{Role: "tool", Type: "tool_result", CallID: stringPtr(message.ToolCallID), Result: result})
 			continue
 		}
-		text, err := rawText(message.Content)
+		texts, err := rawTexts(message.Content, "text")
 		if err != nil {
 			return proxycontract.NormalizedRequest{}, unsupported("multimodal message content is unsupported")
 		}
 		role := proxycontract.NormalizedRole(message.Role)
-		blocks = append(blocks, proxycontract.RequestBlock{Role: role, Type: "text", Text: &text})
+		for _, text := range texts {
+			textCopy := text
+			blocks = append(blocks, proxycontract.RequestBlock{Role: role, Type: "text", Text: &textCopy})
+		}
 	}
 	tools := make([]proxycontract.Tool, 0, len(source.Tools))
 	for _, tool := range source.Tools {
@@ -209,11 +212,14 @@ func normalizeResponses(body io.Reader, policy proxycontract.Policy, now time.Ti
 		for _, input := range inputs {
 			switch input.Type {
 			case "", "message":
-				text, err := rawText(input.Content)
+				texts, err := rawTexts(input.Content, "input_text", "output_text")
 				if err != nil {
 					return proxycontract.NormalizedRequest{}, unsupported("multimodal Responses content is unsupported")
 				}
-				blocks = append(blocks, proxycontract.RequestBlock{Role: proxycontract.NormalizedRole(input.Role), Type: "text", Text: &text})
+				for _, text := range texts {
+					textCopy := text
+					blocks = append(blocks, proxycontract.RequestBlock{Role: proxycontract.NormalizedRole(input.Role), Type: "text", Text: &textCopy})
+				}
 			case "function_call":
 				blocks = append(blocks, proxycontract.RequestBlock{Role: "assistant", Type: "tool_call", CallID: stringPtr(input.CallID), ToolName: stringPtr(input.Name), Arguments: normalizeJSONValue(input.Arguments)})
 			case "function_call_output":
@@ -275,6 +281,31 @@ func rawText(raw json.RawMessage) (string, error) {
 		return "", err
 	}
 	return text, nil
+}
+
+func rawTexts(raw json.RawMessage, allowedTypes ...string) ([]string, error) {
+	if text, err := rawText(raw); err == nil {
+		return []string{text}, nil
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := decodeRawStrict(raw, &parts); err != nil || len(parts) == 0 {
+		return nil, errors.New("content is not text")
+	}
+	allowed := map[string]bool{}
+	for _, kind := range allowedTypes {
+		allowed[kind] = true
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if !allowed[part.Type] {
+			return nil, errors.New("content contains unsupported type")
+		}
+		texts = append(texts, part.Text)
+	}
+	return texts, nil
 }
 func rawContentValue(raw json.RawMessage) (json.RawMessage, error) {
 	if len(raw) == 0 {
