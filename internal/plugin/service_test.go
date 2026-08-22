@@ -18,14 +18,14 @@ func TestPluginEnvironmentRemovesInstallerCredentials(t *testing.T) {
 		"HUNTER_API_KEY=provider-secret",
 	})
 	joined := strings.Join(filtered, "\n")
-	if joined != "PATH=/usr/bin\nHUNTER_API_KEY=provider-secret" {
+	if joined != "PATH=/usr/bin" {
 		t.Fatalf("unexpected plugin environment: %q", joined)
 	}
 }
 
 type countingRunner struct{ calls int }
 
-func (r *countingRunner) Run(context.Context, string, []string, RuntimeContext, Stdio) (int, error) {
+func (r *countingRunner) Run(context.Context, string, []string, string, RuntimeContext, Stdio) (int, error) {
 	r.calls++
 	return 0, nil
 }

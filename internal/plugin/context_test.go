@@ -25,23 +25,42 @@ func TestRuntimeContextRoundTripAndSpoofReplacement(t *testing.T) {
 	environment, err := runtimeEnvironment([]string{
 		"PATH=/bin",
 		"LC_MESSAGES=C",
+		"BLAZN_SOCIAL_HOME=/tmp/social",
+		"BLAZN_SEC_USER_AGENT=blazn-social qualification@example.test",
+		"HUNTER_API_KEY=social-secret",
 		"OPENAI_API_KEY=must-not-pass",
 		"AWS_SESSION_TOKEN=must-not-pass",
 		"GH_TOKEN=must-not-pass",
 		strings.ToLower(RuntimeContextEnvironment) + `={"spoofed":true}`,
-	}, context)
+	}, context, "social")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(environment) != 3 || environment[0] != "PATH=/bin" || environment[1] != "LC_MESSAGES=C" || !strings.HasPrefix(environment[2], RuntimeContextEnvironment+"=") {
+	if len(environment) != 6 || environment[0] != "PATH=/bin" || environment[1] != "LC_MESSAGES=C" || environment[2] != "BLAZN_SOCIAL_HOME=/tmp/social" || environment[3] != "BLAZN_SEC_USER_AGENT=blazn-social qualification@example.test" || environment[4] != "HUNTER_API_KEY=social-secret" || !strings.HasPrefix(environment[5], RuntimeContextEnvironment+"=") {
 		t.Fatalf("environment = %#v", environment)
 	}
-	actual, err := DecodeRuntimeContext(strings.TrimPrefix(environment[2], RuntimeContextEnvironment+"="))
+	actual, err := DecodeRuntimeContext(strings.TrimPrefix(environment[5], RuntimeContextEnvironment+"="))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if actual.WorkspaceID != context.WorkspaceID || actual.InvocationID != context.InvocationID {
 		t.Fatalf("runtime context = %#v", actual)
+	}
+}
+
+func TestRuntimeEnvironmentDoesNotCrossPluginCredentialBoundaries(t *testing.T) {
+	context := validRuntimeContext(t)
+	environment, err := runtimeEnvironment([]string{
+		"PATH=/bin",
+		"BLAZN_SOCIAL_HOME=/tmp/social",
+		"BLAZN_SEC_USER_AGENT=blazn-social qualification@example.test",
+		"HUNTER_API_KEY=social-secret",
+	}, context, "content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(environment) != 2 || environment[0] != "PATH=/bin" || !strings.HasPrefix(environment[1], RuntimeContextEnvironment+"=") {
+		t.Fatalf("content environment received Social values: %#v", environment)
 	}
 }
 

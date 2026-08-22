@@ -132,7 +132,7 @@ func DecodeRuntimeContext(value string) (RuntimeContext, error) {
 	return context, nil
 }
 
-func runtimeEnvironment(base []string, context RuntimeContext) ([]string, error) {
+func runtimeEnvironment(base []string, context RuntimeContext, pluginName string) ([]string, error) {
 	encoded, err := EncodeRuntimeContext(context)
 	if err != nil {
 		return nil, err
@@ -141,14 +141,14 @@ func runtimeEnvironment(base []string, context RuntimeContext) ([]string, error)
 	result := make([]string, 0, len(base)+1)
 	for _, value := range base {
 		name, _, _ := strings.Cut(value, "=")
-		if allowedPluginEnvironment(name) {
+		if allowedPluginEnvironment(name, pluginName) {
 			result = append(result, value)
 		}
 	}
 	return append(result, prefix+encoded), nil
 }
 
-func allowedPluginEnvironment(name string) bool {
+func allowedPluginEnvironment(name, pluginName string) bool {
 	upper := strings.ToUpper(name)
 	switch upper {
 	case "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "TZ",
@@ -156,6 +156,15 @@ func allowedPluginEnvironment(name string) bool {
 		"SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SSL_CERT_FILE", "SSL_CERT_DIR":
 		return true
 	default:
-		return strings.HasPrefix(upper, "LC_")
+		if strings.HasPrefix(upper, "LC_") {
+			return true
+		}
+		if pluginName == "social" {
+			switch upper {
+			case "BLAZN_SOCIAL_HOME", "BLAZN_SEC_USER_AGENT", "HUNTER_API_KEY":
+				return true
+			}
+		}
+		return false
 	}
 }
