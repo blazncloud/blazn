@@ -35,6 +35,7 @@ export interface IssuedWorkerCredential {
 }
 
 export interface WorkerCredentialIssuer {
+  health?(signal: AbortSignal): Promise<void>;
   issue(
     request: WorkerCredentialIssueRequest,
     signal: AbortSignal,

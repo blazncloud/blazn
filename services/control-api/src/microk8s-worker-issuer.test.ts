@@ -24,6 +24,7 @@ async function fake(handler: (body: Record<string, unknown>) => unknown, stall =
     request.on("end", () => {
       if (stall) return;
       response.setHeader("content-type", "application/json");
+      if (request.method === "GET" && request.url === "/healthz") { response.end(JSON.stringify({ schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "health", healthy: true })); return; }
       response.end(JSON.stringify(handler(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>)));
     });
   });
@@ -46,6 +47,7 @@ test("Unix issuer sends the closed binding and accepts canonical issue and revok
     const result = await issuer.issue(issue, new AbortController().signal);
     assert.equal(result.providerHandle, issue.issuanceId);
     await issuer.revoke(issue.issuanceId, new AbortController().signal);
+    await issuer.health(new AbortController().signal);
     assert.deepEqual(seen[0], { schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "issue", ...issue });
   } finally { await fixture.close(); }
 });

@@ -15,6 +15,7 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
 
   async issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply> {
     const payload = Buffer.from(JSON.stringify(body));
+    if (payload.length > maxBytes) throw new Error("Node broker request is too large");
     return this.call("POST", "/v1/node-service/join-credentials", payload, { "content-type": "application/json", "idempotency-key": idempotencyKey, "x-blazn-node-proof": proof }, signal);
   }
 
@@ -25,20 +26,22 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
 
   private call(method: "GET" | "POST", path: string, payload: Buffer, headers: Record<string, string>, signal: AbortSignal): Promise<BrokerProxyReply> {
     return new Promise((resolve, reject) => {
+      let deadline: ReturnType<typeof setTimeout>;
+      const fail=(error:Error)=>{clearTimeout(deadline);reject(error);};
       const req = request(`${brokerOrigin}${path}`, { method, signal, headers: { ...headers, "content-length": String(payload.length), connection: "close" } }, (response) => {
         const chunks: Buffer[] = []; let size = 0;
         response.on("data", (chunk: Buffer) => { size += chunk.length; if (size > maxBytes) req.destroy(new Error("Node broker response is too large")); else chunks.push(chunk); });
         response.on("end", () => {
           const contentType = response.headers["content-type"];
           const retry = response.headers["retry-after"];
-          if (!statuses.has(response.statusCode ?? 0) || contentType !== "application/json" || (Array.isArray(retry) ? retry.length !== 1 : false)) return reject(new Error("Node broker response contract is invalid"));
-          const body = Buffer.concat(chunks); try { validateBrokerBody(response.statusCode!, JSON.parse(body.toString("utf8"))); } catch { return reject(new Error("Node broker response JSON is invalid")); }
-          if (retry !== undefined && (response.statusCode !== 429 || typeof retry !== "string" || !/^[1-9][0-9]{0,2}$/.test(retry))) return reject(new Error("Node broker retry contract is invalid"));
-          resolve({ status: response.statusCode!, body, ...(typeof retry === "string" ? { retryAfter: retry } : {}) });
+          if (!statuses.has(response.statusCode ?? 0) || contentType !== "application/json" || rawHeaderCount(response.rawHeaders,"content-type")!==1 || rawHeaderCount(response.rawHeaders,"retry-after")>1 || rawHeaderCount(response.rawHeaders,"location")!==0 || (Array.isArray(retry) ? retry.length !== 1 : false)) return fail(new Error("Node broker response contract is invalid"));
+          const body = Buffer.concat(chunks); try { validateBrokerBody(response.statusCode!, JSON.parse(body.toString("utf8"))); } catch { return fail(new Error("Node broker response JSON is invalid")); }
+          if (retry !== undefined && (response.statusCode !== 429 || typeof retry !== "string" || !/^[1-9][0-9]{0,2}$/.test(retry))) return fail(new Error("Node broker retry contract is invalid"));
+          clearTimeout(deadline);resolve({ status: response.statusCode!, body, ...(typeof retry === "string" ? { retryAfter: retry } : {}) });
         });
       });
-      req.setTimeout(this.timeoutMs, () => req.destroy(new Error("Node broker proxy deadline exceeded")));
-      req.once("error", reject); req.end(payload);
+      deadline=setTimeout(()=>req.destroy(new Error("Node broker proxy deadline exceeded")),this.timeoutMs);
+      req.once("error",fail);req.end(payload);
     });
   }
 }
@@ -49,3 +52,4 @@ function validateBrokerBody(status:number,value:unknown):void{
   exact(body,["code","message","requestId"]);if(typeof body.code!=="string"||!(body.code in NODE_ERROR_STATUS)||NODE_ERROR_STATUS[body.code as NodeErrorCode]!==status||typeof body.message!=="string"||!body.message||body.message.length>512||typeof body.requestId!=="string"||!/^[0-9a-f-]{36}$/.test(body.requestId))throw new Error();
 }
 function exact(value:Record<string,unknown>,keys:string[]):void{if(Object.keys(value).length!==keys.length||keys.some(key=>!(key in value))||Object.keys(value).some(key=>!keys.includes(key)))throw new Error();}
+function rawHeaderCount(headers:string[],name:string):number{let count=0;for(let index=0;index<headers.length;index+=2)if(headers[index]?.toLowerCase()===name)count++;return count;}

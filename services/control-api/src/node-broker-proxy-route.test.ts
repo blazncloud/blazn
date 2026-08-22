@@ -11,11 +11,11 @@ const enrollmentId="33333333-3333-4333-8333-333333333333",planId="55555555-5555-
 const body={enrollmentId,planId,planDigest:`sha256:${"a".repeat(64)}`,nodeId,machineFingerprint:"b".repeat(64),nodePublicKeyFingerprint:`sha256:${"c".repeat(64)}`};
 
 test("public join issuance forwards only the exact proof contract",async()=>{
-  let observed:unknown;const proxy={async issue(forwarded,key,proof){observed={body:forwarded,key,proof};return{status:200,body:Buffer.from('{"workerOnly":true}')}},async health(){}} as NodeBrokerProxy;
-  const server=nodeServer(new NodeHttpRouter({} as NodeService,proxy));await listen(server);
+  let observed:unknown,limits=0;const proxy={async issue(forwarded,key,proof){observed={body:forwarded,key,proof};return{status:200,body:Buffer.from('{"workerOnly":true}')}},async health(){}} as NodeBrokerProxy;
+  const server=nodeServer(new NodeHttpRouter({} as NodeService,proxy,async()=>{limits++;}));await listen(server);
   try{const accepted=await fetch(origin(server)+"/v1/node-service/join-credentials",{method:"POST",headers:{"content-type":"application/json","idempotency-key":"join-http-key","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify(body)});assert.equal(accepted.status,200);assert.deepEqual(observed,{body,key:"join-http-key",proof:"x".repeat(86)});
     const bearer=await fetch(origin(server)+"/v1/node-service/join-credentials",{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer forbidden","idempotency-key":"join-http-key","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify(body)});assert.equal(bearer.status,401);
-    const extra=await fetch(origin(server)+"/v1/node-service/join-credentials",{method:"POST",headers:{"content-type":"application/json","idempotency-key":"join-http-key","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify({...body,extra:true})});assert.equal(extra.status,400);
+    const extra=await fetch(origin(server)+"/v1/node-service/join-credentials",{method:"POST",headers:{"content-type":"application/json","idempotency-key":"join-http-key","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify({...body,extra:true})});assert.equal(extra.status,400);const badProof=await fetch(origin(server)+"/v1/node-service/join-credentials",{method:"POST",headers:{"content-type":"application/json","idempotency-key":"join-http-key","x-blazn-node-proof":"bad"},body:JSON.stringify(body)});assert.equal(badProof.status,403);assert.equal(limits,1);
   }finally{await close(server);}
 });
 

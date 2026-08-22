@@ -76,11 +76,17 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
     }
   }
 
-  private call(body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
-    const payload = Buffer.from(JSON.stringify(body));
+  async health(signal: AbortSignal): Promise<void> {
+    const response = object(await this.call(undefined, signal, "GET", "/healthz"));
+    exactKeys(response, ["schemaVersion", "operation", "healthy"]);
+    if (response.schemaVersion !== schemaVersion || response.operation !== "health" || response.healthy !== true) throw new Error("MicroK8s worker issuer health response is invalid");
+  }
+
+  private call(body: Record<string, unknown> | undefined, signal: AbortSignal, method: "GET" | "POST" = "POST", path = "/v1/worker-credentials"): Promise<unknown> {
+    const payload = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
     return new Promise((resolve, reject) => {
-      const req = httpRequest({ socketPath: this.socketPath, path: "/v1/worker-credentials", method: "POST", signal,
-        headers: { "content-type": "application/json", "content-length": payload.length } }, (res) => {
+      const req = httpRequest({ socketPath: this.socketPath, path, method, signal,
+        headers: method === "POST" ? { "content-type": "application/json", "content-length": payload.length } : { "content-length": "0" } }, (res) => {
         const chunks: Buffer[] = [];
         let size = 0;
         res.on("data", (chunk: Buffer) => {

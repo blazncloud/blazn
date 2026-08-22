@@ -18,6 +18,7 @@ type fakeBackend struct {
 	issues, revokes       int
 	failIssue, failRevoke bool
 	now                   time.Time
+	failHealthy           bool
 }
 
 func (f *fakeBackend) Issue(_ context.Context, token string, ttl int) (BackendIssue, error) {
@@ -34,7 +35,12 @@ func (f *fakeBackend) Revoke(context.Context, string) error {
 	}
 	return nil
 }
-func (f *fakeBackend) Healthy(context.Context) error { return nil }
+func (f *fakeBackend) Healthy(context.Context) error {
+	if f.failHealthy {
+		return errors.New("unhealthy detail")
+	}
+	return nil
+}
 func secureTempDir(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

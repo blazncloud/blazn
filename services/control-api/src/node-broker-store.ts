@@ -42,11 +42,13 @@ export interface NodeBrokerTransaction {
 }
 
 export interface NodeBrokerStore {
+  health?(): Promise<void>;
   transaction<T>(action: (tx: NodeBrokerTransaction) => Promise<T>): Promise<T>;
 }
 
 export class PgNodeBrokerStore implements NodeBrokerStore {
   constructor(private readonly database: Database) {}
+  async health(): Promise<void> { await this.database.query("SELECT 1"); }
   async transaction<T>(
     action: (tx: NodeBrokerTransaction) => Promise<T>,
   ): Promise<T> {

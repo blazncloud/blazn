@@ -35,7 +35,7 @@ const nodeRouter = new NodeHttpRouter(new NodeService(
   new PgNodeStore(database),
   () => readNodeEnrollmentKey(process.env.NODE_ENROLLMENT_HMAC_FILE ?? `${nodeSecretsRoot}/enrollment-hmac-v1`),
   new TemplateNodePlanFactory(process.env.NODE_INSTALL_PLAN_TEMPLATE_FILE ?? "/etc/blazn/node-plan/node-install-plan-template-v1.json", nodePlanSigner),
-), brokerProxy);
+), brokerProxy, (request) => enforceLimit(database, "node-broker-public", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 60, 60));
 
 function closeStream(sessionId: string): void {
   const streams = activeStreams.get(sessionId);

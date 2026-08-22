@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
-import { BrokerRateLimiter, createNodeBrokerServer } from "./node-broker-http.js";
+import { createNodeBrokerServer } from "./node-broker-http.js";
 import type { NodeBrokerService } from "./node-broker-service.js";
 
 const body={enrollmentId:"11111111-1111-4111-8111-111111111111",planId:"22222222-2222-4222-8222-222222222222",planDigest:`sha256:${"a".repeat(64)}`,nodeId:"33333333-3333-4333-8333-333333333333",machineFingerprint:"b".repeat(64),nodePublicKeyFingerprint:`sha256:${"c".repeat(64)}`};
 
 test("broker HTTP accepts only bounded proof-authenticated issuance requests",async()=>{let calls=0;const service={issue:async()=>{calls++;return{issuanceId:"44444444-4444-4444-8444-444444444444",credential:"x".repeat(43),expiresAt:"2029-01-01T00:05:00.000Z",clusterId:"cluster-a",workerOnly:true,replayed:false};}} as unknown as NodeBrokerService,server=createNodeBrokerServer(service);await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;try{const accepted=await fetch(`${origin}/v1/node-service/join-credentials`,{method:"POST",headers:{"content-type":"application/json","idempotency-key":"join-key-1","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify(body)});assert.equal(accepted.status,200);assert.equal((await accepted.json() as {workerOnly:boolean}).workerOnly,true);assert.equal(calls,1);const bearer=await fetch(`${origin}/v1/node-service/join-credentials`,{method:"POST",headers:{"content-type":"application/json","authorization":"Bearer user-token","idempotency-key":"join-key-2","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify(body)});assert.equal(bearer.status,401);const large=await fetch(`${origin}/v1/node-service/join-credentials`,{method:"POST",headers:{"content-type":"application/json","idempotency-key":"join-key-3","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify({...body,padding:"x".repeat(17*1024)})});assert.equal(large.status,413);assert.equal(calls,1);}finally{await new Promise<void>(r=>server.close(()=>r()));}});
-
-test("broker rate limiter is deterministic per fixed window",()=>{let now=0;const limiter=new BrokerRateLimiter(()=>now);limiter.take("node-a",2);limiter.take("node-a",2);assert.throws(()=>limiter.take("node-a",2));now=60_000;limiter.take("node-a",2);});
