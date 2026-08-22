@@ -41,14 +41,14 @@ blazn_download() {
 
   case "$blazn_download_url" in
     https://*)
-      curl -fL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 \
+      curl -fsSL --proto '=https' --tlsv1.2 --retry 3 --retry-delay 1 \
         --connect-timeout 15 --output "$blazn_download_output" "$blazn_download_url"
       ;;
     file://*)
       if [ "${BLAZN_ALLOW_INSECURE_TEST_ORIGIN:-}" != "1" ]; then
         blazn_die "file origins are allowed only with BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1"
       fi
-      curl -fL --output "$blazn_download_output" "$blazn_download_url"
+      curl -fsSL --output "$blazn_download_output" "$blazn_download_url"
       ;;
     *)
       blazn_die "distribution URL must use HTTPS"
@@ -126,7 +126,7 @@ if [ -z "$blazn_version" ]; then
 fi
 
 case "$blazn_version" in
-  ''|*[!A-Za-z0-9._-]*) blazn_die "invalid release version" ;;
+  ''|.|..|*[!A-Za-z0-9._-]*) blazn_die "invalid release version" ;;
 esac
 
 blazn_asset="blazn_${blazn_os}_${blazn_arch}.tar.gz"

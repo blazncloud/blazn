@@ -79,6 +79,15 @@ run_installer() {
     sh "$test_repo_root/scripts/install.sh"
 }
 
+run_installer_bad_fingerprint() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT='SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
 inode_of() {
   if [ "$test_os" = "Darwin" ]; then
     stat -f '%i' "$1"
@@ -100,6 +109,12 @@ second_inode=$(inode_of "$test_install/blazn")
 [ "$first_inode" = "$second_inode" ] || fail "same version is idempotent"
 grep -q 'already installed' "$test_root/idempotent.out" || fail "idempotent result is reported"
 pass "same version is idempotent"
+
+if run_installer_bad_fingerprint >"$test_root/fingerprint.out" 2>&1; then
+  fail "wrong signing fingerprint was accepted"
+fi
+grep -q 'exactly the expected signing key' "$test_root/fingerprint.out" || fail "fingerprint failure is explicit"
+pass "wrong signing fingerprint is rejected"
 
 cp "$test_release/checksums.txt" "$test_root/good-checksums"
 printf '# tampered\n' >> "$test_release/checksums.txt"
@@ -138,4 +153,14 @@ grep -q 'checksum mismatch' "$test_root/tampered-archive.out" || fail "archive c
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "failed install replaced prior binary"
 pass "tampered archive is rejected and prior install survives"
 
-printf '1..6\n'
+printf 'unexpected\n' > "$test_root/payload/unexpected"
+(cd "$test_root/payload" && tar -czf "$test_release/$test_asset" blazn unexpected)
+write_manifest
+if run_installer >"$test_root/unsafe-archive.out" 2>&1; then
+  fail "archive with an unexpected path was accepted"
+fi
+grep -q 'must contain only the blazn binary' "$test_root/unsafe-archive.out" || fail "unsafe archive failure is explicit"
+[ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "unsafe archive replaced prior binary"
+pass "unexpected archive paths are rejected"
+
+printf '1..8\n'
