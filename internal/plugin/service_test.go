@@ -27,8 +27,18 @@ func TestServiceRechecksCompatibilityForHealthAndDispatch(t *testing.T) {
 	runner := &countingRunner{}
 	service := &Service{Catalog: DefaultCatalog(), Store: store, Runner: runner, CoreVersion: "v1.0.0"}
 	statuses := service.List()
-	if len(statuses) != 1 || !statuses[0].Installed || statuses[0].Healthy || statuses[0].Message == "" {
+	if len(statuses) != 2 {
 		t.Fatalf("status=%+v", statuses)
+	}
+	byName := map[string]Status{}
+	for _, status := range statuses {
+		byName[status.Name] = status
+	}
+	if social := byName["social"]; !social.Installed || social.Healthy || social.Message == "" {
+		t.Fatalf("social status=%+v", social)
+	}
+	if content := byName["content"]; content.Installed || content.Healthy || content.Message != "not installed" {
+		t.Fatalf("content status=%+v", content)
 	}
 	if _, err := service.Run(context.Background(), definition, []string{"person", "search"}, "human", Stdio{}); err == nil {
 		t.Fatal("incompatible installed plugin was dispatched")

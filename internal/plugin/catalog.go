@@ -28,14 +28,25 @@ var socialDefinition = Definition{
 	Repository:         "blazncloud/blazn-social",
 	Executable:         "blazn-social",
 	CanonicalCommand:   "social",
-	Aliases:            []string{"person", "company", "contact", "connections", "content", "post", "evidence", "entity", "data", "providers"},
+	Aliases:            []string{"person", "company", "contact", "connections", "post", "evidence", "entity", "data", "providers"},
 	SigningIdentity:    "blazn-social-release",
 	SignatureNamespace: "blazn-social-release",
 	AllowedSigner:      `blazn-social-release namespaces="blazn-social-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5dgrZCi276ezBnP1qZBMvwK8bRBAzkXhC5nk/VC7uT blazn-social-release-v1`,
 }
 
+var contentDefinition = Definition{
+	Name:               "content",
+	Repository:         "blazncloud/blazn-content",
+	Executable:         "blazn-content",
+	CanonicalCommand:   "content",
+	Aliases:            []string{"media", "image", "video", "audio", "render", "remix"},
+	SigningIdentity:    "blazn-content-release",
+	SignatureNamespace: "blazn-content-release",
+	AllowedSigner:      `blazn-content-release namespaces="blazn-content-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOGkctg037D7qw5pChuiv48yUl6Y8wiTJ3Q+cgUxvq5c blazn-content-release-v1`,
+}
+
 func DefaultCatalog() Catalog {
-	catalog, err := NewCatalog([]Definition{socialDefinition}, []string{"auth", "doctor", "help", "node", "plugins", "uninstall", "version", "workspace"})
+	catalog, err := NewCatalog([]Definition{socialDefinition, contentDefinition}, []string{"auth", "doctor", "help", "node", "plugins", "uninstall", "version", "workspace"})
 	if err != nil {
 		panic(err)
 	}
