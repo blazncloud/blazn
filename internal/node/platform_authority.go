@@ -340,6 +340,10 @@ func sameJSON(left, right any) bool {
 func sameAuthorityBinding(left, right RootInstallAuthority) bool {
 	left.AuthorizedAt, left.Digest = "", ""
 	right.AuthorizedAt, right.Digest = "", ""
+	if left.Plan.Mode == client.NodeModeFresh && right.Plan.Mode == client.NodeModeFresh {
+		left.KubernetesBinding, left.JoinIntent = nil, nil
+		right.KubernetesBinding, right.JoinIntent = nil, nil
+	}
 	return sameJSON(left, right)
 }
 
@@ -390,4 +394,58 @@ func (e NativeRootEngine) updateRootKubernetesBinding(plan client.NodeInstallPla
 		return nil, err
 	}
 	return binding, nil
+}
+
+func (e NativeRootEngine) beginRootJoinIntent(plan client.NodeInstallPlan, join *RootJoinBinding) (bool, error) {
+	if join == nil || !join.WorkerOnly || join.ClusterID != plan.Cluster.ID || join.ExpectedNodeName != plan.Hostname || join.BootstrapTaint != plan.Cluster.BootstrapTaint {
+		return false, errors.New("root join intent differs from signed plan")
+	}
+	_, _, path, err := e.authorityPaths()
+	if err != nil {
+		return false, err
+	}
+	authority, err := loadRootAuthority(path)
+	if err != nil || authority.Plan.Digest != plan.Digest || !sameJSON(authority.Plan, plan) {
+		return false, errors.New("cannot journal join for different root authority")
+	}
+	if authority.JoinIntent != nil {
+		return bindRootJoinIntent(&authority, join, time.Time{})
+	}
+	now := time.Now()
+	if e.Now != nil {
+		now = e.Now()
+	}
+	if _, err := bindRootJoinIntent(&authority, join, now); err != nil {
+		return false, err
+	}
+	authority.Digest, err = RootInstallAuthorityDigest(authority)
+	if err != nil {
+		return false, err
+	}
+	encoded, err := json.Marshal(authority)
+	if err != nil {
+		return false, err
+	}
+	if err := writePrivateAtomic(path, encoded); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func bindRootJoinIntent(authority *RootInstallAuthority, join *RootJoinBinding, now time.Time) (bool, error) {
+	if authority == nil || join == nil || authority.Plan.Mode != client.NodeModeFresh || join.ClusterID != authority.Plan.Cluster.ID || join.ExpectedNodeName != authority.Plan.Hostname || join.BootstrapTaint != authority.Plan.Cluster.BootstrapTaint || !join.WorkerOnly {
+		return false, errors.New("root join intent differs from signed plan")
+	}
+	if authority.JoinIntent != nil {
+		intent := authority.JoinIntent
+		if intent.ClusterID != join.ClusterID || intent.ExpectedNodeName != join.ExpectedNodeName || intent.BootstrapTaint != join.BootstrapTaint || !intent.WorkerOnly {
+			return false, errors.New("root join intent is already bound differently")
+		}
+		return false, nil
+	}
+	if now.IsZero() {
+		return false, errors.New("root join intent timestamp is unavailable")
+	}
+	authority.JoinIntent = &RootJoinIntent{ClusterID: join.ClusterID, ExpectedNodeName: join.ExpectedNodeName, BootstrapTaint: join.BootstrapTaint, WorkerOnly: true, StartedAt: now.UTC().Format(time.RFC3339Nano)}
+	return true, nil
 }

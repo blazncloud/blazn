@@ -33,14 +33,19 @@ type mockJoinAPI struct {
 	node           client.Node
 }
 
-type countingJoinCoordinator struct{ issues, confirms int }
+type countingJoinCoordinator struct {
+	issues, confirms int
+	binding          RootJoinBinding
+	confirmed        JoinedNode
+}
 
 func (c *countingJoinCoordinator) WorkerCredential(context.Context, client.NodeInstallPlan) (RootJoinBinding, error) {
 	c.issues++
-	return RootJoinBinding{}, nil
+	return c.binding, nil
 }
-func (c *countingJoinCoordinator) ConfirmJoined(context.Context, client.NodeInstallPlan, JoinedNode) error {
+func (c *countingJoinCoordinator) ConfirmJoined(_ context.Context, _ client.NodeInstallPlan, joined JoinedNode) error {
 	c.confirms++
+	c.confirmed = joined
 	return nil
 }
 
@@ -539,6 +544,16 @@ func TestRootAuthorityHTTPClientHasNoProxyAndRejectsRedirects(t *testing.T) {
 	}
 }
 
+func TestRootHelperResponseRequiresEOF(t *testing.T) {
+	valid := `{"schemaVersion":"blazn.dev/node-root-helper/v1","ok":true}`
+	if _, err := decodeRootResponse(strings.NewReader(valid)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeRootResponse(strings.NewReader(valid + `{}`)); err == nil {
+		t.Fatal("trailing helper response accepted")
+	}
+}
+
 func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T) {
 	authorization, _ := validBootstrapAuthorization(t)
 	plan := authorization.Expected.Plan
@@ -567,6 +582,54 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 	}
 	if coordinator.issues != 0 || coordinator.confirms != 0 || adapter.joined == nil || adapter.joined.ExpectedResourceVersion != "8" {
 		t.Fatalf("issues=%d confirms=%d joined=%#v", coordinator.issues, coordinator.confirms, adapter.joined)
+	}
+}
+
+func TestFreshJoinConsumptionUsesFinalDeferredMutationBinding(t *testing.T) {
+	plan := testJoinPlan("linux")
+	plan.Mode = client.NodeModeFresh
+	coordinator := &countingJoinCoordinator{binding: RootJoinBinding{Credential: strings.Repeat("x", 43), ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}}
+	version := int64(7)
+	privileged := functionPrivilegedClient(func(_ context.Context, request RootRequest) (RootResponse, error) {
+		switch request.Operation {
+		case RootJoin:
+			return RootResponse{OK: true, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "7"}, nil
+		case RootApply:
+			version++
+			return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: strconv.FormatInt(version, 10)}}, nil
+		case RootVerify:
+			return RootResponse{OK: true}, nil
+		default:
+			return RootResponse{}, errors.New("unexpected operation")
+		}
+	})
+	adapter, _ := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, coordinator)
+	adapter.deferred = []client.NodeInstallMutation{{Ordinal: 1, Kind: "label"}, {Ordinal: 2, Kind: "taint"}}
+	if err := adapter.Verify(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if coordinator.confirms != 1 || coordinator.confirmed.ResourceVersion != "9" || coordinator.confirmed.UID != "uid-1" {
+		t.Fatalf("confirmed=%#v count=%d", coordinator.confirmed, coordinator.confirms)
+	}
+}
+
+func TestRootJoinIntentIsCreateOnceAndCrashResumable(t *testing.T) {
+	plan := testJoinPlan("linux")
+	plan.Mode = client.NodeModeFresh
+	authority := RootInstallAuthority{Plan: plan}
+	binding := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	created, err := bindRootJoinIntent(&authority, binding, time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	if err != nil || !created || authority.JoinIntent == nil {
+		t.Fatalf("created=%v intent=%#v err=%v", created, authority.JoinIntent, err)
+	}
+	created, err = bindRootJoinIntent(&authority, binding, time.Time{})
+	if err != nil || created {
+		t.Fatalf("replay created=%v err=%v", created, err)
+	}
+	tampered := *binding
+	tampered.ExpectedNodeName = "replacement"
+	if _, err := bindRootJoinIntent(&authority, &tampered, time.Time{}); err == nil {
+		t.Fatal("mismatched crash resume was accepted")
 	}
 }
 
@@ -617,6 +680,51 @@ func TestDirectoryRollbackRestoresMetadataWithoutReplacingDirectory(t *testing.T
 	}
 	if !info.IsDir() || info.Mode().Perm() != 0750 {
 		t.Fatalf("directory=%v mode=%v", info.IsDir(), info.Mode().Perm())
+	}
+}
+
+func TestRollbackCASPreservesHostileFileReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "managed")
+	desired := []byte("desired")
+	if err := os.WriteFile(path, desired, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	uid, _, _ := fileOwner(info)
+	gid, _ := fileGroup(info)
+	sum := sha256.Sum256(desired)
+	plan := client.NodeInstallPlan{Components: []client.NodeInstallComponent{{Name: "config", SHA256: hex.EncodeToString(sum[:])}}}
+	mutation := client.NodeInstallMutation{Kind: "file", Action: "write", Target: path, Mode: 0600, UID: uid, GID: gid, Desired: map[string]any{"sourceComponent": "config", "contentSha256": hex.EncodeToString(sum[:])}}
+	if err := os.WriteFile(path, []byte("hostile replacement"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	engine := NativeRootEngine{Platform: "linux", Commands: &recordingExecutor{}}
+	err := engine.rollback(context.Background(), plan, mutation, PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, t.TempDir(), nil)
+	value, readErr := os.ReadFile(path)
+	if err == nil || readErr != nil || string(value) != "hostile replacement" {
+		t.Fatalf("err=%v readErr=%v value=%q", err, readErr, value)
+	}
+}
+
+func TestSystemdRollbackReloadsAfterCASRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "blazn-node.service")
+	desired := []byte("unit")
+	if err := os.WriteFile(path, desired, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	uid, _, _ := fileOwner(info)
+	gid, _ := fileGroup(info)
+	sum := sha256.Sum256(desired)
+	plan := client.NodeInstallPlan{Components: []client.NodeInstallComponent{{Name: "unit", SHA256: hex.EncodeToString(sum[:])}}}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "write", Target: path, Mode: 0600, UID: uid, GID: gid, Desired: map[string]any{"sourceComponent": "unit"}}
+	commands := &recordingExecutor{}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands}
+	if err := engine.rollback(context.Background(), plan, mutation, PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, t.TempDir(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) || len(commands.calls) != 1 || commands.calls[0].path != "/usr/bin/systemctl" || !containsArgument(commands.calls[0].args, "daemon-reload") {
+		t.Fatalf("stat=%v calls=%#v", err, commands.calls)
 	}
 }
 

@@ -230,7 +230,7 @@ func TestAdoptProfileMayInstallAbsentServiceUnit(t *testing.T) {
 func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 	plan := validNodeInstallPlan()
 	plan.InstallProfile, plan.Target.Platform, plan.Target.Architecture = "macos-lima-worker-adopt/v1", NodePlatformMacOS, NodeArchARM64
-	plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "wheel", DefinitionSHA256: testHash}
+	plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node", DefinitionSHA256: testHash}
 	plan.Rollback.BackupRootClass, plan.Rollback.BackupRoot = "macos_node_root", "/Library/Application Support/BlaznNodeRoot/install-backups/receipt-1"
 	binding := NodeTrustedLimaBinding{ComponentName: "lima-worker-binding", Target: "/Library/Application Support/Blazn/lima-worker-binding.json", ClusterID: plan.Cluster.ID, VMName: "blazn-worker", WorkerName: "worker-1"}
 	binding.SHA256, _ = NodeLimaBindingSHA256(binding)
@@ -316,7 +316,7 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 			plan.Mode = NodeModeAdopt
 			plan.Target.Platform = NodePlatformMacOS
 			plan.Target.Architecture = NodeArchARM64
-			plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "wheel", DefinitionSHA256: testHash}
+			plan.NodeService = NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node", DefinitionSHA256: testHash}
 			plan.Rollback.BackupRootClass = "macos_node_root"
 			plan.Rollback.BackupRoot = "/Library/Application Support/BlaznNodeRoot/install-backups/receipt-1"
 			plan.Components = []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}, {Name: "lima-worker-binding", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}}

@@ -98,11 +98,20 @@ type RootInstallAuthority struct {
 	PlanSigningKey     client.NodePlanSigningKey     `json:"planSigningKey"`
 	NodePublicKey      string                        `json:"nodePublicKey"`
 	KubernetesBinding  *client.KubernetesBinding     `json:"kubernetesBinding"`
+	JoinIntent         *RootJoinIntent               `json:"joinIntent"`
 	ProfileID          string                        `json:"profileId"`
 	ProfileSHA256      string                        `json:"profileSha256"`
 	ControlPlaneOrigin string                        `json:"controlPlaneOrigin"`
 	AuthorizedAt       string                        `json:"authorizedAt"`
 	Digest             string                        `json:"digest"`
+}
+
+type RootJoinIntent struct {
+	ClusterID        string `json:"clusterId"`
+	ExpectedNodeName string `json:"expectedNodeName"`
+	BootstrapTaint   string `json:"bootstrapTaint"`
+	WorkerOnly       bool   `json:"workerOnly"`
+	StartedAt        string `json:"startedAt"`
 }
 
 type RootInstallAuthorityTrust struct {
@@ -125,10 +134,21 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 		return errors.New("root install authority plan signer key ID is invalid")
 	}
 	if authority.Plan.Mode == client.NodeModeFresh && authority.KubernetesBinding != nil {
-		return errors.New("fresh root install authority cannot pre-bind Kubernetes")
+		if authority.JoinIntent == nil {
+			return errors.New("fresh root install authority binding lacks join intent")
+		}
 	}
 	if authority.Plan.Mode == client.NodeModeAdopt && (authority.KubernetesBinding == nil || authority.KubernetesBinding.ClusterID != authority.Plan.Cluster.ID || authority.KubernetesBinding.NodeName != authority.Plan.Hostname || authority.KubernetesBinding.NodeUID == "" || authority.KubernetesBinding.ResourceVersion == "") {
 		return errors.New("root install authority Kubernetes binding is invalid")
+	}
+	if authority.JoinIntent != nil {
+		intent := authority.JoinIntent
+		if authority.Plan.Mode != client.NodeModeFresh || intent.ClusterID != authority.Plan.Cluster.ID || intent.ExpectedNodeName != authority.Plan.Hostname || intent.BootstrapTaint != authority.Plan.Cluster.BootstrapTaint || !intent.WorkerOnly {
+			return errors.New("root install authority join intent is invalid")
+		}
+		if _, err := time.Parse(time.RFC3339Nano, intent.StartedAt); err != nil {
+			return errors.New("root install authority join intent timestamp is invalid")
+		}
 	}
 	planKey, err := base64.RawURLEncoding.DecodeString(authority.PlanSigningKey.PublicKey)
 	if err != nil || len(planKey) != ed25519.PublicKeySize {
@@ -156,10 +176,10 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 func DecodeRootInstallAuthority(encoded []byte) (RootInstallAuthority, error) {
 	var authority RootInstallAuthority
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 11 {
+	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 12 {
 		return authority, errors.New("root install authority fields are invalid")
 	}
-	for _, name := range []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "profileId", "profileSha256", "controlPlaneOrigin", "authorizedAt", "digest"} {
+	for _, name := range []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "joinIntent", "profileId", "profileSha256", "controlPlaneOrigin", "authorizedAt", "digest"} {
 		if fields[name] == nil {
 			return RootInstallAuthority{}, errors.New("root install authority fields are incomplete")
 		}

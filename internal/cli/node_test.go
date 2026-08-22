@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
 	nodepkg "github.com/blazncloud/blazn/internal/node"
@@ -15,6 +16,8 @@ type fakeNodeCommands struct {
 	options    NodeEnrollOptions
 	heartbeats int
 }
+
+func (f *fakeNodeCommands) Serve(context.Context, time.Duration) error { return nil }
 
 func (f *fakeNodeCommands) Enroll(_ context.Context, options NodeEnrollOptions) (nodepkg.EnrollResult, error) {
 	f.options = options

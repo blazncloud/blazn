@@ -740,7 +740,7 @@
             "sourceClass": "embedded",
             "version": "v1",
             "publisher": "Blazn",
-            "sha256": "f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18",
+            "sha256": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc",
             "ownership": "install"
           },
           {
@@ -757,9 +757,9 @@
           "manager": "launchd",
           "unitName": "com.blazn.node",
           "binaryPath": "/usr/local/bin/blazn",
-          "runAsUser": "root",
-          "runAsGroup": "wheel",
-          "definitionSha256": "f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18"
+          "runAsUser": "_blazn-node",
+          "runAsGroup": "_blazn-node",
+          "definitionSha256": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"
         },
         "labels": {
           "blazn.dev/node": "true",
@@ -818,7 +818,7 @@
               "label": "com.blazn.node",
               "sourceComponent": "blazn-node-launchd"
             },
-            "desiredDigest": "sha256:f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18",
+            "desiredDigest": "sha256:228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc",
             "mode": 420,
             "uid": 0,
             "gid": 0,
@@ -833,7 +833,7 @@
               "label": "com.blazn.node",
               "sourceComponent": "blazn-node-launchd"
             },
-            "desiredDigest": "sha256:f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18",
+            "desiredDigest": "sha256:228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc",
             "mode": 0,
             "uid": 0,
             "gid": 0,

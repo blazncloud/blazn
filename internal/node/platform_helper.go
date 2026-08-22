@@ -43,7 +43,7 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	if json.Unmarshal(data, &raw) != nil {
 		return errors.New("root helper request is invalid")
 	}
-	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true}
+	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true, "wal": true, "receipt": true}
 	for key := range raw {
 		if !allowed[key] {
 			return fmt.Errorf("root helper field %q is unsupported", key)
@@ -97,14 +97,14 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 
 func validateRootRequestShape(request RootRequest) error {
 	noMutationFields := func() bool {
-		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil
+		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil && request.WAL == nil && request.Receipt == nil
 	}
 	switch request.Operation {
 	case RootAuthorize:
 		if request.Bootstrap == nil || !noMutationFields() {
 			return errors.New("root authorize request fields are invalid")
 		}
-	case RootProbe, RootServiceState:
+	case RootProbe, RootServiceState, RootFinalizeState:
 		if request.Bootstrap != nil || !noMutationFields() {
 			return errors.New("root probe request fields are invalid")
 		}
@@ -127,6 +127,18 @@ func validateRootRequestShape(request RootRequest) error {
 	case RootVerify:
 		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
 			return errors.New("root verify request fields are invalid")
+		}
+	case RootCreateWAL, RootSaveWAL:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join != nil || request.WAL == nil || request.Receipt != nil {
+			return errors.New("root WAL request fields are invalid")
+		}
+	case RootLoadWAL, RootRemoveWAL, RootLoadReceipt:
+		if request.Bootstrap != nil || !noMutationFields() {
+			return errors.New("root state request fields are invalid")
+		}
+	case RootSaveReceipt:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join != nil || request.WAL != nil || request.Receipt == nil {
+			return errors.New("root receipt request fields are invalid")
 		}
 	default:
 		return errors.New("root helper operation is unsupported")
@@ -218,6 +230,15 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if e.Platform != request.Platform {
 			return RootResponse{}, errors.New("root helper OS mismatch")
 		}
+		if request.Plan.Target.Platform == client.NodePlatformMacOS {
+			paths, pathErr := NodeProductionPaths(request.Plan.Target.Platform)
+			if pathErr != nil {
+				return RootResponse{}, pathErr
+			}
+			if identityErr := e.ensureMacOSServiceIdentity(request.Plan.NodeService, paths.ServiceStateRoot); identityErr != nil {
+				return RootResponse{}, identityErr
+			}
+		}
 		binding, err := e.rootKubernetesBinding()
 		if err == nil && binding != nil {
 			observed, observeErr := e.observeNode(ctx, request.Plan, binding.NodeName)
@@ -280,6 +301,18 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 			}
 			return RootResponse{NodeUID: observed.UID, NodeName: observed.Name, ResourceVersion: observed.ResourceVersion, KubernetesBinding: existing}, nil
 		}
+		started, err := e.beginRootJoinIntent(request.Plan, request.Join)
+		if err != nil {
+			return RootResponse{}, err
+		}
+		if !started {
+			observed, observeErr := e.observeNode(ctx, request.Plan, request.Join.ExpectedNodeName)
+			if observeErr != nil {
+				return RootResponse{}, errors.New("journaled worker join requires operator recovery before retry")
+			}
+			binding, bindErr := e.updateRootKubernetesBinding(request.Plan, observed)
+			return RootResponse{NodeUID: observed.UID, NodeName: observed.Name, ResourceVersion: observed.ResourceVersion, KubernetesBinding: binding}, bindErr
+		}
 		joined, err := e.join(ctx, request.Plan, request.Join)
 		if err != nil {
 			return RootResponse{}, err
@@ -288,9 +321,112 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion, KubernetesBinding: binding}, err
 	case RootVerify:
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
+	case RootFinalizeState:
+		return RootResponse{}, e.finalizeServiceState(request.Plan)
+	case RootCreateWAL, RootSaveWAL, RootLoadWAL, RootRemoveWAL, RootSaveReceipt, RootLoadReceipt:
+		return e.executeRootState(request)
 	default:
 		return RootResponse{}, errors.New("root helper operation is unsupported")
 	}
+}
+
+func (e NativeRootEngine) executeRootState(request RootRequest) (RootResponse, error) {
+	paths, err := NodeProductionPaths(request.Plan.Target.Platform)
+	if err != nil {
+		return RootResponse{}, err
+	}
+	store := FileStateStore{Root: paths.RootStateRoot}
+	switch request.Operation {
+	case RootCreateWAL:
+		err = store.CreateWAL(*request.WAL)
+	case RootSaveWAL:
+		err = store.SaveWAL(*request.WAL)
+	case RootLoadWAL:
+		var wal InstallWAL
+		wal, err = store.LoadWAL()
+		if errors.Is(err, os.ErrNotExist) {
+			return RootResponse{ErrorCode: "not_found"}, nil
+		}
+		return RootResponse{WAL: &wal}, err
+	case RootRemoveWAL:
+		err = store.RemoveWAL()
+	case RootSaveReceipt:
+		err = store.SaveReceipt(*request.Receipt)
+	case RootLoadReceipt:
+		var receipt client.NodeInstallReceipt
+		receipt, err = store.LoadReceipt()
+		if errors.Is(err, os.ErrNotExist) {
+			return RootResponse{ErrorCode: "not_found"}, nil
+		}
+		return RootResponse{Receipt: &receipt}, err
+	}
+	return RootResponse{}, err
+}
+
+func (e NativeRootEngine) finalizeServiceState(plan client.NodeInstallPlan) error {
+	paths, err := NodeProductionPaths(plan.Target.Platform)
+	if err != nil {
+		return err
+	}
+	if plan.Target.Platform == client.NodePlatformMacOS {
+		if err := e.ensureMacOSServiceIdentity(plan.NodeService, paths.ServiceStateRoot); err != nil {
+			return err
+		}
+	}
+	account, err := user.Lookup(plan.NodeService.RunAsUser)
+	if err != nil {
+		return errors.New("node service account is unavailable")
+	}
+	group, err := user.LookupGroup(plan.NodeService.RunAsGroup)
+	if err != nil {
+		return errors.New("node service group is unavailable")
+	}
+	uid, uidErr := strconv.Atoi(account.Uid)
+	gid, gidErr := strconv.Atoi(group.Gid)
+	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
+		return errors.New("node service identity must be dedicated and non-root")
+	}
+	return filepath.Walk(paths.ServiceStateRoot, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return errors.New("node service state contains an unsafe entry")
+		}
+		mode := os.FileMode(0600)
+		if info.IsDir() {
+			mode = 0700
+		}
+		if err := os.Chown(path, uid, gid); err != nil {
+			return err
+		}
+		return os.Chmod(path, mode)
+	})
+}
+
+func (e NativeRootEngine) ensureMacOSServiceIdentity(service client.NodeInstallService, home string) error {
+	if service.RunAsUser != "_blazn-node" || service.RunAsGroup != "_blazn-node" || home != MacOSNodeServiceStateRoot {
+		return errors.New("macOS node service identity contract is invalid")
+	}
+	if account, err := user.Lookup(service.RunAsUser); err == nil {
+		if account.Uid == "0" {
+			return errors.New("macOS node service identity is root")
+		}
+		return nil
+	}
+	if account, err := user.LookupId("299"); err == nil && account.Username != service.RunAsUser {
+		return errors.New("macOS node service UID is already occupied")
+	}
+	if group, err := user.LookupGroupId("299"); err == nil && group.Name != service.RunAsGroup {
+		return errors.New("macOS node service GID is already occupied")
+	}
+	commands := [][]string{{".", "-create", "/Groups/_blazn-node"}, {".", "-create", "/Groups/_blazn-node", "PrimaryGroupID", "299"}, {".", "-create", "/Users/_blazn-node"}, {".", "-create", "/Users/_blazn-node", "UniqueID", "299"}, {".", "-create", "/Users/_blazn-node", "PrimaryGroupID", "299"}, {".", "-create", "/Users/_blazn-node", "NFSHomeDirectory", home}, {".", "-create", "/Users/_blazn-node", "UserShell", "/usr/bin/false"}, {".", "-create", "/Users/_blazn-node", "IsHidden", "1"}}
+	for _, args := range commands {
+		if _, err := e.Commands.Run(context.Background(), "/usr/bin/dscl", args...); err != nil {
+			return errors.New("create dedicated macOS node service identity failed")
+		}
+	}
+	return nil
 }
 func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeInstallService) (RootResponse, error) {
 	state := ServicePriorState{}
@@ -634,6 +770,9 @@ func verifyExactDirectory(path string, mode os.FileMode, uid, gid int64) error {
 	return nil
 }
 func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, prior PriorState, backupRoot string, join *RootJoinBinding) error {
+	if err := e.verifyRollbackDesired(ctx, plan, m, join); err != nil {
+		return fmt.Errorf("rollback compare-and-swap rejected drift: %w", err)
+	}
 	if prior.State == "absent" {
 		switch m.Kind {
 		case "group":
@@ -643,7 +782,11 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			_, err := e.Commands.Run(ctx, "/usr/sbin/userdel", m.Target)
 			return err
 		case "systemd_unit":
-			return os.Remove(m.Target)
+			if err := os.Remove(m.Target); err != nil {
+				return err
+			}
+			_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "daemon-reload")
+			return err
 		case "launchd_unit":
 			return os.Remove(m.Target)
 		case "package":
@@ -662,6 +805,12 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			return e.applyClusterMutation(ctx, plan, m, join, true)
 		case "taint":
 			return e.applyClusterMutation(ctx, plan, m, join, true)
+		case "image":
+			_, err := e.Commands.Run(ctx, "/snap/bin/microk8s.ctr", "images", "remove", m.Target)
+			return err
+		case "firewall":
+			_, err := e.Commands.Run(ctx, "/usr/sbin/ufw", "delete", "allow", strconv.FormatInt(number(m.Desired["port"]), 10)+"/"+stringValue(m.Desired["protocol"]))
+			return err
 		default:
 			if strings.HasPrefix(m.Target, "/") {
 				return os.Remove(m.Target)
@@ -765,6 +914,36 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 		}
 	}
 	return errors.New("rollback material kind is unsupported")
+}
+
+func (e NativeRootEngine) verifyRollbackDesired(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, join *RootJoinBinding) error {
+	if mutation.Kind == "label" || mutation.Kind == "taint" {
+		if join == nil || join.ExpectedNodeUID == "" {
+			return errors.New("cluster rollback binding is unavailable")
+		}
+		output, err := e.kubectl(ctx, plan, "get", "node", join.ExpectedNodeName, "-o", "json")
+		if err != nil {
+			return err
+		}
+		var node struct {
+			Metadata struct {
+				UID    string            `json:"uid"`
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Spec struct {
+				Taints []struct {
+					Key    string `json:"key"`
+					Value  string `json:"value"`
+					Effect string `json:"effect"`
+				} `json:"taints"`
+			} `json:"spec"`
+		}
+		if json.Unmarshal(output, &node) != nil || node.Metadata.UID != join.ExpectedNodeUID {
+			return errors.New("cluster rollback node differs from binding")
+		}
+		return e.verifyMutation(ctx, plan, mutation, node.Metadata.Labels, node.Spec.Taints)
+	}
+	return e.verifyMutation(ctx, plan, mutation, nil, nil)
 }
 
 func restoreDirectoryMetadata(target string, metadata map[string]string) error {
@@ -961,6 +1140,11 @@ func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeIn
 		if err != nil || group.Gid != strconv.FormatInt(number(mutation.Desired["gid"]), 10) {
 			return errors.New("group differs from signed state")
 		}
+		output, err := e.Commands.Run(ctx, "/usr/bin/getent", "group", mutation.Target)
+		parts := strings.Split(strings.TrimSpace(string(output)), ":")
+		if err != nil || len(parts) != 4 || parts[0] != mutation.Target || parts[2] != group.Gid || parts[3] != "" {
+			return errors.New("group membership differs from signed state")
+		}
 		return nil
 	case "user":
 		return e.verifyUser(ctx, mutation)
@@ -990,6 +1174,13 @@ func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeIn
 	case "image":
 		_, err := e.Commands.Run(ctx, "/snap/bin/microk8s.ctr", "images", "inspect", mutation.Target)
 		return err
+	case "firewall":
+		output, err := e.Commands.Run(ctx, "/usr/sbin/ufw", "status")
+		rule := strconv.FormatInt(number(mutation.Desired["port"]), 10) + "/" + stringValue(mutation.Desired["protocol"])
+		if err != nil || !strings.Contains(string(output), rule) {
+			return errors.New("firewall rule differs from signed state")
+		}
+		return nil
 	case "label":
 		if labels[mutation.Target] != stringValue(mutation.Desired["value"]) {
 			return errors.New("node label differs from signed state")

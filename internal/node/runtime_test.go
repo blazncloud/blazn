@@ -51,9 +51,9 @@ func TestProductionRuntimeSeparatesServiceAndInstallerState(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceState, serviceOK := runtime.State.(FileStateStore)
-	installerState, installerOK := runtime.InstallerState.(FileStateStore)
+	installerState, installerOK := runtime.InstallerState.(*PrivilegedInstallState)
 	identityStore, identityOK := runtime.Identities.(FileIdentityStore)
-	if !serviceOK || !installerOK || !identityOK || serviceState.Root != paths.ServiceStateRoot || installerState.Root != paths.RootStateRoot || identityStore.Path != filepath.Join(paths.ServiceStateRoot, "identity.json") || runtime.TrustedProfileRoot != paths.ProfileRoot {
+	if !serviceOK || !installerOK || !identityOK || serviceState.Root != paths.ServiceStateRoot || installerState.Local.(FileStateStore).Root != paths.ServiceStateRoot || identityStore.Path != filepath.Join(paths.ServiceStateRoot, "identity.json") || runtime.TrustedProfileRoot != paths.ProfileRoot {
 		t.Fatalf("runtime paths: service=%#v installer=%#v identity=%#v profile=%q", runtime.State, runtime.InstallerState, runtime.Identities, runtime.TrustedProfileRoot)
 	}
 	_, err = newProductionCommandRuntime(&mockAPI{}, "access", "v1", &countingJoinCoordinator{}, fixedCapability{}, nil, ProductionNodePaths{ServiceStateRoot: "/same", RootStateRoot: "/same", ProfileRoot: "/profiles"}, defaultRootBinaryPath)
@@ -66,26 +66,54 @@ func TestProductionCapabilityUsesPersistedVerifiedBinding(t *testing.T) {
 	authorization, _ := validBootstrapAuthorization(t)
 	plan := authorization.Expected.Plan
 	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
-	capability, err := (ProductionCapabilityProvider{State: state}).Capability(context.Background())
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{"gvisor"}, SandboxBackends: []string{"kubernetes-agent-sandbox"}, ReasonCodes: []string{}}
+	capability, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if capability.Worker.KubernetesBinding != *authorization.KubernetesBinding || capability.Host.Platform != plan.Target.Platform || capability.Host.Architecture != plan.Target.Architecture || capability.Worker.AllocatableCPUMillis != plan.Target.MinCPU*1000-plan.ResourceBounds.ReservedCPUMillis {
+	if capability.Worker.KubernetesBinding != *authorization.KubernetesBinding || capability.Host.Platform != plan.Target.Platform || capability.Host.Architecture != plan.Target.Architecture || capability.Worker.AllocatableCPUMillis != plan.Target.MinCPU*1000 {
 		t.Fatalf("capability=%#v", capability)
 	}
 	state.runtime.KubernetesBinding = nil
-	if _, err := (ProductionCapabilityProvider{State: state}).Capability(context.Background()); err == nil {
+	if _, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background()); err == nil {
 		t.Fatal("capability accepted missing verified binding")
+	}
+}
+
+type fixedLiveObserver struct {
+	observation LiveNodeObservation
+	err         error
+}
+
+func (f fixedLiveObserver) Observe(context.Context, client.NodeInstallPlan, client.KubernetesBinding) (LiveNodeObservation, error) {
+	return f.observation, f.err
+}
+
+func TestProductionCapabilityDegradesAndRejectsIdentityMismatch(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Exchange: authorization.Expected, KubernetesBinding: authorization.KubernetesBinding}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{"worker_observation_failed"}}
+	capability, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background())
+	if err != nil || capability.Host.Health.Status != "degraded" || len(capability.Host.Health.ReasonCodes) < 2 {
+		t.Fatalf("capability=%#v err=%v", capability, err)
+	}
+	observation.Binding.NodeUID = "replacement"
+	if _, err := (ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}}).Capability(context.Background()); err == nil {
+		t.Fatal("replacement Kubernetes identity was accepted")
 	}
 }
 
 func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
 	materials := ProductionEmbeddedMaterials()
-	for name, want := range map[string]string{"blazn-node-systemd": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea", "blazn-node-launchd": "f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18"} {
+	for name, want := range map[string]string{"blazn-node-systemd": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
 		sum := sha256.Sum256(materials[name])
 		if fmt.Sprintf("%x", sum) != want {
 			t.Fatalf("material %s digest=%x", name, sum)
 		}
+	}
+	if !strings.Contains(string(materials["blazn-node-systemd"]), "User=blazn-node\nGroup=blazn-node\nExecStart=/usr/local/bin/blazn node serve") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>UserName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>GroupName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<string>node</string><string>serve</string>") {
+		t.Fatal("installed service units do not execute node serve under the dedicated identity")
 	}
 	if DefaultRootHelperPath != defaultRootBinaryPath || RootHelperSubcommand != "node-root-helper" {
 		t.Fatalf("helper path=%q subcommand=%q", DefaultRootHelperPath, RootHelperSubcommand)
@@ -609,6 +637,18 @@ type mockPlatform struct {
 	authorizeErr  error
 	authorization *BootstrapAuthorization
 }
+type bindingMockPlatform struct {
+	*mockPlatform
+	binding *client.KubernetesBinding
+}
+
+func (p *bindingMockPlatform) KubernetesBinding() *client.KubernetesBinding {
+	if p.binding == nil {
+		return nil
+	}
+	value := *p.binding
+	return &value
+}
 
 func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
 	m.authorization = &authorization
@@ -636,7 +676,31 @@ func (m *mockPlatform) Rollback(_ context.Context, mutation client.NodeInstallMu
 	m.rolledBack = append(m.rolledBack, mutation.Ordinal)
 	return nil
 }
-func (m *mockPlatform) Verify(context.Context, client.NodeInstallPlan) error { return m.verifyErr }
+func (m *mockPlatform) Verify(context.Context, client.NodeInstallPlan) error             { return m.verifyErr }
+func (*mockPlatform) FinalizeServiceState(context.Context, client.NodeInstallPlan) error { return nil }
+
+func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
+	state := &memoryState{}
+	installer := NewInstaller(platform, state)
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected}
+	service := NewService(api, fixedIdentity{identity}, state, installer)
+	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
+	service.now = func() time.Time { return when }
+	profile := trustedBootstrapProfile(authorization.Expected.Plan)
+	result, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: authorization.Expected.Plan.WorkspaceID, IdempotencyKey: authorization.Expected.Plan.IdempotencyKey, Name: authorization.Expected.Plan.Hostname, Mode: authorization.Expected.Plan.Mode, Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, MachineFingerprint: authorization.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
+	if err != nil || !result.Installed || state.runtime.KubernetesBinding == nil {
+		t.Fatalf("result=%#v binding=%#v err=%v", result, state.runtime.KubernetesBinding, err)
+	}
+	plan := authorization.Expected.Plan
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}})
+	daemon.now = func() time.Time { return when }
+	if _, err := daemon.Heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func testRoot(t *testing.T) string {
 	t.Helper()

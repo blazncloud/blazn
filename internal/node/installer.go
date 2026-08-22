@@ -34,6 +34,16 @@ type Platform interface {
 	Verify(context.Context, client.NodeInstallPlan) error
 }
 
+func (i *Installer) FinalizeServiceState(ctx context.Context, plan client.NodeInstallPlan) error {
+	finalizer, ok := i.platform.(interface {
+		FinalizeServiceState(context.Context, client.NodeInstallPlan) error
+	})
+	if !ok {
+		return errors.New("platform service-state finalizer is unavailable")
+	}
+	return finalizer.FinalizeServiceState(ctx, plan)
+}
+
 func (i *Installer) AuthorizeBootstrap(ctx context.Context, authorization BootstrapAuthorization) error {
 	if i.platform == nil {
 		return errors.New("privileged platform is unavailable")
@@ -69,8 +79,8 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 		return client.NodeInstallReceipt{}, err
 	}
 	defer release()
-	if i.uid() != 0 {
-		return client.NodeInstallReceipt{}, errors.New("privileged node install requires UID 0")
+	if binder, ok := i.state.(interface{ BindPlan(client.NodeInstallPlan) }); ok {
+		binder.BindPlan(plan)
 	}
 	fingerprint, err := identity.Fingerprint()
 	issuedAt, issuedErr := time.Parse(time.RFC3339, identityMeta.IssuedAt)
@@ -161,14 +171,14 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 }
 
 func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, identityMeta client.NodeEnrollmentIdentity, identity Identity) (client.NodeInstallReceipt, error) {
+	if binder, ok := i.state.(interface{ BindPlan(client.NodeInstallPlan) }); ok {
+		binder.BindPlan(plan)
+	}
 	release, err := i.state.AcquireInstallLock()
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
 	defer release()
-	if i.uid() != 0 {
-		return client.NodeInstallReceipt{}, errors.New("privileged node recovery requires UID 0")
-	}
 	wal, err := i.state.LoadWAL()
 	if err != nil {
 		return client.NodeInstallReceipt{}, err

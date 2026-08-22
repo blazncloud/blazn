@@ -18,6 +18,7 @@ type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
 	Recover(context.Context) (client.NodeInstallReceipt, error)
 	Heartbeat(context.Context) (nodepkg.HeartbeatResult, error)
+	Serve(context.Context, time.Duration) error
 }
 
 func newDefaultNodeCommands(build BuildInfo) (nodeCommands, error) {
@@ -92,6 +93,14 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 		}
 		result, err := commands.Heartbeat(ctx)
 		return a.writeNodeValue(format, result, err, "node heartbeat accepted")
+	case "serve":
+		if len(args) != 1 || format != OutputHuman {
+			return a.nodeUsage(format, errors.New("serve accepts no arguments and emits no structured output"))
+		}
+		if err := commands.Serve(ctx, 30*time.Second); err != nil && !errors.Is(err, context.Canceled) {
+			return a.writeError(format, ExitFailure, "node_failed", err.Error())
+		}
+		return ExitSuccess
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown node command %q", args[0]))
 	}

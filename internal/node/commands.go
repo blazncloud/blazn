@@ -34,14 +34,17 @@ type CommandRuntime struct {
 	CurrentVersion     string
 	TrustedProfileRoot string
 	PlatformFactory    func(client.NodeTrustedInstallProfile) (Platform, error)
+	PrepareState       func(context.Context) error
 }
 
 func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOptions) (EnrollResult, error) {
 	if c.Service == nil {
 		return EnrollResult{}, errors.New("node enrollment service is unavailable")
 	}
-	if currentUID() != 0 {
-		return EnrollResult{}, errors.New("node install requires a privileged root execution boundary")
+	if c.PrepareState != nil {
+		if err := c.PrepareState(ctx); err != nil {
+			return EnrollResult{}, err
+		}
 	}
 	profileRoot := c.TrustedProfileRoot
 	if profileRoot == "" {
@@ -87,6 +90,11 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 	if c.State == nil || c.Identities == nil {
 		return client.NodeInstallReceipt{}, errors.New("node recovery dependencies are unavailable")
 	}
+	if c.PrepareState != nil {
+		if err := c.PrepareState(ctx); err != nil {
+			return client.NodeInstallReceipt{}, err
+		}
+	}
 	state, err := c.State.LoadRuntime()
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
@@ -120,7 +128,11 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 	if c.Installer == nil {
 		return client.NodeInstallReceipt{}, errors.New("node recovery installer is unavailable")
 	}
-	return c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+	receipt, err := c.Installer.Recover(ctx, state.Exchange.Plan, state.Exchange.Identity, identity)
+	if finalizeErr := c.Installer.FinalizeServiceState(ctx, state.Exchange.Plan); finalizeErr != nil && err == nil {
+		err = finalizeErr
+	}
+	return receipt, err
 }
 
 func NewProductionCommandRuntime(api API, accessToken, currentVersion string, join JoinCoordinator, capabilities CapabilityProvider, embedded map[string][]byte) (*CommandRuntime, error) {
@@ -135,9 +147,6 @@ func NewProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 	if err != nil {
 		return nil, err
 	}
-	if binary != "/usr/local/bin/blazn" {
-		return nil, errors.New("production node runtime requires the receipt-owned /usr/local/bin/blazn binary")
-	}
 	paths, err := HostProductionNodePaths()
 	if err != nil {
 		return nil, err
@@ -146,11 +155,16 @@ func NewProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 }
 
 func newProductionCommandRuntime(api API, accessToken, currentVersion string, join JoinCoordinator, capabilities CapabilityProvider, embedded map[string][]byte, paths ProductionNodePaths, binary string) (*CommandRuntime, error) {
-	if api == nil || accessToken == "" || currentVersion == "" || binary != defaultRootBinaryPath || paths.ServiceStateRoot == "" || paths.RootStateRoot == "" || paths.ServiceStateRoot == paths.RootStateRoot || paths.ProfileRoot == "" {
+	if api == nil || accessToken == "" || currentVersion == "" || !filepath.IsAbs(binary) || paths.ServiceStateRoot == "" || paths.RootStateRoot == "" || paths.ServiceStateRoot == paths.RootStateRoot || paths.ProfileRoot == "" {
 		return nil, errors.New("production node runtime dependencies or paths are invalid")
 	}
 	state := FileStateStore{Root: paths.ServiceStateRoot}
-	installerState := FileStateStore{Root: paths.RootStateRoot}
+	platformName := "linux"
+	if paths.RootStateRoot == MacOSNodeRootStateRoot {
+		platformName = "macos"
+	}
+	privileged := PipePrivilegedClient{HelperPath: DefaultRootHelperPath, UseSudo: currentUID() != 0, Timeout: 2 * time.Minute}
+	installerState := &PrivilegedInstallState{Client: privileged, Local: state, Platform: platformName}
 	identities := FileIdentityStore{Path: filepath.Join(paths.ServiceStateRoot, "identity.json")}
 	if capabilities == nil {
 		capabilities = ProductionCapabilityProvider{State: state}
@@ -169,9 +183,12 @@ func newProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 	service := NewService(api, identities, state, nil)
 	daemon := NewDaemon(api, state, identities, capabilities)
 	runtime := &CommandRuntime{Service: service, Daemon: daemon, State: state, InstallerState: installerState, Identities: identities, AccessToken: accessToken, CurrentBinaryPath: binary, CurrentVersion: currentVersion, TrustedProfileRoot: paths.ProfileRoot}
+	runtime.PrepareState = func(ctx context.Context) error {
+		return prepareProductionServiceState(ctx, paths.ServiceStateRoot, binary)
+	}
 	runtime.PlatformFactory = func(profile client.NodeTrustedInstallProfile) (Platform, error) {
 		resolver := TrustedMaterialResolver{Profile: profile, CurrentBinaryPath: binary, Embedded: embedded, HTTP: &http.Client{Timeout: 2 * time.Minute}, MaxBytes: 512 << 20}
-		return SupportedPlatformAdapter(PipePrivilegedClient{HelperPath: DefaultRootHelperPath, UseSudo: currentUID() != 0, Timeout: 2 * time.Minute}, resolver, join)
+		return SupportedPlatformAdapter(privileged, resolver, join)
 	}
 	return runtime, nil
 }
@@ -180,4 +197,25 @@ func (c *CommandRuntime) Heartbeat(ctx context.Context) (HeartbeatResult, error)
 		return HeartbeatResult{}, errors.New("node daemon is unavailable")
 	}
 	return c.Daemon.Heartbeat(ctx)
+}
+
+func (c *CommandRuntime) Serve(ctx context.Context, interval time.Duration) error {
+	if interval < time.Second || interval > 5*time.Minute {
+		return errors.New("node serve heartbeat interval is invalid")
+	}
+	if _, err := c.Heartbeat(ctx); err != nil {
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if _, err := c.Heartbeat(ctx); err != nil {
+				return err
+			}
+		}
+	}
 }

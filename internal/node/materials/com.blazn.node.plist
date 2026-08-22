@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.blazn.node</string>
+  <key>UserName</key><string>_blazn-node</string>
+  <key>GroupName</key><string>_blazn-node</string>
   <key>ProgramArguments</key>
   <array><string>/usr/local/bin/blazn</string><string>node</string><string>serve</string></array>
   <key>RunAtLoad</key><true/>

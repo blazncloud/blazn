@@ -31,27 +31,36 @@ const (
 type RootOperation string
 
 const (
-	RootProbe        RootOperation = "probe"
-	RootAuthorize    RootOperation = "authorize_bootstrap"
-	RootServiceState RootOperation = "service_state"
-	RootCapture      RootOperation = "capture"
-	RootApply        RootOperation = "apply"
-	RootRollback     RootOperation = "rollback"
-	RootVerify       RootOperation = "verify"
-	RootJoin         RootOperation = "join"
+	RootProbe         RootOperation = "probe"
+	RootAuthorize     RootOperation = "authorize_bootstrap"
+	RootServiceState  RootOperation = "service_state"
+	RootCapture       RootOperation = "capture"
+	RootApply         RootOperation = "apply"
+	RootRollback      RootOperation = "rollback"
+	RootVerify        RootOperation = "verify"
+	RootJoin          RootOperation = "join"
+	RootFinalizeState RootOperation = "finalize_service_state"
+	RootCreateWAL     RootOperation = "create_wal"
+	RootSaveWAL       RootOperation = "save_wal"
+	RootLoadWAL       RootOperation = "load_wal"
+	RootRemoveWAL     RootOperation = "remove_wal"
+	RootSaveReceipt   RootOperation = "save_receipt"
+	RootLoadReceipt   RootOperation = "load_receipt"
 )
 
 type RootRequest struct {
-	SchemaVersion string                 `json:"schemaVersion"`
-	Operation     RootOperation          `json:"operation"`
-	Platform      string                 `json:"platform"`
-	Plan          client.NodeInstallPlan `json:"plan"`
-	Ordinal       int64                  `json:"ordinal,omitempty"`
-	BackupRoot    string                 `json:"backupRoot,omitempty"`
-	Prior         *PriorState            `json:"prior,omitempty"`
-	Material      *RootMaterial          `json:"material,omitempty"`
-	Join          *RootJoinBinding       `json:"join,omitempty"`
-	Bootstrap     *RootBootstrapRequest  `json:"bootstrap,omitempty"`
+	SchemaVersion string                     `json:"schemaVersion"`
+	Operation     RootOperation              `json:"operation"`
+	Platform      string                     `json:"platform"`
+	Plan          client.NodeInstallPlan     `json:"plan"`
+	Ordinal       int64                      `json:"ordinal,omitempty"`
+	BackupRoot    string                     `json:"backupRoot,omitempty"`
+	Prior         *PriorState                `json:"prior,omitempty"`
+	Material      *RootMaterial              `json:"material,omitempty"`
+	Join          *RootJoinBinding           `json:"join,omitempty"`
+	Bootstrap     *RootBootstrapRequest      `json:"bootstrap,omitempty"`
+	WAL           *InstallWAL                `json:"wal,omitempty"`
+	Receipt       *client.NodeInstallReceipt `json:"receipt,omitempty"`
 }
 type RootBootstrapRequest struct {
 	EnrollmentID       string                                `json:"enrollmentId"`
@@ -85,15 +94,17 @@ type RootJoinBinding struct {
 	ExpectedResourceVersion string `json:"expectedResourceVersion,omitempty"`
 }
 type RootResponse struct {
-	SchemaVersion     string                    `json:"schemaVersion"`
-	OK                bool                      `json:"ok"`
-	Prior             *PriorState               `json:"prior,omitempty"`
-	Service           *ServicePriorState        `json:"service,omitempty"`
-	NodeUID           string                    `json:"nodeUid,omitempty"`
-	NodeName          string                    `json:"nodeName,omitempty"`
-	ResourceVersion   string                    `json:"resourceVersion,omitempty"`
-	KubernetesBinding *client.KubernetesBinding `json:"kubernetesBinding,omitempty"`
-	ErrorCode         string                    `json:"errorCode,omitempty"`
+	SchemaVersion     string                     `json:"schemaVersion"`
+	OK                bool                       `json:"ok"`
+	Prior             *PriorState                `json:"prior,omitempty"`
+	Service           *ServicePriorState         `json:"service,omitempty"`
+	NodeUID           string                     `json:"nodeUid,omitempty"`
+	NodeName          string                     `json:"nodeName,omitempty"`
+	ResourceVersion   string                     `json:"resourceVersion,omitempty"`
+	KubernetesBinding *client.KubernetesBinding  `json:"kubernetesBinding,omitempty"`
+	WAL               *InstallWAL                `json:"wal,omitempty"`
+	Receipt           *client.NodeInstallReceipt `json:"receipt,omitempty"`
+	ErrorCode         string                     `json:"errorCode,omitempty"`
 }
 
 type PrivilegedClient interface {
@@ -141,10 +152,18 @@ func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (Ro
 	if err := command.Run(); err != nil {
 		return response, errors.New("root helper operation failed")
 	}
-	decoder := json.NewDecoder(&stdout)
+	return decodeRootResponse(&stdout)
+}
+
+func decodeRootResponse(input io.Reader) (RootResponse, error) {
+	var response RootResponse
+	decoder := json.NewDecoder(input)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&response); err != nil || response.SchemaVersion != RootHelperSchema || !response.OK {
 		return RootResponse{}, errors.New("root helper returned an invalid response")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return RootResponse{}, errors.New("root helper returned trailing output")
 	}
 	return response, nil
 }
@@ -178,6 +197,11 @@ func (a *PlatformAdapter) KubernetesBinding() *client.KubernetesBinding {
 		return nil
 	}
 	return &client.KubernetesBinding{ClusterID: a.joined.ClusterID, NodeName: a.joined.ExpectedNodeName, NodeUID: a.joined.ExpectedNodeUID, ResourceVersion: a.joined.ExpectedResourceVersion}
+}
+
+func (a *PlatformAdapter) FinalizeServiceState(ctx context.Context, plan client.NodeInstallPlan) error {
+	_, err := a.Privileged.Call(ctx, a.request(RootFinalizeState, plan, 0))
+	return err
 }
 
 func NewPlatformAdapter(platform string, privileged PrivilegedClient, materials MaterialResolver, join JoinCoordinator) (*PlatformAdapter, error) {
@@ -305,7 +329,7 @@ func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPla
 		binding.ExpectedResourceVersion = applied.KubernetesBinding.ResourceVersion
 	}
 	if fresh {
-		if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: response.NodeName, UID: response.NodeUID, ResourceVersion: response.ResourceVersion}); err != nil {
+		if err := a.Join.ConfirmJoined(ctx, plan, JoinedNode{Name: binding.ExpectedNodeName, UID: binding.ExpectedNodeUID, ResourceVersion: binding.ExpectedResourceVersion}); err != nil {
 			return err
 		}
 	}

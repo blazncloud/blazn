@@ -1987,7 +1987,7 @@ func validateNodeProfileSemantics(plan NodeInstallPlan) error {
 			}
 		}
 	case "macos-lima-worker-adopt/v1":
-		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "root" || plan.NodeService.RunAsGroup != "wheel" || plan.Rollback.BackupRootClass != "macos_node_root" {
+		if plan.NodeService.Manager != "launchd" || plan.NodeService.RunAsUser != "_blazn-node" || plan.NodeService.RunAsGroup != "_blazn-node" || plan.Rollback.BackupRootClass != "macos_node_root" {
 			return fmt.Errorf("macOS profile service identity is invalid")
 		}
 		for _, mutation := range plan.Mutations {

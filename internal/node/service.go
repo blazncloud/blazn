@@ -118,6 +118,9 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 			}
 			result.State = state
 		}
+		if err := s.installer.FinalizeServiceState(ctx, response.Plan); err != nil {
+			return result, fmt.Errorf("finalize daemon-owned node state: %w", err)
+		}
 	}
 	return result, nil
 }

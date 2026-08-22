@@ -102,6 +102,15 @@ func (a *App) Run(args []string) int {
 	command := positional[0]
 	rest := positional[1:]
 	switch command {
+	case nodepkg.RootPrepareStateSubcommand:
+		if format != OutputHuman || len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "node root state initializer accepts no options")
+		}
+		if err := nodepkg.PrepareProductionServiceState(); err != nil {
+			fmt.Fprintln(a.stderr, "node root state initialization failed")
+			return ExitFailure
+		}
+		return ExitSuccess
 	case nodepkg.RootHelperSubcommand:
 		if format != OutputHuman || len(rest) != 0 {
 			return a.writeError(format, ExitUsage, "usage", "node root helper accepts no options")
