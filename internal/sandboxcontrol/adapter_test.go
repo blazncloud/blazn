@@ -305,6 +305,11 @@ func TestReceiptTamperAndArtifactContract(t *testing.T) {
 	request := testCreate()
 	request.Artifacts = []ArtifactExport{{Name: "result", Path: "/tmp/result", MediaType: "text/plain", Required: true}}
 	assertCode(t, ValidateCreate(request, trustedRuntimes()), ErrInvalidRequest)
+	sandbox := SandboxRecord{Name: "sandbox-a", WorkspaceID: "workspace-a", Artifacts: []ArtifactExport{{Name: "result", Required: true}}}
+	badArtifact := ArtifactReceipt{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/other/sandboxes/sandbox-a/result", SHA256: "sha256:" + strings.Repeat("c", 64), ExportedAt: "2026-08-22T12:00:00Z"}
+	assertCode(t, validateArtifactCompletion(sandbox, []ArtifactReceipt{badArtifact}), ErrArtifactExport)
+	badArtifact.Name, badArtifact.ObjectKey = "unrequested", "workspaces/workspace-a/sandboxes/sandbox-a/unrequested"
+	assertCode(t, validateArtifactCompletion(sandbox, []ArtifactReceipt{badArtifact}), ErrArtifactExport)
 }
 
 func testAdapter(t *testing.T, fake *fakeAPI, exporter ArtifactExporter) *Adapter {
