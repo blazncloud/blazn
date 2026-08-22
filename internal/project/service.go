@@ -83,15 +83,12 @@ func (s *Service) Use(ctx context.Context, value string) (client.ProjectEnvelope
 	if err != nil {
 		return client.ProjectEnvelope{}, err
 	}
-	if selection.WorkspaceID != project.Project.WorkspaceID {
-		return client.ProjectEnvelope{}, errors.New("Workspace selection changed while selecting the Project; retry")
-	}
 	selection, session, err := s.selection(ctx)
 	if err != nil {
 		return client.ProjectEnvelope{}, err
 	}
 	if selection.WorkspaceID != project.Project.WorkspaceID {
-		return client.ProjectEnvelope{}, errors.New("Workspace selection changed while updating the Project; retry")
+		return client.ProjectEnvelope{}, errors.New("Workspace selection changed while selecting the Project; retry")
 	}
 	selection.ProjectID = project.Project.ID
 	selection.SelectedAt = s.now().UTC()
@@ -110,6 +107,9 @@ func (s *Service) Update(ctx context.Context, value, requestID string, expectedV
 	selection, session, err := s.selection(ctx)
 	if err != nil {
 		return client.ProjectEnvelope{}, err
+	}
+	if selection.WorkspaceID != project.Project.WorkspaceID {
+		return client.ProjectEnvelope{}, errors.New("Workspace selection changed while updating the Project; retry")
 	}
 	request := client.UpdateProjectRequest{ExpectedVersion: expectedVersion, Name: changes.Name, Description: changes.Description, Status: changes.Status}
 	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ProjectEnvelope, error) {
