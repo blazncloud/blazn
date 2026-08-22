@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/normalized-response.json",
+  "title": "Normalized proxy response",
+  "type": "object", "additionalProperties": false,
+  "required": ["logicalRequestId", "modelAlias", "routeId", "blocks", "finishReason", "usage"],
+  "properties": {
+    "logicalRequestId": {"type": "string", "format": "uuid"},
+    "modelAlias": {"type": "string", "minLength": 1, "maxLength": 128},
+    "routeId": {"type": "string", "format": "uuid"},
+    "blocks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"enum": ["text", "tool_call"]}, "text": {"type": "string"}, "callId": {"type": "string", "minLength": 1, "maxLength": 256}, "toolName": {"type": "string", "minLength": 1, "maxLength": 128}, "arguments": {}}, "oneOf": [
+      {"properties": {"type": {"const": "text"}}, "required": ["text"], "not": {"anyOf": [{"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["arguments"]}]}},
+      {"properties": {"type": {"const": "tool_call"}}, "required": ["callId", "toolName", "arguments"], "not": {"required": ["text"]}}
+    ]}},
+    "finishReason": {"enum": ["stop", "length", "tool_call", "content_filter", "cancelled"]},
+    "usage": {"type": "object", "additionalProperties": false, "required": ["inputTokens", "outputTokens"], "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}}
+  }
+}

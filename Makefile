@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-node-client check-node-generated test test-control-api test-infra release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated test test-control-api test-infra release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -30,6 +30,12 @@ generate-node-client:
 check-node-generated:
 	go run ./cmd/generate-node-client --check
 
+generate-proxy-contract:
+	go run ./cmd/generate-proxy-contract
+
+check-proxy-generated:
+	go run ./cmd/generate-proxy-contract --check
+
 test:
 	go test ./...
 
@@ -52,4 +58,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-node-generated test test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-proxy-generated check-node-generated test test-release test-install

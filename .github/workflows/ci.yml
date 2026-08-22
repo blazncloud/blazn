@@ -30,6 +30,8 @@ jobs:
         run: make check-workspace-generated
       - name: Check generated Node API client and signed models
         run: make check-node-generated
+      - name: Check generated proxy contracts
+        run: make check-proxy-generated
       - name: Run unit tests
         run: make test
       - name: Verify release packaging
