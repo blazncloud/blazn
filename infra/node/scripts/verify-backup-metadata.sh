@@ -7,6 +7,13 @@ metadata=$1; receipt=$2; inventory=$3
 for command_name in jq node sha256sum wc; do command -v "$command_name" >/dev/null 2>&1 || die "$command_name is required"; done
 for file in "$metadata" "$receipt"; do if [ ! -f "$file" ] || [ -L "$file" ]; then die "required metadata input is unavailable or symlinked: $file"; fi; done
 if [ ! -d "$inventory" ] || [ -L "$inventory" ]; then die "Node broker key inventory is unavailable or symlinked"; fi
+if [ "${BLAZN_NODE_BACKUP_TEST_MODE:-0}" != 1 ]; then
+  [ "$(id -u)" -eq 0 ] || die "recoverability verification must run as root"
+  [ "$(stat -c '%u:%a' "$inventory")" = 0:700 ] || die "recovery inventory must be root-owned mode 0700"
+  for protected in database-url enrollment-hmac-v1 join-credential-v1 signing-private-v1.b64url signing-public-v1.json node-install-plan-template-v1.json; do
+    [ -f "$inventory/$protected" ] && [ ! -L "$inventory/$protected" ] && [ "$(stat -c '%u:%a' "$inventory/$protected")" = 0:400 ] || die "recovery inventory entry must be root-owned mode 0400: $protected"
+  done
+fi
 
 jq -e '
   type=="object" and (keys|sort)==["bucket","configDigest","controlApi","correlationId","createdAt","database","fencingToken","nodeBrokerReceiptDigest","nodePlanReceiptDigest","schemaVersion","secretDigests"] and

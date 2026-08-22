@@ -29,13 +29,13 @@ jq -cn --argjson node "$node" --argjson plan "$plan" '{nodeBroker:$node,nodePlan
 digest=sha256:$(jq -cS .nodeBroker "$tmp/receipt.json" | sha256sum | awk '{print $1}')
 plan_digest=sha256:$(jq -cS .nodePlan "$tmp/receipt.json" | sha256sum | awk '{print $1}')
 jq -cn --arg digest "$digest" --arg planDigest "$plan_digest" '{schemaVersion:"blazn.dev/control-plane-backup/v2",correlationId:"test",fencingToken:1,createdAt:"20260822T080000Z",database:"blazn",bucket:"blazn-poc",configDigest:("sha256:"+("1"*64)),controlApi:{sourceDigest:("sha256:"+("2"*64)),image:("blazn-control-api:source-"+("2"*64)),imageId:("sha256:"+("3"*64))},secretDigests:{"workspace-invitation-hmac-v1":("sha256:"+("4"*64))},nodeBrokerReceiptDigest:$digest,nodePlanReceiptDigest:$planDigest}' >"$tmp/metadata.json"
-"$VERIFY" "$tmp/metadata.json" "$tmp/receipt.json" "$tmp/keys" >/dev/null
+BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/metadata.json" "$tmp/receipt.json" "$tmp/keys" >/dev/null
 
 jq '.nodeBrokerReceiptDigest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' "$tmp/metadata.json" >"$tmp/bad-metadata.json"
-if "$VERIFY" "$tmp/bad-metadata.json" "$tmp/receipt.json" "$tmp/keys" >"$tmp/out" 2>"$tmp/err"; then printf 'metadata digest mismatch unexpectedly passed\n' >&2; exit 1; fi
+if BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/bad-metadata.json" "$tmp/receipt.json" "$tmp/keys" >"$tmp/out" 2>"$tmp/err"; then printf 'metadata digest mismatch unexpectedly passed\n' >&2; exit 1; fi
 grep -F 'receipt digest mismatch' "$tmp/err" >/dev/null
 printf x >>"$tmp/keys/join-credential-v1"
-if "$VERIFY" "$tmp/metadata.json" "$tmp/receipt.json" "$tmp/keys" >"$tmp/out" 2>"$tmp/err"; then printf 'key inventory mismatch unexpectedly passed\n' >&2; exit 1; fi
+if BLAZN_NODE_BACKUP_TEST_MODE=1 "$VERIFY" "$tmp/metadata.json" "$tmp/receipt.json" "$tmp/keys" >"$tmp/out" 2>"$tmp/err"; then printf 'key inventory mismatch unexpectedly passed\n' >&2; exit 1; fi
 grep -F 'key inventory digest mismatch' "$tmp/err" >/dev/null
 trap - EXIT HUP INT TERM
 cleanup

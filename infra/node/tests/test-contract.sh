@@ -17,6 +17,7 @@ for expected in \
   'condition: service_completed_successfully' \
   'file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/database-url' \
   'node-plan-verify:' \
+  'node /opt/blazn-node/verify-plan-materials.mjs && node dist/node-plan-validate.js' \
   'NODE_PLAN_SIGNING_PRIVATE_KEY_FILE: /run/secrets/node_plan_signing_private_key_v1' \
   'NODE_PLAN_SIGNING_KEY_ID: control-plane-node-plan/v1' \
   'NODE_INSTALL_PLAN_TEMPLATE_FILE: /opt/blazn-node/node-install-plan-template-v1.json' \
