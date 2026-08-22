@@ -19,7 +19,7 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Node broker port is invalid");
   const database = createDatabase(databaseUrl);
   try {
-    await database.query({ text: "SELECT 1", query_timeout: 1_500 });
+    await database.query("BEGIN; SET LOCAL statement_timeout='1500ms'; SELECT 1; COMMIT;");
     const startupKey = await readJoinCredentialKey(`${root}/join-credential-v1`);
     startupKey.fill(0);
     const service = new NodeBrokerService(new PgNodeBrokerStore(database), () => readJoinCredentialKey(`${root}/join-credential-v1`), resolvedIssuer);
