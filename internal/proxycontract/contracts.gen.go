@@ -5,8 +5,8 @@
 // normalized-error.schema.json SHA256: 3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c
 // normalized-request.schema.json SHA256: 98923667ba46cd8d3207cfcb3cd62d757e41b8f8d71bf78d5eec1b5dda284df1
 // normalized-response.schema.json SHA256: 90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87
-// normalized-stream-event.schema.json SHA256: 0e81faa5cac68535a8201e82feb999b942f8ab01559870a3b25919d0dd1b65be
-// policy.schema.json SHA256: 176b6b24bb6066e7cb05d7efcc9c02c76242501b5ae3947250cb1fe0804015b5
+// normalized-stream-event.schema.json SHA256: 1e388ceb3a1a29f91540a9e9edc9854d54a987668713f1a0e1750987a5bb4b25
+// policy.schema.json SHA256: 6c9256aed4037a0a9a3bcec27fd25a8b090636ee87c0a762e1c2cdc85b35256e
 
 package proxycontract
 
@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 type Protocol string
@@ -49,67 +50,84 @@ type StreamEventType string
 type ErrorCode string
 type RetryClass string
 type RollbackOperation string
+type EventReasonCode string
+type ToolChoice string
 
 const (
-	ProtocolOpenAIResponses         Protocol              = "openai-responses"
-	ProtocolOpenAIChat              Protocol              = "openai-chat"
-	ProtocolAnthropicMessages       Protocol              = "anthropic-messages"
-	DestinationLocalNode            DestinationClass      = "local_node"
-	DestinationCompany              DestinationClass      = "company"
-	DestinationProvider             DestinationClass      = "provider"
-	DestinationBlaznCloud           DestinationClass      = "blazn_cloud"
-	CapabilityText                  Capability            = "text"
-	CapabilityTools                 Capability            = "tools"
-	CapabilityStructuredOutput      Capability            = "structured_output"
-	CapabilityStreaming             Capability            = "streaming"
-	BoundaryLocal                   DataBoundary          = "local"
-	BoundaryCompany                 DataBoundary          = "company"
-	BoundaryExternal                DataBoundary          = "external"
-	CostLocal                       CostClass             = "local"
-	CostIncluded                    CostClass             = "included"
-	CostMeteredLow                  CostClass             = "metered_low"
-	CostMeteredHigh                 CostClass             = "metered_high"
-	ReasonConnectionFailure         RetryableReason       = "connection_failure"
-	ReasonTimeoutBeforeFirstByte    RetryableReason       = "timeout_before_first_byte"
-	ReasonRateLimited               RetryableReason       = "rate_limited"
-	ReasonUpstream5xx               RetryableReason       = "upstream_5xx"
-	ReasonModelUnavailable          RetryableReason       = "model_unavailable"
-	ReasonCompatibleContextOverflow RetryableReason       = "compatible_context_overflow"
-	JournalPrepared                 JournalState          = "prepared"
-	JournalPublishing               JournalState          = "publishing"
-	JournalActive                   JournalState          = "active"
-	JournalDeactivating             JournalState          = "deactivating"
-	JournalRecoveryRequired         JournalState          = "recovery_required"
-	EnvOpenAIBaseURL                EnvironmentName       = "OPENAI_BASE_URL"
-	EnvOpenAIAPIKey                 EnvironmentName       = "OPENAI_API_KEY"
-	EnvAnthropicBaseURL             EnvironmentName       = "ANTHROPIC_BASE_URL"
-	EnvAnthropicAPIKey              EnvironmentName       = "ANTHROPIC_API_KEY"
-	EnvAnthropicAuthToken           EnvironmentName       = "ANTHROPIC_AUTH_TOKEN"
-	RollbackRestore                 RollbackAction        = "restore_prior_value"
-	RollbackRemove                  RollbackAction        = "remove_blazn_value"
-	EventRequestStarted             EventType             = "request_started"
-	EventRouteSelected              EventType             = "route_selected"
-	EventAttemptFinished            EventType             = "attempt_finished"
-	EventRequestFinished            EventType             = "request_finished"
-	EventRequestCancelled           EventType             = "request_cancelled"
-	OutcomeSuccess                  EventOutcome          = "success"
-	OutcomeFailed                   EventOutcome          = "failed"
-	OutcomeCancelled                EventOutcome          = "cancelled"
-	OutcomeFallback                 EventOutcome          = "fallback"
-	DataPublic                      DataClass             = "public"
-	DataCompany                     DataClass             = "company"
-	DataRestricted                  DataClass             = "restricted"
-	DataLocalOnly                   DataClass             = "local_only"
-	AddressLoopbackOnly             ResolvedAddressPolicy = "loopback_only"
-	AddressNodeTunnel               ResolvedAddressPolicy = "authenticated_node_tunnel"
-	AddressPublicUnicast            ResolvedAddressPolicy = "public_unicast_only"
-	PlatformDarwin                  Platform              = "darwin"
-	PlatformLinux                   Platform              = "linux"
-	ModeSession                     ActivationMode        = "session"
-	ModeScopedRun                   ActivationMode        = "scoped_run"
-	RollbackRestoreEnvironment      RollbackOperation     = "restore_environment"
-	RollbackStopListener            RollbackOperation     = "stop_listener"
-	RollbackRemoveScopedState       RollbackOperation     = "remove_scoped_state"
+	ProtocolOpenAIResponses              Protocol              = "openai-responses"
+	ProtocolOpenAIChat                   Protocol              = "openai-chat"
+	ProtocolAnthropicMessages            Protocol              = "anthropic-messages"
+	DestinationLocalNode                 DestinationClass      = "local_node"
+	DestinationCompany                   DestinationClass      = "company"
+	DestinationProvider                  DestinationClass      = "provider"
+	DestinationBlaznCloud                DestinationClass      = "blazn_cloud"
+	CapabilityText                       Capability            = "text"
+	CapabilityTools                      Capability            = "tools"
+	CapabilityStructuredOutput           Capability            = "structured_output"
+	CapabilityStreaming                  Capability            = "streaming"
+	BoundaryLocal                        DataBoundary          = "local"
+	BoundaryCompany                      DataBoundary          = "company"
+	BoundaryExternal                     DataBoundary          = "external"
+	CostLocal                            CostClass             = "local"
+	CostIncluded                         CostClass             = "included"
+	CostMeteredLow                       CostClass             = "metered_low"
+	CostMeteredHigh                      CostClass             = "metered_high"
+	ReasonConnectionFailure              RetryableReason       = "connection_failure"
+	ReasonTimeoutBeforeFirstByte         RetryableReason       = "timeout_before_first_byte"
+	ReasonRateLimited                    RetryableReason       = "rate_limited"
+	ReasonUpstream5xx                    RetryableReason       = "upstream_5xx"
+	ReasonModelUnavailable               RetryableReason       = "model_unavailable"
+	ReasonCompatibleContextOverflow      RetryableReason       = "compatible_context_overflow"
+	JournalPrepared                      JournalState          = "prepared"
+	JournalPublishing                    JournalState          = "publishing"
+	JournalActive                        JournalState          = "active"
+	JournalDeactivating                  JournalState          = "deactivating"
+	JournalRecoveryRequired              JournalState          = "recovery_required"
+	EnvOpenAIBaseURL                     EnvironmentName       = "OPENAI_BASE_URL"
+	EnvOpenAIAPIKey                      EnvironmentName       = "OPENAI_API_KEY"
+	EnvAnthropicBaseURL                  EnvironmentName       = "ANTHROPIC_BASE_URL"
+	EnvAnthropicAPIKey                   EnvironmentName       = "ANTHROPIC_API_KEY"
+	EnvAnthropicAuthToken                EnvironmentName       = "ANTHROPIC_AUTH_TOKEN"
+	RollbackRestore                      RollbackAction        = "restore_prior_value"
+	RollbackRemove                       RollbackAction        = "remove_blazn_value"
+	EventRequestStarted                  EventType             = "request_started"
+	EventRouteSelected                   EventType             = "route_selected"
+	EventAttemptFinished                 EventType             = "attempt_finished"
+	EventRequestFinished                 EventType             = "request_finished"
+	EventRequestCancelled                EventType             = "request_cancelled"
+	OutcomeSuccess                       EventOutcome          = "success"
+	OutcomeFailed                        EventOutcome          = "failed"
+	OutcomeCancelled                     EventOutcome          = "cancelled"
+	OutcomeFallback                      EventOutcome          = "fallback"
+	DataPublic                           DataClass             = "public"
+	DataCompany                          DataClass             = "company"
+	DataRestricted                       DataClass             = "restricted"
+	DataLocalOnly                        DataClass             = "local_only"
+	AddressLoopbackOnly                  ResolvedAddressPolicy = "loopback_only"
+	AddressNodeTunnel                    ResolvedAddressPolicy = "authenticated_node_tunnel"
+	AddressPublicUnicast                 ResolvedAddressPolicy = "public_unicast_only"
+	PlatformDarwin                       Platform              = "darwin"
+	PlatformLinux                        Platform              = "linux"
+	ModeSession                          ActivationMode        = "session"
+	ModeScopedRun                        ActivationMode        = "scoped_run"
+	RollbackRestoreEnvironment           RollbackOperation     = "restore_environment"
+	RollbackStopListener                 RollbackOperation     = "stop_listener"
+	RollbackRemoveScopedState            RollbackOperation     = "remove_scoped_state"
+	EventReasonNone                      EventReasonCode       = "none"
+	EventReasonConnectionFailure         EventReasonCode       = "connection_failure"
+	EventReasonTimeoutBeforeFirstByte    EventReasonCode       = "timeout_before_first_byte"
+	EventReasonRateLimited               EventReasonCode       = "rate_limited"
+	EventReasonUpstream5xx               EventReasonCode       = "upstream_5xx"
+	EventReasonModelUnavailable          EventReasonCode       = "model_unavailable"
+	EventReasonCompatibleContextOverflow EventReasonCode       = "compatible_context_overflow"
+	EventReasonUnsupportedCapability     EventReasonCode       = "unsupported_capability"
+	EventReasonAuthenticationFailed      EventReasonCode       = "authentication_failed"
+	EventReasonPolicyDenied              EventReasonCode       = "policy_denied"
+	EventReasonCancelled                 EventReasonCode       = "cancelled"
+	EventReasonFallbackSelected          EventReasonCode       = "fallback_selected"
+	ToolChoiceNone                       ToolChoice            = "none"
+	ToolChoiceAuto                       ToolChoice            = "auto"
+	ToolChoiceRequired                   ToolChoice            = "required"
 )
 
 type Policy struct {
@@ -134,7 +152,7 @@ type Route struct {
 	ID                  string           `json:"id"`
 	DestinationClass    DestinationClass `json:"destinationClass"`
 	Endpoint            Endpoint         `json:"endpoint"`
-	SourceProtocol      Protocol         `json:"sourceProtocol"`
+	SourceProtocols     []Protocol       `json:"sourceProtocols"`
 	DestinationProtocol Protocol         `json:"destinationProtocol"`
 	Model               string           `json:"model"`
 	Capabilities        []Capability     `json:"capabilities"`
@@ -266,7 +284,7 @@ type Event struct {
 	RouteID          string           `json:"routeId"`
 	DestinationClass DestinationClass `json:"destinationClass"`
 	Outcome          EventOutcome     `json:"outcome"`
-	ReasonCode       string           `json:"reasonCode"`
+	ReasonCode       EventReasonCode  `json:"reasonCode"`
 	LatencyMS        int              `json:"latencyMs"`
 	Usage            *Usage           `json:"usage,omitempty"`
 }
@@ -283,7 +301,7 @@ type NormalizedRequest struct {
 	Stream               bool             `json:"stream"`
 	Blocks               []RequestBlock   `json:"blocks"`
 	Tools                []Tool           `json:"tools"`
-	ToolChoice           string           `json:"toolChoice,omitempty"`
+	ToolChoice           ToolChoice       `json:"toolChoice,omitempty"`
 	ResponseSchema       map[string]any   `json:"responseSchema,omitempty"`
 	Limits               NormalizedLimits `json:"limits"`
 	CapabilitiesRequired []Capability     `json:"capabilitiesRequired"`
@@ -355,14 +373,14 @@ func DecodePolicy(reader io.Reader) (Policy, error) {
 	}
 	for _, check := range []func() error{func() error {
 		return requiredJSON(raw, "id", "version", "workspaceId", "protocols", "aliases", "routes", "requestLimits", "fallback", "contentCapture")
-	}, func() error {
+	}, func() error { return requiredBoolean(raw, "contentCapture") }, func() error {
 		return requiredNested(raw, "requestLimits", "maxContextTokens", "maxOutputTokens", "timeoutMs", "streaming", "maxCostClass")
-	}, func() error {
+	}, func() error { return requiredNestedBoolean(raw, "requestLimits", "streaming") }, func() error {
 		return requiredNested(raw, "fallback", "maxAttempts", "retryableReasons", "allowedBoundaryTransitions")
 	}, func() error {
 		return requiredMapNested(raw, "aliases", "routeIds", "dataClass", "allowedDestinationBoundaries")
 	}, func() error {
-		return requiredArrayNested(raw, "routes", "id", "destinationClass", "endpoint", "sourceProtocol", "destinationProtocol", "model", "capabilities", "acceptedDataClasses", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass")
+		return requiredArrayNested(raw, "routes", "id", "destinationClass", "endpoint", "sourceProtocols", "destinationProtocol", "model", "capabilities", "acceptedDataClasses", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass")
 	}} {
 		if err = check(); err != nil {
 			return value, err
@@ -381,7 +399,7 @@ func DecodeActivationJournal(reader io.Reader) (ActivationJournal, error) {
 		return requiredNested(raw, "listener", "pid", "processStartIdentity", "executableIdentity", "address", "listenerKeyFingerprint")
 	}, func() error {
 		return requiredArrayNested(raw, "environment", "name", "priorPresent", "desiredValueDigest", "activationMarker", "rollbackAction")
-	}, func() error { return requiredArrayNested(raw, "rollbackActions", "ordinal", "operation", "target") }} {
+	}, func() error { return requiredArrayBoolean(raw, "environment", "priorPresent") }, func() error { return optionalArrayNonNull(raw, "environment", "priorValue") }, func() error { return requiredArrayNested(raw, "rollbackActions", "ordinal", "operation", "target") }} {
 		if err = check(); err != nil {
 			return value, err
 		}
@@ -393,10 +411,11 @@ func DecodeEvent(reader io.Reader) (Event, error) {
 	if err != nil {
 		return value, err
 	}
-	if err = requiredJSON(raw, "eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "policy", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs"); err != nil {
-		return value, err
+	err = requiredJSON(raw, "eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "policy", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs")
+	if err == nil {
+		err = optionalNonNull(raw, "usage")
 	}
-	return value, value.Validate()
+	return value, firstError(err, value.Validate())
 }
 func DecodeActivationReceipt(reader io.Reader) (ActivationReceipt, error) {
 	value, raw, err := decodeStrict[ActivationReceipt](reader)
@@ -423,7 +442,7 @@ func DecodeNormalizedRequest(reader io.Reader) (NormalizedRequest, error) {
 	}
 	for _, check := range []func() error{func() error {
 		return requiredJSON(raw, "logicalRequestId", "protocol", "modelAlias", "dataClass", "stream", "blocks", "tools", "limits", "capabilitiesRequired")
-	}, func() error { return requiredNested(raw, "limits", "maxOutputTokens", "deadlineAt") }, func() error { return requiredArrayNested(raw, "blocks", "role", "type") }, func() error { return requiredArrayNested(raw, "tools", "name", "inputSchema") }} {
+	}, func() error { return requiredBoolean(raw, "stream") }, func() error { return optionalNonNull(raw, "toolChoice") }, func() error { return requiredNested(raw, "limits", "maxOutputTokens", "deadlineAt") }, func() error { return optionalNestedNonNull(raw, "limits", "temperature", "topP", "stop") }, func() error { return requiredArrayNested(raw, "blocks", "role", "type") }, func() error { return validateRequestBlocksJSON(raw) }, func() error { return requiredArrayNested(raw, "tools", "name", "inputSchema") }, func() error { return optionalArrayNonNull(raw, "tools", "description") }} {
 		if err = check(); err != nil {
 			return value, err
 		}
@@ -435,8 +454,15 @@ func DecodeNormalizedResponse(reader io.Reader) (NormalizedResponse, error) {
 	if err != nil {
 		return value, err
 	}
-	if err = requiredJSON(raw, "logicalRequestId", "modelAlias", "routeId", "blocks", "finishReason", "usage"); err == nil {
+	err = requiredJSON(raw, "logicalRequestId", "modelAlias", "routeId", "blocks", "finishReason", "usage")
+	if err == nil {
+		err = requiredNested(raw, "usage", "inputTokens", "outputTokens")
+	}
+	if err == nil {
 		err = requiredArrayNested(raw, "blocks", "type")
+	}
+	if err == nil {
+		err = validateResponseBlocksJSON(raw)
 	}
 	if err != nil {
 		return value, err
@@ -448,7 +474,14 @@ func DecodeNormalizedStreamEvent(reader io.Reader) (NormalizedStreamEvent, error
 	if err != nil {
 		return value, err
 	}
-	if err = requiredJSON(raw, "logicalRequestId", "sequence", "type"); err != nil {
+	err = requiredJSON(raw, "logicalRequestId", "sequence", "type")
+	if err == nil {
+		err = optionalNonNull(raw, "text", "callId", "toolName", "argumentsDelta", "usage", "finishReason", "error")
+	}
+	if err == nil {
+		err = validateStreamEventJSON(raw)
+	}
+	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
@@ -458,7 +491,11 @@ func DecodeNormalizedError(reader io.Reader) (NormalizedError, error) {
 	if err != nil {
 		return value, err
 	}
-	if err = requiredJSON(raw, "code", "retryClass", "safeMessage"); err != nil {
+	err = requiredJSON(raw, "code", "retryClass", "safeMessage")
+	if err == nil {
+		err = optionalNonNull(raw, "upstreamStatus")
+	}
+	if err != nil {
 		return value, err
 	}
 	return value, value.Validate()
@@ -488,9 +525,40 @@ func requiredJSON(raw json.RawMessage, names ...string) error {
 		return err
 	}
 	for _, name := range names {
+		value, ok := object[name]
+		if !ok {
+			return fmt.Errorf("required JSON field %s is absent", name)
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("required JSON field %s cannot be null", name)
+		}
+	}
+	return nil
+}
+func requiredPresentJSON(raw json.RawMessage, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	for _, name := range names {
 		if _, ok := object[name]; !ok {
 			return fmt.Errorf("required JSON field %s is absent", name)
 		}
+	}
+	return nil
+}
+func requiredBoolean(raw json.RawMessage, name string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	value, ok := object[name]
+	if !ok {
+		return fmt.Errorf("required JSON field %s is absent", name)
+	}
+	var decoded bool
+	if err := json.Unmarshal(value, &decoded); err != nil || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return fmt.Errorf("required JSON field %s must be boolean", name)
 	}
 	return nil
 }
@@ -505,6 +573,17 @@ func requiredNested(raw json.RawMessage, parent string, names ...string) error {
 	}
 	return requiredJSON(child, names...)
 }
+func requiredNestedBoolean(raw json.RawMessage, parent, name string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	child, ok := object[parent]
+	if !ok {
+		return fmt.Errorf("required JSON field %s is absent", parent)
+	}
+	return requiredBoolean(child, name)
+}
 func requiredArrayNested(raw json.RawMessage, parent string, names ...string) error {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
@@ -516,6 +595,22 @@ func requiredArrayNested(raw json.RawMessage, parent string, names ...string) er
 	}
 	for i, entry := range entries {
 		if err := requiredJSON(entry, names...); err != nil {
+			return fmt.Errorf("%s[%d]: %w", parent, i, err)
+		}
+	}
+	return nil
+}
+func requiredArrayBoolean(raw json.RawMessage, parent, name string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(object[parent], &entries); err != nil {
+		return err
+	}
+	for i, entry := range entries {
+		if err := requiredBoolean(entry, name); err != nil {
 			return fmt.Errorf("%s[%d]: %w", parent, i, err)
 		}
 	}
@@ -536,6 +631,120 @@ func requiredMapNested(raw json.RawMessage, parent string, names ...string) erro
 		}
 	}
 	return nil
+}
+func optionalNonNull(raw json.RawMessage, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	for _, name := range names {
+		if value, ok := object[name]; ok && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("optional JSON field %s cannot be null", name)
+		}
+	}
+	return nil
+}
+func optionalNestedNonNull(raw json.RawMessage, parent string, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	return optionalNonNull(object[parent], names...)
+}
+func optionalArrayNonNull(raw json.RawMessage, parent string, names ...string) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(object[parent], &entries); err != nil {
+		return err
+	}
+	for index, entry := range entries {
+		if err := optionalNonNull(entry, names...); err != nil {
+			return fmt.Errorf("%s[%d]: %w", parent, index, err)
+		}
+	}
+	return nil
+}
+func firstError(left, right error) error {
+	if left != nil {
+		return left
+	}
+	return right
+}
+func validateUnionObject(raw json.RawMessage, required, forbidden []string) error {
+	if err := requiredPresentJSON(raw, required...); err != nil {
+		return err
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	for _, name := range required {
+		if name != "arguments" && name != "result" && bytes.Equal(bytes.TrimSpace(object[name]), []byte("null")) {
+			return fmt.Errorf("required union field %s cannot be null", name)
+		}
+	}
+	for _, name := range forbidden {
+		if _, ok := object[name]; ok {
+			return fmt.Errorf("forbidden union field %s is present", name)
+		}
+	}
+	return nil
+}
+func validateRequestBlocksJSON(raw json.RawMessage) error {
+	return validateArrayUnionJSON(raw, "blocks", map[string]unionRule{"text": {[]string{"text"}, []string{"callId", "toolName", "arguments", "result"}}, "tool_call": {[]string{"callId", "toolName", "arguments"}, []string{"text", "result"}}, "tool_result": {[]string{"callId", "result"}, []string{"text", "toolName", "arguments"}}})
+}
+func validateResponseBlocksJSON(raw json.RawMessage) error {
+	return validateArrayUnionJSON(raw, "blocks", map[string]unionRule{"text": {[]string{"text"}, []string{"callId", "toolName", "arguments"}}, "tool_call": {[]string{"callId", "toolName", "arguments"}, []string{"text"}}})
+}
+
+type unionRule struct{ required, forbidden []string }
+
+func validateArrayUnionJSON(raw json.RawMessage, parent string, rules map[string]unionRule) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(object[parent], &entries); err != nil {
+		return err
+	}
+	for index, entry := range entries {
+		var item map[string]json.RawMessage
+		if err := json.Unmarshal(entry, &item); err != nil {
+			return err
+		}
+		var kind string
+		if err := json.Unmarshal(item["type"], &kind); err != nil {
+			return err
+		}
+		rule, ok := rules[kind]
+		if !ok {
+			continue
+		}
+		if err := validateUnionObject(entry, rule.required, rule.forbidden); err != nil {
+			return fmt.Errorf("%s[%d]: %w", parent, index, err)
+		}
+	}
+	return nil
+}
+func validateStreamEventJSON(raw json.RawMessage) error {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return err
+	}
+	var kind string
+	if err := json.Unmarshal(object["type"], &kind); err != nil {
+		return err
+	}
+	rules := map[string]unionRule{"response_start": {nil, []string{"text", "argumentsDelta", "error"}}, "text_delta": {[]string{"text"}, []string{"callId", "toolName", "argumentsDelta", "error"}}, "tool_call_start": {[]string{"callId", "toolName"}, []string{"text", "argumentsDelta", "error"}}, "tool_arguments_delta": {[]string{"callId", "argumentsDelta"}, []string{"text", "toolName", "error"}}, "usage": {[]string{"usage"}, []string{"text", "error"}}, "response_end": {[]string{"finishReason"}, []string{"text", "argumentsDelta", "error"}}, "error": {[]string{"error"}, []string{"text", "argumentsDelta", "finishReason"}}}
+	rule, ok := rules[kind]
+	if !ok {
+		return nil
+	}
+	return validateUnionObject(raw, rule.required, rule.forbidden)
 }
 
 func (p Policy) Validate() error {
@@ -599,7 +808,7 @@ func (p Policy) Validate() error {
 }
 
 func (r Route) Validate() error {
-	if !uuidPattern.MatchString(r.ID) || !validDestination(r.DestinationClass) || !validProtocol(r.SourceProtocol) || !validProtocol(r.DestinationProtocol) || len(r.Model) < 1 || len(r.Model) > 160 || !validBoundary(r.DataBoundary) || r.HealthTimeoutMS < 100 || r.HealthTimeoutMS > 30000 || len(r.CredentialRef) < 1 || len(r.CredentialRef) > 256 || !validCost(r.CostClass) {
+	if !uuidPattern.MatchString(r.ID) || !validDestination(r.DestinationClass) || len(r.SourceProtocols) < 1 || len(r.SourceProtocols) > 3 || duplicateStrings(protocolStrings(r.SourceProtocols)) || !allProtocols(r.SourceProtocols) || !validProtocol(r.DestinationProtocol) || len(r.Model) < 1 || len(r.Model) > 160 || !validBoundary(r.DataBoundary) || r.HealthTimeoutMS < 100 || r.HealthTimeoutMS > 30000 || len(r.CredentialRef) < 1 || len(r.CredentialRef) > 256 || !validCost(r.CostClass) {
 		return fmt.Errorf("route %q is invalid", r.ID)
 	}
 	if err := r.Endpoint.Validate(r.DestinationClass); err != nil {
@@ -725,7 +934,7 @@ func (r ActivationReceipt) Validate() error {
 }
 
 func (e Event) Validate() error {
-	if !uuidPattern.MatchString(e.EventID) || len(e.Cursor) < 1 || len(e.Cursor) > 128 || !uuidPattern.MatchString(e.ActivationID) || !uuidPattern.MatchString(e.LogicalRequestID) || !uuidPattern.MatchString(e.RouteID) || e.Attempt < 1 || e.Attempt > 2 || !validProtocol(e.Protocol) || !validDestination(e.DestinationClass) || !validEventType(e.Type) || !validOutcome(e.Outcome) || len(e.ModelAlias) < 1 || len(e.ModelAlias) > 128 || len(e.ReasonCode) < 1 || len(e.ReasonCode) > 96 || e.LatencyMS < 0 {
+	if !uuidPattern.MatchString(e.EventID) || len(e.Cursor) < 1 || len(e.Cursor) > 128 || !uuidPattern.MatchString(e.ActivationID) || !uuidPattern.MatchString(e.LogicalRequestID) || !uuidPattern.MatchString(e.RouteID) || e.Attempt < 1 || e.Attempt > 2 || !validProtocol(e.Protocol) || !validDestination(e.DestinationClass) || !validEventType(e.Type) || !validOutcome(e.Outcome) || len(e.ModelAlias) < 1 || len(e.ModelAlias) > 128 || !validEventReason(e.ReasonCode) || e.LatencyMS < 0 {
 		return errors.New("proxy event is invalid")
 	}
 	if !uuidPattern.MatchString(e.Policy.ID) || e.Policy.Version < 1 || !digestPattern.MatchString(e.Policy.Digest) {
@@ -741,7 +950,7 @@ func (e Event) Validate() error {
 }
 
 func (r NormalizedRequest) Validate() error {
-	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
+	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || (r.ToolChoice != "" && !validToolChoice(r.ToolChoice)) || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
 		return errors.New("normalized request is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, r.Limits.DeadlineAt); err != nil {
@@ -783,11 +992,11 @@ func (b RequestBlock) Validate() error {
 			return errors.New("text request block union is invalid")
 		}
 	case "tool_call":
-		if b.Role != "assistant" || b.CallID == nil || *b.CallID == "" || b.ToolName == nil || *b.ToolName == "" || b.Arguments == nil || b.Text != nil || b.Result != nil {
+		if b.Role != "assistant" || b.CallID == nil || len(*b.CallID) < 1 || len(*b.CallID) > 256 || b.ToolName == nil || len(*b.ToolName) < 1 || len(*b.ToolName) > 128 || b.Arguments == nil || b.Text != nil || b.Result != nil {
 			return errors.New("tool-call request block union is invalid")
 		}
 	case "tool_result":
-		if b.Role != "tool" || b.CallID == nil || *b.CallID == "" || b.Result == nil || b.Text != nil || b.ToolName != nil || b.Arguments != nil {
+		if b.Role != "tool" || b.CallID == nil || len(*b.CallID) < 1 || len(*b.CallID) > 256 || b.Result == nil || b.Text != nil || b.ToolName != nil || b.Arguments != nil {
 			return errors.New("tool-result request block union is invalid")
 		}
 	}
@@ -811,7 +1020,7 @@ func (b ResponseBlock) Validate() error {
 			return errors.New("text response block union is invalid")
 		}
 	case "tool_call":
-		if b.CallID == nil || *b.CallID == "" || b.ToolName == nil || *b.ToolName == "" || b.Arguments == nil || b.Text != nil {
+		if b.CallID == nil || len(*b.CallID) < 1 || len(*b.CallID) > 256 || b.ToolName == nil || len(*b.ToolName) < 1 || len(*b.ToolName) > 128 || b.Arguments == nil || b.Text != nil {
 			return errors.New("tool-call response block union is invalid")
 		}
 	default:
@@ -833,6 +1042,12 @@ func (e NormalizedStreamEvent) Validate() error {
 		if err := e.Error.Validate(); err != nil {
 			return err
 		}
+	}
+	if e.CallID != nil && (len(*e.CallID) < 1 || len(*e.CallID) > 256) {
+		return errors.New("stream callId is invalid")
+	}
+	if e.ToolName != nil && (len(*e.ToolName) < 1 || len(*e.ToolName) > 128) {
+		return errors.New("stream toolName is invalid")
 	}
 	switch e.Type {
 	case "response_start":
@@ -965,7 +1180,7 @@ func writeCanonical(output *bytes.Buffer, value any) error {
 		for key := range typed {
 			keys = append(keys, key)
 		}
-		sort.Strings(keys)
+		sort.Slice(keys, func(i, j int) bool { return utf16Less(keys[i], keys[j]) })
 		output.WriteByte('{')
 		for index, key := range keys {
 			if index > 0 {
@@ -985,6 +1200,15 @@ func writeCanonical(output *bytes.Buffer, value any) error {
 	}
 	return nil
 }
+func utf16Less(left, right string) bool {
+	a, b := utf16.Encode([]rune(left)), utf16.Encode([]rune(right))
+	for index := 0; index < len(a) && index < len(b); index++ {
+		if a[index] != b[index] {
+			return a[index] < b[index]
+		}
+	}
+	return len(a) < len(b)
+}
 
 // ValidateJournalReceipt proves the receipt refers to the exact protected
 // journal generation. It does not grant authority to restore environment state
@@ -994,6 +1218,12 @@ func ValidateJournalReceipt(j ActivationJournal, r ActivationReceipt) error {
 		return fmt.Errorf("journal: %w", err)
 	}
 	if err := r.Validate(); err != nil {
+		return fmt.Errorf("receipt: %w", err)
+	}
+	if err := VerifyContractChecksum(j, j.Checksum); err != nil {
+		return fmt.Errorf("journal: %w", err)
+	}
+	if err := VerifyContractChecksum(r, r.Checksum); err != nil {
 		return fmt.Errorf("receipt: %w", err)
 	}
 	journalDigest, err := ContractDigest(j)
@@ -1026,8 +1256,10 @@ func ValidateJournalReceipt(j ActivationJournal, r ActivationReceipt) error {
 	}
 	return nil
 }
-func (r ActivationReceipt) AllowsVerifiedListenerStop() bool { return r.Validate() == nil }
-func (r ActivationReceipt) AllowsEnvironmentRestore() bool   { return false }
+func (r ActivationReceipt) AllowsVerifiedListenerStop() bool {
+	return r.Validate() == nil && VerifyContractChecksum(r, r.Checksum) == nil
+}
+func (r ActivationReceipt) AllowsEnvironmentRestore() bool { return false }
 
 func validProtocol(v Protocol) bool {
 	return v == ProtocolOpenAIResponses || v == ProtocolOpenAIChat || v == ProtocolAnthropicMessages
@@ -1065,6 +1297,12 @@ func validEventType(v EventType) bool {
 }
 func validOutcome(v EventOutcome) bool {
 	return v == OutcomeSuccess || v == OutcomeFailed || v == OutcomeCancelled || v == OutcomeFallback
+}
+func validEventReason(v EventReasonCode) bool {
+	return v == EventReasonNone || v == EventReasonConnectionFailure || v == EventReasonTimeoutBeforeFirstByte || v == EventReasonRateLimited || v == EventReasonUpstream5xx || v == EventReasonModelUnavailable || v == EventReasonCompatibleContextOverflow || v == EventReasonUnsupportedCapability || v == EventReasonAuthenticationFailed || v == EventReasonPolicyDenied || v == EventReasonCancelled || v == EventReasonFallbackSelected
+}
+func validToolChoice(v ToolChoice) bool {
+	return v == ToolChoiceNone || v == ToolChoiceAuto || v == ToolChoiceRequired
 }
 func allProtocols(values []Protocol) bool {
 	for _, value := range values {
