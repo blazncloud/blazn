@@ -85,10 +85,13 @@ To close the remaining Gate 2 item:
 
 1. Reserve `blazn.benpelo.com` in the existing ngrok account.
 2. Add the exact DNS validation/routing record returned by ngrok.
-3. Start `blazn-ngrok.service` under `with-public-origin-lock.sh`.
-4. Verify public TLS health, browser activation, login, restart, and revocation
+3. Install and validate the dedicated `blazn-ngrok` service identity and
+   root-controlled ngrok configuration.
+4. Stop `blazn-ngrok-qualification.service`, then start
+   `blazn-ngrok.service` directly. The unit is the authoritative owner of the
+   lifetime public-origin lock; do not wrap `systemctl start` in a second lock.
+5. Verify public TLS health, browser activation, login, restart, and revocation
    through `https://blazn.benpelo.com`.
-5. Stop the temporary qualification tunnel.
 
 The existing `homeai-ngrok.service` remains active and unchanged throughout.
 
