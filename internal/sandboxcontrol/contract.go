@@ -315,7 +315,8 @@ func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, ar
 }
 
 func CanonicalArtifactContract(artifacts []ArtifactExport) ([]ArtifactExport, string, error) {
-	canonical := append([]ArtifactExport(nil), artifacts...)
+	canonical := make([]ArtifactExport, len(artifacts))
+	copy(canonical, artifacts)
 	if err := validateArtifactExports(canonical); err != nil {
 		return nil, "", err
 	}

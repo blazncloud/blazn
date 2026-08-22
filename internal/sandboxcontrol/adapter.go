@@ -462,7 +462,7 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	if err := verifyManaged(updatedRecord, workspaceID, ownerID); err != nil {
 		return OperationReceipt{}, err
 	}
-	if updatedRecord.UID != uid || !updatedRecord.Deleting || contains(updatedRecord.Finalizers, CleanupFinalizer) {
+	if updatedRecord.UID != uid || !updatedRecord.Deleting || contains(updatedRecord.Finalizers, CleanupFinalizer) || updatedRecord.ArtifactContractDigest != artifactContractDigest || !sameArtifactExports(updatedRecord.Artifacts, canonicalExpected) {
 		return OperationReceipt{}, adapterError(ErrCleanupIncomplete, 409, "backend did not complete cleanup finalizer transition", nil)
 	}
 	updatedRecord.State = StateDeleted
@@ -499,8 +499,9 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend Sandbox identity is invalid", nil)
 	}
 	artifactValue, artifactDigest := object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"], object.Metadata.Annotations["sandboxes.blazn.dev/artifact-contract-digest"]
+	trimmedArtifacts := strings.TrimSpace(artifactValue)
 	artifacts := []ArtifactExport{}
-	if artifactValue == "" || len(artifactValue) > 32768 || json.Unmarshal([]byte(artifactValue), &artifacts) != nil {
+	if len(trimmedArtifacts) < 2 || trimmedArtifacts[0] != '[' || trimmedArtifacts[len(trimmedArtifacts)-1] != ']' || len(artifactValue) > 32768 || json.Unmarshal([]byte(artifactValue), &artifacts) != nil {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend artifact contract is invalid", nil)
 	}
 	if err := validateArtifactExports(artifacts); err != nil {

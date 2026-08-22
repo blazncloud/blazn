@@ -45,6 +45,7 @@ type fakeAPI struct {
 	runtimeMissing        bool
 	patchRetainsFinalizer bool
 	patchChangesUID       bool
+	patchChangesArtifacts bool
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -129,6 +130,11 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		}
 		if f.patchChangesUID {
 			f.object.Metadata.UID = "uid-other"
+		}
+		if f.patchChangesArtifacts {
+			_, digest, _ := CanonicalArtifactContract(nil)
+			f.object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"] = "[]"
+			f.object.Metadata.Annotations["sandboxes.blazn.dev/artifact-contract-digest"] = digest
 		}
 		writeJSON(response, http.StatusOK, f.object)
 	default:
@@ -304,10 +310,11 @@ func TestFinalizeRejectsAdmissionFinalizerOrUIDRewrite(t *testing.T) {
 		name            string
 		retainFinalizer bool
 		changeUID       bool
-	}{{name: "finalizer re-added", retainFinalizer: true}, {name: "uid changed", changeUID: true}} {
+		changeArtifacts bool
+	}{{name: "finalizer re-added", retainFinalizer: true}, {name: "uid changed", changeUID: true}, {name: "artifact contract changed", changeArtifacts: true}} {
 		t.Run(testCase.name, func(t *testing.T) {
 			fake := newFakeAPI(t)
-			fake.patchRetainsFinalizer, fake.patchChangesUID = testCase.retainFinalizer, testCase.changeUID
+			fake.patchRetainsFinalizer, fake.patchChangesUID, fake.patchChangesArtifacts = testCase.retainFinalizer, testCase.changeUID, testCase.changeArtifacts
 			exporter := &fakeExporter{receipts: []ArtifactReceipt{{SchemaVersion: ArtifactSchema, Name: "result", ObjectKey: "workspaces/workspace-a/sandboxes/sandbox-a/artifacts/result", SHA256: "sha256:" + strings.Repeat("b", 64), Size: 1, ExportedAt: "2026-08-22T12:00:01Z"}}}
 			adapter := testAdapter(t, fake, exporter)
 			record, _, err := adapter.Create(context.Background(), testCreate())
@@ -355,6 +362,11 @@ func TestArtifactSuppressionCannotSatisfyTrustedFinalizePrecondition(t *testing.
 		{"annotation removed", func(annotations map[string]string) {
 			delete(annotations, "sandboxes.blazn.dev/artifact-exports")
 			delete(annotations, "sandboxes.blazn.dev/artifact-contract-digest")
+		}, ErrBackend},
+		{"null list", func(annotations map[string]string) {
+			_, digest, _ := CanonicalArtifactContract(nil)
+			annotations["sandboxes.blazn.dev/artifact-exports"] = "null"
+			annotations["sandboxes.blazn.dev/artifact-contract-digest"] = digest
 		}, ErrBackend},
 		{"empty list", func(annotations map[string]string) {
 			_, digest, _ := CanonicalArtifactContract(nil)
