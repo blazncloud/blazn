@@ -96,7 +96,7 @@ if (FAKE_CONTAINER_MISMATCH=1; export FAKE_CONTAINER_MISMATCH; verify_control_ap
 grep -F 'does not match its receipt' "$clean/mismatch.err" >/dev/null
 
 race=$(fixture race)
-printf sentinel >"$race/ownership/build.json"
+printf sentinel | sudo tee "$race/ownership/build.json" >/dev/null
 sudo chown 0:0 "$race/ownership/build.json"
 sudo chmod 0600 "$race/ownership/build.json"
 if run_build "$race" env FAKE_MUTATE_SOURCE=1 >"$race/out" 2>"$race/err"; then exit 41; fi
@@ -109,7 +109,7 @@ swap=$(fixture swap)
 digest=$(control_api_source_digest "$swap/repo/infra/milestone-2")
 final=blazn-control-api_source-$digest
 printf '%064d\n' 2 >"$swap/images/$final"
-printf sentinel >"$swap/ownership/build.json"
+printf sentinel | sudo tee "$swap/ownership/build.json" >/dev/null
 sudo chown 0:0 "$swap/ownership/build.json"
 sudo chmod 0600 "$swap/ownership/build.json"
 if run_build "$swap" env >"$swap/out" 2>"$swap/err"; then exit 42; fi
