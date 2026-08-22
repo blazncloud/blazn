@@ -239,6 +239,16 @@ func parseWorkspaceOptions(args []string) (workspaceOptions, []string, error) {
 		i++
 		*target = args[i]
 	}
+	if opts.workspace == "" {
+		for _, arg := range args {
+			if arg == "--workspace" || strings.HasPrefix(arg, "--workspace=") {
+				return opts, nil, errors.New("--workspace requires a non-empty value")
+			}
+		}
+	}
+	if opts.requestID != "" && (len(opts.requestID) < 8 || len(opts.requestID) > 128) {
+		return opts, nil, errors.New("--request-id must contain between 8 and 128 characters")
+	}
 	return opts, out, nil
 }
 
@@ -352,7 +362,7 @@ func (a *App) writeWorkspaceEnvelope(f OutputFormat, r client.WorkspaceEnvelope,
 	if f == OutputJSON {
 		return a.writeJSON(r)
 	}
-	fmt.Fprintf(a.stdout, "%s workspace %s (%s)\n", strings.Title(status), r.Workspace.Name, r.Workspace.ID)
+	fmt.Fprintf(a.stdout, "%s workspace %s (%s)\n", titleWord(status), r.Workspace.Name, r.Workspace.ID)
 	return ExitSuccess
 }
 func (a *App) writeWorkspaceList(f OutputFormat, r client.WorkspaceList, e error) int {
@@ -427,6 +437,13 @@ func (a *App) writeMutation(f OutputFormat, r client.MutationResult, e error) in
 	if f == OutputJSON {
 		return a.writeJSON(r)
 	}
-	fmt.Fprintf(a.stdout, "%s workspace %s (version %d)\n", strings.Title(r.Status), r.WorkspaceID, r.Version)
+	fmt.Fprintf(a.stdout, "%s workspace %s (version %d)\n", titleWord(r.Status), r.WorkspaceID, r.Version)
 	return ExitSuccess
+}
+
+func titleWord(value string) string {
+	if value == "" {
+		return ""
+	}
+	return strings.ToUpper(value[:1]) + value[1:]
 }

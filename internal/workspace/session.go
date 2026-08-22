@@ -67,6 +67,11 @@ func NewDefaultSessionProvider() (SessionProvider, error) {
 	if err := os.MkdirAll(lockDir, 0o700); err != nil {
 		return nil, err
 	}
+	if info, err := os.Lstat(lockDir); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		return nil, errors.New("Blazn credential lock directory is unsafe")
+	} else if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) {
+		return nil, errors.New("Blazn credential lock directory has the wrong owner")
+	}
 	provider := &authSessionProvider{origin: origin, api: api, lock: filepath.Join(lockDir, account+".lock"), now: time.Now}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -137,6 +142,9 @@ func (p *authSessionProvider) refresh(ctx context.Context, credentials auth.Cred
 	if err != nil {
 		return auth.Credentials{}, err
 	}
+	if updated.AccessToken == "" || updated.RefreshToken == "" || updated.DeviceID == "" || updated.ExpiresIn < 1 {
+		return auth.Credentials{}, errors.New("Blazn API returned an incomplete refreshed session")
+	}
 	credentials.AccessToken = updated.AccessToken
 	credentials.RefreshToken = updated.RefreshToken
 	credentials.DeviceID = updated.DeviceID
@@ -146,7 +154,19 @@ func (p *authSessionProvider) refresh(ctx context.Context, credentials auth.Cred
 		return auth.Credentials{}, err
 	}
 	if err := p.store.Put(encoded); err != nil {
-		return auth.Credentials{}, err
+		storeErr := err
+		revokePayload := "blazn-session-revoke-v1\n" + credentials.DeviceID
+		revokeProof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(ed25519.PrivateKey(privateKey), []byte(revokePayload)))
+		revokeErr := p.api.RevokeSession(ctx, client.RevokeSessionRequest{DeviceID: credentials.DeviceID, Proof: revokeProof})
+		if revokeErr == nil || client.IsCode(revokeErr, "device_not_found") || client.IsCode(revokeErr, "device_revoked") {
+			if deleteErr := p.store.Delete(); deleteErr != nil {
+				return auth.Credentials{}, fmt.Errorf("store refreshed session: %v; remote session revoked but stale credential cleanup failed: %w", storeErr, deleteErr)
+			}
+			return auth.Credentials{}, fmt.Errorf("store refreshed session: %w; remote session was revoked", storeErr)
+		}
+		if retryErr := p.store.Put(encoded); retryErr != nil {
+			return auth.Credentials{}, fmt.Errorf("store refreshed session: %v; remote revocation failed: %v; credential retry failed: %w", storeErr, revokeErr, retryErr)
+		}
 	}
 	return credentials, nil
 }
@@ -158,6 +178,11 @@ func (p *authSessionProvider) withLock(ctx context.Context, action func() error)
 	}
 	file := os.NewFile(uintptr(fd), p.lock)
 	defer file.Close()
+	if info, err := file.Stat(); err != nil {
+		return err
+	} else if err := validatePrivateFile(info); err != nil {
+		return fmt.Errorf("credential lock is unsafe: %w", err)
+	}
 	for {
 		if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
 			break

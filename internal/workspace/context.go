@@ -64,6 +64,11 @@ func (s *FileContextStore) Load(origin, userID string) (Selection, error) {
 	}
 	file := os.NewFile(uintptr(fd), path)
 	defer file.Close()
+	if opened, err := file.Stat(); err != nil {
+		return Selection{}, err
+	} else if err := validatePrivateFile(opened); err != nil {
+		return Selection{}, fmt.Errorf("opened workspace context is unsafe: %w", err)
+	}
 	encoded, err := io.ReadAll(io.LimitReader(file, 4097))
 	if err != nil || len(encoded) > 4096 {
 		return Selection{}, errors.New("workspace context cannot be read safely")
