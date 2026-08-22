@@ -97,20 +97,31 @@ func TestHeartbeatUsesOnlyNodeProof(t *testing.T) {
 	}))
 	defer server.Close()
 	api, _ := New(server.URL, server.Client())
-	heartbeat := NodeHeartbeat{NodeID: testUUIDA, IdentityGeneration: 1, BootID: "boot", Sequence: 0, SentAt: "2026-08-21T00:00:00Z", CapabilityDigest: "sha256:" + testHash, Capability: NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 4, MemoryBytes: 1024, DiskBytes: 1024, Labels: map[string]string{}, Limits: NodeCapabilityLimits{}, Health: NodeCapabilityHealth{Status: "healthy"}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []LocalModelCapability{}}}
+	heartbeat := NodeHeartbeat{NodeID: testUUIDA, IdentityGeneration: 1, BootID: "boot", Sequence: 0, SentAt: "2026-08-21T00:00:00Z", CapabilityDigest: "sha256:" + testHash, Capability: NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 4, MemoryBytes: 1024, DiskBytes: 1024, Accelerators: []NodeAccelerator{}, Labels: map[string]string{}, Limits: NodeCapabilityLimits{}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []LocalModelCapability{}}}
 	if err := api.SubmitNodeHeartbeat(context.Background(), "proof", heartbeat); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestNodeCapabilityValidatesLocalCompanyModel(t *testing.T) {
-	capability := NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 8, MemoryBytes: 1024, DiskBytes: 1024, Labels: map[string]string{"blazn.dev/pool": "local-ai"}, Limits: NodeCapabilityLimits{MaxConcurrentAgents: 4}, Health: NodeCapabilityHealth{Status: "healthy"}, SandboxBackends: []string{"agent-sandbox"}, RuntimeClasses: []string{"gvisor"}, LocalModels: []LocalModelCapability{{RouteID: testUUIDA, DisplayName: "Qwen 3.8", Model: "qwen3.8", Protocol: "openai-chat", EndpointClass: "authenticated_node_tunnel", Capabilities: []string{"text", "streaming"}, DataBoundary: "local", Healthy: true, MaxConcurrency: 2, MaxContextTokens: 32768, MaxOutputTokens: 4096}}}
+	capability := NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 8, MemoryBytes: 1024, DiskBytes: 1024, Accelerators: []NodeAccelerator{}, Labels: map[string]string{"blazn.dev/pool": "local-ai"}, Limits: NodeCapabilityLimits{MaxConcurrentAgents: 4}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, SandboxBackends: []string{"agent-sandbox"}, RuntimeClasses: []string{"gvisor"}, LocalModels: []LocalModelCapability{{RouteID: testUUIDA, DisplayName: "Qwen 3.8", Model: "qwen3.8", Protocol: "openai-chat", EndpointClass: "authenticated_node_tunnel", Capabilities: []string{"text", "streaming"}, DataBoundary: "local", Healthy: true, MaxConcurrency: 2, MaxContextTokens: 32768, MaxOutputTokens: 4096}}}
 	if err := ValidateNodeCapability(capability); err != nil {
 		t.Fatal(err)
 	}
 	capability.LocalModels[0].DataBoundary = "cloud"
 	if err := ValidateNodeCapability(capability); err == nil {
 		t.Fatal("non-local node model boundary passed")
+	}
+}
+
+func TestNodeCapabilityRejectsNullRequiredCollections(t *testing.T) {
+	capability := NodeCapability{Version: 1, Platform: NodePlatformLinux, Architecture: NodeArchAMD64, CPU: 1, MemoryBytes: 1, DiskBytes: 1, Accelerators: []NodeAccelerator{}, Labels: map[string]string{}, Health: NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []LocalModelCapability{}}
+	if err := ValidateNodeCapability(capability); err != nil {
+		t.Fatal(err)
+	}
+	capability.RuntimeClasses = nil
+	if err := ValidateNodeCapability(capability); err == nil {
+		t.Fatal("nil required runtimeClasses passed")
 	}
 }
 

@@ -315,7 +315,7 @@ type NodeEventStream struct {
 }
 
 var (
-	nodeUUIDPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	nodeUUIDPattern        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	nodeHashPattern        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	nodeDigestPattern      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	nodeBase64URLPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -388,7 +388,7 @@ func decodeClosedNodeObject(encoded []byte, output any) error {
 }
 
 func ValidateNodeCapability(capability NodeCapability) error {
-	if capability.Version < 1 || !validPlatform(capability.Platform) || !validArchitecture(capability.Architecture) || capability.CPU < 1 || capability.MemoryBytes < 1 || capability.DiskBytes < 1 {
+	if capability.Version < 1 || !validPlatform(capability.Platform) || !validArchitecture(capability.Architecture) || capability.CPU < 1 || capability.MemoryBytes < 1 || capability.DiskBytes < 1 || capability.Accelerators == nil || capability.Labels == nil || capability.Health.ReasonCodes == nil || capability.SandboxBackends == nil || capability.RuntimeClasses == nil || capability.LocalModels == nil {
 		return fmt.Errorf("node capability resources are invalid")
 	}
 	if len(capability.Accelerators) > 16 || len(capability.Labels) > 64 || capability.Limits.MaxConcurrentSandboxes < 0 || capability.Limits.MaxConcurrentSandboxes > 1024 || capability.Limits.MaxConcurrentAgents < 0 || capability.Limits.MaxConcurrentAgents > 1024 {
@@ -467,7 +467,7 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	if !validPlatform(plan.Target.Platform) || !validArchitecture(plan.Target.Architecture) || !nodeHashPattern.MatchString(plan.Target.MachineFingerprint) || plan.Target.MinCPU < 1 || plan.Target.MinMemoryBytes < 1073741824 || plan.Target.MinDiskBytes < 10737418240 {
 		return fmt.Errorf("target is invalid")
 	}
-	if len(plan.Components) > 64 || len(plan.Mutations) > 256 {
+	if plan.Components == nil || plan.Mutations == nil || len(plan.Components) > 64 || len(plan.Mutations) > 256 {
 		return fmt.Errorf("plan collection limit exceeded")
 	}
 	for index, component := range plan.Components {
@@ -504,7 +504,7 @@ func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
 	if !strings.HasPrefix(receipt.Binary.Path, "/") || !nodeDigestPattern.MatchString(receipt.Binary.Digest) || !oneOf(receipt.Service.Manager, "systemd", "launchd") || len(receipt.Service.Name) < 1 || len(receipt.Service.Name) > 256 || !nodeDigestPattern.MatchString(receipt.Service.DefinitionDigest) {
 		return fmt.Errorf("receipt binary or service is invalid")
 	}
-	if len(receipt.Mutations) > 256 {
+	if receipt.Mutations == nil || len(receipt.Mutations) > 256 {
 		return fmt.Errorf("receipt mutation limit exceeded")
 	}
 	seen := make(map[int64]struct{}, len(receipt.Mutations))
