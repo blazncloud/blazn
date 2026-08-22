@@ -340,6 +340,84 @@ test("fresh locked recheck rejects trust revocation during slow provider issuanc
   }
 });
 
+test("ambiguous replay takes a fresh lock and refuses a concurrent revocation", async () => {
+  const f = await fixture();
+  try {
+    const durable = durableStore(f.binding);
+    durable.failCommit.value = true;
+    durable.onAmbiguousCommit.value = () => durable.setTrust("revoked");
+    let revokes = 0;
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => ({
+        providerHandle: input.issuanceId,
+        credential: "w".repeat(43),
+        clusterId: input.clusterId,
+        clusterHealthy: true,
+        workerOnly: true,
+        expiresAt: new Date("2029-01-01T00:04:00.000Z"),
+      }),
+      revoke: async () => {
+        revokes++;
+      },
+    };
+    const service = new NodeBrokerService(
+      durable.store,
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    await assert.rejects(
+      () => service.issue("join-key-1", f.request, f.proof),
+      (error: unknown) =>
+        error instanceof NodeHttpError &&
+        error.code === "join_credential_invalid",
+    );
+    assert.equal(revokes, 2);
+    assert.equal(durable.intent()?.status, "revoked");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("provider TTL is bounded by enrollment seconds remaining on the database clock", async () => {
+  const f = await fixture();
+  try {
+    const binding = {
+      ...f.binding,
+      enrollmentExpiresAt: new Date("2029-01-01T00:00:02.900Z"),
+    };
+    let observedTTL = 0;
+    const issuer: WorkerCredentialIssuer = {
+      issue: async (input) => {
+        observedTTL = input.ttlSeconds;
+        return {
+          providerHandle: input.issuanceId,
+          credential: "y".repeat(43),
+          clusterId: input.clusterId,
+          clusterHealthy: true,
+          workerOnly: true,
+          expiresAt: new Date("2029-01-01T00:00:02.000Z"),
+        };
+      },
+      revoke: async () => {},
+    };
+    const service = new NodeBrokerService(
+      fakeStore(
+        binding,
+        () => undefined,
+        () => {},
+      ),
+      async () => Buffer.alloc(32, 4),
+      issuer,
+      1_000,
+    );
+    await service.issue("join-key-1", f.request, f.proof);
+    assert.equal(observedTTL, 2);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 function fakeStore(
   binding: BrokerBinding,
   get: () => StoredJoinIssuance | undefined,
@@ -381,6 +459,7 @@ function durableStore(binding: BrokerBinding) {
   let active = false;
   const failInsert = { value: false };
   const failCommit = { value: false };
+  const onAmbiguousCommit = { value: () => {} };
   const approvedBy = String(binding.canonicalPlan.approvedBy);
   let complete = {
     ...binding,
@@ -421,6 +500,7 @@ function durableStore(binding: BrokerBinding) {
         });
         if (inserted && failCommit.value) {
           failCommit.value = false;
+          onAmbiguousCommit.value();
           throw new Error("injected ambiguous commit result");
         }
         return result;
@@ -433,6 +513,7 @@ function durableStore(binding: BrokerBinding) {
     store,
     failInsert,
     failCommit,
+    onAmbiguousCommit,
     intent: () => intent,
     inTransaction: () => active,
     setTrust: (trustState: string) => {

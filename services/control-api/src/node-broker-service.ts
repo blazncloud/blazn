@@ -94,6 +94,7 @@ export class NodeBrokerService {
         idempotencyKey,
         digest,
         key,
+        proof,
       );
     try {
       await this.providerCall((signal) =>
@@ -108,7 +109,8 @@ export class NodeBrokerService {
       const plan = prepared.binding!.canonicalPlan,
         cluster = record(plan.cluster, "plan.cluster"),
         now = requiredDatabaseNow(prepared.binding!),
-        ttlSeconds = ttl(prepared.binding!.planExpiresAt, now);
+        expiry = credentialExpiry(prepared.binding!),
+        ttlSeconds = ttl(expiry, now);
       external = await this.providerCall((signal) =>
         this.issuer.issue(
           {
@@ -125,7 +127,7 @@ export class NodeBrokerService {
       validateIssued(
         external,
         intent,
-        prepared.binding!.planExpiresAt,
+        expiry,
         cluster.id,
         now,
         ttlSeconds,
@@ -156,11 +158,12 @@ export class NodeBrokerService {
         const plan = binding.canonicalPlan,
           cluster = record(plan.cluster, "plan.cluster"),
           clusterId = text(cluster.id, "cluster.id", 128),
-          ttlSeconds = ttl(binding.planExpiresAt, now);
+          expiry = credentialExpiry(binding),
+          ttlSeconds = ttl(expiry, now);
         validateIssued(
           external,
           current,
-          binding.planExpiresAt,
+          expiry,
           cluster.id,
           now,
           ttlSeconds,
@@ -210,6 +213,7 @@ export class NodeBrokerService {
         idempotencyKey,
         digest,
         key,
+        proof,
       ).catch(() => undefined);
       if (recovered) return recovered;
       await this.compensate(intent);
@@ -222,11 +226,15 @@ export class NodeBrokerService {
     key: string,
     digest: string,
     encryptionKey: Buffer,
+    proof: string,
   ): Promise<JoinCredentialResponse | undefined> {
     return this.store.transaction(async (tx) => {
       await tx.lockNode(request.nodeId);
+      if (!(await tx.lockBinding(request))) return undefined;
       const binding = await tx.binding(request);
       if (!binding) return undefined;
+      const now = requiredDatabaseNow(binding);
+      validateBinding(binding, request, proof, now);
       const existing = await tx.issuance(request);
       return existing
         ? replay(
@@ -234,7 +242,7 @@ export class NodeBrokerService {
             key,
             digest,
             encryptionKey,
-            requiredDatabaseNow(binding),
+            now,
           )
         : undefined;
     });
@@ -244,6 +252,7 @@ export class NodeBrokerService {
     key: string,
     digest: string,
     encryptionKey: Buffer,
+    proof: string,
   ): Promise<JoinCredentialResponse> {
     const deadline = Date.now() + this.providerTimeoutMs + 5_000;
     while (Date.now() < deadline) {
@@ -252,6 +261,7 @@ export class NodeBrokerService {
         key,
         digest,
         encryptionKey,
+        proof,
       );
       if (existing) return existing;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -483,6 +493,11 @@ function ttl(expiry: Date, now: Date) {
     1,
     Math.min(300, Math.floor((expiry.getTime() - now.getTime()) / 1000)),
   );
+}
+function credentialExpiry(binding: BrokerBinding): Date {
+  return binding.enrollmentExpiresAt.getTime() < binding.planExpiresAt.getTime()
+    ? binding.enrollmentExpiresAt
+    : binding.planExpiresAt;
 }
 const UUID =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
