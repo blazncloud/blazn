@@ -105,7 +105,7 @@ if [ "$MODE" = deploy ]; then
   require_command docker
   require_command jq
   require_command sha256sum
-  docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is unavailable"
+  DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli} docker compose version >/dev/null 2>&1 || die "Blazn-owned Docker Compose v2 is unavailable"
   require_command flock
   [ -d "$DATA_ROOT/postgres" ] || die "prepared PostgreSQL directory is missing"
   [ -d "$DATA_ROOT/objects" ] || die "prepared object directory is missing"

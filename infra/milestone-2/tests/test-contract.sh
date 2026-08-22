@@ -5,6 +5,7 @@ TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 compose=$ROOT_DIR/compose.yaml
 ngrok=$ROOT_DIR/ngrok.example.yml
+unit=$ROOT_DIR/systemd/blazn-control-plane.service
 
 # The first four strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
@@ -28,6 +29,8 @@ done
 
 grep -F 'addr: http://127.0.0.1:58080' "$ngrok" >/dev/null
 grep -F 'domain: blazn.benpelo.com' "$ngrok" >/dev/null
+# This is intentionally the literal shell-style interpolation token.
+# shellcheck disable=SC2016
 if grep -F '${NGROK_AUTHTOKEN}' "$ngrok" >/dev/null; then
   printf 'ngrok config incorrectly relies on shell interpolation\n' >&2
   exit 1
@@ -36,6 +39,7 @@ if grep -E '^[[:space:]]+addr:' "$ngrok" | grep -Ev 'http://127\.0\.0\.1:58080$'
   printf 'ngrok config exposes a data-plane endpoint\n' >&2
   exit 1
 fi
+grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
 
 for script in "$ROOT_DIR"/scripts/*.sh "$ROOT_DIR"/tests/*.sh; do
   sh -n "$script"
