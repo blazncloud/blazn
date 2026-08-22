@@ -169,5 +169,6 @@ CREATE TABLE node_audit_events (
 
 GRANT SELECT, INSERT, UPDATE ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operations, node_operation_events, node_audit_events TO blazn_runtime;
 GRANT SELECT ON TABLE node_join_issuances TO blazn_runtime;
+GRANT SELECT ON TABLE nodes, node_enrollments, node_install_plans TO blazn_node_broker;
 GRANT SELECT, INSERT, UPDATE ON TABLE node_join_issuances TO blazn_node_broker;
 REVOKE ALL ON TABLE nodes, node_enrollments, node_identities, node_capability_versions, node_heartbeat_state, node_install_plans, node_install_receipts, node_operations, node_operation_events, node_join_issuances, node_audit_events FROM blazn_bootstrap;

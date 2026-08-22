@@ -74,6 +74,10 @@ is the persistence source of truth. The migration role creates the tables;
 infrastructure must provision `blazn_node_broker` as a no-login-or-dedicated,
 non-superuser, no-create-role/database, no-replication, no-bypass-RLS role
 before migration and grant it only the join-issuance operations in the migration.
+The broker has read-only access to the Node, enrollment, and signed-plan rows
+needed for verification, plus select/insert/update on join issuances. It has no
+membership, user, credential, capability, operation, or general Node mutation
+privilege.
 
 Operator authorization occurs before idempotency replay. The same
 `(principal, operation, idempotency-key)` cannot create different resources;
