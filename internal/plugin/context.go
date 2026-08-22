@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"runtime"
 	"strings"
 )
 
@@ -160,7 +161,11 @@ func allowedPluginEnvironment(name, pluginName string) bool {
 			return true
 		}
 		if pluginName == "social" {
-			switch upper {
+			socialSetting := name
+			if runtime.GOOS == "windows" {
+				socialSetting = upper
+			}
+			switch socialSetting {
 			case "BLAZN_SOCIAL_HOME", "BLAZN_SEC_USER_AGENT", "HUNTER_API_KEY":
 				return true
 			}

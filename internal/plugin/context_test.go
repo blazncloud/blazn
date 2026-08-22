@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,21 @@ func TestRuntimeEnvironmentDoesNotCrossPluginCredentialBoundaries(t *testing.T) 
 	}
 	if len(environment) != 2 || environment[0] != "PATH=/bin" || !strings.HasPrefix(environment[1], RuntimeContextEnvironment+"=") {
 		t.Fatalf("content environment received Social values: %#v", environment)
+	}
+}
+
+func TestSocialSettingNamesRespectPlatformCaseSemantics(t *testing.T) {
+	context := validRuntimeContext(t)
+	environment, err := runtimeEnvironment([]string{"PATH=/bin", "hunter_api_key=wrong-case"}, context, "social")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLength := 2
+	if runtime.GOOS == "windows" {
+		wantLength = 3
+	}
+	if len(environment) != wantLength {
+		t.Fatalf("environment=%#v want length=%d", environment, wantLength)
 	}
 }
 

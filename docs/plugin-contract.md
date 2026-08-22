@@ -86,8 +86,9 @@ Three existing Social settings cross that boundary by exact name only:
 `BLAZN_SOCIAL_HOME`, `BLAZN_SEC_USER_AGENT`, and `HUNTER_API_KEY`. They are
 available only when dispatching the `social` plugin, are not exposed to Content
 or future plugins, and are excluded from the pre-activation candidate
-handshake. Broader provider credentials remain credential-store work rather
-than ambient environment inheritance.
+handshake. Names are exact on case-sensitive platforms and follow Windows'
+case-insensitive environment semantics. Broader provider credentials remain
+credential-store work rather than ambient environment inheritance.
 
 Plugins reject unknown fields, incoherent states, unsafe origins, unsupported
 versions, and contexts larger than 16 KiB. The runtime envelope is metadata,
