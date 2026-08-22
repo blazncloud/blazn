@@ -11,6 +11,20 @@ import (
 	"testing"
 )
 
+func TestReleaseViewArgsCanPinExactPluginVersion(t *testing.T) {
+	latest, err := releaseViewArgs(socialDefinition, "")
+	if err != nil || strings.Join(latest, " ") != "release view --repo blazncloud/blazn-social --json tagName" {
+		t.Fatalf("latest args=%v err=%v", latest, err)
+	}
+	exact, err := releaseViewArgs(socialDefinition, "v0.1.0")
+	if err != nil || strings.Join(exact, " ") != "release view v0.1.0 --repo blazncloud/blazn-social --json tagName" {
+		t.Fatalf("exact args=%v err=%v", exact, err)
+	}
+	if _, err := releaseViewArgs(socialDefinition, "latest; unsafe"); err == nil {
+		t.Fatal("unsafe plugin version override accepted")
+	}
+}
+
 func TestCandidateHandshakeMustMatchSignedManifest(t *testing.T) {
 	directory := t.TempDir()
 	expected := validManifest("v1.0.0")

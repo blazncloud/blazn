@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 type Status struct {
@@ -33,6 +34,7 @@ type execProcessRunner struct{}
 
 func (execProcessRunner) Run(ctx context.Context, path string, args []string, streams Stdio) (int, error) {
 	command := exec.CommandContext(ctx, path, args...)
+	command.Env = pluginEnvironment(os.Environ())
 	command.Stdin, command.Stdout, command.Stderr = streams.Stdin, streams.Stdout, streams.Stderr
 	err := command.Run()
 	if err == nil {
@@ -43,6 +45,27 @@ func (execProcessRunner) Run(ctx context.Context, path string, args []string, st
 		return exitErr.ExitCode(), nil
 	}
 	return 1, err
+}
+
+func pluginEnvironment(environment []string) []string {
+	blocked := map[string]bool{
+		"BLAZN_PLUGIN_VERSION":    true,
+		"GH_ENTERPRISE_TOKEN":     true,
+		"GH_TOKEN":                true,
+		"GITHUB_ENTERPRISE_TOKEN": true,
+		"GITHUB_TOKEN":            true,
+	}
+	result := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		key := entry
+		if separator := strings.IndexByte(entry, '='); separator >= 0 {
+			key = entry[:separator]
+		}
+		if !blocked[key] {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 type Service struct {
