@@ -1,0 +1,154 @@
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"runtime"
+	"strings"
+)
+
+const (
+	ExitSuccess     = 0
+	ExitFailure     = 1
+	ExitUsage       = 2
+	ExitUnavailable = 7
+)
+
+type OutputFormat string
+
+const (
+	OutputHuman OutputFormat = "human"
+	OutputJSON  OutputFormat = "json"
+)
+
+type BuildInfo struct {
+	Version         string `json:"version"`
+	Commit          string `json:"commit"`
+	BuildTime       string `json:"buildTime"`
+	GOOS            string `json:"goos"`
+	GOARCH          string `json:"goarch"`
+	ContractVersion string `json:"contractVersion"`
+}
+
+type App struct {
+	stdout io.Writer
+	stderr io.Writer
+	build  BuildInfo
+	doctor func() DoctorReport
+}
+
+func New(stdout, stderr io.Writer, build BuildInfo) *App {
+	if build.GOOS == "" {
+		build.GOOS = runtime.GOOS
+	}
+	if build.GOARCH == "" {
+		build.GOARCH = runtime.GOARCH
+	}
+	return &App{
+		stdout: stdout,
+		stderr: stderr,
+		build:  build,
+		doctor: func() DoctorReport { return RunDoctor(build) },
+	}
+}
+
+func (a *App) Run(args []string) int {
+	format, positional, err := parseGlobalOptions(args)
+	if err != nil {
+		return a.writeError(format, ExitUsage, "usage", err.Error())
+	}
+
+	if len(positional) == 0 {
+		return a.writeHelp(format, "")
+	}
+
+	command := positional[0]
+	rest := positional[1:]
+	switch command {
+	case "help":
+		if len(rest) > 1 {
+			return a.writeError(format, ExitUsage, "usage", "help accepts at most one command name")
+		}
+		topic := ""
+		if len(rest) == 1 {
+			topic = rest[0]
+		}
+		return a.writeHelp(format, topic)
+	case "-h", "--help":
+		if len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "root help does not accept arguments")
+		}
+		return a.writeHelp(format, "")
+	case "version":
+		if helpRequested(rest) {
+			return a.writeHelp(format, "version")
+		}
+		if len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "version does not accept arguments")
+		}
+		return a.writeVersion(format)
+	case "doctor":
+		if helpRequested(rest) {
+			return a.writeHelp(format, "doctor")
+		}
+		if len(rest) != 0 {
+			return a.writeError(format, ExitUsage, "usage", "doctor does not accept arguments")
+		}
+		return a.writeDoctor(format)
+	default:
+		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown command %q", command))
+	}
+}
+
+func parseGlobalOptions(args []string) (OutputFormat, []string, error) {
+	format := OutputHuman
+	positional := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--output":
+			if i+1 >= len(args) {
+				return format, nil, fmt.Errorf("--output requires human or json")
+			}
+			i++
+			value, err := outputFormat(args[i])
+			if err != nil {
+				return format, nil, err
+			}
+			format = value
+		case strings.HasPrefix(arg, "--output="):
+			value, err := outputFormat(strings.TrimPrefix(arg, "--output="))
+			if err != nil {
+				return format, nil, err
+			}
+			format = value
+		default:
+			positional = append(positional, arg)
+		}
+	}
+	return format, positional, nil
+}
+
+func outputFormat(value string) (OutputFormat, error) {
+	switch OutputFormat(value) {
+	case OutputHuman, OutputJSON:
+		return OutputFormat(value), nil
+	default:
+		return OutputHuman, fmt.Errorf("invalid --output value %q; expected human or json", value)
+	}
+}
+
+func helpRequested(args []string) bool {
+	return len(args) == 1 && (args[0] == "-h" || args[0] == "--help")
+}
+
+func (a *App) writeJSON(value any) int {
+	encoder := json.NewEncoder(a.stdout)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		fmt.Fprintf(a.stderr, "blazn: failed to write output: %v\n", err)
+		return ExitFailure
+	}
+	return ExitSuccess
+}
