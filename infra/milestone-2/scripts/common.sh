@@ -40,10 +40,14 @@ assert_not_symlink_chain() {
 assert_directory_owned_mode() {
   path=$1
   expected_uid=$2
-  expected_mode=$3
+  expected_modes=$3
   [ -d "$path" ] && [ ! -L "$path" ] || die "expected a non-symlink directory: $path"
   [ "$(stat -c '%u' "$path")" = "$expected_uid" ] || die "directory has unexpected owner: $path"
-  [ "$(stat -c '%a' "$path")" = "$expected_mode" ] || die "directory has unexpected mode: $path"
+  actual_mode=$(stat -c '%a' "$path")
+  case ",$expected_modes," in
+    *,"$actual_mode",*) ;;
+    *) die "directory has unexpected mode: $path" ;;
+  esac
 }
 
 assert_regular_file_owned_mode() {

@@ -11,4 +11,4 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/run/lock/blazn-poc
+ReadWritePaths=-/run/lock/blazn-poc
