@@ -210,7 +210,7 @@ func TestLogoutRevokesThenDeletes(t *testing.T) {
 	api := &fakeAPI{}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
-	if err != nil || result.Status != "logged_out" || api.deleted != 1 || store.deleted != 1 {
+	if err != nil || result.Status != "logged_out" || api.revokeSessions != 1 || api.deleted != 0 || store.deleted != 1 {
 		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
 	}
 }
@@ -219,7 +219,7 @@ func TestLogoutRefreshesExpiredAccessBeforeRemoteRevocation(t *testing.T) {
 	api := &fakeAPI{session: client.Session{AccessToken: "fresh-access", RefreshToken: "fresh-refresh", ExpiresIn: 300, DeviceID: "dev-1"}}
 	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
-	if err != nil || result.Status != "logged_out" || api.refreshes != 1 || api.deletedToken != "fresh-access" || store.deleted != 1 {
+	if err != nil || result.Status != "logged_out" || api.refreshes != 1 || api.revokeSessions != 1 || api.revokeSessionRequest.RefreshToken != "fresh-refresh" || store.deleted != 1 {
 		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
 	}
 }
@@ -243,7 +243,7 @@ func TestLogoutPreservesLocalCredentialWhenExpiredSessionCannotRefresh(t *testin
 }
 
 func TestLogoutPreservesLocalCredentialWhenRemoteRevocationFails(t *testing.T) {
-	api := &fakeAPI{deleteErr: errors.New("network unavailable")}
+	api := &fakeAPI{revokeSessionErr: errors.New("network unavailable")}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
 	if err == nil || result.Status != "logout_failed" || result.RemoteRevoked || store.deleted != 0 {

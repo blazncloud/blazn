@@ -293,7 +293,7 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 			if err != nil {
 				return err
 			}
-			if err := revoker.RevokeSession(ctx, request); err != nil && !isDefinitiveCredentialError(err) {
+			if err := revoker.RevokeSession(ctx, request); err != nil && !isRefreshCredentialError(err) {
 				return fmt.Errorf("proof-bound session revocation failed; local session preserved: %w", err)
 			}
 		} else {
@@ -465,7 +465,7 @@ func (s *Service) revokeIssuedSession(ctx context.Context, session client.Sessio
 			if proofErr == nil {
 				proofErr = revoker.RevokeSession(ctx, request)
 			}
-			if proofErr == nil || isDefinitiveCredentialError(proofErr) {
+			if proofErr == nil || isRefreshCredentialError(proofErr) {
 				revokeErr = nil
 			} else {
 				revokeErr = fmt.Errorf("access revocation failed: %v; proof-bound revocation failed: %w", revokeErr, proofErr)

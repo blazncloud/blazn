@@ -244,7 +244,7 @@ async function revokeSessionWithProof(request: IncomingMessage, response: Server
   try {
     await client.query("BEGIN");
     const result = await client.query<{ session_id: string; public_key: string }>(`SELECT s.id AS session_id, d.public_key FROM sessions s JOIN devices d ON d.id=s.device_id
-      WHERE s.device_id=$1 AND s.revoked_at IS NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id FOR UPDATE`, [deviceId]);
+      WHERE s.device_id=$1 AND s.refresh_token_hash=$2 AND s.revoked_at IS NULL AND d.revoked_at IS NULL AND d.user_id=s.user_id FOR UPDATE`, [deviceId, tokenHash(refreshToken)]);
     const session = result.rows[0];
     if (!session) throw new HttpError("session_revoked", "the session or device is already revoked");
     const canonical = `blazn-refresh-v1\n${deviceId}\n${tokenHash(refreshToken)}`;
