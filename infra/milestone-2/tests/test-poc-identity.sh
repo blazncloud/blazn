@@ -129,14 +129,14 @@ for failpoint in after-second-user after-second-group after-second-home after-ow
   fi
   grep -F 'injected POC CLI cleanup failure' "$fixture/$failpoint.err" >/dev/null
 done
-[ -e "$fixture/ownership/identity-cleanup.runtime.json" ]
-[ "$(sudo stat -c %a "$fixture/ownership/identity-cleanup.runtime.json")" = 444 ]
 for failpoint in after-db after-files after-receipt; do
   if FAKE_POC_IDENTITY_FAILPOINT=$failpoint run_manage cleanup >"$fixture/identity-$failpoint.out" 2>"$fixture/identity-$failpoint.err"; then
     printf 'POC identity cleanup failpoint unexpectedly passed: %s\n' "$failpoint" >&2
     exit 1
   fi
   grep -F 'injected POC identity cleanup failure' "$fixture/identity-$failpoint.err" >/dev/null
+  [ -e "$fixture/ownership/identity-cleanup.runtime.json" ]
+  [ "$(sudo stat -c %a "$fixture/ownership/identity-cleanup.runtime.json")" = 444 ]
 done
 run_manage cleanup >"$fixture/cleanup.out"
 [ ! -e "$fixture/identity" ]
