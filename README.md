@@ -44,7 +44,10 @@ curl -fsSL \
 The default destination is `~/.local/bin`. When needed, the installer adds that
 directory to the detected zsh, bash, or POSIX shell profile, so new terminals
 can invoke `blazn` directly. Set `BLAZN_NO_PATH_UPDATE=1` when a managed
-environment owns shell configuration.
+environment owns shell configuration. During installation, named stages are
+printed and the release archive displays a terminal progress bar. Set
+`BLAZN_NO_PROGRESS=1` to hide only the bar or `BLAZN_QUIET=1` to suppress all
+non-error installer progress.
 
 Verify the installation and run offline diagnostics:
 

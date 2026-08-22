@@ -83,6 +83,19 @@ run_installer() {
   BLAZN_VERSION="$test_version" \
   BLAZN_INSTALL_DIR="$test_install" \
   BLAZN_SHELL_PROFILE="$test_profile" \
+  BLAZN_QUIET=1 \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
+run_installer_with_progress() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_SHELL_PROFILE="$test_profile" \
+  BLAZN_NO_PROGRESS=1 \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
     sh "$test_repo_root/scripts/install.sh"
@@ -95,6 +108,7 @@ run_installer_without_path_update() {
   BLAZN_INSTALL_DIR="$test_install" \
   BLAZN_SHELL_PROFILE="$1" \
   BLAZN_NO_PATH_UPDATE=1 \
+  BLAZN_QUIET=1 \
   BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
   BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
     sh "$test_repo_root/scripts/install.sh"
@@ -177,11 +191,23 @@ process_start_of() {
 }
 
 write_manifest
-run_installer >/dev/null
+run_installer_with_progress >"$test_root/progress.out" 2>&1
 [ -x "$test_install/blazn" ] || fail "signed archive installs executable"
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "installed binary runs"
 grep -q '^version=v1.2.3$' "$test_install/.blazn-install-receipt" || fail "receipt records version"
 pass "signed archive installs with receipt"
+
+for progress_message in \
+  'Checking installer prerequisites' \
+  'Downloading signed release metadata' \
+  'Verifying release signature' \
+  "Downloading $test_asset" \
+  'Verifying release archive' \
+  "Installing to $test_install"; do
+  grep -Fq "blazn installer: $progress_message" "$test_root/progress.out" || \
+    fail "installer progress is missing: $progress_message"
+done
+pass "install reports each download, verification, and installation stage"
 
 expected_path_line="export PATH='$test_install':\"\$PATH\""
 [ -f "$test_profile" ] || fail "installer did not create the selected shell profile"
@@ -450,4 +476,4 @@ grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fai
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
-printf '1..22\n'
+printf '1..23\n'
