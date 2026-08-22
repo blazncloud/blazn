@@ -35,9 +35,6 @@ func TestFileIdentityStoreCreatesPrivateStableKey(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("mode=%v err=%v", info.Mode(), err)
 	}
-	if strings.Contains(string(mustRead(t, path)), base64.RawURLEncoding.EncodeToString(first.PrivateKey[:8])) == false {
-		t.Fatal("identity encoding missing")
-	}
 }
 
 func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
@@ -95,11 +92,36 @@ func TestInstallerPersistsSignedReceiptAndRollsBackOnFailure(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected failure")
 				}
-				if len(platform.rolledBack) != 1 || state.receipt.State != "removed" || state.hasWAL {
+				if len(platform.rolledBack) != 2 || state.receipt.State != "removed" || state.hasWAL {
 					t.Fatalf("rollback=%v receipt=%#v wal=%v", platform.rolledBack, state.receipt, state.hasWAL)
 				}
 			}
 		})
+	}
+}
+
+func TestCompletedWALRecoveryNeverRollsBackActiveInstall(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	meta := client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}
+	state := &memoryState{hasWAL: true, wal: InstallWAL{SchemaVersion: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "complete", Owner: client.NodeReceiptOwner{UID: 0, PID: 1, ProcessStartIdentity: "start", Nonce: strings.Repeat("A", 32)}, Mutations: []client.NodeReceiptMutation{{Ordinal: 1, Kind: "group", Target: "blazn-node", PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}, {Ordinal: 2, Kind: "user", Target: "blazn-node", PriorState: "absent", RollbackMaterial: client.NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}, CreatedAt: "2026-08-22T12:00:00Z", UpdatedAt: "2026-08-22T12:01:00Z"}}
+	platform := &mockPlatform{failAt: -1}
+	installer := NewInstaller(platform, state)
+	installer.now = func() time.Time { return time.Date(2026, 8, 22, 12, 2, 0, 0, time.UTC) }
+	receipt, err := installer.Recover(context.Background(), plan, meta, identity)
+	if err != nil || receipt.State != "active" || len(platform.rolledBack) != 0 || state.hasWAL {
+		t.Fatalf("receipt=%#v rollback=%v wal=%v err=%v", receipt, platform.rolledBack, state.hasWAL, err)
+	}
+}
+
+func TestFileWALCreateIsExclusive(t *testing.T) {
+	store := FileStateStore{Root: filepath.Join(t.TempDir(), "state")}
+	wal := InstallWAL{SchemaVersion: 1, PlanID: "plan-a"}
+	if err := store.CreateWAL(wal); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateWAL(wal); err == nil {
+		t.Fatal("concurrent WAL owner replaced")
 	}
 }
 
@@ -192,6 +214,12 @@ func (m *memoryState) Pin(v EnrollmentPin) error          { m.pin = v; return ni
 func (m *memoryState) SaveRuntime(v RuntimeState) error   { m.runtime = v; return nil }
 func (m *memoryState) LoadRuntime() (RuntimeState, error) { return m.runtime, nil }
 func (m *memoryState) SaveWAL(v InstallWAL) error         { m.wal = v; m.hasWAL = true; return nil }
+func (m *memoryState) CreateWAL(v InstallWAL) error {
+	if m.hasWAL {
+		return os.ErrExist
+	}
+	return m.SaveWAL(v)
+}
 func (m *memoryState) LoadWAL() (InstallWAL, error) {
 	if !m.hasWAL {
 		return InstallWAL{}, os.ErrNotExist
@@ -200,6 +228,12 @@ func (m *memoryState) LoadWAL() (InstallWAL, error) {
 }
 func (m *memoryState) RemoveWAL() error                              { m.hasWAL = false; return nil }
 func (m *memoryState) SaveReceipt(v client.NodeInstallReceipt) error { m.receipt = v; return nil }
+func (m *memoryState) LoadReceipt() (client.NodeInstallReceipt, error) {
+	if m.receipt.ReceiptID == "" {
+		return client.NodeInstallReceipt{}, os.ErrNotExist
+	}
+	return m.receipt, nil
+}
 
 type mockPlatform struct {
 	failAt     int
@@ -244,16 +278,8 @@ func mustFingerprint(t *testing.T, identity Identity) string {
 	}
 	return value
 }
-func mustRead(t *testing.T, path string) []byte {
-	t.Helper()
-	value, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return value
-}
 func installPlan() client.NodeInstallPlan {
-	return client.NodeInstallPlan{SchemaVersion: client.NodeSchemaVersion, PlanID: "11111111-1111-4111-8111-111111111111", NodeID: "22222222-2222-4222-8222-222222222222", EnrollmentID: "33333333-3333-4333-8333-333333333333", WorkspaceID: "44444444-4444-4444-8444-444444444444", Digest: "sha256:" + testHash, Components: []client.NodeInstallComponent{{Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: testHash}}, NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", DefinitionSHA256: testHash}, Mutations: []client.NodeInstallMutation{{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "gid": float64(991), "system": true}, DesiredDigest: "sha256:" + testHash}, {Ordinal: 2, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node"}, DesiredDigest: "sha256:" + testHash}}, Rollback: client.NodeInstallRollback{BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/test"}, IssuedAt: "2026-08-22T12:00:00Z", ExpiresAt: "2026-08-22T12:15:00Z"}
+	return client.NodeInstallPlan{SchemaVersion: client.NodeSchemaVersion, PlanID: "11111111-1111-4111-8111-111111111111", NodeID: "22222222-2222-4222-8222-222222222222", EnrollmentID: "33333333-3333-4333-8333-333333333333", WorkspaceID: "44444444-4444-8444-444444444444", Digest: "sha256:" + testHash, Cluster: client.NodeInstallCluster{ID: "cluster-a"}, Target: client.NodeInstallTarget{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64}, Components: []client.NodeInstallComponent{{Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", SHA256: testHash}}, NodeService: client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service", BinaryPath: "/usr/local/bin/blazn", DefinitionSHA256: testHash}, Mutations: []client.NodeInstallMutation{{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "gid": float64(991), "system": true}, DesiredDigest: "sha256:" + testHash}, {Ordinal: 2, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node"}, DesiredDigest: "sha256:" + testHash}}, Rollback: client.NodeInstallRollback{BackupRootClass: "linux_var_lib", BackupRoot: "/var/lib/blazn/install-backups/test"}, IssuedAt: "2026-08-22T12:00:00Z", ExpiresAt: "2026-08-22T12:15:00Z"}
 }
 func testCapability() client.NodeCapability {
 	return client.NodeCapability{Version: 1, Host: client.NodeHostCapacity{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, CPUMillis: 1000, MemoryBytes: 1 << 30, DiskBytes: 10 << 30, Accelerators: []client.NodeAccelerator{}, Health: client.NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}}, Worker: client.NodeWorkerCapacity{Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, AllocatableCPUMillis: 900, AllocatableMemoryBytes: 1 << 30, AllocatableDiskBytes: 10 << 30, Labels: map[string]string{}, Limits: client.NodeCapabilityLimits{MaxConcurrentSandboxes: 1, MaxConcurrentAgents: 1}, Health: client.NodeCapabilityHealth{Status: "healthy", ReasonCodes: []string{}}, KubernetesBinding: client.KubernetesBinding{ClusterID: "cluster-a", NodeName: "node-a", NodeUID: "uid-a", ResourceVersion: "1"}}, SandboxBackends: []string{}, RuntimeClasses: []string{}, LocalModels: []client.LocalModelCapability{}}

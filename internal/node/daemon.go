@@ -59,6 +59,17 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
+	fingerprint, err := identity.Fingerprint()
+	if err != nil || fingerprint != state.Exchange.Identity.PublicKeyFingerprint {
+		return HeartbeatResult{}, errors.New("local node identity differs from the enrolled identity")
+	}
+	expiresAt, err := time.Parse(time.RFC3339, state.Exchange.Identity.ExpiresAt)
+	if err != nil || !d.now().Before(expiresAt) {
+		return HeartbeatResult{}, errors.New("node identity is expired")
+	}
+	if capability.Host.Platform != state.Exchange.Plan.Target.Platform || capability.Host.Architecture != state.Exchange.Plan.Target.Architecture || capability.Worker.Architecture != state.Exchange.Plan.Target.Architecture || capability.Worker.KubernetesBinding.ClusterID != state.Exchange.Plan.Cluster.ID {
+		return HeartbeatResult{}, errors.New("node capability differs from the verified install plan binding")
+	}
 	digest, err := client.NodeCapabilityDigest(capability)
 	if err != nil {
 		return HeartbeatResult{}, err

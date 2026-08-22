@@ -46,9 +46,11 @@ type StateStore interface {
 	SaveRuntime(RuntimeState) error
 	LoadRuntime() (RuntimeState, error)
 	SaveWAL(InstallWAL) error
+	CreateWAL(InstallWAL) error
 	LoadWAL() (InstallWAL, error)
 	RemoveWAL() error
 	SaveReceipt(client.NodeInstallReceipt) error
+	LoadReceipt() (client.NodeInstallReceipt, error)
 }
 
 type FileStateStore struct{ Root string }
@@ -64,6 +66,16 @@ func (s FileStateStore) LoadRuntime() (RuntimeState, error) {
 	return v, err
 }
 func (s FileStateStore) SaveWAL(v InstallWAL) error { return s.write("install-wal.json", v) }
+func (s FileStateStore) CreateWAL(v InstallWAL) error {
+	if !filepath.IsAbs(s.Root) {
+		return errors.New("node state root must be absolute")
+	}
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return writePrivateCreate(filepath.Join(s.Root, "install-wal.json"), encoded)
+}
 func (s FileStateStore) LoadWAL() (InstallWAL, error) {
 	var v InstallWAL
 	err := s.read("install-wal.json", 256<<10, &v)
@@ -81,6 +93,14 @@ func (s FileStateStore) RemoveWAL() error {
 }
 func (s FileStateStore) SaveReceipt(v client.NodeInstallReceipt) error {
 	return s.write("install-receipt.json", v)
+}
+func (s FileStateStore) LoadReceipt() (client.NodeInstallReceipt, error) {
+	var v client.NodeInstallReceipt
+	err := s.read("install-receipt.json", 256<<10, &v)
+	if err == nil {
+		err = client.ValidateNodeInstallReceipt(v)
+	}
+	return v, err
 }
 
 func (s FileStateStore) write(name string, v any) error {

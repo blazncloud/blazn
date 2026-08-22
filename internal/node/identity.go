@@ -60,7 +60,7 @@ func (s FileIdentityStore) LoadOrCreate() (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	if err := writePrivateAtomic(s.Path, encoded); err != nil {
+	if err := writePrivateCreate(s.Path, encoded); err != nil {
 		if value, readErr := readPrivateFile(s.Path, 4096); readErr == nil {
 			return decodeIdentity(value)
 		}
@@ -123,6 +123,46 @@ func writePrivateAtomic(path string, value []byte) error {
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err == nil {
+		_ = directory.Sync()
+		_ = directory.Close()
+	}
+	return nil
+}
+
+func writePrivateCreate(path string, value []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(dir); err != nil || info.Mode().Perm() != 0700 || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("private state directory is unsafe")
+	}
+	tmp, err := os.CreateTemp(dir, ".create-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(value); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmpPath, path); err != nil {
 		return err
 	}
 	directory, err := os.Open(dir)

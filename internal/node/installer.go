@@ -62,7 +62,7 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 	}
 	created := i.now().UTC()
 	wal := InstallWAL{SchemaVersion: 1, PlanID: plan.PlanID, PlanDigest: plan.Digest, NodeID: plan.NodeID, Stage: "preflight", Owner: owner, Mutations: []client.NodeReceiptMutation{}, CreatedAt: nowString(created), UpdatedAt: nowString(created)}
-	if err := i.state.SaveWAL(wal); err != nil {
+	if err := i.state.CreateWAL(wal); err != nil {
 		return client.NodeInstallReceipt{}, err
 	}
 	mutations := append([]client.NodeInstallMutation(nil), plan.Mutations...)
@@ -80,12 +80,6 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 			return client.NodeInstallReceipt{}, err
 		}
 		if err := i.platform.Apply(ctx, mutation); err != nil {
-			if prior.State == "absent" {
-				wal.Mutations[len(wal.Mutations)-1].Status = "removed"
-			} else {
-				wal.Mutations[len(wal.Mutations)-1].Status = "restored"
-			}
-			_ = i.state.SaveWAL(wal)
 			return i.failAndRollback(ctx, plan, identityMeta, identity, servicePrior, &wal, fmt.Errorf("apply mutation %d: %w", mutation.Ordinal, err))
 		}
 		wal.Mutations[len(wal.Mutations)-1].Status = "applied"
@@ -96,6 +90,11 @@ func (i *Installer) Install(ctx context.Context, plan client.NodeInstallPlan, id
 	}
 	if err := i.platform.Verify(ctx, plan); err != nil {
 		return i.failAndRollback(ctx, plan, identityMeta, identity, servicePrior, &wal, fmt.Errorf("verify install: %w", err))
+	}
+	wal.Stage = "complete"
+	wal.UpdatedAt = nowString(i.now())
+	if err := i.state.SaveWAL(wal); err != nil {
+		return client.NodeInstallReceipt{}, err
 	}
 	receipt, err := i.receipt(plan, identityMeta, identity, servicePrior, wal, "active", nil)
 	if err != nil {
@@ -121,6 +120,19 @@ func (i *Installer) Recover(ctx context.Context, plan client.NodeInstallPlan, id
 	servicePrior, err := i.platform.ServiceState(ctx, plan.NodeService)
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
+	}
+	if wal.Stage == "complete" {
+		receipt, err := i.receipt(plan, identityMeta, identity, servicePrior, wal, "active", nil)
+		if err != nil {
+			return receipt, err
+		}
+		if err := i.state.SaveReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		if err := i.state.RemoveWAL(); err != nil {
+			return receipt, err
+		}
+		return receipt, nil
 	}
 	residues := i.rollback(ctx, plan, &wal)
 	state := "removed"
@@ -171,7 +183,7 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 	wal.Stage = "configure"
 	for index := len(wal.Mutations) - 1; index >= 0; index-- {
 		entry := &wal.Mutations[index]
-		if entry.Status != "applied" {
+		if entry.Status != "applied" && entry.Status != "pending" {
 			continue
 		}
 		mutation, ok := byOrdinal[entry.Ordinal]
