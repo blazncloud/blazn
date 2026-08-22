@@ -80,7 +80,8 @@ applied=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USE
 if [ "$phase" = rollback-started ]; then
   role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")
   if [ "$role_count" = 1 ]; then
-    cat_sql='BEGIN;
+    cat <<'SQL' | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+BEGIN;
 REASSIGN OWNED BY blazn_node_broker TO blazn_migration;
 DROP OWNED BY blazn_node_broker;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM blazn_node_broker;
@@ -93,8 +94,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_node_broker;
 DO $revoke$ DECLARE database_row record; BEGIN FOR database_row IN SELECT datname FROM pg_database LOOP EXECUTE format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM blazn_node_broker',database_row.datname); END LOOP; END $revoke$;
 DROP ROLE blazn_node_broker;
-COMMIT;'
-    printf '%s\n' "$cat_sql" | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+COMMIT;
+SQL
   elif [ "$role_count" != 0 ]; then die "could not determine broker role state"; fi
   write_phase role-removed "$retained"; phase=role-removed; test_fault role-removed
 fi

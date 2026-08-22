@@ -101,7 +101,9 @@ docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c '
 setup_broker
 verify pre-migration >/dev/null
 
-rollback_sql='BEGIN;
+emit_rollback_sql() {
+  cat <<'SQL'
+BEGIN;
 REASSIGN OWNED BY blazn_node_broker TO blazn_migration;
 DROP OWNED BY blazn_node_broker;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM blazn_node_broker;
@@ -113,10 +115,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON SEQUENCES FROM blazn_node_broker;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_node_broker;
 DO $revoke$ DECLARE database_row record; BEGIN FOR database_row IN SELECT datname FROM pg_database LOOP EXECUTE format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM blazn_node_broker',database_row.datname); END LOOP; END $revoke$;
-DROP ROLE blazn_node_broker;'
-if { printf '%s\nSELECT 1/0;\nCOMMIT;\n' "$rollback_sql"; } | docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >"$tmp/out" 2>"$tmp/err"; then printf 'failing rollback transaction unexpectedly passed\n' >&2; exit 1; fi
+DROP ROLE blazn_node_broker;
+SQL
+}
+if { emit_rollback_sql; printf 'SELECT 1/0;\nCOMMIT;\n'; } | docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >"$tmp/out" 2>"$tmp/err"; then printf 'failing rollback transaction unexpectedly passed\n' >&2; exit 1; fi
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")" = 1 ] || { printf 'interrupted rollback did not roll back DROP ROLE\n' >&2; exit 1; }
-{ printf '%s\nCOMMIT;\n' "$rollback_sql"; } | docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >/dev/null
+{ emit_rollback_sql; printf 'COMMIT;\n'; } | docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn >/dev/null
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")" = 0 ] || { printf 'completed rollback left the role\n' >&2; exit 1; }
 setup_broker
 
