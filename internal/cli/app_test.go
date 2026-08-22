@@ -290,7 +290,7 @@ func TestRunUninstallAtHonorsLifecycleLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runUninstallAt(executable); err == nil || !strings.Contains(err.Error(), "another Blazn install or uninstall") {
+	if _, err := runUninstallAt(executable); err == nil || !strings.Contains(err.Error(), "another or stale Blazn install or uninstall") {
 		t.Fatalf("expected lifecycle lock refusal, got %v", err)
 	}
 	if _, err := os.Stat(executable); err != nil {
