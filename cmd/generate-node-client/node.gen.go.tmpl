@@ -469,6 +469,113 @@ func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
 	return nil
 }
 
+func DecodeNodeInstallPlan(reader io.Reader) (NodeInstallPlan, error) {
+	var plan NodeInstallPlan
+	raw, err := decodeStrictNodeObject(reader, &plan)
+	if err != nil {
+		return plan, err
+	}
+	if err := requireNodeFields(raw, "schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "mode", "cluster", "target", "components", "mutations", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"); err != nil {
+		return plan, err
+	}
+	for key, fields := range map[string][]string{
+		"cluster":  {"id", "workerOnly", "bootstrapTaint", "expectedCaFingerprint"},
+		"target":   {"platform", "architecture", "machineFingerprint", "minCpu", "minMemoryBytes", "minDiskBytes"},
+		"rollback": {"preserveUserData", "preserveControlPlane", "ambiguousOwnership"},
+	} {
+		if err := requireNodeNestedFields(raw, key, fields...); err != nil {
+			return plan, err
+		}
+	}
+	if err := requireNodeArrayFields(raw, "components", "name", "version", "source", "sha256", "ownership"); err != nil {
+		return plan, err
+	}
+	if err := requireNodeArrayFields(raw, "mutations", "ordinal", "kind", "target", "desiredDigest", "rollback"); err != nil {
+		return plan, err
+	}
+	return plan, ValidateNodeInstallPlan(plan)
+}
+
+func DecodeNodeInstallReceipt(reader io.Reader) (NodeInstallReceipt, error) {
+	var receipt NodeInstallReceipt
+	raw, err := decodeStrictNodeObject(reader, &receipt)
+	if err != nil {
+		return receipt, err
+	}
+	if err := requireNodeFields(raw, "schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "owner", "binary", "service", "mutations", "createdAt", "updatedAt", "checksum"); err != nil {
+		return receipt, err
+	}
+	for key, fields := range map[string][]string{
+		"owner":   {"uid", "pid", "processStartIdentity", "nonce"},
+		"binary":  {"path", "digest"},
+		"service": {"manager", "name", "definitionDigest"},
+	} {
+		if err := requireNodeNestedFields(raw, key, fields...); err != nil {
+			return receipt, err
+		}
+	}
+	if err := requireNodeArrayFields(raw, "mutations", "ordinal", "kind", "target", "priorState", "desiredDigest", "status"); err != nil {
+		return receipt, err
+	}
+	if _, exists := raw["residues"]; exists {
+		if err := requireNodeArrayFields(raw, "residues", "target", "reason"); err != nil {
+			return receipt, err
+		}
+	}
+	return receipt, ValidateNodeInstallReceipt(receipt)
+}
+
+func decodeStrictNodeObject(reader io.Reader, output any) (map[string]json.RawMessage, error) {
+	encoded, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > 1<<20 {
+		return nil, fmt.Errorf("node JSON exceeds 1 MiB")
+	}
+	if err := decodeClosedNodeResponse(bytes.NewReader(encoded), output); err != nil {
+		return nil, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &raw); err != nil || raw == nil {
+		return nil, fmt.Errorf("node JSON must be an object")
+	}
+	return raw, nil
+}
+
+func requireNodeFields(raw map[string]json.RawMessage, fields ...string) error {
+	for _, field := range fields {
+		if _, exists := raw[field]; !exists {
+			return fmt.Errorf("required field %s is missing", field)
+		}
+	}
+	return nil
+}
+
+func requireNodeNestedFields(raw map[string]json.RawMessage, key string, fields ...string) error {
+	var nested map[string]json.RawMessage
+	if err := json.Unmarshal(raw[key], &nested); err != nil || nested == nil {
+		return fmt.Errorf("%s must be an object", key)
+	}
+	if err := requireNodeFields(nested, fields...); err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	return nil
+}
+
+func requireNodeArrayFields(raw map[string]json.RawMessage, key string, fields ...string) error {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(raw[key], &items); err != nil || items == nil {
+		return fmt.Errorf("%s must be an array", key)
+	}
+	for index, item := range items {
+		if err := requireNodeFields(item, fields...); err != nil {
+			return fmt.Errorf("%s[%d]: %w", key, index, err)
+		}
+	}
+	return nil
+}
+
 func validatePlanMutations(mutations []NodeInstallMutation) error {
 	seen := make(map[int64]struct{}, len(mutations))
 	for index, mutation := range mutations {
@@ -531,9 +638,6 @@ func (c *Client) ExchangeNodeEnrollment(ctx context.Context, enrollmentID string
 		return output, fmt.Errorf("node enrollment exchange request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-enrollments/"+url.PathEscape(enrollmentID)+"/exchange", "", "", "", request, &output, http.StatusOK)
-	if err == nil {
-		err = ValidateNodeInstallPlan(output)
-	}
 	return output, err
 }
 
@@ -665,6 +769,14 @@ func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProo
 	if output == nil || success == http.StatusNoContent {
 		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 		return err
+	}
+	if plan, ok := output.(*NodeInstallPlan); ok {
+		decoded, err := DecodeNodeInstallPlan(response.Body)
+		if err != nil {
+			return fmt.Errorf("decode node response: %w", err)
+		}
+		*plan = decoded
+		return nil
 	}
 	if err := decodeClosedNodeResponse(io.LimitReader(response.Body, 1<<20), output); err != nil {
 		return fmt.Errorf("decode node response: %w", err)

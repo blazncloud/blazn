@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -125,5 +126,16 @@ func TestExchangeRejectsUnknownOrTrailingPlanFields(t *testing.T) {
 		if err == nil {
 			t.Fatalf("unsafe response suffix %q passed", suffix)
 		}
+	}
+}
+
+func TestDecodeNodeInstallPlanRequiresPresentCollections(t *testing.T) {
+	encoded, _ := json.Marshal(validNodeInstallPlan())
+	var raw map[string]any
+	_ = json.Unmarshal(encoded, &raw)
+	delete(raw, "components")
+	encoded, _ = json.Marshal(raw)
+	if _, err := DecodeNodeInstallPlan(bytes.NewReader(encoded)); err == nil || !strings.Contains(err.Error(), "components") {
+		t.Fatalf("missing components error=%v", err)
 	}
 }
