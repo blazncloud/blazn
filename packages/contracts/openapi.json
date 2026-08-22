@@ -85,7 +85,7 @@
           "userCode": {"type": "string", "minLength": 6, "maxLength": 32},
           "verificationUri": {"type": "string", "format": "uri", "pattern": "^https://"},
           "verificationUriComplete": {"type": "string", "format": "uri", "pattern": "^https://"},
-          "challenge": {"type": "string", "minLength": 32, "maxLength": 256},
+		  "challenge": {"type": "string", "description": "One-time server challenge bound to this device authorization", "minLength": 32, "maxLength": 256},
           "expiresIn": {"type": "integer", "minimum": 60, "maximum": 900},
           "interval": {"type": "integer", "minimum": 1, "maximum": 30}
         }
@@ -95,7 +95,7 @@
         "required": ["deviceCode", "proof"],
         "properties": {
           "deviceCode": {"type": "string", "minLength": 32, "maxLength": 256},
-		  "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature", "pattern": "^[A-Za-z0-9_-]{86}$"}
+		  "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature over blazn-device-session-v1, deviceCode, and challenge separated by newlines", "pattern": "^[A-Za-z0-9_-]{86}$"}
         }
       },
       "RefreshSessionRequest": {
@@ -104,7 +104,7 @@
         "properties": {
           "refreshToken": {"type": "string", "minLength": 32, "maxLength": 512},
           "deviceId": {"type": "string", "minLength": 1, "maxLength": 128},
-		  "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature", "pattern": "^[A-Za-z0-9_-]{86}$"}
+		  "proof": {"type": "string", "description": "Unpadded base64url Ed25519 signature over blazn-refresh-v1, deviceId, and lowercase SHA-256 hex of refreshToken separated by newlines", "pattern": "^[A-Za-z0-9_-]{86}$"}
         }
       },
       "Session": {
