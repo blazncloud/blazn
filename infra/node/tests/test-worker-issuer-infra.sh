@@ -15,7 +15,7 @@ trap cleanup EXIT HUP INT TERM
 helper=$top/helper
 printf '#!/bin/sh\nexit 0\n' >"$helper"; chmod 0755 "$helper"
 systemctl=$top/systemctl
-# shellcheck disable=SC2016 -- variables belong to the generated fake.
+# shellcheck disable=SC2016
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$BLAZN_TEST_LOG"\n' >"$systemctl"; chmod 0755 "$systemctl"
 tmpfiles=$top/tmpfiles
 printf '#!/bin/sh\nexit 0\n' >"$tmpfiles"; chmod 0755 "$tmpfiles"

@@ -77,7 +77,7 @@ current=$(jq -er .phase "$RECEIPT")
 if [ "$current" = initialized ]; then
   raw=$ROOT/.issuer-raw.$$
   keytmp=$ROOT/.issuer-key.$$
-  openssl rand 32 -out "$raw"; chmod 0600 "$raw"; sync_path "$raw"
+  openssl rand -out "$raw" 32; chmod 0600 "$raw"; sync_path "$raw"
   openssl base64 -A -in "$raw" | tr '+/' '-_' | tr -d '=' >"$keytmp"
   chmod 0400 "$keytmp"; sync_path "$keytmp"; rm -f -- "$raw"
   [ "$(wc -c <"$keytmp" | tr -d ' ')" = 43 ] || die "issuer key encoding is invalid"
