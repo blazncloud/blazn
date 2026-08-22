@@ -7,6 +7,11 @@ short-lived worker join credential for a deterministic issuance UUID, or revoke
 that exact provider handle.
 
 The compiled production socket is `/run/blazn/microk8s-worker-issuer.sock`.
+Durable issuance/revocation state is rooted at the Linux-only privileged path
+`/var/lib/blazn-node-root/microk8s-worker-issuer`, never beneath the
+daemon-owned `/var/lib/blazn` tree. macOS hosts do not run this helper directly;
+their digest-bound Lima worker uses the same Linux root-state contract inside
+the VM.
 The receipt installer must create `/run/blazn` as root and the broker primary
 group with mode `0750`; the helper creates the socket as root and that group
 with mode `0660`. Tests inject the provider object directly; production has no

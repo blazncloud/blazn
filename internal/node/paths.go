@@ -9,9 +9,10 @@ import (
 )
 
 const (
-	LinuxNodeServiceStateRoot = "/var/lib/blazn/node"
-	LinuxNodeRootStateRoot    = "/var/lib/blazn-node-root"
-	LinuxNodeProfileRoot      = "/etc/blazn/node/profiles"
+	LinuxNodeServiceStateRoot    = "/var/lib/blazn/node"
+	LinuxNodeRootStateRoot       = "/var/lib/blazn-node-root"
+	LinuxNodeProfileRoot         = "/etc/blazn/node/profiles"
+	LinuxMicroK8sIssuerStateRoot = "/var/lib/blazn-node-root/microk8s-worker-issuer"
 
 	MacOSNodeServiceStateRoot = "/Library/Application Support/Blazn/Node"
 	MacOSNodeRootStateRoot    = "/Library/Application Support/BlaznNodeRoot"

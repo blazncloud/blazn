@@ -6,18 +6,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/KingJammin/blazn/internal/microk8sissuer"
 	"os"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/KingJammin/blazn/internal/microk8sissuer"
+	nodepkg "github.com/KingJammin/blazn/internal/node"
 )
 
 const (
 	configPath = "/etc/blazn/microk8s-worker-issuer/config.json"
 	keyPath    = "/etc/blazn/microk8s-worker-issuer/issuer-hmac-v1"
 	socketPath = "/run/blazn/microk8s-worker-issuer.sock"
-	stateRoot  = "/var/lib/blazn/microk8s-worker-issuer"
+	stateRoot  = nodepkg.LinuxMicroK8sIssuerStateRoot
 	tokenFile  = "/var/snap/microk8s/current/credentials/cluster-tokens.txt"
 )
 

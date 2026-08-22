@@ -251,6 +251,9 @@ those platform root-state trees. They never share a parent controlled by the
 Node daemon account. Service-owned identity/runtime state remains separately at
 `/var/lib/blazn/node` on Linux and `/Library/Application Support/Blazn/Node` on
 macOS; macOS never relies on the `/var` symlink.
+The Linux MicroK8s credential issuer also stores its durable issuance journal at
+`/var/lib/blazn-node-root/microk8s-worker-issuer`; it may not fall back to the
+daemon-owned legacy parent.
 Account mutations are first-class receipt entries. A newly created `group` or
 `user` has prior state `absent`, absent rollback material, and is marked
 `removed` when rolled back. An adopted or previously receipt-owned account has
