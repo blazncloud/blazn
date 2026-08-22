@@ -74,7 +74,7 @@ type fakeAPI struct {
 	revokeSessionRequest client.RefreshSessionRequest
 	revokeSessionErr     error
 	revokeSessions       int
-	stableRevokeRequest  RevokeSessionRequest
+	stableRevokeRequest  client.RevokeSessionRequest
 	stableRevokeErr      error
 	stableRevokes        int
 }
@@ -114,12 +114,7 @@ func (a *fakeAPI) GetCurrentUser(context.Context, string) (client.CurrentUser, e
 	}
 	return a.current, a.currentErr
 }
-func (a *fakeAPI) RevokeSession(_ context.Context, request client.RefreshSessionRequest) error {
-	a.revokeSessions++
-	a.revokeSessionRequest = request
-	return a.revokeSessionErr
-}
-func (a *fakeAPI) RevokeSessionWithDeviceProof(_ context.Context, request RevokeSessionRequest) error {
+func (a *fakeAPI) RevokeSession(_ context.Context, request client.RevokeSessionRequest) error {
 	a.stableRevokes++
 	a.stableRevokeRequest = request
 	return a.stableRevokeErr

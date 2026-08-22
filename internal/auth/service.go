@@ -40,17 +40,8 @@ type API interface {
 	RevokeDevice(context.Context, string, string) error
 }
 
-type ProofBoundSessionRevoker interface {
-	RevokeSession(context.Context, client.RefreshSessionRequest) error
-}
-
-type RevokeSessionRequest struct {
-	DeviceID string `json:"deviceId"`
-	Proof    string `json:"proof"`
-}
-
 type StableDeviceSessionRevoker interface {
-	RevokeSessionWithDeviceProof(context.Context, RevokeSessionRequest) error
+	RevokeSession(context.Context, client.RevokeSessionRequest) error
 }
 
 type Credentials struct {
@@ -316,7 +307,7 @@ func (s *Service) Status(ctx context.Context) (StatusResult, error) {
 		}
 		current, err := s.api.GetCurrentUser(ctx, credentials.AccessToken)
 		if err != nil {
-			if client.IsCode(err, "session_revoked") {
+			if client.IsCode(err, "access_expired") {
 				credentials, err = s.refreshCredentialsLocked(ctx, credentials)
 				if errors.Is(err, ErrNotFound) {
 					result = StatusResult{Authenticated: false, Store: s.store.Description()}
@@ -360,18 +351,9 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 		if err != nil {
 			return fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
 		}
-		revoker, ok := s.api.(ProofBoundSessionRevoker)
 		if stableErr := s.revokeSessionStable(ctx, credentials); stableErr == nil {
 			// Stable device proof does not depend on the current refresh-token
 			// generation, so response loss and rotation cannot orphan the session.
-		} else if ok {
-			request, err := refreshProofRequest(credentials)
-			if err != nil {
-				return err
-			}
-			if err := revoker.RevokeSession(ctx, request); err != nil {
-				return fmt.Errorf("proof-bound session revocation failed; local session preserved: %w", err)
-			}
 		} else {
 			remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
 			if remoteErr != nil {
@@ -551,16 +533,6 @@ func (s *Service) revokeIssuedSession(ctx context.Context, session client.Sessio
 		credentials := Credentials{APIOrigin: s.origin, AccessToken: session.AccessToken, RefreshToken: session.RefreshToken, DeviceID: session.DeviceID, ExpiresAt: s.now(), DevicePrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}
 		if stableErr := s.revokeSessionStable(ctx, credentials); stableErr == nil {
 			revokeErr = nil
-		} else if revoker, ok := s.api.(ProofBoundSessionRevoker); ok {
-			request, proofErr := refreshProofRequest(credentials)
-			if proofErr == nil {
-				proofErr = revoker.RevokeSession(ctx, request)
-			}
-			if proofErr == nil {
-				revokeErr = nil
-			} else {
-				revokeErr = fmt.Errorf("access revocation failed: %v; proof-bound revocation failed: %w", revokeErr, proofErr)
-			}
 		}
 	}
 	return revokeErr
@@ -575,20 +547,20 @@ func (s *Service) revokeSessionStable(ctx context.Context, credentials Credentia
 	if err != nil {
 		return err
 	}
-	if err := revoker.RevokeSessionWithDeviceProof(ctx, request); err != nil && !isStableRevocationConfirmation(err) {
+	if err := revoker.RevokeSession(ctx, request); err != nil && !isStableRevocationConfirmation(err) {
 		return err
 	}
 	return nil
 }
 
-func stableRevokeRequest(credentials Credentials) (RevokeSessionRequest, error) {
+func stableRevokeRequest(credentials Credentials) (client.RevokeSessionRequest, error) {
 	privateKey, err := decodePrivateKey(credentials.DevicePrivateKey)
 	if err != nil {
-		return RevokeSessionRequest{}, err
+		return client.RevokeSessionRequest{}, err
 	}
 	payload := "blazn-session-revoke-v1\n" + credentials.DeviceID
 	proof := base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte(payload)))
-	return RevokeSessionRequest{DeviceID: credentials.DeviceID, Proof: proof}, nil
+	return client.RevokeSessionRequest{DeviceID: credentials.DeviceID, Proof: proof}, nil
 }
 
 func isStableRevocationConfirmation(err error) bool {
@@ -628,7 +600,7 @@ func isRefreshCredentialError(err error) bool {
 }
 
 func isDefinitiveCredentialError(err error) bool {
-	for _, code := range []string{"session_invalid", "refresh_invalid", "device_revoked"} {
+	for _, code := range []string{"session_invalid", "refresh_invalid", "session_revoked", "device_revoked"} {
 		if client.IsCode(err, code) {
 			return true
 		}
