@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -112,17 +113,15 @@ rendered_plans.append({
     "wantValid": False,
 })
 
-go_source = textwrap.dedent(
+go_test_source = textwrap.dedent(
     """\
-    package main
+    package client
 
     import (
         "bytes"
         "encoding/json"
-        "fmt"
         "os"
-
-        client "github.com/KingJammin/blazn/internal/client"
+        "testing"
     )
 
     type testCase struct {
@@ -131,18 +130,21 @@ go_source = textwrap.dedent(
         WantValid bool            `json:"wantValid"`
     }
 
-    func main() {
+    func TestRenderedPlans(t *testing.T) {
         var cases []testCase
-        if err := json.NewDecoder(os.Stdin).Decode(&cases); err != nil {
-            panic(err)
+        input, err := os.Open("cases.json")
+        if err != nil { t.Fatal(err) }
+        defer input.Close()
+        if err := json.NewDecoder(input).Decode(&cases); err != nil {
+            t.Fatal(err)
         }
         for _, test := range cases {
-            _, err := client.DecodeNodeInstallPlan(bytes.NewReader(test.Plan))
+            _, err := DecodeNodeInstallPlan(bytes.NewReader(test.Plan))
             if test.WantValid && err != nil {
-                panic(fmt.Sprintf("%s rejected by generated validator: %v", test.Name, err))
+                t.Fatalf("%s rejected by generated validator: %v", test.Name, err)
             }
             if !test.WantValid && err == nil {
-                panic(fmt.Sprintf("%s accepted by generated validator", test.Name))
+                t.Fatalf("%s accepted by generated validator", test.Name)
             }
         }
     }
@@ -157,13 +159,21 @@ go_env.update({
     "GOFLAGS": "-mod=readonly",
 })
 with tempfile.TemporaryDirectory(prefix=".node-plan-validator-", dir=repo) as temp_dir:
-    helper = pathlib.Path(temp_dir) / "main.go"
-    helper.write_text(go_source)
+    module = pathlib.Path(temp_dir)
+    client_dir = module / "client"
+    jcs_dir = module / "jcs"
+    client_dir.mkdir()
+    jcs_dir.mkdir()
+    (module / "go.mod").write_text('module node-plan-validator\n\ngo 1.24\n\nrequire github.com/gowebpki/jcs v0.0.0\nreplace github.com/gowebpki/jcs => ./jcs\n')
+    (jcs_dir / "go.mod").write_text('module github.com/gowebpki/jcs\n\ngo 1.24\n')
+    (jcs_dir / "jcs.go").write_text('package jcs\nfunc Transform(value []byte) ([]byte, error) { panic("canonicalization is outside this validator-only gate") }\n')
+    shutil.copy2(repo / "internal" / "client" / "node.gen.go", client_dir / "node.gen.go")
+    (client_dir / "node_validator_test.go").write_text(go_test_source)
+    (client_dir / "cases.json").write_text(json.dumps(rendered_plans))
     result = subprocess.run(
-        ["go", "run", helper],
-        cwd=repo,
+        ["go", "test", "./client"],
+        cwd=module,
         env=go_env,
-        input=json.dumps(rendered_plans),
         text=True,
         capture_output=True,
         check=False,
