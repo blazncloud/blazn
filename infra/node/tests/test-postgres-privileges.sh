@@ -124,10 +124,12 @@ if { emit_rollback_sql; printf 'SELECT 1/0;\nCOMMIT;\n'; } | docker exec -i "$co
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select count(*) from pg_roles where rolname='blazn_node_broker'")" = 0 ] || { printf 'completed rollback left the role\n' >&2; exit 1; }
 setup_broker
 
-for migration in 004_nodes.sql 005_node_broker_security.sql 006_node_plan_signing_trust.sql; do
+for migration in 004_nodes.sql 005_node_broker_security.sql 006_node_plan_signing_trust.sql 007_node_broker_connect.sql 008_node_broker_intents.sql; do
   docker exec -i "$container" env PGPASSWORD=1111111111111111111111111111111111111111111111111111111111111111 psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_migration -d blazn <"$REPO_ROOT/services/control-api/migrations/$migration" >/dev/null
 done
 verify post-migration >/dev/null
+
+[ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_table_privilege('blazn_node_broker','node_join_issuances','INSERT'),has_table_privilege('blazn_node_broker','node_join_issuances','UPDATE'),has_column_privilege('blazn_node_broker','node_join_issuances','id','INSERT'),has_column_privilege('blazn_node_broker','node_join_issuances','joined_node_uid','INSERT'),has_table_privilege('blazn_node_broker','node_join_issuance_intents','SELECT'),has_table_privilege('blazn_node_broker','node_join_issuance_intents','INSERT'),has_column_privilege('blazn_node_broker','node_join_issuance_intents','status','UPDATE'),has_function_privilege('blazn_node_broker','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE'),has_function_privilege('blazn_runtime','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')")" = 'f|f|t|f|t|f|t|t|f' ] || { printf 'broker issuance/intent/function privilege matrix differs\n' >&2; exit 1; }
 
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_table_privilege('blazn_runtime','node_enrollments','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','status','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','plan_signing_key_id','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','plan_signing_public_key','UPDATE'),has_column_privilege('blazn_runtime','node_enrollments','plan_signing_key_fingerprint','UPDATE')")" = 'f|t|f|f|f' ] || { printf 'runtime enrollment signing-key update privilege matrix differs\n' >&2; exit 1; }
 docker exec "$container" env PGPASSWORD=2222222222222222222222222222222222222222222222222222222222222222 psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_runtime -d blazn -c 'UPDATE node_enrollments SET status=status WHERE false' >/dev/null

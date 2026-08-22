@@ -76,8 +76,13 @@ assert_empty "select nspname from pg_namespace where nspname !~ '^pg_' and nspna
 assert_empty "select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
   where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind='S' and
   (has_sequence_privilege(current_user,c.oid,'USAGE') or has_sequence_privilege(current_user,c.oid,'SELECT') or has_sequence_privilege(current_user,c.oid,'UPDATE')) order by 1" sequence
-assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-  where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+if [ "$mode" = post-migration ]; then
+  assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and p.oid<>'node_broker_lock_join_binding(uuid,uuid,uuid)'::regprocedure and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+else
+  assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+fi
 assert_empty "select pg_get_userbyid(d.defaclrole) || ':' || coalesce(n.nspname,'*') || ':' || d.defaclobjtype::text || ':' || coalesce(r.rolname,'PUBLIC') || ':' || x.privilege_type
   from pg_default_acl d left join pg_namespace n on n.oid=d.defaclnamespace cross join lateral aclexplode(d.defaclacl) x left join pg_roles r on r.oid=x.grantee
   where (x.grantee=0 or x.grantee=(select oid from pg_roles where rolname=current_user)) order by 1" default
