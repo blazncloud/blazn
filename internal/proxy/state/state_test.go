@@ -8,6 +8,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,25 +23,19 @@ func TestStoreWritesChecksummedSingleLinkRecords(t *testing.T) {
 	journal := testJournal()
 	receipt := writeActiveRecords(t, store, journal)
 
-	err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error {
-		readJournal, err := locked.ReadJournal()
-		if err != nil {
-			return err
-		}
-		readReceipt, err := locked.ReadReceipt()
-		if err != nil {
-			return err
-		}
-		if err := ValidateBinding(readJournal, readReceipt); err != nil {
-			return err
-		}
-		if readJournal.Checksum == "" || readReceipt.Checksum == "" || receipt.Checksum == "" {
-			t.Fatal("records were not checksummed")
-		}
-		return nil
-	})
+	readJournal, err := readJournal(store.paths.Journal, store.uid)
 	if err != nil {
 		t.Fatal(err)
+	}
+	readReceipt, err := readReceipt(store.paths.Receipt, store.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateBinding(readJournal, readReceipt); err != nil {
+		t.Fatal(err)
+	}
+	if readJournal.Checksum == "" || readReceipt.Checksum == "" || receipt.Checksum == "" {
+		t.Fatal("records were not checksummed")
 	}
 	for _, path := range []string{store.paths.Journal, store.paths.Receipt, store.paths.Lock} {
 		info, err := os.Lstat(path)
@@ -135,14 +131,14 @@ func TestReservationMustMatchAndIsConsumedAfterSuccess(t *testing.T) {
 	}
 	changed := reservation
 	changed.Nonce = nonceFor('x')
-	if err := store.WithReservation(context.Background(), changed, func(*LockedStore) error { return nil }); !errors.Is(err, ErrLifecycleConflict) {
+	if err := store.WithReservation(context.Background(), changed, func(*ActivationTransaction) error { return nil }); !errors.Is(err, ErrLifecycleConflict) {
 		t.Fatalf("mismatched reservation error = %v", err)
 	}
 	callbackErr := errors.New("publication failed")
-	if err := store.WithReservation(context.Background(), reservation, func(*LockedStore) error { return callbackErr }); !errors.Is(err, callbackErr) {
+	if err := store.WithReservation(context.Background(), reservation, func(*ActivationTransaction) error { return callbackErr }); !errors.Is(err, callbackErr) {
 		t.Fatalf("callback error = %v", err)
 	}
-	if err := store.WithReservation(context.Background(), reservation, func(*LockedStore) error { return nil }); err != nil {
+	if err := store.WithReservation(context.Background(), reservation, func(*ActivationTransaction) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(store.paths.Reservation); !errors.Is(err, os.ErrNotExist) {
@@ -150,39 +146,153 @@ func TestReservationMustMatchAndIsConsumedAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestEscapedTransactionCannotMutateAfterFenceIsConsumed(t *testing.T) {
+	store := testStore(t)
+	reservation, err := store.Reserve(context.Background(), nonceFor('e'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var escaped *ActivationTransaction
+	if err := store.WithReservation(context.Background(), reservation, func(tx *ActivationTransaction) error {
+		escaped = tx
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	journal := testJournal()
+	journal.State = "prepared"
+	if err := escaped.Prepare(journal); !errors.Is(err, ErrLifecycleConflict) {
+		t.Fatalf("escaped transaction error = %v", err)
+	}
+	if _, err := os.Stat(store.paths.Journal); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("escaped transaction mutated state: %v", err)
+	}
+}
+
+func TestActivePreflightReservationBlocksRecoverAndReconcile(t *testing.T) {
+	store := testStore(t)
+	journal := testJournal()
+	writeActiveRecords(t, store, journal)
+	reservation, err := store.Reserve(context.Background(), nonceFor('b'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := &fakeEnvironment{}
+	listener := newFakeListener(proofFromJournal(journal))
+	if _, err := store.Recover(context.Background(), environment, listener); !errors.Is(err, ErrLifecycleConflict) {
+		t.Fatalf("recover error = %v", err)
+	}
+	if _, err := store.Reconcile(context.Background()); !errors.Is(err, ErrLifecycleConflict) {
+		t.Fatalf("reconcile error = %v", err)
+	}
+	if listener.stopCalls != 0 || len(environment.requests) != 0 {
+		t.Fatalf("reserved preflight was mutated: stop=%d CAS=%d", listener.stopCalls, len(environment.requests))
+	}
+	if err := store.CancelReservation(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAtomicWriteFaultsNeverExposeCorruptRecord(t *testing.T) {
-	points := []string{"state.temp.opened", "state.temp.written", "state.temp.synced", "state.temp.closed", "state.renamed", "state.parent.synced"}
-	for _, point := range points {
-		t.Run(point, func(t *testing.T) {
+	type faultCase struct {
+		point      string
+		occurrence int
+	}
+	cases := []faultCase{{"state.removed", 1}, {"state.remove.parent.synced", 1}}
+	for _, point := range []string{"state.temp.opened", "state.temp.written", "state.temp.synced", "state.temp.closed", "state.renamed", "state.parent.synced"} {
+		cases = append(cases, faultCase{point, 1}, faultCase{point, 2})
+	}
+	for _, testCase := range cases {
+		name := testCase.point + "-occurrence-" + strconv.Itoa(testCase.occurrence)
+		t.Run(name, func(t *testing.T) {
 			var fail atomic.Bool
+			var seen atomic.Int32
 			fail.Store(true)
 			store := testStoreWithOptions(t, WithFaultInjector(FaultFunc(func(actual string) error {
-				if fail.Load() && actual == point {
-					return errors.New("injected " + point)
+				if fail.Load() && actual == testCase.point && int(seen.Add(1)) == testCase.occurrence {
+					return errors.New("injected " + testCase.point)
 				}
 				return nil
 			})))
 			journal := testJournal()
 			fail.Store(false)
-			if err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error { return locked.WriteJournal(journal) }); err != nil {
+			writeActiveRecords(t, store, journal)
+			reservation, err := store.Reserve(context.Background(), nonceFor('f'), time.Minute)
+			if err != nil {
 				t.Fatal(err)
 			}
 			fail.Store(true)
-			journal.Generation = 2
-			journal.UpdatedAt = journal.UpdatedAt.Add(time.Second)
-			_ = store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error { return locked.WriteJournal(journal) })
+			next := *journal
+			next.State = "recovery_required"
+			next.UpdatedAt = next.UpdatedAt.Add(time.Second)
+			_ = store.WithReservation(context.Background(), reservation, func(tx *ActivationTransaction) error {
+				return tx.Transition(ExpectedActivation{Generation: journal.Generation, State: "active"}, &next, "process_environment")
+			})
 			fail.Store(false)
-			if err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error {
-				got, err := locked.ReadJournal()
-				if err != nil {
-					return err
+			_ = store.CancelReservation(context.Background(), reservation)
+			reconciliation, err := store.Reconcile(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reconciliation.State != ReconciliationActive && reconciliation.State != ReconciliationRecoveryRequired {
+				t.Fatalf("unexpected reconciliation: %+v", reconciliation)
+			}
+			got, err := readJournal(store.paths.Journal, store.uid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != "active" && got.State != "recovery_required" {
+				t.Fatalf("unexpected state %s", got.State)
+			}
+			gotReceipt, receiptErr := readReceipt(store.paths.Receipt, store.uid)
+			if receiptErr == nil {
+				if err := ValidateBinding(got, gotReceipt); err != nil {
+					t.Fatalf("exposed unbound records: %v", err)
 				}
-				if got.Generation != 1 && got.Generation != 2 {
-					t.Fatalf("unexpected generation %d", got.Generation)
+			} else if !errors.Is(receiptErr, ErrNotFound) {
+				t.Fatalf("receipt is neither valid nor missing: %v", receiptErr)
+			}
+		})
+	}
+}
+
+func TestClearRemovalAndDirectorySyncFaultsRemainReconcileable(t *testing.T) {
+	type faultCase struct {
+		point      string
+		occurrence int
+	}
+	for _, testCase := range []faultCase{{"state.removed", 1}, {"state.removed", 2}, {"state.remove.parent.synced", 1}, {"state.remove.parent.synced", 2}} {
+		name := testCase.point + "-occurrence-" + strconv.Itoa(testCase.occurrence)
+		t.Run(name, func(t *testing.T) {
+			var enabled atomic.Bool
+			var seen atomic.Int32
+			store := testStoreWithOptions(t, WithFaultInjector(FaultFunc(func(point string) error {
+				if enabled.Load() && point == testCase.point && int(seen.Add(1)) == testCase.occurrence {
+					return errors.New("injected removal fault")
 				}
 				return nil
-			}); err != nil {
+			})))
+			journal := testJournal()
+			writeActiveRecords(t, store, journal)
+			reservation, err := store.Reserve(context.Background(), nonceFor('c'), time.Minute)
+			if err != nil {
 				t.Fatal(err)
+			}
+			enabled.Store(true)
+			err = store.WithReservation(context.Background(), reservation, func(tx *ActivationTransaction) error {
+				return tx.Clear(ExpectedActivation{Generation: journal.Generation, State: "active"})
+			})
+			if err == nil {
+				t.Fatal("fault was not reached")
+			}
+			enabled.Store(false)
+			_ = store.CancelReservation(context.Background(), reservation)
+			result, reconcileErr := store.Reconcile(context.Background())
+			if reconcileErr != nil {
+				t.Fatal(reconcileErr)
+			}
+			if result.State != ReconciliationInactive && result.State != ReconciliationActive {
+				t.Fatalf("unexpected state after interrupted clear: %+v", result)
 			}
 		})
 	}
@@ -258,13 +368,11 @@ func TestReconcileRepairsReceiptWithoutTouchingRuntime(t *testing.T) {
 	if result.State != ReconciliationActive || !result.ReceiptRepaired || result.ActivationID != journal.ActivationID {
 		t.Fatalf("unexpected reconciliation: %+v", result)
 	}
-	if err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error {
-		repaired, err := locked.ReadReceipt()
-		if err != nil {
-			return err
-		}
-		return ValidateBinding(journal, repaired)
-	}); err != nil {
+	repaired, err := readReceipt(store.paths.Receipt, store.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateBinding(journal, repaired); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -314,20 +422,18 @@ func TestCASConflictPersistsBoundRecoveryRecords(t *testing.T) {
 	if !errors.Is(err, ErrRecoveryRequired) || result.Status != RecoveryRequired {
 		t.Fatalf("result=%+v error=%v", result, err)
 	}
-	if err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error {
-		journal, err := locked.ReadJournal()
-		if err != nil {
-			return err
-		}
-		receipt, err := locked.ReadReceipt()
-		if err != nil {
-			return err
-		}
-		if journal.State != "recovery_required" || receipt.State != "recovery_required" {
-			t.Fatalf("journal=%s receipt=%s", journal.State, receipt.State)
-		}
-		return ValidateBinding(journal, receipt)
-	}); err != nil {
+	persistedJournal, err := readJournal(store.paths.Journal, store.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedReceipt, err := readReceipt(store.paths.Receipt, store.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedJournal.State != "recovery_required" || persistedReceipt.State != "recovery_required" {
+		t.Fatalf("journal=%s receipt=%s", persistedJournal.State, persistedReceipt.State)
+	}
+	if err := ValidateBinding(persistedJournal, persistedReceipt); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -341,6 +447,9 @@ func TestUnverifiedStopRequiresRecovery(t *testing.T) {
 	result, err := store.Recover(context.Background(), &fakeEnvironment{}, listener)
 	if !errors.Is(err, ErrRecoveryRequired) || result.ListenerEvidence != "listener_stop_unverified" {
 		t.Fatalf("result=%+v error=%v", result, err)
+	}
+	if len(result.ManualRemediation) == 0 || !strings.Contains(result.ManualRemediation[0], "do not signal a PID") {
+		t.Fatalf("unsafe or missing listener remediation: %+v", result.ManualRemediation)
 	}
 }
 
@@ -405,18 +514,31 @@ func testJournal() *Journal {
 
 func writeActiveRecords(t *testing.T, store *Store, journal *Journal) *Receipt {
 	t.Helper()
-	var receipt *Receipt
-	if err := store.WithLifecycleLock(context.Background(), func(locked *LockedStore) error {
-		if err := locked.WriteJournal(journal); err != nil {
-			return err
-		}
-		var err error
-		receipt, err = ReceiptFromJournal(journal, "process_environment")
-		if err != nil {
-			return err
-		}
-		return locked.WriteReceipt(receipt)
+	journal.State = "prepared"
+	prepareReservation, err := store.Reserve(context.Background(), nonceFor('p'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithReservation(context.Background(), prepareReservation, func(tx *ActivationTransaction) error {
+		return tx.Prepare(journal)
 	}); err != nil {
+		t.Fatal(err)
+	}
+	next := *journal
+	next.State = "active"
+	next.UpdatedAt = next.UpdatedAt.Add(time.Second)
+	activeReservation, err := store.Reserve(context.Background(), nonceFor('a'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithReservation(context.Background(), activeReservation, func(tx *ActivationTransaction) error {
+		return tx.Transition(ExpectedActivation{Generation: journal.Generation, State: "prepared"}, &next, "process_environment")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	*journal = next
+	receipt, err := readReceipt(store.paths.Receipt, store.uid)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return receipt

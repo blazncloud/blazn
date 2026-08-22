@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"runtime"
+	"sync"
 	"time"
 )
 
@@ -68,15 +70,15 @@ func newStore(paths Paths, uid int, options ...Option) (*Store, error) {
 
 func (s *Store) Paths() Paths { return s.paths }
 
-type LockedStore struct{ store *Store }
+type lockedStore struct{ store *Store }
 
-func (s *Store) WithLifecycleLock(ctx context.Context, operation func(*LockedStore) error) (err error) {
+func (s *Store) withLifecycleLock(ctx context.Context, operation func(*lockedStore) error) (err error) {
 	lock, err := lockFile(ctx, s.paths.Lock, s.uid)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, unlockFile(lock)) }()
-	return operation(&LockedStore{store: s})
+	return operation(&lockedStore{store: s})
 }
 
 type Reservation struct {
@@ -87,14 +89,18 @@ type Reservation struct {
 }
 
 func (s *Store) Reserve(ctx context.Context, nonce string, ttl time.Duration) (Reservation, error) {
-	if len(nonce) < 32 || ttl <= 0 || ttl > 5*time.Minute {
+	if !validNonce(nonce) || ttl <= 0 || ttl > 5*time.Minute {
 		return Reservation{}, fmt.Errorf("%w: invalid reservation", ErrInvalidState)
 	}
 	reservation := Reservation{Nonce: nonce, OwnerUID: s.uid, ExpiresAt: s.now().UTC().Add(ttl)}
-	err := s.WithLifecycleLock(ctx, func(locked *LockedStore) error {
+	err := s.withLifecycleLock(ctx, func(locked *lockedStore) error {
 		current, err := locked.readReservation()
-		if err == nil && current.ExpiresAt.After(s.now()) && current.Nonce != nonce {
-			return ErrLifecycleConflict
+		if err == nil && current.ExpiresAt.After(s.now()) {
+			if current.Nonce != nonce {
+				return ErrLifecycleConflict
+			}
+			reservation = *current
+			return nil
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
@@ -104,16 +110,51 @@ func (s *Store) Reserve(ctx context.Context, nonce string, ttl time.Duration) (R
 	return reservation, err
 }
 
+func (s *Store) withInternalReservation(ctx context.Context, operation func(*lockedStore) error) error {
+	nonce, err := randomSuffix()
+	if err != nil {
+		return err
+	}
+	reservation, err := s.Reserve(ctx, nonce, 30*time.Second)
+	if err != nil {
+		return err
+	}
+	return s.withReservation(ctx, reservation, operation)
+}
+
+type ActivationTransaction struct {
+	mu     sync.Mutex
+	locked *lockedStore
+	active bool
+}
+
 // WithReservation reacquires the lifecycle lock after network/provider checks,
-// verifies the exact nonce and expiry, and consumes the reservation only after
-// the mutation callback succeeds. A failed callback preserves it for recovery.
-func (s *Store) WithReservation(ctx context.Context, reservation Reservation, operation func(*LockedStore) error) error {
-	return s.WithLifecycleLock(ctx, func(locked *LockedStore) error {
+// verifies the exact owner/nonce/expiry/checksum fence, and consumes the
+// reservation only after the transition callback succeeds. A failed callback
+// preserves it for explicit cancellation or expiry-based recovery.
+func (s *Store) WithReservation(ctx context.Context, reservation Reservation, operation func(*ActivationTransaction) error) error {
+	if operation == nil {
+		return ErrInvalidState
+	}
+	return s.withReservation(ctx, reservation, func(locked *lockedStore) error {
+		tx := &ActivationTransaction{locked: locked, active: true}
+		defer func() {
+			tx.mu.Lock()
+			tx.active = false
+			tx.mu.Unlock()
+		}()
+		return operation(tx)
+	})
+}
+
+func (s *Store) withReservation(ctx context.Context, reservation Reservation, operation func(*lockedStore) error) error {
+	return s.withLifecycleLock(ctx, func(locked *lockedStore) error {
 		current, err := locked.readReservation()
 		if err != nil {
 			return fmt.Errorf("%w: reservation missing", ErrLifecycleConflict)
 		}
-		if current.Nonce != reservation.Nonce || current.OwnerUID != s.uid || !current.ExpiresAt.Equal(reservation.ExpiresAt) || !current.ExpiresAt.After(s.now()) {
+		if current.Nonce != reservation.Nonce || current.OwnerUID != s.uid || reservation.OwnerUID != s.uid ||
+			current.Checksum != reservation.Checksum || !current.ExpiresAt.Equal(reservation.ExpiresAt) || !current.ExpiresAt.After(s.now()) {
 			return fmt.Errorf("%w: reservation changed or expired", ErrLifecycleConflict)
 		}
 		if err := operation(locked); err != nil {
@@ -124,7 +165,7 @@ func (s *Store) WithReservation(ctx context.Context, reservation Reservation, op
 }
 
 func (s *Store) CancelReservation(ctx context.Context, reservation Reservation) error {
-	return s.WithLifecycleLock(ctx, func(locked *LockedStore) error {
+	return s.withLifecycleLock(ctx, func(locked *lockedStore) error {
 		current, err := locked.readReservation()
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -132,14 +173,14 @@ func (s *Store) CancelReservation(ctx context.Context, reservation Reservation) 
 		if err != nil {
 			return err
 		}
-		if current.Nonce != reservation.Nonce || current.OwnerUID != s.uid {
+		if current.Nonce != reservation.Nonce || current.OwnerUID != s.uid || reservation.OwnerUID != s.uid || current.Checksum != reservation.Checksum {
 			return ErrLifecycleConflict
 		}
 		return removeSecureFile(s.paths.Reservation, s.uid, s.faults)
 	})
 }
 
-func (locked *LockedStore) WriteJournal(journal *Journal) error {
+func (locked *lockedStore) writeJournal(journal *Journal) error {
 	if journal.OwnerUID != locked.store.uid {
 		return ErrOwnershipAmbiguous
 	}
@@ -153,7 +194,7 @@ func (locked *LockedStore) WriteJournal(journal *Journal) error {
 	return atomicWrite(locked.store.paths.Journal, locked.store.uid, data, locked.store.faults)
 }
 
-func (locked *LockedStore) WriteReceipt(receipt *Receipt) error {
+func (locked *lockedStore) writeReceipt(receipt *Receipt) error {
 	if receipt.OwnerUID != locked.store.uid {
 		return ErrOwnershipAmbiguous
 	}
@@ -167,19 +208,166 @@ func (locked *LockedStore) WriteReceipt(receipt *Receipt) error {
 	return atomicWrite(locked.store.paths.Receipt, locked.store.uid, data, locked.store.faults)
 }
 
-func (locked *LockedStore) ReadJournal() (*Journal, error) {
+func (locked *lockedStore) readJournal() (*Journal, error) {
 	return readJournal(locked.store.paths.Journal, locked.store.uid)
 }
 
-func (locked *LockedStore) ReadReceipt() (*Receipt, error) {
+func (locked *lockedStore) readReceipt() (*Receipt, error) {
 	return readReceipt(locked.store.paths.Receipt, locked.store.uid)
 }
 
-func (locked *LockedStore) RemoveRecords() error {
+func (locked *lockedStore) removeRecords() error {
 	if err := removeSecureFile(locked.store.paths.Receipt, locked.store.uid, locked.store.faults); err != nil {
 		return err
 	}
 	return removeSecureFile(locked.store.paths.Journal, locked.store.uid, locked.store.faults)
+}
+
+type ExpectedActivation struct {
+	Generation int64
+	State      string
+}
+
+// Prepare creates the authoritative journal only when no prior activation
+// evidence exists. It intentionally does not create a receipt until runtime
+// publication becomes active.
+func (tx *ActivationTransaction) Prepare(journal *Journal) error {
+	if tx == nil {
+		return ErrInvalidState
+	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if !tx.active || tx.locked == nil || journal == nil {
+		return ErrLifecycleConflict
+	}
+	if journal.State != "prepared" {
+		return fmt.Errorf("%w: initial journal state must be prepared", ErrInvalidState)
+	}
+	currentJournal, journalErr := tx.locked.readJournal()
+	currentReceipt, receiptErr := tx.locked.readReceipt()
+	if errors.Is(journalErr, ErrNotFound) && errors.Is(receiptErr, ErrNotFound) {
+		return tx.locked.writeJournal(journal)
+	}
+	if ownershipError(journalErr) || ownershipError(receiptErr) || errors.Is(journalErr, ErrInvalidState) || errors.Is(receiptErr, ErrInvalidState) {
+		return ErrOwnershipAmbiguous
+	}
+	if currentJournal != nil || currentReceipt != nil {
+		return ErrLifecycleConflict
+	}
+	return errors.Join(journalErr, receiptErr)
+}
+
+// Transition advances a journal using compare-and-set generation/state. When
+// the journal digest changes, any old receipt is removed and directory-synced
+// first. Every crash point therefore leaves either a bound pair or an
+// authoritative journal with a repairable missing receipt.
+func (tx *ActivationTransaction) Transition(expected ExpectedActivation, next *Journal, mechanism string) error {
+	if tx == nil {
+		return ErrInvalidState
+	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if !tx.active || tx.locked == nil || next == nil {
+		return ErrLifecycleConflict
+	}
+	current, err := tx.locked.readJournal()
+	if err != nil {
+		return err
+	}
+	if current.Generation != expected.Generation || current.State != expected.State {
+		return ErrLifecycleConflict
+	}
+	if next.Generation != current.Generation || !sameActivationIdentity(current, next) || !validStateTransition(current.State, next.State) {
+		return fmt.Errorf("%w: invalid activation transition", ErrInvalidState)
+	}
+	receipt, receiptErr := tx.locked.readReceipt()
+	if ownershipError(receiptErr) {
+		return ErrOwnershipAmbiguous
+	}
+	if receiptErr == nil {
+		if err := ValidateBinding(current, receipt); err != nil {
+			return err
+		}
+	} else if !errors.Is(receiptErr, ErrNotFound) && !errors.Is(receiptErr, ErrInvalidState) {
+		return receiptErr
+	}
+	activatedAt := next.UpdatedAt
+	if receiptErr == nil {
+		activatedAt = receipt.ActivatedAt
+		if mechanism == "" {
+			mechanism = receipt.PublicationMechanism
+		}
+	}
+	if !errors.Is(receiptErr, ErrNotFound) {
+		if err := removeSecureFile(tx.locked.store.paths.Receipt, tx.locked.store.uid, tx.locked.store.faults); err != nil {
+			return err
+		}
+	}
+	if err := tx.locked.writeJournal(next); err != nil {
+		return err
+	}
+	if next.State != "active" && next.State != "recovery_required" {
+		return nil
+	}
+	newReceipt, err := receiptFromJournalAt(next, mechanism, activatedAt)
+	if err != nil {
+		return err
+	}
+	if next.State == "recovery_required" {
+		newReceipt.State = "recovery_required"
+	}
+	return tx.locked.writeReceipt(newReceipt)
+}
+
+// Clear removes a bound activation using compare-and-set state. Receipt-first
+// deletion makes every interruption recoverable from the journal.
+func (tx *ActivationTransaction) Clear(expected ExpectedActivation) error {
+	if tx == nil {
+		return ErrInvalidState
+	}
+	tx.mu.Lock()
+	defer tx.mu.Unlock()
+	if !tx.active || tx.locked == nil {
+		return ErrLifecycleConflict
+	}
+	journal, err := tx.locked.readJournal()
+	if err != nil {
+		return err
+	}
+	if journal.Generation != expected.Generation || journal.State != expected.State {
+		return ErrLifecycleConflict
+	}
+	receipt, receiptErr := tx.locked.readReceipt()
+	if ownershipError(receiptErr) {
+		return ErrOwnershipAmbiguous
+	}
+	if receiptErr == nil {
+		if err := ValidateBinding(journal, receipt); err != nil {
+			return err
+		}
+	} else if !errors.Is(receiptErr, ErrNotFound) && !errors.Is(receiptErr, ErrInvalidState) {
+		return receiptErr
+	}
+	return tx.locked.removeRecords()
+}
+
+func sameActivationIdentity(current, next *Journal) bool {
+	return current.SchemaVersion == next.SchemaVersion && current.ActivationID == next.ActivationID && current.Nonce == next.Nonce &&
+		current.OwnerUID == next.OwnerUID && current.Platform == next.Platform && current.Mode == next.Mode &&
+		current.SessionIdentity == next.SessionIdentity && current.Policy == next.Policy && current.Binary == next.Binary &&
+		current.Listener == next.Listener && current.CreatedAt.Equal(next.CreatedAt) &&
+		reflect.DeepEqual(current.Environment, next.Environment) && reflect.DeepEqual(current.RollbackActions, next.RollbackActions)
+}
+
+func validStateTransition(current, next string) bool {
+	allowed := map[string]map[string]bool{
+		"prepared":          {"publishing": true, "active": true, "recovery_required": true},
+		"publishing":        {"active": true, "recovery_required": true},
+		"active":            {"deactivating": true, "recovery_required": true},
+		"deactivating":      {"recovery_required": true},
+		"recovery_required": {"deactivating": true},
+	}
+	return allowed[current][next]
 }
 
 type ReconciliationState string
@@ -203,9 +391,10 @@ type Reconciliation struct {
 // missing/corrupt receipt; a receipt can never repair a journal because it
 // intentionally contains no prior values.
 func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error) {
-	err = s.WithLifecycleLock(ctx, func(locked *LockedStore) error {
-		journal, journalErr := locked.ReadJournal()
-		receipt, receiptErr := locked.ReadReceipt()
+	var semanticErr error
+	err = s.withInternalReservation(ctx, func(locked *lockedStore) error {
+		journal, journalErr := locked.readJournal()
+		receipt, receiptErr := locked.readReceipt()
 		if ownershipError(journalErr) || ownershipError(receiptErr) {
 			return ErrOwnershipAmbiguous
 		}
@@ -217,14 +406,14 @@ func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error
 			return nil
 		}
 		if journalErr == nil {
-			repaired, err := ReceiptFromJournal(journal, publicationMechanism(journal))
+			repaired, err := receiptFromJournal(journal, publicationMechanism(journal))
 			if err != nil {
 				return err
 			}
 			if journal.State != "active" {
 				repaired.State = "recovery_required"
 			}
-			if err := locked.WriteReceipt(repaired); err != nil {
+			if err := locked.writeReceipt(repaired); err != nil {
 				return err
 			}
 			result = reconciliationFromJournal(journal, true)
@@ -232,7 +421,8 @@ func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error
 		}
 		if receiptErr == nil {
 			result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required"}
-			return ErrRecoveryRequired
+			semanticErr = ErrRecoveryRequired
+			return nil
 		}
 		if errors.Is(journalErr, ErrNotFound) && errors.Is(receiptErr, ErrNotFound) {
 			result.State = ReconciliationInactive
@@ -240,7 +430,7 @@ func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error
 		}
 		return ErrOwnershipAmbiguous
 	})
-	return result, err
+	return result, errors.Join(err, semanticErr)
 }
 
 func reconciliationFromJournal(journal *Journal, repaired bool) Reconciliation {
@@ -307,7 +497,7 @@ func readRecord(path string, uid int, destination any) error {
 	return nil
 }
 
-func (locked *LockedStore) readReservation() (*Reservation, error) {
+func (locked *lockedStore) readReservation() (*Reservation, error) {
 	var reservation Reservation
 	if err := readRecord(locked.store.paths.Reservation, locked.store.uid, &reservation); err != nil {
 		return nil, err
@@ -321,7 +511,7 @@ func (locked *LockedStore) readReservation() (*Reservation, error) {
 	return &reservation, nil
 }
 
-func (locked *LockedStore) writeReservation(reservation *Reservation) error {
+func (locked *lockedStore) writeReservation(reservation *Reservation) error {
 	data, err := marshalChecksummed(reservation, func(checksum string) { reservation.Checksum = checksum })
 	if err != nil {
 		return err
@@ -351,7 +541,11 @@ func ValidateBinding(journal *Journal, receipt *Receipt) error {
 	return nil
 }
 
-func ReceiptFromJournal(journal *Journal, mechanism string) (*Receipt, error) {
+func receiptFromJournal(journal *Journal, mechanism string) (*Receipt, error) {
+	return receiptFromJournalAt(journal, mechanism, journal.UpdatedAt)
+}
+
+func receiptFromJournalAt(journal *Journal, mechanism string, activatedAt time.Time) (*Receipt, error) {
 	if journal.Checksum == "" || validateDigest(journal.Checksum) != nil {
 		return nil, fmt.Errorf("%w: journal must be checksummed first", ErrInvalidState)
 	}
@@ -364,7 +558,7 @@ func ReceiptFromJournal(journal *Journal, mechanism string) (*Receipt, error) {
 		OwnerUID: journal.OwnerUID, JournalDigest: journal.Checksum, PolicyDigest: journal.Policy.Digest,
 		Platform: journal.Platform, Mode: journal.Mode, SessionIdentity: journal.SessionIdentity, Binary: journal.Binary,
 		Listener: journal.Listener, PublicationMechanism: mechanism, Environment: environment,
-		RollbackSummary: append([]RollbackAction(nil), journal.RollbackActions...), ActivatedAt: journal.UpdatedAt, State: "active",
+		RollbackSummary: append([]RollbackAction(nil), journal.RollbackActions...), ActivatedAt: activatedAt, State: "active",
 	}
 	return receipt, receipt.Validate()
 }

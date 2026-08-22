@@ -66,9 +66,10 @@ type RecoveryResult struct {
 }
 
 func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, listener ListenerController) (result RecoveryResult, err error) {
-	err = s.WithLifecycleLock(ctx, func(locked *LockedStore) error {
-		journal, journalErr := locked.ReadJournal()
-		receipt, receiptErr := locked.ReadReceipt()
+	var semanticErr error
+	err = s.withInternalReservation(ctx, func(locked *lockedStore) error {
+		journal, journalErr := locked.readJournal()
+		receipt, receiptErr := locked.readReceipt()
 
 		if ownershipError(journalErr) || ownershipError(receiptErr) {
 			return ErrOwnershipAmbiguous
@@ -90,16 +91,23 @@ func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, li
 		}
 
 		if !journalValid {
-			return s.recoverFromReceiptOnly(ctx, locked, receipt, listener, &result)
+			semanticErr = s.recoverFromReceiptOnly(ctx, locked, receipt, listener, &result)
+			if errors.Is(semanticErr, ErrRecoveryRequired) {
+				return nil
+			}
+			return semanticErr
 		}
 
 		if !receiptValid {
 			mechanism := publicationMechanism(journal)
-			repaired, err := ReceiptFromJournal(journal, mechanism)
+			repaired, err := receiptFromJournal(journal, mechanism)
 			if err != nil {
 				return err
 			}
-			if err := locked.WriteReceipt(repaired); err != nil {
+			if journal.State != "active" {
+				repaired.State = "recovery_required"
+			}
+			if err := locked.writeReceipt(repaired); err != nil {
 				return err
 			}
 			receipt = repaired
@@ -111,6 +119,7 @@ func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, li
 		result.ListenerEvidence = evidence
 		if stopErr != nil {
 			listenerOK = false
+			result.ManualRemediation = append(result.ManualRemediation, manualListener(result.ListenerEvidence)...)
 		}
 
 		environmentOK := true
@@ -133,42 +142,43 @@ func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, li
 		}
 
 		if listenerOK && environmentOK {
-			if err := locked.RemoveRecords(); err != nil {
+			tx := &ActivationTransaction{locked: locked, active: true}
+			if err := tx.Clear(ExpectedActivation{Generation: journal.Generation, State: journal.State}); err != nil {
 				return err
 			}
 			result.Status = RecoveryComplete
 			return nil
 		}
 
-		journal.State = "recovery_required"
-		journal.UpdatedAt = s.now().UTC()
-		if err := locked.WriteJournal(journal); err != nil {
-			return err
-		}
-		recoveryReceipt, err := ReceiptFromJournal(journal, receipt.PublicationMechanism)
-		if err != nil {
-			return err
-		}
-		recoveryReceipt.State = "recovery_required"
-		if err := locked.WriteReceipt(recoveryReceipt); err != nil {
-			return err
+		if journal.State != "recovery_required" {
+			next := *journal
+			next.State = "recovery_required"
+			next.UpdatedAt = s.now().UTC()
+			tx := &ActivationTransaction{locked: locked, active: true}
+			if err := tx.Transition(ExpectedActivation{Generation: journal.Generation, State: journal.State}, &next, receipt.PublicationMechanism); err != nil {
+				return err
+			}
 		}
 		result.Status = RecoveryRequired
-		result.ManualRemediation = manualEnvironment(result.ConflictedEnvironment)
-		return ErrRecoveryRequired
+		result.ManualRemediation = append(result.ManualRemediation, manualEnvironment(result.ConflictedEnvironment)...)
+		semanticErr = ErrRecoveryRequired
+		return nil
 	})
-	return result, err
+	return result, errors.Join(err, semanticErr)
 }
 
-func (s *Store) recoverFromReceiptOnly(ctx context.Context, locked *LockedStore, receipt *Receipt, listener ListenerController, result *RecoveryResult) error {
+func (s *Store) recoverFromReceiptOnly(ctx context.Context, locked *lockedStore, receipt *Receipt, listener ListenerController, result *RecoveryResult) error {
 	evidence, stopErr := stopVerified(ctx, listener, proofFromReceipt(receipt))
 	result.ListenerEvidence = evidence
 	receipt.State = "recovery_required"
-	if err := locked.WriteReceipt(receipt); err != nil {
+	if err := locked.writeReceipt(receipt); err != nil {
 		return err
 	}
 	result.Status = RecoveryRequired
 	result.ManualRemediation = manualEnvironment(EnvironmentNames[:])
+	if stopErr != nil {
+		result.ManualRemediation = append(result.ManualRemediation, manualListener(result.ListenerEvidence)...)
+	}
 	if stopErr != nil {
 		return errors.Join(ErrRecoveryRequired, stopErr)
 	}
@@ -239,4 +249,17 @@ func manualEnvironment(names []string) []string {
 		}
 	}
 	return result
+}
+
+func manualListener(evidence string) []string {
+	switch evidence {
+	case "listener_inspection_failed":
+		return []string{"listener identity could not be inspected; do not signal a PID by number; retry recovery after the platform identity service is available"}
+	case "listener_stop_failed":
+		return []string{"the exact listener identity was verified but stop failed; retry recovery; do not signal a PID manually unless every recorded identity field is independently verified"}
+	case "listener_stop_unverified":
+		return []string{"listener stop could not be verified; do not signal a PID by number; inspect process-start, executable, binary, key, nonce, owner, generation, mode, and session identity before any manual action"}
+	default:
+		return nil
+	}
 }
