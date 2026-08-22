@@ -23,6 +23,8 @@ if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ]; then
   CREATE_JOURNAL=${BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL:?test create journal is required}
 fi
 NODE_SECRETS=${BLAZN_NODE_BROKER_SECRETS_ROOT:-$NODE_ROOT/secrets}
+DEFER_CONFIG=${BLAZN_NODE_UPGRADE_DEFER_CONFIG:-0}
+case "$DEFER_CONFIG" in 0|1) ;; *) die "BLAZN_NODE_UPGRADE_DEFER_CONFIG must be 0 or 1" ;; esac
 [ "$NODE_SECRETS" = "$NODE_ROOT/secrets" ] || die "Node broker secrets root differs from the reviewed path"
 export BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS"
 
@@ -100,11 +102,11 @@ case "$phase" in inputs-backed-up|role-ready|environment-bound|build-ready|compl
 if [ -f "$BUILD_RECEIPT" ]; then CONTROL_API_IMAGE=$(jq -er .image "$BUILD_RECEIPT"); else CONTROL_API_IMAGE=blazn-control-api:upgrade-placeholder; fi
 export CONTROL_API_IMAGE
 compose() { docker compose -f "$M2_ROOT/compose.yaml" --env-file "$ENV_FILE" "$@"; }
-postgres_container=$(compose ps -q postgres)
-[ -n "$postgres_container" ] || die "the exact Blazn PostgreSQL container is not running"
-[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.State.Status}}' "$postgres_container")" = blazn-m2/postgres/running ] || die "the running PostgreSQL container is not the expected Compose service"
 
 if [ "$phase" = inputs-backed-up ]; then
+  postgres_container=$(compose ps -q postgres)
+  [ -n "$postgres_container" ] || die "the exact Blazn PostgreSQL container is not running"
+  [ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.State.Status}}' "$postgres_container")" = blazn-m2/postgres/running ] || die "the running PostgreSQL container is not the expected Compose service"
   url=$(sed -n '1p' "$NODE_SECRETS/database-url"); password=${url#*://*:}; password=${password%%@*}
   {
     printf 'BEGIN;\n'
@@ -129,6 +131,11 @@ if [ "$phase" = inputs-backed-up ]; then
 fi
 
 if [ "$phase" = role-ready ]; then ensure_env_binding; write_phase environment-bound; phase=environment-bound; test_fault environment-bound; fi
+if [ "$phase" = environment-bound ] && [ "$DEFER_CONFIG" = 1 ]; then
+  grep -Fx 'BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets' "$ENV_FILE" >/dev/null || die "environment binding is absent"
+  printf 'Node broker prerequisites are environment-bound; config publication is deferred until after release promotion\n'
+  exit 0
+fi
 if [ "$phase" = environment-bound ]; then
   if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" != 1 ]; then "$M2_ROOT/scripts/build-control-api.sh" >/dev/null; load_control_api_image "$M2_ROOT"; fi
   write_phase build-ready; phase=build-ready; test_fault build-ready

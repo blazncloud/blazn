@@ -71,15 +71,16 @@ candidate=/opt/blazn-releases/<full-commit>
 sudo "$candidate/infra/milestone-2/scripts/with-control-plane-env.sh" \
   "$candidate/infra/milestone-2/scripts/with-control-plane-lock.sh" \
   node-prereqs <correlation-id> auto \
+  env BLAZN_NODE_UPGRADE_DEFER_CONFIG=1 \
   "$candidate/infra/node/scripts/upgrade-control-plane.sh"
 ```
 
-This transaction creates and verifies the restricted broker login and
-root-owned keys, writes the environment binding, rebuilds the candidate API,
-and reconciles the main config/source/build receipt. It may cause the old
-supervisor to stop after the receipt changes; that is expected only after the
-upgrade command itself returns success. Explicitly run `systemctl stop
-blazn-control-plane.service`, clear a failed unit state if necessary, and prove
+This first transaction creates and verifies the restricted broker login and
+root-owned keys and writes the environment binding, then stops at the receipted
+`environment-bound` phase. It deliberately does not rebuild the candidate API
+or change the active build/main receipts, so the old release's `ExecStopPost`
+can still validate its own source and stop its exact Compose project. Explicitly
+run `systemctl stop blazn-control-plane.service` and prove
 the unit is exactly `inactive` and no receipt-owned Compose container remains.
 Do not promote while it is `failed`, activating, deactivating, or any container
 is running.
@@ -89,10 +90,10 @@ release active and PostgreSQL running, follow the Node upgrade receipt's
 journaled rollback/source-restore procedure from the staged candidate, and do
 not continue this runbook.
 
-**Hold point B0:** the Node upgrade receipt, broker authentication and exact
-privilege matrix, environment binding, main ownership receipt, API build
-receipt, and candidate config/source digests all match. PostgreSQL is then
-stopped cleanly with the rest of the old service.
+**Hold point B0:** the Node upgrade receipt is exactly `environment-bound`;
+broker authentication and its exact privilege matrix, key inventory, and
+environment binding match. The old main/build receipts remain byte-identical.
+PostgreSQL is then stopped cleanly with the rest of the old service.
 
 Stop `blazn-control-plane.service` and confirm it is fully inactive. Then invoke
 the staged candidate's `promote-release.sh FULL_COMMIT` under the exact lock.
@@ -107,8 +108,20 @@ service until the next two sections complete.
 
 ## 3. Install and bind the invitation key
 
-With the service stopped and the candidate active, load the root-owned
-environment and invoke the upgrade through the mutation lock:
+With the service stopped and the candidate active, first resume the same Node
+upgrade receipt without the defer flag. The `environment-bound` resume no
+longer needs PostgreSQL: it builds the candidate image and atomically publishes
+the Node-bound build/main config receipts.
+
+```sh
+sudo /opt/blazn/infra/milestone-2/scripts/with-control-plane-env.sh \
+  /opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh \
+  node-config <correlation-id> auto \
+  /opt/blazn/infra/node/scripts/upgrade-control-plane.sh
+```
+
+Only after the Node upgrade receipt is `complete`, load the root-owned
+environment and invoke the Workspace key upgrade through the mutation lock:
 
 ```sh
 sudo /opt/blazn/infra/milestone-2/scripts/with-control-plane-env.sh \
