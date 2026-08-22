@@ -1,0 +1,845 @@
+// Code generated from packages/contracts/proxy; DO NOT EDIT.
+// activation-journal.schema.json SHA256: 2f58611a5be80c932374bedeafc765018e629c2d106259d8b4776a321f0ddb67
+// activation-receipt.schema.json SHA256: fd41f579f30433ab2c0c57ac364bcf4fc603ef293ac3b39cf71e310e7c99e6ee
+// event.schema.json SHA256: e61f1a558c744122c36427d692bbb9b7c7b620e84d75612b2e60e9c17d0310d3
+// normalized-error.schema.json SHA256: 3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c
+// normalized-request.schema.json SHA256: 40999c0f9f2109515dd4784d79ba92a2474c22d9cc9a8bee8b60b57699104778
+// normalized-response.schema.json SHA256: 16b383d0a61bd87d3d0983dd813d2940badb095cac6660642c4e8f5114d02285
+// normalized-stream-event.schema.json SHA256: a8e30211bd54861dfbb04568802da8f6f476e4ad7eff21dbbb9ba11809a85e4b
+// policy.schema.json SHA256: 36c42efd44aca0de01280fb190001aac2bf06dac83d870ba7a3f211b12c84bc9
+
+package proxycontract
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Protocol string
+type DestinationClass string
+type Capability string
+type DataBoundary string
+type CostClass string
+type RetryableReason string
+type JournalState string
+type EnvironmentName string
+type RollbackAction string
+type EventType string
+type EventOutcome string
+type DataClass string
+type ResolvedAddressPolicy string
+type BoundaryTransition string
+type Platform string
+type ActivationMode string
+type PublicationMechanism string
+type ReceiptState string
+type NormalizedBlockType string
+type NormalizedRole string
+type FinishReason string
+type StreamEventType string
+type ErrorCode string
+type RetryClass string
+type RollbackOperation string
+
+const (
+	ProtocolOpenAIResponses         Protocol              = "openai-responses"
+	ProtocolOpenAIChat              Protocol              = "openai-chat"
+	ProtocolAnthropicMessages       Protocol              = "anthropic-messages"
+	DestinationLocalNode            DestinationClass      = "local_node"
+	DestinationCompany              DestinationClass      = "company"
+	DestinationProvider             DestinationClass      = "provider"
+	DestinationBlaznCloud           DestinationClass      = "blazn_cloud"
+	CapabilityText                  Capability            = "text"
+	CapabilityTools                 Capability            = "tools"
+	CapabilityStructuredOutput      Capability            = "structured_output"
+	CapabilityStreaming             Capability            = "streaming"
+	BoundaryLocal                   DataBoundary          = "local"
+	BoundaryCompany                 DataBoundary          = "company"
+	BoundaryExternal                DataBoundary          = "external"
+	CostLocal                       CostClass             = "local"
+	CostIncluded                    CostClass             = "included"
+	CostMeteredLow                  CostClass             = "metered_low"
+	CostMeteredHigh                 CostClass             = "metered_high"
+	ReasonConnectionFailure         RetryableReason       = "connection_failure"
+	ReasonTimeoutBeforeFirstByte    RetryableReason       = "timeout_before_first_byte"
+	ReasonRateLimited               RetryableReason       = "rate_limited"
+	ReasonUpstream5xx               RetryableReason       = "upstream_5xx"
+	ReasonModelUnavailable          RetryableReason       = "model_unavailable"
+	ReasonCompatibleContextOverflow RetryableReason       = "compatible_context_overflow"
+	JournalPrepared                 JournalState          = "prepared"
+	JournalPublishing               JournalState          = "publishing"
+	JournalActive                   JournalState          = "active"
+	JournalDeactivating             JournalState          = "deactivating"
+	JournalRecoveryRequired         JournalState          = "recovery_required"
+	EnvOpenAIBaseURL                EnvironmentName       = "OPENAI_BASE_URL"
+	EnvOpenAIAPIKey                 EnvironmentName       = "OPENAI_API_KEY"
+	EnvAnthropicBaseURL             EnvironmentName       = "ANTHROPIC_BASE_URL"
+	EnvAnthropicAPIKey              EnvironmentName       = "ANTHROPIC_API_KEY"
+	EnvAnthropicAuthToken           EnvironmentName       = "ANTHROPIC_AUTH_TOKEN"
+	RollbackRestore                 RollbackAction        = "restore_prior_value"
+	RollbackRemove                  RollbackAction        = "remove_blazn_value"
+	EventRequestStarted             EventType             = "request_started"
+	EventRouteSelected              EventType             = "route_selected"
+	EventAttemptFinished            EventType             = "attempt_finished"
+	EventRequestFinished            EventType             = "request_finished"
+	EventRequestCancelled           EventType             = "request_cancelled"
+	OutcomeSuccess                  EventOutcome          = "success"
+	OutcomeFailed                   EventOutcome          = "failed"
+	OutcomeCancelled                EventOutcome          = "cancelled"
+	OutcomeFallback                 EventOutcome          = "fallback"
+	DataPublic                      DataClass             = "public"
+	DataCompany                     DataClass             = "company"
+	DataRestricted                  DataClass             = "restricted"
+	DataLocalOnly                   DataClass             = "local_only"
+	AddressLoopbackOnly             ResolvedAddressPolicy = "loopback_only"
+	AddressNodeTunnel               ResolvedAddressPolicy = "authenticated_node_tunnel"
+	AddressPublicUnicast            ResolvedAddressPolicy = "public_unicast_only"
+	PlatformDarwin                  Platform              = "darwin"
+	PlatformLinux                   Platform              = "linux"
+	ModeSession                     ActivationMode        = "session"
+	ModeScopedRun                   ActivationMode        = "scoped_run"
+	RollbackRestoreEnvironment      RollbackOperation     = "restore_environment"
+	RollbackStopListener            RollbackOperation     = "stop_listener"
+	RollbackRemoveScopedState       RollbackOperation     = "remove_scoped_state"
+)
+
+type Policy struct {
+	ID             string           `json:"id"`
+	Version        int              `json:"version"`
+	WorkspaceID    string           `json:"workspaceId"`
+	Protocols      []Protocol       `json:"protocols"`
+	Aliases        map[string]Alias `json:"aliases"`
+	Routes         []Route          `json:"routes"`
+	RequestLimits  RequestLimits    `json:"requestLimits"`
+	Fallback       Fallback         `json:"fallback"`
+	ContentCapture bool             `json:"contentCapture"`
+}
+
+type Alias struct {
+	RouteIDs                     []string       `json:"routeIds"`
+	DataClass                    DataClass      `json:"dataClass"`
+	AllowedDestinationBoundaries []DataBoundary `json:"allowedDestinationBoundaries"`
+}
+
+type Route struct {
+	ID                  string           `json:"id"`
+	DestinationClass    DestinationClass `json:"destinationClass"`
+	Endpoint            Endpoint         `json:"endpoint"`
+	SourceProtocol      Protocol         `json:"sourceProtocol"`
+	DestinationProtocol Protocol         `json:"destinationProtocol"`
+	Model               string           `json:"model"`
+	Capabilities        []Capability     `json:"capabilities"`
+	AcceptedDataClasses []DataClass      `json:"acceptedDataClasses"`
+	DataBoundary        DataBoundary     `json:"dataBoundary"`
+	HealthTimeoutMS     int              `json:"healthTimeoutMs"`
+	CredentialRef       string           `json:"credentialRef"`
+	CostClass           CostClass        `json:"costClass"`
+}
+
+type Endpoint struct {
+	Scheme                string                `json:"scheme"`
+	Hostname              string                `json:"hostname"`
+	Port                  int                   `json:"port"`
+	BasePath              string                `json:"basePath"`
+	HostnameAllowlist     []string              `json:"hostnameAllowlist"`
+	ResolvedAddressPolicy ResolvedAddressPolicy `json:"resolvedAddressPolicy"`
+}
+
+type RequestLimits struct {
+	MaxContextTokens int       `json:"maxContextTokens"`
+	MaxOutputTokens  int       `json:"maxOutputTokens"`
+	TimeoutMS        int       `json:"timeoutMs"`
+	Streaming        bool      `json:"streaming"`
+	MaxCostClass     CostClass `json:"maxCostClass"`
+}
+
+type Fallback struct {
+	MaxAttempts                int                  `json:"maxAttempts"`
+	RetryableReasons           []RetryableReason    `json:"retryableReasons"`
+	AllowedBoundaryTransitions []BoundaryTransition `json:"allowedBoundaryTransitions"`
+}
+
+type ActivationJournal struct {
+	SchemaVersion   string                `json:"schemaVersion"`
+	ActivationID    string                `json:"activationId"`
+	Nonce           string                `json:"nonce"`
+	Generation      int                   `json:"generation"`
+	State           JournalState          `json:"state"`
+	OwnerUID        int                   `json:"ownerUid"`
+	Platform        Platform              `json:"platform"`
+	Mode            ActivationMode        `json:"mode"`
+	SessionIdentity string                `json:"sessionIdentity"`
+	Policy          PolicyIdentity        `json:"policy"`
+	Binary          BinaryIdentity        `json:"binary"`
+	Listener        ListenerIdentity      `json:"listener"`
+	Environment     []EnvironmentMutation `json:"environment"`
+	CA              json.RawMessage       `json:"ca"`
+	RollbackActions []RollbackStep        `json:"rollbackActions"`
+	CreatedAt       string                `json:"createdAt"`
+	UpdatedAt       string                `json:"updatedAt"`
+	Checksum        string                `json:"checksum"`
+}
+
+type PolicyIdentity struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+	Digest  string `json:"digest"`
+}
+type BinaryIdentity struct {
+	Path   string `json:"path"`
+	Digest string `json:"digest"`
+}
+type ListenerIdentity struct {
+	PID                    int    `json:"pid"`
+	ProcessStartIdentity   string `json:"processStartIdentity"`
+	ExecutableIdentity     string `json:"executableIdentity"`
+	Address                string `json:"address"`
+	ListenerKeyFingerprint string `json:"listenerKeyFingerprint"`
+}
+type EnvironmentMutation struct {
+	Name               EnvironmentName `json:"name"`
+	PriorPresent       bool            `json:"priorPresent"`
+	PriorValue         *string         `json:"priorValue,omitempty"`
+	DesiredValueDigest string          `json:"desiredValueDigest"`
+	ActivationMarker   string          `json:"activationMarker"`
+	RollbackAction     RollbackAction  `json:"rollbackAction"`
+}
+type RollbackStep struct {
+	Ordinal   int               `json:"ordinal"`
+	Operation RollbackOperation `json:"operation"`
+	Target    string            `json:"target"`
+}
+
+type ActivationReceipt struct {
+	SchemaVersion        string               `json:"schemaVersion"`
+	ActivationID         string               `json:"activationId"`
+	Generation           int                  `json:"generation"`
+	JournalDigest        string               `json:"journalDigest"`
+	PolicyDigest         string               `json:"policyDigest"`
+	Platform             Platform             `json:"platform"`
+	Mode                 ActivationMode       `json:"mode"`
+	SessionIdentity      string               `json:"sessionIdentity"`
+	Listener             ReceiptListener      `json:"listener"`
+	PublicationMechanism PublicationMechanism `json:"publicationMechanism"`
+	Environment          []ReceiptEnvironment `json:"environment"`
+	ActivatedAt          string               `json:"activatedAt"`
+	State                ReceiptState         `json:"state"`
+	Checksum             string               `json:"checksum"`
+}
+type ReceiptListener struct {
+	PID                  int    `json:"pid"`
+	ProcessStartIdentity string `json:"processStartIdentity"`
+	ExecutableIdentity   string `json:"executableIdentity"`
+	Address              string `json:"address"`
+}
+type ReceiptEnvironment struct {
+	Name               EnvironmentName `json:"name"`
+	DesiredValueDigest string          `json:"desiredValueDigest"`
+}
+
+type Event struct {
+	EventID          string           `json:"eventId"`
+	Cursor           string           `json:"cursor"`
+	Timestamp        string           `json:"timestamp"`
+	Type             EventType        `json:"type"`
+	ActivationID     string           `json:"activationId"`
+	LogicalRequestID string           `json:"logicalRequestId"`
+	Attempt          int              `json:"attempt"`
+	Protocol         Protocol         `json:"protocol"`
+	ModelAlias       string           `json:"modelAlias"`
+	Policy           PolicyIdentity   `json:"policy"`
+	RouteID          string           `json:"routeId"`
+	DestinationClass DestinationClass `json:"destinationClass"`
+	Outcome          EventOutcome     `json:"outcome"`
+	ReasonCode       string           `json:"reasonCode"`
+	LatencyMS        int              `json:"latencyMs"`
+	Usage            *Usage           `json:"usage,omitempty"`
+}
+type Usage struct {
+	InputTokens  int `json:"inputTokens,omitempty"`
+	OutputTokens int `json:"outputTokens,omitempty"`
+}
+
+type NormalizedRequest struct {
+	LogicalRequestID     string           `json:"logicalRequestId"`
+	Protocol             Protocol         `json:"protocol"`
+	ModelAlias           string           `json:"modelAlias"`
+	DataClass            DataClass        `json:"dataClass"`
+	Stream               bool             `json:"stream"`
+	Blocks               []RequestBlock   `json:"blocks"`
+	Tools                []Tool           `json:"tools"`
+	ToolChoice           string           `json:"toolChoice,omitempty"`
+	ResponseSchema       map[string]any   `json:"responseSchema,omitempty"`
+	Limits               NormalizedLimits `json:"limits"`
+	CapabilitiesRequired []Capability     `json:"capabilitiesRequired"`
+}
+type RequestBlock struct {
+	Role      NormalizedRole      `json:"role"`
+	Type      NormalizedBlockType `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	CallID    string              `json:"callId,omitempty"`
+	ToolName  string              `json:"toolName,omitempty"`
+	Arguments any                 `json:"arguments,omitempty"`
+	Result    any                 `json:"result,omitempty"`
+}
+type Tool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"inputSchema"`
+}
+type NormalizedLimits struct {
+	MaxOutputTokens int      `json:"maxOutputTokens"`
+	DeadlineAt      string   `json:"deadlineAt"`
+	Temperature     *float64 `json:"temperature,omitempty"`
+	TopP            *float64 `json:"topP,omitempty"`
+	Stop            []string `json:"stop,omitempty"`
+}
+type NormalizedResponse struct {
+	LogicalRequestID string          `json:"logicalRequestId"`
+	ModelAlias       string          `json:"modelAlias"`
+	RouteID          string          `json:"routeId"`
+	Blocks           []ResponseBlock `json:"blocks"`
+	FinishReason     FinishReason    `json:"finishReason"`
+	Usage            Usage           `json:"usage"`
+}
+type ResponseBlock struct {
+	Type      NormalizedBlockType `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	CallID    string              `json:"callId,omitempty"`
+	ToolName  string              `json:"toolName,omitempty"`
+	Arguments any                 `json:"arguments,omitempty"`
+}
+type NormalizedStreamEvent struct {
+	LogicalRequestID string           `json:"logicalRequestId"`
+	Sequence         int              `json:"sequence"`
+	Type             StreamEventType  `json:"type"`
+	Text             string           `json:"text,omitempty"`
+	CallID           string           `json:"callId,omitempty"`
+	ToolName         string           `json:"toolName,omitempty"`
+	ArgumentsDelta   string           `json:"argumentsDelta,omitempty"`
+	Usage            *Usage           `json:"usage,omitempty"`
+	FinishReason     FinishReason     `json:"finishReason,omitempty"`
+	Error            *NormalizedError `json:"error,omitempty"`
+}
+type NormalizedError struct {
+	Code           ErrorCode  `json:"code"`
+	RetryClass     RetryClass `json:"retryClass"`
+	SafeMessage    string     `json:"safeMessage"`
+	UpstreamStatus int        `json:"upstreamStatus,omitempty"`
+}
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+var digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var noncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,128}$`)
+var aliasPattern = regexp.MustCompile(`^[a-zA-Z0-9._:-]{1,128}$`)
+
+func DecodePolicy(reader io.Reader) (Policy, error) {
+	value, err := decodeStrict[Policy](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeActivationJournal(reader io.Reader) (ActivationJournal, error) {
+	value, err := decodeStrict[ActivationJournal](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeEvent(reader io.Reader) (Event, error) {
+	value, err := decodeStrict[Event](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeActivationReceipt(reader io.Reader) (ActivationReceipt, error) {
+	value, err := decodeStrict[ActivationReceipt](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeNormalizedRequest(reader io.Reader) (NormalizedRequest, error) {
+	value, err := decodeStrict[NormalizedRequest](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeNormalizedResponse(reader io.Reader) (NormalizedResponse, error) {
+	value, err := decodeStrict[NormalizedResponse](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeNormalizedStreamEvent(reader io.Reader) (NormalizedStreamEvent, error) {
+	value, err := decodeStrict[NormalizedStreamEvent](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+func DecodeNormalizedError(reader io.Reader) (NormalizedError, error) {
+	value, err := decodeStrict[NormalizedError](reader)
+	if err != nil {
+		return value, err
+	}
+	return value, value.Validate()
+}
+
+func decodeStrict[T any](reader io.Reader) (T, error) {
+	var value T
+	decoder := json.NewDecoder(io.LimitReader(reader, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return value, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return value, errors.New("JSON value has trailing data")
+	}
+	return value, nil
+}
+
+func (p Policy) Validate() error {
+	if !uuidPattern.MatchString(p.ID) || !uuidPattern.MatchString(p.WorkspaceID) || p.Version < 1 {
+		return errors.New("policy identity is invalid")
+	}
+	if len(p.Protocols) < 1 || duplicateStrings(protocolStrings(p.Protocols)) || !allProtocols(p.Protocols) {
+		return errors.New("policy protocols are invalid")
+	}
+	if len(p.Aliases) < 1 || len(p.Routes) < 1 || len(p.Routes) > 32 {
+		return errors.New("policy routes and aliases must be non-empty and bounded")
+	}
+	routes := make(map[string]Route, len(p.Routes))
+	for _, route := range p.Routes {
+		if err := route.Validate(); err != nil {
+			return err
+		}
+		if _, exists := routes[route.ID]; exists {
+			return errors.New("policy route IDs must be unique")
+		}
+		routes[route.ID] = route
+	}
+	for name, alias := range p.Aliases {
+		if !aliasPattern.MatchString(name) || len(alias.RouteIDs) < 1 || len(alias.RouteIDs) > 2 || duplicateStrings(alias.RouteIDs) || !validDataClass(alias.DataClass) || len(alias.AllowedDestinationBoundaries) < 1 || duplicateStrings(boundaryStrings(alias.AllowedDestinationBoundaries)) {
+			return fmt.Errorf("alias %q is invalid", name)
+		}
+		for _, boundary := range alias.AllowedDestinationBoundaries {
+			if !validBoundary(boundary) {
+				return fmt.Errorf("alias %q boundary is invalid", name)
+			}
+		}
+		for _, id := range alias.RouteIDs {
+			route, exists := routes[id]
+			if !exists {
+				return fmt.Errorf("alias %q references unknown route %s", name, id)
+			}
+			if !containsDataClass(route.AcceptedDataClasses, alias.DataClass) || !containsBoundary(alias.AllowedDestinationBoundaries, route.DataBoundary) {
+				return fmt.Errorf("alias %q route %s violates data-class boundary", name, id)
+			}
+		}
+	}
+	if p.RequestLimits.MaxContextTokens < 1 || p.RequestLimits.MaxOutputTokens < 1 || p.RequestLimits.TimeoutMS < 1000 || p.RequestLimits.TimeoutMS > 3600000 || !validCost(p.RequestLimits.MaxCostClass) {
+		return errors.New("policy request limits are invalid")
+	}
+	if p.Fallback.MaxAttempts < 1 || p.Fallback.MaxAttempts > 2 || duplicateStrings(retryStrings(p.Fallback.RetryableReasons)) || !allRetryReasons(p.Fallback.RetryableReasons) || duplicateStrings(transitionStrings(p.Fallback.AllowedBoundaryTransitions)) || !allTransitions(p.Fallback.AllowedBoundaryTransitions) {
+		return errors.New("policy fallback is invalid")
+	}
+	if p.ContentCapture {
+		return errors.New("proxy/v1alpha1 forbids content capture")
+	}
+	return nil
+}
+
+func (r Route) Validate() error {
+	if !uuidPattern.MatchString(r.ID) || !validDestination(r.DestinationClass) || !validProtocol(r.SourceProtocol) || !validProtocol(r.DestinationProtocol) || len(r.Model) < 1 || len(r.Model) > 160 || !validBoundary(r.DataBoundary) || r.HealthTimeoutMS < 100 || r.HealthTimeoutMS > 30000 || len(r.CredentialRef) < 1 || len(r.CredentialRef) > 256 || !validCost(r.CostClass) {
+		return fmt.Errorf("route %q is invalid", r.ID)
+	}
+	if err := r.Endpoint.Validate(r.DestinationClass); err != nil {
+		return fmt.Errorf("route %q: %w", r.ID, err)
+	}
+	if len(r.Capabilities) < 1 || duplicateStrings(capabilityStrings(r.Capabilities)) || !allCapabilities(r.Capabilities) || len(r.AcceptedDataClasses) < 1 || duplicateStrings(dataClassStrings(r.AcceptedDataClasses)) {
+		return fmt.Errorf("route %q capabilities or data classes are invalid", r.ID)
+	}
+	for _, value := range r.AcceptedDataClasses {
+		if !validDataClass(value) {
+			return fmt.Errorf("route %q data class is invalid", r.ID)
+		}
+	}
+	return nil
+}
+
+func (e Endpoint) Validate(class DestinationClass) error {
+	if (e.Scheme != "http" && e.Scheme != "https") || !validHostname(e.Hostname) || e.Port < 1 || e.Port > 65535 || len(e.BasePath) > 512 || !strings.HasPrefix(e.BasePath, "/") || len(e.HostnameAllowlist) < 1 || len(e.HostnameAllowlist) > 16 || duplicateStrings(e.HostnameAllowlist) || !validAddressPolicy(e.ResolvedAddressPolicy) {
+		return errors.New("endpoint is invalid")
+	}
+	allowed := false
+	for _, hostname := range e.HostnameAllowlist {
+		if !validHostname(hostname) {
+			return errors.New("endpoint allowlist is invalid")
+		}
+		if strings.EqualFold(hostname, e.Hostname) {
+			allowed = true
+		}
+	}
+	if !allowed {
+		return errors.New("endpoint hostname is not allowlisted")
+	}
+	if (class == DestinationProvider || class == DestinationBlaznCloud) && (e.Scheme != "https" || e.ResolvedAddressPolicy != AddressPublicUnicast) {
+		return errors.New("external endpoints require HTTPS public-unicast policy")
+	}
+	if class == DestinationLocalNode && e.ResolvedAddressPolicy != AddressLoopbackOnly && e.ResolvedAddressPolicy != AddressNodeTunnel {
+		return errors.New("local endpoint address policy is invalid")
+	}
+	return nil
+}
+
+func (j ActivationJournal) Validate() error {
+	if j.SchemaVersion != "proxy/v1alpha1" || !uuidPattern.MatchString(j.ActivationID) || !noncePattern.MatchString(j.Nonce) || j.Generation < 1 || !validJournalState(j.State) || j.OwnerUID < 0 || !validPlatform(j.Platform) || !validMode(j.Mode) || len(j.SessionIdentity) < 1 || len(j.SessionIdentity) > 256 || !digestPattern.MatchString(j.Checksum) {
+		return errors.New("activation journal identity or state is invalid")
+	}
+	if !uuidPattern.MatchString(j.Policy.ID) || j.Policy.Version < 1 || !digestPattern.MatchString(j.Policy.Digest) || !strings.HasPrefix(j.Binary.Path, "/") || !digestPattern.MatchString(j.Binary.Digest) {
+		return errors.New("activation journal policy or binary identity is invalid")
+	}
+	if j.Listener.PID < 1 || j.Listener.ProcessStartIdentity == "" || j.Listener.ExecutableIdentity == "" || !validLoopbackAddress(j.Listener.Address) || !digestPattern.MatchString(j.Listener.ListenerKeyFingerprint) {
+		return errors.New("activation journal listener identity is invalid")
+	}
+	if len(j.Environment) > 16 {
+		return errors.New("activation journal environment exceeds 16 entries")
+	}
+	seen := map[EnvironmentName]bool{}
+	for _, mutation := range j.Environment {
+		if !validEnvironmentName(mutation.Name) || seen[mutation.Name] || !digestPattern.MatchString(mutation.DesiredValueDigest) || len(mutation.ActivationMarker) < 16 {
+			return errors.New("activation journal environment mutation is invalid")
+		}
+		seen[mutation.Name] = true
+		if mutation.PriorPresent != (mutation.PriorValue != nil) || (mutation.PriorPresent && mutation.RollbackAction != RollbackRestore) || (!mutation.PriorPresent && mutation.RollbackAction != RollbackRemove) {
+			return errors.New("activation journal rollback semantics are invalid")
+		}
+	}
+	for index, action := range j.RollbackActions {
+		if action.Ordinal != index+1 || !validRollbackOperation(action.Operation) || len(action.Target) < 1 || len(action.Target) > 256 {
+			return errors.New("activation journal rollback action is invalid")
+		}
+	}
+	created, err := time.Parse(time.RFC3339, j.CreatedAt)
+	if err != nil {
+		return errors.New("activation journal createdAt is invalid")
+	}
+	updated, err := time.Parse(time.RFC3339, j.UpdatedAt)
+	if err != nil || updated.Before(created) {
+		return errors.New("activation journal updatedAt is invalid")
+	}
+	if string(j.CA) != "null" {
+		return errors.New("proxy/v1alpha1 activation journal CA must be null")
+	}
+	return nil
+}
+
+func (r ActivationReceipt) Validate() error {
+	if r.SchemaVersion != "proxy/v1alpha1" || !uuidPattern.MatchString(r.ActivationID) || r.Generation < 1 || !digestPattern.MatchString(r.JournalDigest) || !digestPattern.MatchString(r.PolicyDigest) || !validPlatform(r.Platform) || !validMode(r.Mode) || len(r.SessionIdentity) < 1 || len(r.SessionIdentity) > 256 || !validPublication(r.PublicationMechanism) || (r.State != "active" && r.State != "recovery_required") || !digestPattern.MatchString(r.Checksum) {
+		return errors.New("activation receipt identity is invalid")
+	}
+	if r.Listener.PID < 1 || r.Listener.ProcessStartIdentity == "" || r.Listener.ExecutableIdentity == "" || !validLoopbackAddress(r.Listener.Address) {
+		return errors.New("activation receipt listener is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, r.ActivatedAt); err != nil {
+		return errors.New("activation receipt timestamp is invalid")
+	}
+	if len(r.Environment) > 16 {
+		return errors.New("activation receipt environment exceeds 16")
+	}
+	seen := map[EnvironmentName]bool{}
+	for _, entry := range r.Environment {
+		if !validEnvironmentName(entry.Name) || seen[entry.Name] || !digestPattern.MatchString(entry.DesiredValueDigest) {
+			return errors.New("activation receipt environment is invalid")
+		}
+		seen[entry.Name] = true
+	}
+	if r.Mode == ModeScopedRun && r.PublicationMechanism != "process_environment" {
+		return errors.New("scoped receipt must use process environment")
+	}
+	return nil
+}
+
+func (e Event) Validate() error {
+	if !uuidPattern.MatchString(e.EventID) || len(e.Cursor) < 1 || len(e.Cursor) > 128 || !uuidPattern.MatchString(e.ActivationID) || !uuidPattern.MatchString(e.LogicalRequestID) || !uuidPattern.MatchString(e.RouteID) || e.Attempt < 1 || e.Attempt > 2 || !validProtocol(e.Protocol) || !validDestination(e.DestinationClass) || !validEventType(e.Type) || !validOutcome(e.Outcome) || len(e.ModelAlias) < 1 || len(e.ModelAlias) > 128 || len(e.ReasonCode) < 1 || len(e.ReasonCode) > 96 || e.LatencyMS < 0 {
+		return errors.New("proxy event is invalid")
+	}
+	if !uuidPattern.MatchString(e.Policy.ID) || e.Policy.Version < 1 || !digestPattern.MatchString(e.Policy.Digest) {
+		return errors.New("proxy event policy identity is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, e.Timestamp); err != nil {
+		return errors.New("proxy event timestamp is invalid")
+	}
+	if e.Usage != nil && (e.Usage.InputTokens < 0 || e.Usage.OutputTokens < 0) {
+		return errors.New("proxy event usage is invalid")
+	}
+	return nil
+}
+
+func (r NormalizedRequest) Validate() error {
+	if !uuidPattern.MatchString(r.LogicalRequestID) || !validProtocol(r.Protocol) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !validDataClass(r.DataClass) || len(r.Blocks) < 1 || r.Limits.MaxOutputTokens < 1 || !allCapabilities(r.CapabilitiesRequired) || duplicateStrings(capabilityStrings(r.CapabilitiesRequired)) {
+		return errors.New("normalized request is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, r.Limits.DeadlineAt); err != nil {
+		return errors.New("normalized request deadline is invalid")
+	}
+	if r.Limits.Temperature != nil && (*r.Limits.Temperature < 0 || *r.Limits.Temperature > 2) {
+		return errors.New("temperature is invalid")
+	}
+	if r.Limits.TopP != nil && (*r.Limits.TopP <= 0 || *r.Limits.TopP > 1) {
+		return errors.New("topP is invalid")
+	}
+	if len(r.Limits.Stop) > 8 {
+		return errors.New("stop list exceeds 8")
+	}
+	for _, v := range r.Limits.Stop {
+		if len(v) > 512 {
+			return errors.New("stop value is too long")
+		}
+	}
+	for _, b := range r.Blocks {
+		if !validRole(b.Role) || !validBlockType(b.Type) {
+			return errors.New("request block is invalid")
+		}
+	}
+	for _, tool := range r.Tools {
+		if len(tool.Name) < 1 || len(tool.Name) > 128 || len(tool.Description) > 4096 || tool.InputSchema == nil {
+			return errors.New("tool is invalid")
+		}
+	}
+	return nil
+}
+func (r NormalizedResponse) Validate() error {
+	if !uuidPattern.MatchString(r.LogicalRequestID) || len(r.ModelAlias) < 1 || len(r.ModelAlias) > 128 || !uuidPattern.MatchString(r.RouteID) || !validFinish(r.FinishReason) || r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 {
+		return errors.New("normalized response is invalid")
+	}
+	for _, b := range r.Blocks {
+		if b.Type != "text" && b.Type != "tool_call" {
+			return errors.New("response block is invalid")
+		}
+	}
+	return nil
+}
+func (e NormalizedStreamEvent) Validate() error {
+	if !uuidPattern.MatchString(e.LogicalRequestID) || e.Sequence < 0 || !validStreamType(e.Type) {
+		return errors.New("normalized stream event is invalid")
+	}
+	if e.Usage != nil && (e.Usage.InputTokens < 0 || e.Usage.OutputTokens < 0) {
+		return errors.New("stream usage is invalid")
+	}
+	if e.FinishReason != "" && !validFinish(e.FinishReason) {
+		return errors.New("stream finish reason is invalid")
+	}
+	if e.Error != nil {
+		return e.Error.Validate()
+	}
+	return nil
+}
+func (e NormalizedError) Validate() error {
+	if !validErrorCode(e.Code) || !validRetryClass(e.RetryClass) || len(e.SafeMessage) < 1 || len(e.SafeMessage) > 512 || (e.UpstreamStatus != 0 && (e.UpstreamStatus < 100 || e.UpstreamStatus > 599)) {
+		return errors.New("normalized error is invalid")
+	}
+	return nil
+}
+
+func validProtocol(v Protocol) bool {
+	return v == ProtocolOpenAIResponses || v == ProtocolOpenAIChat || v == ProtocolAnthropicMessages
+}
+func validDestination(v DestinationClass) bool {
+	return v == DestinationLocalNode || v == DestinationCompany || v == DestinationProvider || v == DestinationBlaznCloud
+}
+func validBoundary(v DataBoundary) bool {
+	return v == BoundaryLocal || v == BoundaryCompany || v == BoundaryExternal
+}
+func validCost(v CostClass) bool {
+	return v == CostLocal || v == CostIncluded || v == CostMeteredLow || v == CostMeteredHigh
+}
+func validJournalState(v JournalState) bool {
+	return v == JournalPrepared || v == JournalPublishing || v == JournalActive || v == JournalDeactivating || v == JournalRecoveryRequired
+}
+func validEnvironmentName(v EnvironmentName) bool {
+	return v == EnvOpenAIBaseURL || v == EnvOpenAIAPIKey || v == EnvAnthropicBaseURL || v == EnvAnthropicAPIKey || v == EnvAnthropicAuthToken
+}
+func validEventType(v EventType) bool {
+	return v == EventRequestStarted || v == EventRouteSelected || v == EventAttemptFinished || v == EventRequestFinished || v == EventRequestCancelled
+}
+func validOutcome(v EventOutcome) bool {
+	return v == OutcomeSuccess || v == OutcomeFailed || v == OutcomeCancelled || v == OutcomeFallback
+}
+func allProtocols(values []Protocol) bool {
+	for _, value := range values {
+		if !validProtocol(value) {
+			return false
+		}
+	}
+	return true
+}
+func allCapabilities(values []Capability) bool {
+	for _, value := range values {
+		if value != CapabilityText && value != CapabilityTools && value != CapabilityStructuredOutput && value != CapabilityStreaming {
+			return false
+		}
+	}
+	return true
+}
+func allRetryReasons(values []RetryableReason) bool {
+	for _, value := range values {
+		if value != ReasonConnectionFailure && value != ReasonTimeoutBeforeFirstByte && value != ReasonRateLimited && value != ReasonUpstream5xx && value != ReasonModelUnavailable && value != ReasonCompatibleContextOverflow {
+			return false
+		}
+	}
+	return true
+}
+func protocolStrings(values []Protocol) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = string(value)
+	}
+	return out
+}
+func capabilityStrings(values []Capability) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = string(value)
+	}
+	return out
+}
+func retryStrings(values []RetryableReason) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = string(value)
+	}
+	return out
+}
+func boundaryStrings(values []DataBoundary) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
+	}
+	return out
+}
+func dataClassStrings(values []DataClass) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
+	}
+	return out
+}
+func transitionStrings(values []BoundaryTransition) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = string(v)
+	}
+	return out
+}
+func duplicateStrings(values []string) bool {
+	seen := map[string]bool{}
+	for _, value := range values {
+		if seen[value] {
+			return true
+		}
+		seen[value] = true
+	}
+	return false
+}
+
+func validDataClass(v DataClass) bool {
+	return v == DataPublic || v == DataCompany || v == DataRestricted || v == DataLocalOnly
+}
+func validAddressPolicy(v ResolvedAddressPolicy) bool {
+	return v == AddressLoopbackOnly || v == AddressNodeTunnel || v == AddressPublicUnicast
+}
+func allTransitions(values []BoundaryTransition) bool {
+	for _, v := range values {
+		if v != "local_to_company" && v != "local_to_external" && v != "company_to_external" {
+			return false
+		}
+	}
+	return true
+}
+func containsDataClass(values []DataClass, target DataClass) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+func containsBoundary(values []DataBoundary, target DataBoundary) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+func validPlatform(v Platform) bool   { return v == PlatformDarwin || v == PlatformLinux }
+func validMode(v ActivationMode) bool { return v == ModeSession || v == ModeScopedRun }
+func validPublication(v PublicationMechanism) bool {
+	return v == "process_environment" || v == "launchctl_user_environment" || v == "systemd_user_environment"
+}
+func validRollbackOperation(v RollbackOperation) bool {
+	return v == RollbackRestoreEnvironment || v == RollbackStopListener || v == RollbackRemoveScopedState
+}
+func validRole(v NormalizedRole) bool {
+	return v == "system" || v == "developer" || v == "user" || v == "assistant" || v == "tool"
+}
+func validBlockType(v NormalizedBlockType) bool {
+	return v == "text" || v == "tool_call" || v == "tool_result"
+}
+func validFinish(v FinishReason) bool {
+	return v == "stop" || v == "length" || v == "tool_call" || v == "content_filter" || v == "cancelled"
+}
+func validStreamType(v StreamEventType) bool {
+	return v == "response_start" || v == "text_delta" || v == "tool_call_start" || v == "tool_arguments_delta" || v == "usage" || v == "response_end" || v == "error"
+}
+func validRetryClass(v RetryClass) bool { return v == "never" || v == "before_first_byte_only" }
+func validErrorCode(v ErrorCode) bool {
+	switch v {
+	case "invalid_request", "unsupported_capability", "authentication_failed", "policy_denied", "context_overflow", "rate_limited", "model_unavailable", "upstream_5xx", "connection_failure", "timeout_before_first_byte", "cancelled", "internal_error":
+		return true
+	}
+	return false
+}
+
+func validLoopbackAddress(value string) bool {
+	separator := strings.LastIndex(value, ":")
+	if separator < 1 {
+		return false
+	}
+	host := value[:separator]
+	if host != "127.0.0.1" && host != "[::1]" {
+		return false
+	}
+	port, err := strconv.Atoi(value[separator+1:])
+	return err == nil && port >= 1 && port <= 65535
+}
+
+func validHostname(value string) bool {
+	if len(value) < 1 || len(value) > 253 || strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) < 1 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
