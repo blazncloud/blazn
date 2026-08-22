@@ -1,3 +1,9 @@
+CREATE FUNCTION run_output_names_valid(input_value text[]) RETURNS boolean
+LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT COALESCE(bool_and(value ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'), true)
+  FROM unnest(input_value) AS value;
+$$;
+
 CREATE TABLE runs (
   id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL,
@@ -7,7 +13,7 @@ CREATE TABLE runs (
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   version bigint NOT NULL DEFAULT 1 CHECK (version > 0),
   plan_digest text NOT NULL CHECK (plan_digest ~ '^sha256:[0-9a-f]{64}$'),
-  parameters jsonb NOT NULL DEFAULT '{}'::jsonb,
+  output_names text[] NOT NULL DEFAULT '{}'::text[],
   requested_by uuid NOT NULL REFERENCES users(id),
   node_id uuid,
   sandbox_id uuid,
@@ -18,7 +24,7 @@ CREATE TABLE runs (
   error_code text CHECK (error_code IS NULL OR error_code ~ '^[a-z][a-z0-9_]{0,62}$'),
   FOREIGN KEY (project_id, workspace_id) REFERENCES projects(id, workspace_id) ON DELETE CASCADE,
   UNIQUE (id, workspace_id, project_id),
-  CHECK (NOT workspace_json_contains_secret_key(parameters)),
+  CHECK (cardinality(output_names) <= 1000 AND run_output_names_valid(output_names)),
   CHECK ((status = 'queued' AND started_at IS NULL AND completed_at IS NULL) OR
          (status = 'running' AND started_at IS NOT NULL AND completed_at IS NULL) OR
          (status IN ('succeeded', 'failed', 'cancelled') AND completed_at IS NOT NULL)),
@@ -82,6 +88,18 @@ CREATE TABLE artifacts (
   CHECK (status <> 'deleted' OR object_key IS NULL)
 );
 
+CREATE TABLE run_input_artifacts (
+  run_id uuid NOT NULL,
+  workspace_id uuid NOT NULL,
+  project_id uuid NOT NULL,
+  artifact_id uuid NOT NULL,
+  ordinal integer NOT NULL CHECK (ordinal >= 0 AND ordinal < 1000),
+  PRIMARY KEY (run_id, artifact_id),
+  UNIQUE (run_id, ordinal),
+  FOREIGN KEY (run_id, workspace_id, project_id) REFERENCES runs(id, workspace_id, project_id) ON DELETE CASCADE,
+  FOREIGN KEY (artifact_id, workspace_id, project_id) REFERENCES artifacts(id, workspace_id, project_id)
+);
+
 CREATE FUNCTION validate_run_receipt_consistency() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -125,12 +143,16 @@ CREATE INDEX runs_project_status_id_idx ON runs(workspace_id, project_id, status
 CREATE INDEX run_events_project_created_idx ON run_events(workspace_id, project_id, created_at, run_id, sequence);
 CREATE INDEX artifacts_project_status_id_idx ON artifacts(workspace_id, project_id, status, id);
 CREATE INDEX artifacts_source_run_idx ON artifacts(source_run_id) WHERE source_run_id IS NOT NULL;
+CREATE INDEX run_input_artifacts_artifact_idx ON run_input_artifacts(artifact_id, run_id);
 
 GRANT SELECT, INSERT, UPDATE ON TABLE runs TO blazn_runtime;
 GRANT SELECT, INSERT ON TABLE run_events TO blazn_runtime;
 GRANT SELECT, INSERT ON TABLE run_receipts TO blazn_runtime;
 GRANT SELECT, INSERT, UPDATE ON TABLE artifacts TO blazn_runtime;
+GRANT SELECT, INSERT ON TABLE run_input_artifacts TO blazn_runtime;
 GRANT EXECUTE ON FUNCTION validate_run_receipt_consistency() TO blazn_runtime;
-REVOKE DELETE ON TABLE runs, run_events, run_receipts, artifacts FROM blazn_runtime;
-REVOKE ALL ON TABLE runs, run_events, run_receipts, artifacts FROM blazn_bootstrap;
+GRANT EXECUTE ON FUNCTION run_output_names_valid(text[]) TO blazn_runtime;
+REVOKE DELETE ON TABLE runs, run_events, run_receipts, artifacts, run_input_artifacts FROM blazn_runtime;
+REVOKE ALL ON TABLE runs, run_events, run_receipts, artifacts, run_input_artifacts FROM blazn_bootstrap;
 REVOKE ALL ON FUNCTION validate_run_receipt_consistency() FROM blazn_bootstrap;
+REVOKE ALL ON FUNCTION run_output_names_valid(text[]) FROM blazn_bootstrap;

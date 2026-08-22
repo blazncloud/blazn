@@ -30,7 +30,9 @@ key; non-ready Artifacts are not downloadable.
 ## Persistence and lifecycle
 
 Migration `012_runs_artifacts.sql` creates Runs, ordered events, immutable
-receipts, and Artifacts with composite tenant foreign keys. Queued, running, and
+receipts, Artifacts, and ordered tenant-bound input-Artifact links with composite
+foreign keys. Output names are immutable validated values rather than generic
+parameter JSON. Queued, running, and
 terminal timestamp/error invariants are enforced in PostgreSQL. Runtime roles
 can create and advance resources but cannot physically delete historical Runs,
 events, receipts, or Artifacts.
