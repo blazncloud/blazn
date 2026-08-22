@@ -96,7 +96,8 @@ names = (
     "BLAZN_QUALIFICATION_REINSTALL_REQUEST_ID",
     "BLAZN_QUALIFICATION_REQUEST_ID",
     "BLAZN_QUALIFICATION_SNAPSHOT",
-    "BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256",
+    "BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256",
+    "BLAZN_QUALIFICATION_CLEAN_TARGET_STATE_SHA256",
     "BLAZN_QUALIFICATION_TARGET",
     "BLAZN_QUALIFICATION_WORKSPACE",
 )
@@ -164,6 +165,39 @@ qual_export_lock_identity() {
     BLAZN_QUALIFICATION_LOCK_IDENTITY=$(stat -f '%d:%i:%u:%Lp' "$lock_file")
   fi
   export BLAZN_QUALIFICATION_LOCK_IDENTITY
+}
+
+qual_snapshot_identity_digest() {
+  instance_uuid=$1
+  snapshot_name=$2
+  snapshot_created_at=$3
+  config_digest=$4
+  clean_state_digest=$5
+  [[ "$instance_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || qual_die 'LXD instance UUID is unavailable or invalid'
+  [[ "$snapshot_name" =~ ^checkpoint-[a-z0-9][a-z0-9-]{1,47}$ ]] || qual_die 'snapshot identity name is invalid'
+  [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'snapshot config digest is invalid'
+  [[ "$clean_state_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'clean target-state digest is invalid'
+  python3 - "$instance_uuid" "$snapshot_name" "$snapshot_created_at" "$config_digest" "$clean_state_digest" <<'PY'
+import hashlib, json, sys
+value = {"instanceUuid": sys.argv[1], "snapshot": sys.argv[2], "snapshotCreatedAt": sys.argv[3], "configDigest": sys.argv[4], "cleanTargetStateDigest": sys.argv[5]}
+print("sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+PY
+}
+
+qual_lxd_snapshot_identity() {
+  identity_guest=$1
+  identity_snapshot=$2
+  clean_digest=${BLAZN_QUALIFICATION_CLEAN_TARGET_STATE_SHA256:-}
+  [[ "$clean_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'approval-bound clean target-state digest is required'
+  instance_uuid=$(lxc config get "$identity_guest" volatile.uuid)
+  snapshot_info=$(lxc info "${identity_guest}/${identity_snapshot}" --format=json)
+  snapshot_created=$(jq -r '.created_at // .createdAt // empty' <<<"$snapshot_info")
+  [ -n "$snapshot_created" ] || qual_die 'snapshot creation identity is unavailable'
+  snapshot_config=$(lxc config show "${identity_guest}/${identity_snapshot}" --expanded)
+  config_digest="sha256:$(printf '%s' "$snapshot_config" | sha256sum | awk '{print $1}')"
+  identity_digest=$(qual_snapshot_identity_digest "$instance_uuid" "$identity_snapshot" "$snapshot_created" "$config_digest" "$clean_digest")
+  jq -n --arg instanceUuid "$instance_uuid" --arg snapshot "$identity_snapshot" --arg snapshotCreatedAt "$snapshot_created" --arg configDigest "$config_digest" --arg cleanTargetStateDigest "$clean_digest" --arg identityDigest "$identity_digest" \
+    '{instanceUuid:$instanceUuid,snapshot:$snapshot,snapshotCreatedAt:$snapshotCreatedAt,configDigest:$configDigest,cleanTargetStateDigest:$cleanTargetStateDigest,identityDigest:$identityDigest}'
 }
 
 qual_validate_lock() {

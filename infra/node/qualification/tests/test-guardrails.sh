@@ -66,12 +66,32 @@ digest_one=$("${base_env[@]}" bash -c 'source "$1/lib/common.sh"; qual_validate_
 digest_two=$("${base_env[@]}" BLAZN_QUALIFICATION_LXD_CPU=5 bash -c 'source "$1/lib/common.sh"; qual_validate_lxd_limits; qual_approval_input_digest lxd-create' _ "$qual_dir")
 [[ "$digest_one" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'approval digest is malformed\n' >&2; exit 1; }
 [ "$digest_one" != "$digest_two" ] || { printf 'approval digest did not bind LXD CPU\n' >&2; exit 1; }
+# shellcheck disable=SC2016
+snapshot_identity_one=$(bash -c 'source "$1/lib/common.sh"; qual_snapshot_identity_digest aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa checkpoint-clean 2026-08-22T00:00:00Z "$2" "$3"' _ "$qual_dir" \
+  sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+  sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)
+# shellcheck disable=SC2016
+snapshot_identity_recreated=$(bash -c 'source "$1/lib/common.sh"; qual_snapshot_identity_digest bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb checkpoint-clean 2026-08-22T00:00:00Z "$2" "$3"' _ "$qual_dir" \
+  sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+  sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)
+[ "$snapshot_identity_one" != "$snapshot_identity_recreated" ] || { printf 'same-name/config recreated instance retained snapshot identity\n' >&2; exit 1; }
+# shellcheck disable=SC2016
+snapshot_identity_replaced=$(bash -c 'source "$1/lib/common.sh"; qual_snapshot_identity_digest aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa checkpoint-clean 2026-08-22T00:00:01Z "$2" "$3"' _ "$qual_dir" \
+  sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+  sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee)
+[ "$snapshot_identity_one" != "$snapshot_identity_replaced" ] || { printf 'same-instance snapshot replacement retained snapshot identity\n' >&2; exit 1; }
+# shellcheck disable=SC2016
+snapshot_identity_drifted=$(bash -c 'source "$1/lib/common.sh"; qual_snapshot_identity_digest aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa checkpoint-clean 2026-08-22T00:00:00Z "$2" "$3"' _ "$qual_dir" \
+  sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+  sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+[ "$snapshot_identity_one" != "$snapshot_identity_drifted" ] || { printf 'different clean filesystem content retained snapshot identity\n' >&2; exit 1; }
 for binding in \
   BLAZN_QUALIFICATION_INSTALL_PROFILE_SHA256=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
   BLAZN_QUALIFICATION_EXPECTED_HOSTNAME=mac-mini-3 \
   BLAZN_QUALIFICATION_LOCK_IDENTITY=1:2:0:600 \
   BLAZN_QUALIFICATION_CRASH_TIMEOUT_SECONDS=301 \
-  BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+  BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256=sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+  BLAZN_QUALIFICATION_CLEAN_TARGET_STATE_SHA256=sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
   BLAZN_QUALIFICATION_LXD_ROOT_DISK=48GiB \
   BLAZN_QUALIFICATION_LXD_PROCESSES=1200; do
   # shellcheck disable=SC2016

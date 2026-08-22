@@ -59,10 +59,13 @@ do_snapshot() {
   [[ "$snapshot" =~ ^checkpoint-[a-z0-9][a-z0-9-]{1,47}$ ]] || qual_die 'snapshot must be a bounded DNS-safe checkpoint name'
   guest_exists || qual_die 'qualification guest does not exist'
   guest_owned
+  clean_target=$("$qual_dir/capture-target-state.sh" before)
+  observed_clean_digest="sha256:$(jq -cS '.state' <<<"$clean_target" | sha256sum | awk '{print $1}')"
+  [[ "${BLAZN_QUALIFICATION_CLEAN_TARGET_STATE_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'snapshot requires the approval-bound clean target-state digest'
+  [ "$observed_clean_digest" = "$BLAZN_QUALIFICATION_CLEAN_TARGET_STATE_SHA256" ] || qual_die 'live clean target state differs from snapshot approval'
   lxc snapshot "$guest" "$snapshot" >/dev/null
-  snapshot_config=$(lxc config show "${guest}/${snapshot}" --expanded)
-  snapshot_digest="sha256:$(printf '%s' "$snapshot_config" | sha256sum | awk '{print $1}')"
-  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --arg snapshot "$snapshot" --arg snapshotDigest "$snapshot_digest" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,action:"snapshot",target:$target,snapshot:$snapshot,configDigest:$snapshotDigest}'
+  snapshot_identity=$(qual_lxd_snapshot_identity "$guest" "$snapshot")
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --argjson snapshotIdentity "$snapshot_identity" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,action:"snapshot",target:$target,snapshotIdentity:$snapshotIdentity}'
 }
 
 do_restore() {
@@ -70,13 +73,13 @@ do_restore() {
   [[ "$snapshot" =~ ^checkpoint-[a-z0-9][a-z0-9-]{1,47}$ ]] || qual_die 'snapshot must be a bounded DNS-safe checkpoint name'
   guest_exists || qual_die 'qualification guest does not exist'
   guest_owned
-  snapshot_config=$(lxc config show "${guest}/${snapshot}" --expanded)
-  snapshot_digest="sha256:$(printf '%s' "$snapshot_config" | sha256sum | awk '{print $1}')"
-  [[ "${BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'restore requires the approval-bound snapshot config digest'
-  [ "$snapshot_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256" ] || qual_die 'snapshot config digest differs from restore approval'
+  snapshot_identity=$(qual_lxd_snapshot_identity "$guest" "$snapshot")
+  identity_digest=$(jq -r '.identityDigest' <<<"$snapshot_identity")
+  [[ "${BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'restore requires the approval-bound immutable snapshot identity'
+  [ "$identity_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256" ] || qual_die 'snapshot identity differs from restore approval'
   lxc restore "$guest" "$snapshot" >/dev/null
   guest_owned
-  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --arg snapshot "$snapshot" --arg snapshotDigest "$snapshot_digest" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,action:"restore",target:$target,snapshot:$snapshot,configDigest:$snapshotDigest}'
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$guest" --argjson snapshotIdentity "$snapshot_identity" '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,action:"restore",target:$target,snapshotIdentity:$snapshotIdentity}'
 }
 
 case "$action" in

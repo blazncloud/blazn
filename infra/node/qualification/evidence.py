@@ -31,7 +31,7 @@ FORBIDDEN_ARTIFACT_MARKERS = (
 )
 FRESH_GATES = {
     "source-provenance", "baseline-invariants", "lxd-create", "lxd-snapshot", "target-baseline", "ubuntu-preflight",
-    "service-identity", "no-input-sudo-observe", "install", "idempotent-install",
+    "service-identity", "no-input-sudo-observe", "node-identity-trust", "install", "idempotent-install",
     "repair", "expired-observe", "expired-repair-denied", "expired-uninstall",
     "install-crash-resume", "cleanup-crash-resume", "reinstall",
     "kubernetes-uid-rv", "kubernetes-stale-cas-denied",
@@ -39,7 +39,7 @@ FRESH_GATES = {
 }
 MAC_GATES = {
     "source-provenance", "baseline-invariants", "target-baseline", "native-mac-preflight",
-    "service-identity", "no-input-sudo-observe", "adopt-install", "idempotent-install",
+    "service-identity", "no-input-sudo-observe", "node-identity-trust", "adopt-install", "idempotent-install",
     "repair", "expired-observe", "expired-repair-denied", "expired-uninstall",
     "cleanup-crash-resume", "reinstall", "kubernetes-uid-rv",
     "kubernetes-stale-cas-denied", "kubernetes-quarantine-noschedule",
@@ -69,6 +69,10 @@ def digest_file(path: pathlib.Path) -> str:
     return digest_bytes(path.read_bytes())
 
 
+def digest_json_value(value: Any) -> str:
+    return digest_bytes(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
+
+
 def artifact_has_forbidden_marker(path: pathlib.Path) -> bytes | None:
     # Evidence logs are bounded operational artifacts. Scan in chunks while
     # preserving enough overlap to catch a marker split at a chunk boundary.
@@ -96,13 +100,18 @@ def valid_receipt(value: Any, run: dict[str, Any], state: str) -> bool:
         return False
     mutations = value.get("mutations")
     wanted = {"applied"} if state == "active" else {"restored", "removed"}
+    trust = run.get("receiptTrust", {})
     return (
         value.get("schemaVersion") == "nodes/v1alpha1"
         and all(UUID.fullmatch(str(value.get(field, ""))) for field in ("receiptId", "planId", "nodeId"))
         and DIGEST.fullmatch(str(value.get("planDigest", ""))) is not None
         and isinstance(value.get("generation"), int) and value["generation"] >= 1
         and isinstance(value.get("nodeIdentityGeneration"), int) and value["nodeIdentityGeneration"] >= 1
+        and value.get("nodeIdentityGeneration") == trust.get("identityGeneration")
         and value.get("signerKind") == "node_identity"
+        and value.get("signerFingerprint") == trust.get("fingerprint")
+        and value.get("signingKeyId") == trust.get("signingKeyId")
+        and value.get("nodeId") == trust.get("nodeId")
         and value.get("state") == state and value.get("currentStage") == "complete"
         and value.get("residues") == [] and isinstance(mutations, list) and bool(mutations)
         and all(isinstance(item, dict) and set(("ordinal", "kind", "target", "priorState", "rollbackMaterial", "desiredDigest", "status")).issubset(item) and item.get("status") in wanted and DIGEST.fullmatch(str(item.get("desiredDigest", ""))) is not None for item in mutations)
@@ -115,6 +124,45 @@ def valid_receipt(value: Any, run: dict[str, Any], state: str) -> bool:
         and isinstance(value.get("signingKeyId"), str) and bool(value["signingKeyId"])
         and re.fullmatch(r"[A-Za-z0-9_-]{86}", str(value.get("signature", ""))) is not None
     )
+
+
+def authoritative_identity(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("schemaVersion") != "blazn.dev/node-root-helper/v1" or value.get("ok") is not True:
+        return None
+    observation = value.get("observation")
+    identity = observation.get("identity") if isinstance(observation, dict) else None
+    if not isinstance(identity, dict):
+        return None
+    expected = {"publicKey", "publicKeyFingerprint", "signingKeyId", "generation", "enrollmentId", "nodeId", "workspaceId", "controlPlaneOriginDigest"}
+    if set(identity) != expected:
+        return None
+    try:
+        public_key_text = str(identity["publicKey"])
+        public_key = base64.urlsafe_b64decode(public_key_text + "=" * (-len(public_key_text) % 4))
+    except (ValueError, TypeError):
+        return None
+    fingerprint = "sha256:" + hashlib.sha256(public_key).hexdigest()
+    if len(public_key) != 32 or identity.get("publicKeyFingerprint") != fingerprint or not DIGEST.fullmatch(str(identity.get("controlPlaneOriginDigest", ""))) or not isinstance(identity.get("generation"), int) or identity["generation"] < 1 or not isinstance(identity.get("signingKeyId"), str) or not identity["signingKeyId"] or not all(UUID.fullmatch(str(identity.get(key, ""))) for key in ("enrollmentId", "nodeId", "workspaceId")):
+        return None
+    return {
+        "publicKey": public_key_text,
+        "fingerprint": fingerprint,
+        "signingKeyId": identity["signingKeyId"],
+        "identityGeneration": identity["generation"],
+        "enrollmentId": identity["enrollmentId"],
+        "nodeId": identity["nodeId"],
+        "workspaceId": identity["workspaceId"],
+        "controlPlaneOriginDigest": identity["controlPlaneOriginDigest"],
+    }
+
+
+def valid_snapshot_identity(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != {"instanceUuid", "snapshot", "snapshotCreatedAt", "configDigest", "cleanTargetStateDigest", "identityDigest"}:
+        return False
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", str(value.get("instanceUuid", ""))) or not re.fullmatch(r"checkpoint-[a-z0-9][a-z0-9-]{1,47}", str(value.get("snapshot", ""))) or not valid_timestamp(value.get("snapshotCreatedAt")) or not DIGEST.fullmatch(str(value.get("configDigest", ""))) or not DIGEST.fullmatch(str(value.get("cleanTargetStateDigest", ""))):
+        return False
+    payload = {key: value[key] for key in ("instanceUuid", "snapshot", "snapshotCreatedAt", "configDigest", "cleanTargetStateDigest")}
+    return value.get("identityDigest") == digest_json_value(payload)
 
 
 def semantic_receipt(step: str, value: dict[str, Any]) -> dict[str, Any] | None:
@@ -189,12 +237,13 @@ def gate_semantics(step: str, value: Any, run: dict[str, Any]) -> bool:
         "target-post-uninstall": lambda: value.get("phase") == "after" and value.get("correlationId") == run.get("correlationId") and value.get("target") == run.get("target") and value.get("source") == {key: run["source"][key] for key in ("head", "tree")} and isinstance(value.get("state"), dict) and bool(value["state"]),
         "ubuntu-preflight": lambda: value.get("os") == "ubuntu" and value.get("osVersion") == "26.04",
         "lxd-create": lambda: value.get("status") == "passed" and value.get("target") == run.get("target") and DIGEST.fullmatch(str(value.get("imageFingerprintDigest", ""))) is not None and isinstance(value.get("limits"), dict),
-        "lxd-snapshot": lambda: value.get("status") == "passed" and value.get("action") == "snapshot" and value.get("target") == run.get("target") and bool(value.get("snapshot")) and DIGEST.fullmatch(str(value.get("configDigest", ""))) is not None,
-        "lxd-restore": lambda: value.get("status") == "passed" and value.get("action") == "restore" and value.get("target") == run.get("target") and bool(value.get("snapshot")) and DIGEST.fullmatch(str(value.get("configDigest", ""))) is not None,
+        "lxd-snapshot": lambda: value.get("status") == "passed" and value.get("action") == "snapshot" and value.get("target") == run.get("target") and valid_snapshot_identity(value.get("snapshotIdentity")),
+        "lxd-restore": lambda: value.get("status") == "passed" and value.get("action") == "restore" and value.get("target") == run.get("target") and valid_snapshot_identity(value.get("snapshotIdentity")),
         "lxd-delete": lambda: value.get("status") == "passed" and value.get("action") == "delete" and value.get("target") == run.get("target"),
         "native-mac-preflight": lambda: value.get("status") == "passed" and value.get("host") in ("mac-mini-3", "mac-mini-3.local") and value.get("architecture") == "arm64",
         "service-identity": lambda: isinstance(value.get("service"), dict) and value["service"].get("accountUid") not in (None, "", "0", "absent") and value["service"].get("processUid") == value["service"].get("accountUid"),
         "no-input-sudo-observe": lambda: value.get("noInputRootObservation") == "allowed",
+        "node-identity-trust": lambda: authoritative_identity(value) == run.get("receiptTrust"),
         "install": lambda: valid_receipt(receipt, run, "active"),
         "adopt-install": lambda: valid_receipt(receipt, run, "active"),
         "idempotent-install": lambda: valid_receipt(receipt, run, "active"),
@@ -203,8 +252,8 @@ def gate_semantics(step: str, value: Any, run: dict[str, Any]) -> bool:
         "expired-observe": lambda: value.get("schemaVersion") == "blazn.dev/node-root-helper/v1" and value.get("ok") is True and bool(observation),
         "expired-repair-denied": lambda: value.get("status") == "passed" and value.get("expiredRepairDenied") is True and isinstance(value.get("denial"), dict) and value["denial"].get("exitCode") == 1 and value["denial"].get("error", {}).get("code") == "node_failed" and value["denial"].get("error", {}).get("message") == "repair requires an authorized fresh, unexpired plan: install plan is not active at trusted current time" and isinstance(value.get("signedPlan"), dict) and valid_timestamp(value["signedPlan"].get("expiresAt")) and UUID.fullmatch(str(value["signedPlan"].get("planId", ""))) is not None and DIGEST.fullmatch(str(value["signedPlan"].get("digest", ""))) is not None and re.fullmatch(r"[A-Za-z0-9_-]{86}", str(value["signedPlan"].get("signature", ""))) is not None,
         "expired-uninstall": lambda: valid_receipt(receipt, run, "removed"),
-        "install-crash-resume": lambda: value.get("status") == "passed" and value.get("snapshotRestore", {}).get("instance") == run.get("target") and value.get("snapshotRestore", {}).get("restoredUnderLifecycleLock") is True and DIGEST.fullmatch(str(value.get("snapshotRestore", {}).get("configDigest", ""))) is not None and value.get("crash", {}).get("lifecycle") == "install" and valid_receipt(value.get("recovery"), run, "active"),
-        "cleanup-crash-resume": lambda: value.get("status") == "passed" and value.get("snapshotRestore", {}).get("instance") == run.get("target") and value.get("snapshotRestore", {}).get("restoredUnderLifecycleLock") is True and DIGEST.fullmatch(str(value.get("snapshotRestore", {}).get("configDigest", ""))) is not None and value.get("crash", {}).get("lifecycle") == "cleanup" and valid_receipt(value.get("recovery"), run, "removed"),
+        "install-crash-resume": lambda: value.get("status") == "passed" and value.get("snapshotRestore", {}).get("instance") == run.get("target") and value.get("snapshotRestore", {}).get("restoredUnderLifecycleLock") is True and valid_snapshot_identity({key: value["snapshotRestore"].get(key) for key in ("instanceUuid", "snapshot", "snapshotCreatedAt", "configDigest", "cleanTargetStateDigest", "identityDigest")}) and value.get("crash", {}).get("lifecycle") == "install" and valid_receipt(value.get("recovery"), run, "active"),
+        "cleanup-crash-resume": lambda: value.get("status") == "passed" and value.get("snapshotRestore", {}).get("instance") == run.get("target") and value.get("snapshotRestore", {}).get("restoredUnderLifecycleLock") is True and valid_snapshot_identity({key: value["snapshotRestore"].get(key) for key in ("instanceUuid", "snapshot", "snapshotCreatedAt", "configDigest", "cleanTargetStateDigest", "identityDigest")}) and value.get("crash", {}).get("lifecycle") == "cleanup" and valid_receipt(value.get("recovery"), run, "removed"),
         "kubernetes-uid-rv": lambda: isinstance(value.get("node"), dict) and bool(value["node"].get("uid")) and bool(value["node"].get("resourceVersion")),
         "kubernetes-stale-cas-denied": lambda: value.get("status") == "passed" and value.get("staleCASDenied") is True and value.get("stateUnchanged") is True and value.get("rejection", {}).get("classification") in ("kubernetes-status-invalid-422-jsonpatch-test", "kubectl-invalid-jsonpatch-test") and value.get("rejection", {}).get("reason") == "Invalid",
         "kubernetes-quarantine-noschedule": lambda: value.get("status") == "passed" and value.get("quarantineNoSchedule") is True and value.get("ordinaryWorkloads") == 0,
@@ -341,15 +390,23 @@ def record(args: argparse.Namespace) -> None:
     if not isinstance(metadata, dict):
         die("metadata must be a JSON object")
     semantic = artifact_json(stdout, args.step)
+    if args.step == "node-identity-trust":
+        trust = authoritative_identity(semantic)
+        if trust is None:
+            die("node identity trust artifact is not an authoritative root observation")
+        if "receiptTrust" in run and run["receiptTrust"] != trust:
+            die("authoritative node identity changed during the run")
+        run["receiptTrust"] = trust
     receipt = full_semantic_receipt(args.step, semantic)
     if receipt is not None:
-        public_key = args.receipt_public_key or run.get("receiptTrust", {}).get("publicKey", "")
-        if not public_key:
-            die(f"step {args.step} requires --receipt-public-key to pin receipt trust")
-        trust = verify_receipt_trust(receipt, public_key)
-        if "receiptTrust" in run and run["receiptTrust"] != trust:
-            die("receipt signer trust changed during the run")
-        run["receiptTrust"] = trust
+        authoritative = run.get("receiptTrust")
+        if not isinstance(authoritative, dict) or set(authoritative) != {"publicKey", "fingerprint", "signingKeyId", "identityGeneration", "enrollmentId", "nodeId", "workspaceId", "controlPlaneOriginDigest"}:
+            die(f"step {args.step} requires node-identity-trust evidence first")
+        if args.receipt_public_key and args.receipt_public_key != authoritative["publicKey"]:
+            die("caller-supplied receipt key differs from root-observed Node identity")
+        observed = verify_receipt_trust(receipt, authoritative["publicKey"])
+        if any(observed[key] != authoritative[key] for key in ("publicKey", "fingerprint", "signingKeyId")):
+            die("receipt signer differs from root-observed Node identity")
     if not gate_semantics(args.step, semantic, run):
         die(f"step {args.step} stdout does not satisfy its gate-specific semantic contract")
     lowered_metadata = json.dumps(metadata, sort_keys=True).lower()
@@ -398,7 +455,8 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
     if "binaryVersion" in source and (not isinstance(source["binaryVersion"], str) or not source["binaryVersion"]):
         errors.append("binary version is invalid")
     receipt_trust = run.get("receiptTrust")
-    if receipt_trust is not None and (not isinstance(receipt_trust, dict) or set(receipt_trust) != {"publicKey", "fingerprint", "signingKeyId"} or not DIGEST.fullmatch(str(receipt_trust.get("fingerprint", "")))):
+    trust_fields = {"publicKey", "fingerprint", "signingKeyId", "identityGeneration", "enrollmentId", "nodeId", "workspaceId", "controlPlaneOriginDigest"}
+    if receipt_trust is not None and (not isinstance(receipt_trust, dict) or set(receipt_trust) != trust_fields or not DIGEST.fullmatch(str(receipt_trust.get("fingerprint", ""))) or not DIGEST.fullmatch(str(receipt_trust.get("controlPlaneOriginDigest", ""))) or not isinstance(receipt_trust.get("identityGeneration"), int) or receipt_trust["identityGeneration"] < 1):
         errors.append("receipt trust is invalid")
     scope = run.get("scope")
     profile = run.get("profile")
@@ -487,7 +545,7 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
                         except SystemExit as exc:
                             errors.append(f"step {sid} cryptographic receipt verification failed: {exc}")
                         else:
-                            if observed_trust != receipt_trust:
+                            if any(observed_trust[key] != receipt_trust.get(key) for key in ("publicKey", "fingerprint", "signingKeyId")):
                                 errors.append(f"step {sid} receipt signer differs from pinned trust")
     if len(ids) != len(set(ids)):
         errors.append("duplicate step IDs")
@@ -507,6 +565,19 @@ def validate(root: pathlib.Path, run: dict[str, Any], require_complete: bool) ->
         before_value, after_value = semantic_by_id.get(before_id), semantic_by_id.get(after_id)
         if isinstance(before_value, dict) and isinstance(after_value, dict) and before_value.get(field) != after_value.get(field):
             errors.append(f"{before_id}/{after_id} {field} comparison differs")
+    target_baseline = semantic_by_id.get("target-baseline")
+    snapshot_step = semantic_by_id.get("lxd-snapshot")
+    snapshot_identity = snapshot_step.get("snapshotIdentity") if isinstance(snapshot_step, dict) else None
+    if isinstance(target_baseline, dict) and isinstance(snapshot_identity, dict):
+        if snapshot_identity.get("cleanTargetStateDigest") != digest_json_value(target_baseline.get("state")):
+            errors.append("snapshot clean target-state digest differs from target-baseline content")
+    for step_id in ("lxd-restore", "install-crash-resume", "cleanup-crash-resume"):
+        value = semantic_by_id.get(step_id)
+        if not isinstance(value, dict) or not isinstance(snapshot_identity, dict):
+            continue
+        restored = value.get("snapshotIdentity") if step_id == "lxd-restore" else value.get("snapshotRestore")
+        if not isinstance(restored, dict) or restored.get("identityDigest") != snapshot_identity.get("identityDigest") or restored.get("instanceUuid") != snapshot_identity.get("instanceUuid"):
+            errors.append(f"{step_id} snapshot identity differs from the clean snapshot creation evidence")
     active_receipts: list[dict[str, Any]] = []
     removed_receipts: list[dict[str, Any]] = []
     for sid, semantic in semantic_by_id.items():

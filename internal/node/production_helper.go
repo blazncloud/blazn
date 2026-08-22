@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -55,7 +56,11 @@ func RunProductionObservationHelper(ctx context.Context, output io.Writer) error
 	if err != nil {
 		return err
 	}
-	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot}
+	observedIdentity, err := observedIdentityFromAuthority(authority)
+	if err != nil {
+		return err
+	}
+	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot, ObservationIdentity: observedIdentity}
 	request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootObserve, Platform: platform, Plan: authority.Plan}
 	if err := engine.AuthorizeRootRequest(ctx, request); err != nil {
 		return err
@@ -67,6 +72,20 @@ func RunProductionObservationHelper(ctx context.Context, output io.Writer) error
 	response.SchemaVersion = RootHelperSchema
 	response.OK = true
 	return json.NewEncoder(output).Encode(response)
+}
+
+func observedIdentityFromAuthority(authority RootInstallAuthority) (RootObservedIdentity, error) {
+	publicKey, err := base64.RawURLEncoding.DecodeString(authority.NodePublicKey)
+	if err != nil || len(publicKey) != 32 || authority.Identity.Generation < 1 || authority.Identity.SigningKeyID == "" || authority.Plan.EnrollmentID == "" || authority.Plan.NodeID == "" || authority.Plan.WorkspaceID == "" || authority.ControlPlaneOrigin == "" {
+		return RootObservedIdentity{}, errors.New("root authority public identity tuple is invalid")
+	}
+	keyDigest := sha256.Sum256(publicKey)
+	fingerprint := "sha256:" + hex.EncodeToString(keyDigest[:])
+	if fingerprint != authority.Identity.PublicKeyFingerprint {
+		return RootObservedIdentity{}, errors.New("root authority public key fingerprint differs")
+	}
+	originDigest := sha256.Sum256([]byte(authority.ControlPlaneOrigin))
+	return RootObservedIdentity{PublicKey: authority.NodePublicKey, PublicKeyFingerprint: fingerprint, SigningKeyID: authority.Identity.SigningKeyID, Generation: authority.Identity.Generation, EnrollmentID: authority.Plan.EnrollmentID, NodeID: authority.Plan.NodeID, WorkspaceID: authority.Plan.WorkspaceID, ControlPlaneOriginDigest: "sha256:" + hex.EncodeToString(originDigest[:])}, nil
 }
 
 func prepareProductionServiceState(ctx context.Context, expected, binary string) error {

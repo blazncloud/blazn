@@ -229,6 +229,7 @@ type NativeRootEngine struct {
 	AuthorityHTTPClient  *http.Client
 	LookupUser           func(string) (*user.User, error)
 	LookupGroup          func(string) (*user.Group, error)
+	ObservationIdentity  RootObservedIdentity
 }
 
 func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (RootResponse, error) {
@@ -352,6 +353,9 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 }
 
 func (e NativeRootEngine) observeCapability(ctx context.Context, plan client.NodeInstallPlan) (RootNodeObservation, error) {
+	if e.ObservationIdentity.PublicKey == "" || e.ObservationIdentity.PublicKeyFingerprint == "" || e.ObservationIdentity.SigningKeyID == "" || e.ObservationIdentity.Generation < 1 || e.ObservationIdentity.EnrollmentID != plan.EnrollmentID || e.ObservationIdentity.NodeID != plan.NodeID || e.ObservationIdentity.WorkspaceID != plan.WorkspaceID || e.ObservationIdentity.ControlPlaneOriginDigest == "" {
+		return RootNodeObservation{}, errors.New("root-authorized node identity observation is unavailable")
+	}
 	binding, err := e.rootKubernetesBinding()
 	if err != nil || binding == nil {
 		return RootNodeObservation{}, errors.New("root-authorized Kubernetes binding is unavailable")
@@ -386,7 +390,7 @@ func (e NativeRootEngine) observeCapabilityBinding(ctx context.Context, plan cli
 	if err != nil {
 		return RootNodeObservation{}, errors.New("worker allocatable storage is invalid")
 	}
-	result := RootNodeObservation{Binding: client.KubernetesBinding{ClusterID: binding.ClusterID, NodeName: binding.NodeName, NodeUID: binding.NodeUID, ResourceVersion: value.Metadata.ResourceVersion}, AllocatableCPUMillis: cpu, AllocatableMemoryBytes: memory, AllocatableDiskBytes: disk, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}, Plan: RootObservedPlan{PlanID: plan.PlanID, ExpiresAt: plan.ExpiresAt, Digest: plan.Digest, Signature: plan.Signature}}
+	result := RootNodeObservation{Binding: client.KubernetesBinding{ClusterID: binding.ClusterID, NodeName: binding.NodeName, NodeUID: binding.NodeUID, ResourceVersion: value.Metadata.ResourceVersion}, AllocatableCPUMillis: cpu, AllocatableMemoryBytes: memory, AllocatableDiskBytes: disk, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}, Plan: RootObservedPlan{PlanID: plan.PlanID, ExpiresAt: plan.ExpiresAt, Digest: plan.Digest, Signature: plan.Signature}, Identity: e.ObservationIdentity}
 	service, serviceErr := e.serviceState(ctx, plan.NodeService)
 	result.ServiceActive = serviceErr == nil && service.Service != nil && service.Service.Active
 	if serviceErr != nil {

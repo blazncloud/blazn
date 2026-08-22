@@ -153,10 +153,10 @@ run_crash_case() {
   snapshot=${BLAZN_QUALIFICATION_SNAPSHOT:-}
   [[ "$snapshot" =~ ^checkpoint-[a-z0-9][a-z0-9-]{1,47}$ ]] || qual_die 'crash case requires the exact reviewed LXD snapshot name'
   lxc info "${BLAZN_QUALIFICATION_TARGET}/${snapshot}" >/dev/null 2>&1 || qual_die 'reviewed recovery snapshot does not exist'
-  snapshot_config=$(lxc config show "${BLAZN_QUALIFICATION_TARGET}/${snapshot}" --expanded)
-  snapshot_digest="sha256:$(printf '%s' "$snapshot_config" | sha256sum | awk '{print $1}')"
-  [[ "${BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'crash case requires the approval-bound clean snapshot config digest'
-  [ "$snapshot_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256" ] || qual_die 'clean snapshot config digest differs from approval'
+  snapshot_identity=$(qual_lxd_snapshot_identity "$BLAZN_QUALIFICATION_TARGET" "$snapshot")
+  identity_digest=$(jq -r '.identityDigest' <<<"$snapshot_identity")
+  [[ "${BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'crash case requires the approval-bound immutable clean snapshot identity'
+  [ "$identity_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_IDENTITY_SHA256" ] || qual_die 'clean snapshot identity differs from crash approval'
   lxc restore "$BLAZN_QUALIFICATION_TARGET" "$snapshot"
   [ "$(lxc config get "$BLAZN_QUALIFICATION_TARGET" user.blazn.qualification 2>/dev/null || true)" = "$BLAZN_QUALIFICATION_CORRELATION_ID" ] || qual_die 'restored guest correlation marker differs'
   verify_binary
@@ -218,8 +218,8 @@ run_crash_case() {
   else
     recovery=$(target_exec "$binary" --output=json node uninstall --yes --remove-managed-runtime)
   fi
-  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$BLAZN_QUALIFICATION_TARGET" --arg snapshot "$snapshot" --arg snapshotDigest "$snapshot_digest" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" \
-    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:{instance:$target,name:$snapshot,configDigest:$snapshotDigest,restoredUnderLifecycleLock:true},crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$BLAZN_QUALIFICATION_TARGET" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" --argjson snapshotIdentity "$snapshot_identity" \
+    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:($snapshotIdentity + {instance:$target,restoredUnderLifecycleLock:true}),crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
 }
 
 do_action() {
@@ -244,6 +244,9 @@ do_action() {
       ;;
     expired-observe)
       verify_plan_expired
+      target_daemon_observe
+      ;;
+    identity-observe)
       target_daemon_observe
       ;;
     expired-repair-denied)
@@ -290,8 +293,8 @@ case "$action" in
     qual_require_approval "$action"
     qual_with_lock run_crash_case "$crash_lifecycle" "$checkpoint"
     ;;
-  expired-observe)
+  expired-observe|identity-observe)
     do_action
     ;;
-  *) qual_die 'usage: lifecycle.sh plan|install|idempotent-install|repair|expired-observe|expired-repair-denied|expired-uninstall|uninstall|reinstall|crash-install-CHECKPOINT|crash-cleanup-CHECKPOINT' ;;
+  *) qual_die 'usage: lifecycle.sh plan|install|idempotent-install|repair|identity-observe|expired-observe|expired-repair-denied|expired-uninstall|uninstall|reinstall|crash-install-CHECKPOINT|crash-cleanup-CHECKPOINT' ;;
 esac

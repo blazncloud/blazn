@@ -27,11 +27,16 @@
     "receiptTrust": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicKey", "fingerprint", "signingKeyId"],
+      "required": ["publicKey", "fingerprint", "signingKeyId", "identityGeneration", "enrollmentId", "nodeId", "workspaceId", "controlPlaneOriginDigest"],
       "properties": {
         "publicKey": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
         "fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-        "signingKeyId": {"type": "string", "minLength": 1, "maxLength": 128}
+        "signingKeyId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "identityGeneration": {"type": "integer", "minimum": 1},
+        "enrollmentId": {"type": "string", "minLength": 1},
+        "nodeId": {"type": "string", "minLength": 1},
+        "workspaceId": {"type": "string", "minLength": 1},
+        "controlPlaneOriginDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       }
     },
     "startedAt": {"type": "string", "format": "date-time"},
