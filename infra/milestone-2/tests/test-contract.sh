@@ -27,6 +27,9 @@ for expected in \
   'TRUSTED_PROXY_CIDRS: 172.18.0.1/32' \
   'TRUSTED_PROXY_HOPS: "1"' \
   'TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret' \
+  'AUTH0_CLIENT_SECRET_FILE: /run/secrets/auth0_client_secret' \
+  'OIDC_COOKIE_KEY_FILE: /run/secrets/oidc_cookie_key' \
+  'AUTH0_REQUIRE_MFA: ${AUTH0_REQUIRE_MFA:-true}' \
   'WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1' \
   'S3_ENDPOINT: http://object:9000' \
   'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
@@ -84,6 +87,12 @@ for privileged_service in api-migrate api-bootstrap postgres object object-init 
     printf 'workspace invitation HMAC key reaches non-runtime service: %s\n' "$privileged_service" >&2
     exit 1
   fi
+  for identity_secret in auth0_client_secret oidc_cookie_key; do
+    if printf '%s\n' "$service_block" | grep -F "$identity_secret" >/dev/null; then
+      printf 'identity secret reaches non-runtime service: %s %s\n' "$privileged_service" "$identity_secret" >&2
+      exit 1
+    fi
+  done
 done
 
 grep -F 'CREATE ROLE blazn_migration' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null

@@ -318,6 +318,12 @@ services:
       TRUSTED_PROXY_CIDRS: 172.18.0.1/32
       TRUSTED_PROXY_HOPS: "1"
       TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret
+      AUTH0_ISSUER_URL: ${AUTH0_ISSUER_URL:?set isolated Blazn Auth0 issuer}
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID:?set isolated Blazn Auth0 client ID}
+      AUTH0_CLIENT_SECRET_FILE: /run/secrets/auth0_client_secret
+      AUTH0_CONNECTIONS: ${AUTH0_CONNECTIONS:-google-oauth2,github,apple}
+      AUTH0_REQUIRE_MFA: ${AUTH0_REQUIRE_MFA:-true}
+      OIDC_COOKIE_KEY_FILE: /run/secrets/oidc_cookie_key
       WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1
       NODE_PLAN_SIGNING_PRIVATE_KEY_FILE: /run/secrets/node_plan_signing_private_key_v1
       NODE_PLAN_SIGNING_KEY_ID: control-plane-node-plan/v1
@@ -333,6 +339,8 @@ services:
       - s3_runtime_access_key
       - s3_runtime_secret_key
       - proxy_auth_secret
+      - auth0_client_secret
+      - oidc_cookie_key
       - workspace_invitation_hmac_v1
       - node_plan_signing_private_key_v1
     volumes:
@@ -504,6 +512,10 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/s3-runtime-secret-key
   proxy_auth_secret:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/proxy-auth-secret
+  auth0_client_secret:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/auth0-client-secret
+  oidc_cookie_key:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/oidc-cookie-key
   workspace_invitation_hmac_v1:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/workspace-invitation-hmac-v1
   node_plan_signing_private_key_v1:
