@@ -48,6 +48,12 @@ test-infra:
 	./infra/milestone-2/tests/test-live-upgrade.sh
 	./infra/milestone-2/tests/test-api-build.sh
 	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
+	./infra/node/tests/test-contract.sh
+	./infra/node/tests/test-secret-create-resume.sh
+	./infra/node/tests/test-upgrade-resume.sh
+	./infra/node/tests/test-backup-metadata.sh
+	./infra/node/tests/test-postgres-privileges.sh
+	shellcheck infra/node/scripts/*.sh infra/node/tests/*.sh
 
 release:
 	./scripts/release.sh

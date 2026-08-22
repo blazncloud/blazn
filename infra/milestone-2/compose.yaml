@@ -14,6 +14,7 @@ services:
       - migration_database_url
       - bootstrap_database_url
       - runtime_database_url
+      - node_broker_database_url
     ports:
       - "${BLAZN_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-55432}:5432"
     volumes:
@@ -149,6 +150,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      node-migration-preflight:
+        condition: service_completed_successfully
     restart: "no"
     security_opt:
       - no-new-privileges:true
@@ -160,6 +163,72 @@ services:
           cpus: "0.50"
           memory: 512M
           pids: 128
+    networks:
+      - control
+
+  node-migration-preflight:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    user: "999:999"
+    read_only: true
+    entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "pre-migration"]
+    environment:
+      NODE_BROKER_DATABASE_URL_FILE: /run/secrets/node_broker_database_url
+    secrets:
+      - node_broker_database_url
+    volumes:
+      - type: bind
+        source: ../node/scripts/verify-database.sh
+        target: /opt/blazn-node/verify-database.sh
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 64
+    networks:
+      - control
+
+  node-broker-verify:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    user: "999:999"
+    read_only: true
+    entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "post-migration"]
+    environment:
+      NODE_BROKER_DATABASE_URL_FILE: /run/secrets/node_broker_database_url
+    secrets:
+      - node_broker_database_url
+    volumes:
+      - type: bind
+        source: ../node/scripts/verify-database.sh
+        target: /opt/blazn-node/verify-database.sh
+        read_only: true
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 64
     networks:
       - control
 
@@ -179,7 +248,7 @@ services:
       - source: initial_password
         target: initial_password
     depends_on:
-      api-migrate:
+      node-broker-verify:
         condition: service_completed_successfully
     restart: "no"
     labels:
@@ -269,6 +338,8 @@ secrets:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/bootstrap-database-url
   runtime_database_url:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/runtime-database-url
+  node_broker_database_url:
+    file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/database-url
   initial_password:
     file: ${BLAZN_SECRETS_ROOT:?set BLAZN_SECRETS_ROOT}/initial-password
   s3_root_access_key:

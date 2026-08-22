@@ -17,6 +17,7 @@ esac
 DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 SECRETS_ROOT=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}
+NODE_SECRETS_ROOT=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
 RECEIPT_PATH=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 BIND_ADDRESS=${BLAZN_BIND_ADDRESS:-127.0.0.1}
 MIN_DATA_BYTES=${BLAZN_MIN_DATA_BYTES:-42949672960}
@@ -30,6 +31,7 @@ for named_path in \
   "BLAZN_DATA_ROOT:$DATA_ROOT" \
   "BLAZN_BACKUP_ROOT:$BACKUP_ROOT" \
   "BLAZN_SECRETS_ROOT:$SECRETS_ROOT" \
+  "BLAZN_NODE_BROKER_SECRETS_ROOT:$NODE_SECRETS_ROOT" \
   "BLAZN_RECEIPT_PATH:$RECEIPT_PATH"; do
   name=${named_path%%:*}
   value=${named_path#*:}
@@ -156,6 +158,23 @@ if [ "$MODE" = deploy ]; then
   for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
     assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444
   done
+  [ "$NODE_SECRETS_ROOT" = /etc/blazn/node-broker/secrets ] || die "node broker secrets root differs from the reviewed path"
+  assert_directory_owned_mode /etc/blazn/node-broker 0 700
+  assert_directory_owned_mode "$NODE_SECRETS_ROOT" 0 700
+  assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/database-url" 0 444
+  assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/enrollment-hmac-v1" 0 400
+  assert_regular_file_owned_mode "$NODE_SECRETS_ROOT/join-credential-v1" 0 400
+  node_creation_journal=$(jq -er .nodeBroker.creationJournal.path "$RECEIPT_PATH")
+  case "$node_creation_journal" in /var/lib/blazn/ownership/node-broker-secret-create.json|/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json) ;; *) die "ownership receipt has an unreviewed Node secret-creation journal" ;; esac
+  assert_regular_file_owned_mode "$node_creation_journal" 0 600
+  jq -e \
+    --arg nodeDatabaseDigest "sha256:$(sha256_file "$NODE_SECRETS_ROOT/database-url")" \
+    --arg nodeEnrollmentDigest "sha256:$(sha256_file "$NODE_SECRETS_ROOT/enrollment-hmac-v1")" \
+    --arg nodeJoinDigest "sha256:$(sha256_file "$NODE_SECRETS_ROOT/join-credential-v1")" \
+    --arg nodeCreationJournal "$node_creation_journal" \
+    --arg nodeCreationJournalDigest "sha256:$(sha256_file "$node_creation_journal")" \
+    '.nodeBroker == {schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:"/etc/blazn/node-broker/secrets",databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}}' \
+    "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not bind the Node broker prerequisites"
 fi
 
 printf '{"status":"ok","mode":"%s","bindAddress":"%s","ports":[%s,%s,%s,%s],"dataBytesFree":%s,"backupBytesFree":%s,"dataInodesFree":%s,"backupInodesFree":%s,"separateFilesystem":true}\n' \

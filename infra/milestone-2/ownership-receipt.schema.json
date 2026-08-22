@@ -11,6 +11,7 @@
     "paths",
     "backupMount",
     "controlApi",
+    "nodeBroker",
     "ports",
     "units",
     "images",
@@ -56,6 +57,7 @@
         "imageId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
     },
+    "nodeBroker": { "$ref": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json" },
     "units": {
       "type": "array",
       "uniqueItems": true,

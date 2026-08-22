@@ -17,6 +17,7 @@ require_command docker
 require_command sha256sum
 require_command cmp
 require_command sort
+require_command jq
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 load_control_api_image "$ROOT_DIR"
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
@@ -75,8 +76,18 @@ manifest_tmp=$staging.sha256.$$
   find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
 ) >"$manifest_tmp"
 mv -- "$manifest_tmp" "$staging/SHA256SUMS"
-printf '{"schemaVersion":"blazn.dev/control-plane-backup/v1","correlationId":"%s","fencingToken":%s,"createdAt":"%s","database":"%s","bucket":"%s"}\n' \
-  "$correlation" "$BLAZN_FENCING_TOKEN" "$timestamp" "${POSTGRES_DB:-blazn}" "${S3_BUCKET:-blazn-poc}" >"$staging/metadata.json"
+receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
+assert_regular_file_owned_mode "$receipt" 0 600
+node_broker_receipt_digest=sha256:$(jq -cS .nodeBroker "$receipt" | sha256sum | awk '{print $1}')
+jq -cn \
+  --arg correlationId "$correlation" \
+  --arg createdAt "$timestamp" \
+  --arg database "${POSTGRES_DB:-blazn}" \
+  --arg bucket "${S3_BUCKET:-blazn-poc}" \
+  --arg nodeBrokerReceiptDigest "$node_broker_receipt_digest" \
+  --argjson fencingToken "$BLAZN_FENCING_TOKEN" \
+  '{schemaVersion:"blazn.dev/control-plane-backup/v1",correlationId:$correlationId,fencingToken:$fencingToken,createdAt:$createdAt,database:$database,bucket:$bucket,nodeBrokerReceiptDigest:$nodeBrokerReceiptDigest}' \
+  >"$staging/metadata.json"
 (
   cd "$staging"
   sha256sum metadata.json >>SHA256SUMS

@@ -5,9 +5,11 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/common.sh"
 
-[ "$#" -eq 2 ] || die "usage: restore-test.sh BACKUP_DIRECTORY EMPTY_RESTORE_ROOT"
+[ "$#" -eq 4 ] || die "usage: restore-test.sh BACKUP_DIRECTORY EMPTY_RESTORE_ROOT OWNERSHIP_RECEIPT NODE_KEY_INVENTORY"
 backup=$1
 target=$2
+node_receipt=$3
+node_inventory=$4
 require_absolute_path BACKUP_DIRECTORY "$backup"
 require_absolute_path EMPTY_RESTORE_ROOT "$target"
 require_command realpath
@@ -37,6 +39,7 @@ require_command sha256sum
   cd "$backup"
   sha256sum -c SHA256SUMS
 )
+"$SCRIPT_DIR/../../node/scripts/verify-backup-metadata.sh" "$backup/metadata.json" "$node_receipt" "$node_inventory" >/dev/null
 
 image=${POSTGRES_IMAGE:-}
 case "$image" in

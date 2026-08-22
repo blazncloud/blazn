@@ -79,7 +79,7 @@ grep -F 'CREATE ROLE blazn_bootstrap' "$ROOT_DIR/postgres-init/01-roles.sh" >/de
 grep -F 'NOBYPASSRLS' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'NOBYPASSRLS' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
 grep -F 'pg_auth_members' "$ROOT_DIR/scripts/upgrade-live-v1-to-v2.sh" >/dev/null
-if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null; then
+if grep -F 'ALTER DEFAULT PRIVILEGES' "$ROOT_DIR/postgres-init/01-roles.sh" | grep -F 'GRANT' >/dev/null; then
   printf 'database initialization grants broad future-table privileges\n' >&2
   exit 1
 fi
@@ -176,7 +176,7 @@ cleanup_boundary() {
   [ "$restore_parent_created" -eq 0 ] || rmdir /var/tmp/blazn-restore 2>/dev/null || true
 }
 trap cleanup_boundary EXIT HUP INT TERM
-if "$ROOT_DIR/scripts/restore-test.sh" "$boundary_tmp" "/var/tmp/blazn-restore/../blazn-restore-escape-$$" >"$boundary_tmp/out" 2>"$boundary_tmp/err"; then
+if "$ROOT_DIR/scripts/restore-test.sh" "$boundary_tmp" "/var/tmp/blazn-restore/../blazn-restore-escape-$$" "$boundary_tmp/receipt" "$boundary_tmp/inventory" >"$boundary_tmp/out" 2>"$boundary_tmp/err"; then
   printf 'restore traversal boundary unexpectedly passed\n' >&2
   exit 1
 fi
