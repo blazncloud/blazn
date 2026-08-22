@@ -1,10 +1,161 @@
-# Blazn
+<p align="center">
+  <img src="docs/assets/blazn-icon.svg" width="160" height="160" alt="Blazn logo">
+</p>
 
-Blazn is a cross-platform workspace for people and teams to run, coordinate, and improve AI agents as a shared workforce.
+<h1 align="center">Blazn</h1>
 
-It brings agent conversations, execution environments, models, knowledge, tools, schedules, project work, artifacts, and operational insight into one product—creating a unified company brain that can work across local machines and the Blazn cloud.
+<p align="center">
+  The operating workspace for people and AI agent teams.
+</p>
 
-Start with the [product overview](docs/product-overview.md), then use the [POC execution plan](docs/poc-execution-plan.md) and [Milestone 1 guide](docs/milestone-1.md).
+<p align="center">
+  <a href="https://github.com/KingJammin/blazn/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/KingJammin/blazn/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/KingJammin/blazn/releases/tag/v0.1.0-poc.2"><img alt="Release v0.1.0-poc.2" src="https://img.shields.io/badge/release-v0.1.0--poc.2-f97316.svg"></a>
+  <img alt="Go 1.26.2 or newer" src="https://img.shields.io/badge/go-%3E%3D1.26.2-101010.svg">
+</p>
+
+Blazn is a cross-platform workspace for people and teams to run, coordinate, and improve AI agents as a shared workforce. It brings agents, conversations, execution environments, models, knowledge, tools, schedules, projects, artifacts, and operational insight into one product—a shared company brain that can work across local machines and the Blazn cloud.
+
+The visual identity carries forward the flame, Blaze orange, and dark ground established by Blaze Proxy. Blazn expands that foundation into a broader workspace, control plane, node fabric, and governed AI-routing system.
+
+## What is in this repository
+
+| Area | What it provides |
+|---|---|
+| CLI | Human and deterministic JSON output for auth, workspaces, nodes, diagnostics, and lifecycle operations |
+| Control API | TypeScript services for authentication, workspace membership, node enrollment, broker operations, and persistence |
+| Contracts | Versioned OpenAPI and JSON Schema contracts for clients, nodes, proxy events, policies, and receipts |
+| Node runtime | Signed enrollment plans, transactional installation, recovery, identity, daemon, and heartbeat support |
+| AI proxy foundation | Normalized OpenAI and Anthropic request, response, error, stream, policy, and activation contracts |
+| Infrastructure | Reviewed deployment, database, backup, MicroK8s issuer, and Agent Sandbox qualification assets |
+
+## Quick start
+
+### Install the current signed release
+
+The installer requires an immutable version and verifies the signed checksum manifest before installing:
+
+```bash
+curl -fsSL \
+  https://github.com/KingJammin/blazn/releases/download/v0.1.0-poc.2/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.2 sh
+```
+
+The default destination is `~/.local/bin`. If that directory is not already on your `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Verify the installation and run offline diagnostics:
+
+```bash
+blazn version
+blazn doctor
+blazn help
+```
+
+### Build from source
+
+```bash
+git clone https://github.com/KingJammin/blazn.git
+cd blazn
+go build -o ./bin/blazn ./cmd/blazn
+./bin/blazn version
+```
+
+## Examples
+
+### Machine-readable diagnostics
+
+Non-streaming CLI commands support deterministic output for scripts and CI:
+
+```bash
+blazn doctor --output json
+blazn version --output json
+```
+
+### Connect to a deployed control plane
+
+Authenticated commands require an HTTPS Blazn API origin. Loopback HTTP is available only for explicit local development.
+
+```bash
+export BLAZN_API_URL="https://blazn.example.com"
+blazn auth login
+blazn auth status
+blazn auth devices --output json
+```
+
+### Create and select a workspace
+
+Mutating workspace commands require a caller-provided request ID so retries are safe and idempotent:
+
+```bash
+blazn workspace create "Acme AI" \
+  --slug acme-ai \
+  --request-id onboarding-20260822
+
+blazn workspace list
+blazn workspace use acme-ai
+blazn workspace members
+```
+
+### Invite a teammate safely
+
+Invitation tokens are accepted from standard input, never as command-line arguments where shell history or process listings could expose them:
+
+```bash
+blazn workspace invite \
+  --role member \
+  --expires-in 24h \
+  --request-id invite-alex-20260822
+
+printf '%s\n' "$BLAZN_INVITE_TOKEN" |
+  blazn workspace join \
+    --invite-stdin \
+    --request-id join-alex-20260822
+```
+
+## CLI overview
+
+```text
+blazn auth       Authenticate this device and manage sessions
+blazn workspace  Create, select, and manage workspaces
+blazn node       Enroll, install, recover, and heartbeat a node
+blazn doctor     Run offline readiness checks
+blazn version    Show build and contract versions
+blazn uninstall  Remove a receipt-owned direct installation
+```
+
+Run `blazn help <command>` for the exact options supported by your installed release.
+
+## Development
+
+The primary validation command checks formatting, generated contracts and clients, Go tests, control API tests, release packaging, and installer behavior:
+
+```bash
+make ci
+```
+
+Useful focused commands:
+
+```bash
+make test
+make test-control-api
+make test-release
+make test-install
+```
+
+## Documentation
+
+- [Product overview](docs/product-overview.md) — vision, surfaces, system model, and product principles
+- [POC execution plan](docs/poc-execution-plan.md) — phased implementation and qualification plan
+- [Milestone 1](docs/milestone-1.md) — CLI distribution and release trust
+- [Milestone 2](docs/milestone-2.md) — control plane and authentication
+- [Milestone 2A contract](docs/milestone-2a-contract.md) — workspace and membership semantics
+- [Node contract](docs/node-contract.md) — enrollment, installation, receipts, and lifecycle
+- [Proxy contract](docs/proxy-contract.md) — compatible request routing and activation policy
+- [Brand assets](docs/assets/README.md) — flame mark and palette
 
 ## Product surfaces
 
@@ -13,6 +164,6 @@ Start with the [product overview](docs/product-overview.md), then use the [POC e
 - Blazn cloud for managed models, environments, collaboration, and orchestration
 - Blazn Button for embedding real-time agent work into products
 
-## Status
+## Project status
 
-The product vision and initial system designs are documented. Milestone 1 implements the standalone CLI, signed cross-platform release artifacts, and secure curl installation lifecycle. Authentication and workspace services are the next milestone.
+Blazn is in proof-of-concept development. The repository currently includes the signed standalone CLI release path, device-bound authentication, workspace contracts and services, node enrollment and broker infrastructure, proxy contracts, and deployment qualification assets. The complete desktop workspace, managed cloud experience, and all product-vision surfaces are not yet generally available.
