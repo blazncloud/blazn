@@ -57,13 +57,21 @@ func addEmbeddedServiceDefinition(plan *NodeInstallPlan) {
 		}
 	}
 	if !found {
-		plan.Components = append(plan.Components, NodeInstallComponent{Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: plan.NodeService.DefinitionSHA256, Ownership: "adopt_exact"})
+		ownership := "adopt_exact"
+		if plan.Mode == NodeModeFresh {
+			ownership = "install"
+		}
+		plan.Components = append(plan.Components, NodeInstallComponent{Name: "service-definition", ArtifactType: "configuration", SourceClass: "embedded", Version: "1.0", Publisher: "Blazn", SHA256: plan.NodeService.DefinitionSHA256, Ownership: ownership})
 	}
 	kind, target, desired := "systemd_unit", "/etc/systemd/system/"+plan.NodeService.UnitName, map[string]any{"unitName": plan.NodeService.UnitName, "sourceComponent": "service-definition"}
 	if plan.NodeService.Manager == "launchd" {
 		kind, target, desired = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist", map[string]any{"label": plan.NodeService.UnitName, "sourceComponent": "service-definition"}
 	}
-	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: int64(len(plan.Mutations) + 1), Kind: kind, Action: "adopt_exact", Target: target, Desired: desired, DesiredDigest: "sha256:" + plan.NodeService.DefinitionSHA256, Mode: 0644, UID: 0, GID: 0, Rollback: "leave_and_report"})
+	action, rollback := "adopt_exact", "leave_and_report"
+	if plan.Mode == NodeModeFresh {
+		action, rollback = "write", "remove_if_owned"
+	}
+	plan.Mutations = append(plan.Mutations, NodeInstallMutation{Ordinal: int64(len(plan.Mutations) + 1), Kind: kind, Action: action, Target: target, Desired: desired, DesiredDigest: "sha256:" + plan.NodeService.DefinitionSHA256, Mode: 0644, UID: 0, GID: 0, Rollback: rollback})
 }
 
 func validNodeCapability() NodeCapability {
@@ -149,6 +157,19 @@ func TestFreshLinuxBindsServiceAccountAndWritableDataRoot(t *testing.T) {
 	addEmbeddedServiceDefinition(&plan)
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatal(err)
+	}
+	for index := range plan.Mutations {
+		if plan.Mutations[index].Kind == "systemd_unit" {
+			plan.Mutations[index].Action = "adopt_exact"
+		}
+	}
+	if err := ValidateNodeInstallPlan(plan); err == nil {
+		t.Fatal("fresh service definition falsely adopted as preexisting")
+	}
+	for index := range plan.Mutations {
+		if plan.Mutations[index].Kind == "systemd_unit" {
+			plan.Mutations[index].Action = "write"
+		}
 	}
 	plan.Mutations[2].Mode = 0500
 	if err := ValidateNodeInstallPlan(plan); err == nil {
