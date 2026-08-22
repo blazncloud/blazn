@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -77,6 +78,10 @@ type fakeAPI struct {
 	stableRevokeRequest  client.RevokeSessionRequest
 	stableRevokeErr      error
 	stableRevokes        int
+	listErrs             []error
+	listTokens           []string
+	revokeErrs           []error
+	revokeTokens         []string
 }
 
 func (a *fakeAPI) CreateDeviceAuthorization(_ context.Context, request client.DeviceAuthorizationRequest) (client.DeviceAuthorization, error) {
@@ -119,11 +124,23 @@ func (a *fakeAPI) RevokeSession(_ context.Context, request client.RevokeSessionR
 	a.stableRevokeRequest = request
 	return a.stableRevokeErr
 }
-func (a *fakeAPI) ListDevices(context.Context, string) (client.DeviceList, error) {
+func (a *fakeAPI) ListDevices(_ context.Context, token string) (client.DeviceList, error) {
+	a.listTokens = append(a.listTokens, token)
+	if len(a.listErrs) > 0 {
+		err := a.listErrs[0]
+		a.listErrs = a.listErrs[1:]
+		return a.devices, err
+	}
 	return a.devices, nil
 }
-func (a *fakeAPI) RevokeDevice(_ context.Context, _ string, id string) error {
+func (a *fakeAPI) RevokeDevice(_ context.Context, token string, id string) error {
+	a.revokeTokens = append(a.revokeTokens, token)
 	a.revoked = id
+	if len(a.revokeErrs) > 0 {
+		err := a.revokeErrs[0]
+		a.revokeErrs = a.revokeErrs[1:]
+		return err
+	}
 	return nil
 }
 
@@ -348,10 +365,7 @@ func TestBeginLoginCleansRevokedStoredSessionBeforeReplacement(t *testing.T) {
 	if _, _, _, err := service.BeginLogin(context.Background()); err != nil || api.stableRevokes != 1 || store.deleted != 1 || len(api.authorizationRequest.DevicePublicKey) == 0 {
 		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
 	}
-	if service.pendingRelease != nil {
-		service.pendingRelease()
-		service.pendingRelease = nil
-	}
+	service.pendingLogin = ""
 }
 
 func TestStatusRefreshesAfterAccessExpiry(t *testing.T) {
@@ -364,6 +378,87 @@ func TestStatusRefreshesAfterAccessExpiry(t *testing.T) {
 	status, err := testService(api, store).Status(context.Background())
 	if err != nil || !status.Authenticated || api.refreshes != 1 || api.currentCalls != 2 {
 		t.Fatalf("status=%#v api=%#v err=%v", status, api, err)
+	}
+}
+
+func TestStatusStablyRevokesSupersededSessionBeforeLocalDelete(t *testing.T) {
+	api := &fakeAPI{currentErr: &client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}}}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	status, err := testService(api, store).Status(context.Background())
+	if err != nil || status.Authenticated || api.stableRevokes != 1 || store.deleted != 1 {
+		t.Fatalf("status=%#v api=%#v store=%#v err=%v", status, api, store, err)
+	}
+}
+
+func TestStatusPreservesSupersededSessionWhenStableRevokeFails(t *testing.T) {
+	api := &fakeAPI{
+		currentErr:      &client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}},
+		stableRevokeErr: errors.New("network unavailable"),
+	}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	_, err := testService(api, store).Status(context.Background())
+	if err == nil || store.deleted != 0 || len(store.value) == 0 {
+		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
+	}
+}
+
+func TestDevicesRefreshesOnceAfterAccessExpiry(t *testing.T) {
+	api := &fakeAPI{
+		session:  client.Session{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 300, DeviceID: "dev-1"},
+		devices:  client.DeviceList{Items: []client.Device{{ID: "dev-1"}}},
+		listErrs: []error{&client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "access_expired"}}, nil},
+	}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	devices, err := testService(api, store).Devices(context.Background())
+	if err != nil || len(devices) != 1 || api.refreshes != 1 || !reflect.DeepEqual(api.listTokens, []string{"old", "new-access"}) {
+		t.Fatalf("devices=%#v api=%#v err=%v", devices, api, err)
+	}
+}
+
+func TestRevokeDeviceRefreshesOnceAfterAccessExpiry(t *testing.T) {
+	api := &fakeAPI{
+		session:    client.Session{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresIn: 300, DeviceID: "dev-1"},
+		revokeErrs: []error{&client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "access_expired"}}, nil},
+	}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	if err := testService(api, store).RevokeDevice(context.Background(), "other-device"); err != nil || api.refreshes != 1 || !reflect.DeepEqual(api.revokeTokens, []string{"old", "new-access"}) {
+		t.Fatalf("api=%#v err=%v", api, err)
+	}
+}
+
+func TestPendingLoginFenceBlocksDuplicateButAllowsStatusAndLogoutCancellation(t *testing.T) {
+	home := t.TempDir()
+	firstLocker, err := newCredentialLockerAtHome(defaultAPIURL, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLocker, err := newCredentialLockerAtHome(defaultAPIURL, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryStore{}
+	firstAPI := &fakeAPI{
+		authorization: client.DeviceAuthorization{DeviceCode: "device-secret", UserCode: "ABCD-EFGH", VerificationURI: "https://login.example/device", Challenge: "server-challenge", ExpiresIn: 600, Interval: 1},
+		session:       client.Session{AccessToken: "access", RefreshToken: "refresh", DeviceID: "dev-1", ExpiresIn: 300},
+	}
+	first := newService(firstAPI, store, defaultAPIURL, firstLocker)
+	secondAPI := &fakeAPI{}
+	second := newService(secondAPI, store, defaultAPIURL, secondLocker)
+	if _, _, _, err := first.BeginLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = firstLocker.WithLock(context.Background(), firstLocker.CancelLogin) })
+	if _, _, _, err := second.BeginLogin(context.Background()); !errors.Is(err, ErrLoginPending) || len(secondAPI.authorizationRequest.DevicePublicKey) != 0 {
+		t.Fatalf("duplicate login err=%v request=%#v", err, secondAPI.authorizationRequest)
+	}
+	if status, err := second.Status(context.Background()); err != nil || status.Authenticated {
+		t.Fatalf("status=%#v err=%v", status, err)
+	}
+	if result, err := second.Logout(context.Background()); err != nil || !result.RemoteRevoked {
+		t.Fatalf("logout=%#v err=%v", result, err)
+	}
+	if _, err := first.CompleteLogin(context.Background(), "device-secret", time.Second); err == nil || firstAPI.deleted != 1 || len(store.value) != 0 {
+		t.Fatalf("firstAPI=%#v store=%#v err=%v", firstAPI, store, err)
 	}
 }
 
