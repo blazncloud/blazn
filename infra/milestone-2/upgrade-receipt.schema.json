@@ -15,13 +15,14 @@
     "digests": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["s3-root-access-key", "s3-root-secret-key", "s3-runtime-access-key", "s3-runtime-secret-key", "bootstrap-database-url"],
+      "required": ["s3-root-access-key", "s3-root-secret-key", "s3-runtime-access-key", "s3-runtime-secret-key", "bootstrap-database-url", "proxy-auth-secret"],
       "properties": {
         "s3-root-access-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
         "s3-root-secret-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
         "s3-runtime-access-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
         "s3-runtime-secret-key": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-        "bootstrap-database-url": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        "bootstrap-database-url": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "proxy-auth-secret": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
     }
   }

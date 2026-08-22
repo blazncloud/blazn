@@ -9,9 +9,15 @@ ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 [ "$(id -u)" -eq 0 ] || die "receipt reconciliation must run as root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "receipt reconciliation must run through with-control-plane-lock.sh"
 require_command jq
+require_command docker
 backup_root=${BLAZN_BACKUP_ROOT:-}
 [ -n "$backup_root" ] || die "BLAZN_BACKUP_ROOT is required"
 assert_approved_backup_mount "$backup_root"
+validate_control_api_build "$ROOT_DIR"
+control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
+control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
+control_api_image=$(jq -er .image "$control_api_build_receipt")
+control_api_image_id=$(jq -er .imageId "$control_api_build_receipt")
 
 receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
@@ -40,7 +46,10 @@ jq --arg digest "$digest" \
   --arg backupMount "$BLAZN_BACKUP_MOUNT" \
   --arg backupSource "$BLAZN_BACKUP_SOURCE" \
   --arg backupFstype "$BLAZN_BACKUP_FSTYPE" \
-  '.configDigest=$digest | .configUpdatedAt=$updatedAt | .backupMount={target:$backupMount,source:$backupSource,fstype:$backupFstype}' "$receipt" >"$tmp"
+  --arg controlApiSource "$control_api_source" \
+  --arg controlApiImage "$control_api_image" \
+  --arg controlApiImageId "$control_api_image_id" \
+  '.configDigest=$digest | .configUpdatedAt=$updatedAt | .backupMount={target:$backupMount,source:$backupSource,fstype:$backupFstype} | .controlApi={sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId}' "$receipt" >"$tmp"
 chmod 0600 "$tmp"
 mv -- "$tmp" "$receipt"
 printf 'updated control-plane receipt config digest to %s\n' "$digest"

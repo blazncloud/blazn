@@ -104,7 +104,7 @@ validate_upgrade_receipt() {
   jq -e --arg host "$(hostname)" --arg secrets "$SECRETS_ROOT" \
     '.schemaVersion == "blazn.dev/control-plane-v2-upgrade/v1" and .owner == "blazn-poc" and .host == $host and .secretsRoot == $secrets and (.phase == "secrets-installed" or .phase == "identity-ready")' \
     "$UPGRADE_RECEIPT" >/dev/null || die "v2 upgrade receipt is invalid"
-  for installed in s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key bootstrap-database-url; do
+  for installed in s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key bootstrap-database-url proxy-auth-secret; do
     assert_regular_file_owned_mode "$SECRETS_ROOT/$installed" 0 444
     expected=$(jq -er --arg name "$installed" '.digests[$name]' "$UPGRADE_RECEIPT")
     [ "$expected" = "sha256:$(sha "$SECRETS_ROOT/$installed")" ] || die "installed secret does not match the v2 upgrade receipt: $installed"
@@ -117,7 +117,7 @@ if [ -e "$UPGRADE_RECEIPT" ]; then
   validate_upgrade_receipt
 else
   if [ ! -e "$STAGE" ]; then
-    for unexpected in s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key bootstrap-database-url; do
+    for unexpected in s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key bootstrap-database-url proxy-auth-secret; do
       [ ! -e "$SECRETS_ROOT/$unexpected" ] || die "new secret exists without an upgrade receipt or recovery staging directory: $unexpected"
     done
     umask 077
@@ -136,15 +136,20 @@ else
   if [ ! -e "$STAGE/s3-runtime-secret-key" ]; then
     write_stage_value "$STAGE/s3-runtime-secret-key" "$(openssl rand -hex 32)"
   fi
+  if [ ! -e "$STAGE/proxy-auth-secret" ]; then
+    write_stage_value "$STAGE/proxy-auth-secret" "$(openssl rand -hex 32)"
+  fi
   validate_bootstrap_url "$STAGE/bootstrap-database-url"
   validate_runtime_access "$STAGE/s3-runtime-access-key"
   validate_hex_secret "$STAGE/s3-runtime-secret-key"
+  validate_hex_secret "$STAGE/proxy-auth-secret"
 
   install_matching_file "$SECRETS_ROOT/s3-access-key" "$SECRETS_ROOT/s3-root-access-key"
   install_matching_file "$SECRETS_ROOT/s3-secret-key" "$SECRETS_ROOT/s3-root-secret-key"
   install_matching_file "$STAGE/s3-runtime-access-key" "$SECRETS_ROOT/s3-runtime-access-key"
   install_matching_file "$STAGE/s3-runtime-secret-key" "$SECRETS_ROOT/s3-runtime-secret-key"
   install_matching_file "$STAGE/bootstrap-database-url" "$SECRETS_ROOT/bootstrap-database-url"
+  install_matching_file "$STAGE/proxy-auth-secret" "$SECRETS_ROOT/proxy-auth-secret"
 
   mkdir -p -- "$(dirname -- "$UPGRADE_RECEIPT")"
   assert_directory_owned_mode "$(dirname -- "$UPGRADE_RECEIPT")" 0 700
@@ -159,7 +164,8 @@ else
     --arg runtimeAccess "sha256:$(sha "$SECRETS_ROOT/s3-runtime-access-key")" \
     --arg runtimeSecret "sha256:$(sha "$SECRETS_ROOT/s3-runtime-secret-key")" \
     --arg bootstrapUrl "sha256:$(sha "$SECRETS_ROOT/bootstrap-database-url")" \
-    '{schemaVersion:"blazn.dev/control-plane-v2-upgrade/v1",owner:"blazn-poc",host:$host,secretsRoot:$secrets,phase:"secrets-installed",createdAt:$createdAt,digests:{"s3-root-access-key":$rootAccess,"s3-root-secret-key":$rootSecret,"s3-runtime-access-key":$runtimeAccess,"s3-runtime-secret-key":$runtimeSecret,"bootstrap-database-url":$bootstrapUrl}}' \
+    --arg proxyAuth "sha256:$(sha "$SECRETS_ROOT/proxy-auth-secret")" \
+    '{schemaVersion:"blazn.dev/control-plane-v2-upgrade/v1",owner:"blazn-poc",host:$host,secretsRoot:$secrets,phase:"secrets-installed",createdAt:$createdAt,digests:{"s3-root-access-key":$rootAccess,"s3-root-secret-key":$rootSecret,"s3-runtime-access-key":$runtimeAccess,"s3-runtime-secret-key":$runtimeSecret,"bootstrap-database-url":$bootstrapUrl,"proxy-auth-secret":$proxyAuth}}' \
     >"$receipt_tmp"
   chmod 0600 "$receipt_tmp"
   ln -- "$receipt_tmp" "$UPGRADE_RECEIPT" || {
@@ -172,7 +178,7 @@ fi
 
 if [ -d "$STAGE" ]; then
   assert_directory_owned_mode "$STAGE" 0 700
-  for staged in bootstrap-database-url s3-runtime-access-key s3-runtime-secret-key; do
+  for staged in bootstrap-database-url s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
     [ ! -e "$STAGE/$staged" ] || {
       assert_regular_file_owned_mode "$STAGE/$staged" 0 444
       expected=$(jq -er --arg name "$staged" '.digests[$name]' "$UPGRADE_RECEIPT")
