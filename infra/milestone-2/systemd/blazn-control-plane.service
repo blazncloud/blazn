@@ -9,6 +9,7 @@ ConditionPathExists=/etc/blazn/control-plane/control-plane.env
 Type=oneshot
 RemainAfterExit=yes
 EnvironmentFile=/etc/blazn/control-plane/control-plane.env
+Environment=DOCKER_CONFIG=/etc/blazn/docker-cli
 WorkingDirectory=/opt/blazn/infra/milestone-2
 ExecStartPre=/opt/blazn/infra/milestone-2/scripts/preflight.sh --deploy
 ExecStart=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env up --detach --wait --remove-orphans
