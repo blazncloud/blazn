@@ -1,0 +1,10 @@
+[Unit]
+Description=Blazn POC temporary ngrok qualification tunnel (API only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ngrok http 127.0.0.1:58080 --config %h/.config/ngrok/homeai.yml --inspect=false --log stdout --log-format json
+Restart=on-failure
+RestartSec=5

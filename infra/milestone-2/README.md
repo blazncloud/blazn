@@ -94,6 +94,11 @@ backup promotion, and production-like restore must use the same
 separate `public-origin/blazn.benpelo.com` owner. The monotonically increasing
 fencing token is passed to the foreground operation.
 
+`systemd/blazn-ngrok-qualification.service` is a temporary fallback for the
+POC test matrix when the requested custom hostname has not yet been reserved.
+It exposes the same API-only loopback target at an ngrok-assigned TLS URL, is
+never enabled at boot, and does not close the named-hostname acceptance gate.
+
 `prepare-host.sh` refuses pre-existing unowned data or secret paths and writes
 the ownership receipt last. Cleanup is intentionally not automated here: a
 reviewed cleanup must enumerate the exact receipt paths, reject links/mount
