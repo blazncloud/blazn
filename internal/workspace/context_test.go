@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,5 +51,18 @@ func TestContextStoreRejectsSymlink(t *testing.T) {
 	}
 	if _, err := store.Load(origin, userID); err == nil {
 		t.Fatal("symlink context accepted")
+	}
+}
+
+func TestDefaultContextPathIgnoresAmbientHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	store, err := NewFileContextStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.home == fakeHome || strings.HasPrefix(store.path("https://one.example", "user"), fakeHome) {
+		t.Fatalf("context trusted ambient home: %q", store.home)
 	}
 }

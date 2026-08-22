@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"time"
 
@@ -29,11 +30,12 @@ type API interface {
 }
 
 type Service struct {
-	api      API
-	sessions SessionProvider
-	contexts ContextStore
-	now      func() time.Time
-	newKey   func() (string, error)
+	api       API
+	streamAPI API
+	sessions  SessionProvider
+	contexts  ContextStore
+	now       func() time.Time
+	newKey    func() (string, error)
 }
 
 func NewDefaultService() (*Service, error) {
@@ -42,15 +44,21 @@ func NewDefaultService() (*Service, error) {
 		return nil, err
 	}
 	provider := sessions.(*authSessionProvider)
+	streamAPI, err := client.New(provider.baseURL, &http.Client{})
+	if err != nil {
+		return nil, err
+	}
 	contexts, err := NewFileContextStore()
 	if err != nil {
 		return nil, err
 	}
-	return NewService(provider.api, sessions, contexts), nil
+	service := NewService(provider.api, sessions, contexts)
+	service.streamAPI = streamAPI
+	return service, nil
 }
 
 func NewService(api API, sessions SessionProvider, contexts ContextStore) *Service {
-	return &Service{api: api, sessions: sessions, contexts: contexts, now: time.Now, newKey: randomKey}
+	return &Service{api: api, streamAPI: api, sessions: sessions, contexts: contexts, now: time.Now, newKey: randomKey}
 }
 
 func randomKey() (string, error) {
@@ -240,13 +248,13 @@ func (s *Service) Events(ctx context.Context, workspaceValue, cursor string) (*c
 	if err != nil {
 		return nil, err
 	}
-	stream, err := s.api.StreamWorkspaceEvents(ctx, session.AccessToken, workspace.Workspace.ID, cursor)
+	stream, err := s.streamAPI.StreamWorkspaceEvents(ctx, session.AccessToken, workspace.Workspace.ID, cursor)
 	if client.IsCode(err, "access_expired") {
 		session, refreshErr := s.sessions.Session(ctx, true)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}
-		return s.api.StreamWorkspaceEvents(ctx, session.AccessToken, workspace.Workspace.ID, cursor)
+		return s.streamAPI.StreamWorkspaceEvents(ctx, session.AccessToken, workspace.Workspace.ID, cursor)
 	}
 	return stream, err
 }

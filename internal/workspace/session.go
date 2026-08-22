@@ -36,11 +36,12 @@ type SessionProvider interface {
 }
 
 type authSessionProvider struct {
-	origin string
-	api    *client.Client
-	store  auth.CredentialStore
-	lock   string
-	now    func() time.Time
+	origin  string
+	baseURL string
+	api     *client.Client
+	store   auth.CredentialStore
+	lock    string
+	now     func() time.Time
 }
 
 func NewDefaultSessionProvider() (SessionProvider, error) {
@@ -72,7 +73,7 @@ func NewDefaultSessionProvider() (SessionProvider, error) {
 	} else if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Uid != uint32(os.Getuid()) {
 		return nil, errors.New("Blazn credential lock directory has the wrong owner")
 	}
-	provider := &authSessionProvider{origin: origin, api: api, lock: filepath.Join(lockDir, account+".lock"), now: time.Now}
+	provider := &authSessionProvider{origin: origin, baseURL: apiURL, api: api, lock: filepath.Join(lockDir, account+".lock"), now: time.Now}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := provider.withLock(ctx, func() error {

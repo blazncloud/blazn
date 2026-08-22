@@ -42,6 +42,9 @@ func (a *App) runWorkspace(format OutputFormat, args []string) int {
 	if err != nil {
 		return a.writeError(format, ExitUsage, "usage", err.Error())
 	}
+	if command == "join" && (len(rest) != 1 || rest[0] != "--invite-stdin" || opts.workspace != "") {
+		return a.workspaceUsage(format, errors.New("join requires --invite-stdin; invitation tokens are never accepted as arguments"))
+	}
 	commands, err := a.workspace()
 	if err != nil {
 		return a.writeWorkspaceError(format, err)
@@ -135,9 +138,6 @@ func (a *App) runWorkspace(format OutputFormat, args []string) int {
 		result, err := commands.RevokeInvitation(ctx, opts.workspace, pos[0], version, opts.requestID)
 		return a.writeMutation(format, result, err)
 	case "join":
-		if len(rest) != 1 || rest[0] != "--invite-stdin" || opts.workspace != "" {
-			return a.workspaceUsage(format, errors.New("join requires --invite-stdin; invitation tokens are never accepted as arguments"))
-		}
 		if a.stdinTTY() {
 			return a.workspaceUsage(format, errors.New("--invite-stdin requires piped stdin so the token is not echoed"))
 		}
