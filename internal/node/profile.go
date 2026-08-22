@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type TrustedProfileFile struct {

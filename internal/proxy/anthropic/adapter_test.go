@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 const requestID = "11111111-1111-4111-8111-111111111111"

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/KingJammin/blazn/internal/client"
-	nodepkg "github.com/KingJammin/blazn/internal/node"
+	"github.com/blazncloud/blazn/internal/client"
+	nodepkg "github.com/blazncloud/blazn/internal/node"
 )
 
 type NodeEnrollOptions = nodepkg.CommandEnrollOptions

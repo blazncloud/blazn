@@ -23,7 +23,7 @@
             "artifactType": "binary",
             "sourceClass": "current_binary",
             "version": "v0.1.0-poc.1",
-            "publisher": "KingJammin/blazn",
+            "publisher": "blazncloud/blazn",
             "sha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
             "ownership": "adopt_exact"
           },
@@ -268,7 +268,7 @@
             "artifactType": "binary",
             "sourceClass": "current_binary",
             "version": "v0.1.0-poc.1",
-            "publisher": "KingJammin/blazn",
+            "publisher": "blazncloud/blazn",
             "sha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
             "ownership": "adopt_exact"
           },
@@ -498,7 +498,7 @@
             "artifactType": "binary",
             "sourceClass": "current_binary",
             "version": "v0.1.0-poc.1",
-            "publisher": "KingJammin/blazn",
+            "publisher": "blazncloud/blazn",
             "sha256": "cbd3631373c218391e6d11a814384ce8448ccf101323afdf3b300dc61a587d9e",
             "ownership": "adopt_exact"
           },
@@ -730,7 +730,7 @@
             "artifactType": "binary",
             "sourceClass": "current_binary",
             "version": "v0.1.0-poc.1",
-            "publisher": "KingJammin/blazn",
+            "publisher": "blazncloud/blazn",
             "sha256": "672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27",
             "ownership": "adopt_exact"
           },

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KingJammin/blazn/internal/client"
-	nodepkg "github.com/KingJammin/blazn/internal/node"
+	"github.com/blazncloud/blazn/internal/client"
+	nodepkg "github.com/blazncloud/blazn/internal/node"
 )
 
 type fakeNodeCommands struct {

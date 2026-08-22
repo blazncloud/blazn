@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/KingJammin/blazn/internal/auth"
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/auth"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 type e2eStore struct{ value []byte }

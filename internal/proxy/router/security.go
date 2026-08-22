@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/proxycontract"
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 type CredentialProvider interface {

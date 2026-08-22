@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KingJammin/blazn/internal/client"
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 const RootInstallAuthoritySchema = "blazn.dev/node-root-install-authority/v1"
