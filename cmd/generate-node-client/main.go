@@ -20,7 +20,7 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "bfe79594daa71b4be9a6ec7555fe92de495304943f4ca130bcffc360e4c89158"
+	openAPISHA256          = "075126546f4277f5b3def6381746c9bbc6b222c9408cf17e03950d5075b60571"
 	planSHA256             = "3013566a4ee672ad43b72429c23e677219f3782c3b69d9cec973b7126999fddd"
 	receiptSHA256          = "7a0791874671dc82222d7abf80f4cedf00bbdb0d40cbeaa7ed268496414e1c85"
 	operationReceiptSHA256 = "6ae34cba3202a8be488bb3b38db36b87c456d3fef5c0cc64f23caf521dd4d925"
