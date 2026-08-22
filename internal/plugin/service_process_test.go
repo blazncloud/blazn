@@ -18,7 +18,7 @@ func TestExecProcessRunnerPassesOnlyValidatedRuntimeContext(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "must-not-pass")
 	runtimeContext := validRuntimeContext(t)
 	var stdout bytes.Buffer
-	code, err := (execProcessRunner{}).Run(context.Background(), executable, []string{"-test.run=TestRuntimeContextProcessHelper"}, runtimeContext, Stdio{Stdout: &stdout, Stderr: &stdout})
+	code, err := (execProcessRunner{}).Run(context.Background(), executable, []string{"-test.run=TestRuntimeContextProcessHelper"}, "social", runtimeContext, Stdio{Stdout: &stdout, Stderr: &stdout})
 	if err != nil || code != 0 || strings.TrimSpace(stdout.String()) != runtimeContext.WorkspaceID {
 		t.Fatalf("code=%d output=%q err=%v", code, stdout.String(), err)
 	}

@@ -27,16 +27,15 @@ type Stdio struct {
 }
 
 type ProcessRunner interface {
-	Run(context.Context, string, []string, RuntimeContext, Stdio) (int, error)
+	Run(context.Context, string, []string, string, RuntimeContext, Stdio) (int, error)
 }
 
 type execProcessRunner struct{}
 
-func (execProcessRunner) Run(ctx context.Context, path string, args []string, runtimeContext RuntimeContext, streams Stdio) (int, error) {
+func (execProcessRunner) Run(ctx context.Context, path string, args []string, pluginName string, runtimeContext RuntimeContext, streams Stdio) (int, error) {
 	command := exec.CommandContext(ctx, path, args...)
-	command.Env = pluginEnvironment(os.Environ())
 	command.Stdin, command.Stdout, command.Stderr = streams.Stdin, streams.Stdout, streams.Stderr
-	environment, err := runtimeEnvironment(os.Environ(), runtimeContext)
+	environment, err := runtimeEnvironment(os.Environ(), runtimeContext, pluginName)
 	if err != nil {
 		return 1, err
 	}
@@ -53,20 +52,13 @@ func (execProcessRunner) Run(ctx context.Context, path string, args []string, ru
 }
 
 func pluginEnvironment(environment []string) []string {
-	blocked := map[string]bool{
-		"BLAZN_PLUGIN_VERSION":    true,
-		"GH_ENTERPRISE_TOKEN":     true,
-		"GH_TOKEN":                true,
-		"GITHUB_ENTERPRISE_TOKEN": true,
-		"GITHUB_TOKEN":            true,
-	}
 	result := make([]string, 0, len(environment))
 	for _, entry := range environment {
 		key := entry
 		if separator := strings.IndexByte(entry, '='); separator >= 0 {
 			key = entry[:separator]
 		}
-		if !blocked[key] {
+		if allowedPluginEnvironment(key, "") {
 			result = append(result, entry)
 		}
 	}
@@ -145,5 +137,5 @@ func (s *Service) Run(ctx context.Context, definition Definition, args []string,
 	if runtimeContext.OutputFormat != format {
 		return 0, errors.New("plugin runtime context output format does not match dispatch")
 	}
-	return s.Runner.Run(ctx, installed.Path, forwarded, runtimeContext, streams)
+	return s.Runner.Run(ctx, installed.Path, forwarded, definition.Name, runtimeContext, streams)
 }
