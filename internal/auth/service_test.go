@@ -50,6 +50,7 @@ type fakeAPI struct {
 	authorizationRequest client.DeviceAuthorizationRequest
 	sessionRequest       client.DeviceSessionRequest
 	refreshRequest       client.RefreshSessionRequest
+	refreshErr           error
 }
 
 func (a *fakeAPI) CreateDeviceAuthorization(_ context.Context, request client.DeviceAuthorizationRequest) (client.DeviceAuthorization, error) {
@@ -68,6 +69,9 @@ func (a *fakeAPI) ExchangeDeviceAuthorization(_ context.Context, request client.
 func (a *fakeAPI) RefreshSession(_ context.Context, request client.RefreshSessionRequest) (client.Session, error) {
 	a.refreshes++
 	a.refreshRequest = request
+	if a.refreshErr != nil {
+		return client.Session{}, a.refreshErr
+	}
 	return a.session, nil
 }
 func (a *fakeAPI) DeleteCurrentSession(_ context.Context, token string) error {
@@ -180,6 +184,24 @@ func TestLogoutRefreshesExpiredAccessBeforeRemoteRevocation(t *testing.T) {
 	result, err := testService(api, store).Logout(context.Background())
 	if err != nil || result.Status != "logged_out" || api.refreshes != 1 || api.deletedToken != "fresh-access" || store.deleted != 1 {
 		t.Fatalf("Logout = %#v api=%#v store=%#v err=%v", result, api, store, err)
+	}
+}
+
+func TestInvalidRefreshIsTerminalAndDeletesLocalCredential(t *testing.T) {
+	api := &fakeAPI{refreshErr: &client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "refresh_invalid"}}}
+	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z")}
+	status, err := testService(api, store).Status(context.Background())
+	if err != nil || status.Authenticated || store.deleted != 1 {
+		t.Fatalf("Status=%#v store=%#v err=%v", status, store, err)
+	}
+}
+
+func TestLogoutRemovesLocalCredentialWhenExpiredSessionCannotRefresh(t *testing.T) {
+	api := &fakeAPI{refreshErr: errors.New("network unavailable")}
+	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z")}
+	result, err := testService(api, store).Logout(context.Background())
+	if err == nil || result.Status != "local_session_removed" || result.RemoteRevoked || store.deleted != 1 {
+		t.Fatalf("Logout=%#v store=%#v err=%v", result, store, err)
 	}
 }
 

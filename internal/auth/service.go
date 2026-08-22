@@ -213,7 +213,10 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 		return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
 	}
 	if err != nil {
-		return LogoutResult{}, err
+		if deleteErr := s.store.Delete(); deleteErr != nil {
+			return LogoutResult{}, fmt.Errorf("refresh remote session: %v; remove local session: %w", err, deleteErr)
+		}
+		return LogoutResult{Status: "local_session_removed", RemoteRevoked: false}, err
 	}
 	remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
 	if err := s.store.Delete(); err != nil {

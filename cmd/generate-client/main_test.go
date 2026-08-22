@@ -24,6 +24,9 @@ func TestCheckedInContractMatchesGeneratorAssumptions(t *testing.T) {
 	if err := validate(document, string(clientTemplate)); err != nil {
 		t.Fatal(err)
 	}
+	if supportedContractSHA256 == "" {
+		t.Fatal("contract fingerprint is not pinned")
+	}
 }
 
 func TestValidatorRejectsBearerAndSchemaDrift(t *testing.T) {

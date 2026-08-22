@@ -18,6 +18,12 @@ import (
 //go:embed client.gen.go.tmpl
 var clientTemplate []byte
 
+// supportedContractSHA256 pins the complete schema semantics represented by
+// clientTemplate. A contract change therefore cannot be accepted by merely
+// rerunning the generator; the validator and typed template must be reviewed
+// before this fingerprint is deliberately updated.
+const supportedContractSHA256 = "255975f130aeeab11aa3b9169fa2836d6ed0c28347d04fa6bf6209fcef6d1d4e"
+
 type operation struct {
 	path        string
 	method      string
@@ -60,11 +66,15 @@ func main() {
 	outputPath := filepath.Join(root, "internal", "client", "client.gen.go")
 	contract, err := os.ReadFile(contractPath)
 	fatalIf(err)
+	digest := sha256.Sum256(contract)
+	digestString := hex.EncodeToString(digest[:])
+	if digestString != supportedContractSHA256 {
+		fatalIf(fmt.Errorf("OpenAPI contract %s is not represented by the pinned client template %s", digestString, supportedContractSHA256))
+	}
 	var document map[string]any
 	fatalIf(json.Unmarshal(contract, &document))
 	fatalIf(validate(document, string(clientTemplate)))
-	digest := sha256.Sum256(contract)
-	generated := render(hex.EncodeToString(digest[:]))
+	generated := render(digestString)
 	if *check {
 		current, err := os.ReadFile(outputPath)
 		fatalIf(err)
