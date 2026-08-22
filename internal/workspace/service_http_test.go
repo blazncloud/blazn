@@ -111,3 +111,32 @@ func TestJoinContextFailureIsExplicitPartialAndDoesNotReaccept(t *testing.T) {
 		t.Fatalf("result=%#v accepts=%d key=%q err=%v", result, accepts, key, err)
 	}
 }
+
+func TestInvitationCreateRetryUsesExplicitStableIdempotencyKey(t *testing.T) {
+	const workspaceID = "123e4567-e89b-42d3-a456-426614174000"
+	var keys []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"workspace":{"id":"` + workspaceID + `","slug":"team","name":"Team","status":"active","version":1,"currentUserRole":"owner","createdAt":"now","updatedAt":"now"}}`))
+			return
+		}
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"invitation":{"id":"123e4567-e89b-42d3-a456-426614174001","workspaceId":"` + workspaceID + `","role":"member","status":"pending","version":1,"createdAt":"now","expiresAt":"later"},"inviteToken":"deterministic-token"}`))
+	}))
+	defer server.Close()
+	api, _ := client.New(server.URL, server.Client())
+	service := NewService(api, &fakeSessions{}, &memoryContexts{selection: Selection{APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: workspaceID}})
+	first, err := service.Invite(context.Background(), "", client.RoleMember, 300, "invite-request-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Invite(context.Background(), "", client.RoleMember, 300, "invite-request-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.InviteToken != "deterministic-token" || second.InviteToken != first.InviteToken || len(keys) != 2 || keys[0] != "invite-request-123" || keys[1] != keys[0] {
+		t.Fatalf("first=%#v second=%#v keys=%v", first, second, keys)
+	}
+}
