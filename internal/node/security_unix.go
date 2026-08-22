@@ -25,14 +25,19 @@ func ensurePrivateDirectory(path string, uid int64) error {
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return err
 	}
-	for _, candidate := range []string{path, filepath.Dir(path)} {
+	for candidate := path; ; candidate = filepath.Dir(candidate) {
 		info, err := os.Lstat(candidate)
 		if err != nil {
 			return err
 		}
 		owner, _, ok := fileOwner(info)
-		if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || owner != uid || info.Mode().Perm()&0022 != 0 {
+		writable := info.Mode().Perm()&0022 != 0
+		stickyRoot := owner == 0 && info.Mode()&os.ModeSticky != 0
+		if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (owner != uid && owner != 0) || (writable && !stickyRoot) {
 			return fmt.Errorf("private directory boundary is unsafe: %s", candidate)
+		}
+		if candidate == string(filepath.Separator) {
+			break
 		}
 	}
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0700 {

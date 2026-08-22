@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -28,6 +29,9 @@ type TrustedProfileFile struct {
 func LoadTrustedProfile(path, currentBinaryPath, currentVersion string) (client.NodeTrustedInstallProfile, error) {
 	if !filepath.IsAbs(path) || !filepath.IsAbs(currentBinaryPath) || currentVersion == "" {
 		return client.NodeTrustedInstallProfile{}, errors.New("trusted profile and current binary inputs must be absolute and versioned")
+	}
+	if err := verifyNoSymlinkTraversal(currentBinaryPath); err != nil {
+		return client.NodeTrustedInstallProfile{}, fmt.Errorf("current binary path is unsafe: %w", err)
 	}
 	encoded, err := readTrustedProfile(path)
 	if err != nil {
