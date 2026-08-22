@@ -19,6 +19,7 @@ if grep -F -- '- --extensions' "$tmp/install.yaml" >/dev/null; then exit 1; fi
 if grep -F 'kind: ClusterRole' "$tmp/install.yaml" >/dev/null; then exit 1; fi
 if grep -F 'kind: ClusterRoleBinding' "$tmp/install.yaml" >/dev/null; then exit 1; fi
 [ "$(grep -c '^kind: CustomResourceDefinition$' "$tmp/install.yaml")" -eq 4 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/install.yaml")" -eq 9 ]
 
 mkdir "$tmp/bin"
 cat >"$tmp/bin/kubectl" <<'EOF'

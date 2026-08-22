@@ -51,11 +51,18 @@ $0 == "---" { emit_doc(); reset_doc(); next }
   if ($0 ~ /^kind: / && kind == "") { kind=$0; sub(/^kind: /, "", kind) }
   if ($0 == "metadata:") {
     inmeta=1
-    doc = doc $0 "\n  annotations:\n    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] "\n"
+    has_annotations=0
+  }
+  else if (inmeta && $0 == "  annotations:") {
+    has_annotations=1
+    doc = doc $0 "\n    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] "\n"
     next
   }
   else if (inmeta && $0 ~ /^  name: / && name == "") { name=$0; sub(/^  name: /, "", name) }
-  else if (inmeta && $0 !~ /^  / && $0 != "metadata:") inmeta=0
+  else if (inmeta && $0 !~ /^  / && $0 != "metadata:") {
+    if (!has_annotations) doc = doc "  annotations:\n    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] "\n"
+    inmeta=0
+  }
   if ($0 == "        - --extensions") { extensions_removed++; next }
   doc = doc $0 "\n"
   if (kind == "Deployment" && name == "agent-sandbox-controller" && $0 == "        - --leader-elect=true") {
