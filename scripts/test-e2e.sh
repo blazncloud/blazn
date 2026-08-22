@@ -34,6 +34,7 @@ trap cleanup EXIT HUP INT TERM
 install_dir="$test_root/bin"
 config_dir="$test_root/config"
 mkdir -p "$install_dir" "$config_dir/blazn"
+chmod 0700 "$config_dir/blazn"
 printf 'preserve\n' > "$config_dir/blazn/keep"
 
 install_once() {
