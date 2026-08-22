@@ -18,13 +18,15 @@ import (
 )
 
 type upstreamResult struct {
-	response       *http.Response
-	route          proxycontract.Route
-	attempt        int
-	scanner        *bufio.Scanner
-	normalizer     *streamNormalizer
-	buffered       []proxycontract.NormalizedStreamEvent
-	attemptStarted time.Time
+	response          *http.Response
+	route             proxycontract.Route
+	attempt           int
+	scanner           *bufio.Scanner
+	normalizer        *streamNormalizer
+	buffered          []proxycontract.NormalizedStreamEvent
+	bufferedReasoning []reasoningEmission
+	attemptStarted    time.Time
+	cancel            context.CancelFunc
 }
 
 func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []proxycontract.Route) (upstreamResult, error) {
@@ -62,8 +64,17 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		}
 		endpoint := *resolved.URL
 		endpoint.Path = joinPath(endpoint.Path, path)
-		httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+		routeBudget := time.Duration(route.HealthTimeoutMS) * time.Millisecond
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < routeBudget {
+			routeBudget = time.Until(deadline)
+		}
+		attemptCtx, attemptCancel := context.WithCancel(ctx)
+		timerFired := make(chan struct{})
+		routeTimer := time.AfterFunc(routeBudget, func() { attemptCancel(); close(timerFired) })
+		httpRequest, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
 		if err != nil {
+			routeTimer.Stop()
+			attemptCancel()
 			return failed, err
 		}
 		httpRequest.Header.Set("Content-Type", "application/json")
@@ -73,6 +84,8 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		}
 		stripCredentialHeaders(httpRequest.Header)
 		if err := h.config.CredentialApply.Apply(httpRequest, route, credential); err != nil {
+			routeTimer.Stop()
+			attemptCancel()
 			failure := &APIError{Code: "credential_unavailable", Message: "destination credential is unavailable", Status: 503, Cause: err}
 			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonAuthenticationFailed, h.config.Now().Sub(started), nil)
 			return failed, failure
@@ -84,6 +97,13 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		client := &http.Client{Transport: transport, CheckRedirect: redirectPolicy(route)}
 		response, err := client.Do(httpRequest)
 		if err != nil {
+			routeTimedOut := timerDidFire(routeTimer, timerFired)
+			attemptCancel()
+			if routeTimedOut && ctx.Err() == nil {
+				last = &APIError{Code: "timeout_before_first_byte", Message: "upstream did not respond before the route deadline", Status: 504, Retryable: true, Reason: proxycontract.ReasonTimeoutBeforeFirstByte, Cause: err}
+				h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonTimeoutBeforeFirstByte, h.config.Now().Sub(started), nil)
+				continue
+			}
 			if ctx.Err() != nil {
 				return failed, &APIError{Code: "cancelled", Message: "request was cancelled", Status: 499, Retryable: false, Cause: ctx.Err()}
 			}
@@ -98,6 +118,8 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 			continue
 		}
 		if response.StatusCode >= 400 {
+			routeTimer.Stop()
+			attemptCancel()
 			retryReason, retryable := classifyStatus(response.StatusCode)
 			_ = response.Body.Close()
 			code, reasonCode := string(retryReason), eventReason(retryReason)
@@ -111,26 +133,26 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonCode, h.config.Now().Sub(started), nil)
 			continue
 		}
-		result := upstreamResult{response: response, route: route, attempt: attempt + 1, attemptStarted: started}
+		result := upstreamResult{response: response, route: route, attempt: attempt + 1, attemptStarted: started, cancel: attemptCancel}
 		if request.Stream {
-			firstEventTimeout := time.Duration(route.HealthTimeoutMS) * time.Millisecond
-			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < firstEventTimeout {
-				firstEventTimeout = time.Until(deadline)
-			}
-			timerFired := make(chan struct{})
-			timer := time.AfterFunc(firstEventTimeout, func() { _ = response.Body.Close(); close(timerFired) })
 			prepared, prepareErr := prepareStream(result, request)
-			if !timer.Stop() {
-				<-timerFired
+			if timerDidFire(routeTimer, timerFired) {
 				prepareErr = &APIError{Code: "timeout_before_first_byte", Message: "upstream did not produce an event before the route deadline", Status: 504, Retryable: true, Reason: proxycontract.ReasonTimeoutBeforeFirstByte}
 			}
 			if prepareErr != nil {
+				attemptCancel()
 				_ = response.Body.Close()
 				last = prepareErr
 				h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(prepareErr), h.config.Now().Sub(started), nil)
 				continue
 			}
 			result = prepared
+		} else if timerDidFire(routeTimer, timerFired) {
+			attemptCancel()
+			_ = response.Body.Close()
+			last = &APIError{Code: "timeout_before_first_byte", Message: "upstream did not return headers before the route deadline", Status: 504, Retryable: true, Reason: proxycontract.ReasonTimeoutBeforeFirstByte}
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonTimeoutBeforeFirstByte, h.config.Now().Sub(started), nil)
+			continue
 		}
 		return result, nil
 	}
@@ -138,6 +160,14 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		last = safeError("no_compliant_route", "no route could serve the request", 403, false)
 	}
 	return failed, last
+}
+
+func timerDidFire(timer *time.Timer, fired <-chan struct{}) bool {
+	if timer.Stop() {
+		return false
+	}
+	<-fired
+	return true
 }
 
 func (h *Handler) fallbackAllowed(err error) bool {
@@ -388,6 +418,9 @@ func decodeUpstreamResponse(result upstreamResult, request proxycontract.Normali
 	return decodeUpstreamResponseDetailed(result, request, nil)
 }
 func decodeUpstreamResponseDetailed(result upstreamResult, request proxycontract.NormalizedRequest, metadata *responseMetadata) (proxycontract.NormalizedResponse, error) {
+	if result.cancel != nil {
+		defer result.cancel()
+	}
 	defer result.response.Body.Close()
 	limited := io.LimitReader(result.response.Body, maxRequestBytes+1)
 	response := proxycontract.NormalizedResponse{LogicalRequestID: request.LogicalRequestID, ModelAlias: request.ModelAlias, RouteID: result.route.ID, Blocks: []proxycontract.ResponseBlock{}, FinishReason: "stop"}
@@ -540,27 +573,27 @@ func writeSourceResponseDetailed(writer http.ResponseWriter, protocol proxycontr
 func prepareStream(result upstreamResult, request proxycontract.NormalizedRequest) (upstreamResult, error) {
 	scanner := bufio.NewScanner(result.response.Body)
 	scanner.Buffer(make([]byte, 4096), maxRequestBytes)
-	normalizer := &streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}, reasoningItems: map[string]reasoningOutput{}, toolOutputIndexes: map[string]int{}, textOutputIndex: -1}
+	normalizer := &streamNormalizer{toolIDs: map[int]string{}, toolNames: map[int]string{}, toolStarted: map[int]bool{}, responseCallIDs: map[string]string{}, reasoningItems: map[string]reasoningOutput{}, toolOutputIndexes: map[string]int{}, textOutputIndex: -1, reasoningDone: map[string]bool{}}
 	for {
-		events, done, err := nextStreamEvents(scanner, normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
+		events, reasoning, done, err := nextStreamEvents(scanner, normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
 		if err != nil {
 			return result, streamAPIError(err)
 		}
 		if done {
 			return result, &APIError{Code: "connection_failure", Message: "upstream ended before the first usable event", Status: 502, Retryable: true, Reason: proxycontract.ReasonConnectionFailure}
 		}
-		if len(events) == 0 {
+		if len(events) == 0 && len(reasoning) == 0 {
 			continue
 		}
 		if events[0].Type == "error" {
 			return result, streamAPIError(events[0].Error)
 		}
-		result.scanner, result.normalizer, result.buffered = scanner, normalizer, events
+		result.scanner, result.normalizer, result.buffered, result.bufferedReasoning = scanner, normalizer, events, reasoning
 		return result, nil
 	}
 }
 
-func nextStreamEvents(scanner *bufio.Scanner, normalizer *streamNormalizer, protocol proxycontract.Protocol, requestID string) ([]proxycontract.NormalizedStreamEvent, bool, error) {
+func nextStreamEvents(scanner *bufio.Scanner, normalizer *streamNormalizer, protocol proxycontract.Protocol, requestID string) ([]proxycontract.NormalizedStreamEvent, []reasoningEmission, bool, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
@@ -568,24 +601,27 @@ func nextStreamEvents(scanner *bufio.Scanner, normalizer *streamNormalizer, prot
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
-			return nil, true, nil
+			return nil, nil, true, nil
 		}
 		events, err := normalizer.normalize(protocol, requestID, normalizer.sequence, []byte(payload))
 		if err != nil {
-			return nil, false, err
+			return nil, nil, false, err
 		}
-		if len(events) > 0 {
-			normalizer.sequence = events[len(events)-1].Sequence + 1
-			return events, false, nil
+		reasoning := normalizer.drainReasoning()
+		if len(events) > 0 || len(reasoning) > 0 {
+			if len(events) > 0 {
+				normalizer.sequence = events[len(events)-1].Sequence + 1
+			}
+			return events, reasoning, false, nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if normalizer.terminal {
-		return nil, true, nil
+		return nil, nil, true, nil
 	}
-	return nil, false, io.ErrUnexpectedEOF
+	return nil, nil, false, io.ErrUnexpectedEOF
 }
 
 func streamAPIError(value any) error {
@@ -612,6 +648,9 @@ func streamAPIError(value any) error {
 // streamResponse commits the route only after dispatch buffered one usable
 // event. From this point onward fallback is forbidden even if the stream fails.
 func streamResponse(ctx context.Context, writer http.ResponseWriter, result upstreamResult, request proxycontract.NormalizedRequest) (*proxycontract.Usage, error) {
+	if result.cancel != nil {
+		defer result.cancel()
+	}
 	defer result.response.Body.Close()
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
@@ -638,6 +677,9 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 		}
 		return nil
 	}
+	if err := encoder.emitReasoning(result.bufferedReasoning); err != nil {
+		return encoder.usage, err
+	}
 	if err := consume(result.buffered); err != nil {
 		_ = encoder.fail(err)
 		flusher.Flush()
@@ -650,7 +692,7 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 			return encoder.usage, ctx.Err()
 		default:
 		}
-		events, done, err := nextStreamEvents(result.scanner, result.normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
+		events, reasoning, done, err := nextStreamEvents(result.scanner, result.normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
 		if err != nil {
 			_ = encoder.fail(err)
 			flusher.Flush()
@@ -661,6 +703,9 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 			break
 		}
 		encoder.applyIndexHints(result.normalizer)
+		if err = encoder.emitReasoning(reasoning); err != nil {
+			return encoder.usage, err
+		}
 		if err = consume(events); err != nil {
 			_ = encoder.fail(err)
 			flusher.Flush()
@@ -674,6 +719,11 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 		return encoder.usage, failure
 	}
 	encoder.reasoningItems = result.normalizer.orderedReasoningItems()
+	if !result.normalizer.reasoningComplete() {
+		failure := safeError("upstream_invalid_response", "reasoning item did not complete", 502, false)
+		_ = encoder.fail(failure)
+		return encoder.usage, failure
+	}
 	if err := encoder.finish(); err != nil {
 		return encoder.usage, err
 	}
@@ -694,11 +744,32 @@ type streamNormalizer struct {
 	reasoningOrder    []string
 	toolOutputIndexes map[string]int
 	textOutputIndex   int
+	pendingReasoning  []reasoningEmission
+	reasoningDone     map[string]bool
 }
 
 type reasoningOutput struct {
 	raw   json.RawMessage
 	index int
+}
+type reasoningEmission struct {
+	kind  string
+	index int
+	item  json.RawMessage
+}
+
+func (n *streamNormalizer) drainReasoning() []reasoningEmission {
+	out := n.pendingReasoning
+	n.pendingReasoning = nil
+	return out
+}
+func (n *streamNormalizer) reasoningComplete() bool {
+	for id := range n.reasoningItems {
+		if !n.reasoningDone[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID string, sequence int, payload []byte) ([]proxycontract.NormalizedStreamEvent, error) {
@@ -844,6 +915,7 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 				index = *event.OutputIndex
 			}
 			n.reasoningItems[item.ID] = reasoningOutput{raw: append(json.RawMessage(nil), event.Item...), index: index}
+			n.pendingReasoning = append(n.pendingReasoning, reasoningEmission{kind: "response.output_item.added", index: index, item: append(json.RawMessage(nil), event.Item...)})
 			return nil, nil
 		}
 		if item.Type != "function_call" {
@@ -881,6 +953,9 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 			ID   string `json:"id"`
 		}
 		if len(event.Item) > 0 && json.Unmarshal(event.Item, &item) == nil && item.Type == "reasoning" && item.ID != "" {
+			if event.OutputIndex == nil {
+				return nil, errors.New("reasoning done event omitted output_index")
+			}
 			if _, ok := n.reasoningItems[item.ID]; !ok {
 				n.reasoningOrder = append(n.reasoningOrder, item.ID)
 			}
@@ -889,6 +964,8 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 				index = *event.OutputIndex
 			}
 			n.reasoningItems[item.ID] = reasoningOutput{raw: append(json.RawMessage(nil), event.Item...), index: index}
+			n.reasoningDone[item.ID] = true
+			n.pendingReasoning = append(n.pendingReasoning, reasoningEmission{kind: "response.output_item.done", index: index, item: append(json.RawMessage(nil), event.Item...)})
 		}
 		return nil, nil
 	case "response.completed":
@@ -998,6 +1075,26 @@ func (s *sourceStreamEncoder) applyIndexHints(normalizer *streamNormalizer) {
 			s.nextOutputIndex = index + 1
 		}
 	}
+}
+
+func (s *sourceStreamEncoder) emitReasoning(events []reasoningEmission) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if s.protocol != proxycontract.ProtocolOpenAIResponses {
+		return errors.New("reasoning stream cannot be represented by the source protocol")
+	}
+	for _, event := range events {
+		var item any
+		if json.Unmarshal(event.item, &item) != nil {
+			return errors.New("invalid reasoning stream item")
+		}
+		if err := s.emit(map[string]any{"type": event.kind, "sequence_number": s.sequence, "output_index": event.index, "item": item}); err != nil {
+			return err
+		}
+		s.sequence++
+	}
+	return nil
 }
 
 func (s *sourceStreamEncoder) emit(payload any) error {
@@ -1158,24 +1255,6 @@ func (s *sourceStreamEncoder) finish() error {
 			eventType = "response.incomplete"
 		}
 		actions := map[int]func() error{}
-		for _, reasoning := range s.reasoningItems {
-			reasoning := reasoning
-			actions[reasoning.index] = func() error {
-				var item map[string]any
-				if json.Unmarshal(reasoning.raw, &item) != nil {
-					return nil
-				}
-				if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": reasoning.index, "item": item}); err != nil {
-					return err
-				}
-				s.sequence++
-				if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": reasoning.index, "item": item}); err != nil {
-					return err
-				}
-				s.sequence++
-				return nil
-			}
-		}
 		if s.textStarted {
 			actions[s.textIndex] = func() error {
 				messageID := "msg_" + s.requestID

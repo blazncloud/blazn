@@ -271,7 +271,7 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 	if !strings.Contains(stream, `"input_tokens":40`) || !strings.Contains(stream, `"status":"completed"`) || !strings.Contains(stream, `"encrypted_content":"opaque-next-turn"`) || !strings.Contains(stream, `"output":[{"encrypted_content":"opaque-next-turn"`) || !strings.Contains(stream, `"output_index":1`) {
 		t.Fatalf("completed response missing usage: %s", stream)
 	}
-	doneIndexes := []int{}
+	addedIndexes, doneIndexes := []int{}, []int{}
 	for _, line := range strings.Split(stream, "\n") {
 		if !strings.HasPrefix(line, "data: {") {
 			continue
@@ -280,9 +280,15 @@ func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
 		if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) != nil {
 			continue
 		}
+		if event["type"] == "response.output_item.added" {
+			addedIndexes = append(addedIndexes, int(event["output_index"].(float64)))
+		}
 		if event["type"] == "response.output_item.done" {
 			doneIndexes = append(doneIndexes, int(event["output_index"].(float64)))
 		}
+	}
+	if len(addedIndexes) < 2 || addedIndexes[0] != 0 || addedIndexes[1] != 1 {
+		t.Fatalf("added event indexes lost upstream order: %v", addedIndexes)
 	}
 	if len(doneIndexes) < 2 || doneIndexes[0] != 0 || doneIndexes[len(doneIndexes)-1] != 1 {
 		t.Fatalf("done event indexes lost upstream order: %v", doneIndexes)
@@ -397,6 +403,40 @@ func TestRouteFirstEventTimeoutFallsBackWithinOverallDeadline(t *testing.T) {
 	}
 	if calls.Load() != 2 || !strings.Contains(record.Body.String(), "fallback") {
 		t.Fatalf("calls=%d body=%s", calls.Load(), record.Body.String())
+	}
+}
+
+func TestRouteHeaderTimeoutFallsBack(t *testing.T) {
+	var calls atomic.Int32
+	handler, policy := testHandler(t, func(route proxycontract.Route, incoming *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if route.Model == "qwen3.8" {
+			<-incoming.Context().Done()
+			return nil, incoming.Context().Err()
+		}
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"headers-fallback\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"
+		return response(200, "text/event-stream", stream), nil
+	}, nil)
+	primaryID := policy.Routes[0].ID
+	primary := handler.routes.byID[primaryID]
+	primary.HealthTimeoutMS = 100
+	handler.routes.byID[primaryID] = primary
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"x"}],"stream":true}`)
+	if calls.Load() != 2 || !strings.Contains(record.Body.String(), "headers-fallback") {
+		t.Fatalf("header stall did not fall back: calls=%d body=%s", calls.Load(), record.Body.String())
+	}
+}
+
+func TestLocalChatTruncationMapsToIncompleteResponses(t *testing.T) {
+	handler, _ := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		if route.Model != "qwen3.8" {
+			t.Fatal("local Chat should satisfy request")
+		}
+		return response(200, "application/json", `{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":8}}`), nil
+	}, nil)
+	record := request(handler, "/v1/responses", `{"model":"company-assistant","input":"x","max_output_tokens":8}`)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), `"status":"incomplete"`) || !strings.Contains(record.Body.String(), `"incomplete_details":{"reason":"max_output_tokens"}`) {
+		t.Fatalf("local truncation mapping: %d %s", record.Code, record.Body.String())
 	}
 }
 

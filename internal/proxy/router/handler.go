@@ -131,6 +131,10 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, err)
 		return
 	}
+	if normalized.Protocol == proxycontract.ProtocolOpenAIResponses && response.FinishReason == "length" && responseMeta.status == "" {
+		responseMeta.status = "incomplete"
+		responseMeta.incompleteDetails = json.RawMessage(`{"reason":"max_output_tokens"}`)
+	}
 	if err = writeSourceResponseDetailed(writer, normalized.Protocol, response, responseMeta); err != nil {
 		return
 	}
