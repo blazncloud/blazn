@@ -21,14 +21,14 @@ tmpfiles=$top/tmpfiles
 printf '#!/bin/sh\nexit 0\n' >"$tmpfiles"; chmod 0755 "$tmpfiles"
 
 run_install(){
-  root=$1; fault=${2:-}
-  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_TEST_FAIL_AFTER="$fault" BLAZN_TEST_LOG="$root/systemctl.log" \
+  install_root=$1; install_fault=${2:-}
+  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_TEST_FAIL_AFTER="$install_fault" BLAZN_TEST_LOG="$install_root/systemctl.log" \
     BLAZN_ISSUER_BINARY_SOURCE="$helper" BLAZN_ISSUER_BINARY_SHA256="sha256:$(sha256sum "$helper" | awk '{print $1}')" BLAZN_NODE_BROKER_UID=65532 BLAZN_ISSUER_TEST_BROKER_GID=65531 BLAZN_ISSUER_TEST_MICROK8S_GID=1001 BLAZN_ISSUER_TEST_REVISION=9072 \
     BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_ISSUER_TEST_TMPFILES="$tmpfiles" \
-    BLAZN_ISSUER_CONFIG_ROOT="$root/etc/issuer" BLAZN_ISSUER_BINARY_PATH="$root/usr/libexec/issuer" BLAZN_ISSUER_UNIT_PATH="$root/etc/systemd/issuer.service" BLAZN_ISSUER_TMPFILES_PATH="$root/etc/tmpfiles/issuer.conf" \
-    BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" BLAZN_RECEIPT_PATH="$root/control-plane.json" "$INSTALLER"
+    BLAZN_ISSUER_CONFIG_ROOT="$install_root/etc/issuer" BLAZN_ISSUER_BINARY_PATH="$install_root/usr/libexec/issuer" BLAZN_ISSUER_UNIT_PATH="$install_root/etc/systemd/issuer.service" BLAZN_ISSUER_TMPFILES_PATH="$install_root/etc/tmpfiles/issuer.conf" \
+    BLAZN_ISSUER_RECEIPT_PATH="$install_root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$install_root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$install_root/control-plane.env" BLAZN_RECEIPT_PATH="$install_root/control-plane.json" "$INSTALLER"
 }
-run_rollback(){ root=$1; fault=${2:-}; sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_ROLLBACK_TEST_FAIL_AFTER="$fault" BLAZN_ISSUER_STATE_ROOT="$root/issuer-state" BLAZN_ISSUER_RECEIPT_PATH="$root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$root/systemctl.log" "$ROLLBACK"; }
+run_rollback(){ rollback_root=$1; rollback_fault=${2:-}; sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_ROLLBACK_TEST_FAIL_AFTER="$rollback_fault" BLAZN_ISSUER_STATE_ROOT="$rollback_root/issuer-state" BLAZN_ISSUER_RECEIPT_PATH="$rollback_root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$rollback_root/systemctl.log" "$ROLLBACK"; }
 
 for fault in recovery-created initialized key-pending recovery-key-pending secret-created config-bound files-installed service-started complete; do
   root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"
