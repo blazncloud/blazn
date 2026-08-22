@@ -203,6 +203,7 @@ jobs:
             -f ref="refs/tags/$VERSION" \
             -f sha="$SOURCE_SHA" >/dev/null
           gh release create "$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "Blazn $VERSION" \
             --generate-notes
@@ -223,7 +224,7 @@ jobs:
           set -euo pipefail
           smoke="$RUNNER_TEMP/blazn-release-smoke"
           mkdir -p "$smoke/download/$VERSION" "$smoke/bin"
-          gh release download "$VERSION" --dir "$smoke/download/$VERSION"
+          gh release download "$VERSION" --repo "$GITHUB_REPOSITORY" --dir "$smoke/download/$VERSION"
       - name: Run downloaded installer with embedded production trust root
         shell: bash
         env:
