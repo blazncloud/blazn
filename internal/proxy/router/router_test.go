@@ -351,7 +351,7 @@ func TestPreFirstEventErrorFallsBackButEOFPostCommitFailsClosed(t *testing.T) {
 		if route.Model == "qwen3.8" {
 			return response(200, "text/event-stream", "data: {\"error\":{\"message\":\"unavailable\"}}\n\ndata: [DONE]\n\n"), nil
 		}
-		return response(200, "text/event-stream", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n"), nil
+		return response(200, "text/event-stream", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"fallback\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n"), nil
 	}, nil)
 	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"x"}],"stream":true}`)
 	if record.Code != 200 || calls.Load() != 2 || !strings.Contains(record.Body.String(), "fallback") || !strings.HasSuffix(record.Body.String(), "data: [DONE]\n\n") {

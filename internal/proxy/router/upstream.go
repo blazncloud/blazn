@@ -813,12 +813,16 @@ func (n *streamNormalizer) normalize(protocol proxycontract.Protocol, requestID 
 		n.started = true
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "response_start"}}, nil
 	case "response.output_text.delta":
-		if event.OutputIndex != nil {
-			n.textOutputIndex = *event.OutputIndex
+		if event.OutputIndex == nil {
+			return nil, errors.New("Responses text delta omitted output_index")
 		}
+		n.textOutputIndex = *event.OutputIndex
 		text := event.Delta
 		return []proxycontract.NormalizedStreamEvent{{LogicalRequestID: requestID, Sequence: sequence, Type: "text_delta", Text: &text}}, nil
 	case "response.output_item.added":
+		if event.OutputIndex == nil {
+			return nil, errors.New("Responses output item omitted output_index")
+		}
 		var item struct {
 			Type   string `json:"type"`
 			ID     string `json:"id"`
@@ -1128,6 +1132,9 @@ func (s *sourceStreamEncoder) finish() error {
 	if s.usage == nil {
 		return errors.New("stream omitted required usage")
 	}
+	if err := s.validateOutputIndexes(); err != nil {
+		return err
+	}
 	if s.protocol == proxycontract.ProtocolOpenAIChat {
 		finish := string(s.finishReason)
 		if finish == "tool_call" {
@@ -1219,6 +1226,36 @@ func (s *sourceStreamEncoder) finish() error {
 	}
 	_, err := fmt.Fprint(s.writer, "data: [DONE]\n\n")
 	return err
+}
+
+func (s *sourceStreamEncoder) validateOutputIndexes() error {
+	if s.protocol != proxycontract.ProtocolOpenAIResponses {
+		return nil
+	}
+	seen := map[int]bool{}
+	claim := func(index int) error {
+		if index < 0 || seen[index] {
+			return errors.New("Responses stream has missing or duplicate output indexes")
+		}
+		seen[index] = true
+		return nil
+	}
+	for _, item := range s.reasoningItems {
+		if err := claim(item.index); err != nil {
+			return err
+		}
+	}
+	if s.textStarted {
+		if err := claim(s.textIndex); err != nil {
+			return err
+		}
+	}
+	for _, index := range s.toolIndexes {
+		if err := claim(index); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *sourceStreamEncoder) fail(err error) error {
