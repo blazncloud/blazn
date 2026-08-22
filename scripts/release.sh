@@ -123,6 +123,14 @@ case "$build_date_epoch" in
 esac
 build_date=$(date -u -r "$build_date_epoch" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d "@${build_date_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
 
+effective_goflags=$(go env GOFLAGS)
+case " $effective_goflags " in
+  *" -tags"*)
+    echo "release builds refuse ambient Go build tags; qualification builds are non-publishable" >&2
+    exit 2
+    ;;
+esac
+
 tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/blazn-release.XXXXXX")
 cleanup() {
   rm -rf -- "$tmp_root"
@@ -155,11 +163,20 @@ printf '%s\n' "$targets" | while read -r target_os target_arch; do
   echo "building ${target_os}/${target_arch}" >&2
   (
     cd "$source_root"
-    CGO_ENABLED=0 GOOS=$target_os GOARCH=$target_arch \
+    GOFLAGS='' CGO_ENABLED=0 GOOS=$target_os GOARCH=$target_arch \
       go build -buildvcs=false -trimpath -ldflags "$ldflags" \
       -o "${stage_dir}/blazn" "$build_package"
   )
   chmod 0755 "${stage_dir}/blazn"
+
+  if [ "$target_os" = darwin ]; then
+    for qualification_marker in BLAZN_TEST_KEYCHAIN_PATH BLAZN_ALLOW_TEST_KEYCHAIN; do
+      if LC_ALL=C grep -a -F "$qualification_marker" "${stage_dir}/blazn" >/dev/null 2>&1; then
+        echo "Darwin production binary contains qualification-only Keychain marker: $qualification_marker" >&2
+        exit 1
+      fi
+    done
+  fi
 
   archive="${output_dir}/blazn_${archive_version}_${target_os}_${target_arch}.tar.gz"
   if tar --version 2>/dev/null | grep -q 'GNU tar'; then

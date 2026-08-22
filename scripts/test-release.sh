@@ -91,8 +91,41 @@ if tar --version 2>/dev/null | grep -q 'GNU tar'; then
   mkdir -p "${tmp_root}/real-extract"
   tar -C "${tmp_root}/real-extract" -xzf "$real_one/blazn_9.9.9-test_linux_amd64.tar.gz"
   "${tmp_root}/real-extract/blazn" version --output=json | grep -F '"version":"v9.9.9-test"' >/dev/null
+  mkdir -p "${tmp_root}/darwin-extract"
+  tar -C "${tmp_root}/darwin-extract" -xzf "$real_one/blazn_9.9.9-test_darwin_arm64.tar.gz"
+  for qualification_marker in BLAZN_TEST_KEYCHAIN_PATH BLAZN_ALLOW_TEST_KEYCHAIN; do
+    if LC_ALL=C grep -a -F "$qualification_marker" "${tmp_root}/darwin-extract/blazn" >/dev/null 2>&1; then
+      echo "production Darwin asset contains qualification marker: $qualification_marker" >&2
+      exit 1
+    fi
+  done
 else
   echo "real reproducibility check is reserved for the pinned GNU-tar release builder" >&2
 fi
+
+if GOFLAGS='-tags=blazn_qualification' SOURCE_DATE_EPOCH=1724198400 "${repo_root}/scripts/release.sh" \
+  --source-root "$fixture_root" \
+  --version v1.2.3-tags \
+  --commit 0123456789abcdef0123456789abcdef01234567 \
+  --output "${tmp_root}/tagged-output" >"${tmp_root}/tagged.log" 2>&1; then
+  echo "release accepted qualification tag from GOFLAGS" >&2
+  exit 1
+fi
+grep -F 'refuse ambient Go build tags' "${tmp_root}/tagged.log" >/dev/null
+
+goenv_file="${tmp_root}/goenv"
+printf 'GOFLAGS=-tags=blazn_qualification\n' >"$goenv_file"
+if (
+  unset GOFLAGS
+  GOENV="$goenv_file" SOURCE_DATE_EPOCH=1724198400 "${repo_root}/scripts/release.sh" \
+    --source-root "$fixture_root" \
+    --version v1.2.3-goenv \
+    --commit 0123456789abcdef0123456789abcdef01234567 \
+    --output "${tmp_root}/goenv-output"
+) >"${tmp_root}/goenv.log" 2>&1; then
+  echo "release accepted qualification tag from GOENV" >&2
+  exit 1
+fi
+grep -F 'refuse ambient Go build tags' "${tmp_root}/goenv.log" >/dev/null
 
 echo "release packaging tests passed"

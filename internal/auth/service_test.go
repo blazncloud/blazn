@@ -354,7 +354,7 @@ func TestBeginLoginRefusesExistingValidSessionBeforeAuthorization(t *testing.T) 
 	}
 }
 
-func TestBeginLoginCleansRevokedStoredSessionBeforeReplacement(t *testing.T) {
+func TestBeginLoginRefusesRevokedStoredSessionWithoutNetwork(t *testing.T) {
 	api := &fakeAPI{
 		authorization: client.DeviceAuthorization{DeviceCode: "device-secret", UserCode: "ABCD-EFGH", VerificationURI: "https://login.example/device", Challenge: "server-challenge", ExpiresIn: 600, Interval: 1},
 		currentErr:    &client.APIError{StatusCode: http.StatusUnauthorized, Body: client.ErrorBody{Code: "session_revoked"}},
@@ -362,10 +362,9 @@ func TestBeginLoginCleansRevokedStoredSessionBeforeReplacement(t *testing.T) {
 	}
 	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
 	service := testService(api, store)
-	if _, _, _, err := service.BeginLogin(context.Background()); err != nil || api.stableRevokes != 1 || store.deleted != 1 || len(api.authorizationRequest.DevicePublicKey) == 0 {
+	if _, _, _, err := service.BeginLogin(context.Background()); err == nil || api.currentCalls != 0 || api.refreshes != 0 || api.stableRevokes != 0 || store.deleted != 0 || len(api.authorizationRequest.DevicePublicKey) != 0 {
 		t.Fatalf("api=%#v store=%#v err=%v", api, store, err)
 	}
-	service.pendingLogin = ""
 }
 
 func TestStatusRefreshesAfterAccessExpiry(t *testing.T) {

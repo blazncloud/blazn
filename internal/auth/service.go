@@ -138,12 +138,18 @@ func NewDefaultService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := NewSystemStoreForOrigin(origin)
+	locker, err := newCredentialLocker(origin)
 	if err != nil {
 		return nil, err
 	}
-	locker, err := newCredentialLocker(origin)
-	if err != nil {
+	var store CredentialStore
+	selectionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := locker.WithLock(selectionCtx, func() error {
+		var err error
+		store, err = NewSystemStoreForOrigin(origin)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return newService(api, store, origin, locker), nil
@@ -154,7 +160,7 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 	defer cancel()
 	var loginNonce string
 	if err := s.locker.WithLock(lockCtx, func() error {
-		if err := s.ensureLoginAllowedLocked(ctx); err != nil {
+		if err := s.ensureLoginAllowedLocked(); err != nil {
 			return err
 		}
 		var err error
@@ -202,26 +208,11 @@ func (s *Service) BeginLogin(ctx context.Context) (LoginStart, string, time.Dura
 	return start, authorization.DeviceCode, time.Duration(authorization.Interval) * time.Second, nil
 }
 
-func (s *Service) ensureLoginAllowedLocked(ctx context.Context) error {
-	if credentials, err := s.credentialsLocked(ctx); err == nil {
-		if _, currentErr := s.api.GetCurrentUser(ctx, credentials.AccessToken); currentErr == nil {
-			return errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
-		} else if client.IsCode(currentErr, "session_revoked") {
-			refreshed, refreshErr := s.refreshCredentialsLocked(ctx, credentials)
-			if refreshErr == nil {
-				if _, retryErr := s.api.GetCurrentUser(ctx, refreshed.AccessToken); retryErr == nil {
-					return errors.New("this API origin already has a valid Blazn session; run 'blazn auth logout' before logging in again")
-				} else {
-					return fmt.Errorf("verify existing Blazn session before login: %w", retryErr)
-				}
-			} else if !errors.Is(refreshErr, ErrNotFound) {
-				return fmt.Errorf("safely replace existing Blazn session before login: %w", refreshErr)
-			}
-		} else {
-			return fmt.Errorf("verify existing Blazn session before login: %w", currentErr)
-		}
+func (s *Service) ensureLoginAllowedLocked() error {
+	if _, err := s.load(); err == nil {
+		return errors.New("this API origin already has stored Blazn credentials; run 'blazn auth logout' before logging in again")
 	} else if !errors.Is(err, ErrNotFound) {
-		return fmt.Errorf("check existing Blazn session before login: %w", err)
+		return fmt.Errorf("check existing Blazn credentials before login: %w", err)
 	}
 	return nil
 }
