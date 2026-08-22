@@ -18,6 +18,7 @@ require_command sha256sum
 require_command cmp
 require_command sort
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
+load_control_api_image "$ROOT_DIR"
 BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 [ -n "$BACKUP_ROOT" ] || die "BLAZN_BACKUP_ROOT is required"

@@ -37,7 +37,7 @@ for expected in \
 done
 grep -F 'subnet: 172.18.0.0/16' "$compose" >/dev/null
 grep -F 'gateway: 172.18.0.1' "$compose" >/dev/null
-grep -F 'image: blazn-control-api:managed' "$compose" >/dev/null
+grep -F 'image: ${CONTROL_API_IMAGE:?set CONTROL_API_IMAGE from the verified build receipt}' "$compose" >/dev/null
 
 # These strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
@@ -107,10 +107,16 @@ grep -F 'up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-p
 build_script=$ROOT_DIR/scripts/build-control-api.sh
 grep -F 'docker compose' "$build_script" >/dev/null
 grep -F 'build api' "$build_script" >/dev/null
-grep -F 'docker image inspect blazn-control-api:managed' "$build_script" >/dev/null
+grep -F 'source_before=' "$build_script" >/dev/null
+grep -F 'source_after=' "$build_script" >/dev/null
+grep -F 'candidate_image=' "$build_script" >/dev/null
+grep -F 'final_image=blazn-control-api:source-' "$build_script" >/dev/null
 grep -F 'build-control-api.sh' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 grep -F 'services/control-api/src services/control-api/migrations packages/contracts' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'controlApi' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
+grep -F 'verify_control_api_containers' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
+grep -F 'verify_control_api_containers' "$ROOT_DIR/scripts/run-control-plane.sh" >/dev/null
+grep -F 'stop-control-plane.sh' "$unit" >/dev/null
 grep -F 'Restart=on-failure' "$unit" >/dev/null
 if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
   printf 'Docker still owns a control-plane restart policy\n' >&2
@@ -118,7 +124,8 @@ if grep -F 'restart: unless-stopped' "$compose" >/dev/null; then
 fi
 grep -F -- '--url https://blazn.benpelo.com' "$ngrok_unit" >/dev/null
 grep -F 'with-public-origin-lock.sh permanent' "$ngrok_unit" >/dev/null
-grep -F '/usr/bin/setpriv --reuid=blazn-ngrok' "$ngrok_unit" >/dev/null
+grep -F '/usr/bin/setpriv --reuid=blazn-ngrok --regid=blazn-ngrok --clear-groups' "$ngrok_unit" >/dev/null
+grep -F 'unreviewed supplementary group memberships' "$ROOT_DIR/scripts/install-ngrok-user.sh" >/dev/null
 grep -F -- '--traffic-policy-file /run/blazn-ngrok/traffic-policy.yml' "$ngrok_unit" >/dev/null
 grep -F 'prepare-ngrok-policy.sh' "$ngrok_unit" >/dev/null
 grep -F 'install-ngrok-user.sh --validate-only' "$ngrok_unit" >/dev/null

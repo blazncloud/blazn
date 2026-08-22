@@ -13,7 +13,7 @@ require_command docker
 backup_root=${BLAZN_BACKUP_ROOT:-}
 [ -n "$backup_root" ] || die "BLAZN_BACKUP_ROOT is required"
 assert_approved_backup_mount "$backup_root"
-validate_control_api_build "$ROOT_DIR"
+load_control_api_image "$ROOT_DIR"
 control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
 control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
 control_api_image=$(jq -er .image "$control_api_build_receipt")

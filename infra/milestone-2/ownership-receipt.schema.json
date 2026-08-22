@@ -52,7 +52,7 @@
       "required": ["sourceDigest", "image", "imageId"],
       "properties": {
         "sourceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-        "image": { "const": "blazn-control-api:managed" },
+        "image": { "type": "string", "pattern": "^blazn-control-api:source-[a-f0-9]{64}$" },
         "imageId": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
     },

@@ -165,10 +165,36 @@ validate_control_api_build() {
   build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
   assert_regular_file_owned_mode "$build_receipt" 0 600
   source_digest=sha256:$(control_api_source_digest "$infra_root")
-  image_id=$(docker image inspect blazn-control-api:managed --format '{{.Id}}') || die "managed control API image is unavailable"
-  jq -e --arg sourceDigest "$source_digest" --arg imageId "$image_id" \
-    '.schemaVersion == "blazn.dev/control-api-build/v1" and .image == "blazn-control-api:managed" and .sourceDigest == $sourceDigest and .imageId == $imageId' \
+  expected_image=blazn-control-api:source-${source_digest#sha256:}
+  image_id=$(docker image inspect "$expected_image" --format '{{.Id}}') || die "receipt-bound control API image is unavailable"
+  jq -e --arg sourceDigest "$source_digest" --arg image "$expected_image" --arg imageId "$image_id" \
+    '.schemaVersion == "blazn.dev/control-api-build/v1" and .image == $image and .sourceDigest == $sourceDigest and .imageId == $imageId' \
     "$build_receipt" >/dev/null || die "control API build receipt does not match source and image"
+}
+
+load_control_api_image() {
+  infra_root=$1
+  validate_control_api_build "$infra_root"
+  build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
+  CONTROL_API_IMAGE=$(jq -er .image "$build_receipt")
+  export CONTROL_API_IMAGE
+}
+
+verify_control_api_containers() {
+  infra_root=$1
+  env_file=$2
+  expected_id=$(docker image inspect "$CONTROL_API_IMAGE" --format '{{.Id}}') || die "receipt-bound control API image is unavailable"
+  for service in api api-migrate api-bootstrap; do
+    container=$(docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" ps -a -q "$service")
+    [ -n "$container" ] || die "control API service has no container: $service"
+    identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
+    [ "$identity" = "blazn-m2/$service/$expected_id" ] || die "control API service container does not match its receipt: $service"
+    state=$(docker inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$container")
+    case "$service:$state" in
+      api:running/0|api-migrate:exited/0|api-bootstrap:exited/0) ;;
+      *) die "control API service has unexpected state: $service ($state)" ;;
+    esac
+  done
 }
 
 control_plane_config_digest() {

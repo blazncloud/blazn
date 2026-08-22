@@ -13,6 +13,12 @@ require_command jq
 require_command openssl
 require_command sha256sum
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
+if [ -f "${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}" ]; then
+  load_control_api_image "$ROOT_DIR"
+else
+  CONTROL_API_IMAGE=blazn-control-api:upgrade-placeholder
+  export CONTROL_API_IMAGE
+fi
 [ "${POSTGRES_DB:-blazn}" = blazn ] || die "live upgrade expects POSTGRES_DB=blazn"
 [ "${POSTGRES_USER:-blazn_admin}" = blazn_admin ] || die "live upgrade expects POSTGRES_USER=blazn_admin"
 
