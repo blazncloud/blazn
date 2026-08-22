@@ -74,10 +74,13 @@ case $action in
     fi
     if [ ! -e "$users_root" ]; then mkdir "$users_root"; chmod 0711 "$users_root"; fi
     assert_directory_owned_mode "$users_root" 0 711
+    empty_skel=$users_root/.empty-skel
+    if [ ! -e "$empty_skel" ]; then mkdir "$empty_skel"; chmod 0755 "$empty_skel"; fi
+    assert_directory_owned_mode "$empty_skel" 0 755
     for spec in "$owner_name:$owner_home" "$second_name:$second_home"; do
       account_name=${spec%%:*}; account_home=${spec#*:}
       if ! getent passwd "$account_name" >/dev/null 2>&1; then
-        useradd --system --user-group --home-dir "$account_home" --create-home --shell "$nologin" "$account_name"
+        useradd --system --user-group --home-dir "$account_home" --create-home --skel "$empty_skel" --shell "$nologin" "$account_name"
       fi
       account_uid=$(id -u "$account_name"); account_gid=$(id -g "$account_name")
       chown "$account_uid:$account_gid" "$account_home"
@@ -85,6 +88,7 @@ case $action in
       ids=$(validate_account "$account_name" "$account_home")
       [ -n "$ids" ] || die "POC CLI account validation failed"
     done
+    rmdir "$empty_skel"
     owner_ids=$(validate_account "$owner_name" "$owner_home"); second_ids=$(validate_account "$second_name" "$second_home")
     owner_uid=${owner_ids%%:*}; owner_gid=${owner_ids##*:}; second_uid=${second_ids%%:*}; second_gid=${second_ids##*:}
     receipt_tmp=$receipt.tmp.$$
