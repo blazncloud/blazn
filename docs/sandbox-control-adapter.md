@@ -16,7 +16,10 @@ administrator kubeconfig on behalf of callers, or fall back to unmanaged Pods.
   non-root with RuntimeDefault seccomp, drop every Linux capability, forbid
   privilege escalation, and use a read-only root filesystem.
 - Blazn's artifact cleanup finalizer remains until every required export has a
-  content-addressed receipt. Export failure leaves the finalizer in place.
+  content-addressed receipt at the deterministic
+  `workspaces/<workspace>/sandboxes/<sandbox>/artifacts/<name>` key. Export
+  failure or a mutated persisted export annotation leaves the finalizer in
+  place.
 - Delete uses exact UID and resourceVersion preconditions with foreground
   propagation. Finalizer removal uses the latest resourceVersion.
 
