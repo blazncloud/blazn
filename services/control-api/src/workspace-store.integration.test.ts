@@ -7,13 +7,15 @@ import { WorkspaceService } from "./workspace-service.js";
 import { WorkspaceHttpError, type WorkspacePrincipal } from "./workspace-types.js";
 
 const databaseUrl = process.env.BLAZN_WORKSPACE_TEST_DATABASE_URL;
+const adminDatabaseUrl = process.env.BLAZN_WORKSPACE_TEST_ADMIN_DATABASE_URL ?? databaseUrl;
 
 test("PostgreSQL workspace isolation, idempotency, invitation race, owner safety, and removal", { skip: !databaseUrl }, async () => {
   const database = new pg.Pool({ connectionString: databaseUrl, max: 12 });
+  const admin = new pg.Pool({ connectionString: adminDatabaseUrl, max: 2 });
   const owner = principal(); const member = principal(); const rival = principal();
   try {
-    await database.query("TRUNCATE workspace_audit_events,workspace_idempotency_receipts,workspace_invitations,workspace_memberships,workspaces,users CASCADE");
-    for (const user of [owner, member, rival]) await database.query("INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES($1,$2,$3,'salt','hash')", [user.userId, user.email, user.displayName]);
+    await admin.query("TRUNCATE workspace_audit_events,workspace_idempotency_receipts,workspace_invitations,workspace_memberships,workspaces,users CASCADE");
+    for (const user of [owner, member, rival]) await admin.query("INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES($1,$2,$3,'salt','hash')", [user.userId, user.email, user.displayName]);
     const service = new WorkspaceService(new PgWorkspaceStore(database), async () => Buffer.alloc(32, 3));
 
     const created = await service.createWorkspace(owner, "create-key-0001", { name: "Acme", slug: "acme" });
@@ -44,6 +46,7 @@ test("PostgreSQL workspace isolation, idempotency, invitation race, owner safety
     await assert.rejects(service.eventBatch(joined, created.workspace.id), isCode("workspace_not_found"));
   } finally {
     await database.end();
+    await admin.end();
   }
 });
 

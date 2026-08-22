@@ -16,6 +16,7 @@ export class WorkspaceHttpRouter {
     const path = url.pathname;
     if (path === "/v1/workspaces" && request.method === "POST") {
       const body = await jsonBody(request); requireExactKeysOptional(body, ["name"], ["slug"]);
+      if (body.slug !== undefined && typeof body.slug !== "string") throw new WorkspaceHttpError("invalid_request", "slug must be a string");
       return sendJson(response, 201, await this.service.createWorkspace(principal, idempotency(request), { name: requiredString(body, "name", 160), ...(typeof body.slug === "string" ? { slug: body.slug } : {}) }));
     }
     if (path === "/v1/workspaces" && request.method === "GET") return sendJson(response, 200, await this.service.listWorkspaces(principal, cursor(url)));
