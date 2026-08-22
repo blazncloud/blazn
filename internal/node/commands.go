@@ -98,7 +98,7 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 }
 
 func NewProductionCommandRuntime(api API, accessToken, currentVersion string, join JoinCoordinator, capabilities CapabilityProvider, embedded map[string][]byte) (*CommandRuntime, error) {
-	if api == nil || accessToken == "" || currentVersion == "" || join == nil || capabilities == nil {
+	if api == nil || accessToken == "" || currentVersion == "" || capabilities == nil {
 		return nil, errors.New("production node runtime dependencies are incomplete")
 	}
 	binary, err := os.Executable()
@@ -114,6 +114,16 @@ func NewProductionCommandRuntime(api API, accessToken, currentVersion string, jo
 	}
 	state := FileStateStore{Root: "/var/lib/blazn/node"}
 	identities := FileIdentityStore{Path: "/var/lib/blazn/node/identity.json"}
+	if join == nil {
+		joinAPI, ok := api.(JoinAPI)
+		if !ok {
+			return nil, errors.New("production node API does not expose the frozen join credential endpoints")
+		}
+		join, err = NewBrokerJoinCoordinator(joinAPI, state, identities)
+		if err != nil {
+			return nil, err
+		}
+	}
 	service := NewService(api, identities, state, nil)
 	daemon := NewDaemon(api, state, identities, capabilities)
 	runtime := &CommandRuntime{Service: service, Daemon: daemon, State: state, Identities: identities, AccessToken: accessToken, CurrentBinaryPath: binary, CurrentVersion: currentVersion, TrustedProfileRoot: "/etc/blazn/node/profiles"}

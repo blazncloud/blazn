@@ -47,6 +47,18 @@ type recordingExecutor struct {
 	calls []recordedCommand
 }
 
+type scriptedExecutor struct {
+	run func(string, []string, []byte) ([]byte, error)
+}
+
+func (e scriptedExecutor) Run(_ context.Context, path string, args ...string) ([]byte, error) {
+	return e.run(path, args, nil)
+}
+
+func (e scriptedExecutor) RunInput(_ context.Context, path string, input []byte, args ...string) ([]byte, error) {
+	return e.run(path, args, input)
+}
+
 func (e *recordingExecutor) Run(ctx context.Context, path string, args ...string) ([]byte, error) {
 	return e.run(path, nil, args...)
 }
@@ -298,5 +310,62 @@ func TestBrokerJoinCoordinatorRejectsCredentialBeyondIdentityExpiry(t *testing.T
 	coordinator.Now = func() time.Time { return now }
 	if _, err := coordinator.WorkerCredential(context.Background(), plan); err == nil {
 		t.Fatal("credential beyond identity expiry was accepted")
+	}
+}
+
+func TestVerifyMutationDetectsFileDrift(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "material")
+	content := []byte("signed material")
+	if err := os.WriteFile(path, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, _, ok := fileOwner(info)
+	gid, groupOK := fileGroup(info)
+	if !ok || !groupOK {
+		t.Skip("file ownership is unavailable")
+	}
+	sum := sha256.Sum256(content)
+	mutation := client.NodeInstallMutation{Kind: "file", Target: path, Mode: 0600, UID: uid, GID: gid, Desired: map[string]any{"contentSha256": hex.EncodeToString(sum[:])}}
+	engine := NativeRootEngine{Platform: runtime.GOOS}
+	if err := engine.verifyMutation(context.Background(), client.NodeInstallPlan{}, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("drift"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.verifyMutation(context.Background(), client.NodeInstallPlan{}, mutation, nil, nil); err == nil {
+		t.Fatal("drifted installed file passed live verification")
+	}
+}
+
+func TestServiceStateRequiresExactSystemdOutputs(t *testing.T) {
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		if args[0] == "is-enabled" {
+			return []byte("static\n"), nil
+		}
+		return []byte("activating\n"), nil
+	}}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands}
+	response, err := engine.serviceState(context.Background(), client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Service == nil || response.Service.Enabled || response.Service.Active {
+		t.Fatalf("non-exact service states were accepted: %+v", response.Service)
+	}
+}
+
+func TestInstalledSnapVersionUsesExactRevisionColumn(t *testing.T) {
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+		return []byte("Name Version Rev Tracking Publisher Notes\nmicrok8s v1.35.6 9072 1.35/stable canonical** classic\n"), nil
+	}}
+	engine := NativeRootEngine{Commands: commands}
+	version, err := engine.installedPackageVersion(context.Background(), "microk8s", "snap")
+	if err != nil || version != "revision:9072" {
+		t.Fatalf("version=%q err=%v", version, err)
 	}
 }

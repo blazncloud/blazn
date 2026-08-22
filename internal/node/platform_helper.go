@@ -228,10 +228,10 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeInstallService) (RootResponse, error) {
 	state := ServicePriorState{}
 	if service.Manager == "systemd" {
-		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-enabled", service.UnitName); err == nil {
+		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-enabled", service.UnitName); err == nil && strings.TrimSpace(string(output)) == "enabled" {
 			state.Enabled = true
 		}
-		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", service.UnitName); err == nil {
+		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", service.UnitName); err == nil && strings.TrimSpace(string(output)) == "active" {
 			state.Active = true
 		}
 	} else {
@@ -246,6 +246,13 @@ func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPl
 	if !canonicalPath(backupRoot) {
 		return PriorState{}, errors.New("backup root is unsafe")
 	}
+	if (mutation.Kind == "systemd_unit" || mutation.Kind == "launchd_unit") && mutation.Action == "enable" {
+		response, err := e.serviceState(ctx, plan.NodeService)
+		if err != nil || response.Service == nil {
+			return PriorState{}, errors.New("service state cannot be captured exactly")
+		}
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "service", "manager": plan.NodeService.Manager, "name": plan.NodeService.UnitName, "enabled": strconv.FormatBool(response.Service.Enabled), "active": strconv.FormatBool(response.Service.Active)})
+	}
 	if mutation.Kind == "group" {
 		group, err := user.LookupGroup(mutation.Target)
 		if err != nil {
@@ -258,14 +265,20 @@ func (e NativeRootEngine) capture(ctx context.Context, plan client.NodeInstallPl
 		if err != nil {
 			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
 		}
-		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "user", "name": account.Username, "uid": account.Uid, "gid": account.Gid, "home": account.HomeDir})
+		output, err := e.Commands.Run(ctx, "/usr/bin/getent", "passwd", mutation.Target)
+		parts := strings.Split(strings.TrimSpace(string(output)), ":")
+		if err != nil || len(parts) != 7 || parts[0] != account.Username || parts[2] != account.Uid || parts[3] != account.Gid || parts[5] != account.HomeDir {
+			return PriorState{}, errors.New("preexisting user state cannot be captured exactly")
+		}
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "user", "name": account.Username, "uid": account.Uid, "gid": account.Gid, "home": account.HomeDir, "shell": parts[6]})
 	}
 	if mutation.Kind == "package" {
 		manager := stringValue(mutation.Desired["manager"])
-		if err := e.verifyPackage(ctx, mutation, manager); err != nil {
+		version, err := e.installedPackageVersion(ctx, mutation.Target, manager)
+		if err != nil {
 			return PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}, nil
 		}
-		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "package", "name": mutation.Target, "manager": manager, "version": stringValue(mutation.Desired["version"])})
+		return e.backupMetadata(backupRoot, plan, mutation, map[string]string{"kind": "package", "name": mutation.Target, "manager": manager, "version": version})
 	}
 	if strings.HasPrefix(mutation.Target, "/") {
 		info, err := os.Lstat(mutation.Target)
@@ -419,35 +432,58 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 }
 func (e NativeRootEngine) verifyPackage(ctx context.Context, m client.NodeInstallMutation, manager string) error {
 	expected := stringValue(m.Desired["version"])
+	installed, err := e.installedPackageVersion(ctx, m.Target, manager)
+	if err != nil {
+		return err
+	}
 	if manager == "snap" {
-		output, err := e.Commands.Run(ctx, "/usr/bin/snap", "list", m.Target, "--unicode=never")
-		if err != nil {
-			return err
-		}
 		revision := strings.TrimPrefix(expected, "v1.35.6-rev")
-		if revision == expected || !containsField(string(output), revision) {
+		if revision == expected || installed != "revision:"+revision {
 			return errors.New("installed snap revision differs from signed plan")
 		}
 		return nil
 	}
-	if manager == "brew" {
-		output, err := e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "list", "--versions", m.Target)
-		if err != nil {
-			return err
-		}
-		if !containsField(string(output), expected) {
+	if installed != expected {
+		if manager == "brew" {
 			return errors.New("installed brew version differs from signed plan")
 		}
-		return nil
-	}
-	output, err := e.Commands.Run(ctx, "/usr/bin/dpkg-query", "-W", "-f=${Version}", m.Target)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(string(output)) != expected {
 		return errors.New("installed package version differs from signed plan")
 	}
 	return nil
+}
+
+func (e NativeRootEngine) installedPackageVersion(ctx context.Context, target, manager string) (string, error) {
+	if manager == "snap" {
+		output, err := e.Commands.Run(ctx, "/usr/bin/snap", "list", target, "--unicode=never")
+		if err != nil {
+			return "", err
+		}
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		fields := strings.Fields(lines[len(lines)-1])
+		if len(fields) < 3 || fields[0] != target {
+			return "", errors.New("installed snap response is invalid")
+		}
+		return "revision:" + fields[2], nil
+	}
+	if manager == "brew" {
+		output, err := e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "list", "--versions", target)
+		if err != nil {
+			return "", err
+		}
+		fields := strings.Fields(string(output))
+		if len(fields) != 2 || fields[0] != target {
+			return "", errors.New("installed brew response is invalid")
+		}
+		return fields[1], nil
+	}
+	if manager != "apt" {
+		return "", errors.New("package manager is unsupported")
+	}
+	output, err := e.Commands.Run(ctx, "/usr/bin/dpkg-query", "-W", "-f=${Version}", target)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 func (e NativeRootEngine) verifyUser(ctx context.Context, m client.NodeInstallMutation) error {
 	output, err := e.Commands.Run(ctx, "/usr/bin/getent", "passwd", m.Target)
@@ -459,14 +495,6 @@ func (e NativeRootEngine) verifyUser(ctx context.Context, m client.NodeInstallMu
 		return errors.New("existing user differs from exact signed account")
 	}
 	return nil
-}
-func containsField(value, want string) bool {
-	for _, field := range strings.Fields(value) {
-		if field == want {
-			return true
-		}
-	}
-	return false
 }
 func verifyExactFile(path string, content []byte, mode os.FileMode, uid, gid int64) error {
 	info, err := os.Lstat(path)
@@ -509,14 +537,8 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			_, err := e.Commands.Run(ctx, "/usr/sbin/userdel", m.Target)
 			return err
 		case "systemd_unit":
-			if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "disable", "--now", filepath.Base(m.Target)); err != nil {
-				return err
-			}
 			return os.Remove(m.Target)
 		case "launchd_unit":
-			if _, err := e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+strings.TrimSuffix(filepath.Base(m.Target), ".plist")); err != nil {
-				return err
-			}
 			return os.Remove(m.Target)
 		case "package":
 			manager := stringValue(m.Desired["manager"])
@@ -581,13 +603,13 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			_, err = e.Commands.Run(ctx, "/usr/sbin/groupmod", "--gid", metadata["gid"], m.Target)
 			return err
 		case "user":
-			args := []string{"--uid", metadata["uid"], "--gid", metadata["gid"], "--home", metadata["home"], m.Target}
+			args := []string{"--uid", metadata["uid"], "--gid", metadata["gid"], "--home", metadata["home"], "--shell", metadata["shell"], m.Target}
 			_, err = e.Commands.Run(ctx, "/usr/sbin/usermod", args...)
 			return err
 		case "package":
 			manager := metadata["manager"]
 			if manager == "snap" {
-				_, err = e.Commands.Run(ctx, "/usr/bin/snap", "refresh", m.Target, "--revision", strings.TrimPrefix(metadata["version"], "v1.35.6-rev"))
+				_, err = e.Commands.Run(ctx, "/usr/bin/snap", "refresh", m.Target, "--revision", strings.TrimPrefix(metadata["version"], "revision:"))
 				return err
 			}
 			if manager == "brew" {
@@ -595,6 +617,33 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 				return err
 			}
 			_, err = e.Commands.Run(ctx, "/usr/bin/apt-get", "install", "-y", m.Target+"="+metadata["version"])
+			return err
+		case "service":
+			enabled, enabledErr := strconv.ParseBool(metadata["enabled"])
+			active, activeErr := strconv.ParseBool(metadata["active"])
+			if enabledErr != nil || activeErr != nil || metadata["name"] != plan.NodeService.UnitName || metadata["manager"] != plan.NodeService.Manager {
+				return errors.New("rollback service metadata is invalid")
+			}
+			if metadata["manager"] == "systemd" {
+				enableAction := "disable"
+				if enabled {
+					enableAction = "enable"
+				}
+				if _, err = e.Commands.Run(ctx, "/usr/bin/systemctl", enableAction, metadata["name"]); err != nil {
+					return err
+				}
+				activeAction := "stop"
+				if active {
+					activeAction = "start"
+				}
+				_, err = e.Commands.Run(ctx, "/usr/bin/systemctl", activeAction, metadata["name"])
+				return err
+			}
+			if active || enabled {
+				_, err = e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", m.Target)
+			} else {
+				_, err = e.Commands.Run(ctx, "/bin/launchctl", "bootout", "system/"+metadata["name"])
+			}
 			return err
 		default:
 			return errors.New("rollback metadata kind is unsupported")
@@ -736,6 +785,9 @@ func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPla
 		return err
 	}
 	var node struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
 		Spec struct {
 			Taints []struct {
 				Key    string `json:"key"`
@@ -747,6 +799,11 @@ func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPla
 	if json.Unmarshal(output, &node) != nil {
 		return errors.New("joined node taint response is invalid")
 	}
+	for _, mutation := range sortedMutations(plan) {
+		if err := e.verifyMutation(ctx, plan, mutation, node.Metadata.Labels, node.Spec.Taints); err != nil {
+			return fmt.Errorf("verify mutation %d: %w", mutation.Ordinal, err)
+		}
+	}
 	observedTaint := false
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == "blazn.dev/bootstrap" && taint.Value == "pending" && taint.Effect == "NoSchedule" {
@@ -757,6 +814,87 @@ func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPla
 		return errors.New("bootstrap taint is not observed")
 	}
 	return nil
+}
+
+func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, labels map[string]string, taints []struct {
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Effect string `json:"effect"`
+}) error {
+	switch mutation.Kind {
+	case "group":
+		group, err := user.LookupGroup(mutation.Target)
+		if err != nil || group.Gid != strconv.FormatInt(number(mutation.Desired["gid"]), 10) {
+			return errors.New("group differs from signed state")
+		}
+		return nil
+	case "user":
+		return e.verifyUser(ctx, mutation)
+	case "directory":
+		return verifyExactDirectory(mutation.Target, os.FileMode(mutation.Mode), mutation.UID, mutation.GID)
+	case "file", "certificate":
+		return verifyFileDigestAndMetadata(mutation.Target, stringValue(mutation.Desired["contentSha256"]), os.FileMode(mutation.Mode), mutation.UID, mutation.GID)
+	case "systemd_unit", "launchd_unit":
+		if mutation.Action != "enable" {
+			return verifyFileDigestAndMetadata(mutation.Target, componentDigest(plan, stringValue(mutation.Desired["sourceComponent"])), os.FileMode(mutation.Mode), mutation.UID, mutation.GID)
+		}
+		if mutation.Kind == "systemd_unit" {
+			enabled, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-enabled", plan.NodeService.UnitName)
+			if err != nil || strings.TrimSpace(string(enabled)) != "enabled" {
+				return errors.New("systemd service is not enabled")
+			}
+			active, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", plan.NodeService.UnitName)
+			if err != nil || strings.TrimSpace(string(active)) != "active" {
+				return errors.New("systemd service is not active")
+			}
+			return nil
+		}
+		_, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName)
+		return err
+	case "package":
+		return e.verifyPackage(ctx, mutation, stringValue(mutation.Desired["manager"]))
+	case "image":
+		_, err := e.Commands.Run(ctx, "/snap/bin/microk8s.ctr", "images", "inspect", mutation.Target)
+		return err
+	case "label":
+		if labels[mutation.Target] != stringValue(mutation.Desired["value"]) {
+			return errors.New("node label differs from signed state")
+		}
+		return nil
+	case "taint":
+		for _, taint := range taints {
+			if taint.Key == mutation.Target && taint.Value == stringValue(mutation.Desired["value"]) && taint.Effect == stringValue(mutation.Desired["effect"]) {
+				return nil
+			}
+		}
+		return errors.New("node taint differs from signed state")
+	default:
+		return errors.New("mutation verification is unsupported")
+	}
+}
+
+func componentDigest(plan client.NodeInstallPlan, name string) string {
+	for _, component := range plan.Components {
+		if component.Name == name {
+			return component.SHA256
+		}
+	}
+	return ""
+}
+
+func verifyFileDigestAndMetadata(path, expectedDigest string, mode os.FileMode, uid, gid int64) error {
+	if expectedDigest == "" {
+		return errors.New("signed file digest is unavailable")
+	}
+	value, err := readBoundedRegular(path, 512<<20)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(value)
+	if hex.EncodeToString(sum[:]) != expectedDigest {
+		return errors.New("file digest differs from signed state")
+	}
+	return verifyExactFile(path, value, mode, uid, gid)
 }
 
 type joinPayload struct {
