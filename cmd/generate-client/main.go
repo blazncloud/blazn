@@ -22,7 +22,7 @@ var clientTemplate []byte
 // clientTemplate. A contract change therefore cannot be accepted by merely
 // rerunning the generator; the validator and typed template must be reviewed
 // before this fingerprint is deliberately updated.
-const supportedContractSHA256 = "6606869bb793465081d66c6f84769ae872c1048623c4d755585cffaf6ce801a2"
+const supportedContractSHA256 = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
 
 type operation struct {
 	path        string
