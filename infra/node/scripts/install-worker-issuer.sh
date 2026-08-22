@@ -155,6 +155,8 @@ if [ "$current" = service-started ]; then phase complete; current=complete; faul
 [ "sha256:$(sha "$UNIT")" = "$(jq -er .unit.digest "$RECEIPT")" ] || die "systemd unit differs from receipt"
 [ "sha256:$(sha "$TMPFILES")" = "$(jq -er .tmpfiles.digest "$RECEIPT")" ] || die "tmpfiles policy differs from receipt"
 [ "sha256:$(sha "$ENV_FILE")" = "$(jq -er .environment.digest "$RECEIPT")" ] || die "control-plane environment differs from receipt"
+[ "sha256:$(sha "$RECOVERY/inventory.json")" = "$(jq -er .recovery.inventoryDigest "$RECEIPT")" ] || die "recovery inventory differs from receipt"
+[ "sha256:$(sha "$RECOVERY/control-plane.env")" = "$(jq -er .environment.priorDigest "$RECEIPT")" ] || die "environment recovery copy differs from receipt"
 validate_key "$ROOT/issuer-hmac-v1"
 recovery_key=$(jq -er .secretRecoveryPath "$RECOVERY/inventory.json"); [ "$recovery_key" = "$RECOVERY/issuer-hmac-v1" ] || die "recovery key path differs from inventory"; validate_key "$recovery_key"; cmp "$ROOT/issuer-hmac-v1" "$recovery_key" >/dev/null || die "recovery key differs from active generation"
 printf 'MicroK8s worker issuer infrastructure is receipt-bound; live join remains blocked\n'

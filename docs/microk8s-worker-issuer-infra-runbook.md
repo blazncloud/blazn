@@ -16,7 +16,8 @@ correlation.
 Read-only preflight includes `snap info microk8s`, the `current` revision,
 both group records, helper SHA-256, and `docker compose --profile node-broker
 config`. After normal prebackup and restore qualification, install under the
-lock with `BLAZN_ISSUER_BINARY_SOURCE` and the receipt-bound broker UID.
+lock with root-owned `BLAZN_ISSUER_BINARY_SOURCE`, its exact
+`BLAZN_ISSUER_BINARY_SHA256`, and the receipt-bound broker UID.
 
 Verify the receipt is complete and still says `liveJoinBlocked`, the service is
 active, and `/run/blazn` plus its socket have the receipted owner/GID/modes.
