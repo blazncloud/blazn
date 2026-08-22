@@ -7,7 +7,7 @@ die(){ printf 'blazn-worker-issuer-infra: %s\n' "$*" >&2; exit 1; }
 need(){ command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
 [ "$(id -u)" -eq 0 ] || die "installation requires root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "installation requires the control-plane lock"
-for command_name in awk cmp cp dirname find getent grep groupadd install jq mv openssl rm sha256sum stat sync wc; do need "$command_name"; done
+for command_name in awk cmp cp dirname find getent grep install jq mv openssl rm sha256sum stat sync wc; do need "$command_name"; done
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 SOURCE=${BLAZN_ISSUER_BINARY_SOURCE:?set BLAZN_ISSUER_BINARY_SOURCE to the reviewed helper binary}
@@ -59,7 +59,8 @@ if [ "$TEST_MODE" = 1 ]; then
   TMPFILES_CMD=${BLAZN_ISSUER_TEST_TMPFILES:?}
   group_created=false
 else
-  if getent group blazn-node-broker >/dev/null; then group_created=false; else groupadd --system blazn-node-broker; group_created=true; fi
+  getent group blazn-node-broker >/dev/null || die "dedicated blazn-node-broker group must be provisioned before this transaction"
+  group_created=false
   BROKER_GID=$(getent group blazn-node-broker | awk -F: '{print $3}')
   MICROK8S_GID=$(getent group microk8s | awk -F: '{print $3}')
   [ -n "$MICROK8S_GID" ] || die "MicroK8s group is unavailable"
@@ -148,4 +149,5 @@ if [ "$current" = service-started ]; then phase complete; current=complete; faul
 [ "sha256:$(sha "$TMPFILES")" = "$(jq -er .tmpfiles.digest "$RECEIPT")" ] || die "tmpfiles policy differs from receipt"
 [ "sha256:$(sha "$ENV_FILE")" = "$(jq -er .environment.digest "$RECEIPT")" ] || die "control-plane environment differs from receipt"
 validate_key "$ROOT/issuer-hmac-v1"
+recovery_key=$(jq -er .secretRecoveryPath "$RECOVERY/inventory.json"); [ "$recovery_key" = "$RECOVERY/issuer-hmac-v1" ] || die "recovery key path differs from inventory"; validate_key "$recovery_key"; cmp "$ROOT/issuer-hmac-v1" "$recovery_key" >/dev/null || die "recovery key differs from active generation"
 printf 'MicroK8s worker issuer infrastructure is receipt-bound; live join remains blocked\n'

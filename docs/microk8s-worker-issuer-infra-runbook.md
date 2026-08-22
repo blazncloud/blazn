@@ -6,7 +6,8 @@ Kubernetes Node name/UID and bootstrap-taint observer is reviewed. Never apply
 this qualification to `ben1` or shared MicroK8s.
 
 Before installation, hold the serialized control-plane lock and record merged
-source/helper/ownership-receipt digests, broker UID/GID, MicroK8s v1.35.6
+source/helper/ownership-receipt digests, broker UID and pre-provisioned empty
+dedicated broker group/GID, MicroK8s v1.35.6
 revision 9072 or 9075, `microk8s` GID, and zero active bootstrap issuances.
 Confirm HomeAI is outside the Compose project and rollback targets. Refuse
 managed paths without the issuer receipt, links, or missing operator

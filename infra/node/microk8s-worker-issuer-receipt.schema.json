@@ -21,7 +21,7 @@
     "microk8s": {"type": "object", "additionalProperties": false, "required": ["version", "revision", "gid", "tokenFile"], "properties": {"version": {"const": "v1.35.6"}, "revision": {"enum": [9072, 9075]}, "gid": {"type": "integer", "minimum": 1}, "tokenFile": {"const": "/var/snap/microk8s/current/credentials/cluster-tokens.txt"}}},
     "recovery": {"type": "object", "additionalProperties": false, "required": ["root", "inventoryDigest"], "properties": {"root": {"type": "string", "pattern": "^/var/lib/blazn/ownership/microk8s-worker-issuer-recovery$"}, "inventoryDigest": {"$ref": "#/$defs/digest"}}},
     "brokerUid": {"type": "integer", "minimum": 1},
-    "brokerGroupCreated": {"type": "boolean"},
+    "brokerGroupCreated": {"const": false},
     "rollback": {"type": "object", "additionalProperties": false, "required": ["retainedRecovery", "groupRetained", "rolledBackAt"], "properties": {"retainedRecovery": {"const": true}, "groupRetained": {"const": true}, "rolledBackAt": {"type": "string", "format": "date-time"}}},
     "liveJoinBlocked": {"const": true}
   },
