@@ -18,8 +18,11 @@
    streaming/cancellation/fallback, and byte-for-byte application-config
    snapshots pass without secret or content leakage.
 
-The POC uses `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`, and
-`ANTHROPIC_API_KEY`. API-key values are per-activation listener credentials,
+The POC uses `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`. Both Anthropic credential
+variables are replaced with the per-activation listener credential so Claude
+Code cannot bypass the listener through its gateway-token precedence. All
+prior values are snapshotted and compare-and-set restored. API-key/token values are per-activation listener credentials,
 never provider credentials. It does not modify `HTTP_PROXY`, `HTTPS_PROXY`,
 shell profiles, provider configs, or system trust/CA state. Unsupported clients
 are reported `BYPASS/UNSUPPORTED`.
@@ -27,7 +30,7 @@ are reported `BYPASS/UNSUPPORTED`.
 ## CLI
 
 ```text
-blazn proxy on [--policy POLICY] [--mode auto|session|scoped]
+blazn proxy on [--policy POLICY] [--mode auto|session]
 blazn proxy off [--remove-ca]
 blazn proxy status
 blazn proxy doctor [--policy POLICY]
@@ -37,7 +40,8 @@ blazn proxy tail [--cursor CURSOR] [--follow]
 blazn proxy reset --yes [--remove-ca]
 ```
 
-Same-policy activation is idempotent. A different active digest is exit `6`
+`scoped` is intentionally not a durable `on` mode; scoped activation exists
+only for `proxy run`. Same-policy activation is idempotent. A different active digest is exit `6`
 and requires `off`. `run` executes exact argv, forwards signals/exit status,
 uses scoped state, and restores automatically. `off` is idempotent and
 daemon-independent. `reset` removes only receipt-proven Blazn state; ambiguity
@@ -87,10 +91,16 @@ One per-user lifecycle flock plus a short reservation serializes changes.
 Network/provider checks run outside the lock. Before mutation, the command
 reacquires it, verifies the nonce, and performs write/fsync/rename/parent-fsync.
 
-The frozen journal schema is
-[`activation-journal.schema.json`](../packages/contracts/proxy/activation-journal.schema.json).
+The frozen journal and redundant receipt schemas are
+[`activation-journal.schema.json`](../packages/contracts/proxy/activation-journal.schema.json)
+and [`activation-receipt.schema.json`](../packages/contracts/proxy/activation-receipt.schema.json).
 It records exact prior variable values only in the protected journal. Receipts
 contain names/digests, never prior values or provider secrets.
+
+Checksums are `sha256:` plus lowercase SHA-256 over RFC 8785 canonical JSON of
+the complete object with `checksum` omitted. The receipt binds the same
+activation generation, platform, mode, OS-session identity, journal digest,
+policy digest, listener process identity, and published environment digests.
 
 Restoration is compare-and-set: restore only values still carrying the recorded
 marker/digest. PID termination additionally requires process-start identity,
@@ -109,6 +119,20 @@ GET  /v1/models
 POST /v1/messages
 GET  /healthz
 ```
+
+`/healthz` is the only unauthenticated endpoint and exposes only an aggregate
+ready/not-ready result. `/v1/models` and every inference endpoint require the
+activation listener credential. The listener accepts the appropriate
+`Authorization` or `x-api-key` source header, validates it in constant time,
+then removes every source credential header before upstream dispatch.
+
+Independent protocol adapters exchange only the frozen
+[`normalized-request`](../packages/contracts/proxy/normalized-request.schema.json),
+[`normalized-response`](../packages/contracts/proxy/normalized-response.schema.json),
+[`normalized-stream-event`](../packages/contracts/proxy/normalized-stream-event.schema.json),
+and [`normalized-error`](../packages/contracts/proxy/normalized-error.schema.json)
+shapes. A translation must reject a source feature that cannot be represented
+without loss; it may never silently omit it.
 
 Supported POC subset:
 
@@ -132,9 +156,21 @@ The POC freezes one local Qwen primary route plus one authorized cloud route,
 maximum two attempts. Fallback is allowed only before first byte for connection
 failure, pre-first-byte timeout, 429, 5xx, unavailable model, or compatible
 context overflow. Local-to-external fallback requires an explicit policy bit
-and compatible data boundary. Cycles, missing credentials, incompatible
+and compatible data boundary. Each alias declares the request data class and
+allowed destination boundaries; every route declares accepted data classes.
+Fallback must be present in the exact allowed-boundary transition list, and
+`local_only` may never leave `local`. Cycles, missing credentials, incompatible
 protocols/capabilities, disallowed hosts, budgets, and boundary contradictions
 fail validation before activation.
+
+Route endpoints are decomposed into scheme, exact host, port, and base path.
+Local routes resolve only to loopback or an authenticated node tunnel. External
+provider/cloud routes require HTTPS, an exact workspace-policy hostname
+allowlist match, and public-unicast resolution. The implementation resolves and
+validates every address before connect and again for redirects/retries, rejects
+link-local/private/loopback/metadata destinations for external routes, pins the
+validated address for that connection, preserves the validated Host/SNI name,
+and does not follow a redirect outside the route allowlist.
 
 ## Credentials
 

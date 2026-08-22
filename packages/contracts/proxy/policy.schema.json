@@ -12,26 +12,52 @@
     "protocols": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]}},
     "aliases": {
       "type": "object", "minProperties": 1, "additionalProperties": false,
-      "patternProperties": {"^[a-zA-Z0-9._:-]{1,128}$": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}}
+      "patternProperties": {
+        "^[a-zA-Z0-9._:-]{1,128}$": {
+          "type": "object", "additionalProperties": false,
+          "required": ["routeIds", "dataClass", "allowedDestinationBoundaries"],
+          "properties": {
+            "routeIds": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}},
+            "dataClass": {"enum": ["public", "company", "restricted", "local_only"]},
+            "allowedDestinationBoundaries": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["local", "company", "external"]}}
+          }
+        }
+      }
     },
     "routes": {
       "type": "array", "minItems": 1, "maxItems": 32,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["id", "destinationClass", "baseHostname", "sourceProtocol", "destinationProtocol", "model", "capabilities", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass"],
+        "required": ["id", "destinationClass", "endpoint", "sourceProtocol", "destinationProtocol", "model", "capabilities", "acceptedDataClasses", "dataBoundary", "healthTimeoutMs", "credentialRef", "costClass"],
         "properties": {
           "id": {"type": "string", "format": "uuid"},
           "destinationClass": {"enum": ["local_node", "company", "provider", "blazn_cloud"]},
-          "baseHostname": {"type": "string", "format": "hostname", "maxLength": 253},
+          "endpoint": {
+            "type": "object", "additionalProperties": false,
+            "required": ["scheme", "hostname", "port", "basePath", "hostnameAllowlist", "resolvedAddressPolicy"],
+            "properties": {
+              "scheme": {"enum": ["http", "https"]},
+              "hostname": {"type": "string", "minLength": 1, "maxLength": 253},
+              "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+              "basePath": {"type": "string", "pattern": "^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*$", "maxLength": 512},
+              "hostnameAllowlist": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 253}},
+              "resolvedAddressPolicy": {"enum": ["loopback_only", "authenticated_node_tunnel", "public_unicast_only"]}
+            }
+          },
           "sourceProtocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
           "destinationProtocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
           "model": {"type": "string", "minLength": 1, "maxLength": 160},
-          "capabilities": {"type": "array", "uniqueItems": true, "items": {"enum": ["text", "tools", "structured_output", "streaming"]}},
+          "capabilities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["text", "tools", "structured_output", "streaming"]}},
+          "acceptedDataClasses": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["public", "company", "restricted", "local_only"]}},
           "dataBoundary": {"enum": ["local", "company", "external"]},
           "healthTimeoutMs": {"type": "integer", "minimum": 100, "maximum": 30000},
           "credentialRef": {"type": "string", "minLength": 1, "maxLength": 256},
           "costClass": {"enum": ["local", "included", "metered_low", "metered_high"]}
-        }
+        },
+        "allOf": [
+          {"if": {"properties": {"destinationClass": {"const": "local_node"}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"resolvedAddressPolicy": {"enum": ["loopback_only", "authenticated_node_tunnel"]}}}}}},
+          {"if": {"properties": {"destinationClass": {"enum": ["provider", "blazn_cloud"]}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"scheme": {"const": "https"}, "resolvedAddressPolicy": {"const": "public_unicast_only"}}}}}}
+        ]
       }
     },
     "requestLimits": {
@@ -47,11 +73,11 @@
     },
     "fallback": {
       "type": "object", "additionalProperties": false,
-      "required": ["maxAttempts", "retryableReasons", "allowBoundaryChange"],
+      "required": ["maxAttempts", "retryableReasons", "allowedBoundaryTransitions"],
       "properties": {
         "maxAttempts": {"type": "integer", "minimum": 1, "maximum": 2},
         "retryableReasons": {"type": "array", "uniqueItems": true, "items": {"enum": ["connection_failure", "timeout_before_first_byte", "rate_limited", "upstream_5xx", "model_unavailable", "compatible_context_overflow"]}},
-        "allowBoundaryChange": {"type": "boolean"}
+        "allowedBoundaryTransitions": {"type": "array", "maxItems": 3, "uniqueItems": true, "items": {"enum": ["local_to_company", "local_to_external", "company_to_external"]}}
       }
     },
     "contentCapture": {"const": false}

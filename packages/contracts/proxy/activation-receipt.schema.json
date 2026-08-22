@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/activation-receipt.json",
+  "title": "Blazn proxy activation receipt",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "activationId", "generation", "journalDigest", "policyDigest", "platform", "mode", "sessionIdentity", "listener", "publicationMechanism", "environment", "activatedAt", "state", "checksum"],
+  "properties": {
+    "schemaVersion": {"const": "proxy/v1alpha1"},
+    "activationId": {"type": "string", "format": "uuid"},
+    "generation": {"type": "integer", "minimum": 1},
+    "journalDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "policyDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "platform": {"enum": ["darwin", "linux"]},
+    "mode": {"enum": ["session", "scoped_run"]},
+    "sessionIdentity": {"type": "string", "minLength": 1, "maxLength": 256},
+    "listener": {"type": "object", "additionalProperties": false, "required": ["pid", "processStartIdentity", "executableIdentity", "address"], "properties": {"pid": {"type": "integer", "minimum": 1}, "processStartIdentity": {"type": "string", "minLength": 1}, "executableIdentity": {"type": "string", "minLength": 1}, "address": {"type": "string", "minLength": 1}}},
+    "publicationMechanism": {"enum": ["process_environment", "launchctl_user_environment", "systemd_user_environment"]},
+    "environment": {"type": "array", "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["name", "desiredValueDigest"], "properties": {"name": {"enum": ["OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]}, "desiredValueDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}}},
+    "activatedAt": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["active", "recovery_required"]},
+    "checksum": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/normalized-request.json",
+  "title": "Normalized proxy request",
+  "type": "object", "additionalProperties": false,
+  "required": ["logicalRequestId", "protocol", "modelAlias", "dataClass", "stream", "blocks", "tools", "limits", "capabilitiesRequired"],
+  "properties": {
+    "logicalRequestId": {"type": "string", "format": "uuid"},
+    "protocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
+    "modelAlias": {"type": "string", "minLength": 1, "maxLength": 128},
+    "dataClass": {"enum": ["public", "company", "restricted", "local_only"]},
+    "stream": {"type": "boolean"},
+    "blocks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/block"}},
+    "tools": {"type": "array", "items": {"$ref": "#/$defs/tool"}},
+    "toolChoice": {"enum": ["none", "auto", "required"]},
+    "responseSchema": {"type": ["object", "null"]},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["maxOutputTokens", "deadlineAt"], "properties": {"maxOutputTokens": {"type": "integer", "minimum": 1}, "deadlineAt": {"type": "string", "format": "date-time"}, "temperature": {"type": "number", "minimum": 0, "maximum": 2}, "topP": {"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "stop": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 512}}}},
+    "capabilitiesRequired": {"type": "array", "uniqueItems": true, "items": {"enum": ["text", "tools", "structured_output", "streaming"]}}
+  },
+  "$defs": {
+    "block": {"type": "object", "additionalProperties": false, "required": ["role", "type"], "properties": {"role": {"enum": ["system", "developer", "user", "assistant", "tool"]}, "type": {"enum": ["text", "tool_call", "tool_result"]}, "text": {"type": "string"}, "callId": {"type": "string", "maxLength": 256}, "toolName": {"type": "string", "maxLength": 128}, "arguments": {}, "result": {}}},
+    "tool": {"type": "object", "additionalProperties": false, "required": ["name", "inputSchema"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "description": {"type": "string", "maxLength": 4096}, "inputSchema": {"type": "object"}}}
+  }
+}

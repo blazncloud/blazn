@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/normalized-stream-event.json",
+  "title": "Normalized proxy stream event",
+  "type": "object", "additionalProperties": false,
+  "required": ["logicalRequestId", "sequence", "type"],
+  "properties": {
+    "logicalRequestId": {"type": "string", "format": "uuid"},
+    "sequence": {"type": "integer", "minimum": 0},
+    "type": {"enum": ["response_start", "text_delta", "tool_call_start", "tool_arguments_delta", "usage", "response_end", "error"]},
+    "text": {"type": "string"},
+    "callId": {"type": "string", "maxLength": 256},
+    "toolName": {"type": "string", "maxLength": 128},
+    "argumentsDelta": {"type": "string"},
+    "usage": {"type": "object", "additionalProperties": false, "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}},
+    "finishReason": {"enum": ["stop", "length", "tool_call", "content_filter", "cancelled"]},
+    "error": {"$ref": "normalized-error.schema.json"}
+  }
+}

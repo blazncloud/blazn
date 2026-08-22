@@ -4,7 +4,7 @@
   "title": "Blazn proxy operational event",
   "type": "object",
   "additionalProperties": false,
-  "required": ["eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs"],
+  "required": ["eventId", "cursor", "timestamp", "type", "activationId", "logicalRequestId", "attempt", "protocol", "modelAlias", "policy", "routeId", "destinationClass", "outcome", "reasonCode", "latencyMs"],
   "properties": {
     "eventId": {"type": "string", "format": "uuid"},
     "cursor": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -15,10 +15,11 @@
     "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
     "protocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
     "modelAlias": {"type": "string", "minLength": 1, "maxLength": 128},
+    "policy": {"type": "object", "additionalProperties": false, "required": ["id", "version", "digest"], "properties": {"id": {"type": "string", "format": "uuid"}, "version": {"type": "integer", "minimum": 1}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
     "routeId": {"type": "string", "format": "uuid"},
     "destinationClass": {"enum": ["local_node", "company", "provider", "blazn_cloud"]},
     "outcome": {"enum": ["success", "failed", "cancelled", "fallback"]},
-    "reasonCode": {"type": "string", "minLength": 1, "maxLength": 96},
+    "reasonCode": {"enum": ["none", "connection_failure", "timeout_before_first_byte", "rate_limited", "upstream_5xx", "model_unavailable", "compatible_context_overflow", "unsupported_capability", "authentication_failed", "policy_denied", "cancelled", "fallback_selected"]},
     "latencyMs": {"type": "integer", "minimum": 0},
     "usage": {"type": "object", "additionalProperties": false, "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}}
   }

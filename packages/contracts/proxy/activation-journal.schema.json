@@ -4,7 +4,7 @@
   "title": "Blazn proxy activation journal",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "policy", "binary", "listener", "environment", "rollbackActions", "createdAt", "updatedAt", "checksum"],
+  "required": ["schemaVersion", "activationId", "nonce", "generation", "state", "ownerUid", "platform", "mode", "sessionIdentity", "policy", "binary", "listener", "environment", "rollbackActions", "createdAt", "updatedAt", "checksum"],
   "properties": {
     "schemaVersion": {"const": "proxy/v1alpha1"},
     "activationId": {"type": "string", "format": "uuid"},
@@ -12,15 +12,33 @@
     "generation": {"type": "integer", "minimum": 1},
     "state": {"enum": ["prepared", "publishing", "active", "deactivating", "recovery_required"]},
     "ownerUid": {"type": "integer", "minimum": 0},
+    "platform": {"enum": ["darwin", "linux"]},
+    "mode": {"enum": ["session", "scoped_run"]},
+    "sessionIdentity": {"type": "string", "minLength": 1, "maxLength": 256},
     "policy": {"type": "object", "additionalProperties": false, "required": ["id", "version", "digest"], "properties": {"id": {"type": "string", "format": "uuid"}, "version": {"type": "integer", "minimum": 1}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
     "binary": {"type": "object", "additionalProperties": false, "required": ["path", "digest"], "properties": {"path": {"type": "string", "pattern": "^/"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
     "listener": {"type": "object", "additionalProperties": false, "required": ["pid", "processStartIdentity", "executableIdentity", "address", "listenerKeyFingerprint"], "properties": {"pid": {"type": "integer", "minimum": 1}, "processStartIdentity": {"type": "string", "minLength": 1}, "executableIdentity": {"type": "string", "minLength": 1}, "address": {"type": "string", "pattern": "^(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}$"}, "listenerKeyFingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
     "environment": {
       "type": "array", "maxItems": 16,
-      "items": {"type": "object", "additionalProperties": false, "required": ["name", "priorPresent", "desiredValueDigest", "activationMarker", "rollbackAction"], "properties": {"name": {"enum": ["OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]}, "priorPresent": {"type": "boolean"}, "priorValue": {"type": "string"}, "desiredValueDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "activationMarker": {"type": "string", "minLength": 16}, "rollbackAction": {"enum": ["restore", "remove"]}}}
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "priorPresent", "desiredValueDigest", "activationMarker", "rollbackAction"],
+        "properties": {
+          "name": {"enum": ["OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]},
+          "priorPresent": {"type": "boolean"},
+          "priorValue": {"type": "string"},
+          "desiredValueDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "activationMarker": {"type": "string", "minLength": 16},
+          "rollbackAction": {"enum": ["restore_prior_value", "remove_blazn_value"]}
+        },
+        "allOf": [
+          {"if": {"properties": {"priorPresent": {"const": true}}, "required": ["priorPresent"]}, "then": {"required": ["priorValue"], "properties": {"rollbackAction": {"const": "restore_prior_value"}}}},
+          {"if": {"properties": {"priorPresent": {"const": false}}, "required": ["priorPresent"]}, "then": {"not": {"required": ["priorValue"]}, "properties": {"rollbackAction": {"const": "remove_blazn_value"}}}}
+        ]
+      }
     },
-    "ca": {"type": ["object", "null"]},
-    "rollbackActions": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+    "ca": {"type": "null"},
+    "rollbackActions": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["ordinal", "operation", "target"], "properties": {"ordinal": {"type": "integer", "minimum": 1}, "operation": {"enum": ["restore_environment", "stop_listener", "remove_scoped_state"]}, "target": {"type": "string", "minLength": 1, "maxLength": 256}}}},
     "createdAt": {"type": "string", "format": "date-time"},
     "updatedAt": {"type": "string", "format": "date-time"},
     "checksum": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
