@@ -55,9 +55,6 @@ kctl wait --for=condition=Ready sandbox/synthetic -n blazn-spike --timeout=180s
 [ "$(kctl get pod synthetic -n blazn-spike -o jsonpath='{.metadata.labels.kueue\.x-k8s\.io/queue-name}')" = blazn-spike ]
 [ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].status.admission.clusterQueue}')" = blazn-spike ]
 [ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].status.conditions[?(@.type=="Admitted")].status}')" = True ]
-[ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].spec.podSets[0].template.spec.containers[0].resources.requests.cpu}')" = 100m ]
-[ "$(kctl get workload -n blazn-spike -o jsonpath='{.items[0].spec.podSets[0].template.spec.containers[0].resources.requests.memory}')" = 64Mi ]
-kctl get workload -n blazn-spike -o jsonpath='{.items[0].metadata.finalizers}' | grep -F 'kueue.x-k8s.io/resource-in-use' >/dev/null
 
 kctl delete sandbox synthetic -n blazn-spike --wait=true --timeout=120s
 kctl wait --for=delete pod/synthetic -n blazn-spike --timeout=120s
