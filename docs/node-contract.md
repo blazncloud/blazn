@@ -110,6 +110,11 @@ The token is derived with the root-owned
 The token is unpadded base64url of the 32-byte HMAC-SHA256 output. Only its
 SHA-256 hash and key ID are stored, so an authorized identical retry
 reconstructs the same secret without persisting plaintext.
+The authenticated enrollment-creation response also returns the active plan
+signing key ID, raw Ed25519 public key, and SHA-256 fingerprint. The CLI verifies
+their consistency and pins that tuple in its origin/workspace credential state
+before the public token exchange. A plan is never trusted merely because it
+carries its own key ID.
 
 The enrolling binary generates an Ed25519 key locally and sends its raw public
 key plus a stable machine fingerprint over TLS. The raw 32-byte public key uses
@@ -156,10 +161,21 @@ be `/`, contain `..`, escape the profile roots, or traverse a symlink. Mutation
 kind/action/payload must match the schema's discriminated rules. Package and
 image mutations name a signed component; repository/registry origin, version,
 OCI reference, and digest must match that component and the local profile.
+Components declare one source class. `https` requires an approved source host
+and URL; packages/images additionally bind their repository or registry.
+`current_binary` means the already-authenticated running `blazn` binary
+installed by Milestone 1, and `embedded` means a digest-pinned service/config
+asset compiled into that binary. Neither class permits a URL, removing any
+bootstrap dependency on a private GitHub release or unreserved hostname.
 Ubuntu/existing-Linux profiles require systemd, Linux image platform, the
 profile architecture, `blazn-node:blazn-node`, and approved apt/snap inputs;
 they reject launchd/brew. The macOS/Lima profile requires launchd, ARM64 Linux
 images, `root:wheel`, approved brew inputs, and rejects systemd/apt/snap.
+Fresh Linux creates/adopts the receipted `blazn-node` group and non-login user
+before assigning `/var/lib/blazn`; the service may not start against a
+root-only unwritable tree. The macOS profile embeds a digest-pinned Lima binding
+configuration naming the exact existing VM/worker and requires
+`lima_worker_binding` evidence before eligibility.
 
 The long-running service uses a renewable node identity, never the user's
 access/refresh token. Rotation overlaps old/new identities only for a bounded
