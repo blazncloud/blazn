@@ -92,10 +92,19 @@ func TestBackendRejectsDuplicateURLs(t *testing.T) {
 		t.Fatal("duplicate URL accepted")
 	}
 }
-func TestRevokeRemovesOnlyExactTokenAndIsIdempotent(t *testing.T) {
+func TestIssueSyncFailureDoesNotReturnCredential(t *testing.T) {
+	backend, runner, _ := backendFixture(t, "")
+	token := "0123456789abcdef0123456789abcdef"
+	runner.output = []byte(fmt.Sprintf(`{"token":%q,"urls":[%q]}`, token+"/check-value-123456", "10.0.0.1:25000/"+token+"/check-value-123456"))
+	backend.syncTokenFile = func(*os.File) error { return errors.New("injected sync failure") }
+	if _, err := backend.Issue(context.Background(), token, 60); err == nil {
+		t.Fatal("unsynced token was returned")
+	}
+}
+func TestRevokeExpiresOnlyExactTokenAndPreservesPermanentAdminToken(t *testing.T) {
 	token := "0123456789abcdef0123456789abcdef"
 	other := "fedcba9876543210fedcba9876543210"
-	backend, _, path := backendFixture(t, token+"|0000000123\n"+other+"|0000000456\n")
+	backend, _, path := backendFixture(t, token+"|0000001060\n"+other+"\n")
 	if err := backend.Revoke(context.Background(), token); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +112,7 @@ func TestRevokeRemovesOnlyExactTokenAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != other+"|0000000456\n" {
+	if string(data) != token+"|0000000001\n"+other+"\n" {
 		t.Fatalf("unexpected token file %q", data)
 	}
 }
@@ -112,7 +121,7 @@ func TestRevokeMergesAConcurrentExternalAppend(t *testing.T) {
 	token := "0123456789abcdef0123456789abcdef"
 	other := "fedcba9876543210fedcba9876543210"
 	backend, _, path := backendFixture(t, token+"|0000001060\n")
-	backend.beforeTokenReplace = func() {
+	backend.beforeTokenExpiryWrite = func() {
 		file, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 		if file != nil {
 			_, _ = file.WriteString(other + "|0000001061\n")
@@ -123,8 +132,38 @@ func TestRevokeMergesAConcurrentExternalAppend(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != other+"|0000001061\n" {
+	if string(data) != token+"|0000000001\n"+other+"|0000001061\n" {
 		t.Fatalf("concurrent token was lost: %q", data)
+	}
+}
+
+func TestRevokeRequiresCompleteWriteAndDurableSync(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	backend, _, path := backendFixture(t, token+"|0000001060\n")
+	backend.writeTokenExpiry = func(*os.File, []byte, int64) (int, error) { return 5, nil }
+	if err := backend.Revoke(context.Background(), token); err == nil {
+		t.Fatal("partial expiry write reported success")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != token+"|0000001060\n" {
+		t.Fatal("partial write fixture changed unexpectedly")
+	}
+	backend.writeTokenExpiry = nil
+	backend.syncTokenFile = func(*os.File) error { return errors.New("injected sync failure") }
+	if err := backend.Revoke(context.Background(), token); err == nil {
+		t.Fatal("sync failure reported success")
+	}
+	backend.syncTokenFile = nil
+	if err := backend.Revoke(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBrokerTokenCannotBePermanent(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	backend, _, _ := backendFixture(t, token+"\n")
+	if err := backend.Revoke(context.Background(), token); err == nil {
+		t.Fatal("permanent broker token accepted")
 	}
 }
 

@@ -25,7 +25,7 @@ import (
 const maxCommandOutput = 16 << 10
 const maxTokenFileBytes = 1 << 20
 
-var tokenLinePattern = regexp.MustCompile(`^([0-9a-f]{32})\|([0-9]{10})$`)
+var tokenLinePattern = regexp.MustCompile(`^([0-9a-f]{32})(?:\|([0-9]{10}))?$`)
 
 type CommandRunner interface {
 	Run(context.Context, string, []string) ([]byte, error)
@@ -66,7 +66,9 @@ type MicroK8sBackend struct {
 	Runner                             CommandRunner
 	Now                                func() time.Time
 	allowTestPaths                     bool
-	beforeTokenReplace                 func()
+	beforeTokenExpiryWrite             func()
+	syncTokenFile                      func(*os.File) error
+	writeTokenExpiry                   func(*os.File, []byte, int64) (int, error)
 }
 type upstreamResponse struct {
 	Token string   `json:"token"`
@@ -95,7 +97,7 @@ func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = parseTokenFile(data, "")
+	_, _, _, _, err = parseTokenFile(data, "")
 	return err
 }
 func (b *MicroK8sBackend) validateConfiguration() error {
@@ -128,7 +130,7 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 	if err != nil {
 		return BackendIssue{}, err
 	}
-	_, count, _, err := parseTokenFile(data, token)
+	_, count, _, _, err := parseTokenFile(data, token)
 	if err != nil || count != 0 {
 		return BackendIssue{}, &ProtocolError{Code: "token_collision", Message: "token file contains an ambiguous token binding"}
 	}
@@ -156,17 +158,24 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 		}
 		seen[candidate] = true
 	}
+	syncFile := b.syncTokenFile
+	if syncFile == nil {
+		syncFile = func(file *os.File) error { return file.Sync() }
+	}
+	if err := syncFile(file); err != nil {
+		return BackendIssue{}, fmt.Errorf("persist MicroK8s token: %w", err)
+	}
 	data, err = readLockedTokenFile(file)
 	if err != nil {
 		return BackendIssue{}, err
 	}
-	_, count, epoch, parseErr := parseTokenFile(data, token)
+	_, count, epoch, offset, parseErr := parseTokenFile(data, token)
 	now := time.Now
 	if b.Now != nil {
 		now = b.Now
 	}
 	current := now().UTC()
-	if parseErr != nil || count != 1 || epoch <= current.Unix() || epoch > current.Add(time.Duration(ttl+5)*time.Second).Unix() || !sameTokenInode(b.TokenFile, file) {
+	if parseErr != nil || count != 1 || offset < 0 || epoch <= current.Unix() || epoch > current.Add(time.Duration(ttl+5)*time.Second).Unix() || !sameTokenInode(b.TokenFile, file) {
 		return BackendIssue{}, fmt.Errorf("MicroK8s token persistence is ambiguous")
 	}
 	return BackendIssue{TokenCheck: parsed.Token, URLs: parsed.URLs, ExpiresAt: current.Add(time.Duration(ttl) * time.Second)}, nil
@@ -181,7 +190,7 @@ func (b *MicroK8sBackend) Revoke(ctx context.Context, token string) error {
 	if err := b.validateTokenFile(true); err != nil {
 		return err
 	}
-	return rewriteTokenFile(ctx, b.TokenFile, b.ExpectedUID, b.ExpectedGID, b.ExpectedMode, token, b.beforeTokenReplace)
+	return expireTokenInPlace(ctx, b.TokenFile, b.ExpectedUID, b.ExpectedGID, b.ExpectedMode, token, b.Now, b.beforeTokenExpiryWrite, b.writeTokenExpiry, b.syncTokenFile)
 }
 func (b *MicroK8sBackend) ensureTokenFile() error {
 	if !b.allowTestPaths {
@@ -259,85 +268,57 @@ func validatePinnedMicroK8s() error {
 	}
 	return nil
 }
-func rewriteTokenFile(ctx context.Context, path string, uid, gid uint32, mode os.FileMode, token string, beforeFreshRead func()) error {
+func expireTokenInPlace(ctx context.Context, path string, uid, gid uint32, mode os.FileMode, token string, now func() time.Time, beforeWrite func(), writeExpiry func(*os.File, []byte, int64) (int, error), syncFile func(*os.File) error) error {
 	file, unlock, err := openLockedTokenFile(ctx, path, uid, gid, mode)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	info, _ := file.Stat()
-	st := info.Sys().(*syscall.Stat_t)
-	dir := filepath.Dir(path)
-	for attempts := 0; attempts < 4; attempts++ {
-		data, readErr := readLockedTokenFile(file)
-		if readErr != nil {
-			return readErr
-		}
-		lines, count, _, parseErr := parseTokenFile(data, token)
-		if parseErr != nil {
-			return parseErr
-		}
-		if count == 0 {
-			return nil
-		}
-		kept := make([]string, 0, len(lines))
-		for _, line := range lines {
-			if !strings.HasPrefix(line, token+"|") {
-				kept = append(kept, line)
-			}
-		}
-		next := ""
-		if len(kept) > 0 {
-			next = strings.Join(kept, "\n") + "\n"
-		}
-		tmp, createErr := os.CreateTemp(dir, ".cluster-tokens-")
-		if createErr != nil {
-			return createErr
-		}
-		name := tmp.Name()
-		if createErr = tmp.Chmod(info.Mode().Perm()); createErr == nil {
-			createErr = tmp.Chown(int(st.Uid), int(st.Gid))
-		}
-		if createErr == nil {
-			_, createErr = tmp.WriteString(next)
-		}
-		if createErr == nil {
-			createErr = tmp.Sync()
-		}
-		closeErr := tmp.Close()
-		if createErr == nil {
-			createErr = closeErr
-		}
-		if createErr != nil {
-			os.Remove(name)
-			return createErr
-		}
-		if beforeFreshRead != nil {
-			beforeFreshRead()
-			beforeFreshRead = nil
-		}
-		fresh, freshErr := readLockedTokenFile(file)
-		if freshErr != nil {
-			os.Remove(name)
-			return freshErr
-		}
-		if !bytes.Equal(fresh, data) || !sameTokenInode(path, file) {
-			os.Remove(name)
-			continue
-		}
-		if renameErr := os.Rename(name, path); renameErr != nil {
-			os.Remove(name)
-			return renameErr
-		}
-		d, openErr := os.Open(dir)
-		if openErr != nil {
-			return openErr
-		}
-		syncErr := d.Sync()
-		d.Close()
-		return syncErr
+	data, err := readLockedTokenFile(file)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("MicroK8s token file changed concurrently")
+	_, count, epoch, offset, err := parseTokenFile(data, token)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	if count != 1 || offset < 0 {
+		return fmt.Errorf("broker token persistence is ambiguous")
+	}
+	clock := time.Now
+	if now != nil {
+		clock = now
+	}
+	if beforeWrite != nil {
+		beforeWrite()
+	}
+	if writeExpiry == nil {
+		writeExpiry = func(file *os.File, value []byte, offset int64) (int, error) { return file.WriteAt(value, offset) }
+	}
+	if epoch > clock().Unix() {
+		n, writeErr := writeExpiry(file, []byte("0000000001"), offset)
+		if writeErr != nil || n != 10 {
+			return fmt.Errorf("expire MicroK8s token safely")
+		}
+	}
+	if syncFile == nil {
+		syncFile = func(file *os.File) error { return file.Sync() }
+	}
+	if err := syncFile(file); err != nil {
+		return fmt.Errorf("persist MicroK8s token revocation: %w", err)
+	}
+	fresh, err := readLockedTokenFile(file)
+	if err != nil || !sameTokenInode(path, file) {
+		return fmt.Errorf("verify MicroK8s token revocation")
+	}
+	_, count, epoch, offset, err = parseTokenFile(fresh, token)
+	if err != nil || count != 1 || offset < 0 || epoch > clock().Unix() {
+		return fmt.Errorf("verify MicroK8s token revocation")
+	}
+	return nil
 }
 
 func openLockedTokenFile(ctx context.Context, path string, uid, gid uint32, mode os.FileMode) (*os.File, func(), error) {
@@ -394,31 +375,41 @@ func readLockedTokenFile(file *os.File) ([]byte, error) {
 	}
 	return data[:n], nil
 }
-func parseTokenFile(data []byte, target string) ([]string, int, int64, error) {
+func parseTokenFile(data []byte, target string) ([]string, int, int64, int64, error) {
 	if len(data) == 0 {
-		return []string{}, 0, 0, nil
+		return []string{}, 0, 0, -1, nil
 	}
 	if data[len(data)-1] != '\n' {
-		return nil, 0, 0, fmt.Errorf("MicroK8s token file is malformed")
+		return nil, 0, 0, -1, fmt.Errorf("MicroK8s token file is malformed")
 	}
 	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 	count := 0
 	var targetEpoch int64
+	targetOffset := int64(-1)
+	lineOffset := int64(0)
 	for _, line := range lines {
 		match := tokenLinePattern.FindStringSubmatch(line)
 		if match == nil {
-			return nil, 0, 0, fmt.Errorf("MicroK8s token file is malformed")
+			return nil, 0, 0, -1, fmt.Errorf("MicroK8s token file is malformed")
 		}
-		epoch, err := strconv.ParseInt(match[2], 10, 64)
-		if err != nil || epoch < 1 || epoch > 4102444800 {
-			return nil, 0, 0, fmt.Errorf("MicroK8s token expiry is invalid")
+		var epoch int64
+		if match[2] != "" {
+			parsed, err := strconv.ParseInt(match[2], 10, 64)
+			if err != nil || parsed < 1 || parsed > 4102444800 {
+				return nil, 0, 0, -1, fmt.Errorf("MicroK8s token expiry is invalid")
+			}
+			epoch = parsed
 		}
 		if hmac.Equal([]byte(match[1]), []byte(target)) {
 			count++
 			targetEpoch = epoch
+			if match[2] != "" {
+				targetOffset = lineOffset + 33
+			}
 		}
+		lineOffset += int64(len(line) + 1)
 	}
-	return lines, count, targetEpoch, nil
+	return lines, count, targetEpoch, targetOffset, nil
 }
 func validJoinURL(candidate, tokenCheck string) bool {
 	u, err := url.Parse("https://" + candidate)

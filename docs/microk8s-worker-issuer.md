@@ -33,8 +33,12 @@ probe `/snap/bin/microk8s.status --wait-ready --timeout 5`.
 
 The helper parses a closed JSON response, requires the same token plus server
 certificate check in every cluster-agent URL, and returns a base64url-encoded
-closed credential payload. Revocation atomically removes only exact
-`<token>`/`<token>|<expiry>` lines from MicroK8s `cluster-tokens.txt`.
+closed credential payload. The stock file may contain permanent `<32hex>`
+administrator tokens or expiring `<32hex>|<10-digit-epoch>` tokens. Broker
+issuance requires exactly one bounded expiring form. Revocation never rewrites
+the file: it durably changes only that token's fixed-width expiry in place to
+the canonical past value `0000000001`, preserving concurrent appends and all
+unrelated permanent or expiring tokens.
 The credentials directory must be root-owned, mode `0770`, and owned by the
 configured MicroK8s administrator group. The token file is root-owned, owned
 by that exact group, single-linked, and exactly mode `0660`.
