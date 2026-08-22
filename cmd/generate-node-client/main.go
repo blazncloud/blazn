@@ -20,7 +20,7 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "075126546f4277f5b3def6381746c9bbc6b222c9408cf17e03950d5075b60571"
+	openAPISHA256          = "f28ec23eeb970b53ec886639f369fa923da98e38a2e26c3131eaeaf6c03fb47d"
 	planSHA256             = "111984c682128e09a2caba46d405feb848c34e65ded478dbc49d9e74a677341e"
 	receiptSHA256          = "cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4"
 	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
@@ -162,6 +162,9 @@ func validateOpenAPI(document map[string]any) error {
 	if atString(document, "components", "securitySchemes", "bearerAuth", "bearerFormat") != "opaque" || atString(document, "components", "securitySchemes", "nodeProof", "name") != "X-Blazn-Node-Proof" {
 		return fmt.Errorf("node authentication schemes changed")
 	}
+	if err := validateNodeError(document); err != nil {
+		return err
+	}
 	paths, _ := at(document, "paths").(map[string]any)
 	if len(paths) != len(operations) {
 		return fmt.Errorf("node paths changed: got %d want %d", len(paths), len(operations))
@@ -242,6 +245,46 @@ func validateOpenAPI(document map[string]any) error {
 	discriminators, ok := at(document, "components", "schemas", "CreateNodeOperationRequest", "allOf").([]any)
 	if !ok || len(discriminators) != 6 {
 		return fmt.Errorf("node operation discriminators changed")
+	}
+	return nil
+}
+
+func validateNodeError(document map[string]any) error {
+	if atString(document, "components", "responses", "Error", "content", "application/json", "schema", "$ref") != "#/components/schemas/NodeError" {
+		return fmt.Errorf("node error response schema changed")
+	}
+	errorSchema, ok := at(document, "components", "schemas", "NodeError").(map[string]any)
+	if !ok || errorSchema["additionalProperties"] != false {
+		return fmt.Errorf("NodeError must remain a closed object")
+	}
+	want := map[string]int{
+		"access_expired": 401, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
+		"capability_digest_invalid": 400, "device_not_found": 404, "device_proof_invalid": 403, "device_revoked": 401,
+		"enrollment_consumed": 410, "enrollment_expired": 410, "enrollment_invalid": 400, "enrollment_not_found": 404,
+		"expired_token": 400, "forwarded_identity_invalid": 400, "heartbeat_replay": 409, "heartbeat_skew": 400,
+		"identity_rejected": 401, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
+		"invalid_public_key": 400, "invalid_request": 400, "join_credential_consumed": 410, "join_credential_invalid": 400,
+		"membership_required": 403, "method_not_allowed": 405, "node_not_found": 404, "not_found": 404,
+		"object_storage_unavailable": 503, "permission_denied": 403, "proxy_auth_invalid": 403, "rate_limited": 429,
+		"request_too_large": 413, "session_revoked": 401, "slow_down": 429, "state_conflict": 409,
+		"unauthorized": 401, "version_conflict": 409,
+	}
+	statuses, ok := errorSchema["x-blazn-error-status"].(map[string]any)
+	if !ok || len(statuses) != len(want) {
+		return fmt.Errorf("NodeError status map changed")
+	}
+	values, ok := at(document, "components", "schemas", "NodeError", "properties", "code", "enum").([]any)
+	if !ok || len(values) != len(want) {
+		return fmt.Errorf("NodeError code enum changed")
+	}
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		code, ok := value.(string)
+		status, statusOK := statuses[code].(float64)
+		if !ok || seen[code] || want[code] == 0 || !statusOK || int(status) != want[code] {
+			return fmt.Errorf("NodeError code/status changed: %v", value)
+		}
+		seen[code] = true
 	}
 	return nil
 }

@@ -51,8 +51,38 @@
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]+$"}},
       "LastEventId": {"name": "Last-Event-ID", "in": "header", "required": false, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
     },
-    "responses": {"Error": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "openapi.json#/components/schemas/ErrorBody"}}}}},
+    "responses": {"Error": {"description": "Error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/NodeError"}}}}},
     "schemas": {
+      "NodeError": {
+        "type": "object", "additionalProperties": false,
+        "required": ["code", "message", "requestId"],
+        "x-blazn-error-status": {
+          "access_expired": 401, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
+          "capability_digest_invalid": 400, "device_not_found": 404, "device_proof_invalid": 403, "device_revoked": 401,
+          "enrollment_consumed": 410, "enrollment_expired": 410, "enrollment_invalid": 400, "enrollment_not_found": 404,
+          "expired_token": 400, "forwarded_identity_invalid": 400, "heartbeat_replay": 409, "heartbeat_skew": 400,
+          "identity_rejected": 401, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
+          "invalid_public_key": 400, "invalid_request": 400, "join_credential_consumed": 410, "join_credential_invalid": 400,
+          "membership_required": 403, "method_not_allowed": 405, "node_not_found": 404, "not_found": 404,
+          "object_storage_unavailable": 503, "permission_denied": 403, "proxy_auth_invalid": 403, "rate_limited": 429,
+          "request_too_large": 413, "session_revoked": 401, "slow_down": 429, "state_conflict": 409, "unauthorized": 401,
+          "version_conflict": 409
+        },
+        "properties": {
+          "code": {"type": "string", "enum": [
+            "access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending",
+            "capability_digest_invalid", "device_not_found", "device_proof_invalid", "device_revoked",
+            "enrollment_consumed", "enrollment_expired", "enrollment_invalid", "enrollment_not_found",
+            "expired_token", "forwarded_identity_invalid", "heartbeat_replay", "heartbeat_skew",
+            "identity_rejected", "idempotency_conflict", "internal_error", "invalid_json", "invalid_public_key", "invalid_request",
+            "join_credential_consumed", "join_credential_invalid", "membership_required", "method_not_allowed", "node_not_found", "not_found",
+            "object_storage_unavailable", "permission_denied", "proxy_auth_invalid", "rate_limited", "request_too_large",
+            "session_revoked", "slow_down", "state_conflict", "unauthorized", "version_conflict"
+          ]},
+          "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "requestId": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      },
       "CreateNodeEnrollmentRequest": {"type": "object", "additionalProperties": false, "required": ["name", "mode", "platform"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "mode": {"enum": ["fresh", "adopt"]}, "platform": {"enum": ["linux", "macos"]}, "architecture": {"enum": ["amd64", "arm64"]}}},
       "NodeEnrollmentSecret": {"type": "object", "additionalProperties": false, "required": ["id", "token", "tokenKeyId", "expiresAt", "replayed"], "properties": {"id": {"type": "string", "format": "uuid"}, "token": {"type": "string", "minLength": 43, "maxLength": 128}, "tokenKeyId": {"const": "node-enrollment/v1"}, "expiresAt": {"type": "string", "format": "date-time"}, "replayed": {"type": "boolean"}}},
       "ExchangeNodeEnrollmentRequest": {"type": "object", "additionalProperties": false, "required": ["token", "machineFingerprint", "nodePublicKey", "platform", "architecture"], "properties": {"token": {"type": "string", "minLength": 43, "maxLength": 128}, "machineFingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "nodePublicKey": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"}, "platform": {"enum": ["linux", "macos"]}, "architecture": {"enum": ["amd64", "arm64"]}, "kubernetesBinding": {"$ref": "#/components/schemas/KubernetesBinding"}}},
