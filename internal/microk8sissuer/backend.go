@@ -54,6 +54,7 @@ type MicroK8sBackend struct {
 	ExpectedUID            uint32
 	Runner                 CommandRunner
 	Now                    func() time.Time
+	allowTestPaths         bool
 }
 type upstreamResponse struct {
 	Token string   `json:"token"`
@@ -61,7 +62,7 @@ type upstreamResponse struct {
 }
 
 func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
-	if b.AddNodePath != "/snap/bin/microk8s.add-node" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt" {
+	if !b.allowTestPaths && (b.AddNodePath != "/snap/bin/microk8s.add-node" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt") {
 		return fmt.Errorf("MicroK8s paths are not allowlisted")
 	}
 	return b.validateTokenFile()

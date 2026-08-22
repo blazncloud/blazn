@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
 )
@@ -30,13 +31,21 @@ func (f *fakeBackend) Revoke(context.Context, string) error {
 	return nil
 }
 func (f *fakeBackend) Healthy(context.Context) error { return nil }
+func secureTempDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
 func requestFixture() Request {
 	return Request{SchemaVersion: SchemaVersion, Operation: "issue", IssuanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ClusterID: "cluster-a", ExpectedNodeName: "worker-a", BootstrapTaint: BootstrapTaint, TTLSeconds: 60, WorkerOnly: true}
 }
 func TestIssueIsDeterministicAndBindsCredential(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	backend := &fakeBackend{now: now}
-	service, _ := NewService(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), backend)
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
 	service.now = func() time.Time { return now }
 	first, err := service.Handle(context.Background(), requestFixture())
 	if err != nil {
@@ -60,7 +69,7 @@ func TestIssueIsDeterministicAndBindsCredential(t *testing.T) {
 }
 func TestConflictingIssueFailsAndDoesNotCallBackend(t *testing.T) {
 	backend := &fakeBackend{now: time.Now()}
-	service, _ := NewService(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), backend)
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
 	service.now = func() time.Time { return backend.now }
 	if _, err := service.Handle(context.Background(), requestFixture()); err != nil {
 		t.Fatal(err)
@@ -77,7 +86,7 @@ func TestConflictingIssueFailsAndDoesNotCallBackend(t *testing.T) {
 func TestCrashStateRevokesBeforeRetryAndRevokeIsIdempotent(t *testing.T) {
 	now := time.Now()
 	backend := &fakeBackend{now: now, failIssue: true}
-	service, _ := NewService(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), backend)
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
 	service.now = func() time.Time { return now }
 	if _, err := service.Handle(context.Background(), requestFixture()); err == nil {
 		t.Fatal("failure accepted")
@@ -103,7 +112,7 @@ func TestCrashStateRevokesBeforeRetryAndRevokeIsIdempotent(t *testing.T) {
 func TestBackendFailureDoesNotLeakSecret(t *testing.T) {
 	now := time.Now()
 	backend := &fakeBackend{now: now, failIssue: true}
-	service, _ := NewService(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), backend)
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
 	service.now = func() time.Time { return now }
 	_, err := service.Handle(context.Background(), requestFixture())
 	if err == nil || err.Error() == "secret output" {

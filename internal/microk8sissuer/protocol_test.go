@@ -2,6 +2,7 @@ package microk8sissuer
 
 import (
 	"encoding/json"
+	"os"
 	"testing"
 )
 
@@ -22,7 +23,9 @@ func TestDecodeRequestClosedAndTTLBounded(t *testing.T) {
 	}
 }
 func TestDeterministicTokenBindsEveryDomainField(t *testing.T) {
-	service, _ := NewService(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), &fakeBackend{})
+	root := t.TempDir()
+	_ = os.Chmod(root, 0700)
+	service, _ := NewService(root, []byte("0123456789abcdef0123456789abcdef"), &fakeBackend{})
 	base := requestFixture()
 	token := service.token(base)
 	if len(token) != 32 {
