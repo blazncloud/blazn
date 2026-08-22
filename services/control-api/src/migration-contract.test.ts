@@ -111,7 +111,7 @@ test("sandbox duration migration derives expiry from one database clock and reti
 
 test("sandbox controller migration exposes only fenced database authority", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(path.resolve(here, "../migrations/012_sandbox_controller_queue.sql"), "utf8");
+  const sql = await readFile(path.resolve(here, "../migrations/013_sandbox_controller_queue.sql"), "utf8");
   assert.match(sql, /sandbox_operations_one_nonterminal_per_sandbox_idx[\s\S]*status IN \('pending', 'running'\)/);
   assert.match(sql, /legacy_operation_incompatible/);
   assert.match(sql, /sandbox_controller_operation_is_current/);

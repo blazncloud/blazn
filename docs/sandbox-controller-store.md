@@ -1,6 +1,6 @@
 # Sandbox controller database authority
 
-Migration `012_sandbox_controller_queue.sql` adds the durable, database-only
+Migration `013_sandbox_controller_queue.sql` adds the durable, database-only
 boundary used by a future Sandbox reconciler. It does not start a controller,
 call Kubernetes, install manifests, or enable an API route.
 
