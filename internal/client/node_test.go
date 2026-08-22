@@ -497,6 +497,9 @@ func TestEnrollmentHMACAndJoinCredentialAESFormats(t *testing.T) {
 	if err != nil || len(token) != 43 || len(tokenHash) != 64 {
 		t.Fatalf("token=%q hash=%q err=%v", token, tokenHash, err)
 	}
+	if token != "oyG8FGAHnl21bk-XX5A0edmbBsL84NMs9o5ZPBDVEoE" || tokenHash != "5f5f00b27a562d1b2a2ee55ab1bbd4536117b9f4a0f187968d408edca3840cb7" {
+		t.Fatalf("enrollment HMAC vector token=%q hash=%q", token, tokenHash)
+	}
 	replayedToken, replayedHash, err := DeriveNodeEnrollmentToken(key, testUUIDA, testUUIDB, testUUIDC, "enrollment-key-1")
 	if err != nil || token != replayedToken || tokenHash != replayedHash {
 		t.Fatal("enrollment HMAC was not deterministic")
