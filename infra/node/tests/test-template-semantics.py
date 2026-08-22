@@ -113,7 +113,7 @@ rendered_plans.append({
 })
 
 go_source = textwrap.dedent(
-    """\\
+    """\
     package main
 
     import (
