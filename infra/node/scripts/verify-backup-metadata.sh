@@ -15,7 +15,7 @@ if [ "${BLAZN_NODE_BACKUP_TEST_MODE:-0}" != 1 ]; then
   protected_names='database-url enrollment-hmac-v1 join-credential-v1'
   if [ "$schema_version" = blazn.dev/control-plane-backup/v3 ]; then protected_names="$protected_names signing-private-v1.b64url signing-public-v1.json node-install-plan-template-v1.json"; fi
   for protected in $protected_names; do
-    [ -f "$inventory/$protected" ] && [ ! -L "$inventory/$protected" ] && [ "$(stat -c '%u:%a' "$inventory/$protected")" = 0:400 ] || die "recovery inventory entry must be root-owned mode 0400: $protected"
+    if [ ! -f "$inventory/$protected" ] || [ -L "$inventory/$protected" ] || [ "$(stat -c '%u:%a' "$inventory/$protected")" != 0:400 ]; then die "recovery inventory entry must be root-owned mode 0400: $protected"; fi
   done
 fi
 

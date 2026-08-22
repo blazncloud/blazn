@@ -4,11 +4,11 @@ set -eu
 ROOT=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
 JOURNAL=${BLAZN_NODE_PLAN_CREATE_JOURNAL:-/var/lib/blazn/ownership/node-plan-material-create.json}
 for command_name in jq openssl sha256sum stat wc; do command -v "$command_name" >/dev/null 2>&1 || { printf 'Node plan verifier requires %s\n' "$command_name" >&2; exit 1; }; done
-[ -d "$ROOT" ] && [ ! -L "$ROOT" ] && [ "$(stat -c '%u:%a' "$ROOT")" = 0:700 ] || { printf 'Node plan material root is unsafe\n' >&2; exit 1; }
+if [ ! -d "$ROOT" ] || [ -L "$ROOT" ] || [ "$(stat -c '%u:%a' "$ROOT")" != 0:700 ]; then printf 'Node plan material root is unsafe\n' >&2; exit 1; fi
 for file in signing-private-v1.b64url signing-public-v1.b64url signing-public-v1.json node-install-plan-template-v1.json; do
-  [ -f "$ROOT/$file" ] && [ ! -L "$ROOT/$file" ] && [ "$(stat -c '%u:%a' "$ROOT/$file")" = 0:444 ] || { printf 'Node plan material is unsafe: %s\n' "$file" >&2; exit 1; }
+  if [ ! -f "$ROOT/$file" ] || [ -L "$ROOT/$file" ] || [ "$(stat -c '%u:%a' "$ROOT/$file")" != 0:444 ]; then printf 'Node plan material is unsafe: %s\n' "$file" >&2; exit 1; fi
 done
-[ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] && [ "$(stat -c '%u:%a' "$JOURNAL")" = 0:600 ] || { printf 'Node plan journal is unsafe\n' >&2; exit 1; }
+if [ ! -f "$JOURNAL" ] || [ -L "$JOURNAL" ] || [ "$(stat -c '%u:%a' "$JOURNAL")" != 0:600 ]; then printf 'Node plan journal is unsafe\n' >&2; exit 1; fi
 private=$(sed -n '1p' "$ROOT/signing-private-v1.b64url")
 if [ "$(wc -c <"$ROOT/signing-private-v1.b64url" | tr -d ' ')" != 44 ] || ! LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$ROOT/signing-private-v1.b64url"; then
   printf 'Node plan private seed is not a raw base64url Ed25519 seed\n' >&2
