@@ -214,6 +214,8 @@ printf "ALTER ROLE blazn_bootstrap LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOR
 role_state=$(compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc \
   "select rolname,rolcanlogin,rolsuper,rolcreatedb,rolcreaterole,rolreplication from pg_roles where rolname='blazn_bootstrap'")
 [ "$role_state" = "blazn_bootstrap|t|f|f|f|f" ] || die "bootstrap role attributes are not least privilege"
+# The inner shell expands its positional database-name argument.
+# shellcheck disable=SC2016
 authenticated_user=$(printf '%s\n' "$bootstrap_password" | compose exec -T postgres /bin/sh -euc \
   'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -U blazn_bootstrap -d "$1" -Atqc "select current_user"' -- "${POSTGRES_DB:-blazn}")
 [ "$authenticated_user" = blazn_bootstrap ] || die "bootstrap role credential validation failed"
