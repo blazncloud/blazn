@@ -28,8 +28,8 @@ var pinnedDigests = map[string]string{
 	"normalized-error.schema.json":        "3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c",
 	"normalized-request.schema.json":      "98923667ba46cd8d3207cfcb3cd62d757e41b8f8d71bf78d5eec1b5dda284df1",
 	"normalized-response.schema.json":     "90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87",
-	"normalized-stream-event.schema.json": "0e81faa5cac68535a8201e82feb999b942f8ab01559870a3b25919d0dd1b65be",
-	"policy.schema.json":                  "176b6b24bb6066e7cb05d7efcc9c02c76242501b5ae3947250cb1fe0804015b5",
+	"normalized-stream-event.schema.json": "1e388ceb3a1a29f91540a9e9edc9854d54a987668713f1a0e1750987a5bb4b25",
+	"policy.schema.json":                  "6c9256aed4037a0a9a3bcec27fd25a8b090636ee87c0a762e1c2cdc85b35256e",
 }
 
 var requiredFields = map[string][]string{
