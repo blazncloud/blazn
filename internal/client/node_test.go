@@ -199,13 +199,15 @@ func signedNodeInstallPlan(t *testing.T) (NodeInstallPlan, NodeInstallPlanTrust)
 	t.Helper()
 	publicKey, privateKey := testSigningKey()
 	plan := validNodeInstallPlan()
+	nodePublicKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	plan.Target.NodePublicKeyFingerprint, _ = NodePublicKeyFingerprint(nodePublicKey)
 	digest, err := NodeInstallPlanDigest(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKeyFingerprint: plan.Target.NodePublicKeyFingerprint, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey}
+	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodePublicKey, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey}
 	return plan, trust
 }
 
@@ -223,6 +225,11 @@ func TestVerifyNodeInstallPlanPinsSignatureExpiryAndLocalBindings(t *testing.T) 
 	wrongBinding.MachineFingerprint = strings.Repeat("b", 64)
 	if err := VerifyNodeInstallPlan(plan, wrongBinding); err == nil {
 		t.Fatal("wrong trusted machine binding passed")
+	}
+	wrongPublicKey := trust
+	wrongPublicKey.NodePublicKey = ed25519.NewKeyFromSeed(bytes.Repeat([]byte{8}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	if err := VerifyNodeInstallPlan(plan, wrongPublicKey); err == nil {
+		t.Fatal("wrong trusted node public key passed")
 	}
 	expired := trust
 	expired.Now = time.Date(2026, 8, 21, 0, 10, 0, 0, time.UTC)
