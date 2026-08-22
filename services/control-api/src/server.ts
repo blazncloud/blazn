@@ -13,7 +13,7 @@ import { NodeHttpRouter } from "./node-http.js";
 import { TemplateNodePlanFactory } from "./node-plan.js";
 import { NodeService } from "./node-service.js";
 import { PgNodeStore } from "./node-store.js";
-import { NodeHttpError } from "./node-types.js";
+import { nodeErrorBody, NodeHttpError } from "./node-types.js";
 import { WorkspaceHttpRouter } from "./workspace-http.js";
 import { WorkspaceService } from "./workspace-service.js";
 import { PgWorkspaceStore } from "./workspace-store.js";
@@ -381,7 +381,7 @@ const server = createServer((request, response) => {
     const httpError = error instanceof HttpError || error instanceof WorkspaceHttpError || error instanceof NodeHttpError ? error : new HttpError("internal_error", "request failed");
     if (!response.headersSent) {
       if ("retryAfter" in httpError && httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
-      sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
+      sendJson(response, httpError.status, httpError instanceof NodeHttpError ? nodeErrorBody(httpError, requestId) : { code: httpError.code, message: httpError.message, requestId });
     }
     else response.end();
     if (!(error instanceof HttpError) && !(error instanceof WorkspaceHttpError) && !(error instanceof NodeHttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });

@@ -35,23 +35,27 @@ export interface NodeOperationView {
 
 export interface NodeEvent { id: string; type: string; payload: unknown; createdAt: string }
 
-export type NodeErrorCode = "node_not_found" | "enrollment_not_found" | "enrollment_invalid" | "enrollment_expired" |
-  "enrollment_consumed" | "permission_denied" | "membership_required" | "version_conflict" |
-  "idempotency_conflict" | "identity_rejected" | "heartbeat_replay" | "heartbeat_skew" |
-  "capability_digest_invalid" | "state_conflict" | "invalid_request" | "method_not_allowed" |
-  "join_credential_invalid" | "join_credential_consumed" | "rate_limited";
-
-const NODE_ERROR_STATUS: Record<NodeErrorCode, number> = {
-  node_not_found: 404, enrollment_not_found: 404, enrollment_invalid: 400, enrollment_expired: 410,
-  enrollment_consumed: 410, permission_denied: 403, membership_required: 403, version_conflict: 409,
-  idempotency_conflict: 409, identity_rejected: 401, heartbeat_replay: 409, heartbeat_skew: 400,
-  capability_digest_invalid: 400, state_conflict: 409, invalid_request: 400, method_not_allowed: 405,
-  join_credential_invalid: 400, join_credential_consumed: 410, rate_limited: 429,
+export const NODE_ERROR_STATUS = {
+  access_expired: 401, authorization_capacity: 503, authorization_not_found: 404, authorization_pending: 428,
+  capability_digest_invalid: 400, device_not_found: 404, device_proof_invalid: 403, device_revoked: 401,
+  enrollment_consumed: 410, enrollment_expired: 410, enrollment_invalid: 400, enrollment_not_found: 404,
+  expired_token: 400, forwarded_identity_invalid: 400, heartbeat_replay: 409, heartbeat_skew: 400,
+  identity_rejected: 403, idempotency_conflict: 409, internal_error: 500, invalid_json: 400,
+  invalid_public_key: 400, invalid_request: 400, join_credential_consumed: 410, join_credential_invalid: 400,
+  membership_required: 403, method_not_allowed: 405, node_not_found: 404, not_found: 404,
+  object_storage_unavailable: 503, permission_denied: 403, proxy_auth_invalid: 403, rate_limited: 429,
+  request_too_large: 413, session_revoked: 401, slow_down: 429, state_conflict: 409,
+  unauthorized: 401, version_conflict: 409,
 };
+export type NodeErrorCode = keyof typeof NODE_ERROR_STATUS;
 
 export class NodeHttpError extends Error {
   readonly status: number;
   constructor(readonly code: NodeErrorCode, message: string) { super(message); this.status = NODE_ERROR_STATUS[code]; }
+}
+
+export function nodeErrorBody(error: NodeHttpError, requestId: string): { code: NodeErrorCode; message: string; requestId: string } {
+  return { code: error.code, message: error.message, requestId };
 }
 
 export function nodeRoleAllows(role: WorkspaceRole, mutation: boolean): boolean {
