@@ -21,9 +21,9 @@ var nodeTemplate []byte
 
 const (
 	openAPISHA256          = "075126546f4277f5b3def6381746c9bbc6b222c9408cf17e03950d5075b60571"
-	planSHA256             = "3013566a4ee672ad43b72429c23e677219f3782c3b69d9cec973b7126999fddd"
-	receiptSHA256          = "7a0791874671dc82222d7abf80f4cedf00bbdb0d40cbeaa7ed268496414e1c85"
-	operationReceiptSHA256 = "6ae34cba3202a8be488bb3b38db36b87c456d3fef5c0cc64f23caf521dd4d925"
+	planSHA256             = "977c783d975a06fed3079a6ea3a864efa509570d0ee931085e8dcfdf4b555421"
+	receiptSHA256          = "381bbcb30009dd098512bf646329940bb17d158534a96bd36e54ef5f36bddfde"
+	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
 )
 
 type source struct {
@@ -120,10 +120,10 @@ func validateSources(sources map[string]source, template string) error {
 	}
 	plan := sources[filepath.Join("packages", "contracts", "nodes", "node-install-plan.schema.json")].doc
 	receipt := sources[filepath.Join("packages", "contracts", "nodes", "node-install-receipt.schema.json")].doc
-	if err := validateInstallSchema(plan, "Blazn NodeInstallPlan", []string{"schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "cluster", "target", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"}); err != nil {
+	if err := validateInstallSchema(plan, "Blazn NodeInstallPlan", []string{"schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "installProfile", "cluster", "target", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install plan: %w", err)
 	}
-	if err := validateInstallSchema(receipt, "Blazn NodeInstallReceipt", []string{"schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"}); err != nil {
+	if err := validateInstallSchema(receipt, "Blazn NodeInstallReceipt", []string{"schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "nodeIdentityGeneration", "signerKind", "signerFingerprint", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"}); err != nil {
 		return fmt.Errorf("install receipt: %w", err)
 	}
 	operationReceipt := sources[filepath.Join("packages", "contracts", "nodes", "node-operation-receipt.schema.json")].doc
@@ -133,6 +133,7 @@ func validateSources(sources map[string]source, template string) error {
 	for _, marker := range []string{
 		"func ValidateNodeInstallPlan(", "func ValidateNodeInstallReceipt(", "func ValidateNodeOperationReceipt(",
 		"func VerifyNodeInstallPlan(", "func VerifyNodeInstallReceipt(", "func VerifyNodeOperationReceipt(", "func NodeCapabilityDigest(",
+		"func DeriveNodeEnrollmentToken(", "func SealNodeJoinCredential(", "func OpenNodeJoinCredential(",
 		`Header.Set("Authorization", "Bearer "+accessToken)`,
 		`Header.Set("X-Blazn-Node-Proof", nodeProof)`,
 		`Header.Set("Idempotency-Key", idempotencyKey)`,

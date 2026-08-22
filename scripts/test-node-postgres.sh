@@ -117,17 +117,20 @@ BEGIN
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 
-UPDATE nodes SET lifecycle_state='active', trust_state='verified', agent_eligible=true,
-  kubernetes_cluster_id='cluster-a', kubernetes_node_name='worker-a',
-  kubernetes_node_uid='uid-a', kubernetes_resource_version='1'
-  WHERE id='33333333-3333-4333-8333-333333333333';
-
 INSERT INTO node_enrollments(id,workspace_id,requested_name,mode,expected_platform,expected_architecture,token_hash,token_key_id,idempotency_key,created_by,expires_at) VALUES
   ('55555555-5555-4555-8555-555555555555','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','worker-a','fresh','linux','amd64',repeat('c',64),'node-enrollment/v1','enroll-key-a','11111111-1111-4111-8111-111111111111',now()+interval '10 minutes'),
   ('66666666-6666-4666-8666-666666666666','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','worker-b','fresh','linux','amd64',repeat('d',64),'node-enrollment/v1','enroll-key-b','22222222-2222-4222-8222-222222222222',now()+interval '10 minutes');
 
 INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,generation,status,issued_at,expires_at) VALUES
   ('77777777-7777-4777-8777-777777777777','33333333-3333-4333-8333-333333333333',repeat('e',64),repeat('A',43),1,'active',now(),now()+interval '1 hour');
+INSERT INTO node_capability_versions(id,node_id,version,digest,payload,observed_at) VALUES
+  ('88888888-1111-4111-8111-111111111111','33333333-3333-4333-8333-333333333333',1,repeat('f',64),'{}',now());
+
+UPDATE nodes SET lifecycle_state='active', trust_state='verified', agent_eligible=true,
+  current_identity_generation=1, current_capability_version=1,
+  kubernetes_cluster_id='cluster-a', kubernetes_node_name='worker-a',
+  kubernetes_node_uid='uid-a', kubernetes_resource_version='1'
+  WHERE id='33333333-3333-4333-8333-333333333333';
 
 DO $$
 BEGIN
@@ -148,31 +151,36 @@ INSERT INTO node_install_plans(id,workspace_id,node_id,enrollment_id,approved_by
   ('99999999-9999-4999-8999-999999999999','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','55555555-5555-4555-8555-555555555555','11111111-1111-4111-8111-111111111111','plan-key-a',repeat('1',64),'node-plan/v1',repeat('A',86),'{}',now(),now()+interval '5 minutes','issued'),
   ('aaaaaaaa-1111-4111-8111-111111111111','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','44444444-4444-4444-8444-444444444444','66666666-6666-4666-8666-666666666666','22222222-2222-4222-8222-222222222222','plan-key-b',repeat('2',64),'node-plan/v1',repeat('A',86),'{}',now(),now()+interval '5 minutes','issued');
 
-INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signing_key_id,signature,payload) VALUES
-  ('bbbbbbbb-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('3',64),'node-identity/v1',repeat('A',86),'{}');
+INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+  ('bbbbbbbb-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('3',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}');
 
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signing_key_id,signature,payload) VALUES
-      ('cccccccc-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','aaaaaaaa-1111-4111-8111-111111111111',repeat('4',64),'node-identity/v1',repeat('A',86),'{}');
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+      ('cccccccc-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','aaaaaaaa-1111-4111-8111-111111111111',repeat('4',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}');
     RAISE EXCEPTION 'cross-bound install receipt accepted';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
+  BEGIN
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+      ('cccccccc-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('d',64),'node_identity',99,repeat('e',64),'node-identity/v99',repeat('A',86),'{}');
+    RAISE EXCEPTION 'unbound install receipt signer generation accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
 
 INSERT INTO node_operations(id,workspace_id,node_id,type,status,expected_node_version,requested_by,idempotency_key,request_digest) VALUES
   ('dddddddd-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','pause','pending',1,'11111111-1111-4111-8111-111111111111','operation-key-a',repeat('5',64)),
   ('dddddddd-2222-4222-8222-222222222222','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','44444444-4444-4444-8444-444444444444','pause','pending',1,'22222222-2222-4222-8222-222222222222','operation-key-b',repeat('6',64));
-INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signing_key_id,signature,payload) VALUES
-  ('eeeeeeee-1111-4111-8111-111111111111','dddddddd-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','pause',repeat('6',64),'node-identity/v1',repeat('A',86),'{}');
+INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+  ('eeeeeeee-1111-4111-8111-111111111111','dddddddd-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','pause',repeat('6',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}');
 UPDATE node_operations SET status='succeeded',completed_at=now(),receipt_id='eeeeeeee-1111-4111-8111-111111111111'
   WHERE id='dddddddd-1111-4111-8111-111111111111';
 
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signing_key_id,signature,payload) VALUES
-      ('ffffffff-1111-4111-8111-111111111111','dddddddd-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','pause',repeat('7',64),'node-identity/v1',repeat('A',86),'{}');
+    INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+      ('ffffffff-1111-4111-8111-111111111111','dddddddd-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','pause',repeat('7',64),'control_plane',NULL,repeat('c',64),'control-plane-receipt/v1',repeat('A',86),'{}');
     SET CONSTRAINTS ALL IMMEDIATE;
     RAISE EXCEPTION 'cross-bound operation receipt accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
@@ -183,6 +191,11 @@ BEGIN
   BEGIN
     UPDATE node_operations SET status='succeeded',completed_at=now() WHERE id='dddddddd-2222-4222-8222-222222222222';
     RAISE EXCEPTION 'terminal operation without signed receipt accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN
+    INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
+      ('ffffffff-3333-4333-8333-333333333333','dddddddd-2222-4222-8222-222222222222','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','44444444-4444-4444-8444-444444444444','pause',repeat('d',64),'control_plane',1,repeat('c',64),'control-plane-receipt/v1',repeat('A',86),'{}');
+    RAISE EXCEPTION 'control-plane receipt identity generation accepted';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 
@@ -204,9 +217,14 @@ INSERT INTO node_join_issuances(id,workspace_id,enrollment_id,plan_id,node_id,no
   ('aaaaaaaa-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','55555555-5555-4555-8555-555555555555','99999999-9999-4999-8999-999999999999','33333333-3333-4333-8333-333333333333',repeat('e',64),repeat('a',64),repeat('8',64),decode(repeat('aa',29),'hex'),'node-join-credential/v1','join-key-a',repeat('9',64),now(),now()+interval '5 minutes');
 RESET ROLE;
 
-SET ROLE blazn_migration;
+SET ROLE blazn_runtime;
 DO $$
 BEGIN
+  BEGIN
+    UPDATE node_join_issuances SET consumed_at=now()
+      WHERE id='aaaaaaaa-2222-4222-8222-222222222222';
+    RAISE EXCEPTION 'non-atomic runtime consumption accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
   BEGIN
     UPDATE node_join_issuances SET consumed_at=now(),joined_node_uid='wrong-uid'
       WHERE id='aaaaaaaa-2222-4222-8222-222222222222';
@@ -224,6 +242,9 @@ SELECT has_table_privilege('blazn_node_broker','nodes','SELECT') AS broker_nodes
        has_table_privilege('blazn_node_broker','nodes','UPDATE') AS broker_node_update,
        has_table_privilege('blazn_node_broker','users','SELECT') AS broker_user_read,
        has_table_privilege('blazn_runtime','node_join_issuances','INSERT') AS runtime_issue,
+       has_column_privilege('blazn_runtime','node_join_issuances','consumed_at','UPDATE') AS runtime_consume_time,
+       has_column_privilege('blazn_runtime','node_join_issuances','joined_node_uid','UPDATE') AS runtime_consume_uid,
+       has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','UPDATE') AS runtime_ciphertext_update,
        octet_length(credential_ciphertext) >= 29 AS encrypted_credential_present,
        credential_key_id = 'node-join-credential/v1' AS credential_key_pinned,
        char_length(idempotency_key) >= 8 AS deterministic_retry_key_present,
@@ -238,7 +259,10 @@ BEGIN
     OR NOT has_table_privilege('blazn_node_broker','node_join_issuances','INSERT')
     OR has_table_privilege('blazn_node_broker','nodes','UPDATE')
     OR has_table_privilege('blazn_node_broker','users','SELECT')
-    OR has_table_privilege('blazn_runtime','node_join_issuances','INSERT') THEN
+    OR has_table_privilege('blazn_runtime','node_join_issuances','INSERT')
+    OR NOT has_column_privilege('blazn_runtime','node_join_issuances','consumed_at','UPDATE')
+    OR NOT has_column_privilege('blazn_runtime','node_join_issuances','joined_node_uid','UPDATE')
+    OR has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','UPDATE') THEN
     RAISE EXCEPTION 'Node broker/runtime privilege matrix is invalid';
   END IF;
 END $$;
@@ -257,6 +281,7 @@ expect_denied "SET ROLE blazn_node_broker; SELECT * FROM users;" broker_user_rea
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_capability_versions;" broker_capability_read
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_operations;" broker_operation_read
 expect_denied "SET ROLE blazn_runtime; INSERT INTO node_join_issuances DEFAULT VALUES;" runtime_issue
+expect_denied "SET ROLE blazn_runtime; UPDATE node_join_issuances SET credential_ciphertext=decode(repeat('bb',29),'hex');" runtime_ciphertext_update
 expect_denied "SET ROLE blazn_bootstrap; SELECT * FROM nodes;" bootstrap_node_read
 
 printf 'Node PostgreSQL 17.6 qualification passed\n'

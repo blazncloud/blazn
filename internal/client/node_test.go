@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,15 +26,15 @@ func validNodeInstallPlan() NodeInstallPlan {
 	return NodeInstallPlan{
 		SchemaVersion: NodeSchemaVersion,
 		PlanID:        testUUIDA, NodeID: testUUIDB, EnrollmentID: testUUIDC, WorkspaceID: testUUIDD,
-		IdempotencyKey: "install-key-1", ApprovedBy: testUUIDA, ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: NodeModeFresh,
+		IdempotencyKey: "install-key-1", ApprovedBy: testUUIDA, ApprovedAt: "2026-08-21T00:00:00Z", Hostname: "worker-1.example.test", Mode: NodeModeFresh, InstallProfile: "ubuntu-26.04-amd64-worker/v1",
 		Cluster:       NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, APIServer: "https://cluster.example.test", KubernetesVersion: "v1.36.1", JoinCredentialEndpoint: "/v1/node-service/join-credentials", BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash, RegistryEndpoints: []string{"https://registry.example.test"}},
 		Target:        NodeInstallTarget{Platform: NodePlatformLinux, Architecture: NodeArchAMD64, MachineFingerprint: testHash, NodePublicKeyFingerprint: "sha256:" + testHash, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240},
 		RegistryTrust: []NodeRegistryTrust{},
-		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", Version: "1.0", Publisher: "Blazn", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
+		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
 		NodeService:   NodeInstallService{Manager: "systemd", UnitName: "blazn-node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "root", RunAsGroup: "root", DefinitionSHA256: testHash},
 		Labels:        map[string]string{"blazn.dev/pool": "default"}, Taints: []NodeTaint{}, ResourceBounds: NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
-		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/node", Desired: map[string]any{"state": "configured"}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "remove_if_owned"}},
-		ValidationTests: []string{"binary_digest", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRoot: "/var/lib/blazn/receipts"},
+		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/node", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "remove_if_owned"}},
+		ValidationTests: []string{"binary_digest", "worker_only"}, Rollback: NodeInstallRollback{PreserveUserData: true, PreserveControlPlane: true, AmbiguousOwnership: "recovery_required", BackupRoot: "/var/lib/blazn/install-backups/receipt-1"},
 		IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-21T00:10:00Z", SigningKeyID: "node-plan/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86),
 	}
 }
@@ -62,6 +63,32 @@ func TestValidateNodeInstallPlanSafetyAndMutationUniqueness(t *testing.T) {
 	plan.Mutations = append(plan.Mutations, plan.Mutations[0])
 	if err := ValidateNodeInstallPlan(plan); err == nil || !strings.Contains(err.Error(), "repeats ordinal") {
 		t.Fatalf("duplicate mutation error=%v", err)
+	}
+}
+
+func TestNodeInstallMutationDiscriminators(t *testing.T) {
+	mutations := []NodeInstallMutation{
+		{Ordinal: 1, Kind: "package", Action: "install", Target: "containerd", Desired: map[string]any{"manager": "apt", "version": "1.2.3"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/config", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "certificate", Action: "write", Target: "/etc/blazn/ca.pem", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "directory", Action: "create", Target: "/opt/blazn", Desired: map[string]any{}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service", Desired: map[string]any{"unitName": "blazn-node.service", "sourceComponent": "kubernetes"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		{Ordinal: 1, Kind: "launchd_unit", Action: "enable", Target: "/Library/LaunchDaemons/com.blazn.node.plist", Desired: map[string]any{"label": "com.blazn.node", "sourceComponent": "kubernetes"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		{Ordinal: 1, Kind: "image", Action: "pull", Target: "registry.example.test/blazn/node@sha256:" + testHash, Desired: map[string]any{"platform": "linux/amd64"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		{Ordinal: 1, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		{Ordinal: 1, Kind: "firewall", Action: "apply", Target: "blazn:node_api", Desired: map[string]any{"protocol": "tcp", "port": 443, "direction": "egress"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+	}
+	for _, mutation := range mutations {
+		plan := validNodeInstallPlan()
+		plan.Mutations = []NodeInstallMutation{mutation}
+		if err := ValidateNodeInstallPlan(plan); err != nil {
+			t.Fatalf("kind=%s valid mutation error=%v", mutation.Kind, err)
+		}
+		plan.Mutations[0].Action = "invalid"
+		if err := ValidateNodeInstallPlan(plan); err == nil {
+			t.Fatalf("kind=%s invalid action passed", mutation.Kind)
+		}
 	}
 }
 
@@ -147,6 +174,27 @@ func TestNodeCapabilityRejectsNullRequiredCollections(t *testing.T) {
 	}
 }
 
+func TestAgentEligibleNodeRequiresActiveIdentityCapabilityAndBinding(t *testing.T) {
+	node := validNodeResponse()
+	node.LifecycleState = "active"
+	node.TrustState = "verified"
+	node.AgentEligible = true
+	node.KubernetesBinding = &KubernetesBinding{ClusterID: "cluster-1", NodeName: "worker-1", NodeUID: "uid-1", ResourceVersion: "1"}
+	if err := ValidateNode(node); err == nil {
+		t.Fatal("eligible Node without identity/capability passed")
+	}
+	version := int64(1)
+	node.CapabilityVersion = &version
+	node.Identity = &NodeIdentity{Generation: 1, PublicKeyFingerprint: "sha256:" + testHash, Status: "active", IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-08-22T00:00:00Z"}
+	if err := ValidateNode(node); err != nil {
+		t.Fatal(err)
+	}
+	node.Identity.Status = "revoked"
+	if err := ValidateNode(node); err == nil {
+		t.Fatal("eligible Node with revoked identity passed")
+	}
+}
+
 func TestNodeOperationRejectsNullParameters(t *testing.T) {
 	request := CreateNodeOperationRequest{Type: "pause", ExpectedVersion: 1, Parameters: json.RawMessage(`null`)}
 	if err := ValidateCreateNodeOperationRequest(request); err == nil {
@@ -207,7 +255,8 @@ func signedNodeInstallPlan(t *testing.T) (NodeInstallPlan, NodeInstallPlanTrust)
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodePublicKey, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn/install-backups"}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	trust := NodeInstallPlanTrust{Now: time.Date(2026, 8, 21, 0, 5, 0, 0, time.UTC), Keyring: NodeSigningKeyring{plan.SigningKeyID: publicKey}, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, NodeID: plan.NodeID, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodePublicKey, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, IdempotencyKey: plan.IdempotencyKey, Profile: profile}
 	return plan, trust
 }
 
@@ -244,40 +293,127 @@ func TestVerifyNodeInstallPlanPinsSignatureExpiryAndLocalBindings(t *testing.T) 
 	}
 }
 
+func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing.T) {
+	plan, trust := signedNodeInstallPlan(t)
+	untrustedOrigin := trust
+	untrustedOrigin.Profile.AllowedDownloadOrigins = []string{"https://other.example.test"}
+	if err := VerifyNodeInstallPlan(plan, untrustedOrigin); err == nil {
+		t.Fatal("untrusted component origin passed")
+	}
+	if err := ValidateNodeComponentRedirect(trust.Profile, plan.Components[0], "https://redirect.example.test/file"); err == nil {
+		t.Fatal("cross-host redirect passed")
+	}
+	symlink := trust
+	symlink.Profile.VerifyNoSymlinkTraversal = func(target string) error {
+		if target == "/etc/blazn/node" {
+			return errors.New("symlink")
+		}
+		return nil
+	}
+	if err := VerifyNodeInstallPlan(plan, symlink); err == nil {
+		t.Fatal("symlink traversal passed")
+	}
+	unsafeRoot := trust
+	unsafeRoot.Profile.AllowedMutationRoots = []string{"/"}
+	if err := VerifyNodeInstallPlan(plan, unsafeRoot); err == nil {
+		t.Fatal("root mutation profile passed")
+	}
+	badPayload := validNodeInstallPlan()
+	badPayload.Mutations[0].Desired = map[string]any{"path": "/tmp/arbitrary"}
+	if err := ValidateNodeInstallPlan(badPayload); err == nil {
+		t.Fatal("untyped mutation payload passed")
+	}
+	traversal := validNodeInstallPlan()
+	traversal.Mutations[0].Target = "/etc/blazn/../passwd"
+	if err := ValidateNodeInstallPlan(traversal); err == nil {
+		t.Fatal("parent traversal passed")
+	}
+}
+
 func validInstallReceipt() NodeInstallReceipt {
-	return NodeInstallReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, PlanID: testUUIDB, PlanDigest: "sha256:" + testHash, NodeID: testUUIDC, Generation: 1, State: "active", CurrentStage: "complete", Owner: NodeReceiptOwner{UID: 0, PID: 10, ProcessStartIdentity: "start-1", Nonce: strings.Repeat("A", 32)}, Binary: NodeReceiptBinary{Path: "/usr/local/bin/blazn", Digest: "sha256:" + testHash}, Service: NodeReceiptService{Manager: "systemd", Name: "blazn-node", DefinitionDigest: "sha256:" + testHash}, Mutations: []NodeReceiptMutation{{Ordinal: 1, Kind: "file", Target: "/etc/blazn/node", PriorState: "absent", RollbackMaterial: NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}, Residues: []NodeReceiptResidue{}, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:05:00Z", SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
+	return NodeInstallReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, PlanID: testUUIDB, PlanDigest: "sha256:" + testHash, NodeID: testUUIDC, Generation: 1, NodeIdentityGeneration: 1, SignerKind: "node_identity", SignerFingerprint: "sha256:" + testHash, State: "active", CurrentStage: "complete", Owner: NodeReceiptOwner{UID: 0, PID: 10, ProcessStartIdentity: "start-1", Nonce: strings.Repeat("A", 32)}, Binary: NodeReceiptBinary{Path: "/usr/local/bin/blazn", Digest: "sha256:" + testHash}, Service: NodeReceiptService{Manager: "systemd", Name: "blazn-node", DefinitionDigest: "sha256:" + testHash}, Mutations: []NodeReceiptMutation{{Ordinal: 1, Kind: "file", Target: "/etc/blazn/node", PriorState: "absent", RollbackMaterial: NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}, Residues: []NodeReceiptResidue{}, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:05:00Z", SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
 }
 
 func validOperationReceipt() NodeOperationReceipt {
-	return NodeOperationReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, OperationID: testUUIDB, NodeID: testUUIDC, WorkspaceID: testUUIDD, OperationType: "pause", ExpectedNodeVersion: 2, StartedAt: "2026-08-21T00:00:00Z", CompletedAt: "2026-08-21T00:01:00Z", Outcome: "succeeded", KubernetesBefore: nil, KubernetesAfter: nil, Actions: []NodeReceiptAction{}, Residues: []NodeReceiptResidue{}, SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
+	generation := int64(1)
+	return NodeOperationReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, OperationID: testUUIDB, NodeID: testUUIDC, WorkspaceID: testUUIDD, OperationType: "pause", ExpectedNodeVersion: 2, StartedAt: "2026-08-21T00:00:00Z", CompletedAt: "2026-08-21T00:01:00Z", Outcome: "succeeded", KubernetesBefore: nil, KubernetesAfter: nil, Actions: []NodeReceiptAction{}, Residues: []NodeReceiptResidue{}, SignerKind: "node_identity", IdentityGeneration: &generation, SignerFingerprint: "sha256:" + testHash, SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
 }
 
 func TestVerifySignedInstallAndOperationReceipts(t *testing.T) {
 	publicKey, privateKey := testSigningKey()
+	fingerprint, _ := NodePublicKeyFingerprint(publicKey)
 	install := validInstallReceipt()
+	install.SignerFingerprint = fingerprint
 	digest, err := NodeInstallReceiptDigest(install)
 	if err != nil {
 		t.Fatal(err)
 	}
 	install.Digest = digest
 	install.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-receipt-v1\n"+digest)))
-	if err := VerifyNodeInstallReceipt(install, NodeInstallReceiptTrust{Keyring: NodeSigningKeyring{install.SigningKeyID: publicKey}, PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID}); err != nil {
+	if err := VerifyNodeInstallReceipt(install, NodeInstallReceiptTrust{PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID, Signer: NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: install.SigningKeyID, Generation: install.NodeIdentityGeneration, Fingerprint: fingerprint, PublicKey: publicKey}}); err != nil {
 		t.Fatal(err)
 	}
 	operation := validOperationReceipt()
+	operation.SignerFingerprint = fingerprint
 	digest, err = NodeOperationReceiptDigest(operation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	operation.Digest = digest
 	operation.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-operation-receipt-v1\n"+digest)))
-	trust := NodeOperationReceiptTrust{Keyring: NodeSigningKeyring{operation.SigningKeyID: publicKey}, OperationID: operation.OperationID, NodeID: operation.NodeID, WorkspaceID: operation.WorkspaceID, OperationType: operation.OperationType, ExpectedNodeVersion: operation.ExpectedNodeVersion}
+	trust := NodeOperationReceiptTrust{OperationID: operation.OperationID, NodeID: operation.NodeID, WorkspaceID: operation.WorkspaceID, OperationType: operation.OperationType, ExpectedNodeVersion: operation.ExpectedNodeVersion, NodeIdentitySigner: &NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: operation.SigningKeyID, Generation: *operation.IdentityGeneration, Fingerprint: fingerprint, PublicKey: publicKey}}
 	if err := VerifyNodeOperationReceipt(operation, trust); err != nil {
 		t.Fatal(err)
 	}
 	operation.Actions = append(operation.Actions, NodeReceiptAction{Ordinal: 1, Kind: "filesystem", Target: "/tmp/tampered", Outcome: "applied"})
 	if err := VerifyNodeOperationReceipt(operation, trust); err == nil {
 		t.Fatal("tampered operation receipt passed")
+	}
+}
+
+func TestReceiptSignerAndStateCoherence(t *testing.T) {
+	publicKey, privateKey := testSigningKey()
+	fingerprint, _ := NodePublicKeyFingerprint(publicKey)
+	install := validInstallReceipt()
+	install.SignerFingerprint = fingerprint
+	digest, _ := NodeInstallReceiptDigest(install)
+	install.Digest = digest
+	install.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-receipt-v1\n"+digest)))
+	wrongGeneration := NodeInstallReceiptTrust{PlanID: install.PlanID, PlanDigest: install.PlanDigest, NodeID: install.NodeID, Signer: NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: install.SigningKeyID, Generation: install.NodeIdentityGeneration + 1, Fingerprint: fingerprint, PublicKey: publicKey}}
+	if err := VerifyNodeInstallReceipt(install, wrongGeneration); err == nil {
+		t.Fatal("wrong active identity generation passed")
+	}
+	incoherent := validInstallReceipt()
+	incoherent.Residues = []NodeReceiptResidue{{Target: "/tmp/residue", ReasonCode: "leftover", SafeMessage: "leftover"}}
+	if err := ValidateNodeInstallReceipt(incoherent); err == nil {
+		t.Fatal("active receipt with residue passed")
+	}
+	recovery := validInstallReceipt()
+	recovery.State = "recovery_required"
+	if err := ValidateNodeInstallReceipt(recovery); err == nil {
+		t.Fatal("recovery-required receipt without residue passed")
+	}
+
+	controlPublic := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{6}, ed25519.SeedSize)).Public().(ed25519.PublicKey)
+	controlPrivate := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{6}, ed25519.SeedSize))
+	controlFingerprint, _ := NodePublicKeyFingerprint(controlPublic)
+	operation := validOperationReceipt()
+	operation.SignerKind = "control_plane"
+	operation.IdentityGeneration = nil
+	operation.SignerFingerprint = controlFingerprint
+	operation.SigningKeyID = "control-plane-receipt/v1"
+	operation.Outcome = "failed"
+	operation.Actions = []NodeReceiptAction{{Ordinal: 1, Kind: "api", Target: "dispatch", Outcome: "failed"}}
+	digest, _ = NodeOperationReceiptDigest(operation)
+	operation.Digest = digest
+	operation.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(controlPrivate, []byte("blazn-node-operation-receipt-v1\n"+digest)))
+	trust := NodeOperationReceiptTrust{OperationID: operation.OperationID, NodeID: operation.NodeID, WorkspaceID: operation.WorkspaceID, OperationType: operation.OperationType, ExpectedNodeVersion: operation.ExpectedNodeVersion, ControlPlaneSigner: &NodeTrustedSigner{Kind: "control_plane", KeyID: operation.SigningKeyID, Fingerprint: controlFingerprint, PublicKey: controlPublic}}
+	if err := VerifyNodeOperationReceipt(operation, trust); err != nil {
+		t.Fatal(err)
+	}
+	operation.Outcome = "succeeded"
+	if err := ValidateNodeOperationReceipt(operation); err == nil {
+		t.Fatal("control-plane signer claimed success")
 	}
 }
 
@@ -352,5 +488,57 @@ func TestIssueJoinCredentialRequiresAndSendsStableIdempotencyKey(t *testing.T) {
 	}
 	if _, err := api.IssueNodeJoinCredential(context.Background(), "proof", "", request); err == nil {
 		t.Fatal("missing issuance idempotency key passed")
+	}
+}
+
+func TestEnrollmentHMACAndJoinCredentialAESFormats(t *testing.T) {
+	key := bytes.Repeat([]byte{1}, 32)
+	token, tokenHash, err := DeriveNodeEnrollmentToken(key, testUUIDA, testUUIDB, testUUIDC, "enrollment-key-1")
+	if err != nil || len(token) != 43 || len(tokenHash) != 64 {
+		t.Fatalf("token=%q hash=%q err=%v", token, tokenHash, err)
+	}
+	if token != "oyG8FGAHnl21bk-XX5A0edmbBsL84NMs9o5ZPBDVEoE" || tokenHash != "5f5f00b27a562d1b2a2ee55ab1bbd4536117b9f4a0f187968d408edca3840cb7" {
+		t.Fatalf("enrollment HMAC vector token=%q hash=%q", token, tokenHash)
+	}
+	replayedToken, replayedHash, err := DeriveNodeEnrollmentToken(key, testUUIDA, testUUIDB, testUUIDC, "enrollment-key-1")
+	if err != nil || token != replayedToken || tokenHash != replayedHash {
+		t.Fatal("enrollment HMAC was not deterministic")
+	}
+	otherToken, _, _ := DeriveNodeEnrollmentToken(key, testUUIDA, testUUIDB, testUUIDC, "enrollment-key-2")
+	if token == otherToken {
+		t.Fatal("enrollment idempotency binding did not affect token")
+	}
+
+	context := NodeJoinCredentialContext{WorkspaceID: testUUIDA, EnrollmentID: testUUIDB, PlanID: testUUIDC, NodeID: testUUIDD, IssuanceID: "55555555-5555-4555-8555-555555555555", IdempotencyKey: "join-key-1", RequestDigest: testHash}
+	aad, err := NodeJoinCredentialAAD(context)
+	wantAAD := "blazn-node-join-credential-v1\n" + testUUIDA + "\n" + testUUIDB + "\n" + testUUIDC + "\n" + testUUIDD + "\n55555555-5555-4555-8555-555555555555\njoin-key-1\n" + testHash
+	if err != nil || string(aad) != wantAAD {
+		t.Fatalf("aad=%q err=%v", aad, err)
+	}
+	credential := strings.Repeat("credential-", 5)
+	sealed, err := sealNodeJoinCredential(key, bytes.NewReader(bytes.Repeat([]byte{2}, 12)), credential, context)
+	if err != nil || len(sealed) != 12+len(credential)+16 || !bytes.Equal(sealed[:12], bytes.Repeat([]byte{2}, 12)) {
+		t.Fatalf("sealed length=%d err=%v", len(sealed), err)
+	}
+	opened, err := OpenNodeJoinCredential(key, sealed, context)
+	if err != nil || opened != credential {
+		t.Fatalf("opened=%q err=%v", opened, err)
+	}
+	randomSealed, err := SealNodeJoinCredential(key, credential, context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := OpenNodeJoinCredential(key, randomSealed, context); err != nil || opened != credential {
+		t.Fatalf("random sealed open=%q err=%v", opened, err)
+	}
+	wrongContext := context
+	wrongContext.RequestDigest = strings.Repeat("b", 64)
+	if _, err := OpenNodeJoinCredential(key, sealed, wrongContext); err == nil {
+		t.Fatal("wrong AES-GCM AAD passed")
+	}
+	tampered := append([]byte(nil), sealed...)
+	tampered[len(tampered)-1] ^= 1
+	if _, err := OpenNodeJoinCredential(key, tampered, context); err == nil {
+		t.Fatal("tampered AES-GCM ciphertext passed")
 	}
 }

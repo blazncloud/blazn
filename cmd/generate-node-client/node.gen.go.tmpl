@@ -9,7 +9,11 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ed25519"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -20,6 +24,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -28,8 +33,10 @@ import (
 )
 
 const (
-	NodeSchemaVersion = "nodes/v1alpha1"
-	nodeMaxJSONBytes  = 8 << 20
+	NodeSchemaVersion          = "nodes/v1alpha1"
+	NodeEnrollmentTokenKeyID   = "node-enrollment/v1"
+	NodeJoinCredentialKeyID    = "node-join-credential/v1"
+	nodeMaxJSONBytes           = 8 << 20
 )
 
 type NodePlatform string
@@ -264,6 +271,7 @@ type NodeInstallPlan struct {
 	ApprovedAt     string                 `json:"approvedAt"`
 	Hostname       string                 `json:"hostname"`
 	Mode           NodeEnrollmentMode     `json:"mode"`
+	InstallProfile string                 `json:"installProfile"`
 	Cluster        NodeInstallCluster     `json:"cluster"`
 	Target         NodeInstallTarget      `json:"target"`
 	RegistryTrust  []NodeRegistryTrust    `json:"registryTrust"`
@@ -313,6 +321,7 @@ type NodeInstallComponent struct {
 	ArtifactType string `json:"artifactType"`
 	Version      string `json:"version"`
 	Publisher    string `json:"publisher"`
+	SourceHost   string `json:"sourceHost"`
 	Source       string `json:"source"`
 	SHA256       string `json:"sha256"`
 	Ownership    string `json:"ownership"`
@@ -367,6 +376,9 @@ type NodeInstallReceipt struct {
 	PlanDigest    string                   `json:"planDigest"`
 	NodeID        string                   `json:"nodeId"`
 	Generation    int64                    `json:"generation"`
+	NodeIdentityGeneration int64           `json:"nodeIdentityGeneration"`
+	SignerKind    string                   `json:"signerKind"`
+	SignerFingerprint string               `json:"signerFingerprint"`
 	State         string                   `json:"state"`
 	CurrentStage  string                   `json:"currentStage"`
 	Owner         NodeReceiptOwner         `json:"owner"`
@@ -441,6 +453,9 @@ type NodeOperationReceipt struct {
 	KubernetesAfter     *KubernetesBinding  `json:"kubernetesAfter"`
 	Actions             []NodeReceiptAction `json:"actions"`
 	Residues            []NodeReceiptResidue `json:"residues"`
+	SignerKind          string              `json:"signerKind"`
+	IdentityGeneration  *int64              `json:"identityGeneration"`
+	SignerFingerprint   string              `json:"signerFingerprint"`
 	SigningKeyID        string              `json:"signingKeyId"`
 	Digest              string              `json:"digest"`
 	Signature           string              `json:"signature"`
@@ -455,6 +470,24 @@ type NodeReceiptAction struct {
 
 type NodeSigningKeyring map[string]ed25519.PublicKey
 
+type NodeTrustedInstallProfile struct {
+	ID                       string
+	AllowedClusterOrigins    []string
+	AllowedDownloadOrigins   []string
+	AllowedRegistryOrigins   []string
+	AllowedMutationRoots     []string
+	VerifyNoSymlinkTraversal func(string) error
+}
+
+type NodeTrustedSigner struct {
+	Kind        string
+	Status      string
+	KeyID       string
+	Generation  int64
+	Fingerprint string
+	PublicKey   ed25519.PublicKey
+}
+
 type NodeInstallPlanTrust struct {
 	Now                      time.Time
 	Keyring                  NodeSigningKeyring
@@ -467,22 +500,34 @@ type NodeInstallPlanTrust struct {
 	Platform                 NodePlatform
 	Architecture             NodeArchitecture
 	IdempotencyKey           string
+	Profile                  NodeTrustedInstallProfile
 }
 
 type NodeInstallReceiptTrust struct {
-	Keyring    NodeSigningKeyring
 	PlanID     string
 	PlanDigest string
 	NodeID     string
+	Signer     NodeTrustedSigner
 }
 
 type NodeOperationReceiptTrust struct {
-	Keyring             NodeSigningKeyring
 	OperationID         string
 	NodeID              string
 	WorkspaceID         string
 	OperationType       NodeOperationType
 	ExpectedNodeVersion int64
+	NodeIdentitySigner  *NodeTrustedSigner
+	ControlPlaneSigner  *NodeTrustedSigner
+}
+
+type NodeJoinCredentialContext struct {
+	WorkspaceID    string
+	EnrollmentID   string
+	PlanID         string
+	NodeID         string
+	IssuanceID     string
+	IdempotencyKey string
+	RequestDigest  string
 }
 
 type NodeEventStream struct {
@@ -502,6 +547,13 @@ var (
 	nodeReasonCodePattern  = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 	nodeHostnamePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 	nodeReceiptLocatorPattern = regexp.MustCompile(`^receipt-backup://[A-Za-z0-9._/-]{1,512}$`)
+	nodePackageTargetPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
+	nodeSystemdTargetPattern = regexp.MustCompile(`^/etc/systemd/system/[A-Za-z0-9_.@-]+\.service$`)
+	nodeSystemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+\.service$`)
+	nodeLaunchdTargetPattern = regexp.MustCompile(`^/Library/LaunchDaemons/[A-Za-z0-9_.-]+\.plist$`)
+	nodeImageTargetPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$`)
+	nodeFirewallTargetPattern = regexp.MustCompile(`^blazn:[a-z0-9_-]{1,64}$`)
+	nodeBackupRootPattern = regexp.MustCompile(`^/var/lib/blazn/install-backups/[A-Za-z0-9._-]{1,128}$`)
 )
 
 func ValidateCreateNodeOperationRequest(request CreateNodeOperationRequest) error {
@@ -656,7 +708,7 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 			return fmt.Errorf("%s must be a UUID", name)
 		}
 	}
-	if !validNodeIdempotencyKey(plan.IdempotencyKey) || len(plan.Hostname) < 1 || len(plan.Hostname) > 253 || !nodeHostnamePattern.MatchString(plan.Hostname) || (plan.Mode != NodeModeFresh && plan.Mode != NodeModeAdopt) {
+	if !validNodeIdempotencyKey(plan.IdempotencyKey) || len(plan.Hostname) < 1 || len(plan.Hostname) > 253 || !nodeHostnamePattern.MatchString(plan.Hostname) || (plan.Mode != NodeModeFresh && plan.Mode != NodeModeAdopt) || !oneOf(plan.InstallProfile, "ubuntu-26.04-amd64-worker/v1", "existing-linux-worker-adopt/v1", "macos-lima-worker-adopt/v1") {
 		return fmt.Errorf("plan approval or target identity is invalid")
 	}
 	if len(plan.Cluster.ID) < 1 || len(plan.Cluster.ID) > 128 || !plan.Cluster.WorkerOnly || !validHTTPSURL(plan.Cluster.APIServer) || !nodeKubernetesVersionPattern.MatchString(plan.Cluster.KubernetesVersion) || plan.Cluster.JoinCredentialEndpoint != "/v1/node-service/join-credentials" || plan.Cluster.BootstrapTaint != "blazn.dev/bootstrap=pending:NoSchedule" || !nodeDigestPattern.MatchString(plan.Cluster.ExpectedCAFingerprint) || plan.Cluster.RegistryEndpoints == nil || len(plan.Cluster.RegistryEndpoints) > 16 || duplicateNodeStrings(plan.Cluster.RegistryEndpoints) {
@@ -674,14 +726,22 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		return fmt.Errorf("plan collection limit exceeded")
 	}
 	for index, trust := range plan.RegistryTrust {
-		if len(trust.Hostname) < 1 || len(trust.Hostname) > 253 || !nodeHashPattern.MatchString(trust.CABundleSHA256) {
+		if len(trust.Hostname) < 1 || len(trust.Hostname) > 253 || !nodeHostnamePattern.MatchString(trust.Hostname) || !nodeHashPattern.MatchString(trust.CABundleSHA256) {
 			return fmt.Errorf("registryTrust[%d] is invalid", index)
 		}
 	}
 	for index, component := range plan.Components {
-		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !validHTTPSURL(component.Source) || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
+		parsed, err := url.Parse(component.Source)
+		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !nodeHostnamePattern.MatchString(component.SourceHost) || err != nil || !validHTTPSURL(component.Source) || parsed.Hostname() != component.SourceHost || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
 			return fmt.Errorf("components[%d] is invalid", index)
 		}
+	}
+	componentNames := make(map[string]struct{}, len(plan.Components))
+	for _, component := range plan.Components {
+		if _, exists := componentNames[component.Name]; exists {
+			return fmt.Errorf("component name %q is duplicated", component.Name)
+		}
+		componentNames[component.Name] = struct{}{}
 	}
 	if !oneOf(plan.NodeService.Manager, "systemd", "launchd") || len(plan.NodeService.UnitName) < 1 || len(plan.NodeService.UnitName) > 256 || !strings.HasPrefix(plan.NodeService.BinaryPath, "/") || len(plan.NodeService.RunAsUser) < 1 || len(plan.NodeService.RunAsUser) > 128 || len(plan.NodeService.RunAsGroup) < 1 || len(plan.NodeService.RunAsGroup) > 128 || !nodeHashPattern.MatchString(plan.NodeService.DefinitionSHA256) {
 		return fmt.Errorf("node service is invalid")
@@ -705,12 +765,19 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 	if err := validatePlanMutations(plan.Mutations); err != nil {
 		return err
 	}
+	for index, mutation := range plan.Mutations {
+		if component := nodeMutationSourceComponent(mutation); component != "" {
+			if _, exists := componentNames[component]; !exists {
+				return fmt.Errorf("mutations[%d] references unknown component %q", index, component)
+			}
+		}
+	}
 	for _, validation := range plan.ValidationTests {
 		if !oneOf(validation, "binary_digest", "service_active", "node_identity", "cluster_ca", "worker_only", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility") {
 			return fmt.Errorf("validation test is invalid")
 		}
 	}
-	if !plan.Rollback.PreserveUserData || !plan.Rollback.PreserveControlPlane || plan.Rollback.AmbiguousOwnership != "recovery_required" || !strings.HasPrefix(plan.Rollback.BackupRoot, "/") {
+	if !plan.Rollback.PreserveUserData || !plan.Rollback.PreserveControlPlane || plan.Rollback.AmbiguousOwnership != "recovery_required" || !nodeBackupRootPattern.MatchString(plan.Rollback.BackupRoot) {
 		return fmt.Errorf("rollback safety policy is invalid")
 	}
 	approved, err := time.Parse(time.RFC3339, plan.ApprovedAt)
@@ -731,7 +798,7 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 }
 
 func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
-	if receipt.SchemaVersion != NodeSchemaVersion || !nodeUUIDPattern.MatchString(receipt.ReceiptID) || !nodeUUIDPattern.MatchString(receipt.PlanID) || !nodeUUIDPattern.MatchString(receipt.NodeID) || !nodeDigestPattern.MatchString(receipt.PlanDigest) || receipt.Generation < 1 {
+	if receipt.SchemaVersion != NodeSchemaVersion || !nodeUUIDPattern.MatchString(receipt.ReceiptID) || !nodeUUIDPattern.MatchString(receipt.PlanID) || !nodeUUIDPattern.MatchString(receipt.NodeID) || !nodeDigestPattern.MatchString(receipt.PlanDigest) || receipt.Generation < 1 || receipt.NodeIdentityGeneration < 1 || receipt.SignerKind != "node_identity" || !nodeDigestPattern.MatchString(receipt.SignerFingerprint) {
 		return fmt.Errorf("receipt identity is invalid")
 	}
 	if !oneOf(receipt.State, "preparing", "installing", "joining", "verifying", "active", "rolling_back", "recovery_required", "removed") {
@@ -764,6 +831,20 @@ func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
 			return fmt.Errorf("residues[%d] is invalid", index)
 		}
 	}
+	switch receipt.State {
+	case "active":
+		if receipt.CurrentStage != "complete" || len(receipt.Residues) != 0 || !allNodeMutationStatuses(receipt.Mutations, "applied") {
+			return fmt.Errorf("active receipt state is incoherent")
+		}
+	case "removed":
+		if receipt.CurrentStage != "complete" || len(receipt.Residues) != 0 || !allNodeMutationStatuses(receipt.Mutations, "restored", "removed") {
+			return fmt.Errorf("removed receipt state is incoherent")
+		}
+	case "recovery_required":
+		if len(receipt.Residues) == 0 {
+			return fmt.Errorf("recovery-required receipt must contain residues")
+		}
+	}
 	created, err := time.Parse(time.RFC3339, receipt.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("createdAt is invalid")
@@ -778,6 +859,15 @@ func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
 	return nil
 }
 
+func allNodeMutationStatuses(mutations []NodeReceiptMutation, allowed ...string) bool {
+	for _, mutation := range mutations {
+		if !oneOf(mutation.Status, allowed...) {
+			return false
+		}
+	}
+	return true
+}
+
 func validRollbackMaterial(priorState string, material NodeRollbackMaterial) bool {
 	if priorState == "absent" {
 		return material.Kind == "absent" && material.Locator == "" && material.Digest == "" && material.Mode == nil && material.UID == nil && material.GID == nil
@@ -786,7 +876,7 @@ func validRollbackMaterial(priorState string, material NodeRollbackMaterial) boo
 }
 
 func ValidateNodeOperationReceipt(receipt NodeOperationReceipt) error {
-	if receipt.SchemaVersion != NodeSchemaVersion || !nodeUUIDPattern.MatchString(receipt.ReceiptID) || !nodeUUIDPattern.MatchString(receipt.OperationID) || !nodeUUIDPattern.MatchString(receipt.NodeID) || !nodeUUIDPattern.MatchString(receipt.WorkspaceID) || !validNodeOperationType(receipt.OperationType) || receipt.ExpectedNodeVersion < 1 || !oneOf(receipt.Outcome, "succeeded", "failed", "cancelled", "partial", "recovery_required") || receipt.Actions == nil || receipt.Residues == nil || len(receipt.Actions) > 4096 || len(receipt.Residues) > 4096 {
+	if receipt.SchemaVersion != NodeSchemaVersion || !nodeUUIDPattern.MatchString(receipt.ReceiptID) || !nodeUUIDPattern.MatchString(receipt.OperationID) || !nodeUUIDPattern.MatchString(receipt.NodeID) || !nodeUUIDPattern.MatchString(receipt.WorkspaceID) || !validNodeOperationType(receipt.OperationType) || receipt.ExpectedNodeVersion < 1 || !oneOf(receipt.Outcome, "succeeded", "failed", "cancelled", "partial", "recovery_required") || receipt.Actions == nil || receipt.Residues == nil || len(receipt.Actions) > 4096 || len(receipt.Residues) > 4096 || !oneOf(receipt.SignerKind, "node_identity", "control_plane") || !nodeDigestPattern.MatchString(receipt.SignerFingerprint) {
 		return fmt.Errorf("operation receipt identity or outcome is invalid")
 	}
 	started, err := time.Parse(time.RFC3339, receipt.StartedAt)
@@ -817,6 +907,33 @@ func ValidateNodeOperationReceipt(receipt NodeOperationReceipt) error {
 			return fmt.Errorf("residues[%d] is invalid", index)
 		}
 	}
+	if receipt.SignerKind == "node_identity" {
+		if receipt.IdentityGeneration == nil || *receipt.IdentityGeneration < 1 {
+			return fmt.Errorf("node-identity receipt generation is invalid")
+		}
+	} else {
+		if receipt.IdentityGeneration != nil || !oneOf(receipt.Outcome, "failed", "cancelled", "recovery_required") {
+			return fmt.Errorf("control-plane receipt identity or outcome is invalid")
+		}
+		for _, action := range receipt.Actions {
+			if !oneOf(action.Outcome, "skipped", "failed", "residue") {
+				return fmt.Errorf("control-plane receipt claims a host action")
+			}
+		}
+	}
+	if receipt.Outcome == "succeeded" {
+		if len(receipt.Residues) != 0 {
+			return fmt.Errorf("successful operation receipt contains residues")
+		}
+		for _, action := range receipt.Actions {
+			if !oneOf(action.Outcome, "applied", "skipped", "restored") {
+				return fmt.Errorf("successful operation receipt action is incoherent")
+			}
+		}
+	}
+	if oneOf(receipt.Outcome, "partial", "recovery_required") && len(receipt.Residues) == 0 {
+		return fmt.Errorf("partial or recovery receipt must contain residues")
+	}
 	if len(receipt.SigningKeyID) < 1 || len(receipt.SigningKeyID) > 128 || !nodeDigestPattern.MatchString(receipt.Digest) || len(receipt.Signature) != 86 || !nodeBase64URLPattern.MatchString(receipt.Signature) {
 		return fmt.Errorf("operation receipt signature metadata is invalid")
 	}
@@ -829,7 +946,7 @@ func DecodeNodeInstallPlan(reader io.Reader) (NodeInstallPlan, error) {
 	if err != nil {
 		return plan, err
 	}
-	if err := requireNodeFields(raw, "schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "cluster", "target", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"); err != nil {
+	if err := requireNodeFields(raw, "schemaVersion", "planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "installProfile", "cluster", "target", "registryTrust", "components", "nodeService", "labels", "taints", "resourceBounds", "mutations", "validationTests", "rollback", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"); err != nil {
 		return plan, err
 	}
 	for key, fields := range map[string][]string{
@@ -846,7 +963,7 @@ func DecodeNodeInstallPlan(reader io.Reader) (NodeInstallPlan, error) {
 	if err := requireNodeArrayFields(raw, "registryTrust", "hostname", "caBundleSha256"); err != nil {
 		return plan, err
 	}
-	if err := requireNodeArrayFields(raw, "components", "name", "artifactType", "version", "publisher", "source", "sha256", "ownership"); err != nil {
+	if err := requireNodeArrayFields(raw, "components", "name", "artifactType", "version", "publisher", "sourceHost", "source", "sha256", "ownership"); err != nil {
 		return plan, err
 	}
 	if err := requireNodeArrayFields(raw, "taints", "key", "value", "effect"); err != nil {
@@ -864,7 +981,7 @@ func DecodeNodeInstallReceipt(reader io.Reader) (NodeInstallReceipt, error) {
 	if err != nil {
 		return receipt, err
 	}
-	if err := requireNodeFields(raw, "schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"); err != nil {
+	if err := requireNodeFields(raw, "schemaVersion", "receiptId", "planId", "planDigest", "nodeId", "generation", "nodeIdentityGeneration", "signerKind", "signerFingerprint", "state", "currentStage", "owner", "binary", "service", "mutations", "residues", "createdAt", "updatedAt", "signingKeyId", "digest", "signature"); err != nil {
 		return receipt, err
 	}
 	for key, fields := range map[string][]string{
@@ -891,7 +1008,7 @@ func DecodeNodeOperationReceipt(reader io.Reader) (NodeOperationReceipt, error) 
 	if err != nil {
 		return receipt, err
 	}
-	if err := requireNodeFields(raw, "schemaVersion", "receiptId", "operationId", "nodeId", "workspaceId", "operationType", "expectedNodeVersion", "startedAt", "completedAt", "outcome", "kubernetesBefore", "kubernetesAfter", "actions", "residues", "signingKeyId", "digest", "signature"); err != nil {
+	if err := requireNodeFields(raw, "schemaVersion", "receiptId", "operationId", "nodeId", "workspaceId", "operationType", "expectedNodeVersion", "startedAt", "completedAt", "outcome", "kubernetesBefore", "kubernetesAfter", "actions", "residues", "signerKind", "identityGeneration", "signerFingerprint", "signingKeyId", "digest", "signature"); err != nil {
 		return receipt, err
 	}
 	if err := requireNodeArrayFields(raw, "actions", "ordinal", "kind", "target", "outcome"); err != nil {
@@ -1008,6 +1125,87 @@ func requireNodeArrayFields(raw map[string]json.RawMessage, key string, fields .
 	return nil
 }
 
+func DeriveNodeEnrollmentToken(key []byte, workspaceID, enrollmentID, principalID, idempotencyKey string) (token string, tokenHash string, err error) {
+	if len(key) != 32 || !nodeUUIDPattern.MatchString(workspaceID) || !nodeUUIDPattern.MatchString(enrollmentID) || !nodeUUIDPattern.MatchString(principalID) || !validNodeIdempotencyKey(idempotencyKey) {
+		return "", "", fmt.Errorf("enrollment token derivation input is invalid")
+	}
+	message := "blazn-node-enrollment-v1\n" + workspaceID + "\n" + enrollmentID + "\n" + principalID + "\n" + idempotencyKey
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(message))
+	token = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	digest := sha256.Sum256([]byte(token))
+	return token, hex.EncodeToString(digest[:]), nil
+}
+
+func NodeJoinCredentialAAD(context NodeJoinCredentialContext) ([]byte, error) {
+	for name, value := range map[string]string{"workspaceId": context.WorkspaceID, "enrollmentId": context.EnrollmentID, "planId": context.PlanID, "nodeId": context.NodeID, "issuanceId": context.IssuanceID} {
+		if !nodeUUIDPattern.MatchString(value) {
+			return nil, fmt.Errorf("join credential %s is invalid", name)
+		}
+	}
+	if !validNodeIdempotencyKey(context.IdempotencyKey) || !nodeHashPattern.MatchString(context.RequestDigest) {
+		return nil, fmt.Errorf("join credential retry binding is invalid")
+	}
+	return []byte("blazn-node-join-credential-v1\n" + context.WorkspaceID + "\n" + context.EnrollmentID + "\n" + context.PlanID + "\n" + context.NodeID + "\n" + context.IssuanceID + "\n" + context.IdempotencyKey + "\n" + context.RequestDigest), nil
+}
+
+func SealNodeJoinCredential(key []byte, credential string, context NodeJoinCredentialContext) ([]byte, error) {
+	return sealNodeJoinCredential(key, rand.Reader, credential, context)
+}
+
+func sealNodeJoinCredential(key []byte, randomness io.Reader, credential string, context NodeJoinCredentialContext) ([]byte, error) {
+	if len(key) != 32 || randomness == nil || len(credential) < 43 || len(credential) > 4096 {
+		return nil, fmt.Errorf("join credential encryption input is invalid")
+	}
+	aad, err := NodeJoinCredentialAAD(context)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(randomness, nonce); err != nil {
+		return nil, fmt.Errorf("generate join credential nonce: %w", err)
+	}
+	sealed := gcm.Seal(nil, nonce, []byte(credential), aad)
+	return append(nonce, sealed...), nil
+}
+
+func OpenNodeJoinCredential(key, encoded []byte, context NodeJoinCredentialContext) (string, error) {
+	if len(key) != 32 {
+		return "", fmt.Errorf("join credential decryption key is invalid")
+	}
+	aad, err := NodeJoinCredentialAAD(context)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(encoded) < gcm.NonceSize()+gcm.Overhead()+1 {
+		return "", fmt.Errorf("encrypted join credential is truncated")
+	}
+	plaintext, err := gcm.Open(nil, encoded[:gcm.NonceSize()], encoded[gcm.NonceSize():], aad)
+	if err != nil {
+		return "", fmt.Errorf("decrypt join credential: %w", err)
+	}
+	if len(plaintext) < 43 || len(plaintext) > 4096 {
+		return "", fmt.Errorf("decrypted join credential length is invalid")
+	}
+	return string(plaintext), nil
+}
+
 func NodeInstallPlanDigest(plan NodeInstallPlan) (string, error) {
 	return nodeCanonicalDigest(plan, "digest", "signature")
 }
@@ -1084,7 +1282,135 @@ func VerifyNodeInstallPlan(plan NodeInstallPlan, trust NodeInstallPlanTrust) err
 			return fmt.Errorf("install plan %s does not match trusted input", binding[0])
 		}
 	}
+	return ValidateNodeInstallProfile(plan, trust.Profile)
+}
+
+func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstallProfile) error {
+	if profile.ID == "" || plan.InstallProfile != profile.ID || profile.VerifyNoSymlinkTraversal == nil || !validNodeProfileTarget(profile.ID, plan.Mode, plan.Target.Platform, plan.Target.Architecture) {
+		return fmt.Errorf("trusted install profile does not match plan target")
+	}
+	if err := validateNodeTrustedOrigins(profile.AllowedClusterOrigins); err != nil {
+		return fmt.Errorf("cluster origins: %w", err)
+	}
+	if err := validateNodeTrustedOrigins(profile.AllowedDownloadOrigins); err != nil {
+		return fmt.Errorf("download origins: %w", err)
+	}
+	if err := validateNodeTrustedOrigins(profile.AllowedRegistryOrigins); err != nil {
+		return fmt.Errorf("registry origins: %w", err)
+	}
+	if !nodeOriginAllowed(plan.Cluster.APIServer, profile.AllowedClusterOrigins) {
+		return fmt.Errorf("cluster API origin is not trusted")
+	}
+	for _, endpoint := range plan.Cluster.RegistryEndpoints {
+		if !nodeOriginAllowed(endpoint, profile.AllowedRegistryOrigins) {
+			return fmt.Errorf("registry origin is not trusted")
+		}
+	}
+	for _, trust := range plan.RegistryTrust {
+		if !nodeHostAllowed(trust.Hostname, profile.AllowedRegistryOrigins) {
+			return fmt.Errorf("registry trust hostname is not trusted")
+		}
+	}
+	for _, component := range plan.Components {
+		if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
+			return err
+		}
+	}
+	if err := validateNodeTrustedRoots(profile.AllowedMutationRoots); err != nil {
+		return err
+	}
+	paths := []string{plan.NodeService.BinaryPath, plan.Rollback.BackupRoot}
+	for _, mutation := range plan.Mutations {
+		if oneOf(mutation.Kind, "file", "certificate", "directory", "systemd_unit", "launchd_unit") {
+			paths = append(paths, mutation.Target)
+		}
+	}
+	for _, target := range paths {
+		if !nodePathUnderAny(target, profile.AllowedMutationRoots) {
+			return fmt.Errorf("install target %q is outside trusted roots", target)
+		}
+		if err := profile.VerifyNoSymlinkTraversal(target); err != nil {
+			return fmt.Errorf("install target %q traverses an untrusted link: %w", target, err)
+		}
+	}
 	return nil
+}
+
+func ValidateNodeComponentRedirect(profile NodeTrustedInstallProfile, component NodeInstallComponent, candidateURL string) error {
+	parsed, err := url.Parse(candidateURL)
+	if err != nil || !validHTTPSURL(candidateURL) || parsed.Hostname() != component.SourceHost || !nodeOriginAllowed(candidateURL, profile.AllowedDownloadOrigins) {
+		return fmt.Errorf("component %q source or redirect is not trusted", component.Name)
+	}
+	return nil
+}
+
+func validNodeProfileTarget(profileID string, mode NodeEnrollmentMode, platform NodePlatform, architecture NodeArchitecture) bool {
+	switch profileID {
+	case "ubuntu-26.04-amd64-worker/v1":
+		return mode == NodeModeFresh && platform == NodePlatformLinux && architecture == NodeArchAMD64
+	case "existing-linux-worker-adopt/v1":
+		return mode == NodeModeAdopt && platform == NodePlatformLinux && validArchitecture(architecture)
+	case "macos-lima-worker-adopt/v1":
+		return mode == NodeModeAdopt && platform == NodePlatformMacOS && architecture == NodeArchARM64
+	default:
+		return false
+	}
+}
+
+func validateNodeTrustedOrigins(origins []string) error {
+	if origins == nil || duplicateNodeStrings(origins) {
+		return fmt.Errorf("trusted origins must be present and unique")
+	}
+	for _, origin := range origins {
+		canonical, err := nodeURLOrigin(origin)
+		if err != nil || canonical != origin {
+			return fmt.Errorf("trusted origin %q is not canonical", origin)
+		}
+	}
+	return nil
+}
+
+func validateNodeTrustedRoots(roots []string) error {
+	if len(roots) == 0 || duplicateNodeStrings(roots) {
+		return fmt.Errorf("trusted mutation roots must be present and unique")
+	}
+	for _, root := range roots {
+		if root == "/" || !strings.HasPrefix(root, "/") || path.Clean(root) != root || nodeHasParentTraversal(root) {
+			return fmt.Errorf("trusted mutation root %q is unsafe", root)
+		}
+	}
+	return nil
+}
+
+func nodeURLOrigin(value string) (string, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return "", fmt.Errorf("URL must use a credential-free HTTPS origin")
+	}
+	return "https://" + strings.ToLower(parsed.Host), nil
+}
+
+func nodeOriginAllowed(value string, allowed []string) bool {
+	origin, err := nodeURLOrigin(value)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range allowed {
+		if origin == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeHostAllowed(hostname string, allowed []string) bool {
+	for _, origin := range allowed {
+		parsed, err := url.Parse(origin)
+		if err == nil && parsed.Hostname() == hostname {
+			return true
+		}
+	}
+	return false
 }
 
 func VerifyNodeInstallReceipt(receipt NodeInstallReceipt, trust NodeInstallReceiptTrust) error {
@@ -1098,7 +1424,10 @@ func VerifyNodeInstallReceipt(receipt NodeInstallReceipt, trust NodeInstallRecei
 	if !nodeSecureEqual(receipt.Digest, digest) {
 		return fmt.Errorf("install receipt digest mismatch")
 	}
-	if err := verifyNodeSignature(trust.Keyring, receipt.SigningKeyID, receipt.Signature, "blazn-node-install-receipt-v1\n", digest); err != nil {
+	if trust.Signer.Kind != "node_identity" || trust.Signer.Status != "active" || trust.Signer.Generation < 1 || receipt.NodeIdentityGeneration != trust.Signer.Generation || receipt.SignerKind != "node_identity" {
+		return fmt.Errorf("install receipt identity generation does not match trusted active signer")
+	}
+	if err := verifyTrustedNodeSigner(trust.Signer, receipt.SigningKeyID, receipt.SignerFingerprint, receipt.Signature, "blazn-node-install-receipt-v1\n", digest); err != nil {
 		return fmt.Errorf("install receipt signature: %w", err)
 	}
 	for name, values := range map[string][2]string{"planId": {receipt.PlanID, trust.PlanID}, "planDigest": {receipt.PlanDigest, trust.PlanDigest}, "nodeId": {receipt.NodeID, trust.NodeID}} {
@@ -1120,7 +1449,19 @@ func VerifyNodeOperationReceipt(receipt NodeOperationReceipt, trust NodeOperatio
 	if !nodeSecureEqual(receipt.Digest, digest) {
 		return fmt.Errorf("operation receipt digest mismatch")
 	}
-	if err := verifyNodeSignature(trust.Keyring, receipt.SigningKeyID, receipt.Signature, "blazn-node-operation-receipt-v1\n", digest); err != nil {
+	var signer *NodeTrustedSigner
+	if receipt.SignerKind == "node_identity" {
+		signer = trust.NodeIdentitySigner
+		if signer == nil || signer.Kind != "node_identity" || signer.Status != "active" || receipt.IdentityGeneration == nil || signer.Generation < 1 || *receipt.IdentityGeneration != signer.Generation {
+			return fmt.Errorf("operation receipt node identity generation does not match trusted signer")
+		}
+	} else {
+		signer = trust.ControlPlaneSigner
+		if signer == nil || signer.Kind != "control_plane" || signer.Generation != 0 || receipt.IdentityGeneration != nil {
+			return fmt.Errorf("operation receipt control-plane signer is invalid")
+		}
+	}
+	if err := verifyTrustedNodeSigner(*signer, receipt.SigningKeyID, receipt.SignerFingerprint, receipt.Signature, "blazn-node-operation-receipt-v1\n", digest); err != nil {
 		return fmt.Errorf("operation receipt signature: %w", err)
 	}
 	bindings := [][3]string{{"operationId", receipt.OperationID, trust.OperationID}, {"nodeId", receipt.NodeID, trust.NodeID}, {"workspaceId", receipt.WorkspaceID, trust.WorkspaceID}, {"operationType", string(receipt.OperationType), string(trust.OperationType)}}
@@ -1133,6 +1474,17 @@ func VerifyNodeOperationReceipt(receipt NodeOperationReceipt, trust NodeOperatio
 		return fmt.Errorf("operation receipt expectedNodeVersion does not match trusted input")
 	}
 	return nil
+}
+
+func verifyTrustedNodeSigner(signer NodeTrustedSigner, receiptKeyID, receiptFingerprint, signature, prefix, digest string) error {
+	if signer.KeyID == "" || !nodeSecureEqual(receiptKeyID, signer.KeyID) || !nodeDigestPattern.MatchString(signer.Fingerprint) || len(signer.PublicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("trusted signer identity is invalid")
+	}
+	computed, err := NodePublicKeyFingerprint(signer.PublicKey)
+	if err != nil || !nodeSecureEqual(computed, signer.Fingerprint) || !nodeSecureEqual(receiptFingerprint, signer.Fingerprint) {
+		return fmt.Errorf("trusted signer fingerprint mismatch")
+	}
+	return verifyNodeSignature(NodeSigningKeyring{signer.KeyID: signer.PublicKey}, receiptKeyID, signature, prefix, digest)
 }
 
 func nodeCanonicalDigest(value any, omitted ...string) (string, error) {
@@ -1189,8 +1541,11 @@ func nodeSecureEqual(left, right string) bool {
 func validatePlanMutations(mutations []NodeInstallMutation) error {
 	seen := make(map[int64]struct{}, len(mutations))
 	for index, mutation := range mutations {
-		if mutation.Ordinal < 1 || !oneOf(mutation.Kind, nodeMutationKinds()...) || !oneOf(mutation.Action, "install", "write", "create", "enable", "pull", "apply", "adopt_exact") || len(mutation.Target) < 1 || len(mutation.Target) > 1024 || mutation.Desired == nil || len(mutation.Desired) > 32 || !nodeDigestPattern.MatchString(mutation.DesiredDigest) || mutation.Mode < 0 || mutation.Mode > 4095 || mutation.UID < 0 || mutation.GID < 0 || !oneOf(mutation.Rollback, "restore_prior", "remove_if_owned", "leave_and_report") {
+		if mutation.Ordinal < 1 || !oneOf(mutation.Kind, nodeMutationKinds()...) || len(mutation.Target) < 1 || len(mutation.Target) > 1024 || nodeHasParentTraversal(mutation.Target) || mutation.Desired == nil || len(mutation.Desired) > 32 || !nodeDigestPattern.MatchString(mutation.DesiredDigest) || mutation.Mode < 0 || mutation.Mode > 4095 || mutation.UID < 0 || mutation.GID < 0 || !oneOf(mutation.Rollback, "restore_prior", "remove_if_owned", "leave_and_report") {
 			return fmt.Errorf("mutations[%d] is invalid", index)
+		}
+		if err := validateNodeMutationSemantics(mutation); err != nil {
+			return fmt.Errorf("mutations[%d]: %w", index, err)
 		}
 		if _, exists := seen[mutation.Ordinal]; exists {
 			return fmt.Errorf("mutations[%d] repeats ordinal %d", index, mutation.Ordinal)
@@ -1198,6 +1553,126 @@ func validatePlanMutations(mutations []NodeInstallMutation) error {
 		seen[mutation.Ordinal] = struct{}{}
 	}
 	return nil
+}
+
+func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
+	switch mutation.Kind {
+	case "package":
+		var desired struct {
+			Manager string `json:"manager"`
+			Version string `json:"version"`
+		}
+		if !oneOf(mutation.Action, "install", "adopt_exact") || !nodePackageTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Manager, "apt", "snap", "brew") || len(desired.Version) < 1 || len(desired.Version) > 128 {
+			return fmt.Errorf("package action or payload is invalid")
+		}
+	case "file", "certificate":
+		var desired struct {
+			SourceComponent string `json:"sourceComponent"`
+			ContentSHA256   string `json:"contentSha256"`
+		}
+		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderChildAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
+			return fmt.Errorf("file action or payload is invalid")
+		}
+	case "directory":
+		var desired struct{}
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodePathUnderAny(mutation.Target, []string{"/etc/blazn", "/var/lib/blazn", "/opt/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil {
+			return fmt.Errorf("directory action or payload is invalid")
+		}
+	case "systemd_unit":
+		var desired struct {
+			UnitName        string `json:"unitName"`
+			SourceComponent string `json:"sourceComponent"`
+		}
+		if !oneOf(mutation.Action, "write", "enable", "adopt_exact") || !nodeSystemdTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !nodeSystemdUnitPattern.MatchString(desired.UnitName) || path.Base(mutation.Target) != desired.UnitName || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 {
+			return fmt.Errorf("systemd action or payload is invalid")
+		}
+	case "launchd_unit":
+		var desired struct {
+			Label           string `json:"label"`
+			SourceComponent string `json:"sourceComponent"`
+		}
+		if !oneOf(mutation.Action, "write", "enable", "adopt_exact") || !nodeLaunchdTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.Label) < 1 || len(desired.Label) > 256 || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 {
+			return fmt.Errorf("launchd action or payload is invalid")
+		}
+	case "image":
+		var desired struct { Platform string `json:"platform"` }
+		if !oneOf(mutation.Action, "pull", "adopt_exact") || !nodeImageTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Platform, "linux/amd64", "linux/arm64") {
+			return fmt.Errorf("image action or payload is invalid")
+		}
+	case "label":
+		var desired struct { Value string `json:"value"` }
+		if mutation.Action != "apply" || !nodeLabelPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.Value) > 128 {
+			return fmt.Errorf("label action or payload is invalid")
+		}
+	case "taint":
+		var desired struct {
+			Value  string `json:"value"`
+			Effect string `json:"effect"`
+		}
+		if mutation.Action != "apply" || !nodeLabelPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.Value) > 128 || !oneOf(desired.Effect, "NoSchedule", "PreferNoSchedule", "NoExecute") {
+			return fmt.Errorf("taint action or payload is invalid")
+		}
+	case "firewall":
+		var desired struct {
+			Protocol  string `json:"protocol"`
+			Port      int    `json:"port"`
+			Direction string `json:"direction"`
+		}
+		if mutation.Action != "apply" || !nodeFirewallTargetPattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || !oneOf(desired.Protocol, "tcp", "udp") || desired.Port < 1 || desired.Port > 65535 || !oneOf(desired.Direction, "ingress", "egress") {
+			return fmt.Errorf("firewall action or payload is invalid")
+		}
+	default:
+		return fmt.Errorf("mutation kind is invalid")
+	}
+	return nil
+}
+
+func decodeNodeDesired(input map[string]any, output any) error {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	return decodeClosedNodeObject(encoded, output)
+}
+
+func nodeMutationSourceComponent(mutation NodeInstallMutation) string {
+	value, _ := mutation.Desired["sourceComponent"].(string)
+	return value
+}
+
+func nodeHasParentTraversal(value string) bool {
+	for _, segment := range strings.Split(value, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return value == "/"
+}
+
+func nodePathUnderAny(target string, roots []string) bool {
+	if !strings.HasPrefix(target, "/") || path.Clean(target) != target || nodeHasParentTraversal(target) {
+		return false
+	}
+	for _, root := range roots {
+		cleanRoot := path.Clean(root)
+		if cleanRoot != "/" && (target == cleanRoot || strings.HasPrefix(target, cleanRoot+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
+func nodePathUnderChildAny(target string, roots []string) bool {
+	if !strings.HasPrefix(target, "/") || path.Clean(target) != target || nodeHasParentTraversal(target) {
+		return false
+	}
+	for _, root := range roots {
+		cleanRoot := path.Clean(root)
+		if cleanRoot != "/" && strings.HasPrefix(target, cleanRoot+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func nodeMutationKinds() []string {
@@ -1217,7 +1692,7 @@ func validNodeOperationType(value NodeOperationType) bool {
 }
 
 func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {
-	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != "node-enrollment/v1" {
+	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != NodeEnrollmentTokenKeyID {
 		return fmt.Errorf("node enrollment response is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, secret.ExpiresAt); err != nil {
@@ -1233,7 +1708,7 @@ func ValidateNode(node Node) error {
 	if node.KubernetesBinding != nil && !validKubernetesBinding(*node.KubernetesBinding) {
 		return fmt.Errorf("node Kubernetes binding is invalid")
 	}
-	if node.AgentEligible && (node.LifecycleState != "active" || node.TrustState != "verified" || node.KubernetesBinding == nil) {
+	if node.AgentEligible && (node.LifecycleState != "active" || node.TrustState != "verified" || node.KubernetesBinding == nil || node.Identity == nil || node.Identity.Status != "active" || node.CapabilityVersion == nil) {
 		return fmt.Errorf("agent-eligible node state is invalid")
 	}
 	if node.Identity != nil {
