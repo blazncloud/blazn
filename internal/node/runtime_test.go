@@ -104,6 +104,25 @@ func TestProductionCapabilityDegradesAndRejectsIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestAgentSandboxControllerAvailabilityRequiresObservedAvailableGeneration(t *testing.T) {
+	for name, fixture := range map[string]struct {
+		value string
+		want  bool
+	}{
+		"available": {value: `{"metadata":{"generation":4},"status":{"observedGeneration":4,"availableReplicas":1}}`, want: true},
+		"stale":     {value: `{"metadata":{"generation":4},"status":{"observedGeneration":3,"availableReplicas":1}}`},
+		"zero":      {value: `{"metadata":{"generation":4},"status":{"observedGeneration":4,"availableReplicas":0}}`},
+		"missing":   {value: `{}`},
+		"malformed": {value: `{`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := agentSandboxControllerAvailable([]byte(fixture.value)); got != fixture.want {
+				t.Fatalf("available=%v want=%v fixture=%s", got, fixture.want, fixture.value)
+			}
+		})
+	}
+}
+
 func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
 	materials := ProductionEmbeddedMaterials()
 	for name, want := range map[string]string{"blazn-node-systemd": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {

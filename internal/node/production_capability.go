@@ -141,9 +141,30 @@ func (HostLiveNodeObserver) Observe(ctx context.Context, plan client.NodeInstall
 		}
 	}
 	if resources, resourceErr := engine.kubectl(ctx, plan, "api-resources", "-o", "name"); resourceErr == nil && strings.Contains(string(resources), "sandboxes.agents.x-k8s.io") {
-		o.SandboxBackends = append(o.SandboxBackends, "kubernetes-agent-sandbox")
+		controller, controllerErr := engine.kubectl(ctx, plan, "get", "deployment", "agent-sandbox-controller", "-n", "agent-sandbox-system", "-o", "json")
+		if controllerErr == nil && agentSandboxControllerAvailable(controller) {
+			o.SandboxBackends = append(o.SandboxBackends, "kubernetes-agent-sandbox")
+		} else {
+			o.ReasonCodes = appendUnique(o.ReasonCodes, "sandbox_controller_unavailable")
+		}
 	}
 	return o, nil
+}
+
+func agentSandboxControllerAvailable(value []byte) bool {
+	var deployment struct {
+		Metadata struct {
+			Generation int64 `json:"generation"`
+		} `json:"metadata"`
+		Status struct {
+			ObservedGeneration int64 `json:"observedGeneration"`
+			AvailableReplicas  int64 `json:"availableReplicas"`
+		} `json:"status"`
+	}
+	return json.Unmarshal(value, &deployment) == nil &&
+		deployment.Metadata.Generation > 0 &&
+		deployment.Status.ObservedGeneration == deployment.Metadata.Generation &&
+		deployment.Status.AvailableReplicas > 0
 }
 
 func liveMemoryBytes(ctx context.Context) (int64, error) {
