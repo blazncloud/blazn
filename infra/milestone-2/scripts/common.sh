@@ -75,11 +75,18 @@ assert_approved_backup_mount() {
   esac
   mount_record=$(findmnt -rn --mountpoint "$canonical_mount" -o TARGET,SOURCE,FSTYPE) || \
     die "approved backup mountpoint is not actively mounted: $canonical_mount"
-  set -- $mount_record
-  [ "$#" -eq 3 ] || die "approved backup mount record is ambiguous"
-  [ "$1" = "$canonical_mount" ] || die "backup mount target does not match the approved mountpoint"
-  [ "$2" = "$backup_source" ] || die "backup mount source does not match the approved source"
-  [ "$3" = "$backup_fstype" ] || die "backup mount filesystem type does not match the approved type"
+  actual_target=
+  actual_source=
+  actual_fstype=
+  extra=
+  IFS=' ' read -r actual_target actual_source actual_fstype extra <<EOF
+$mount_record
+EOF
+  [ -n "$actual_target" ] && [ -n "$actual_source" ] && [ -n "$actual_fstype" ] && [ -z "$extra" ] || \
+    die "approved backup mount record is ambiguous"
+  [ "$actual_target" = "$canonical_mount" ] || die "backup mount target does not match the approved mountpoint"
+  [ "$actual_source" = "$backup_source" ] || die "backup mount source does not match the approved source"
+  [ "$actual_fstype" = "$backup_fstype" ] || die "backup mount filesystem type does not match the approved type"
 }
 
 filesystem_device() {
