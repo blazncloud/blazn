@@ -220,3 +220,20 @@ func TestNodeTemplateUsesLocalNodeError(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeTemplateRequiresRootControlPlaneOriginSemantics(t *testing.T) {
+	template := string(nodeTemplate)
+	if err := validateTrustedProfileTemplate(template); err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"ControlPlaneOrigin       string",
+		"!validNodeControlPlaneOrigin(profile.ControlPlaneOrigin)",
+		"port >= 1 && port <= 65535",
+	} {
+		changed := strings.Replace(template, marker, "", 1)
+		if err := validateTrustedProfileTemplate(changed); err == nil || !strings.Contains(err.Error(), "root control-plane origin") {
+			t.Fatalf("removed semantic marker %q error=%v", marker, err)
+		}
+	}
+}

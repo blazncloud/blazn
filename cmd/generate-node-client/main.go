@@ -118,6 +118,9 @@ func loadSources(root string) (map[string]source, error) {
 }
 
 func validateSources(sources map[string]source, template string) error {
+	if err := validateTrustedProfileTemplate(template); err != nil {
+		return err
+	}
 	for path := range sources {
 		if err := validateRecursiveRefs(sources, path, sources[path].doc, map[string]bool{}); err != nil {
 			return fmt.Errorf("%s references: %w", path, err)
@@ -168,6 +171,22 @@ func validateSources(sources map[string]source, template string) error {
 	for _, unsafe := range []string{"PathEscape(request.Token)", `query.Set("token"`, "Authorization\", \"Bearer \"+request.Token"} {
 		if strings.Contains(template, unsafe) {
 			return fmt.Errorf("enrollment token enters an unsafe transport surface: %q", unsafe)
+		}
+	}
+	return nil
+}
+
+func validateTrustedProfileTemplate(template string) error {
+	markers := []string{
+		"ControlPlaneOrigin       string",
+		"!validNodeControlPlaneOrigin(profile.ControlPlaneOrigin)",
+		"func validNodeControlPlaneOrigin(value string) bool",
+		"parsed.Hostname() == \"\"",
+		"port >= 1 && port <= 65535",
+	}
+	for _, marker := range markers {
+		if strings.Count(template, marker) != 1 {
+			return fmt.Errorf("node template root control-plane origin guard changed: %q", marker)
 		}
 	}
 	return nil
