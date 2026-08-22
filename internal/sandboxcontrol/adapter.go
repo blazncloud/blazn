@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -417,7 +418,7 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	if err != nil {
 		return OperationReceipt{}, adapterError(ErrArtifactExport, 502, "artifact export did not complete", err)
 	}
-	if err := validateArtifactCompletion(record.Artifacts, artifacts); err != nil {
+	if err := validateArtifactCompletion(record, artifacts); err != nil {
 		return OperationReceipt{}, err
 	}
 	finalizers := make([]string, 0, len(record.Finalizers)-1)
@@ -602,10 +603,17 @@ func validateIdentity(workspaceID, ownerID, name string) error {
 	return nil
 }
 
-func validateArtifactCompletion(specs []ArtifactExport, receipts []ArtifactReceipt) error {
+func validateArtifactCompletion(sandbox SandboxRecord, receipts []ArtifactReceipt) error {
+	specs := sandbox.Artifacts
+	requested := make(map[string]ArtifactExport, len(specs))
+	for _, spec := range specs {
+		requested[spec.Name] = spec
+	}
+	prefix := "workspaces/" + sandbox.WorkspaceID + "/sandboxes/" + sandbox.Name + "/"
 	byName := map[string]ArtifactReceipt{}
 	for _, receipt := range receipts {
-		if _, exists := byName[receipt.Name]; exists || receipt.SchemaVersion != ArtifactSchema || !digestPattern.MatchString(receipt.SHA256) || receipt.ObjectKey == "" || receipt.Size < 0 {
+		_, wasRequested := requested[receipt.Name]
+		if _, exists := byName[receipt.Name]; exists || !wasRequested || receipt.SchemaVersion != ArtifactSchema || !digestPattern.MatchString(receipt.SHA256) || !strings.HasPrefix(receipt.ObjectKey, prefix) || path.Clean(receipt.ObjectKey) != receipt.ObjectKey || strings.Contains(receipt.ObjectKey, "..") || receipt.Size < 0 {
 			return adapterError(ErrArtifactExport, 502, "artifact receipt is invalid", nil)
 		}
 		if _, err := time.Parse(time.RFC3339Nano, receipt.ExportedAt); err != nil {

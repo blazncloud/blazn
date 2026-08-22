@@ -270,8 +270,9 @@ func ValidateReceipt(receipt OperationReceipt) error {
 		return fmt.Errorf("sandbox adapter receipt timestamp is invalid")
 	}
 	seenArtifacts := map[string]bool{}
+	artifactPrefix := "workspaces/" + receipt.WorkspaceID + "/sandboxes/" + receipt.Name + "/"
 	for _, artifact := range receipt.Artifacts {
-		if artifact.SchemaVersion != ArtifactSchema || !dnsLabelPattern.MatchString(artifact.Name) || seenArtifacts[artifact.Name] || artifact.ObjectKey == "" || !digestPattern.MatchString(artifact.SHA256) || artifact.Size < 0 {
+		if artifact.SchemaVersion != ArtifactSchema || !dnsLabelPattern.MatchString(artifact.Name) || seenArtifacts[artifact.Name] || !strings.HasPrefix(artifact.ObjectKey, artifactPrefix) || path.Clean(artifact.ObjectKey) != artifact.ObjectKey || strings.Contains(artifact.ObjectKey, "..") || !digestPattern.MatchString(artifact.SHA256) || artifact.Size < 0 {
 			return fmt.Errorf("sandbox artifact receipt is invalid")
 		}
 		seenArtifacts[artifact.Name] = true
