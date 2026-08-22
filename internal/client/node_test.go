@@ -30,7 +30,7 @@ func validNodeInstallPlan() NodeInstallPlan {
 		Cluster:       NodeInstallCluster{ID: "cluster-1", WorkerOnly: true, APIServer: "https://cluster.example.test", KubernetesVersion: "v1.36.1", JoinCredentialEndpoint: "/v1/node-service/join-credentials", BootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule", ExpectedCAFingerprint: "sha256:" + testHash, RegistryEndpoints: []string{"https://registry.example.test"}},
 		Target:        NodeInstallTarget{Platform: NodePlatformLinux, Architecture: NodeArchAMD64, MachineFingerprint: testHash, NodePublicKeyFingerprint: "sha256:" + testHash, MinCPU: 1, MinMemoryBytes: 1073741824, MinDiskBytes: 10737418240},
 		RegistryTrust: []NodeRegistryTrust{},
-		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
+		Components:    []NodeInstallComponent{{Name: "kubernetes", ArtifactType: "binary", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/kubernetes", SHA256: testHash, Ownership: "install"}},
 		NodeService:   NodeInstallService{Manager: "systemd", UnitName: "blazn-node", BinaryPath: "/usr/local/bin/blazn", RunAsUser: "blazn-node", RunAsGroup: "blazn-node", DefinitionSHA256: testHash},
 		Labels:        map[string]string{"blazn.dev/pool": "default"}, Taints: []NodeTaint{}, ResourceBounds: NodeResourceBounds{MaxPods: 64, MaxConcurrentAgents: 4},
 		Mutations:       []NodeInstallMutation{{Ordinal: 1, Kind: "file", Action: "write", Target: "/etc/blazn/node", Desired: map[string]any{"sourceComponent": "kubernetes", "contentSha256": testHash}, DesiredDigest: "sha256:" + testHash, Mode: 0600, UID: 0, GID: 0, Rollback: "remove_if_owned"}},
@@ -66,6 +66,55 @@ func TestValidateNodeInstallPlanSafetyAndMutationUniqueness(t *testing.T) {
 	}
 }
 
+func TestNodeInstallComponentSourceClassesAreClosed(t *testing.T) {
+	plan := validNodeInstallPlan()
+	plan.Components[0] = NodeInstallComponent{Name: "blazn", ArtifactType: "binary", SourceClass: "current_binary", Version: "1.0", Publisher: "Blazn", SHA256: testHash, Ownership: "adopt_exact"}
+	if err := ValidateNodeInstallPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.Components[0].Source = "https://attacker.example.test/blazn"
+	if err := ValidateNodeInstallPlan(plan); err == nil {
+		t.Fatal("local component with remote source passed")
+	}
+	plan = validNodeInstallPlan()
+	plan.Components[0].SourceClass = "embedded"
+	plan.Components[0].Source = ""
+	plan.Components[0].SourceHost = ""
+	if err := ValidateNodeInstallPlan(plan); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNodeServiceAccountMutationsAreClosed(t *testing.T) {
+	for _, mutation := range []NodeInstallMutation{
+		{Ordinal: 1, Kind: "group", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "system": true}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+		{Ordinal: 1, Kind: "user", Action: "create", Target: "blazn-node", Desired: map[string]any{"name": "blazn-node", "group": "blazn-node", "home": "/var/lib/blazn", "shell": "/usr/sbin/nologin", "system": true}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
+	} {
+		plan := validNodeInstallPlan()
+		plan.Mutations = []NodeInstallMutation{mutation}
+		if err := ValidateNodeInstallPlan(plan); err != nil {
+			t.Fatalf("kind=%s valid mutation error=%v", mutation.Kind, err)
+		}
+		plan.Mutations[0].Desired["system"] = false
+		if err := ValidateNodeInstallPlan(plan); err == nil {
+			t.Fatalf("kind=%s non-system account passed", mutation.Kind)
+		}
+	}
+}
+
+func TestNodeEnrollmentSecretPinsPlanSigningKey(t *testing.T) {
+	publicKey, _ := testSigningKey()
+	fingerprint, _ := NodePublicKeyFingerprint(publicKey)
+	secret := NodeEnrollmentSecret{ID: testUUIDA, Token: strings.Repeat("t", 43), TokenKeyID: NodeEnrollmentTokenKeyID, PlanSigningKey: NodePlanSigningKey{KeyID: "node-plan/v1", PublicKey: base64.RawURLEncoding.EncodeToString(publicKey), Fingerprint: fingerprint}, ExpiresAt: "2026-08-21T00:10:00Z"}
+	if err := ValidateNodeEnrollmentSecret(secret); err != nil {
+		t.Fatal(err)
+	}
+	secret.PlanSigningKey.Fingerprint = "sha256:" + strings.Repeat("b", 64)
+	if err := ValidateNodeEnrollmentSecret(secret); err == nil {
+		t.Fatal("mismatched plan signing key fingerprint passed")
+	}
+}
+
 func TestNodeInstallMutationDiscriminators(t *testing.T) {
 	mutations := []NodeInstallMutation{
 		{Ordinal: 1, Kind: "package", Action: "install", Target: "containerd", Desired: map[string]any{"manager": "apt", "version": "1.2.3", "componentName": "containerd"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"},
@@ -84,9 +133,9 @@ func TestNodeInstallMutationDiscriminators(t *testing.T) {
 		plan.Mutations = []NodeInstallMutation{mutation}
 		switch mutation.Kind {
 		case "package":
-			plan.Components = []NodeInstallComponent{{Name: "containerd", ArtifactType: "package", Version: "1.2.3", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/containerd", RepositoryOrigin: "https://packages.example.test", SHA256: testHash, Ownership: "install"}}
+			plan.Components = []NodeInstallComponent{{Name: "containerd", ArtifactType: "package", SourceClass: "https", Version: "1.2.3", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/containerd", RepositoryOrigin: "https://packages.example.test", SHA256: testHash, Ownership: "install"}}
 		case "image":
-			plan.Components = []NodeInstallComponent{{Name: "node-image", ArtifactType: "image", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/node-image", RegistryHost: "registry.example.test", OCIReference: mutation.Target, SHA256: testHash, Ownership: "install"}}
+			plan.Components = []NodeInstallComponent{{Name: "node-image", ArtifactType: "image", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/node-image", RegistryHost: "registry.example.test", OCIReference: mutation.Target, SHA256: testHash, Ownership: "install"}}
 		case "launchd_unit":
 			plan.InstallProfile = "macos-lima-worker-adopt/v1"
 			plan.Mode = NodeModeAdopt
@@ -346,7 +395,7 @@ func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing
 
 func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testing.T) {
 	plan := validNodeInstallPlan()
-	plan.Components = []NodeInstallComponent{{Name: "containerd", ArtifactType: "package", Version: "1.2.3", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/containerd", RepositoryOrigin: "https://packages.example.test", SHA256: testHash, Ownership: "install"}}
+	plan.Components = []NodeInstallComponent{{Name: "containerd", ArtifactType: "package", SourceClass: "https", Version: "1.2.3", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/containerd", RepositoryOrigin: "https://packages.example.test", SHA256: testHash, Ownership: "install"}}
 	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "package", Action: "install", Target: "containerd", Desired: map[string]any{"manager": "apt", "version": "1.2.3", "componentName": "containerd"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}}
 	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/var/lib/blazn/install-backups"}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err == nil {
@@ -363,7 +412,7 @@ func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testi
 
 	imageRef := "registry.example.test/blazn/node@sha256:" + testHash
 	plan = validNodeInstallPlan()
-	plan.Components = []NodeInstallComponent{{Name: "node-image", ArtifactType: "image", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/node-image", RegistryHost: "registry.example.test", OCIReference: imageRef, SHA256: testHash, Ownership: "install"}}
+	plan.Components = []NodeInstallComponent{{Name: "node-image", ArtifactType: "image", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/node-image", RegistryHost: "registry.example.test", OCIReference: imageRef, SHA256: testHash, Ownership: "install"}}
 	plan.Mutations = []NodeInstallMutation{{Ordinal: 1, Kind: "image", Action: "pull", Target: imageRef, Desired: map[string]any{"platform": "linux/amd64", "componentName": "node-image"}, DesiredDigest: "sha256:" + testHash, Rollback: "remove_if_owned"}}
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatal(err)

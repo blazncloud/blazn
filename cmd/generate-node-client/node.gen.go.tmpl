@@ -66,11 +66,18 @@ type CreateNodeEnrollmentRequest struct {
 type NodeError = ErrorBody
 
 type NodeEnrollmentSecret struct {
-	ID         string `json:"id"`
-	Token      string `json:"token"`
-	TokenKeyID string `json:"tokenKeyId"`
-	ExpiresAt  string `json:"expiresAt"`
-	Replayed   bool   `json:"replayed"`
+	ID             string             `json:"id"`
+	Token          string             `json:"token"`
+	TokenKeyID     string             `json:"tokenKeyId"`
+	PlanSigningKey NodePlanSigningKey `json:"planSigningKey"`
+	ExpiresAt      string             `json:"expiresAt"`
+	Replayed       bool               `json:"replayed"`
+}
+
+type NodePlanSigningKey struct {
+	KeyID       string `json:"keyId"`
+	PublicKey   string `json:"publicKey"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 type ExchangeNodeEnrollmentRequest struct {
@@ -321,10 +328,11 @@ type NodeRegistryTrust struct {
 type NodeInstallComponent struct {
 	Name         string `json:"name"`
 	ArtifactType string `json:"artifactType"`
+	SourceClass  string `json:"sourceClass"`
 	Version      string `json:"version"`
 	Publisher    string `json:"publisher"`
-	SourceHost   string `json:"sourceHost"`
-	Source       string `json:"source"`
+	SourceHost   string `json:"sourceHost,omitempty"`
+	Source       string `json:"source,omitempty"`
 	RepositoryOrigin string `json:"repositoryOrigin,omitempty"`
 	RegistryHost string `json:"registryHost,omitempty"`
 	OCIReference string `json:"ociReference,omitempty"`
@@ -556,6 +564,7 @@ var (
 	nodeHostnamePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$`)
 	nodeReceiptLocatorPattern = regexp.MustCompile(`^receipt-backup://[A-Za-z0-9_-]{1,128}$`)
 	nodePackageTargetPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
+	nodeAccountNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	nodeSystemdTargetPattern = regexp.MustCompile(`^/etc/systemd/system/[A-Za-z0-9_.@-]+\.service$`)
 	nodeSystemdUnitPattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]+\.service$`)
 	nodeLaunchdTargetPattern = regexp.MustCompile(`^/Library/LaunchDaemons/[A-Za-z0-9_.-]+\.plist$`)
@@ -740,19 +749,26 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		}
 	}
 	for index, component := range plan.Components {
-		parsed, err := url.Parse(component.Source)
-		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !nodeHostnamePattern.MatchString(component.SourceHost) || err != nil || !validHTTPSURL(component.Source) || parsed.Hostname() != component.SourceHost || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
+		if len(component.Name) < 1 || len(component.Name) > 128 || !oneOf(component.ArtifactType, "package", "binary", "image", "certificate", "configuration") || !oneOf(component.SourceClass, "https", "current_binary", "embedded") || len(component.Version) < 1 || len(component.Version) > 128 || len(component.Publisher) < 1 || len(component.Publisher) > 256 || !nodeHashPattern.MatchString(component.SHA256) || (component.Ownership != "install" && component.Ownership != "adopt_exact") {
 			return fmt.Errorf("components[%d] is invalid", index)
+		}
+		if component.SourceClass == "https" {
+			parsed, err := url.Parse(component.Source)
+			if !nodeHostnamePattern.MatchString(component.SourceHost) || err != nil || !validHTTPSURL(component.Source) || parsed.Hostname() != component.SourceHost {
+				return fmt.Errorf("components[%d] HTTPS source binding is invalid", index)
+			}
+		} else if component.SourceHost != "" || component.Source != "" || component.RepositoryOrigin != "" || component.RegistryHost != "" || component.OCIReference != "" {
+			return fmt.Errorf("components[%d] local source has remote source metadata", index)
 		}
 		switch component.ArtifactType {
 		case "package":
 			origin, originErr := nodeURLOrigin(component.RepositoryOrigin)
-			if originErr != nil || origin != component.RepositoryOrigin || component.RegistryHost != "" || component.OCIReference != "" {
+			if component.SourceClass != "https" || originErr != nil || origin != component.RepositoryOrigin || component.RegistryHost != "" || component.OCIReference != "" {
 				return fmt.Errorf("components[%d] package repository binding is invalid", index)
 			}
 		case "image":
 			registryOrigin, registryHost, registryErr := nodeOCIRegistryOrigin(component.OCIReference)
-			if !nodeHostnamePattern.MatchString(component.RegistryHost) || !nodeImageTargetPattern.MatchString(component.OCIReference) || component.RepositoryOrigin != "" || registryErr != nil || registryOrigin == "" || registryHost != component.RegistryHost || !strings.HasSuffix(component.OCIReference, "@sha256:"+component.SHA256) {
+			if component.SourceClass != "https" || !nodeHostnamePattern.MatchString(component.RegistryHost) || !nodeImageTargetPattern.MatchString(component.OCIReference) || component.RepositoryOrigin != "" || registryErr != nil || registryOrigin == "" || registryHost != component.RegistryHost || !strings.HasSuffix(component.OCIReference, "@sha256:"+component.SHA256) {
 				return fmt.Errorf("components[%d] image registry binding is invalid", index)
 			}
 		default:
@@ -805,7 +821,7 @@ func ValidateNodeInstallPlan(plan NodeInstallPlan) error {
 		return err
 	}
 	for _, validation := range plan.ValidationTests {
-		if !oneOf(validation, "binary_digest", "service_active", "node_identity", "cluster_ca", "worker_only", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility") {
+		if !oneOf(validation, "binary_digest", "service_account", "service_active", "node_identity", "cluster_ca", "worker_only", "lima_worker_binding", "node_uid_binding", "bootstrap_taint", "capability_heartbeat", "agent_eligibility") {
 			return fmt.Errorf("validation test is invalid")
 		}
 	}
@@ -1355,8 +1371,10 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 		}
 	}
 	for _, component := range plan.Components {
-		if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
-			return err
+		if component.SourceClass == "https" {
+			if err := ValidateNodeComponentRedirect(profile, component, component.Source); err != nil {
+				return err
+			}
 		}
 		if component.ArtifactType == "package" && !nodeOriginAllowed(component.RepositoryOrigin, profile.AllowedDownloadOrigins) {
 			return fmt.Errorf("package component %q repository origin is not trusted", component.Name)
@@ -1649,6 +1667,25 @@ func validatePlanMutations(mutations []NodeInstallMutation) error {
 
 func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 	switch mutation.Kind {
+	case "group":
+		var desired struct {
+			Name   string `json:"name"`
+			System bool   `json:"system"`
+		}
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || !desired.System {
+			return fmt.Errorf("group action or payload is invalid")
+		}
+	case "user":
+		var desired struct {
+			Name   string `json:"name"`
+			Group  string `json:"group"`
+			Home   string `json:"home"`
+			Shell  string `json:"shell"`
+			System bool   `json:"system"`
+		}
+		if !oneOf(mutation.Action, "create", "adopt_exact") || !nodeAccountNamePattern.MatchString(mutation.Target) || decodeNodeDesired(mutation.Desired, &desired) != nil || desired.Name != mutation.Target || !nodeAccountNamePattern.MatchString(desired.Group) || desired.Home != "/var/lib/blazn" || !oneOf(desired.Shell, "/usr/sbin/nologin", "/sbin/nologin") || !desired.System {
+			return fmt.Errorf("user action or payload is invalid")
+		}
 	case "package":
 		var desired struct {
 			Manager       string `json:"manager"`
@@ -1663,7 +1700,7 @@ func validateNodeMutationSemantics(mutation NodeInstallMutation) error {
 			SourceComponent string `json:"sourceComponent"`
 			ContentSHA256   string `json:"contentSha256"`
 		}
-		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderChildAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
+		if !oneOf(mutation.Action, "write", "adopt_exact") || !nodePathUnderChildAny(mutation.Target, []string{"/usr/local/bin", "/etc/blazn", "/var/lib/blazn", "/Library/Application Support/Blazn"}) || decodeNodeDesired(mutation.Desired, &desired) != nil || len(desired.SourceComponent) < 1 || len(desired.SourceComponent) > 128 || !nodeHashPattern.MatchString(desired.ContentSHA256) {
 			return fmt.Errorf("file action or payload is invalid")
 		}
 	case "directory":
@@ -1837,7 +1874,7 @@ func nodePathUnderChildAny(target string, roots []string) bool {
 }
 
 func nodeMutationKinds() []string {
-	return []string{"package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"}
+	return []string{"group", "user", "package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"}
 }
 
 func validPlatform(value NodePlatform) bool {
@@ -1855,6 +1892,14 @@ func validNodeOperationType(value NodeOperationType) bool {
 func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {
 	if !nodeUUIDPattern.MatchString(secret.ID) || len(secret.Token) < 43 || len(secret.Token) > 128 || secret.TokenKeyID != NodeEnrollmentTokenKeyID {
 		return fmt.Errorf("node enrollment response is invalid")
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(secret.PlanSigningKey.PublicKey)
+	if len(secret.PlanSigningKey.KeyID) < 1 || len(secret.PlanSigningKey.KeyID) > 128 || err != nil || len(publicKey) != ed25519.PublicKeySize || !nodeDigestPattern.MatchString(secret.PlanSigningKey.Fingerprint) {
+		return fmt.Errorf("node enrollment plan signing key is invalid")
+	}
+	fingerprint, err := NodePublicKeyFingerprint(ed25519.PublicKey(publicKey))
+	if err != nil || !nodeSecureEqual(fingerprint, secret.PlanSigningKey.Fingerprint) {
+		return fmt.Errorf("node enrollment plan signing key fingerprint mismatch")
 	}
 	if _, err := time.Parse(time.RFC3339, secret.ExpiresAt); err != nil {
 		return fmt.Errorf("node enrollment expiresAt is invalid")
