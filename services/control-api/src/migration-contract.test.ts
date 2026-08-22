@@ -98,3 +98,13 @@ test("sandbox persistence freezes immutable versions and workspace-scoped bindin
   assert.doesNotMatch(sql, /GRANT UPDATE[^;]*sandbox_access_grants TO blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT SELECT, INSERT, UPDATE(?:, DELETE)? ON TABLE sandbox_template_versions/);
 });
+
+test("sandbox duration migration derives expiry from one database clock and retires timestamp authority", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/011_sandbox_expiry_duration.sql"), "utf8");
+  assert.match(sql, /CREATE FUNCTION sandbox_create_bound_sandbox_for_duration/);
+  assert.match(sql, /p_expires_in_seconds < 60 OR p_expires_in_seconds > 7200/);
+  assert.match(sql, /effective_expires_at := effective_now \+ make_interval\(secs => p_expires_in_seconds\)/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION sandbox_create_bound_sandbox\([\s\S]*timestamptz[\s\S]*FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION sandbox_create_bound_sandbox_for_duration\([\s\S]*integer[\s\S]*TO blazn_runtime/);
+});

@@ -55,6 +55,14 @@ test("grant file header schema rejects isolated dot segments", async () => {
   assert.equal(validate("/workspace/src/../escape"), false);
 });
 
+test("sandbox source commit accepts only exact SHA-1 or SHA-256 widths", async () => {
+  const openapi = await readJSON(path.join(contracts, "sandboxes.openapi.json")) as { components: { schemas: { SandboxSource: Record<string, unknown> } } };
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  const validate = ajv.compile(openapi.components.schemas.SandboxSource);
+  for (const width of [40, 64]) assert.equal(validate({ repository: "source", commit: "a".repeat(width) }), true, JSON.stringify(validate.errors));
+  for (const width of [39, 41, 63, 65]) assert.equal(validate({ repository: "source", commit: "a".repeat(width) }), false, `accepted commit width ${width}`);
+});
+
 test("semantic template and source coverage rejects duplicate identities and incomplete bindings", async () => {
   const good = await readJSON(path.join(fixtures, "template-good.json")) as { spec: { variants: Array<{ architecture: string }>; repositories: Array<{ name: string }>; artifacts: Array<{ name: string; path: string }> } };
   const unique = (values: string[]): boolean => new Set(values).size === values.length;
