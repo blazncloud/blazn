@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-sandbox-webhook-certs
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+type: kubernetes.io/tls
+data:
+  tls.crt: BLAZN_TLS_CERT
+  tls.key: BLAZN_TLS_KEY
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: blazn-agent-sandbox-ca-bootstrap
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: blazn-agent-sandbox-ca-bootstrap
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+rules:
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  resourceNames:
+  - sandboxclaims.extensions.agents.x-k8s.io
+  - sandboxes.agents.x-k8s.io
+  - sandboxtemplates.extensions.agents.x-k8s.io
+  - sandboxwarmpools.extensions.agents.x-k8s.io
+  verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: blazn-agent-sandbox-ca-bootstrap
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: blazn-agent-sandbox-ca-bootstrap
+subjects:
+- kind: ServiceAccount
+  name: blazn-agent-sandbox-ca-bootstrap
+  namespace: agent-sandbox-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: blazn-agent-sandbox-ca-bootstrap
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase4c
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      annotations:
+        blazn.dev/phase4c-transaction: BLAZN_TRANSACTION_ID
+      labels:
+        app.kubernetes.io/part-of: blazn-phase4c
+    spec:
+      serviceAccountName: blazn-agent-sandbox-ca-bootstrap
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+BLAZN_BOOTSTRAP_INIT_CONTAINERS
+      containers:
+      - name: verify
+        image: registry.k8s.io/kubectl:v1.35.6@sha256:4d8c68e8c2bf360b1808927c4d39fb13998c106cac903622d127a2275c844126
+        args: ["get", "crd", "sandboxes.agents.x-k8s.io"]
+        resources:
+          requests: {cpu: 10m, memory: 16Mi}
+          limits: {cpu: 100m, memory: 64Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+          privileged: false
+          readOnlyRootFilesystem: true

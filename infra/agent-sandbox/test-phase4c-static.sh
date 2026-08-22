@@ -1,0 +1,130 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+PHASE4C=$ROOT/phase4c
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/blazn-phase4c-static.XXXXXX")
+cleanup() {
+  find "$tmp" -xdev -type f -delete
+  find "$tmp" -xdev -depth -type d -empty -delete
+}
+trap cleanup EXIT HUP INT TERM
+
+for script in "$PHASE4C"/*.sh; do sh -n "$script"; done
+BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 "$PHASE4C/render-install.sh" "$tmp/install.yaml"
+grep -F 'image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.6@sha256:' "$tmp/install.yaml" >/dev/null
+grep -F -- '- --leader-election-namespace=agent-sandbox-system' "$tmp/install.yaml" >/dev/null
+grep -F -- '- --cache-label-selectors=true' "$tmp/install.yaml" >/dev/null
+if grep -F -- '- --extensions' "$tmp/install.yaml" >/dev/null; then exit 1; fi
+if grep -F 'kind: ClusterRole' "$tmp/install.yaml" >/dev/null; then exit 1; fi
+if grep -F 'kind: ClusterRoleBinding' "$tmp/install.yaml" >/dev/null; then exit 1; fi
+[ "$(grep -c '^kind: CustomResourceDefinition$' "$tmp/install.yaml")" -eq 4 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/install.yaml")" -eq 9 ]
+
+mkdir "$tmp/bin"
+cat >"$tmp/bin/kubectl" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *'get runtimeclass blazn-qualified'*) printf 'runsc' ;;
+  *'get clusterqueue.kueue.x-k8s.io'*) printf 'True' ;;
+  *'get nodes -l blazn.dev/sandbox-eligible=true'*) printf 'node/node-a' ;;
+  *'auth whoami'*) printf 'phase4c-reviewer' ;;
+  *) printf 'unexpected fake kubectl invocation: %s\n' "$*" >&2; exit 1 ;;
+esac
+EOF
+chmod 0700 "$tmp/bin/kubectl"
+PATH="$tmp/bin:$PATH" \
+  BLAZN_EXISTING_CLUSTER_QUEUE=shared-capacity \
+  BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  BLAZN_ORCHESTRATION_ONLY_ACK=approved-non-sensitive-phase4c-canary \
+  BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 \
+  "$PHASE4C/render-fixtures.sh" "$tmp/orchestration-only" >/dev/null
+grep -F 'blazn.dev/runtime-trust: orchestration-only' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null
+if grep -F 'runtimeClassName:' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null; then exit 1; fi
+grep -F "object.metadata.labels['blazn.dev/runtime-trust'] == 'orchestration-only'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/blazn-poc.yaml")" -eq 4 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/bootstrap.yaml")" -eq 6 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/controller-boundary.yaml")" -eq 8 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/synthetic-canary.yaml")" -eq 2 ]
+PATH="$tmp/bin:$PATH" \
+  BLAZN_EXISTING_CLUSTER_QUEUE=shared-capacity \
+  BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+  BLAZN_RUNTIME_CLASS=blazn-qualified \
+  BLAZN_EXPECTED_RUNTIME_HANDLER=runsc \
+  BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 \
+  "$PHASE4C/render-fixtures.sh" "$tmp/qualified-runtime" >/dev/null
+grep -F 'blazn.dev/runtime-trust: qualified-runtime' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
+grep -F 'runtimeClassName: blazn-qualified' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
+grep -F "object.spec.podTemplate.spec.runtimeClassName == 'blazn-qualified'" "$tmp/qualified-runtime/controller-boundary.yaml" >/dev/null
+
+grep -F 'namespace: blazn-poc' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'object.metadata.namespace == '\''blazn-poc'\''' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'validationActions: [Deny]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'matchPolicy: Equivalent' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'apiVersions: ["v1alpha1", "v1beta1"]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "containers[0].image == 'BLAZN_SYNTHETIC_IMAGE'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'size(object.spec.podTemplate.spec.nodeSelector) == 1' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F '!has(object.spec.podTemplate.spec.nodeName)' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F '!has(object.spec.podTemplate.spec.tolerations)' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'size(c.resources.requests) == 2' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "size(object.spec.podTemplate.spec.volumes) == 0" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "request.userInfo.username == 'BLAZN_CREATE_PRINCIPAL'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "object.spec == oldObject.spec" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F "object.metadata.name == 'phase4c-canary'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+grep -F "containers[0].image == 'example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+grep -F "c.command == ['sh', '-c', 'trap : TERM INT; sleep 3600 & wait']" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+grep -F "c.resources.requests.cpu == '100m'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+if grep -A30 'name: blazn-agent-sandbox-observer' "$PHASE4C/controller-boundary.yaml.in" | grep -F 'customresourcedefinitions' >/dev/null; then exit 1; fi
+grep -F 'verbs: ["get", "patch"]' "$PHASE4C/bootstrap.yaml.in" >/dev/null
+if grep -F 'verbs: ["get", "patch", "update"]' "$PHASE4C/bootstrap.yaml.in" >/dev/null; then exit 1; fi
+grep -F 'readOnlyRootFilesystem: true' "$tmp/install.yaml" >/dev/null
+grep -F 'secretName: agent-sandbox-webhook-certs' "$tmp/install.yaml" >/dev/null
+grep -F 'clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE' "$PHASE4C/blazn-poc.yaml.in" >/dev/null
+grep -F "approved-non-sensitive-phase4c-canary" "$PHASE4C/render-fixtures.sh" >/dev/null
+grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
+grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
+grep -F 'delete_if_owned canary-sandbox sandbox phase4c-canary' "$PHASE4C/rollback.sh" >/dev/null
+# shellcheck disable=SC2016
+grep -F 'kubectl wait --for=delete "$target"' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'admission.json' "$PHASE4C/inventory.sh" >/dev/null
+# shellcheck disable=SC2016
+grep -F 'cmp "$pre/$file" "$post/$file"' "$PHASE4C/rollback.sh" >/dev/null
+# shellcheck disable=SC2016
+grep -F 'phase4c_write_phase "$transaction" rollback-intent' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'sha256sum -c input.sha256' "$PHASE4C/lib.sh" >/dev/null
+if grep -E 'kubectl (apply|create|delete|edit|label|patch|replace|scale)' "$PHASE4C/inventory.sh" >/dev/null; then exit 1; fi
+
+attest_pod() {
+  jq -S \
+    --arg expected_image 'example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    --arg sandbox_uid '88888888-8888-4888-8888-888888888888' \
+    --arg expected_runtime '' \
+    -f "$PHASE4C/attest-pod.jq" "$1" >/dev/null
+}
+attest_pod "$PHASE4C/pod-attestation-fixture.json"
+for allowed_shape in expected-ref normalized-ref digest-image-id missing-status-resources; do
+  case "$allowed_shape" in
+    expected-ref) filter='.status.containerStatuses[0].image = "example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+    normalized-ref) filter='.status.containerStatuses[0].image = "registry.example.invalid/cache/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+    digest-image-id) filter='.status.containerStatuses[0].imageID = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' ;;
+    missing-status-resources) filter='del(.status.containerStatuses[0].allocatedResources,.status.containerStatuses[0].resources)' ;;
+  esac
+  jq "$filter" "$PHASE4C/pod-attestation-fixture.json" >"$tmp/pod-$allowed_shape.json"
+  attest_pod "$tmp/pod-$allowed_shape.json"
+done
+for mutation in extra-selector extra-request wrong-owner wrong-status-ref wrong-normalized-digest wrong-image-id wrong-allocated-resources wrong-status-resources; do
+  case "$mutation" in
+    extra-selector) filter='.spec.nodeSelector.extra = "forbidden"' ;;
+    extra-request) filter='.spec.containers[0].resources.requests["ephemeral-storage"] = "1Mi"' ;;
+    wrong-owner) filter='.metadata.ownerReferences[0].uid = "77777777-7777-4777-8777-777777777777"' ;;
+    wrong-status-ref) filter='.status.containerStatuses[0].image = "example.invalid/synthetic:latest"' ;;
+    wrong-normalized-digest) filter='.status.containerStatuses[0].image = "registry.example.invalid/cache/synthetic@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' ;;
+    wrong-image-id) filter='.status.containerStatuses[0].imageID = "example.invalid/synthetic@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' ;;
+    wrong-allocated-resources) filter='.status.containerStatuses[0].allocatedResources.cpu = "101m"' ;;
+    wrong-status-resources) filter='.status.containerStatuses[0].resources.limits.memory = "129Mi"' ;;
+  esac
+  jq "$filter" "$PHASE4C/pod-attestation-fixture.json" >"$tmp/pod-$mutation.json"
+  if attest_pod "$tmp/pod-$mutation.json" 2>/dev/null; then printf 'Pod attestation accepted mutation: %s\n' "$mutation" >&2; exit 1; fi
+done
+
+printf 'Phase 4C non-mutating preparation audit passed\n'
