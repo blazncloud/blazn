@@ -159,7 +159,7 @@ case $action in
           IFS=: read -r group_name _group_password group_gid group_members <<EOF
 $group_record
 EOF
-          [ "$group_name" = "$account_name" ] && [ "$group_gid" = "$account_gid" ] && [ -z "$group_members" ] || die "POC CLI primary group changed during cleanup"
+          if [ "$group_name" != "$account_name" ] || [ "$group_gid" != "$account_gid" ] || [ -n "$group_members" ]; then die "POC CLI primary group changed during cleanup"; fi
           groupdel "$account_name"
         fi
         getent group "$account_name" >/dev/null 2>&1 && die "POC CLI group remained after cleanup"
