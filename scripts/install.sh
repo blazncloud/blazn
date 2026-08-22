@@ -78,12 +78,115 @@ blazn_receipt_value() {
   ' "$blazn_receipt_file"
 }
 
+blazn_process_start() {
+  blazn_process_pid=$1
+  if [ -r "/proc/$blazn_process_pid/stat" ]; then
+    sed 's/^.*) //' "/proc/$blazn_process_pid/stat" | awk '{print $20}'
+  else
+    ps -p "$blazn_process_pid" -o lstart= 2>/dev/null | awk '{$1=$1; print}'
+  fi
+}
+
+blazn_write_lock_owner() {
+  blazn_owner_start=$(blazn_process_start "$$")
+  [ -n "$blazn_owner_start" ] || blazn_die "could not determine installer process identity"
+  {
+    printf 'pid=%s\n' "$$"
+    printf 'start=%s\n' "$blazn_owner_start"
+  } > "$blazn_lock_owner" || blazn_die "could not write lifecycle lock owner"
+  chmod 0600 "$blazn_lock_owner"
+}
+
+blazn_write_journal() {
+  blazn_journal_state=$1
+  {
+    printf 'state=%s\n' "$blazn_journal_state"
+    printf 'had_binary=%s\n' "$blazn_had_binary"
+    printf 'had_receipt=%s\n' "$blazn_had_receipt"
+  } > "$blazn_lock_journal" || blazn_die "could not write installation journal"
+  chmod 0600 "$blazn_lock_journal"
+}
+
+blazn_recover_stale_lock() {
+  [ -d "$blazn_lock_dir" ] && [ ! -L "$blazn_lock_dir" ] || \
+    blazn_die "lifecycle lock path is not a real directory: $blazn_lock_dir"
+
+  if [ -f "$blazn_lock_owner" ] && [ ! -L "$blazn_lock_owner" ]; then
+    blazn_owner_pid=$(blazn_receipt_value "$blazn_lock_owner" pid 2>/dev/null || true)
+    blazn_owner_start=$(blazn_receipt_value "$blazn_lock_owner" start 2>/dev/null || true)
+    if [ -n "$blazn_owner_pid" ] && [ -n "$blazn_owner_start" ] && kill -0 "$blazn_owner_pid" 2>/dev/null; then
+      blazn_live_start=$(blazn_process_start "$blazn_owner_pid" 2>/dev/null || true)
+      if [ "$blazn_live_start" = "$blazn_owner_start" ]; then
+        blazn_die "another Blazn install or uninstall operation owns $blazn_lock_dir"
+      fi
+    fi
+  fi
+
+  if [ -f "$blazn_lock_journal" ] && [ ! -L "$blazn_lock_journal" ]; then
+    blazn_stale_state=$(blazn_receipt_value "$blazn_lock_journal" state) || \
+      blazn_die "stale lifecycle journal is invalid; manual reconciliation is required"
+    blazn_stale_had_binary=$(blazn_receipt_value "$blazn_lock_journal" had_binary) || \
+      blazn_die "stale lifecycle journal is missing binary state"
+    blazn_stale_had_receipt=$(blazn_receipt_value "$blazn_lock_journal" had_receipt) || \
+      blazn_die "stale lifecycle journal is missing receipt state"
+    case "$blazn_stale_had_binary:$blazn_stale_had_receipt" in
+      0:0|1:1) ;;
+      *) blazn_die "stale lifecycle journal has inconsistent ownership state" ;;
+    esac
+
+    case "$blazn_stale_state" in
+      preparing)
+        if [ "$blazn_stale_had_binary" = "1" ]; then
+          if [ -f "$blazn_backup_binary" ] && [ ! -L "$blazn_backup_binary" ]; then
+            rm -f "$blazn_destination"
+            mv "$blazn_backup_binary" "$blazn_destination" || blazn_die "could not restore stale binary backup"
+          elif [ ! -f "$blazn_destination" ]; then
+            blazn_die "stale transaction lost both the owned binary and its backup"
+          fi
+          if [ -f "$blazn_backup_receipt" ] && [ ! -L "$blazn_backup_receipt" ]; then
+            rm -f "$blazn_receipt"
+            mv "$blazn_backup_receipt" "$blazn_receipt" || blazn_die "could not restore stale receipt backup"
+          elif [ ! -f "$blazn_receipt" ]; then
+            blazn_die "stale transaction lost both the owned receipt and its backup"
+          fi
+        else
+          rm -f "$blazn_destination" "$blazn_receipt"
+        fi
+        ;;
+      committed)
+        [ -f "$blazn_destination" ] && [ -f "$blazn_receipt" ] || \
+          blazn_die "committed stale transaction is missing its installed pair"
+        ;;
+      uninstall_preparing)
+        if [ -f "$blazn_destination" ]; then
+          [ ! -e "$blazn_receipt" ] || blazn_die "stale uninstall has both active and staged receipts"
+          [ -f "$blazn_uninstall_receipt" ] && [ ! -L "$blazn_uninstall_receipt" ] || \
+            blazn_die "stale uninstall is missing its recoverable receipt"
+          mv "$blazn_uninstall_receipt" "$blazn_receipt" || blazn_die "could not restore stale uninstall receipt"
+        else
+          rm -f "$blazn_uninstall_receipt"
+        fi
+        ;;
+      *) blazn_die "unknown stale lifecycle journal state: $blazn_stale_state" ;;
+    esac
+    rm -f "$blazn_stage_binary" "$blazn_stage_receipt" "$blazn_backup_binary" "$blazn_backup_receipt"
+  elif [ -e "$blazn_stage_binary" ] || [ -e "$blazn_stage_receipt" ] || \
+       [ -e "$blazn_backup_binary" ] || [ -e "$blazn_backup_receipt" ] || \
+       [ -e "$blazn_uninstall_receipt" ]; then
+    blazn_die "stale lifecycle lock has transaction files but no valid journal"
+  fi
+
+  rm -f "$blazn_lock_owner" "$blazn_lock_journal"
+  rmdir "$blazn_lock_dir" || blazn_die "could not remove reconciled lifecycle lock"
+}
+
 blazn_test_checkpoint() {
   blazn_checkpoint=$1
   [ "${BLAZN_ALLOW_INSECURE_TEST_ORIGIN:-}" = "1" ] || return 0
   case "${BLAZN_TEST_FAIL_STEP:-}" in
     "$blazn_checkpoint") blazn_die "injected failure at $blazn_checkpoint" ;;
     "signal-$blazn_checkpoint") kill -TERM "$$" ;;
+    "kill-$blazn_checkpoint") kill -KILL "$$" ;;
   esac
 }
 
@@ -126,6 +229,7 @@ blazn_cleanup() {
     rmdir "$blazn_tmp_dir" 2>/dev/null || true
   fi
   if [ "${blazn_lock_owned:-0}" = "1" ] && [ -n "${blazn_lock_dir:-}" ]; then
+    rm -f "${blazn_lock_owner:-}" "${blazn_lock_journal:-}" 2>/dev/null || true
     rmdir "$blazn_lock_dir" 2>/dev/null || \
       blazn_err "could not remove lifecycle lock $blazn_lock_dir"
     blazn_lock_owned=0
@@ -138,6 +242,7 @@ blazn_command_required ssh-keygen
 blazn_command_required awk
 blazn_command_required grep
 blazn_command_required mktemp
+blazn_command_required ps
 
 case "$(uname -s)" in
   Darwin) blazn_os=darwin ;;
@@ -294,10 +399,22 @@ mkdir -p "$blazn_install_dir" || blazn_die "could not create $blazn_install_dir"
 blazn_destination="$blazn_install_dir/blazn"
 blazn_receipt="$blazn_install_dir/.blazn-install-receipt"
 blazn_lock_dir="$blazn_install_dir/.blazn-install.lock"
+blazn_lock_owner="$blazn_lock_dir/owner"
+blazn_lock_journal="$blazn_lock_dir/journal"
+blazn_stage_binary="$blazn_install_dir/.blazn.new"
+blazn_stage_receipt="$blazn_install_dir/.blazn-receipt.new"
+blazn_backup_binary="$blazn_install_dir/.blazn.backup"
+blazn_backup_receipt="$blazn_install_dir/.blazn-receipt.backup"
+blazn_uninstall_receipt="$blazn_install_dir/.blazn-uninstall-receipt"
 if ! mkdir "$blazn_lock_dir" 2>/dev/null; then
-  blazn_die "another Blazn install or uninstall operation owns $blazn_lock_dir"
+  if [ ! -e "$blazn_lock_dir" ]; then
+    blazn_die "could not create lifecycle lock at $blazn_lock_dir"
+  fi
+  blazn_recover_stale_lock
+  mkdir "$blazn_lock_dir" 2>/dev/null || blazn_die "could not acquire reconciled lifecycle lock"
 fi
 blazn_lock_owned=1
+blazn_write_lock_owner
 [ ! -L "$blazn_destination" ] || blazn_die "refusing to replace a symbolic-link destination"
 [ ! -L "$blazn_receipt" ] || blazn_die "refusing to replace a symbolic-link receipt"
 
@@ -322,8 +439,9 @@ elif [ -e "$blazn_receipt" ]; then
   blazn_die "installation receipt exists without its owned binary; reconcile it before installing"
 fi
 
-blazn_stage_binary="$blazn_install_dir/.blazn.new.$$"
-blazn_stage_receipt="$blazn_install_dir/.blazn-receipt.new.$$"
+[ ! -e "$blazn_stage_binary" ] && [ ! -e "$blazn_stage_receipt" ] && \
+[ ! -e "$blazn_backup_binary" ] && [ ! -e "$blazn_backup_receipt" ] || \
+  blazn_die "unreconciled installation transaction files already exist"
 cp "$blazn_tmp_dir/extract/blazn" "$blazn_stage_binary" || \
   blazn_die "could not stage blazn binary"
 chmod 0755 "$blazn_stage_binary"
@@ -343,18 +461,21 @@ blazn_new_receipt_installed=0
 blazn_backup_binary=""
 blazn_backup_receipt=""
 
+if [ -e "$blazn_destination" ]; then blazn_had_binary=1; else blazn_had_binary=0; fi
+if [ -e "$blazn_receipt" ]; then blazn_had_receipt=1; else blazn_had_receipt=0; fi
+[ "$blazn_had_binary" = "$blazn_had_receipt" ] || blazn_die "owned binary and receipt are inconsistent"
+blazn_backup_binary="$blazn_install_dir/.blazn.backup"
+blazn_backup_receipt="$blazn_install_dir/.blazn-receipt.backup"
+blazn_write_journal preparing
+
 if [ -e "$blazn_destination" ]; then
   [ -f "$blazn_destination" ] && [ ! -L "$blazn_destination" ] || \
     blazn_die "existing installation path is not a regular file"
-  blazn_backup_binary="$blazn_install_dir/.blazn.backup.$$"
-  [ ! -e "$blazn_backup_binary" ] || blazn_die "stale binary backup exists at $blazn_backup_binary"
   mv "$blazn_destination" "$blazn_backup_binary" || blazn_die "could not stage the existing blazn binary"
 fi
 if [ -e "$blazn_receipt" ]; then
   [ -f "$blazn_receipt" ] && [ ! -L "$blazn_receipt" ] || \
     blazn_die "existing receipt path is not a regular file"
-  blazn_backup_receipt="$blazn_install_dir/.blazn-receipt.backup.$$"
-  [ ! -e "$blazn_backup_receipt" ] || blazn_die "stale receipt backup exists at $blazn_backup_receipt"
   mv "$blazn_receipt" "$blazn_backup_receipt" || blazn_die "could not stage the existing receipt"
 fi
 blazn_test_checkpoint after-backup
@@ -371,6 +492,7 @@ fi
 blazn_new_receipt_installed=1
 blazn_stage_receipt=""
 blazn_test_checkpoint after-receipt-install
+blazn_write_journal committed
 
 # The new binary/receipt pair is now the committed installation. Cleanup of
 # rollback copies must never make a committed install roll back.

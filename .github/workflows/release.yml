@@ -195,28 +195,46 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           set -euo pipefail
-          gh release view "$VERSION" >/dev/null 2>&1 && exit 1
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" >/dev/null 2>&1 && {
+            echo "tag already exists: $VERSION" >&2
+            exit 1
+          }
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$VERSION" \
+            -f sha="$SOURCE_SHA" >/dev/null
           gh release create "$VERSION" dist/* \
-            --target "$SOURCE_SHA" \
+            --verify-tag \
             --title "Blazn $VERSION" \
             --generate-notes
-      - name: Post-promotion authenticated installer smoke
+
+  post-promotion-smoke:
+    if: inputs.mode == 'publish' && github.ref == 'refs/heads/main'
+    needs: sign-and-publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download promoted release through GitHub
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
-          EXPECTED_PUBLIC_KEY: ${{ vars.BLAZN_RELEASE_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           smoke="$RUNNER_TEMP/blazn-release-smoke"
           mkdir -p "$smoke/download/$VERSION" "$smoke/bin"
           gh release download "$VERSION" --dir "$smoke/download/$VERSION"
-          printf 'blazn-release namespaces="blazn-release" %s\n' "$EXPECTED_PUBLIC_KEY" > "$smoke/allowed_signers"
-          fingerprint=$(printf '%s\n' "$EXPECTED_PUBLIC_KEY" | ssh-keygen -lf - -E sha256 | awk '{print $2}')
+      - name: Run downloaded installer with embedded production trust root
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          smoke="$RUNNER_TEMP/blazn-release-smoke"
           BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
           BLAZN_DIST_URL="file://$smoke" \
           BLAZN_VERSION="$VERSION" \
           BLAZN_INSTALL_DIR="$smoke/bin" \
-          BLAZN_ALLOWED_SIGNERS="$smoke/allowed_signers" \
-          BLAZN_SIGNING_FINGERPRINT="$fingerprint" \
             sh "$smoke/download/$VERSION/install.sh"
+          "$smoke/bin/blazn" version --output=json
+          "$smoke/bin/blazn" uninstall --yes --output=json

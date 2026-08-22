@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -57,13 +60,20 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 	directory := filepath.Dir(executable)
 	lockDir := filepath.Join(directory, ".blazn-install.lock")
 	if err := ops.mkdir(lockDir, 0o700); err != nil {
-		return UninstallResult{}, fmt.Errorf("another Blazn install or uninstall operation owns %s", lockDir)
+		if os.IsExist(err) {
+			return UninstallResult{}, fmt.Errorf("another or stale Blazn install or uninstall operation owns %s; rerun the signed installer to reconcile stale state", lockDir)
+		}
+		return UninstallResult{}, fmt.Errorf("create lifecycle lock %s: %w", lockDir, err)
 	}
 	lockOwned := true
+	lockOwner := filepath.Join(lockDir, "owner")
+	lockJournal := filepath.Join(lockDir, "journal")
 	defer func() {
 		if !lockOwned {
 			return
 		}
+		_ = ops.remove(lockOwner)
+		_ = ops.remove(lockJournal)
 		if err := ops.remove(lockDir); err != nil {
 			if result.Status == "removed" {
 				result.Status = "removed_with_residue"
@@ -75,6 +85,16 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 			}
 		}
 	}()
+	startIdentity, err := processStartIdentity(os.Getpid())
+	if err != nil {
+		return UninstallResult{}, fmt.Errorf("determine uninstall process identity: %w", err)
+	}
+	if err := os.WriteFile(lockOwner, []byte(fmt.Sprintf("pid=%d\nstart=%s\n", os.Getpid(), startIdentity)), 0o600); err != nil {
+		return UninstallResult{}, fmt.Errorf("write lifecycle lock owner: %w", err)
+	}
+	if err := os.WriteFile(lockJournal, []byte("state=uninstall_preparing\nhad_binary=1\nhad_receipt=1\n"), 0o600); err != nil {
+		return UninstallResult{}, fmt.Errorf("write uninstall journal: %w", err)
+	}
 
 	receipt := filepath.Join(directory, installReceiptName)
 	receiptInfo, err := os.Lstat(receipt)
@@ -113,12 +133,25 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 		return UninstallResult{}, fmt.Errorf("installed binary differs from its receipt; refusing to remove it")
 	}
 
-	stagedReceipt := fmt.Sprintf("%s.removing-%d", receipt, os.Getpid())
+	stagedReceipt := filepath.Join(directory, ".blazn-uninstall-receipt")
+	if _, err := os.Lstat(stagedReceipt); err == nil {
+		return UninstallResult{}, fmt.Errorf("stale uninstall receipt exists at %s; rerun the signed installer to reconcile it", stagedReceipt)
+	} else if !os.IsNotExist(err) {
+		return UninstallResult{}, fmt.Errorf("inspect staged uninstall receipt: %w", err)
+	}
 	if err := ops.rename(receipt, stagedReceipt); err != nil {
 		return UninstallResult{}, fmt.Errorf("stage installation receipt: %w", err)
 	}
 	if err := ops.remove(executable); err != nil {
-		_ = ops.rename(stagedReceipt, receipt)
+		if restoreErr := ops.rename(stagedReceipt, receipt); restoreErr != nil {
+			return UninstallResult{
+				Command:         "uninstall",
+				Status:          "failed_with_residue",
+				Path:            executable,
+				ConfigPreserved: true,
+				Residue:         stagedReceipt,
+			}, nil
+		}
 		return UninstallResult{}, fmt.Errorf("remove executable: %w", err)
 	}
 	result = UninstallResult{Command: "uninstall", Status: "removed", Path: executable, ConfigPreserved: true}
@@ -129,6 +162,33 @@ func runUninstallAtWithOps(executable string, ops uninstallOps) (result Uninstal
 	}
 
 	return result, nil
+}
+
+func processStartIdentity(pid int) (string, error) {
+	if runtime.GOOS == "linux" {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			return "", err
+		}
+		end := strings.LastIndex(string(data), ") ")
+		if end < 0 {
+			return "", fmt.Errorf("invalid proc stat format")
+		}
+		fields := strings.Fields(string(data)[end+2:])
+		if len(fields) <= 19 {
+			return "", fmt.Errorf("proc stat is missing process start time")
+		}
+		return fields[19], nil
+	}
+	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil {
+		return "", err
+	}
+	identity := strings.Join(strings.Fields(string(output)), " ")
+	if identity == "" {
+		return "", fmt.Errorf("process start time is empty")
+	}
+	return identity, nil
 }
 
 func parseReceipt(reader io.Reader) (map[string]string, error) {

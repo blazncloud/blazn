@@ -126,6 +126,14 @@ inode_of() {
   fi
 }
 
+process_start_of() {
+  if [ -r "/proc/$1/stat" ]; then
+    sed 's/^.*) //' "/proc/$1/stat" | awk '{print $20}'
+  else
+    ps -p "$1" -o lstart= | awk '{$1=$1; print}'
+  fi
+}
+
 write_manifest
 run_installer >/dev/null
 [ -x "$test_install/blazn" ] || fail "signed archive installs executable"
@@ -236,6 +244,17 @@ done
 cp "$test_root/owned-receipt" "$test_install/.blazn-install-receipt"
 pass "post-backup failures and signals restore the prior installation"
 
+for fault in kill-after-backup kill-after-binary-install; do
+  prepare_upgrade_state
+  if run_installer_fault "$fault" >"$test_root/fault-$fault.out" 2>&1; then
+    fail "kill fault $fault unexpectedly succeeded"
+  fi
+  run_installer >"$test_root/recover-$fault.out"
+  [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "$fault recovery did not install the candidate"
+  grep -q '^version=v1.2.3$' "$test_install/.blazn-install-receipt" || fail "$fault recovery left stale receipt state"
+done
+pass "SIGKILL residue is reconciled on the next installer run"
+
 cp "$test_release/SHA256SUMS.sig" "$test_root/good-signature"
 rm "$test_release/SHA256SUMS.sig"
 if run_installer >"$test_root/missing-signature.out" 2>&1; then
@@ -251,10 +270,15 @@ grep -q 'required command not found: ssh-keygen' "$test_root/missing-verifier.ou
 pass "missing signature verifier is rejected"
 
 mkdir "$test_install/.blazn-install.lock"
+{
+  printf 'pid=%s\n' "$$"
+  printf 'start=%s\n' "$(process_start_of "$$")"
+} > "$test_install/.blazn-install.lock/owner"
 if run_installer >"$test_root/lifecycle-lock.out" 2>&1; then
   fail "concurrent lifecycle lock was ignored"
 fi
 grep -q 'another Blazn install or uninstall' "$test_root/lifecycle-lock.out" || fail "lifecycle lock failure is explicit"
+rm "$test_install/.blazn-install.lock/owner"
 rmdir "$test_install/.blazn-install.lock"
 pass "concurrent lifecycle operation is rejected"
 
@@ -276,4 +300,4 @@ grep -q 'binary version does not match' "$test_root/version-mismatch.out" || fai
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "version mismatch replaced prior binary"
 pass "downloaded binary version mismatch is rejected"
 
-printf '1..15\n'
+printf '1..16\n'

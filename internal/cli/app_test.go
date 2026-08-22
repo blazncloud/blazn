@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -254,7 +255,7 @@ func TestRunUninstallAtReportsReceiptResidueAfterBinaryRemoval(t *testing.T) {
 
 	ops := defaultUninstallOps
 	ops.remove = func(path string) error {
-		if strings.Contains(path, ".removing-") {
+		if filepath.Base(path) == ".blazn-uninstall-receipt" {
 			return errors.New("injected receipt cleanup failure")
 		}
 		return os.Remove(path)
@@ -297,6 +298,52 @@ func TestRunUninstallAtHonorsLifecycleLock(t *testing.T) {
 	}
 }
 
+func TestRunUninstallAtReportsFailedWithResidueWhenRestoreFails(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "blazn")
+	content := []byte("standalone-binary")
+	if err := os.WriteFile(executable, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	receipt := filepath.Join(dir, installReceiptName)
+	if err := os.WriteFile(receipt, []byte(fmt.Sprintf("version=v1.2.3\nbinary_sha256=%x\n", digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := defaultUninstallOps
+	stageComplete := false
+	ops.rename = func(oldPath, newPath string) error {
+		if filepath.Base(oldPath) == ".blazn-uninstall-receipt" && stageComplete {
+			return errors.New("injected receipt restore failure")
+		}
+		err := os.Rename(oldPath, newPath)
+		if err == nil && oldPath == receipt {
+			stageComplete = true
+		}
+		return err
+	}
+	ops.remove = func(path string) error {
+		if path == executable {
+			return errors.New("injected executable removal failure")
+		}
+		return os.Remove(path)
+	}
+	result, err := runUninstallAtWithOps(executable, ops)
+	if err != nil {
+		t.Fatalf("expected structured residue result, got %v", err)
+	}
+	if result.Status != "failed_with_residue" || result.Residue == "" {
+		t.Fatalf("result=%#v", result)
+	}
+	if _, err := os.Stat(executable); err != nil {
+		t.Fatalf("binary should remain after failed removal: %v", err)
+	}
+	if _, err := os.Stat(result.Residue); err != nil {
+		t.Fatalf("staged receipt residue missing: %v", err)
+	}
+}
+
 func TestInstallPathCheckDetectsShadowingBinary(t *testing.T) {
 	dir := t.TempDir()
 	shadow := filepath.Join(dir, "blazn")
@@ -307,5 +354,20 @@ func TestInstallPathCheckDetectsShadowingBinary(t *testing.T) {
 	check := installPathCheck()
 	if check.Status != "warn" || !strings.Contains(check.Message, "instead of the running executable") {
 		t.Fatalf("check=%#v", check)
+	}
+}
+
+func TestConfigOwnerMatches(t *testing.T) {
+	known, matches := configOwnerMatches(&syscall.Stat_t{Uid: 1001}, 1001)
+	if !known || !matches {
+		t.Fatalf("matching owner: known=%v matches=%v", known, matches)
+	}
+	known, matches = configOwnerMatches(&syscall.Stat_t{Uid: 1002}, 1001)
+	if !known || matches {
+		t.Fatalf("different owner: known=%v matches=%v", known, matches)
+	}
+	known, matches = configOwnerMatches(struct{}{}, 1001)
+	if known || matches {
+		t.Fatalf("unknown metadata: known=%v matches=%v", known, matches)
 	}
 }

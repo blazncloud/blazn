@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 type DoctorReport struct {
@@ -132,8 +133,29 @@ func configPermissionsCheck() DoctorCheck {
 		check.Status = "warn"
 		check.Message = fmt.Sprintf("Blazn configuration directory permissions are %04o", info.Mode().Perm())
 		check.Remediation = "restrict the Blazn configuration directory to mode 0700"
+		return check
+	}
+	knownOwner, matchingOwner := configOwnerMatches(info.Sys(), uint32(os.Geteuid()))
+	if !knownOwner {
+		check.Severity = "warning"
+		check.Status = "warn"
+		check.Message = "could not establish ownership of the Blazn configuration directory"
+		check.Remediation = "verify the directory is owned by the current user before authentication"
+	} else if !matchingOwner {
+		check.Severity = "error"
+		check.Status = "fail"
+		check.Message = "Blazn configuration directory is owned by another user"
+		check.Remediation = "use a private configuration directory owned by the current user"
 	}
 	return check
+}
+
+func configOwnerMatches(systemInfo any, effectiveUID uint32) (bool, bool) {
+	stat, ok := systemInfo.(*syscall.Stat_t)
+	if !ok {
+		return false, false
+	}
+	return true, stat.Uid == effectiveUID
 }
 
 func installerToolsCheck() DoctorCheck {

@@ -79,18 +79,18 @@ The CI target runs:
 - Cross-platform release packaging and signature tests.
 - Installer security and rollback tests.
 
-The release workflow first creates one final-version, commit-addressed candidate containing:
+The candidate workflow first creates one unsigned final-version, commit-addressed candidate containing:
 
 ```text
 blazn_<version>_darwin_arm64.tar.gz
 blazn_<version>_linux_amd64.tar.gz
 blazn_<version>_linux_arm64.tar.gz
 SHA256SUMS
-SHA256SUMS.sig
+install.sh
 version.txt
 ```
 
-Native qualification records the candidate workflow run ID, source SHA, version, and artifact digests. A separate `publish` dispatch on `main` references that exact successful candidate run. Its protected signing job performs no checkout and executes no candidate repository scripts: it recomputes the manifest over the downloaded candidate, signs it with the environment-scoped release key, publishes those exact bytes without rebuilding, and performs an authenticated post-promotion installer smoke.
+Native qualification records the candidate workflow run ID, source SHA, version, and artifact digests. A separate `publish` dispatch on `main` references that exact successful candidate run. Its protected signing job performs no checkout and executes no candidate repository scripts: it recomputes the manifest over the downloaded candidate, adds `SHA256SUMS.sig` with the environment-scoped release key, atomically creates the release tag at the qualified source SHA, and publishes those exact bytes without rebuilding. A separate read-only job downloads the promoted release and runs its installer with the embedded production trust root.
 
 ## End-to-end qualification
 
