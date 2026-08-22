@@ -146,7 +146,7 @@ if (
   # shellcheck disable=SC1091
   . "$ROOT_DIR/scripts/common.sh"
   assert_regular_file_owned_mode "$nofollow_tmp/linked-secret" "$current_uid" 444
-); then
+) 2>/dev/null; then
   printf 'symlinked secret unexpectedly passed no-follow validation\n' >&2
   exit 1
 fi
@@ -154,7 +154,7 @@ if (
   # shellcheck disable=SC1091
   . "$ROOT_DIR/scripts/common.sh"
   assert_directory_owned_mode "$nofollow_tmp/linked-directory" "$current_uid" 700,2700
-); then
+) 2>/dev/null; then
   printf 'symlinked data directory unexpectedly passed no-follow validation\n' >&2
   exit 1
 fi
