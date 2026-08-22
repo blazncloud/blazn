@@ -60,6 +60,10 @@ with-control-plane-lock.sh backup <correlation-id> auto backup.sh <correlation-i
 restore-test.sh <backup> /var/tmp/blazn-restore/<unique-id>  # isolated host only
 ```
 
+The dependency installer places the pinned Compose plugin under the dedicated
+`/etc/blazn/docker-cli` configuration root. The systemd unit sets that exact
+`DOCKER_CONFIG`, avoiding a user's Docker CLI configuration and plugins.
+
 Every API deploy/restart, schema migration, PostgreSQL/object-store restart,
 backup promotion, and production-like restore must use the same
 `ben1-control-plane-mutation` lock. Ngrok activation additionally requires the
