@@ -196,8 +196,24 @@ func TestLinuxBackendSelectionPersistsAcrossOutageRecovery(t *testing.T) {
 	}
 	healthy := &fakeRunner{paths: map[string]bool{"secret-tool": true}}
 	second, err := newSystemStoreForOriginAtHome("linux", healthy, "https://example.test", home)
-	if err != nil || second.Description() != "protected credential file" || len(healthy.calls) != 0 {
+	if err != nil || second.Description() != "protected credential file" || len(healthy.calls) != 2 {
 		t.Fatalf("second=%T description=%q calls=%#v err=%v", second, second.Description(), healthy.calls, err)
+	}
+}
+
+func TestLinuxReceiptStillDetectsLaterBackendConflict(t *testing.T) {
+	home := t.TempDir()
+	outage := &fakeRunner{paths: map[string]bool{"secret-tool": true}, err: &commandError{message: "no session bus", exitCode: 1, stderr: true}}
+	protected, err := newSystemStoreForOriginAtHome("linux", outage, "https://example.test", home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := protected.Put([]byte("protected-session")); err != nil {
+		t.Fatal(err)
+	}
+	secret := &fakeRunner{paths: map[string]bool{"secret-tool": true}, out: []byte("secret-service-session\n")}
+	if _, err := newSystemStoreForOriginAtHome("linux", secret, "https://example.test", home); err == nil || !strings.Contains(err.Error(), "also contains") {
+		t.Fatalf("receipt conflict error=%v", err)
 	}
 }
 

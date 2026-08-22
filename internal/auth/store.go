@@ -141,10 +141,26 @@ func selectLinuxCredentialBackend(runner commandRunner, secretStore *systemStore
 	if err == nil {
 		switch selected {
 		case backendProtectedFile:
+			if probeSecretService(runner) == nil {
+				secretExists, err := credentialExists(secretStore)
+				if err != nil {
+					return nil, err
+				}
+				if secretExists {
+					return nil, errors.New("credential backend receipt selects protected-file but Secret Service also contains credentials")
+				}
+			}
 			return protected, nil
 		case backendSecretService:
 			if err := probeSecretService(runner); err != nil {
 				return nil, fmt.Errorf("selected Secret Service backend is unavailable; refusing backend switch: %w", err)
+			}
+			protectedExists, err := credentialExists(protected)
+			if err != nil {
+				return nil, err
+			}
+			if protectedExists {
+				return nil, errors.New("credential backend receipt selects Secret Service but protected-file also contains credentials")
 			}
 			return secretStore, nil
 		default:
