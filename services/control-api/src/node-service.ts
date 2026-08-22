@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalJson, enrollmentToken, publicKeyFingerprint, renderedDigest, requestDigest, sha256Hex, verifyNodePlanSignature, verifyNodeProof } from "./node-crypto.js";
 import type { NodePlanFactory } from "./node-plan.js";
 import type { NodeIdempotencyReceipt, NodeStore, NodeTransaction } from "./node-store.js";
-import { nodeRoleAllows, NodeHttpError, type KubernetesBinding, type NodeArchitecture, type NodeEvent, type NodeOperationType, type NodeOperationView, type NodePlanSigningKey, type NodePlatform, type NodePrincipal, type NodeView } from "./node-types.js";
+import { nodeRoleAllows, NodeHttpError, type ExchangeNodeEnrollmentResponse, type KubernetesBinding, type NodeArchitecture, type NodeEvent, type NodeOperationType, type NodeOperationView, type NodePlanSigningKey, type NodePlatform, type NodePrincipal, type NodeView } from "./node-types.js";
 
 export interface CreateEnrollmentInput { name: string; mode: "fresh" | "adopt"; platform: NodePlatform; architecture?: NodeArchitecture }
 export interface ExchangeEnrollmentInput { token: string; machineFingerprint: string; nodePublicKey: string; platform: NodePlatform; architecture: NodeArchitecture; kubernetesBinding?: KubernetesBinding }
@@ -30,7 +30,7 @@ export class NodeService {
     });
   }
 
-  async exchangeEnrollment(enrollmentId:string,input:ExchangeEnrollmentInput):Promise<Record<string,unknown>>{
+  async exchangeEnrollment(enrollmentId:string,input:ExchangeEnrollmentInput):Promise<ExchangeNodeEnrollmentResponse>{
     validUuid(enrollmentId,"enrollmentId"); validPlatform(input.platform); validArchitecture(input.architecture);
     if(!/^[A-Za-z0-9_-]{43,128}$/.test(input.token)) invalid("token is invalid");
     if(!/^[0-9a-f]{64}$/.test(input.machineFingerprint)) invalid("machineFingerprint is invalid");
@@ -45,15 +45,16 @@ export class NodeService {
       if(enrollment.mode==="fresh"&&input.kubernetesBinding) invalid("fresh enrollment cannot pre-bind Kubernetes");
       if(enrollment.status==="exchanged"){
         if(enrollment.machineBinding!==input.machineFingerprint||enrollment.nodePublicKey!==input.nodePublicKey||enrollment.nodePublicKeyFingerprint!==fingerprint) throw new NodeHttpError("enrollment_consumed","enrollment is bound to another machine identity");
-        const replay=await tx.planByEnrollment(enrollment.id); if(!replay) throw new Error("exchanged enrollment has no plan"); return replay;
+        const replay=await tx.exchangeByEnrollment(enrollment.id); if(!replay) throw new Error("exchanged enrollment has no plan and identity"); return replay;
       }
       if(enrollment.status!=="pending") throw new NodeHttpError("enrollment_consumed","enrollment is no longer exchangeable");
       const configuredSigningKey=validSigningKey(await this.planFactory.signingKey());if(!sameSigningKey(configuredSigningKey,enrollment.planSigningKey))throw new Error("configured Node plan signer does not match enrollment-pinned trust");
       const issuedAt=this.now(),expiresAt=new Date(issuedAt.getTime()+15*60_000),nodeId=randomUUID(),planId=randomUUID();
       const plan=await this.planFactory.create({planId,nodeId,enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,nodePublicKeyFingerprint:fingerprint,issuedAt,expiresAt});
       const digest=requiredRenderedDigest(plan.digest,"plan digest"); const signature=requiredSignature(plan.signature); const signingKeyId=requiredText(plan.signingKeyId,"signingKeyId",128);if(signingKeyId!==enrollment.planSigningKey.keyId||!verifyNodePlanSignature(enrollment.planSigningKey.publicKey,digest,signature))throw new Error("Node install plan signature does not match enrollment-pinned trust");
-      await tx.createExchangedNode({nodeId,identityId:randomUUID(),enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,publicKey:input.nodePublicKey,publicKeyFingerprint:fingerprint,...(input.kubernetesBinding?{kubernetesBinding:input.kubernetesBinding}:{}),planId,plan,planDigest:digest.slice(7),signingKeyId,signature,issuedAt,expiresAt});
-      return plan;
+      const identity=await tx.createExchangedNode({nodeId,identityId:randomUUID(),enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,publicKey:input.nodePublicKey,publicKeyFingerprint:fingerprint,...(input.kubernetesBinding?{kubernetesBinding:input.kubernetesBinding}:{}),planId,plan,planDigest:digest.slice(7),signingKeyId,signature,issuedAt,expiresAt});
+      if(identity.publicKeyFingerprint!==`sha256:${fingerprint}`||identity.issuedAt!==issuedAt.toISOString())throw new Error("created Node identity does not match enrollment exchange");
+      return {plan,identity};
     });
   }
 

@@ -40,6 +40,28 @@ func TestNodeContractsAndPinnedDigestsMatchGenerator(t *testing.T) {
 	}
 }
 
+func TestNodeValidatorRejectsMissingAccountReceiptKinds(t *testing.T) {
+	sources := checkedInSources(t)
+	key := filepath.Join("packages", "contracts", "nodes", "node-install-receipt.schema.json")
+	changed := cloneDocument(t, sources[key].doc)
+	at(changed, "properties", "mutations", "items", "properties", "kind").(map[string]any)["enum"] = []any{"file"}
+	sources[key] = source{path: key, digest: sources[key].digest, doc: changed}
+	if err := validateSources(sources, string(nodeTemplate)); err == nil || !strings.Contains(err.Error(), "group and user") {
+		t.Fatalf("missing account receipt kinds error=%v", err)
+	}
+}
+
+func TestNodeValidatorRejectsExchangeIdentityDrift(t *testing.T) {
+	sources := checkedInSources(t)
+	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
+	changed := cloneDocument(t, sources[key].doc)
+	at(changed, "components", "schemas", "NodeEnrollmentIdentity").(map[string]any)["required"] = []any{"generation", "expiresAt"}
+	sources[key] = source{path: key, digest: sources[key].digest, doc: changed}
+	if err := validateSources(sources, string(nodeTemplate)); err == nil || !strings.Contains(err.Error(), "exchange identity") {
+		t.Fatalf("exchange identity drift error=%v", err)
+	}
+}
+
 func TestNodeValidatorRejectsAuthenticationAndOperationDrift(t *testing.T) {
 	sources := checkedInSources(t)
 	key := filepath.Join("packages", "contracts", "nodes.openapi.json")

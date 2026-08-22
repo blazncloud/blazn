@@ -23,8 +23,8 @@ test("PostgreSQL serializes enrollment replay and isolates workspaces",{skip:!ad
     assert.equal(first.id,second.id);assert.equal(first.token,second.token);assert.equal([first.replayed,second.replayed].filter(Boolean).length,1);
     assert.deepEqual(first.planSigningKey,second.planSigningKey);
     const publicJwk=signer.publicKey.export({format:"jwk"});const exchange={token:first.token,machineFingerprint:"b".repeat(64),nodePublicKey:publicJwk.x!,platform:"linux" as const,architecture:"amd64" as const};
-    const [planA,planB]=await Promise.all([service.exchangeEnrollment(first.id,exchange),service.exchangeEnrollment(first.id,exchange)]);assert.deepEqual(planA,planB);
-    const createdPlan=planA as {planId:string;nodeId:string};const issuanceId=randomUUID();
+    const [planA,planB]=await Promise.all([service.exchangeEnrollment(first.id,exchange),service.exchangeEnrollment(first.id,exchange)]);assert.deepEqual(planA,planB);assert.equal(planA.identity.publicKeyFingerprint,`sha256:${publicKeyFingerprint(publicJwk.x!)}`);assert.equal(planA.identity.issuedAt,"2026-08-22T12:00:00.000Z");
+    const createdPlan=planA.plan as {planId:string;nodeId:string};const issuanceId=randomUUID();
     await admin.query(`INSERT INTO node_join_issuances(id,workspace_id,enrollment_id,plan_id,node_id,node_public_key_fingerprint,machine_fingerprint,credential_hash,credential_ciphertext,credential_key_id,idempotency_key,request_digest,issued_at,expires_at)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'node-join-credential/v1','broker-issuance-key',$10,now(),now()+interval '10 minutes')`,[issuanceId,workspaceId,first.id,createdPlan.planId,createdPlan.nodeId,"b".repeat(64),"b".repeat(64),"c".repeat(64),Buffer.alloc(29),"d".repeat(64)]);
     const consumeBody={nodeId:createdPlan.nodeId,enrollmentId:first.id,planId:createdPlan.planId,joinedNodeUid:`uid-${createdPlan.nodeId}`,joinedNodeName:"ben-fresh",resourceVersion:"1",clusterId:`cluster-${createdPlan.nodeId}`};const consumeProof=nodeProof(signer.privateKey,"blazn-node-join-v1",consumeBody);

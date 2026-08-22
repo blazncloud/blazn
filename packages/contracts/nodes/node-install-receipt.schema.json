@@ -26,7 +26,7 @@
         "required": ["ordinal", "kind", "target", "priorState", "rollbackMaterial", "desiredDigest", "status"],
         "properties": {
           "ordinal": {"type": "integer", "minimum": 1},
-          "kind": {"enum": ["package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"]},
+          "kind": {"enum": ["group", "user", "package", "file", "directory", "systemd_unit", "launchd_unit", "certificate", "image", "label", "taint", "firewall"]},
           "target": {"type": "string", "minLength": 1, "maxLength": 1024},
           "priorState": {"enum": ["absent", "owned", "preexisting_exact"]},
           "rollbackMaterial": {"oneOf": [
@@ -38,7 +38,10 @@
         },
         "allOf": [
           {"if": {"properties": {"priorState": {"const": "absent"}}, "required": ["priorState"]}, "then": {"properties": {"rollbackMaterial": {"properties": {"kind": {"const": "absent"}}}}}},
-          {"if": {"properties": {"priorState": {"enum": ["owned", "preexisting_exact"]}}, "required": ["priorState"]}, "then": {"properties": {"rollbackMaterial": {"properties": {"kind": {"not": {"const": "absent"}}}}}}}
+          {"if": {"properties": {"priorState": {"enum": ["owned", "preexisting_exact"]}}, "required": ["priorState"]}, "then": {"properties": {"rollbackMaterial": {"properties": {"kind": {"not": {"const": "absent"}}}}}}},
+          {"if": {"properties": {"kind": {"enum": ["group", "user"]}}, "required": ["kind"]}, "then": {"properties": {"target": {"pattern": "^[a-z_][a-z0-9_-]{0,31}$"}}}},
+          {"if": {"properties": {"kind": {"enum": ["group", "user"]}, "priorState": {"const": "absent"}}, "required": ["kind", "priorState"]}, "then": {"properties": {"status": {"enum": ["pending", "applied", "removed", "residue"]}}}},
+          {"if": {"properties": {"kind": {"enum": ["group", "user"]}, "priorState": {"enum": ["owned", "preexisting_exact"]}}, "required": ["kind", "priorState"]}, "then": {"properties": {"rollbackMaterial": {"properties": {"kind": {"const": "metadata_snapshot"}}}, "status": {"enum": ["pending", "applied", "restored", "residue"]}}}}
         ]
       }
     },

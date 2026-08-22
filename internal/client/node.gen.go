@@ -1,7 +1,7 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: 590e68d209c1db843a5107a7a48c904c4bb3c455f55b032715f298a62c1263eb
+// OpenAPI SHA256: 7a5db0900aa7954b846af74080d4cdee2c500aa1edb766e54d9691bf64dbe953
 // NodeInstallPlan SHA256: d19f7b439909c02106f31cb88222e8d7a34adff7cd6a36f2919da9ef53515f0d
-// NodeInstallReceipt SHA256: cdfd07ec5c7fde1aa4501e006cdf8ddb060e7af33ab329af89de247d1c29a1e4
+// NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
 
 package client
@@ -78,6 +78,19 @@ type NodePlanSigningKey struct {
 	KeyID       string `json:"keyId"`
 	PublicKey   string `json:"publicKey"`
 	Fingerprint string `json:"fingerprint"`
+}
+
+type ExchangeNodeEnrollmentResponse struct {
+	Plan     NodeInstallPlan        `json:"plan"`
+	Identity NodeEnrollmentIdentity `json:"identity"`
+}
+
+type NodeEnrollmentIdentity struct {
+	Generation           int64  `json:"generation"`
+	SigningKeyID         string `json:"signingKeyId"`
+	PublicKeyFingerprint string `json:"publicKeyFingerprint"`
+	IssuedAt             string `json:"issuedAt"`
+	ExpiresAt            string `json:"expiresAt"`
 }
 
 type ExchangeNodeEnrollmentRequest struct {
@@ -903,6 +916,9 @@ func ValidateNodeInstallReceipt(receipt NodeInstallReceipt) error {
 		if mutation.Ordinal < 1 || !oneOf(mutation.Kind, nodeMutationKinds()...) || len(mutation.Target) < 1 || len(mutation.Target) > 1024 || !oneOf(mutation.PriorState, "absent", "owned", "preexisting_exact") || !nodeDigestPattern.MatchString(mutation.DesiredDigest) || !oneOf(mutation.Status, "pending", "applied", "restored", "removed", "residue") || !validRollbackMaterial(mutation.PriorState, mutation.RollbackMaterial) {
 			return fmt.Errorf("mutations[%d] is invalid", index)
 		}
+		if err := validateNodeReceiptMutationSemantics(mutation); err != nil {
+			return fmt.Errorf("mutations[%d]: %w", index, err)
+		}
 		if _, exists := seen[mutation.Ordinal]; exists {
 			return fmt.Errorf("mutations[%d] repeats ordinal %d", index, mutation.Ordinal)
 		}
@@ -955,6 +971,28 @@ func validRollbackMaterial(priorState string, material NodeRollbackMaterial) boo
 		return material.Kind == "absent" && material.Locator == "" && material.Digest == "" && material.Mode == nil && material.UID == nil && material.GID == nil
 	}
 	return oneOf(material.Kind, "file_backup", "package_snapshot", "unit_snapshot", "firewall_snapshot", "metadata_snapshot") && nodeReceiptLocatorPattern.MatchString(material.Locator) && nodeDigestPattern.MatchString(material.Digest) && material.Mode != nil && *material.Mode >= 0 && *material.Mode <= 4095 && material.UID != nil && *material.UID >= 0 && material.GID != nil && *material.GID >= 0
+}
+
+func validateNodeReceiptMutationSemantics(mutation NodeReceiptMutation) error {
+	if mutation.Kind != "group" && mutation.Kind != "user" {
+		return nil
+	}
+	if !nodeAccountNamePattern.MatchString(mutation.Target) {
+		return fmt.Errorf("account target is invalid")
+	}
+	if mutation.PriorState == "absent" {
+		if mutation.Status == "restored" {
+			return fmt.Errorf("new account rollback must be reported as removed")
+		}
+		return nil
+	}
+	if mutation.RollbackMaterial.Kind != "metadata_snapshot" {
+		return fmt.Errorf("pre-existing account requires a metadata snapshot")
+	}
+	if mutation.Status == "removed" {
+		return fmt.Errorf("pre-existing account may not be reported as removed")
+	}
+	return nil
 }
 
 func ValidateNodeOperationReceipt(receipt NodeOperationReceipt) error {
@@ -1131,6 +1169,19 @@ func decodeTypedNodeAPIResponse(reader io.Reader, output any) error {
 			return err
 		}
 		return ValidateNodeEnrollmentSecret(*value)
+	case *ExchangeNodeEnrollmentResponse:
+		if err := requireNodeFields(raw, "plan", "identity"); err != nil {
+			return err
+		}
+		plan, err := DecodeNodeInstallPlan(bytes.NewReader(raw["plan"]))
+		if err != nil {
+			return fmt.Errorf("plan: %w", err)
+		}
+		value.Plan = plan
+		if err := requireNodeNestedFields(raw, "identity", "generation", "signingKeyId", "publicKeyFingerprint", "issuedAt", "expiresAt"); err != nil {
+			return err
+		}
+		return ValidateExchangeNodeEnrollmentResponse(*value)
 	case *Node:
 		if err := requireNodeFields(raw, "id", "workspaceId", "name", "kind", "platform", "architecture", "lifecycleState", "trustState", "agentEligible", "version", "capabilityVersion", "identity", "createdAt", "updatedAt"); err != nil {
 			return err
@@ -2142,6 +2193,23 @@ func ValidateNodeEnrollmentSecret(secret NodeEnrollmentSecret) error {
 	return nil
 }
 
+func ValidateExchangeNodeEnrollmentResponse(response ExchangeNodeEnrollmentResponse) error {
+	if err := ValidateNodeInstallPlan(response.Plan); err != nil {
+		return fmt.Errorf("install plan: %w", err)
+	}
+	identity := response.Identity
+	if identity.Generation < 1 || len(identity.SigningKeyID) < 1 || len(identity.SigningKeyID) > 128 || !nodeDigestPattern.MatchString(identity.PublicKeyFingerprint) || !nodeSecureEqual(identity.PublicKeyFingerprint, response.Plan.Target.NodePublicKeyFingerprint) {
+		return fmt.Errorf("enrollment identity is invalid")
+	}
+	if err := validateTimeWindow(identity.IssuedAt, identity.ExpiresAt); err != nil {
+		return fmt.Errorf("enrollment identity time window: %w", err)
+	}
+	if !nodeSecureEqual(identity.IssuedAt, response.Plan.IssuedAt) {
+		return fmt.Errorf("enrollment identity issuance does not match its plan")
+	}
+	return nil
+}
+
 func ValidateNode(node Node) error {
 	if !nodeUUIDPattern.MatchString(node.ID) || !nodeUUIDPattern.MatchString(node.WorkspaceID) || node.Name == "" || !oneOf(node.Kind, "personal", "shared", "managed") || !validPlatform(node.Platform) || !validArchitecture(node.Architecture) || !oneOf(string(node.LifecycleState), "pending", "installing", "verifying", "active", "paused", "draining", "offline", "quarantined", "removed") || !oneOf(string(node.TrustState), "unverified", "verifying", "verified", "rotating", "revoked") || node.Version < 1 || (node.CapabilityVersion != nil && *node.CapabilityVersion < 1) {
 		return fmt.Errorf("node response is invalid")
@@ -2236,8 +2304,8 @@ func (c *Client) CreateNodeEnrollment(ctx context.Context, accessToken, workspac
 	return output, err
 }
 
-func (c *Client) ExchangeNodeEnrollment(ctx context.Context, enrollmentID string, request ExchangeNodeEnrollmentRequest) (NodeInstallPlan, error) {
-	var output NodeInstallPlan
+func (c *Client) ExchangeNodeEnrollment(ctx context.Context, enrollmentID string, request ExchangeNodeEnrollmentRequest) (ExchangeNodeEnrollmentResponse, error) {
+	var output ExchangeNodeEnrollmentResponse
 	if len(request.Token) < 43 || len(request.Token) > 128 || !nodeHashPattern.MatchString(request.MachineFingerprint) || len(request.NodePublicKey) != 43 || !nodeBase64URLPattern.MatchString(request.NodePublicKey) || !validPlatform(request.Platform) || !validArchitecture(request.Architecture) {
 		return output, fmt.Errorf("node enrollment exchange request is invalid")
 	}
@@ -2392,14 +2460,6 @@ func (c *Client) nodeDo(ctx context.Context, method, path, accessToken, nodeProo
 	if output == nil || success == http.StatusNoContent {
 		_, err = io.Copy(io.Discard, io.LimitReader(response.Body, nodeMaxJSONBytes))
 		return err
-	}
-	if plan, ok := output.(*NodeInstallPlan); ok {
-		decoded, err := DecodeNodeInstallPlan(response.Body)
-		if err != nil {
-			return fmt.Errorf("decode node response: %w", err)
-		}
-		*plan = decoded
-		return nil
 	}
 	if err := decodeTypedNodeAPIResponse(io.LimitReader(response.Body, nodeMaxJSONBytes), output); err != nil {
 		return fmt.Errorf("decode node response: %w", err)

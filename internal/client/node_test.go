@@ -346,16 +346,16 @@ func TestExchangeNodeEnrollmentUsesBodyAndValidatesPlan(t *testing.T) {
 			t.Fatalf("exchange body=%#v err=%v", input, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(validNodeInstallPlan())
+		_ = json.NewEncoder(w).Encode(ExchangeNodeEnrollmentResponse{Plan: validNodeInstallPlan(), Identity: NodeEnrollmentIdentity{Generation: 7, SigningKeyID: "node-identity/v7", PublicKeyFingerprint: "sha256:" + testHash, IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-09-21T00:00:00Z"}})
 	}))
 	defer server.Close()
 	api, err := New(server.URL, server.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := api.ExchangeNodeEnrollment(context.Background(), testUUIDC, ExchangeNodeEnrollmentRequest{Token: strings.Repeat("t", 43), MachineFingerprint: testHash, NodePublicKey: strings.Repeat("A", 43), Platform: NodePlatformLinux, Architecture: NodeArchAMD64})
-	if err != nil || plan.NodeID != testUUIDB {
-		t.Fatalf("plan=%#v err=%v", plan, err)
+	result, err := api.ExchangeNodeEnrollment(context.Background(), testUUIDC, ExchangeNodeEnrollmentRequest{Token: strings.Repeat("t", 43), MachineFingerprint: testHash, NodePublicKey: strings.Repeat("A", 43), Platform: NodePlatformLinux, Architecture: NodeArchAMD64})
+	if err != nil || result.Plan.NodeID != testUUIDB || result.Identity.Generation != 7 {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
 
@@ -442,7 +442,7 @@ func TestNodeMutationsRequireBearerAndContractIdempotencyKey(t *testing.T) {
 func TestExchangeRejectsUnknownOrTrailingPlanFields(t *testing.T) {
 	for _, suffix := range []string{`,"unexpected":true}`, `} {}`} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			encoded, _ := json.Marshal(validNodeInstallPlan())
+			encoded, _ := json.Marshal(ExchangeNodeEnrollmentResponse{Plan: validNodeInstallPlan(), Identity: NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: "sha256:" + testHash, IssuedAt: "2026-08-21T00:00:00Z", ExpiresAt: "2026-09-21T00:00:00Z"}})
 			encoded = encoded[:len(encoded)-1]
 			_, _ = w.Write(append(encoded, []byte(suffix)...))
 		}))
@@ -631,6 +631,33 @@ func TestPackageRepositoryAndImageRegistryBindSignedComponentsToProfile(t *testi
 
 func validInstallReceipt() NodeInstallReceipt {
 	return NodeInstallReceipt{SchemaVersion: NodeSchemaVersion, ReceiptID: testUUIDA, PlanID: testUUIDB, PlanDigest: "sha256:" + testHash, NodeID: testUUIDC, Generation: 1, NodeIdentityGeneration: 1, SignerKind: "node_identity", SignerFingerprint: "sha256:" + testHash, State: "active", CurrentStage: "complete", Owner: NodeReceiptOwner{UID: 0, PID: 10, ProcessStartIdentity: "start-1", Nonce: strings.Repeat("A", 32)}, Binary: NodeReceiptBinary{Path: "/usr/local/bin/blazn", Digest: "sha256:" + testHash}, Service: NodeReceiptService{Manager: "systemd", Name: "blazn-node", DefinitionDigest: "sha256:" + testHash}, Mutations: []NodeReceiptMutation{{Ordinal: 1, Kind: "file", Target: "/etc/blazn/node", PriorState: "absent", RollbackMaterial: NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}, Residues: []NodeReceiptResidue{}, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:05:00Z", SigningKeyID: "node-identity/v1", Digest: "sha256:" + testHash, Signature: strings.Repeat("A", 86)}
+}
+
+func TestAccountReceiptRollbackCoherence(t *testing.T) {
+	absent := validInstallReceipt()
+	absent.Mutations = []NodeReceiptMutation{{Ordinal: 1, Kind: "group", Target: "blazn-node", PriorState: "absent", RollbackMaterial: NodeRollbackMaterial{Kind: "absent"}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}
+	if err := ValidateNodeInstallReceipt(absent); err != nil {
+		t.Fatal(err)
+	}
+	absent.Mutations[0].Status = "restored"
+	if err := ValidateNodeInstallReceipt(absent); err == nil {
+		t.Fatal("new account reported as restored")
+	}
+	mode, uid, gid := int64(0), int64(991), int64(991)
+	adopted := validInstallReceipt()
+	adopted.Mutations = []NodeReceiptMutation{{Ordinal: 1, Kind: "user", Target: "blazn-node", PriorState: "preexisting_exact", RollbackMaterial: NodeRollbackMaterial{Kind: "metadata_snapshot", Locator: "receipt-backup://account-1", Digest: "sha256:" + testHash, Mode: &mode, UID: &uid, GID: &gid}, DesiredDigest: "sha256:" + testHash, Status: "applied"}}
+	if err := ValidateNodeInstallReceipt(adopted); err != nil {
+		t.Fatal(err)
+	}
+	adopted.Mutations[0].Status = "removed"
+	if err := ValidateNodeInstallReceipt(adopted); err == nil {
+		t.Fatal("pre-existing account reported as removed")
+	}
+	adopted.Mutations[0].Status = "applied"
+	adopted.Mutations[0].RollbackMaterial.Kind = "file_backup"
+	if err := ValidateNodeInstallReceipt(adopted); err == nil {
+		t.Fatal("account accepted non-metadata rollback material")
+	}
 }
 
 func validOperationReceipt() NodeOperationReceipt {

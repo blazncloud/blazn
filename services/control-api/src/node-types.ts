@@ -7,6 +7,8 @@ export type NodeOperationType = "pause" | "resume" | "label" | "cordon" | "uncor
 
 export interface KubernetesBinding { clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string }
 export interface NodePlanSigningKey { keyId: string; publicKey: string; fingerprint: string }
+export interface NodeEnrollmentIdentity { generation: number; signingKeyId: string; publicKeyFingerprint: string; issuedAt: string; expiresAt: string }
+export interface ExchangeNodeEnrollmentResponse { plan: Record<string, unknown>; identity: NodeEnrollmentIdentity }
 export interface NodeIdentityView { generation: number; publicKeyFingerprint: string; status: "active" | "rotating" | "revoked" | "expired"; issuedAt: string; expiresAt: string }
 export interface NodeView {
   id: string; workspaceId: string; name: string; kind: "personal" | "shared" | "managed";
