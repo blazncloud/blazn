@@ -1930,18 +1930,34 @@ func nodeHasServiceDefinition(plan NodeInstallPlan) bool {
 	if plan.NodeService.Manager == "launchd" {
 		wantedKind, wantedTarget = "launchd_unit", "/Library/LaunchDaemons/"+plan.NodeService.UnitName+".plist"
 	}
-	count := 0
+	definitionCount, enableCount, managerMutationCount, definitionOrdinal, enableOrdinal := 0, 0, 0, int64(0), int64(0)
 	for _, mutation := range plan.Mutations {
 		component := components[nodeMutationSourceComponent(mutation)]
+		if mutation.Kind == wantedKind {
+			managerMutationCount++
+		}
 		managerIdentity := mutation.Desired["unitName"] == plan.NodeService.UnitName
 		if plan.NodeService.Manager == "launchd" {
 			managerIdentity = mutation.Desired["label"] == plan.NodeService.UnitName
 		}
-		if mutation.Kind == wantedKind && mutation.Target == wantedTarget && managerIdentity && mutation.Action == "adopt_exact" && mutation.Mode == 0644 && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.Ownership == "adopt_exact" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256 {
-			count++
+		ownershipCoherent := (component.Ownership == "adopt_exact" && mutation.Action == "adopt_exact" && mutation.Rollback == "leave_and_report") || (component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned")
+		if plan.Mode == NodeModeFresh {
+			ownershipCoherent = component.Ownership == "install" && mutation.Action == "write" && mutation.Rollback == "remove_if_owned"
+		}
+		materialBound := mutation.Kind == wantedKind && mutation.Target == wantedTarget && managerIdentity && mutation.UID == 0 && mutation.GID == 0 && component.ArtifactType == "configuration" && component.SourceClass == "embedded" && component.SHA256 == plan.NodeService.DefinitionSHA256 && mutation.DesiredDigest == "sha256:"+component.SHA256
+		if materialBound && ownershipCoherent && mutation.Mode == 0644 {
+			definitionCount++
+			definitionOrdinal = mutation.Ordinal
+		}
+		if materialBound && mutation.Action == "enable" && mutation.Rollback == "restore_prior" && mutation.Mode == 0 {
+			enableCount++
+			enableOrdinal = mutation.Ordinal
 		}
 	}
-	return count == 1
+	if definitionCount != 1 || enableCount != 1 || managerMutationCount != 2 {
+		return false
+	}
+	return enableOrdinal > definitionOrdinal
 }
 
 func nodeHasValidation(values []string, wanted string) bool {
