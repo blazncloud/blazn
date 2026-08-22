@@ -53,4 +53,6 @@ test("Node broker durable intents and row-lock function are narrowly granted", a
   assert.match(sql, /FOR UPDATE OF e,p,n/);
   assert.match(sql, /REVOKE ALL ON FUNCTION node_broker_lock_join_binding/);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION node_broker_lock_join_binding/);
+  const intentTable = sql.match(/CREATE TABLE node_join_issuance_intents \([\s\S]*?\n\);/)?.[0] ?? "";
+  assert.doesNotMatch(intentTable, /credential_(?:hash|ciphertext)|\b(?:token|secret)\b/i);
 });

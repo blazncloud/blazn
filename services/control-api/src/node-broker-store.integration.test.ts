@@ -146,11 +146,19 @@ test(
           Buffer.from(`blazn-node-join-v1\n${canonicalJson(request)}`),
           identityPair.privateKey,
         ).toString("base64url");
-      let issues = 0;
+      let issues = 0,
+        injectRevocation = true;
       const credential = "z".repeat(43),
         issuer: WorkerCredentialIssuer = {
           issue: async (input) => {
             issues++;
+            if (injectRevocation) {
+              injectRevocation = false;
+              await admin.query(
+                "UPDATE nodes SET trust_state='revoked' WHERE id=$1",
+                [nodeId],
+              );
+            }
             return {
               providerHandle: input.issuanceId,
               credential,
@@ -168,11 +176,32 @@ test(
           issuer,
           1_000,
         );
+      await assert.rejects(
+        () => service.issue("broker-join-key", request, proof),
+        (error: unknown) =>
+          error instanceof NodeHttpError &&
+          error.code === "join_credential_invalid",
+      );
+      assert.equal(
+        Number(
+          (
+            await admin.query<{ count: string }>(
+              "SELECT count(*)::text AS count FROM node_join_issuances WHERE node_id=$1",
+              [nodeId],
+            )
+          ).rows[0]?.count,
+        ),
+        0,
+      );
+      await admin.query(
+        "UPDATE nodes SET trust_state='verifying' WHERE id=$1",
+        [nodeId],
+      );
       const race = await Promise.all([
         service.issue("broker-join-key", request, proof),
         service.issue("broker-join-key", request, proof),
       ]);
-      assert.equal(issues, 1);
+      assert.equal(issues, 2);
       assert.equal(race[0].credential, credential);
       assert.equal(race[1].credential, credential);
       assert.equal(race.filter((v) => v.replayed).length, 1);
