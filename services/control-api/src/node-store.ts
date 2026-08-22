@@ -135,6 +135,9 @@ class PgNodeTransaction implements NodeTransaction {
   }
   async insertInstallReceipt(input:{id:string;workspaceId:string;nodeId:string;planId:string;receiptDigest:string;identityGeneration:number;signerFingerprint:string;signingKeyId:string;signature:string;payload:unknown}):Promise<void>{
     await this.client.query(`INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES($1,$2,$3,$4,$5,'node_identity',$6,$7,$8,$9,$10)`,[input.id,input.workspaceId,input.nodeId,input.planId,input.receiptDigest,input.identityGeneration,input.signerFingerprint,input.signingKeyId,input.signature,input.payload]);
+    const activated=await this.client.query(`UPDATE nodes SET lifecycle_state='active',trust_state='verified',agent_eligible=true,service_version=COALESCE($2::jsonb->>'serviceVersion',service_version),version=version+1,updated_at=now()
+      WHERE id=$1 AND workspace_id=$3 AND lifecycle_state='verifying' AND trust_state='verifying' AND kubernetes_node_uid IS NOT NULL AND current_identity_generation=$4 AND current_identity_status='active' RETURNING id`,[input.nodeId,input.payload,input.workspaceId,input.identityGeneration]);
+    if(!activated.rowCount)throw Object.assign(new Error("install receipt cannot activate node from current state"),{nodeCode:"state_conflict"});
   }
   async completeOperation(input:{operationId:string;receiptId:string;status:"succeeded"|"failed"|"cancelled"|"partial"|"recovery_required";result:unknown;error:unknown;receipt:{workspaceId:string;nodeId:string;operationType:NodeOperationType;receiptDigest:string;signerKind:"node_identity"|"control_plane";identityGeneration:number|null;signerFingerprint:string;signingKeyId:string;signature:string;payload:unknown}}):Promise<void>{
     const r=input.receipt;

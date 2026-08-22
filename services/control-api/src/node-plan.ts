@@ -47,6 +47,19 @@ export class TemplateNodePlanFactory implements NodePlanFactory {
       issuedAt: context.issuedAt.toISOString(),
       expiresAt: context.expiresAt.toISOString(),
     };
-    return this.signer.sign(unsigned);
+    const signed = await this.signer.sign(unsigned);
+    validateCompletePlan(signed);
+    return signed;
   }
+}
+
+const PLAN_KEYS=["schemaVersion","planId","nodeId","enrollmentId","workspaceId","idempotencyKey","approvedBy","approvedAt","hostname","mode","installProfile","cluster","target","registryTrust","components","nodeService","labels","taints","resourceBounds","mutations","validationTests","rollback","issuedAt","expiresAt","signingKeyId","digest","signature"];
+function validateCompletePlan(plan:Record<string,unknown>):void{
+  if(Object.keys(plan).length!==PLAN_KEYS.length||PLAN_KEYS.some(key=>!(key in plan))||Object.keys(plan).some(key=>!PLAN_KEYS.includes(key)))throw new Error("signed node install plan does not match the frozen top-level schema");
+  for(const field of ["cluster","target","nodeService","resourceBounds","rollback"]){if(!plan[field]||typeof plan[field]!=="object"||Array.isArray(plan[field]))throw new Error(`signed node install plan ${field} is invalid`);}
+  for(const field of ["registryTrust","components","taints","mutations","validationTests"]){if(!Array.isArray(plan[field]))throw new Error(`signed node install plan ${field} is invalid`);}
+  if(!plan.labels||typeof plan.labels!=="object"||Array.isArray(plan.labels))throw new Error("signed node install plan labels are invalid");
+  const cluster=plan.cluster as Record<string,unknown>;
+  if(cluster.workerOnly!==true||cluster.joinCredentialEndpoint!=="/v1/node-service/join-credentials"||typeof cluster.id!=="string"||!cluster.id)throw new Error("signed node install plan cluster is not worker-only");
+  if(typeof plan.digest!=="string"||!/^sha256:[0-9a-f]{64}$/.test(plan.digest)||typeof plan.signature!=="string"||!/^[A-Za-z0-9_-]{86}$/.test(plan.signature))throw new Error("signed node install plan proof is invalid");
 }
