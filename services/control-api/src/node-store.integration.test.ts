@@ -5,14 +5,10 @@ import { createDatabase } from "./db.js";
 import { NodeService } from "./node-service.js";
 import { PgNodeStore } from "./node-store.js";
 import { NodeHttpError } from "./node-types.js";
-import {
-  canonicalJson,
-  publicKeyFingerprint,
-  renderedDigest,
-} from "./node-crypto.js";
+import { canonicalJson, publicKeyFingerprint, renderedDigest } from "./node-crypto.js";
 
-const adminUrl = process.env.NODE_TEST_ADMIN_DATABASE_URL;
-const runtimeUrl = process.env.NODE_TEST_RUNTIME_DATABASE_URL;
+const adminUrl=process.env.NODE_TEST_ADMIN_DATABASE_URL;
+const runtimeUrl=process.env.NODE_TEST_RUNTIME_DATABASE_URL;
 
 test("PostgreSQL serializes enrollment replay and isolates workspaces",{skip:!adminUrl||!runtimeUrl},async()=>{
   const admin=createDatabase(adminUrl!),runtime=createDatabase(runtimeUrl!);const userId=randomUUID(),outsiderId=randomUUID(),workspaceId=randomUUID(),otherWorkspaceId=randomUUID();
@@ -54,14 +50,4 @@ test("PostgreSQL serializes enrollment replay and isolates workspaces",{skip:!ad
   }
 });
 
-function nodeProof(
-  privateKey: ReturnType<typeof generateKeyPairSync>["privateKey"],
-  prefix: string,
-  body: unknown,
-): string {
-  return sign(
-    null,
-    Buffer.from(`${prefix}\n${canonicalJson(body)}`),
-    privateKey,
-  ).toString("base64url");
-}
+function nodeProof(privateKey:ReturnType<typeof generateKeyPairSync>["privateKey"],prefix:string,body:unknown):string{return sign(null,Buffer.from(`${prefix}\n${canonicalJson(body)}`),privateKey).toString("base64url");}
