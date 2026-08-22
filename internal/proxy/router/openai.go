@@ -87,6 +87,7 @@ type responseInput struct {
 	ID               string          `json:"id,omitempty"`
 	Summary          json.RawMessage `json:"summary,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	Status           string          `json:"status,omitempty"`
 }
 
 type sourceMetadata struct {
@@ -244,6 +245,9 @@ func normalizeResponses(body io.Reader, policy proxycontract.Policy, now time.Ti
 			return proxycontract.NormalizedRequest{}, unsupported("Responses input type is unsupported")
 		}
 		for _, input := range inputs {
+			if input.Status != "" && input.Status != "completed" {
+				return proxycontract.NormalizedRequest{}, unsupported("only completed historical Responses items are supported")
+			}
 			switch input.Type {
 			case "", "message":
 				texts, err := rawTexts(input.Content, "input_text", "output_text")
@@ -640,12 +644,23 @@ func estimateInputTokens(request proxycontract.NormalizedRequest) int {
 		Tools          []proxycontract.Tool         `json:"tools"`
 		ResponseSchema map[string]any               `json:"responseSchema,omitempty"`
 	}{request.Blocks, request.Tools, request.ResponseSchema})
-	// The POC uses a conservative tokenizer-independent ceiling: four UTF-8
-	// bytes per token plus fixed protocol framing for every block and tool.
-	return (len(encoded)+3)/4 + 16*(len(request.Blocks)+len(request.Tools)+1)
+	// The POC uses a conservative tokenizer-independent ceiling: every UTF-8
+	// byte may consume one token, plus fixed protocol framing per item.
+	return len(encoded) + 16*(len(request.Blocks)+len(request.Tools)+1)
 }
-func ensureContextLimit(request proxycontract.NormalizedRequest, policy proxycontract.Policy) error {
-	if estimateInputTokens(request)+request.Limits.MaxOutputTokens > policy.RequestLimits.MaxContextTokens {
+func ensureContextLimit(request routedRequest, policy proxycontract.Policy) error {
+	metadataBytes := len(request.source.responseSchemaName)
+	if metadata := request.source.responses; metadata != nil {
+		metadataBytes += len(metadata.reasoning) + len(metadata.streamOptions) + len(metadata.clientMetadata) + len(metadata.promptCacheKey)
+		for _, value := range metadata.include {
+			metadataBytes += len(value)
+		}
+		for _, item := range metadata.reasoningItems {
+			metadataBytes += len(item)
+		}
+	}
+	inputTokens := estimateInputTokens(request.normalized) + metadataBytes + 16
+	if inputTokens+request.normalized.Limits.MaxOutputTokens > policy.RequestLimits.MaxContextTokens {
 		return safeError("context_overflow", "request exceeds the policy context limit", 400, false)
 	}
 	return nil

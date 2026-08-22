@@ -28,7 +28,9 @@ type upstreamResult struct {
 func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []proxycontract.Route) (upstreamResult, error) {
 	request := routed.normalized
 	var last error
+	var failed upstreamResult
 	for attempt, route := range routes {
+		failed = upstreamResult{route: route, attempt: attempt + 1}
 		if attempt > 0 && !h.fallbackAllowed(last) {
 			break
 		}
@@ -47,11 +49,13 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		}
 		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
 		if err != nil {
-			return upstreamResult{}, &APIError{Code: "credential_unavailable", Message: "destination credential is unavailable", Status: 503, Cause: err}
+			failure := &APIError{Code: "credential_unavailable", Message: "destination credential is unavailable", Status: 503, Cause: err}
+			h.emit(request, route, attempt+1, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonAuthenticationFailed, 0, nil)
+			return failed, failure
 		}
 		body, path, err := encodeDestinationRequest(routed, route)
 		if err != nil {
-			return upstreamResult{}, err
+			return failed, err
 		}
 		endpoint := *resolved.URL
 		endpoint.Path = joinPath(endpoint.Path, path)
@@ -77,7 +81,7 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 		response, err := client.Do(httpRequest)
 		if err != nil {
 			if ctx.Err() != nil {
-				return upstreamResult{}, &APIError{Code: "cancelled", Message: "request was cancelled", Status: 499, Retryable: false, Cause: ctx.Err()}
+				return failed, &APIError{Code: "cancelled", Message: "request was cancelled", Status: 499, Retryable: false, Cause: ctx.Err()}
 			}
 			reason := proxycontract.ReasonConnectionFailure
 			code := "connection_failure"
@@ -119,7 +123,7 @@ func (h *Handler) dispatch(ctx context.Context, routed routedRequest, routes []p
 	if last == nil {
 		last = safeError("no_compliant_route", "no route could serve the request", 403, false)
 	}
-	return upstreamResult{}, last
+	return failed, last
 }
 
 func (h *Handler) fallbackAllowed(err error) bool {
@@ -509,6 +513,12 @@ func streamAPIError(value any) error {
 		return &APIError{Code: string(normalized.Code), Message: normalized.SafeMessage, Status: safeUpstreamStatus(normalized.UpstreamStatus), Retryable: retry, Reason: reason}
 	}
 	if err, ok := value.(error); ok {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return &APIError{Code: "timeout_before_first_byte", Message: "upstream did not produce an event before the deadline", Status: 504, Retryable: true, Reason: proxycontract.ReasonTimeoutBeforeFirstByte, Cause: err}
+		}
+		if errors.Is(err, context.Canceled) {
+			return &APIError{Code: "cancelled", Message: "request was cancelled", Status: 499, Retryable: false, Cause: err}
+		}
 		return &APIError{Code: "connection_failure", Message: "upstream stream failed", Status: 502, Retryable: true, Reason: proxycontract.ReasonConnectionFailure, Cause: err}
 	}
 	return safeError("upstream_5xx", "upstream stream failed", 502, false)
@@ -543,6 +553,8 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 		return nil
 	}
 	if err := consume(result.buffered); err != nil {
+		_ = encoder.fail(err)
+		flusher.Flush()
 		return encoder.usage, err
 	}
 	sawDone := false
@@ -554,6 +566,8 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 		}
 		events, done, err := nextStreamEvents(result.scanner, result.normalizer, result.route.DestinationProtocol, request.LogicalRequestID)
 		if err != nil {
+			_ = encoder.fail(err)
+			flusher.Flush()
 			return encoder.usage, err
 		}
 		if done {
@@ -561,11 +575,16 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 			break
 		}
 		if err = consume(events); err != nil {
+			_ = encoder.fail(err)
+			flusher.Flush()
 			return encoder.usage, err
 		}
 	}
 	if !sawDone || !result.normalizer.terminal {
-		return encoder.usage, safeError("upstream_invalid_response", "upstream stream ended without a terminal event", 502, false)
+		failure := safeError("upstream_invalid_response", "upstream stream ended without a terminal event", 502, false)
+		_ = encoder.fail(failure)
+		flusher.Flush()
+		return encoder.usage, failure
 	}
 	if err := encoder.finish(); err != nil {
 		return encoder.usage, err
@@ -762,6 +781,7 @@ type sourceStreamEncoder struct {
 	finishReason  proxycontract.FinishReason
 	sequence      int
 	started       bool
+	textStarted   bool
 }
 
 func (s *sourceStreamEncoder) emit(payload any) error {
@@ -785,7 +805,9 @@ func (s *sourceStreamEncoder) start() error {
 		return err
 	}
 	s.sequence++
-	return s.emit(map[string]any{"type": "response.in_progress", "sequence_number": s.sequence, "response": response})
+	err := s.emit(map[string]any{"type": "response.in_progress", "sequence_number": s.sequence, "response": response})
+	s.sequence++
+	return err
 }
 func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent) error {
 	var payload any
@@ -839,10 +861,25 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 			s.finishReason = *event.FinishReason
 			return nil
 		}
+		if event.Type == "text_delta" && !s.textStarted {
+			s.textStarted = true
+			messageID := "msg_" + s.requestID
+			if err := s.emit(map[string]any{"type": "response.output_item.added", "sequence_number": s.sequence, "output_index": 0, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}}); err != nil {
+				return err
+			}
+			s.sequence++
+			if err := s.emit(map[string]any{"type": "response.content_part.added", "sequence_number": s.sequence, "item_id": messageID, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}}); err != nil {
+				return err
+			}
+			s.sequence++
+		}
 		kind := map[proxycontract.StreamEventType]string{"text_delta": "response.output_text.delta", "tool_call_start": "response.output_item.added", "tool_arguments_delta": "response.function_call_arguments.delta"}[event.Type]
 		payload = map[string]any{"type": kind, "sequence_number": s.sequence}
 		s.sequence++
 		if event.Text != nil {
+			payload.(map[string]any)["item_id"] = "msg_" + s.requestID
+			payload.(map[string]any)["output_index"] = 0
+			payload.(map[string]any)["content_index"] = 0
 			payload.(map[string]any)["delta"] = *event.Text
 			s.text.WriteString(*event.Text)
 		}
@@ -853,13 +890,13 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 			s.toolNames[*event.CallID] = *event.ToolName
 			s.toolIndexes[*event.CallID] = s.nextToolIndex
 			s.nextToolIndex++
-			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID]
+			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID] + boolInt(s.textStarted)
 			payload.(map[string]any)["item"] = map[string]any{"id": "fc_" + *event.CallID, "type": "function_call", "call_id": *event.CallID, "name": *event.ToolName, "arguments": ""}
 		}
 		if event.Type == "tool_arguments_delta" {
 			s.toolArguments[*event.CallID] += *event.ArgumentsDelta
 			payload.(map[string]any)["item_id"] = "fc_" + *event.CallID
-			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID]
+			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID] + boolInt(s.textStarted)
 			payload.(map[string]any)["delta"] = *event.ArgumentsDelta
 		}
 	}
@@ -892,12 +929,77 @@ func (s *sourceStreamEncoder) finish() error {
 		if status == "incomplete" {
 			eventType = "response.incomplete"
 		}
+		if s.textStarted {
+			messageID := "msg_" + s.requestID
+			if err := s.emit(map[string]any{"type": "response.output_text.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": 0, "content_index": 0, "text": s.text.String()}); err != nil {
+				return err
+			}
+			s.sequence++
+			part := map[string]any{"type": "output_text", "text": s.text.String(), "annotations": []any{}}
+			if err := s.emit(map[string]any{"type": "response.content_part.done", "sequence_number": s.sequence, "item_id": messageID, "output_index": 0, "content_index": 0, "part": part}); err != nil {
+				return err
+			}
+			s.sequence++
+			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": 0, "item": map[string]any{"id": messageID, "type": "message", "role": "assistant", "status": "completed", "content": []any{part}}}); err != nil {
+				return err
+			}
+			s.sequence++
+		}
+		ids := make([]string, 0, len(s.toolIndexes))
+		for id := range s.toolIndexes {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return s.toolIndexes[ids[i]] < s.toolIndexes[ids[j]] })
+		for _, id := range ids {
+			index := s.toolIndexes[id] + boolInt(s.textStarted)
+			if err := s.emit(map[string]any{"type": "response.function_call_arguments.done", "sequence_number": s.sequence, "item_id": "fc_" + id, "output_index": index, "arguments": s.toolArguments[id]}); err != nil {
+				return err
+			}
+			s.sequence++
+			item := map[string]any{"id": "fc_" + id, "type": "function_call", "call_id": id, "name": s.toolNames[id], "arguments": s.toolArguments[id]}
+			if err := s.emit(map[string]any{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": index, "item": item}); err != nil {
+				return err
+			}
+			s.sequence++
+		}
 		if err := s.emit(map[string]any{"type": eventType, "sequence_number": s.sequence, "response": s.responseObject(status)}); err != nil {
 			return err
 		}
 	}
 	_, err := fmt.Fprint(s.writer, "data: [DONE]\n\n")
 	return err
+}
+
+func (s *sourceStreamEncoder) fail(err error) error {
+	code, message := "upstream_invalid_response", "upstream stream failed"
+	var api *APIError
+	if errors.As(err, &api) {
+		code, message = api.Code, api.Message
+	}
+	if s.protocol == proxycontract.ProtocolOpenAIChat {
+		if emitErr := s.emit(map[string]any{"error": map[string]any{"code": code, "message": message, "type": "blazn_proxy_error"}}); emitErr != nil {
+			return emitErr
+		}
+	} else {
+		response := s.responseObject("failed")
+		response["error"] = map[string]any{"code": code, "message": message}
+		if emitErr := s.emit(map[string]any{"type": "response.failed", "sequence_number": s.sequence, "response": response}); emitErr != nil {
+			return emitErr
+		}
+		s.sequence++
+		if emitErr := s.emit(map[string]any{"type": "error", "sequence_number": s.sequence, "code": code, "message": message}); emitErr != nil {
+			return emitErr
+		}
+	}
+	_, writeErr := fmt.Fprint(s.writer, "data: [DONE]\n\n")
+	return writeErr
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *sourceStreamEncoder) responseObject(status string) map[string]any {

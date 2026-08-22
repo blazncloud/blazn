@@ -72,7 +72,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	normalized := routed.normalized
-	if err = ensureContextLimit(normalized, h.config.Policy); err != nil {
+	if err = ensureContextLimit(routed, h.config.Policy); err != nil {
 		writeError(writer, err)
 		return
 	}
@@ -97,10 +97,14 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	started := h.config.Now()
 	result, err := h.dispatch(ctx, routed, routes)
 	if err != nil {
+		failureRoute, failureAttempt := routes[0], 1
+		if result.route.ID != "" {
+			failureRoute, failureAttempt = result.route, result.attempt
+		}
 		if errors.Is(ctx.Err(), context.Canceled) {
-			h.emit(normalized, routes[0], 1, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, h.config.Now().Sub(started), nil)
+			h.emit(normalized, failureRoute, failureAttempt, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, h.config.Now().Sub(started), nil)
 		} else {
-			h.emit(normalized, routes[0], 1, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
+			h.emit(normalized, failureRoute, failureAttempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
 		}
 		writeError(writer, err)
 		return

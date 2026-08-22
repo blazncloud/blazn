@@ -138,6 +138,62 @@ func TestResponsesTranslatesToLocalChatAndReturnsResponsesShape(t *testing.T) {
 	}
 }
 
+func TestCodex0147ResponsesFixturePreservesSerializedFields(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex-0.147-responses.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []upstreamCall
+	handler, _ := testHandler(t, func(route proxycontract.Route, incoming *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(incoming.Body)
+		calls = append(calls, upstreamCall{RouteID: route.ID, Path: incoming.URL.Path, Body: string(body)})
+		stream := "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"summary\\\":\\\"ok\\\"}\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":40,\"output_tokens\":8}}}\n\ndata: [DONE]\n\n"
+		return response(200, "text/event-stream", stream), nil
+	}, nil)
+	record := request(handler, "/v1/responses", string(raw))
+	if record.Code != 200 {
+		t.Fatalf("status=%d body=%s", record.Code, record.Body.String())
+	}
+	if len(calls) != 1 || calls[0].Path != "/v1/responses" {
+		t.Fatalf("expected direct Responses route: %#v", calls)
+	}
+	for _, want := range []string{`"parallel_tool_calls":true`, `"store":false`, `"reasoning":{"effort":"medium","summary":"auto"}`, `"stream_options":{"include_obfuscation":false}`, `"service_tier":"auto"`, `"prompt_cache_key":"codex-session-01"`, `"client_metadata":{"harness":"codex","version":"0.147.0"}`, `"type":"reasoning"`, `"name":"repository_result"`, `"strict":true`, `"output":"README contents"`} {
+		if !strings.Contains(calls[0].Body, want) {
+			t.Fatalf("outgoing request omitted %s: %s", want, calls[0].Body)
+		}
+	}
+	stream := record.Body.String()
+	ordered := []string{`"type":"response.created"`, `"type":"response.in_progress"`, `"type":"response.output_item.added"`, `"type":"response.content_part.added"`, `"type":"response.output_text.delta"`, `"type":"response.output_text.done"`, `"type":"response.content_part.done"`, `"type":"response.output_item.done"`, `"type":"response.completed"`, `data: [DONE]`}
+	last := -1
+	for _, needle := range ordered {
+		next := strings.Index(stream, needle)
+		if next <= last {
+			t.Fatalf("invalid Responses stream order at %s: %s", needle, stream)
+		}
+		last = next
+	}
+	if !strings.Contains(stream, `"input_tokens":40`) || !strings.Contains(stream, `"status":"completed"`) {
+		t.Fatalf("completed response missing usage: %s", stream)
+	}
+}
+
+func TestCodexUnsupportedFieldsAreRejectedBeforeRouting(t *testing.T) {
+	var calls atomic.Int32
+	handler, _ := testHandler(t, func(proxycontract.Route, *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return nil, errors.New("unexpected")
+	}, nil)
+	for _, body := range []string{`{"model":"company-assistant","input":"x","store":true}`, `{"model":"company-assistant","input":"x","include":["file_search_call.results"]}`, `{"model":"company-assistant","input":"x","reasoning":{"effort":"extreme"}}`, `{"model":"company-assistant","input":"x","service_tier":"priority"}`, `{"model":"company-assistant","input":"x","client_metadata":{"nested":"ok","extra":1}}`} {
+		record := request(handler, "/v1/responses", body)
+		if record.Code < 400 || !strings.Contains(record.Body.String(), "unsupported_capability") {
+			t.Fatalf("accepted unsupported request %s: %d %s", body, record.Code, record.Body.String())
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("routed %d rejected requests", calls.Load())
+	}
+}
+
 func TestNoFallbackAfterSuccessfulHeadersOrResponseBytes(t *testing.T) {
 	var calls atomic.Int32
 	handler, _ := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
@@ -173,6 +229,38 @@ func TestChatStreamingNormalizesSSEAndUsage(t *testing.T) {
 	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"hello"}],"stream":true}`)
 	if record.Code != 200 || !strings.Contains(record.Body.String(), `"content":"hi"`) || !strings.Contains(record.Body.String(), `"prompt_tokens":4`) {
 		t.Fatalf("stream %d: %s", record.Code, record.Body.String())
+	}
+}
+
+func TestPreFirstEventErrorFallsBackButEOFPostCommitFailsClosed(t *testing.T) {
+	var calls atomic.Int32
+	handler, _ := testHandler(t, func(route proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if route.Model == "qwen3.8" {
+			return response(200, "text/event-stream", "data: {\"error\":{\"message\":\"unavailable\"}}\n\ndata: [DONE]\n\n"), nil
+		}
+		return response(200, "text/event-stream", "data: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":1}}}\n\ndata: [DONE]\n\n"), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant","messages":[{"role":"user","content":"x"}],"stream":true}`)
+	if record.Code != 200 || calls.Load() != 2 || !strings.Contains(record.Body.String(), "fallback") || !strings.HasSuffix(record.Body.String(), "data: [DONE]\n\n") {
+		t.Fatalf("fallback stream status=%d calls=%d body=%s", record.Code, calls.Load(), record.Body.String())
+	}
+	var events []proxycontract.Event
+	handler, _ = testHandler(t, func(proxycontract.Route, *http.Request) (*http.Response, error) {
+		return response(200, "text/event-stream", "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"), nil
+	}, EventSinkFunc(func(event proxycontract.Event) { events = append(events, event) }))
+	record = request(handler, "/v1/chat/completions", `{"model":"company-assistant-restricted","messages":[{"role":"user","content":"x"}],"stream":true}`)
+	if !strings.Contains(record.Body.String(), "upstream_invalid_response") || !strings.HasSuffix(record.Body.String(), "data: [DONE]\n\n") {
+		t.Fatalf("EOF did not emit explicit failed terminal: %s", record.Body.String())
+	}
+	foundFailure := false
+	for _, event := range events {
+		if event.Type == proxycontract.EventRequestFinished && event.Outcome == proxycontract.OutcomeFailed {
+			foundFailure = true
+		}
+	}
+	if !foundFailure {
+		t.Fatalf("missing failed analytics: %#v", events)
 	}
 }
 
@@ -216,6 +304,19 @@ func TestListenerAuthenticationAndModels(t *testing.T) {
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if health.Code != 200 || strings.Contains(health.Body.String(), "policy") {
 		t.Fatalf("health leaked state: %s", health.Body.String())
+	}
+}
+
+func TestHealthRequiresResolvableCredentialedRoute(t *testing.T) {
+	policy := fixturePolicy(t)
+	handler, err := NewHandler(Config{Policy: policy, ActivationID: activationID, ListenerToken: "listener", Credentials: credentialMap{}, Resolver: EndpointResolver{DNS: staticDNS{}}, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if record.Code != 503 || !strings.Contains(record.Body.String(), "not_ready") {
+		t.Fatalf("health=%d %s", record.Code, record.Body.String())
 	}
 }
 
@@ -338,6 +439,9 @@ func TestRedirectPolicyRejectsHostOrSchemeChange(t *testing.T) {
 		if err := check(&http.Request{URL: mustURL(raw)}, []*http.Request{prior}); err == nil {
 			t.Fatalf("accepted redirect %s", raw)
 		}
+	}
+	if err := check(&http.Request{URL: mustURL("https://api.openai.com:443/admin")}, []*http.Request{prior}); err == nil {
+		t.Fatal("accepted redirect outside frozen basePath")
 	}
 }
 func mustURL(raw string) *url.URL {
