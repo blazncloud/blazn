@@ -338,7 +338,9 @@ SQL
 created_node_runner=true
 docker create --name "$node_runner" --network "$network" --read-only \
   --tmpfs /work:rw,nosuid,nodev,size=256m,mode=0700,uid=1000,gid=1000 \
+  --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
   -v "$repo_root/services/control-api:/source:ro" -w /work \
+  -e HOME=/work/home -e npm_config_cache=/work/.npm \
   -e NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
   -e NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
   "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; npm run build >/dev/null; node --test dist/node-store.integration.test.js' >/dev/null
