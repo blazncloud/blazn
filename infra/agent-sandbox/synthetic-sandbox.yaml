@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: blazn-spike
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: blazn-default
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: blazn-spike
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: blazn-default
+      resources:
+      - name: cpu
+        nominalQuota: "2"
+      - name: memory
+        nominalQuota: 2Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: blazn-spike
+  namespace: blazn-spike
+spec:
+  clusterQueue: blazn-spike
+---
+apiVersion: agents.x-k8s.io/v1beta1
+kind: Sandbox
+metadata:
+  name: synthetic
+  namespace: blazn-spike
+spec:
+  shutdownPolicy: Delete
+  podTemplate:
+    metadata:
+      labels:
+        kueue.x-k8s.io/queue-name: blazn-spike
+    spec:
+      containers:
+      - name: main
+        image: SYNTHETIC_IMAGE
+        command: ["sh", "-c", "trap : TERM INT; sleep 3600 & wait"]
+        resources:
+          requests: {cpu: 100m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 128Mi}
