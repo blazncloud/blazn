@@ -119,7 +119,7 @@ fault(){ [ "$TEST_MODE" = 1 ] || return 0; [ "${BLAZN_ISSUER_TEST_FAIL_AFTER:-}"
 safe_parent(){ candidate=$1; while [ "$candidate" != / ]; do [ ! -L "$candidate" ] || die "issuer path contains a symlink: $candidate"; candidate=$(dirname -- "$candidate"); done; }
 validate_managed_parent(){
   parent=$1
-  [ -d "$parent" ] && [ ! -L "$parent" ] || die "managed issuer parent is unavailable or linked: $parent"
+  if [ ! -d "$parent" ] || [ -L "$parent" ]; then die "managed issuer parent is unavailable or linked: $parent"; fi
   case "$(stat -c '%u:%a:%F' "$parent")" in
     0:700:directory|0:750:directory|0:755:directory) ;;
     *) die "managed issuer parent owner or mode is unsafe: $parent" ;;
@@ -190,7 +190,7 @@ current=$(jq -er .phase "$RECEIPT")
 case "$current" in initialized|secret-created|config-bound|files-installed|service-started|complete) ;; *) die "issuer receipt is not install-resumable" ;; esac
 state_parent=$(dirname -- "$STATE_ROOT")
 if [ ! -e "$state_parent" ]; then mkdir -p -- "$state_parent"; chmod 0700 "$state_parent"; fi
-[ -d "$state_parent" ] && [ ! -L "$state_parent" ] && [ "$(stat -c '%u:%a:%F' "$state_parent")" = "0:700:directory" ] || die "issuer state parent is unsafe"
+if [ ! -d "$state_parent" ] || [ -L "$state_parent" ] || [ "$(stat -c '%u:%a:%F' "$state_parent")" != "0:700:directory" ]; then die "issuer state parent is unsafe"; fi
 mkdir -p -- "$ROOT" "$(dirname -- "$BINARY")" "$(dirname -- "$UNIT")" "$(dirname -- "$TMPFILES")"
 chmod 0700 "$ROOT"
 validate_managed_parent "$(dirname -- "$BINARY")"
