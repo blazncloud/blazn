@@ -97,7 +97,7 @@ export class PgWorkspaceStore implements WorkspaceStore {
 
   async listEvents(workspaceId: string, afterId = ""): Promise<WorkspaceAuditEvent[]> {
     const result = await this.database.query(`SELECT id,event_type,payload,created_at FROM workspace_audit_events
-      WHERE workspace_id=$1 AND ($2='' OR (created_at,id)>(SELECT created_at,id FROM workspace_audit_events WHERE workspace_id=$1 AND id=$2))
+      WHERE workspace_id=$1 AND ($2='' OR (created_at,id)>(SELECT created_at,id FROM workspace_audit_events WHERE workspace_id=$1 AND id::text=$2))
       ORDER BY created_at,id LIMIT 100`, [workspaceId, afterId]);
     return result.rows.map((row) => ({ id: row.id, type: row.event_type, payload: row.payload, createdAt: row.created_at.toISOString() }));
   }
@@ -195,7 +195,7 @@ class PgWorkspaceTransaction implements WorkspaceTransaction {
   }
   async listEvents(workspaceId: string, afterId = ""): Promise<WorkspaceAuditEvent[]> {
     const result = await this.client.query(`SELECT id,event_type,payload,created_at FROM workspace_audit_events
-      WHERE workspace_id=$1 AND ($2='' OR (created_at,id)>(SELECT created_at,id FROM workspace_audit_events WHERE workspace_id=$1 AND id=$2))
+      WHERE workspace_id=$1 AND ($2='' OR (created_at,id)>(SELECT created_at,id FROM workspace_audit_events WHERE workspace_id=$1 AND id::text=$2))
       ORDER BY created_at,id LIMIT 100`, [workspaceId, afterId]);
     return result.rows.map((row) => ({ id: row.id, type: row.event_type, payload: row.payload, createdAt: row.created_at.toISOString() }));
   }
