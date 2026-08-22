@@ -78,24 +78,6 @@ type systemStore struct {
 	account string
 }
 
-func selectedDarwinKeychainPath() (string, error) {
-	path := os.Getenv("BLAZN_TEST_KEYCHAIN_PATH")
-	if path == "" {
-		return "", nil
-	}
-	if os.Getenv("BLAZN_ALLOW_TEST_KEYCHAIN") != "1" {
-		return "", errors.New("BLAZN_TEST_KEYCHAIN_PATH requires BLAZN_ALLOW_TEST_KEYCHAIN=1")
-	}
-	if !filepath.IsAbs(path) {
-		return "", errors.New("test Keychain path must be absolute")
-	}
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("test Keychain path must be an existing regular file")
-	}
-	return path, nil
-}
-
 func NewSystemStore() (CredentialStore, error) {
 	return NewSystemStoreForOrigin(defaultAPIURL)
 }
@@ -183,6 +165,9 @@ func newProtectedFileStoreAtAccount(dir, name string) (CredentialStore, error) {
 func (s *protectedFileStore) Description() string { return "protected credential file" }
 
 func (s *protectedFileStore) Get() ([]byte, error) {
+	if err := s.reconcileStagingFiles(); err != nil {
+		return nil, err
+	}
 	if err := validateOwnedMode(s.path, false); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrNotFound
@@ -213,7 +198,10 @@ func (s *protectedFileStore) Put(secret []byte) error {
 	if err := validateOwnedMode(s.dir, true); err != nil {
 		return fmt.Errorf("credential directory is unsafe: %w", err)
 	}
-	temp, err := os.CreateTemp(s.dir, ".session.tmp.*")
+	if err := s.reconcileStagingFiles(); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(s.dir, s.stagingPrefix()+"*")
 	if err != nil {
 		return fmt.Errorf("create credential staging file: %w", err)
 	}
@@ -255,6 +243,9 @@ func (s *protectedFileStore) Put(secret []byte) error {
 }
 
 func (s *protectedFileStore) Delete() error {
+	if err := s.reconcileStagingFiles(); err != nil {
+		return err
+	}
 	if err := validateOwnedMode(s.path, false); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -263,6 +254,54 @@ func (s *protectedFileStore) Delete() error {
 	}
 	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove credential: %w", err)
+	}
+	return nil
+}
+
+func (s *protectedFileStore) stagingPrefix() string {
+	return "." + filepath.Base(s.path) + ".tmp."
+}
+
+func (s *protectedFileStore) reconcileStagingFiles() error {
+	if err := validateOwnedMode(s.dir, true); err != nil {
+		return fmt.Errorf("credential directory is unsafe: %w", err)
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return fmt.Errorf("list credential staging files: %w", err)
+	}
+	removed := false
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), s.stagingPrefix()) {
+			continue
+		}
+		path := filepath.Join(s.dir, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect credential staging file: %w", err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
+			return fmt.Errorf("refusing unsafe credential staging file %s", path)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
+			return fmt.Errorf("refusing unowned or linked credential staging file %s", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove stale credential staging file: %w", err)
+		}
+		removed = true
+	}
+	if !removed {
+		return nil
+	}
+	directory, err := os.Open(s.dir)
+	if err != nil {
+		return fmt.Errorf("open credential directory after reconciliation: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync credential directory after reconciliation: %w", err)
 	}
 	return nil
 }

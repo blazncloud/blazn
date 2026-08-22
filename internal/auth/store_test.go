@@ -3,15 +3,85 @@ package auth
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 type runnerCall struct {
 	name  string
 	args  []string
 	stdin []byte
+}
+
+func TestProtectedFileStoreRecoversCredentialStagingAfterSIGKILL(t *testing.T) {
+	if os.Getenv("BLAZN_STAGING_KILL_HELPER") == "1" {
+		store, err := newProtectedFileStoreAtAccount(os.Getenv("BLAZN_STAGING_DIR"), "session.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fileStore := store.(*protectedFileStore)
+		staging, err := os.CreateTemp(fileStore.dir, fileStore.stagingPrefix()+"*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := staging.Chmod(0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := staging.Write([]byte("live-refresh-token-and-device-key")); err != nil {
+			t.Fatal(err)
+		}
+		if err := staging.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(os.Getenv("BLAZN_STAGING_MARKER"), []byte(staging.Name()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+		return
+	}
+
+	dir := filepath.Join(t.TempDir(), "credentials")
+	store, err := newProtectedFileStoreAtAccount(dir, "session.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "marker")
+	command := exec.Command(os.Args[0], "-test.run=^TestProtectedFileStoreRecoversCredentialStagingAfterSIGKILL$")
+	command.Env = append(os.Environ(), "BLAZN_STAGING_KILL_HELPER=1", "BLAZN_STAGING_DIR="+dir, "BLAZN_STAGING_MARKER="+marker)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			t.Fatal("SIGKILL helper did not create a staging credential")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("SIGKILL helper exited successfully")
+	}
+	if _, err := store.Get(); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Get after recovery = %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), store.(*protectedFileStore).stagingPrefix()) {
+			t.Fatalf("stale staging credential remains: %s", entry.Name())
+		}
+	}
 }
 
 type fakeRunner struct {
@@ -66,22 +136,6 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 	want := []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccountForOrigin(defaultAPIURL), "-w"}
 	if got := runner.calls[0]; got.name != "security" || !reflect.DeepEqual(got.args, want) || string(got.stdin) != "session" {
 		t.Fatalf("call = %#v", got)
-	}
-}
-
-func TestDarwinTestKeychainRequiresExplicitSafePath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.keychain-db")
-	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("BLAZN_TEST_KEYCHAIN_PATH", path)
-	if _, err := selectedDarwinKeychainPath(); err == nil {
-		t.Fatal("test keychain path worked without explicit opt-in")
-	}
-	t.Setenv("BLAZN_ALLOW_TEST_KEYCHAIN", "1")
-	got, err := selectedDarwinKeychainPath()
-	if err != nil || got != path {
-		t.Fatalf("path=%q err=%v", got, err)
 	}
 }
 
