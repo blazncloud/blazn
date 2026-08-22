@@ -61,7 +61,7 @@ run_rollback() {
     BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$root/ownership/node-broker-upgrade.json" \
     BLAZN_NODE_BROKER_UPGRADE_BACKUP_ROOT="$root/ownership/upgrade-inputs" \
     BLAZN_CONTROL_API_BUILD_RECEIPT="$root/ownership/no-build-receipt" \
-    sh -x "$ROLLBACK"
+    "$ROLLBACK"
 }
 
 run_upgrade() {

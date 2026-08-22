@@ -97,7 +97,7 @@ if [ "$phase" = secrets-retained ]; then
   write_phase environment-restored "$retained"; phase=environment-restored; test_fault environment-restored
 fi
 if [ "$phase" = environment-restored ]; then
-  prior_present=$(jq -er .inputs.buildReceipt.present "$UPGRADE_RECEIPT")
+  prior_present=$(jq -r .inputs.buildReceipt.present "$UPGRADE_RECEIPT")
   if [ -e "$BUILD_RECEIPT" ]; then cp --preserve=mode,timestamps -- "$BUILD_RECEIPT" "$retained/control-api-build.after.json"; chmod 0600 "$retained/control-api-build.after.json"; sync_path "$retained/control-api-build.after.json"; fi
   if [ "$prior_present" = true ]; then restore_file "$(jq -er .inputs.buildReceipt.backupPath "$UPGRADE_RECEIPT")" "$(jq -er .inputs.buildReceipt.digest "$UPGRADE_RECEIPT")" "$BUILD_RECEIPT"; elif [ -e "$BUILD_RECEIPT" ]; then mv -- "$BUILD_RECEIPT" "$retained/control-api-build.created.json"; sync_path "$(dirname -- "$BUILD_RECEIPT")"; fi
   write_phase build-restored "$retained"; phase=build-restored; test_fault build-restored
