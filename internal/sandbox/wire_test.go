@@ -30,6 +30,7 @@ func TestServiceExecStrictWireDecoding(t *testing.T) {
 		{name: "empty object", body: `{}`, wantErr: true},
 		{name: "required zero omitted", body: `{"stdoutBase64":"","stderrBase64":"","truncated":false}`, wantErr: true},
 		{name: "required zero replaced by null", body: `{"remoteExitCode":null,"stdoutBase64":"","stderrBase64":"","truncated":false}`, wantErr: true},
+		{name: "duplicate required property", body: `{"remoteExitCode":0,"remoteExitCode":1,"stdoutBase64":"","stderrBase64":"","truncated":false}`, wantErr: true},
 		{name: "unknown property", body: `{"remoteExitCode":0,"stdoutBase64":"","stderrBase64":"","truncated":false,"extra":true}`, wantErr: true},
 		{name: "trailing document", body: valid + ` {}`, wantErr: true},
 	}
@@ -69,6 +70,8 @@ func TestStrictSSEWireDecoding(t *testing.T) {
 		{name: "zero and null values present", data: valid},
 		{name: "empty object", data: `{}`, wantErr: true},
 		{name: "required nullable property omitted", data: `{"eventId":"` + eventID + `","sandboxId":"` + id + `","sequence":0,"type":"sandbox.ready","payload":{},"createdAt":"2026-08-22T00:00:00Z"}`, wantErr: true},
+		{name: "duplicate required property", data: `{"eventId":"` + eventID + `","eventId":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","sandboxId":"` + id + `","operationId":null,"sequence":0,"type":"sandbox.ready","payload":{},"createdAt":"2026-08-22T00:00:00Z"}`, wantErr: true},
+		{name: "non-nullable payload is null", data: `{"eventId":"` + eventID + `","sandboxId":"` + id + `","operationId":null,"sequence":0,"type":"sandbox.ready","payload":null,"createdAt":"2026-08-22T00:00:00Z"}`, wantErr: true},
 		{name: "unknown property", data: `{"eventId":"` + eventID + `","sandboxId":"` + id + `","operationId":null,"sequence":0,"type":"sandbox.ready","payload":{},"createdAt":"2026-08-22T00:00:00Z","extra":true}`, wantErr: true},
 		{name: "trailing document", data: valid + ` {}`, wantErr: true},
 	}
