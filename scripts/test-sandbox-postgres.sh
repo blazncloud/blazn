@@ -58,7 +58,7 @@ tar -C "$repo_root" -cf - services/control-api | docker run --rm -i --network "$
 
 docker exec -i -e PGPASSWORD="$admin_password" "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d blazn <<'SQL'
 DO $$ BEGIN
-  IF (SELECT count(*) FROM schema_migrations) <> 10 THEN RAISE EXCEPTION 'expected exactly ten applied migrations'; END IF;
+  IF (SELECT count(*) FROM schema_migrations) <> 11 THEN RAISE EXCEPTION 'expected exactly eleven applied migrations'; END IF;
 END $$;
 
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
@@ -109,10 +109,16 @@ SELECT :'artifact_digest' = 'd139b2eb8bb329f61b85f95b4983c028fbbadcfd36fd73cdbb0
   \quit 1
 \endif
 SET ROLE blazn_runtime;
-SELECT sandbox_create_bound_sandbox('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',now()+interval '15 minutes','poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to(:'artifact_contract','UTF8'),:'artifact_digest','10000000-0000-4000-8000-000000000001');
+SELECT sandbox_create_bound_sandbox_for_duration('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',60,'poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to(:'artifact_contract','UTF8'),:'artifact_digest','10000000-0000-4000-8000-000000000001');
+DO $$ DECLARE ttl numeric; BEGIN
+  SELECT extract(epoch FROM expires_at-created_at) INTO ttl FROM sandboxes WHERE id='70000000-0000-4000-8000-000000000001';
+  IF ttl < 60 OR ttl >= 61 THEN RAISE EXCEPTION 'exact minimum sandbox lifetime was not derived from database time: %', ttl; END IF;
+END $$;
 DO $$ BEGIN
-  BEGIN PERFORM sandbox_create_bound_sandbox('70000000-0000-4000-8000-000000000099','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',now()+interval '15 minutes','poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to('{"items":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}]}','UTF8'),repeat('0',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'artifact contract digest mismatch unexpectedly created';
+  BEGIN PERFORM sandbox_create_bound_sandbox_for_duration('70000000-0000-4000-8000-000000000099','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',900,'poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to('{"items":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}]}','UTF8'),repeat('0',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'artifact contract digest mismatch unexpectedly created';
   EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN PERFORM sandbox_create_bound_sandbox('70000000-0000-4000-8000-000000000097','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',now()+interval '15 minutes','poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to('{"items":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}]}','UTF8'),'d139b2eb8bb329f61b85f95b4983c028fbbadcfd36fd73cdbb05d143a4ac0729','10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'runtime retained legacy timestamp sandbox create authority';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN INSERT INTO sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by) VALUES ('60000000-0000-4000-8000-000000000098','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','bypass','{}','{}',repeat('0',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'runtime bypassed trusted publish function';
   EXCEPTION WHEN insufficient_privilege THEN NULL; END;
   BEGIN INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES ('70000000-0000-4000-8000-000000000098','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('a',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('0',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes'); RAISE EXCEPTION 'runtime bypassed trusted sandbox create function';
@@ -261,3 +267,15 @@ DO $$ BEGIN
   IF (SELECT token_hash FROM sandbox_access_grants WHERE id='80000000-0000-4000-8000-000000000001') <> repeat('e',64) THEN RAISE EXCEPTION 'grant token is not hash-only'; END IF;
 END $$;
 SQL
+
+tar -C "$repo_root" -cf - services/control-api packages/contracts/testdata/sandbox/template-good.json | docker run --rm -i --network "$network" \
+  -e BLAZN_SANDBOX_API_TEST_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
+  -e BLAZN_SANDBOX_API_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
+  "$node_image" sh -euc '
+    mkdir /work
+    tar -xf - -C /work
+    cd /work/services/control-api
+    npm ci
+    npm run build
+    node --test dist/sandbox-store.integration.test.js
+  '

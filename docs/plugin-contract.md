@@ -50,6 +50,17 @@ Social and Content releases use independently pinned `blazn-social-release`
 and `blazn-content-release` signing identities and namespaces. Compromise of
 one plugin's release key does not authorize releases for the other.
 
+The v2 Social release key fingerprint is
+`SHA256:L7rcTp4WYKPsYNmDx8ElbxwHlVc8VQvX9EH4SGlLcFQ`. Root releases predating
+this rotation continue to trust only the retired v1 key and therefore fail
+closed when presented with v2-signed Social artifacts.
+
+The rotation rollout publishes the v2-trusting root before the first v2-signed
+Social release, then qualifies both exact versions together. The new root
+rejects retired v1-signed Social releases as a deliberate downgrade defense;
+operators must retain the preceding root release only if they must reinstall a
+historical v1-signed Social artifact.
+
 ## Runtime context
 
 Before dispatch, root `blazn` creates a versioned runtime envelope and replaces
