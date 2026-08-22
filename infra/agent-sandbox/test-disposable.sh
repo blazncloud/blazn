@@ -62,6 +62,12 @@ kctl wait --for=condition=Available deployment/kueue-controller-manager -n kueue
 [ "$(kctl get deployment kueue-controller-manager -n kueue-system -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$KUEUE_IMAGE" ]
 kueue_image_id=$(kctl get pod -n kueue-system -l control-plane=controller-manager -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
 image_id_matches "$kueue_image_id" "$KUEUE_IMAGE"
+attempt=0
+while [ -z "$(kctl get endpoints kueue-webhook-service -n kueue-system -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)" ]; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -lt 60 ] || { printf 'Kueue webhook did not publish an endpoint\n' >&2; exit 1; }
+  sleep 2
+done
 kapply <"$tmp/agent-sandbox.yaml" >/dev/null
 kctl wait --for=condition=Available deployment/agent-sandbox-controller -n agent-sandbox-system --timeout=180s
 [ "$(kctl get deployment agent-sandbox-controller -n agent-sandbox-system -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$AGENT_SANDBOX_IMAGE" ]
