@@ -16,10 +16,10 @@ const cliProjectTestProjectID = "00000000-0000-4000-8000-000000000002"
 
 type fakeProjectCommands struct {
 	createdName, requestID, status, cursor, value string
-	changes                               projectpkg.Update
-	version                               int
-	selection                             workspacepkg.Selection
-	err                                   error
+	changes                                       projectpkg.Update
+	version                                       int
+	selection                                     workspacepkg.Selection
+	err                                           error
 }
 
 func (f *fakeProjectCommands) Create(_ context.Context, name, _slug, _kind, _description, requestID string) (client.ProjectEnvelope, error) {
