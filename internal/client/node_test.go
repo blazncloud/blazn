@@ -101,6 +101,7 @@ func TestNodeServiceAccountMutationsAreClosed(t *testing.T) {
 	} {
 		plan := validNodeInstallPlan()
 		plan.Mutations = []NodeInstallMutation{mutation}
+		addAuthenticatedServiceBinary(&plan)
 		if err := ValidateNodeInstallPlan(plan); err != nil {
 			t.Fatalf("kind=%s valid mutation error=%v", mutation.Kind, err)
 		}
@@ -377,12 +378,17 @@ func TestVerifyNodeInstallPlanPinsSignatureExpiryAndLocalBindings(t *testing.T) 
 
 func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing.T) {
 	plan, trust := signedNodeInstallPlan(t)
+	plan.Components = append(plan.Components, NodeInstallComponent{Name: "download", ArtifactType: "certificate", SourceClass: "https", Version: "1.0", Publisher: "Blazn", SourceHost: "example.test", Source: "https://example.test/download", SHA256: testHash, Ownership: "adopt_exact"})
+	digest, _ := NodeInstallPlanDigest(plan)
+	plan.Digest = digest
+	_, privateKey := testSigningKey()
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
 	untrustedOrigin := trust
 	untrustedOrigin.Profile.AllowedDownloadOrigins = []string{"https://other.example.test"}
 	if err := VerifyNodeInstallPlan(plan, untrustedOrigin); err == nil {
 		t.Fatal("untrusted component origin passed")
 	}
-	if err := ValidateNodeComponentRedirect(trust.Profile, plan.Components[0], "https://redirect.example.test/file"); err == nil {
+	if err := ValidateNodeComponentRedirect(trust.Profile, plan.Components[1], "https://redirect.example.test/file"); err == nil {
 		t.Fatal("cross-host redirect passed")
 	}
 	symlink := trust

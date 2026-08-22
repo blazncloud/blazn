@@ -1038,7 +1038,7 @@ func DecodeNodeInstallPlan(reader io.Reader) (NodeInstallPlan, error) {
 	if err := requireNodeArrayFields(raw, "registryTrust", "hostname", "caBundleSha256"); err != nil {
 		return plan, err
 	}
-	if err := requireNodeArrayFields(raw, "components", "name", "artifactType", "version", "publisher", "sourceHost", "source", "sha256", "ownership"); err != nil {
+	if err := requireNodeArrayFields(raw, "components", "name", "artifactType", "sourceClass", "version", "publisher", "sha256", "ownership"); err != nil {
 		return plan, err
 	}
 	if err := requireNodeArrayFields(raw, "taints", "key", "value", "effect"); err != nil {
