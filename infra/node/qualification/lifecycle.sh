@@ -58,9 +58,8 @@ target_daemon_observe() {
 verify_plan_expired() {
   expires=${BLAZN_QUALIFICATION_PLAN_EXPIRES_AT:-}
   [ -n "$expires" ] || qual_die 'BLAZN_QUALIFICATION_PLAN_EXPIRES_AT is required for expired-plan gates'
-  runtime_path=/var/lib/blazn/node/runtime.json
-  if [ "$BLAZN_QUALIFICATION_PROFILE" = native-mac ]; then runtime_path='/Library/Application Support/Blazn/Node/runtime.json'; fi
-  plan_binding=$(target_exec jq -c '{expiresAt:.exchange.plan.expiresAt,digest:.exchange.plan.digest,signature:.exchange.plan.signature,planId:.exchange.plan.planId}' "$runtime_path")
+  root_observation=$(target_daemon_observe)
+  plan_binding=$(jq -c '.observation.plan' <<<"$root_observation")
   jq -e --arg expires "$expires" '.expiresAt == $expires and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.signature | test("^[A-Za-z0-9_-]{86}$")) and (.planId | type == "string" and length > 0)' <<<"$plan_binding" >/dev/null ||
     qual_die 'requested expiry is not bound to the locally persisted signed install plan'
   expiry_epoch=$(python3 - "$expires" <<'PY'
@@ -150,9 +149,16 @@ run_crash_case() {
   crash_lifecycle=$1
   checkpoint=$2
   [ "$BLAZN_QUALIFICATION_PROFILE" = lxd-ubuntu-26.04 ] || qual_die 'crash cases are restricted to the disposable LXD guest'
+  qual_require_command sha256sum
   snapshot=${BLAZN_QUALIFICATION_SNAPSHOT:-}
   [[ "$snapshot" =~ ^checkpoint-[a-z0-9][a-z0-9-]{1,47}$ ]] || qual_die 'crash case requires the exact reviewed LXD snapshot name'
   lxc info "${BLAZN_QUALIFICATION_TARGET}/${snapshot}" >/dev/null 2>&1 || qual_die 'reviewed recovery snapshot does not exist'
+  snapshot_config=$(lxc config show "${BLAZN_QUALIFICATION_TARGET}/${snapshot}" --expanded)
+  snapshot_digest="sha256:$(printf '%s' "$snapshot_config" | sha256sum | awk '{print $1}')"
+  [[ "${BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256:-}" =~ ^sha256:[0-9a-f]{64}$ ]] || qual_die 'crash case requires the approval-bound clean snapshot config digest'
+  [ "$snapshot_digest" = "$BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256" ] || qual_die 'clean snapshot config digest differs from approval'
+  lxc restore "$BLAZN_QUALIFICATION_TARGET" "$snapshot"
+  [ "$(lxc config get "$BLAZN_QUALIFICATION_TARGET" user.blazn.qualification 2>/dev/null || true)" = "$BLAZN_QUALIFICATION_CORRELATION_ID" ] || qual_die 'restored guest correlation marker differs'
   verify_binary
   if [ "$crash_lifecycle" = install ]; then
     validate_install_inputs
@@ -212,8 +218,8 @@ run_crash_case() {
   else
     recovery=$(target_exec "$binary" --output=json node uninstall --yes --remove-managed-runtime)
   fi
-  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" \
-    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
+  jq -n --arg digest "$BLAZN_QUALIFICATION_ACCEPTED_INPUT_DIGEST" --arg target "$BLAZN_QUALIFICATION_TARGET" --arg snapshot "$snapshot" --arg snapshotDigest "$snapshot_digest" --arg lifecycle "$crash_lifecycle" --arg checkpoint "$checkpoint" --argjson pid "$target_pid" --argjson recovery "$recovery" \
+    '{schemaVersion:1,status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:{instance:$target,name:$snapshot,configDigest:$snapshotDigest,restoredUnderLifecycleLock:true},crash:{lifecycle:$lifecycle,checkpoint:$checkpoint,pid:$pid},recovery:$recovery}'
 }
 
 do_action() {

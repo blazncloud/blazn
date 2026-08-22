@@ -24,6 +24,16 @@
         "binaryVersion": {"type": "string", "minLength": 1}
       }
     },
+    "receiptTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicKey", "fingerprint", "signingKeyId"],
+      "properties": {
+        "publicKey": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "signingKeyId": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
     "startedAt": {"type": "string", "format": "date-time"},
     "completedAt": {"type": "string", "format": "date-time"},
     "status": {"enum": ["running", "passed", "failed"]},

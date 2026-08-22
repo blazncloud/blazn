@@ -71,6 +71,7 @@ for binding in \
   BLAZN_QUALIFICATION_EXPECTED_HOSTNAME=mac-mini-3 \
   BLAZN_QUALIFICATION_LOCK_IDENTITY=1:2:0:600 \
   BLAZN_QUALIFICATION_CRASH_TIMEOUT_SECONDS=301 \
+  BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
   BLAZN_QUALIFICATION_LXD_ROOT_DISK=48GiB \
   BLAZN_QUALIFICATION_LXD_PROCESSES=1200; do
   # shellcheck disable=SC2016
@@ -124,5 +125,16 @@ if rg -n "${legacy_owner}/blazn|github\\.com/${legacy_owner}" "$qual_dir" >/dev/
   printf 'old repository owner remains in qualification harness\n' >&2
   exit 1
 fi
+if rg -n 'runtime\.json' "$qual_dir/lifecycle.sh" >/dev/null || ! rg -n 'root_observation=\$\(target_daemon_observe\)' "$qual_dir/lifecycle.sh" >/dev/null; then
+  printf 'expired-plan binding bypasses the receipt-authorized root observation surface\n' >&2
+  exit 1
+fi
+for action in snapshot restore delete; do
+  rg -F "action:\"${action}\"" "$qual_dir/lxd-disposable.sh" >/dev/null || { printf 'LXD %s lacks structured evidence\n' "$action" >&2; exit 1; }
+done
+restore_line=$(rg -n 'lxc restore "\$BLAZN_QUALIFICATION_TARGET"' "$qual_dir/lifecycle.sh" | cut -d: -f1)
+verify_line=$(rg -n '^  verify_binary$' "$qual_dir/lifecycle.sh" | head -n1 | cut -d: -f1)
+[ -n "$restore_line" ] && [ -n "$verify_line" ] && [ "$restore_line" -lt "$verify_line" ] || { printf 'crash lifecycle does not restore the approved snapshot before execution\n' >&2; exit 1; }
+rg -F 'restoredUnderLifecycleLock:true' "$qual_dir/lifecycle.sh" >/dev/null || { printf 'crash evidence lacks locked snapshot restoration proof\n' >&2; exit 1; }
 
 printf 'Node qualification mutation guard tests passed.\n'

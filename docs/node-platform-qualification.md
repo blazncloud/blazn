@@ -190,6 +190,13 @@ common credential markers. Redact at the
 producer before writing an artifact; never edit an artifact after recording.
 The verifier detects changed size or digest.
 
+For the first receipt-bearing gate, pass the nonsecret base64url Ed25519 node
+public key with `--receipt-public-key`. The recorder pins its SHA-256 fingerprint
+and signing-key ID for the run, recomputes the exact canonical receipt digest,
+and verifies the domain-separated signature with OpenSSL. Every later active or
+removed receipt must verify against that same pinned trust. A removed receipt is
+a distinct signed document; reusing the active receipt signature fails.
+
 ## Baseline and protected-workload invariants
 
 On the LXD host, explicitly name every existing service and container that must
@@ -273,6 +280,12 @@ infra/node/qualification/lxd-disposable.sh snapshot
 
 The script will restore/delete only a guest whose name and instance property
 match the correlation. It never performs a wildcard operation.
+Create, snapshot, restore, and delete emit structured JSON containing the exact
+accepted approval-input digest. Snapshot and restore output also bind the
+instance, snapshot name, and SHA-256 of the expanded immutable snapshot config.
+Use the snapshot command's `configDigest` as
+`BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256` before calculating any restore or
+crash approval digest; a changed snapshot is refused before restore.
 
 After cloud-init/network readiness, record `/etc/os-release`, `uname`, disks,
 interfaces, routes, package/runtime absence, accounts, units, and Kubernetes
@@ -345,12 +358,17 @@ infra/node/qualification/crash-checkpoint.sh observe install binding
 ```
 
 The actual fault and recovery run is integrated so one process holds the
-lifecycle lock throughout the mutation, kill, and recovery. A separate kill
+lifecycle lock throughout snapshot restore, mutation, kill, and recovery. It
+reads the approval-bound snapshot's expanded config digest, restores that exact
+snapshot while holding the lock, rechecks the instance correlation marker, and
+persists the instance/name/config digest and `restoredUnderLifecycleLock=true`
+in the crash evidence. A separate kill
 process cannot acquire or bypass that lock. Set the exact snapshot, one-use
 approval, and bounded poll timeout, then invoke the action name itself:
 
 ```bash
 export BLAZN_QUALIFICATION_SNAPSHOT=checkpoint-clean-ubuntu
+export BLAZN_QUALIFICATION_SNAPSHOT_CONFIG_SHA256=sha256:<snapshot-config-digest>
 export BLAZN_QUALIFICATION_CRASH_TIMEOUT_SECONDS=300
 source infra/node/qualification/lib/common.sh
 qual_export_lock_identity
@@ -372,6 +390,12 @@ non-Blazn `/proc` names, a mismatched WAL, a mismatched guest correlation, or
 Mac/native targets. Inspect the integrated recovery output and prove its final
 signed receipt and zero ambiguous residues; do not run an unrecorded extra
 recovery command. A process exit alone is not crash-resume evidence.
+
+Expired-plan binding never reads the service-owned `0600` runtime file as the
+ordinary operator. The existing receipt-authorized
+`sudo -n /usr/local/bin/blazn node-root-observe` surface returns only the public
+signed-plan ID, expiry, digest, and signature alongside its narrow capability
+observation; it exposes no token, key, origin, mutation, or rollback material.
 
 ## Kubernetes checks
 

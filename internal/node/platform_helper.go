@@ -386,7 +386,7 @@ func (e NativeRootEngine) observeCapabilityBinding(ctx context.Context, plan cli
 	if err != nil {
 		return RootNodeObservation{}, errors.New("worker allocatable storage is invalid")
 	}
-	result := RootNodeObservation{Binding: client.KubernetesBinding{ClusterID: binding.ClusterID, NodeName: binding.NodeName, NodeUID: binding.NodeUID, ResourceVersion: value.Metadata.ResourceVersion}, AllocatableCPUMillis: cpu, AllocatableMemoryBytes: memory, AllocatableDiskBytes: disk, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	result := RootNodeObservation{Binding: client.KubernetesBinding{ClusterID: binding.ClusterID, NodeName: binding.NodeName, NodeUID: binding.NodeUID, ResourceVersion: value.Metadata.ResourceVersion}, AllocatableCPUMillis: cpu, AllocatableMemoryBytes: memory, AllocatableDiskBytes: disk, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}, Plan: RootObservedPlan{PlanID: plan.PlanID, ExpiresAt: plan.ExpiresAt, Digest: plan.Digest, Signature: plan.Signature}}
 	service, serviceErr := e.serviceState(ctx, plan.NodeService)
 	result.ServiceActive = serviceErr == nil && service.Service != nil && service.Service.Active
 	if serviceErr != nil {

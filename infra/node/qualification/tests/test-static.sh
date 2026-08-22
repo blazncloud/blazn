@@ -41,6 +41,19 @@ if "$qual_dir/evidence.py" record --output "$output" --step baseline-invariants 
   printf 'credential-bearing evidence was accepted\n' >&2
   exit 1
 fi
+jq -n --arg head "$(git -C "$repo_root" rev-parse HEAD)" --arg tree "$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" '{phase:"before",correlationId:"nodequal-static001",target:"blazn-q-static001",source:{head:$head,tree:$tree},state:{}}' >"$output/artifacts/empty-target.stdout"
+if "$qual_dir/evidence.py" record --output "$output" --step target-baseline \
+  --stdout "$output/artifacts/empty-target.stdout" --stderr "$output/artifacts/source.stderr" --exit-code 0 >/dev/null 2>&1; then
+  printf 'empty target inventory was accepted\n' >&2
+  exit 1
+fi
+
+jq -n --arg head "$(git -C "$repo_root" rev-parse HEAD)" --arg tree "$(git -C "$repo_root" rev-parse 'HEAD^{tree}')" '{phase:"before",correlationId:"nodequal-static001",source:{head:$head,tree:$tree},protected:{units:[],containers:[]}}' >"$output/artifacts/empty-inventory.stdout"
+if "$qual_dir/evidence.py" record --output "$output" --step baseline-invariants \
+  --stdout "$output/artifacts/empty-inventory.stdout" --stderr "$output/artifacts/source.stderr" --exit-code 0 >/dev/null 2>&1; then
+  printf 'empty protected inventory was accepted\n' >&2
+  exit 1
+fi
 
 printf '{"phase":"before","correlationId":"nodequal-static001","source":{"head":"ffffffffffffffffffffffffffffffffffffffff","tree":"ffffffffffffffffffffffffffffffffffffffff"},"protected":{}}\n' >"$output/artifacts/mismatched-source.stdout"
 if "$qual_dir/evidence.py" record --output "$output" --step baseline-invariants \
@@ -79,14 +92,37 @@ clean_head=$(git -C "$clean_repo" rev-parse HEAD)
 clean_tree=$(git -C "$clean_repo" rev-parse 'HEAD^{tree}')
 binary_digest="sha256:$(shasum -a 256 "$fake_binary" | awk '{print $1}')"
 approval_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-signature=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-active_receipt=$(jq -nc --arg binary "$binary_digest" --arg signature "$signature" '{schemaVersion:"nodes/v1alpha1",receiptId:"11111111-1111-4111-8111-111111111111",planId:"22222222-2222-4222-8222-222222222222",planDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",nodeId:"33333333-3333-4333-8333-333333333333",state:"active",currentStage:"complete",residues:[],mutations:[{status:"applied"}],binary:{digest:$binary},digest:"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",signingKeyId:"node-key",signature:$signature}')
-removed_receipt=$(jq -nc --argjson receipt "$active_receipt" '$receipt | .state="removed" | .mutations[0].status="removed"')
-fresh_gates=(source-provenance baseline-invariants lxd-create target-baseline ubuntu-preflight service-identity
+receipt_fixture="$tmp_root/receipt-fixture.json"
+python3 - "$binary_digest" >"$receipt_fixture" <<'PY'
+import base64, copy, hashlib, json, sys
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+key = Ed25519PrivateKey.generate()
+public = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+public_text = base64.urlsafe_b64encode(public).decode().rstrip("=")
+fingerprint = "sha256:" + hashlib.sha256(public).hexdigest()
+base = {"schemaVersion":"nodes/v1alpha1","receiptId":"11111111-1111-4111-8111-111111111111","planId":"22222222-2222-4222-8222-222222222222","planDigest":"sha256:"+"a"*64,"nodeId":"33333333-3333-4333-8333-333333333333","generation":1,"nodeIdentityGeneration":1,"signerKind":"node_identity","state":"active","currentStage":"complete","owner":{"uid":1000,"pid":100,"processStartIdentity":"start-1","nonce":"A"*32},"binary":{"path":"/usr/local/bin/blazn","digest":sys.argv[1]},"service":{"manager":"systemd","name":"blazn-node.service","definitionDigest":"sha256:"+"b"*64,"priorEnabled":False,"priorActive":False},"residues":[],"mutations":[{"ordinal":1,"kind":"file","target":"/usr/local/bin/blazn","priorState":"absent","rollbackMaterial":{"kind":"absent"},"desiredDigest":"sha256:"+"c"*64,"status":"applied"}],"createdAt":"2026-08-22T00:00:00Z","updatedAt":"2026-08-22T00:00:01Z","signerFingerprint":fingerprint,"signingKeyId":"node-key"}
+def sign(value):
+    unsigned = {k:v for k,v in value.items() if k not in ("digest","signature")}
+    canonical = json.dumps(unsigned, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    digest = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    value["digest"] = digest
+    value["signature"] = base64.urlsafe_b64encode(key.sign(b"blazn-node-install-receipt-v1\n" + digest.encode())).decode().rstrip("=")
+    return value
+active = sign(copy.deepcopy(base))
+removed = copy.deepcopy(base); removed["state"]="removed"; removed["mutations"][0]["status"]="removed"; removed["receiptId"]="44444444-4444-4444-8444-444444444444"
+removed = sign(removed)
+print(json.dumps({"publicKey":public_text,"active":active,"removed":removed}, separators=(",", ":")))
+PY
+receipt_public_key=$(jq -r '.publicKey' "$receipt_fixture")
+active_receipt=$(jq -c '.active' "$receipt_fixture")
+removed_receipt=$(jq -c '.removed' "$receipt_fixture")
+signature=$(jq -r '.active.signature' "$receipt_fixture")
+fresh_gates=(source-provenance baseline-invariants lxd-create lxd-snapshot target-baseline ubuntu-preflight service-identity
   no-input-sudo-observe install idempotent-install repair expired-observe
   expired-repair-denied expired-uninstall install-crash-resume cleanup-crash-resume
   reinstall kubernetes-uid-rv kubernetes-stale-cas-denied
-  kubernetes-quarantine-noschedule target-post-uninstall zero-residue post-invariants)
+  kubernetes-quarantine-noschedule target-post-uninstall lxd-delete zero-residue post-invariants)
 for gate in "${fresh_gates[@]}"; do
   case "$gate" in
     source-provenance) gate_json=$(jq -nc --arg head "$clean_head" --arg tree "$clean_tree" '{status:"passed",source:{head:$head,tree:$tree,remote:"https://github.com/blazncloud/blazn.git"}}') ;;
@@ -94,14 +130,16 @@ for gate in "${fresh_gates[@]}"; do
     target-baseline|target-post-uninstall) phase=before; [ "$gate" = target-post-uninstall ] && phase=after; gate_json=$(jq -nc --arg phase "$phase" --arg head "$clean_head" --arg tree "$clean_tree" '{phase:$phase,correlationId:"nodequal-static001",target:"blazn-q-static001",source:{head:$head,tree:$tree},state:{paths:"sha256:test"}}') ;;
     ubuntu-preflight) gate_json='{"os":"ubuntu","osVersion":"26.04"}' ;;
     lxd-create) gate_json=$(jq -nc --arg digest "$approval_digest" '{status:"passed",qualificationApprovalInputDigest:$digest,target:"blazn-q-static001",imageFingerprintDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",limits:{cpu:"4",memory:"8GiB",rootDisk:"32GiB",processes:"1024"}}') ;;
+    lxd-snapshot) gate_json=$(jq -nc --arg digest "$approval_digest" '{status:"passed",qualificationApprovalInputDigest:$digest,action:"snapshot",target:"blazn-q-static001",snapshot:"checkpoint-clean",configDigest:"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}') ;;
+    lxd-delete) gate_json=$(jq -nc --arg digest "$approval_digest" '{status:"passed",qualificationApprovalInputDigest:$digest,action:"delete",target:"blazn-q-static001"}') ;;
     service-identity) gate_json='{"service":{"accountUid":"1001","processUid":"1001"}}' ;;
     no-input-sudo-observe) gate_json='{"noInputRootObservation":"allowed"}' ;;
     install|idempotent-install|repair|reinstall) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson result "$active_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,result:$result}') ;;
     expired-observe) gate_json='{"schemaVersion":"blazn.dev/node-root-helper/v1","ok":true,"observation":{"binding":{"clusterId":"test"}}}' ;;
     expired-repair-denied) gate_json=$(jq -nc --arg digest "$approval_digest" --arg signature "$signature" '{status:"passed",qualificationApprovalInputDigest:$digest,expiredRepairDenied:true,denial:{exitCode:1,error:{code:"node_failed",message:"repair requires an authorized fresh, unexpired plan: install plan is not active at trusted current time"}},signedPlan:{expiresAt:"2026-08-22T00:00:00Z",planId:"22222222-2222-4222-8222-222222222222",digest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",signature:$signature}}') ;;
     expired-uninstall) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson result "$removed_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,result:$result}') ;;
-    install-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$active_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,crash:{lifecycle:"install"},recovery:$recovery}') ;;
-    cleanup-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$removed_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,crash:{lifecycle:"cleanup"},recovery:$recovery}') ;;
+    install-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$active_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:{instance:"blazn-q-static001",name:"checkpoint-clean",configDigest:"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",restoredUnderLifecycleLock:true},crash:{lifecycle:"install"},recovery:$recovery}') ;;
+    cleanup-crash-resume) gate_json=$(jq -nc --arg digest "$approval_digest" --argjson recovery "$removed_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,snapshotRestore:{instance:"blazn-q-static001",name:"checkpoint-clean",configDigest:"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",restoredUnderLifecycleLock:true},crash:{lifecycle:"cleanup"},recovery:$recovery}') ;;
     kubernetes-uid-rv) gate_json='{"node":{"uid":"uid-1","resourceVersion":"1"}}' ;;
     kubernetes-stale-cas-denied) gate_json=$(jq -nc --arg digest "$approval_digest" '{status:"passed",qualificationApprovalInputDigest:$digest,staleCASDenied:true,stateUnchanged:true,rejection:{classification:"kubernetes-status-invalid-422-jsonpatch-test",reason:"Invalid",code:422}}') ;;
     kubernetes-quarantine-noschedule) gate_json='{"status":"passed","quarantineNoSchedule":true,"ordinaryWorkloads":0}' ;;
@@ -110,13 +148,30 @@ for gate in "${fresh_gates[@]}"; do
   esac
   printf '%s\n' "$gate_json" >"$complete/artifacts/${gate}.stdout"
   "$qual_dir/evidence.py" record --output "$complete" --step "$gate" \
-    --stdout "$complete/artifacts/${gate}.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0
+    --stdout "$complete/artifacts/${gate}.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0 \
+    --receipt-public-key "$receipt_public_key"
 done
 printf '%s\n' "$(jq -nc --arg digest "$approval_digest" --argjson result "$active_receipt" '{status:"passed",qualificationApprovalInputDigest:$digest,result:$result}')" >"$complete/artifacts/adopt-install.stdout"
 "$qual_dir/evidence.py" record --output "$complete" --step adopt-install \
-  --stdout "$complete/artifacts/adopt-install.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0
+  --stdout "$complete/artifacts/adopt-install.stdout" --stderr "$complete/artifacts/gate.stderr" --exit-code 0 \
+  --receipt-public-key "$receipt_public_key"
 "$qual_dir/evidence.py" finalize --output "$complete" >/dev/null
 "$qual_dir/evidence.py" verify --output "$complete" >/dev/null
+cp "$complete/run.json" "$complete/run.before-tamper.json"
+cp "$complete/artifacts/install.stdout" "$complete/artifacts/install.before-tamper.stdout"
+jq '.result.signature = (if (.result.signature|startswith("A")) then "B"+(.result.signature[1:]) else "A"+(.result.signature[1:]) end)' "$complete/artifacts/install.stdout" >"$complete/artifacts/install.stdout.tmp"
+mv "$complete/artifacts/install.stdout.tmp" "$complete/artifacts/install.stdout"
+tampered_signature=$(jq -r '.result.signature' "$complete/artifacts/install.stdout")
+tampered_digest="sha256:$(shasum -a 256 "$complete/artifacts/install.stdout" | awk '{print $1}')"
+tampered_bytes=$(wc -c <"$complete/artifacts/install.stdout" | tr -d ' ')
+jq --arg digest "$tampered_digest" --arg signature "$tampered_signature" --argjson bytes "$tampered_bytes" '(.steps[] | select(.id=="install")) |= (.stdout.digest=$digest | .stdout.bytes=$bytes | .receiptEvidence.signature=$signature)' "$complete/run.json" >"$complete/run.json.tmp"
+mv "$complete/run.json.tmp" "$complete/run.json"
+if "$qual_dir/evidence.py" verify --output "$complete" >/dev/null 2>&1; then
+  printf 'cryptographically invalid rehashed receipt evidence was accepted\n' >&2
+  exit 1
+fi
+mv "$complete/run.before-tamper.json" "$complete/run.json"
+mv "$complete/artifacts/install.before-tamper.stdout" "$complete/artifacts/install.stdout"
 post_artifact="$complete/artifacts/post-invariants.stdout"
 jq '.protected.containers[0].name="changed-homeai"' "$post_artifact" >"$post_artifact.tmp"
 mv "$post_artifact.tmp" "$post_artifact"

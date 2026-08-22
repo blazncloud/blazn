@@ -127,6 +127,16 @@ type RootNodeObservation struct {
 	RuntimeClasses         []string                 `json:"runtimeClasses"`
 	SandboxBackends        []string                 `json:"sandboxBackends"`
 	ReasonCodes            []string                 `json:"reasonCodes"`
+	Plan                   RootObservedPlan         `json:"plan"`
+}
+
+// RootObservedPlan exposes only public signed-plan provenance. It deliberately
+// excludes credentials, origins, mutations, rollback material, and key bytes.
+type RootObservedPlan struct {
+	PlanID    string `json:"planId"`
+	ExpiresAt string `json:"expiresAt"`
+	Digest    string `json:"digest"`
+	Signature string `json:"signature"`
 }
 
 type PrivilegedClient interface {

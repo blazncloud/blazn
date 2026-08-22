@@ -558,6 +558,9 @@ func TestPrivilegedObservationParsesRealShapedLinuxAndMacWorkers(t *testing.T) {
 			if observed.AllocatableCPUMillis != 3500 || observed.AllocatableMemoryBytes != 16<<30 || observed.AllocatableDiskBytes != 120<<30 || !observed.NodeReady || !observed.ServiceActive || len(observed.RuntimeClasses) != 1 || !containsArgument(observed.ReasonCodes, "api_discovery_failed") {
 				t.Fatalf("observation=%#v", observed)
 			}
+			if observed.Plan.PlanID != plan.PlanID || observed.Plan.ExpiresAt != plan.ExpiresAt || observed.Plan.Digest != plan.Digest || observed.Plan.Signature != plan.Signature {
+				t.Fatalf("signed plan provenance=%#v", observed.Plan)
+			}
 		})
 	}
 }
