@@ -21,13 +21,13 @@ mkdir -m 0700 "$tmp/fixtures" "$tmp/pre"
 
 printf '%s\n' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  annotations:' '    blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' '  name: install' >"$tmp/install.yaml"
 for file in blazn-poc.yaml bootstrap.yaml controller-boundary.yaml synthetic-canary.yaml; do printf 'fixture: %s\n' "$file" >"$tmp/fixtures/$file"; done
-for file in api-resources.txt clusterqueues.json context creator-principal kube-system.uid phase4c-targets relevant-admission.txt relevant-crds.txt runtimeclasses.json version.json; do printf 'inventory: %s\n' "$file" >"$tmp/pre/$file"; done
+for file in admission.json api-resources.txt clusterqueues.json context creator-principal kube-system.uid phase4c-targets relevant-crds.txt runtimeclasses.json version.json; do printf 'inventory: %s\n' "$file" >"$tmp/pre/$file"; done
 printf 'disposable-phase4c-test\n' >"$tmp/pre/context"
 printf '99999999-9999-4999-8999-999999999999\n' >"$tmp/pre/kube-system.uid"
 printf 'phase4c-reviewer\n' >"$tmp/pre/creator-principal"
 (
   cd "$tmp/pre"
-  sha256sum api-resources.txt clusterqueues.json context creator-principal kube-system.uid phase4c-targets relevant-admission.txt relevant-crds.txt runtimeclasses.json version.json | LC_ALL=C sort >inventory.sha256
+  sha256sum admission.json api-resources.txt clusterqueues.json context creator-principal kube-system.uid phase4c-targets relevant-crds.txt runtimeclasses.json version.json | LC_ALL=C sort >inventory.sha256
 )
 "$ROOT/phase4c/prepare-transaction.sh" "$tmp/install.yaml" "$tmp/fixtures" "$tmp/pre" "$tmp/transaction" >/dev/null
 digest=$(cat "$tmp/transaction/input.digest")

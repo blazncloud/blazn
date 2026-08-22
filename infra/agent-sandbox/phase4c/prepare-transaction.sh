@@ -13,14 +13,14 @@ fixture_files='blazn-poc.yaml
 bootstrap.yaml
 controller-boundary.yaml
 synthetic-canary.yaml'
-inventory_files='api-resources.txt
+inventory_files='admission.json
+api-resources.txt
 clusterqueues.json
 context
 creator-principal
 inventory.sha256
 kube-system.uid
 phase4c-targets
-relevant-admission.txt
 relevant-crds.txt
 runtimeclasses.json
 version.json'

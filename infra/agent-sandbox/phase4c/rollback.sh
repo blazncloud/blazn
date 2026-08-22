@@ -13,11 +13,17 @@ transaction_id=$(sed -n 's/^    blazn.dev\/phase4c-transaction: //p' "$transacti
 [ "$(cat "$pre/context")" = "$BLAZN_EXPECTED_CONTEXT" ]
 [ "$(cat "$pre/kube-system.uid")" = "$BLAZN_EXPECTED_KUBE_SYSTEM_UID" ]
 
+get_optional_name() {
+  resource=$1 name=$2 namespace=${3:-}
+  if [ -n "$namespace" ]; then kubectl get "$resource" "$name" -n "$namespace" --ignore-not-found -o name
+  else kubectl get "$resource" "$name" --ignore-not-found -o name; fi
+}
+
 uid_for_delete() {
   key=$1 resource=$2 name=$3 namespace=$4
-  if [ -n "$namespace" ]; then object=$(kubectl get "$resource" "$name" -n "$namespace" --ignore-not-found -o json 2>/dev/null || true)
-  else object=$(kubectl get "$resource" "$name" --ignore-not-found -o json 2>/dev/null || true); fi
-  [ -n "$object" ] || return 1
+  if [ -n "$namespace" ]; then object=$(kubectl get "$resource" "$name" -n "$namespace" --ignore-not-found -o json) || { printf 'rollback lookup failed: %s/%s\n' "$resource" "$name" >&2; return 1; }
+  else object=$(kubectl get "$resource" "$name" --ignore-not-found -o json) || { printf 'rollback lookup failed: %s/%s\n' "$resource" "$name" >&2; return 1; }; fi
+  [ -n "$object" ] || return 3
   uid=$(printf '%s' "$object" | jq -er --arg tx "$transaction_id" 'select(.metadata.annotations["blazn.dev/phase4c-transaction"] == $tx) | .metadata.uid') || {
     printf 'refusing rollback of an unowned replacement: %s/%s\n' "$resource" "$name" >&2; exit 1
   }
@@ -32,7 +38,7 @@ check_namespace_contents() {
   unexpected=''
   for resource in $(kubectl api-resources --verbs=list --namespaced -o name | LC_ALL=C sort -u); do
     case "$resource" in events|events.events.k8s.io|pods.metrics.k8s.io) continue ;; esac
-    objects=$(kubectl get "$resource" -n "$namespace" --ignore-not-found -o json)
+    objects=$(kubectl get "$resource" -n "$namespace" --ignore-not-found -o json) || { printf 'namespace rollback inventory lookup failed: %s\n' "$resource" >&2; exit 1; }
     [ -n "$objects" ] || continue
     printf '%s' "$objects" | jq -e --arg tx "$transaction_id" --arg ns "$namespace" '
       [.items[]
@@ -72,21 +78,23 @@ for entry in \
   'webhook-secret secret agent-sandbox-webhook-certs agent-sandbox-system' \
   'bootstrap-sa serviceaccount blazn-agent-sandbox-ca-bootstrap agent-sandbox-system'; do
   # shellcheck disable=SC2086
-  if uid_for_delete $entry >/dev/null; then :; fi
+  if uid_for_delete $entry >/dev/null; then :
+  else lookup_code=$?; [ "$lookup_code" -eq 3 ] || exit "$lookup_code"; fi
 done
 phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
 
 delete_if_owned() {
   key=$1 resource=$2 name=$3 namespace=$4 api_path=$5 propagation=${6:-Foreground}
-  uid=$(uid_for_delete "$key" "$resource" "$name" "$namespace") || return 0
+  if uid=$(uid_for_delete "$key" "$resource" "$name" "$namespace"); then :
+  else lookup_code=$?; [ "$lookup_code" -eq 3 ] && return 0; return "$lookup_code"; fi
   phase4c_delete_uid "$api_path" "$uid" "$propagation"
 }
 
 # Remove an active canary while its controller can still clear finalizers. A
 # rollback from canary-intent/canary-ready must not strand the workload
 # namespace by stopping reconciliation first.
-canary_existed=$(kubectl get sandbox phase4c-canary -n blazn-poc --ignore-not-found -o name)
+canary_existed=$(get_optional_name sandbox phase4c-canary blazn-poc) || { printf 'canary rollback lookup failed\n' >&2; exit 1; }
 if [ -n "$canary_existed" ]; then
   delete_if_owned canary-sandbox sandbox phase4c-canary blazn-poc '/apis/agents.x-k8s.io/v1beta1/namespaces/blazn-poc/sandboxes/phase4c-canary' Background
   phase4c_stop_uid_proxy
@@ -100,15 +108,19 @@ fi
 # generated object. Scan after the UID-fenced canary cascade so its expected
 # Pod/Workload are gone, while any independent unowned object still blocks
 # namespace deletion.
-[ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] || check_namespace_contents blazn-poc
-[ -z "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ] || check_namespace_contents agent-sandbox-system
+blazn_namespace=$(get_optional_name namespace blazn-poc) || { printf 'workload namespace lookup failed\n' >&2; exit 1; }
+[ -z "$blazn_namespace" ] || check_namespace_contents blazn-poc
+controller_namespace=$(get_optional_name namespace agent-sandbox-system) || { printf 'controller namespace lookup failed\n' >&2; exit 1; }
+[ -z "$controller_namespace" ] || check_namespace_contents agent-sandbox-system
 
 # Stop reconciliation only after the active canary and its dependents are gone,
 # then remove the uniquely owned namespaces.
 delete_if_owned namespace-agent-sandbox-system namespace agent-sandbox-system '' '/api/v1/namespaces/agent-sandbox-system'
-if [ -n "$(kubectl get namespace agent-sandbox-system --ignore-not-found -o name)" ]; then kubectl wait --for=delete namespace/agent-sandbox-system --timeout=180s; fi
+controller_namespace=$(get_optional_name namespace agent-sandbox-system) || { printf 'controller namespace post-delete lookup failed\n' >&2; exit 1; }
+if [ -n "$controller_namespace" ]; then kubectl wait --for=delete namespace/agent-sandbox-system --timeout=180s; fi
 delete_if_owned namespace-blazn-poc namespace blazn-poc '' '/api/v1/namespaces/blazn-poc'
-if [ -n "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ]; then kubectl wait --for=delete namespace/blazn-poc --timeout=180s; fi
+blazn_namespace=$(get_optional_name namespace blazn-poc) || { printf 'workload namespace post-delete lookup failed\n' >&2; exit 1; }
+if [ -n "$blazn_namespace" ]; then kubectl wait --for=delete namespace/blazn-poc --timeout=180s; fi
 for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do
   delete_if_owned "crd-$crd" crd "$crd" '' "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$crd"
 done
@@ -123,14 +135,30 @@ delete_if_owned bootstrap-role clusterrole blazn-agent-sandbox-ca-bootstrap '' '
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
+verify_sealed_target_absent() {
+  target=$1 namespace=${2:-}
+  if [ -n "$namespace" ]; then
+    kubectl wait --for=delete "$target" -n "$namespace" --timeout=120s
+    found=$(kubectl get "$target" -n "$namespace" --ignore-not-found -o name)
+  else
+    kubectl wait --for=delete "$target" --timeout=120s
+    found=$(kubectl get "$target" --ignore-not-found -o name)
+  fi
+  [ -z "$found" ] || { printf 'sealed rollback target remains: %s\n' "$target" >&2; exit 1; }
+}
+while read -r target namespace; do
+  [ -z "$target" ] || verify_sealed_target_absent "$target" "${namespace:-}"
+done <"$pre/phase4c-targets"
+
 post=$(mktemp -d "${TMPDIR:-/tmp}/blazn-phase4c-post.XXXXXX")
 cleanup() { find "$post" -xdev -type f -delete; find "$post" -xdev -depth -type d -empty -delete; }
 trap cleanup EXIT HUP INT TERM
 kubectl api-resources -o wide | LC_ALL=C sort >"$post/api-resources.txt"
-kubectl get crd -o name | LC_ALL=C sort | grep -E '(agents\.x-k8s\.io|kueue\.x-k8s\.io)' >"$post/relevant-crds.txt" || :
-kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration,validatingadmissionpolicy,validatingadmissionpolicybinding -o name | LC_ALL=C sort | grep -E '(agent-sandbox|kueue|blazn)' >"$post/relevant-admission.txt" || :
+kubectl get crd -o name >"$post/all-crds.txt"
+LC_ALL=C sort "$post/all-crds.txt" | grep -E '(agents\.x-k8s\.io|kueue\.x-k8s\.io)' >"$post/relevant-crds.txt" || :
+kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration,validatingadmissionpolicy,validatingadmissionpolicybinding -o json | jq -S 'del(.metadata.resourceVersion,.items[].metadata.resourceVersion,.items[].metadata.managedFields,.items[].metadata.creationTimestamp,.items[].metadata.uid,.items[].metadata.generation) | .items |= sort_by(.apiVersion,.kind,.metadata.name)' >"$post/admission.json"
 kubectl get runtimeclass -o json | jq -S 'del(.metadata.resourceVersion,.metadata.managedFields)' >"$post/runtimeclasses.json"
 kubectl get clusterqueue.kueue.x-k8s.io -o json | jq -S 'del(.metadata.resourceVersion,.metadata.managedFields,.items[].metadata.resourceVersion,.items[].metadata.managedFields,.items[].status)' >"$post/clusterqueues.json"
-for file in api-resources.txt relevant-crds.txt relevant-admission.txt runtimeclasses.json clusterqueues.json; do cmp "$pre/$file" "$post/$file" || { printf 'rollback inventory differs: %s\n' "$file" >&2; exit 1; }; done
+for file in api-resources.txt relevant-crds.txt admission.json runtimeclasses.json clusterqueues.json; do cmp "$pre/$file" "$post/$file" || { printf 'rollback inventory differs: %s\n' "$file" >&2; exit 1; }; done
 phase4c_write_phase "$transaction" rollback-complete
 printf 'Phase 4C rollback matches preinstall inventory with UID-fenced zero residue\n'

@@ -101,9 +101,10 @@ metadata:
 spec:
   failurePolicy: Fail
   matchConstraints:
+    matchPolicy: Equivalent
     resourceRules:
     - apiGroups: ["agents.x-k8s.io"]
-      apiVersions: ["v1beta1"]
+      apiVersions: ["v1alpha1", "v1beta1"]
       operations: ["CREATE", "UPDATE"]
       resources: ["sandboxes"]
       scope: Namespaced
@@ -120,6 +121,8 @@ spec:
     message: "Sandbox Pods must use the tokenless blazn-sandbox-runner identity"
   - expression: "object.spec.podTemplate.spec.nodeSelector['blazn.dev/sandbox-eligible'] == 'true'"
     message: "Sandbox Pods must target reviewed sandbox-eligible nodes"
+  - expression: "size(object.spec.podTemplate.spec.nodeSelector) == 1 && (!has(object.spec.podTemplate.spec.nodeName) || object.spec.podTemplate.spec.nodeName == '') && (!has(object.spec.podTemplate.spec.tolerations) || size(object.spec.podTemplate.spec.tolerations) == 0) && (!has(object.spec.podTemplate.spec.affinity)) && (!has(object.spec.podTemplate.spec.priorityClassName) || object.spec.podTemplate.spec.priorityClassName == '') && (!has(object.spec.podTemplate.spec.schedulerName) || object.spec.podTemplate.spec.schedulerName == '')"
+    message: "Sandbox scheduling must use only the reviewed eligibility selector"
   - expression: "(!has(object.spec.podTemplate.spec.hostNetwork) || object.spec.podTemplate.spec.hostNetwork == false) && (!has(object.spec.podTemplate.spec.hostPID) || object.spec.podTemplate.spec.hostPID == false) && (!has(object.spec.podTemplate.spec.hostIPC) || object.spec.podTemplate.spec.hostIPC == false)"
     message: "Sandbox Pods may not share host namespaces"
   - expression: "(!has(object.spec.podTemplate.spec.shareProcessNamespace) || object.spec.podTemplate.spec.shareProcessNamespace == false) && (!has(object.spec.podTemplate.spec.hostAliases) || size(object.spec.podTemplate.spec.hostAliases) == 0) && (!has(object.spec.podTemplate.spec.volumes) || size(object.spec.podTemplate.spec.volumes) == 0) && (!has(object.spec.podTemplate.spec.initContainers) || size(object.spec.podTemplate.spec.initContainers) == 0) && (!has(object.spec.podTemplate.spec.ephemeralContainers) || size(object.spec.podTemplate.spec.ephemeralContainers) == 0)"
@@ -130,7 +133,7 @@ spec:
     message: "Phase 4C permits only the sealed synthetic container identity"
   - expression: "object.spec.podTemplate.spec.containers.all(c, c.command == ['sh', '-c', 'trap : TERM INT; sleep 3600 & wait'] && (!has(c.args) || size(c.args) == 0) && (!has(c.env) || size(c.env) == 0) && (!has(c.envFrom) || size(c.envFrom) == 0) && (!has(c.workingDir) || c.workingDir == '') && (!has(c.lifecycle)) && (!has(c.livenessProbe)) && (!has(c.readinessProbe)) && (!has(c.startupProbe)) && (!has(c.stdin) || c.stdin == false) && (!has(c.stdinOnce) || c.stdinOnce == false) && (!has(c.tty) || c.tty == false) && (!has(c.volumeMounts) || size(c.volumeMounts) == 0) && (!has(c.volumeDevices) || size(c.volumeDevices) == 0) && (!has(c.ports) || size(c.ports) == 0))"
     message: "Phase 4C permits only the sealed synthetic command and execution surface"
-  - expression: "object.spec.podTemplate.spec.containers.all(c, c.resources.requests.cpu == '100m' && c.resources.requests.memory == '64Mi' && c.resources.limits.cpu == '200m' && c.resources.limits.memory == '128Mi')"
+  - expression: "object.spec.podTemplate.spec.containers.all(c, size(c.resources.requests) == 2 && size(c.resources.limits) == 2 && c.resources.requests.cpu == '100m' && c.resources.requests.memory == '64Mi' && c.resources.limits.cpu == '200m' && c.resources.limits.memory == '128Mi')"
     message: "Phase 4C permits only the sealed synthetic resource request and limit"
   - expression: "object.spec.podTemplate.spec.containers.all(c, c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && c.securityContext.runAsNonRoot == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
     message: "Phase 4C permits only the reviewed restricted container security context"

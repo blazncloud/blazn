@@ -24,9 +24,9 @@ namespace-scoped**:
   to the four named CRDs, installs the sealed CA bundle, and loses its Job,
   ClusterRole, and binding through UID-precondition deletes before readiness.
 - A fail-closed ValidatingAdmissionPolicy denies Sandbox creation or update
-  outside `blazn-poc`, without the fixed LocalQueue and tokenless service
+  through either served v1alpha1 or v1beta1 API outside `blazn-poc`, without the fixed LocalQueue and tokenless service
   account, complete restricted PodSpec, reviewed transaction identity, exact
-  authenticated creator, or runtime trust declaration. Updates are accepted
+  authenticated creator, closed scheduling/resources, or runtime trust declaration. Updates are accepted
   only from the controller identity and cannot change spec, labels, or
   annotations. Both owned namespaces enforce the Restricted PSA profile.
 - `inventory.sh` blocks installation if any Sandbox or Phase 4C-owned object
@@ -65,6 +65,14 @@ tests crash after controller installation and resume the persisted phase, then
 crash again with the canary Ready and prove direct rollback removes that canary
 while its controller can still clear finalizers. They also inspect the exact
 UID-precondition request and exercise pre-mutation rollback.
+
+The Ready canary gate records a normalized JSON attestation of the generated
+Pod, including immutable image identity, runtime resources, ownership,
+placement, scheduling defaults, service account, and complete security
+contexts. Static mutation fixtures prove selector, resource, owner, and imageID
+drift fail closed. Inventory seals the complete normalized cluster admission
+configuration, and rollback waits for and rechecks every sealed target before
+declaring zero residue; lookup failures other than explicit NotFound abort.
 
 ## Serialized live runbook
 

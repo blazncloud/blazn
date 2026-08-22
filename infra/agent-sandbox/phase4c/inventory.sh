@@ -23,16 +23,31 @@ crd/sandboxtemplates.extensions.agents.x-k8s.io
 crd/sandboxwarmpools.extensions.agents.x-k8s.io
 namespace/agent-sandbox-system
 namespace/blazn-poc
+serviceaccount/blazn-sandbox-runner blazn-poc
+localqueue.kueue.x-k8s.io/blazn-poc blazn-poc
 clusterrole/blazn-agent-sandbox-observer
 clusterrolebinding/blazn-agent-sandbox-observer
+role/blazn-agent-sandbox-system agent-sandbox-system
+rolebinding/blazn-agent-sandbox-system agent-sandbox-system
+role/blazn-agent-sandbox-controller blazn-poc
+rolebinding/blazn-agent-sandbox-controller blazn-poc
 clusterrole/blazn-agent-sandbox-ca-bootstrap
 clusterrolebinding/blazn-agent-sandbox-ca-bootstrap
+serviceaccount/agent-sandbox-controller agent-sandbox-system
+service/agent-sandbox-controller agent-sandbox-system
+service/agent-sandbox-webhook-service agent-sandbox-system
+deployment/agent-sandbox-controller agent-sandbox-system
+secret/agent-sandbox-webhook-certs agent-sandbox-system
+serviceaccount/blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
+job/blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
 validatingadmissionpolicy/blazn-agent-sandbox-boundary
 validatingadmissionpolicybinding/blazn-agent-sandbox-boundary'
 printf '%s\n' "$targets" >"$evidence/phase4c-targets"
-while IFS= read -r target; do
+while read -r target namespace; do
   [ -n "$target" ] || continue
-  if kubectl get "$target" -o name >/dev/null 2>&1; then
+  if [ -n "${namespace:-}" ]; then found=$(kubectl get "$target" -n "$namespace" --ignore-not-found -o name)
+  else found=$(kubectl get "$target" --ignore-not-found -o name); fi
+  if [ -n "$found" ]; then
     printf 'preexisting Phase 4C target: %s\n' "$target" >&2
     exit 1
   fi
@@ -51,14 +66,16 @@ if kubectl get sandboxes.agents.x-k8s.io -A -o name >/dev/null 2>&1; then
 fi
 
 kubectl api-resources -o wide | LC_ALL=C sort >"$evidence/api-resources.txt"
-kubectl get crd -o name | LC_ALL=C sort | grep -E '(agents\.x-k8s\.io|kueue\.x-k8s\.io)' >"$evidence/relevant-crds.txt" || :
-kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration,validatingadmissionpolicy,validatingadmissionpolicybinding -o name | LC_ALL=C sort | grep -E '(agent-sandbox|kueue|blazn)' >"$evidence/relevant-admission.txt" || :
+kubectl get crd -o name >"$evidence/all-crds.txt"
+LC_ALL=C sort "$evidence/all-crds.txt" | grep -E '(agents\.x-k8s\.io|kueue\.x-k8s\.io)' >"$evidence/relevant-crds.txt" || :
+find "$evidence/all-crds.txt" -xdev -type f -delete
+kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration,validatingadmissionpolicy,validatingadmissionpolicybinding -o json | jq -S 'del(.metadata.resourceVersion,.items[].metadata.resourceVersion,.items[].metadata.managedFields,.items[].metadata.creationTimestamp,.items[].metadata.uid,.items[].metadata.generation) | .items |= sort_by(.apiVersion,.kind,.metadata.name)' >"$evidence/admission.json"
 kubectl get runtimeclass -o json | jq -S 'del(.metadata.resourceVersion,.metadata.managedFields)' >"$evidence/runtimeclasses.json"
 kubectl get clusterqueue.kueue.x-k8s.io -o json | jq -S 'del(.metadata.resourceVersion,.metadata.managedFields,.items[].metadata.resourceVersion,.items[].metadata.managedFields,.items[].status)' >"$evidence/clusterqueues.json"
 
 (
   cd "$evidence"
-  sha256sum context kube-system.uid creator-principal version.json phase4c-targets api-resources.txt relevant-crds.txt relevant-admission.txt runtimeclasses.json clusterqueues.json | LC_ALL=C sort >inventory.sha256
+  sha256sum context kube-system.uid creator-principal version.json phase4c-targets api-resources.txt relevant-crds.txt admission.json runtimeclasses.json clusterqueues.json | LC_ALL=C sort >inventory.sha256
 )
 chmod 0400 "$evidence"/*
 printf 'Read-only Phase 4C inventory captured for context %s, cluster %s\n' "$context" "$cluster_uid"

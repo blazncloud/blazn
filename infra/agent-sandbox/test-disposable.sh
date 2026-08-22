@@ -156,13 +156,22 @@ if sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   exit 1
 else
   phase4c_fail_code=$?
-  [ "$phase4c_fail_code" -eq 86 ] || { printf 'Phase 4C canary-ready failpoint exited %s\n' "$phase4c_fail_code" >&2; exit 1; }
+  if [ "$phase4c_fail_code" -ne 86 ]; then
+    printf 'Phase 4C canary-ready failpoint exited %s\n' "$phase4c_fail_code" >&2
+    sudo -n jq '{metadata:{ownerReferences:.metadata.ownerReferences},spec:{serviceAccountName:.spec.serviceAccountName,automountServiceAccountToken:.spec.automountServiceAccountToken,runtimeClassName:.spec.runtimeClassName,restartPolicy:.spec.restartPolicy,nodeSelector:.spec.nodeSelector,nodeName:.spec.nodeName,schedulerName:.spec.schedulerName,affinity:.spec.affinity,tolerations:.spec.tolerations,priorityClassName:.spec.priorityClassName,priority:.spec.priority,preemptionPolicy:.spec.preemptionPolicy,schedulingGates:.spec.schedulingGates,securityContext:.spec.securityContext,volumes:.spec.volumes,initContainers:.spec.initContainers,containers:.spec.containers,ephemeralContainers:.spec.ephemeralContainers},status:{phase:.status.phase,containerStatuses:.status.containerStatuses}}' "$tmp/phase4c-transaction/evidence/canary-pod.raw.json" >&2 || true
+    exit 1
+  fi
   [ "$(sudo -n cat "$tmp/phase4c-transaction/phase")" = canary-ready ]
 fi
 sudo -n env PATH="$tmp:$PATH" KUBECONFIG="$tmp/kubeconfig" \
   BLAZN_EXPECTED_CONTEXT="$phase4c_context" BLAZN_EXPECTED_KUBE_SYSTEM_UID="$phase4c_uid" \
   BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary BLAZN_REVIEWED_INPUT_DIGEST="$phase4c_digest" \
   "$phase4c_root/with-live-lock.sh" "$phase4c_root/rollback.sh" "$tmp/phase4c-transaction"
+while read -r target namespace; do
+  if [ -n "${namespace:-}" ]; then residue=$(kctl get "$target" -n "$namespace" --ignore-not-found -o name)
+  else residue=$(kctl get "$target" --ignore-not-found -o name); fi
+  [ -z "$residue" ] || { printf 'disposable rollback residue: %s\n' "$target" >&2; exit 1; }
+done <"$tmp/phase4c-inventory/phase4c-targets"
 [ "$(kctl get crd -o name | grep -c agents.x-k8s.io || true)" -eq 0 ]
 [ "$(kctl get namespace blazn-poc --ignore-not-found -o name | wc -l)" -eq 0 ]
 [ "$(kctl get namespace agent-sandbox-system --ignore-not-found -o name | wc -l)" -eq 0 ]

@@ -25,8 +25,9 @@ record_uid() {
   else printf '%s\n' "$uid" >"$file"; chmod 0600 "$file"; sync -f "$file"; fi
 }
 verify_absent() {
-  resource=$1 name=$2
-  found=$(kubectl get "$resource" "$name" --ignore-not-found -o name)
+  resource=$1 name=$2 namespace=${3:-}
+  if [ -n "$namespace" ]; then found=$(kubectl get "$resource" "$name" -n "$namespace" --ignore-not-found -o name)
+  else found=$(kubectl get "$resource" "$name" --ignore-not-found -o name); fi
   [ -z "$found" ] || { printf 'unowned target appeared before transaction: %s/%s\n' "$resource" "$name" >&2; exit 1; }
 }
 assert_absent_or_owned() {
@@ -58,7 +59,7 @@ trap 'exit 130' HUP INT TERM
 while :; do
   case "$phase" in
     sealed)
-      while IFS= read -r target; do [ -z "$target" ] || verify_absent "${target%%/*}" "${target#*/}"; done <"$pre/phase4c-targets"
+      while read -r target namespace; do [ -z "$target" ] || verify_absent "${target%%/*}" "${target#*/}" "${namespace:-}"; done <"$pre/phase4c-targets"
       phase4c_write_phase "$transaction" foundation-intent; phase=foundation-intent ;;
     foundation-intent)
       assert_absent_or_owned namespace agent-sandbox-system ''
@@ -141,6 +142,11 @@ while :; do
       sed 's/namespace: blazn-poc/namespace: default/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/outside-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a Sandbox outside blazn-poc\n' >&2; exit 1; fi
       sed 's/name: phase4c-canary/name: phase4c-near-miss/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/wrong-name-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a differently named Sandbox\n' >&2; exit 1; fi
       sed 's/sleep 3600/sleep 3599/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/wrong-command-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a different canary command\n' >&2; exit 1; fi
+      sed -e 's#agents.x-k8s.io/v1beta1#agents.x-k8s.io/v1alpha1#' -e 's/name: phase4c-canary/name: phase4c-alpha-near-miss/' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/v1alpha1-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed a v1alpha1 near-miss\n' >&2; exit 1; fi
+      grep -F "ValidatingAdmissionPolicy 'blazn-agent-sandbox-boundary'" "$transaction/evidence/v1alpha1-boundary.txt" >/dev/null || { printf 'v1alpha1 probe failed before reaching admission policy\n' >&2; exit 1; }
+      awk '$0 == "      nodeSelector:" { print "      nodeName: phase4c-forbidden-node" } { print }' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/node-name-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed nodeName\n' >&2; exit 1; fi
+      awk '$0 == "        blazn.dev/sandbox-eligible: \"true\"" { print; print "        kubernetes.io/hostname: phase4c-forbidden-node"; next } { print }' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/node-selector-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed an extra nodeSelector key\n' >&2; exit 1; fi
+      awk '$0 == "          requests: {cpu: 100m, memory: 64Mi}" { print "          requests: {cpu: 100m, memory: 64Mi, ephemeral-storage: 1Mi}"; next } { print }' "$fixtures/synthetic-canary.yaml" | if kubectl create --dry-run=server -f - >"$transaction/evidence/resource-key-boundary.txt" 2>&1; then printf 'admission unexpectedly allowed an extra resource key\n' >&2; exit 1; fi
       phase4c_write_phase "$transaction" canary-intent; phase=canary-intent ;;
     canary-intent)
       assert_absent_or_owned sandbox phase4c-canary blazn-poc
@@ -151,6 +157,13 @@ while :; do
       [ "$(kubectl get workload.kueue.x-k8s.io -n blazn-poc -o jsonpath='{.items[0].status.conditions[?(@.type=="Admitted")].status}')" = True ]
       [ "$(kubectl get workload.kueue.x-k8s.io -n blazn-poc -o jsonpath='{.items[0].status.admission.podSetAssignments[0].resourceUsage.cpu}')" = 100m ]
       [ "$(kubectl get workload.kueue.x-k8s.io -n blazn-poc -o jsonpath='{.items[0].status.admission.podSetAssignments[0].resourceUsage.memory}')" = 64Mi ]
+      sandbox_uid=$(cat "$transaction/uids/canary-sandbox")
+      expected_image=$(sed -n 's/^        image: //p' "$fixtures/synthetic-canary.yaml")
+      expected_runtime=$(sed -n 's/^      runtimeClassName: //p' "$fixtures/synthetic-canary.yaml")
+      kubectl get pod phase4c-canary -n blazn-poc -o json >"$transaction/evidence/canary-pod.raw.json"
+      jq -S --arg expected_image "$expected_image" --arg sandbox_uid "$sandbox_uid" --arg expected_runtime "$expected_runtime" -f "$ROOT/attest-pod.jq" "$transaction/evidence/canary-pod.raw.json" >"$transaction/evidence/canary-pod-attestation.json"
+      scheduled_node=$(jq -er '.spec.nodeName | select(length > 0)' "$transaction/evidence/canary-pod.raw.json")
+      [ "$(kubectl get node "$scheduled_node" -o jsonpath='{.metadata.labels.blazn\.dev/sandbox-eligible}')" = true ]
       kubectl get sandbox,pod,workload.kueue.x-k8s.io -n blazn-poc -o yaml >"$transaction/evidence/canary-objects.yaml"
       phase4c_write_phase "$transaction" canary-ready; phase=canary-ready ;;
     canary-ready)

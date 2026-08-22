@@ -60,7 +60,13 @@ grep -F "object.spec.podTemplate.spec.runtimeClassName == 'blazn-qualified'" "$t
 grep -F 'namespace: blazn-poc' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F 'object.metadata.namespace == '\''blazn-poc'\''' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F 'validationActions: [Deny]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'matchPolicy: Equivalent' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'apiVersions: ["v1alpha1", "v1beta1"]' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "containers[0].image == 'BLAZN_SYNTHETIC_IMAGE'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'size(object.spec.podTemplate.spec.nodeSelector) == 1' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F '!has(object.spec.podTemplate.spec.nodeName)' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F '!has(object.spec.podTemplate.spec.tolerations)' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
+grep -F 'size(c.resources.requests) == 2' "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "size(object.spec.podTemplate.spec.volumes) == 0" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "request.userInfo.username == 'BLAZN_CREATE_PRINCIPAL'" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
 grep -F "object.spec == oldObject.spec" "$PHASE4C/controller-boundary.yaml.in" >/dev/null
@@ -79,10 +85,32 @@ grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
 grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
 grep -F 'delete_if_owned canary-sandbox sandbox phase4c-canary' "$PHASE4C/rollback.sh" >/dev/null
 # shellcheck disable=SC2016
+grep -F 'kubectl wait --for=delete "$target"' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'admission.json' "$PHASE4C/inventory.sh" >/dev/null
+# shellcheck disable=SC2016
 grep -F 'cmp "$pre/$file" "$post/$file"' "$PHASE4C/rollback.sh" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'phase4c_write_phase "$transaction" rollback-intent' "$PHASE4C/rollback.sh" >/dev/null
 grep -F 'sha256sum -c input.sha256' "$PHASE4C/lib.sh" >/dev/null
 if grep -E 'kubectl (apply|create|delete|edit|label|patch|replace|scale)' "$PHASE4C/inventory.sh" >/dev/null; then exit 1; fi
+
+attest_pod() {
+  jq -S \
+    --arg expected_image 'example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    --arg sandbox_uid '88888888-8888-4888-8888-888888888888' \
+    --arg expected_runtime '' \
+    -f "$PHASE4C/attest-pod.jq" "$1" >/dev/null
+}
+attest_pod "$PHASE4C/pod-attestation-fixture.json"
+for mutation in extra-selector extra-request wrong-owner wrong-image-id; do
+  case "$mutation" in
+    extra-selector) filter='.spec.nodeSelector.extra = "forbidden"' ;;
+    extra-request) filter='.spec.containers[0].resources.requests["ephemeral-storage"] = "1Mi"' ;;
+    wrong-owner) filter='.metadata.ownerReferences[0].uid = "77777777-7777-4777-8777-777777777777"' ;;
+    wrong-image-id) filter='.status.containerStatuses[0].imageID = "example.invalid/synthetic@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' ;;
+  esac
+  jq "$filter" "$PHASE4C/pod-attestation-fixture.json" >"$tmp/pod-$mutation.json"
+  if attest_pod "$tmp/pod-$mutation.json" 2>/dev/null; then printf 'Pod attestation accepted mutation: %s\n' "$mutation" >&2; exit 1; fi
+done
 
 printf 'Phase 4C non-mutating preparation audit passed\n'
