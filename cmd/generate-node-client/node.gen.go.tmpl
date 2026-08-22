@@ -63,6 +63,8 @@ type CreateNodeEnrollmentRequest struct {
 	Architecture NodeArchitecture     `json:"architecture,omitempty"`
 }
 
+type NodeError = ErrorBody
+
 type NodeEnrollmentSecret struct {
 	ID         string `json:"id"`
 	Token      string `json:"token"`
@@ -157,7 +159,7 @@ type NodeOperation struct {
 	Status              NodeOperationStatus `json:"status"`
 	ExpectedNodeVersion int64               `json:"expectedNodeVersion"`
 	Result              map[string]any      `json:"result"`
-	Error               *ErrorBody          `json:"error"`
+	Error               *NodeError          `json:"error"`
 	Receipt             *NodeOperationReceipt `json:"receipt"`
 	CreatedAt           string              `json:"createdAt"`
 }
@@ -2143,7 +2145,7 @@ func decodeClosedNodeResponse(input io.Reader, output any) error {
 }
 
 func decodeNodeAPIError(response *http.Response) error {
-	var apiError ErrorBody
+	var apiError NodeError
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&apiError); err != nil && err != io.EOF {
 		apiError.Message = http.StatusText(response.StatusCode)
 	}

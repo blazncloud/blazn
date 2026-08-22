@@ -56,6 +56,71 @@ func TestNodeValidatorRejectsAuthenticationAndOperationDrift(t *testing.T) {
 	}
 }
 
+func TestNodeValidatorRejectsSecuritySchemeDrift(t *testing.T) {
+	sources := checkedInSources(t)
+	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{"bearer scheme", func(document map[string]any) {
+			at(document, "components", "securitySchemes", "bearerAuth").(map[string]any)["scheme"] = "basic"
+		}, "authentication schemes"},
+		{"node proof location", func(document map[string]any) {
+			at(document, "components", "securitySchemes", "nodeProof").(map[string]any)["in"] = "query"
+		}, "authentication schemes"},
+		{"extra scheme", func(document map[string]any) {
+			at(document, "components", "securitySchemes").(map[string]any)["unexpected"] = map[string]any{"type": "apiKey"}
+		}, "authentication schemes"},
+		{"global security", func(document map[string]any) { document["security"] = []any{map[string]any{"nodeProof": []any{}}} }, "global bearer"},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			changed := cloneDocument(t, sources[key].doc)
+			testCase.mutate(changed)
+			if err := validateOpenAPI(changed); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("security drift error=%v", err)
+			}
+		})
+	}
+}
+
+func TestNodeValidatorRejectsNodeErrorDrift(t *testing.T) {
+	sources := checkedInSources(t)
+	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"status", func(document map[string]any) {
+			at(document, "components", "schemas", "NodeError", "x-blazn-error-status").(map[string]any)["node_not_found"] = float64(500)
+		}},
+		{"enum", func(document map[string]any) {
+			values := at(document, "components", "schemas", "NodeError", "properties", "code", "enum").([]any)
+			at(document, "components", "schemas", "NodeError", "properties", "code").(map[string]any)["enum"] = values[1:]
+		}},
+		{"required", func(document map[string]any) {
+			at(document, "components", "schemas", "NodeError").(map[string]any)["required"] = []any{"code", "message"}
+		}},
+		{"field", func(document map[string]any) {
+			at(document, "components", "schemas", "NodeError", "properties").(map[string]any)["debug"] = map[string]any{"type": "string"}
+		}},
+		{"bound", func(document map[string]any) {
+			at(document, "components", "schemas", "NodeError", "properties", "message").(map[string]any)["maxLength"] = float64(4096)
+		}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			changed := cloneDocument(t, sources[key].doc)
+			testCase.mutate(changed)
+			if err := validateOpenAPI(changed); err == nil || !strings.Contains(err.Error(), "NodeError") {
+				t.Fatalf("NodeError drift error=%v", err)
+			}
+		})
+	}
+}
+
 func TestNodeValidatorRejectsMisnestedCapabilityModels(t *testing.T) {
 	sources := checkedInSources(t)
 	key := filepath.Join("packages", "contracts", "nodes.openapi.json")
@@ -77,6 +142,15 @@ func TestNodeTemplateKeepsEnrollmentAndJoinSecretsOutOfURLs(t *testing.T) {
 	for _, unsafe := range []string{"PathEscape(request.Token)", `query.Set("token"`, "Authorization\", \"Bearer \"+request.Token"} {
 		if strings.Contains(template, unsafe) {
 			t.Fatalf("node template contains unsafe token routing: %s", unsafe)
+		}
+	}
+}
+
+func TestNodeTemplateUsesLocalNodeError(t *testing.T) {
+	template := string(nodeTemplate)
+	for _, marker := range []string{"type NodeError = ErrorBody", "var apiError NodeError", "*NodeError"} {
+		if !strings.Contains(template, marker) {
+			t.Fatalf("node template lacks local error marker %q", marker)
 		}
 	}
 }

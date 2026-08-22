@@ -134,6 +134,7 @@ func validateSources(sources map[string]source, template string) error {
 		"func ValidateNodeInstallPlan(", "func ValidateNodeInstallReceipt(", "func ValidateNodeOperationReceipt(",
 		"func VerifyNodeInstallPlan(", "func VerifyNodeInstallReceipt(", "func VerifyNodeOperationReceipt(", "func NodeCapabilityDigest(",
 		"func DeriveNodeEnrollmentToken(", "func SealNodeJoinCredential(", "func OpenNodeJoinCredential(",
+		"type NodeError = ErrorBody",
 		`Header.Set("Authorization", "Bearer "+accessToken)`,
 		`Header.Set("X-Blazn-Node-Proof", nodeProof)`,
 		`Header.Set("Idempotency-Key", idempotencyKey)`,
@@ -159,8 +160,15 @@ func validateOpenAPI(document map[string]any) error {
 	if len(servers) != 1 || atString(servers[0], "url") != "https://blazn.benpelo.com" {
 		return fmt.Errorf("node API server origin changed")
 	}
-	if atString(document, "components", "securitySchemes", "bearerAuth", "bearerFormat") != "opaque" || atString(document, "components", "securitySchemes", "nodeProof", "name") != "X-Blazn-Node-Proof" {
+	securitySchemes, ok := at(document, "components", "securitySchemes").(map[string]any)
+	bearerScheme, bearerOK := securitySchemes["bearerAuth"].(map[string]any)
+	nodeProofScheme, nodeProofOK := securitySchemes["nodeProof"].(map[string]any)
+	if !ok || len(securitySchemes) != 2 || !bearerOK || len(bearerScheme) != 3 || !nodeProofOK || len(nodeProofScheme) != 3 || atString(document, "components", "securitySchemes", "bearerAuth", "type") != "http" || atString(document, "components", "securitySchemes", "bearerAuth", "scheme") != "bearer" || atString(document, "components", "securitySchemes", "bearerAuth", "bearerFormat") != "opaque" || atString(document, "components", "securitySchemes", "nodeProof", "type") != "apiKey" || atString(document, "components", "securitySchemes", "nodeProof", "in") != "header" || atString(document, "components", "securitySchemes", "nodeProof", "name") != "X-Blazn-Node-Proof" {
 		return fmt.Errorf("node authentication schemes changed")
+	}
+	globalSecurity, ok := at(document, "security").([]any)
+	if !ok || len(globalSecurity) != 1 || !securityRequirementIs(globalSecurity[0], "bearerAuth") {
+		return fmt.Errorf("node global bearer authentication changed")
 	}
 	if err := validateNodeError(document); err != nil {
 		return err
@@ -207,7 +215,8 @@ func validateOpenAPI(document map[string]any) error {
 				return fmt.Errorf("%s must explicitly disable inherited bearer auth", expected.id)
 			}
 		case "nodeProof":
-			if fmt.Sprint(security) != "[map[nodeProof:[]]]" {
+			values, ok := security.([]any)
+			if !ok || len(values) != 1 || !securityRequirementIs(values[0], "nodeProof") {
 				return fmt.Errorf("%s must require only nodeProof", expected.id)
 			}
 		case "bearer":
@@ -249,13 +258,45 @@ func validateOpenAPI(document map[string]any) error {
 	return nil
 }
 
+func securityRequirementIs(value any, scheme string) bool {
+	requirement, ok := value.(map[string]any)
+	if !ok || len(requirement) != 1 {
+		return false
+	}
+	scopes, ok := requirement[scheme].([]any)
+	return ok && len(scopes) == 0
+}
+
 func validateNodeError(document map[string]any) error {
 	if atString(document, "components", "responses", "Error", "content", "application/json", "schema", "$ref") != "#/components/schemas/NodeError" {
 		return fmt.Errorf("node error response schema changed")
 	}
 	errorSchema, ok := at(document, "components", "schemas", "NodeError").(map[string]any)
-	if !ok || errorSchema["additionalProperties"] != false {
+	if !ok || errorSchema["type"] != "object" || errorSchema["additionalProperties"] != false {
 		return fmt.Errorf("NodeError must remain a closed object")
+	}
+	properties, ok := errorSchema["properties"].(map[string]any)
+	if !ok || len(properties) != 3 || properties["code"] == nil || properties["message"] == nil || properties["requestId"] == nil {
+		return fmt.Errorf("NodeError fields changed")
+	}
+	requiredValues, ok := errorSchema["required"].([]any)
+	required := make([]string, 0, len(requiredValues))
+	if !ok {
+		return fmt.Errorf("NodeError required fields changed")
+	}
+	for _, value := range requiredValues {
+		field, fieldOK := value.(string)
+		if !fieldOK {
+			return fmt.Errorf("NodeError required fields changed")
+		}
+		required = append(required, field)
+	}
+	sort.Strings(required)
+	if strings.Join(required, ",") != "code,message,requestId" {
+		return fmt.Errorf("NodeError required fields changed")
+	}
+	if atString(errorSchema, "properties", "code", "type") != "string" || atString(errorSchema, "properties", "message", "type") != "string" || atNumber(errorSchema, "properties", "message", "minLength") != 1 || atNumber(errorSchema, "properties", "message", "maxLength") != 1024 || atString(errorSchema, "properties", "requestId", "type") != "string" || atNumber(errorSchema, "properties", "requestId", "minLength") != 1 || atNumber(errorSchema, "properties", "requestId", "maxLength") != 128 {
+		return fmt.Errorf("NodeError field bounds changed")
 	}
 	want := map[string]int{
 		"access_expired": 401, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
@@ -281,10 +322,13 @@ func validateNodeError(document map[string]any) error {
 	for _, value := range values {
 		code, ok := value.(string)
 		status, statusOK := statuses[code].(float64)
-		if !ok || seen[code] || want[code] == 0 || !statusOK || int(status) != want[code] {
+		if !ok || seen[code] || want[code] == 0 || !statusOK || status != float64(want[code]) {
 			return fmt.Errorf("NodeError code/status changed: %v", value)
 		}
 		seen[code] = true
+	}
+	if len(seen) != len(want) {
+		return fmt.Errorf("NodeError code set is incomplete")
 	}
 	return nil
 }
