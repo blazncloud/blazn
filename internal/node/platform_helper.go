@@ -743,24 +743,28 @@ func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallP
 			}
 			return err
 		case "directory":
-			mode, modeErr := strconv.ParseUint(metadata["mode"], 8, 32)
-			uid, uidErr := strconv.ParseInt(metadata["uid"], 10, 32)
-			gid, gidErr := strconv.ParseInt(metadata["gid"], 10, 32)
-			if modeErr != nil || uidErr != nil || gidErr != nil || !canonicalPath(m.Target) {
-				return errors.New("rollback directory metadata is invalid")
-			}
-			if err := verifyNoSymlinkTraversal(m.Target); err != nil {
-				return err
-			}
-			if err := os.Chown(m.Target, int(uid), int(gid)); err != nil {
-				return err
-			}
-			return os.Chmod(m.Target, os.FileMode(mode))
+			return restoreDirectoryMetadata(m.Target, metadata)
 		default:
 			return errors.New("rollback metadata kind is unsupported")
 		}
 	}
 	return errors.New("rollback material kind is unsupported")
+}
+
+func restoreDirectoryMetadata(target string, metadata map[string]string) error {
+	mode, modeErr := strconv.ParseUint(metadata["mode"], 8, 32)
+	uid, uidErr := strconv.ParseInt(metadata["uid"], 10, 32)
+	gid, gidErr := strconv.ParseInt(metadata["gid"], 10, 32)
+	if metadata["kind"] != "directory" || modeErr != nil || uidErr != nil || gidErr != nil || !canonicalPath(target) {
+		return errors.New("rollback directory metadata is invalid")
+	}
+	if err := verifyNoSymlinkTraversal(target); err != nil {
+		return err
+	}
+	if err := os.Chown(target, int(uid), int(gid)); err != nil {
+		return err
+	}
+	return os.Chmod(target, os.FileMode(mode))
 }
 
 func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) (JoinedNode, error) {

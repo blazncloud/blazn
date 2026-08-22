@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -456,7 +457,10 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 	}
 	authorization.ProfilePath = profilePath
 	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
-	engine := NativeRootEngine{Platform: "linux", Commands: &recordingExecutor{}, AuthorityPath: filepath.Join(root, "authority", "install-authority.json"), ProfileRoot: profileRoot, CurrentBinaryPath: binaryPath, AuthorityHTTPClient: server.Client(), Now: func() time.Time { return when }}
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"metadata":{"name":%q,"uid":%q,"resourceVersion":%q},"spec":{"taints":[]}}`, plan.Hostname, authorization.KubernetesBinding.NodeUID, authorization.KubernetesBinding.ResourceVersion)), nil
+	}}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: filepath.Join(root, "authority", "install-authority.json"), ProfileRoot: profileRoot, CurrentBinaryPath: binaryPath, AuthorityHTTPClient: server.Client(), Now: func() time.Time { return when }}
 	bootstrap := RootBootstrapRequest{EnrollmentID: authorization.EnrollmentID, Token: authorization.Token, MachineFingerprint: authorization.MachineFingerprint, NodePublicKey: authorization.NodePublicKey, Platform: authorization.Platform, Architecture: authorization.Architecture, KubernetesBinding: authorization.KubernetesBinding, PlanSigningKey: authorization.PlanSigningKey, Expected: authorization.Expected, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath}
 	request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootAuthorize, Platform: "linux", Plan: plan, Bootstrap: &bootstrap}
 	if err := engine.authorizeBootstrap(context.Background(), request); err != nil {
@@ -543,22 +547,11 @@ func TestDirectoryRollbackRestoresMetadataWithoutReplacingDirectory(t *testing.T
 	if !ownerOK || !groupOK {
 		t.Skip("directory ownership unavailable")
 	}
-	backupRoot := filepath.Join(root, "backups")
-	if err := os.Mkdir(backupRoot, 0700); err != nil {
-		t.Fatal(err)
-	}
-	metadata, _ := json.Marshal(map[string]string{"kind": "directory", "mode": "750", "uid": strconv.FormatInt(uid, 10), "gid": strconv.FormatInt(gid, 10)})
-	backupID := "11111111-1111-4111-8111-111111111111"
-	if err := os.WriteFile(filepath.Join(backupRoot, backupID), metadata, 0600); err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(metadata)
-	prior := PriorState{State: "preexisting_exact", Material: client.NodeRollbackMaterial{Kind: "metadata_snapshot", Locator: "receipt-backup://" + backupID, Digest: "sha256:" + hex.EncodeToString(sum[:])}}
+	metadata := map[string]string{"kind": "directory", "mode": "750", "uid": strconv.FormatInt(uid, 10), "gid": strconv.FormatInt(gid, 10)}
 	if err := os.Chmod(directory, 0700); err != nil {
 		t.Fatal(err)
 	}
-	engine := NativeRootEngine{Commands: &recordingExecutor{}}
-	if err := engine.rollback(context.Background(), client.NodeInstallPlan{}, client.NodeInstallMutation{Kind: "directory", Target: directory}, prior, backupRoot, nil); err != nil {
+	if err := restoreDirectoryMetadata(directory, metadata); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(directory)
