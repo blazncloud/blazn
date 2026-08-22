@@ -242,7 +242,7 @@ func TestMacServiceDefinitionBindsLaunchdLabel(t *testing.T) {
 	if err := ValidateNodeInstallPlan(plan); err != nil {
 		t.Fatal(err)
 	}
-	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"lima-worker-binding": binding.SHA256, "service-definition": testHash}, LimaBinding: &binding, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	profile := NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn", "/Library/Application Support/BlaznNodeRoot"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"lima-worker-binding": binding.SHA256, "service-definition": testHash}, LimaBinding: &binding, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 	if err := ValidateNodeInstallProfile(plan, profile); err != nil {
 		t.Fatal(err)
 	}
