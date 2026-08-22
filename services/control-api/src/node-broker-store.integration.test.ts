@@ -23,8 +23,9 @@ const adminUrl = process.env.NODE_TEST_ADMIN_DATABASE_URL,
 
 test("PostgreSQL broker health discards failed clients and recovers on the same pool",{skip:!adminUrl||!brokerUrl},async()=>{
   const admin=createDatabase(adminUrl!),broker=createDatabase(brokerUrl!),store=new PgNodeBrokerStore(broker);
-  try{await store.health!(AbortSignal.timeout(2_000));await admin.query("ALTER ROLE blazn_node_broker NOLOGIN");await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='blazn_node_broker'");await assert.rejects(store.health!(AbortSignal.timeout(2_000)));await admin.query("ALTER ROLE blazn_node_broker LOGIN");await store.health!(AbortSignal.timeout(2_000));}
-  finally{await admin.query("ALTER ROLE blazn_node_broker LOGIN").catch(()=>{});await broker.end();await admin.end();}
+  const expectedPoolErrors:Error[]=[];const onExpectedTermination=(error:Error)=>expectedPoolErrors.push(error);
+  try{await store.health!(AbortSignal.timeout(2_000));broker.on("error",onExpectedTermination);await admin.query("ALTER ROLE blazn_node_broker NOLOGIN");await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='blazn_node_broker'");await new Promise(resolve=>setImmediate(resolve));await assert.rejects(store.health!(AbortSignal.timeout(2_000)));await new Promise(resolve=>setImmediate(resolve));broker.off("error",onExpectedTermination);assert.ok(expectedPoolErrors.length>0);for(const error of expectedPoolErrors){assert.equal((error as Error&{code?:string}).code,"57P01");assert.match(error.message,/terminating connection due to administrator command/);assert.doesNotMatch(error.message,/password|postgres(?:ql)?:\/\/|token|secret/i);}await admin.query("ALTER ROLE blazn_node_broker LOGIN");await store.health!(AbortSignal.timeout(2_000));}
+  finally{broker.off("error",onExpectedTermination);await admin.query("ALTER ROLE blazn_node_broker LOGIN").catch(()=>{});await broker.end();await admin.end();}
 });
 
 test(

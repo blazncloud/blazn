@@ -18,6 +18,8 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
   const port = Number(process.env.NODE_BROKER_PORT ?? "8081");
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Node broker port is invalid");
   const database = createDatabase(databaseUrl);
+  const onDatabaseError=(error:Error)=>process.stderr.write(`${nodeBrokerDatabasePoolError(error)}\n`);
+  database.on("error",onDatabaseError);
   try {
     await probeNodeBrokerDatabase(database, AbortSignal.timeout(2_000));
     const startupKey = await readJoinCredentialKey(`${root}/join-credential-v1`);
@@ -25,12 +27,15 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
     const service = new NodeBrokerService(new PgNodeBrokerStore(database), () => readJoinCredentialKey(`${root}/join-credential-v1`), resolvedIssuer);
     const server = createNodeBrokerServer(service);
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
-    server.once("close", () => void database.end());
+    server.once("close", () => { database.off("error",onDatabaseError);void database.end(); });
     return server;
   } catch (error) {
+    database.off("error",onDatabaseError);
     await database.end();
     throw error;
   }
 }
+
+export function nodeBrokerDatabasePoolError(error:unknown):string{const value=error instanceof Error?error:undefined,name=value&&/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(value.name)?value.name:"Error",code=value&&"code" in value&&typeof value.code==="string"&&/^[A-Z0-9]{5}$/.test(value.code)?value.code:"unknown";return`Node broker database pool error name=${name} code=${code}`;}
 
 if (import.meta.url === `file://${process.argv[1]}`) startNodeBroker().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "Node broker startup failed"}\n`); process.exitCode = 1; });
