@@ -46,6 +46,7 @@ type fakeAPI struct {
 	refreshes            int
 	deleted              int
 	deletedToken         string
+	deleteErr            error
 	revoked              string
 	authorizationRequest client.DeviceAuthorizationRequest
 	sessionRequest       client.DeviceSessionRequest
@@ -77,7 +78,7 @@ func (a *fakeAPI) RefreshSession(_ context.Context, request client.RefreshSessio
 func (a *fakeAPI) DeleteCurrentSession(_ context.Context, token string) error {
 	a.deleted++
 	a.deletedToken = token
-	return nil
+	return a.deleteErr
 }
 func (a *fakeAPI) GetCurrentUser(context.Context, string) (client.CurrentUser, error) {
 	return a.current, nil
@@ -196,11 +197,20 @@ func TestInvalidRefreshIsTerminalAndDeletesLocalCredential(t *testing.T) {
 	}
 }
 
-func TestLogoutRemovesLocalCredentialWhenExpiredSessionCannotRefresh(t *testing.T) {
+func TestLogoutPreservesLocalCredentialWhenExpiredSessionCannotRefresh(t *testing.T) {
 	api := &fakeAPI{refreshErr: errors.New("network unavailable")}
 	store := &memoryStore{value: storedCredentials(t, "2026-01-01T00:00:00Z")}
 	result, err := testService(api, store).Logout(context.Background())
-	if err == nil || result.Status != "local_session_removed" || result.RemoteRevoked || store.deleted != 1 {
+	if err == nil || result.Status != "logout_failed" || result.RemoteRevoked || store.deleted != 0 {
+		t.Fatalf("Logout=%#v store=%#v err=%v", result, store, err)
+	}
+}
+
+func TestLogoutPreservesLocalCredentialWhenRemoteRevocationFails(t *testing.T) {
+	api := &fakeAPI{deleteErr: errors.New("network unavailable")}
+	store := &memoryStore{value: storedCredentials(t, "2030-01-01T00:00:00Z")}
+	result, err := testService(api, store).Logout(context.Background())
+	if err == nil || result.Status != "logout_failed" || result.RemoteRevoked || store.deleted != 0 {
 		t.Fatalf("Logout=%#v store=%#v err=%v", result, store, err)
 	}
 }

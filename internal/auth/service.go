@@ -213,17 +213,14 @@ func (s *Service) Logout(ctx context.Context) (LogoutResult, error) {
 		return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
 	}
 	if err != nil {
-		if deleteErr := s.store.Delete(); deleteErr != nil {
-			return LogoutResult{}, fmt.Errorf("refresh remote session: %v; remove local session: %w", err, deleteErr)
-		}
-		return LogoutResult{Status: "local_session_removed", RemoteRevoked: false}, err
+		return LogoutResult{Status: "logout_failed", RemoteRevoked: false}, fmt.Errorf("refresh remote session; local session preserved for retry: %w", err)
 	}
 	remoteErr := s.api.DeleteCurrentSession(ctx, credentials.AccessToken)
+	if remoteErr != nil && !isTerminalSessionError(remoteErr) {
+		return LogoutResult{Status: "logout_failed", RemoteRevoked: false}, fmt.Errorf("revoke remote session; local session preserved for retry: %w", remoteErr)
+	}
 	if err := s.store.Delete(); err != nil {
 		return LogoutResult{}, fmt.Errorf("remove local session: %w", err)
-	}
-	if remoteErr != nil && !isTerminalSessionError(remoteErr) {
-		return LogoutResult{Status: "local_session_removed", RemoteRevoked: false}, remoteErr
 	}
 	return LogoutResult{Status: "logged_out", RemoteRevoked: true}, nil
 }
