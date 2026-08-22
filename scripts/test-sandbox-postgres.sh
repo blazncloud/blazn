@@ -71,41 +71,58 @@ INSERT INTO sessions(id,user_id,device_id,token_hash,refresh_token_hash,access_e
 INSERT INTO workspaces(id,slug,name,created_by) VALUES
  ('40000000-0000-4000-8000-000000000001','sandbox-one','Sandbox One','10000000-0000-4000-8000-000000000001'),
  ('40000000-0000-4000-8000-000000000002','sandbox-two','Sandbox Two','10000000-0000-4000-8000-000000000002');
+INSERT INTO workspace_memberships(workspace_id,user_id,role,status) VALUES
+ ('40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','owner','active'),
+ ('40000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000002','owner','active');
+\set canonical_spec '{"artifacts":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}],"description":"fixture","expiresInSeconds":900,"isolation":"approved-non-sensitive-poc","networkProfile":"default-deny-v1","policyProfile":"poc-restricted-v1","repositories":[{"destination":"/workspace/src/blazn","name":"source","url":"https://github.com/blazncloud/blazn.git","writable":true}],"variants":[{"architecture":"amd64","command":["/bin/true"],"imageDigest":"registry.invalid/poc@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","imageIndex":"registry.invalid/poc@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","name":"linux-amd64","placementProfile":"poc-linux-amd64-v1","platform":"linux","resources":{"limits":{"cpu":"500m","ephemeralStorage":"2Gi","memory":"512Mi"},"requests":{"cpu":"100m","ephemeralStorage":"1Gi","memory":"128Mi"}}}],"version":"1"}'
+SELECT encode(digest(convert_to(:'canonical_spec','UTF8'),'sha256'),'hex') AS template_digest \gset
+SELECT :'template_digest' = '6b3a0b490870f60ada6fcc54574b2702eddd220705d287fb05b79610fb25d8c8' AS template_digest_ok \gset
+\if :template_digest_ok
+\else
+  \echo 'canonical template fixture digest changed'
+  \quit 1
+\endif
 INSERT INTO sandbox_templates(id,workspace_id,name,draft_spec,draft_digest,created_by) VALUES
- ('50000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','coding-small','{"version":"1"}',repeat('a',64),'10000000-0000-4000-8000-000000000001');
-BEGIN;
-INSERT INTO sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by) VALUES
- ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','1',convert_to('{"version":"1"}','UTF8'),'{"version":"1","variants":[{"name":"linux-amd64","architecture":"amd64"}],"repositories":[{"name":"source","destination":"/workspace/src/blazn"}],"artifacts":[{"name":"patch","path":"/workspace/artifacts/change.patch"}]}',repeat('b',64),'10000000-0000-4000-8000-000000000001');
-INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile) VALUES
- ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','linux-amd64','amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'poc-linux-amd64-v1');
-INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES
- ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','source','https://github.com/blazncloud/blazn.git','/workspace/src/blazn',true);
-INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES
- ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','patch','/workspace/artifacts/change.patch','text/plain',true);
-INSERT INTO sandbox_template_version_status(version_id,workspace_id,template_id,status,changed_by) VALUES
- ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','published','10000000-0000-4000-8000-000000000001');
-UPDATE sandbox_templates SET current_published_version_id='60000000-0000-4000-8000-000000000001' WHERE id='50000000-0000-4000-8000-000000000001';
-COMMIT;
+ ('50000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','coding-small',:'canonical_spec'::jsonb,:'template_digest','10000000-0000-4000-8000-000000000001');
+SET ROLE blazn_runtime;
+SELECT sandbox_publish_template_version('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001',1,convert_to(:'canonical_spec','UTF8'),:'template_digest','10000000-0000-4000-8000-000000000001');
+RESET ROLE;
+DO $$ DECLARE spec jsonb; BEGIN
+  SELECT draft_spec INTO spec FROM sandbox_templates WHERE id='50000000-0000-4000-8000-000000000001';
+  BEGIN PERFORM sandbox_publish_template_version('60000000-0000-4000-8000-000000000099','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001',1,convert_to(spec::text,'UTF8'),repeat('0',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'canonical digest mismatch unexpectedly published';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
 
 SET ROLE blazn_runtime;
-BEGIN;
-INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES
- ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('9',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes');
-INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES
- ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','source',repeat('1',40));
-INSERT INTO sandbox_artifact_contract_entries(sandbox_id,workspace_id,template_version_id,name,path,media_type,required) VALUES
- ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','patch','/workspace/artifacts/change.patch','text/plain',true);
-COMMIT;
+\set artifact_contract '{"items":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}]}'
+RESET ROLE;
+SELECT encode(digest(convert_to(:'artifact_contract','UTF8'),'sha256'),'hex') AS artifact_digest \gset
+SELECT :'artifact_digest' = 'd139b2eb8bb329f61b85f95b4983c028fbbadcfd36fd73cdbb05d143a4ac0729' AS artifact_digest_ok \gset
+\if :artifact_digest_ok
+\else
+  \echo 'canonical artifact fixture digest changed'
+  \quit 1
+\endif
+SET ROLE blazn_runtime;
+SELECT sandbox_create_bound_sandbox('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',now()+interval '15 minutes','poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to(:'artifact_contract','UTF8'),:'artifact_digest','10000000-0000-4000-8000-000000000001');
+DO $$ BEGIN
+  BEGIN PERFORM sandbox_create_bound_sandbox('70000000-0000-4000-8000-000000000099','40000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','amd64','direct',now()+interval '15 minutes','poc-local','[{"repository":"source","commit":"1111111111111111111111111111111111111111"}]',convert_to('{"items":[{"mediaType":"text/plain","name":"patch","path":"/workspace/artifacts/change.patch","required":true}]}','UTF8'),repeat('0',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'artifact contract digest mismatch unexpectedly created';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by) VALUES ('60000000-0000-4000-8000-000000000098','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','bypass','{}','{}',repeat('0',64),'10000000-0000-4000-8000-000000000001'); RAISE EXCEPTION 'runtime bypassed trusted publish function';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES ('70000000-0000-4000-8000-000000000098','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('a',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('0',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes'); RAISE EXCEPTION 'runtime bypassed trusted sandbox create function';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+END $$;
 INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
  ('80000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.exec','exec',repeat('e',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
 DO $$ BEGIN
-  IF NOT sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec', now()) THEN RAISE EXCEPTION 'atomic grant consume failed'; END IF;
-  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec', now()) THEN RAISE EXCEPTION 'consumed grant replay succeeded'; END IF;
+  IF NOT sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec') THEN RAISE EXCEPTION 'atomic grant consume failed'; END IF;
+  IF sandbox_consume_access_grant('80000000-0000-4000-8000-000000000001', repeat('e',64), 'exec') THEN RAISE EXCEPTION 'consumed grant replay succeeded'; END IF;
 END $$;
 INSERT INTO sandbox_access_grants(id,workspace_id,sandbox_id,user_id,session_id,scope,kind,token_hash,token_key_id,state,expires_at) VALUES
  ('80000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','30000000-0000-4000-8000-000000000001','sandbox.download','download',repeat('d',64),'sandbox-access-grant/v1','active',now()+interval '30 seconds');
 DO $$ BEGIN
-  IF sandbox_revoke_access_grants('40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',now()) <> 1 THEN RAISE EXCEPTION 'atomic grant revoke failed'; END IF;
+  IF sandbox_revoke_access_grants('40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001') <> 1 THEN RAISE EXCEPTION 'atomic grant revoke failed'; END IF;
 END $$;
 
 INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
@@ -116,9 +133,22 @@ INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type
 DO $$ BEGIN
   BEGIN INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES ('91000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001',0,'sandbox.delete.requested'); RAISE EXCEPTION 'sandbox-wide duplicate event sequence succeeded';
   EXCEPTION WHEN unique_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_events(id,operation_id,workspace_id,sandbox_id,sequence,type) VALUES ('91000000-0000-4000-8000-000000000003',NULL,'40000000-0000-4000-8000-000000000002','70000000-0000-4000-8000-000000000001',1,'sandbox.invalid'); RAISE EXCEPTION 'cross-workspace sandbox event unexpectedly succeeded';
+  EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
 DO $$ BEGIN
-  BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed) VALUES ('92000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','succeeded',false,true,true,true); RAISE EXCEPTION 'incomplete succeeded receipt was accepted';
+  BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES ('92000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','succeeded',false,true,true,true,false); RAISE EXCEPTION 'incomplete succeeded stop receipt was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+  BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES ('92000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,false); RAISE EXCEPTION 'successful create without backend receipt was accepted';
+  EXCEPTION WHEN check_violation THEN NULL; END;
+END $$;
+BEGIN;
+INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES
+ ('92000000-0000-4000-8000-000000000010','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','succeeded',true,true,true,true,false);
+UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id='92000000-0000-4000-8000-000000000010',completed_at=now() WHERE id='90000000-0000-4000-8000-000000000001';
+COMMIT;
+DO $$ BEGIN
+  BEGIN UPDATE sandbox_operations SET terminal_receipt_id='92000000-0000-4000-8000-000000000010' WHERE id='90000000-0000-4000-8000-000000000002'; RAISE EXCEPTION 'nonterminal operation accepted a receipt';
   EXCEPTION WHEN check_violation THEN NULL; END;
 END $$;
 
@@ -127,8 +157,9 @@ DO $$ BEGIN
   EXCEPTION WHEN insufficient_privilege OR object_not_in_prerequisite_state THEN NULL; END;
 END $$;
 
+RESET ROLE;
 DO $$ BEGIN
-  BEGIN INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','duplicate-amd64','amd64','registry.invalid/poc@sha256:'||repeat('5',64),'registry.invalid/poc@sha256:'||repeat('6',64),'poc-linux-amd64-v1'); RAISE EXCEPTION 'duplicate architecture unexpectedly succeeded';
+  BEGIN INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile,command,resources) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','duplicate-amd64','amd64','registry.invalid/poc@sha256:'||repeat('5',64),'registry.invalid/poc@sha256:'||repeat('6',64),'poc-linux-amd64-v1','["/bin/true"]','{}'); RAISE EXCEPTION 'duplicate architecture unexpectedly succeeded';
   EXCEPTION WHEN unique_violation THEN NULL; END;
   BEGIN INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES ('60000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','dot-path','https://example.invalid/repo.git','/workspace/src/../escape',false); RAISE EXCEPTION 'repository dot segment unexpectedly succeeded';
   EXCEPTION WHEN check_violation THEN NULL; END;
@@ -148,9 +179,10 @@ DO $$ BEGIN
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
 
-DO $$ BEGIN
+DO $$ DECLARE bound_digest char(64); BEGIN
+  SELECT content_digest INTO bound_digest FROM sandbox_template_versions WHERE id='60000000-0000-4000-8000-000000000001';
   BEGIN
-    INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES ('70000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',repeat('b',64),'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('9',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes');
+    INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,expires_at) VALUES ('70000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000001','60000000-0000-4000-8000-000000000001','coding-small','1',bound_digest,'linux-amd64','registry.invalid/poc@sha256:'||repeat('c',64),'registry.invalid/poc@sha256:'||repeat('d',64),'amd64','direct','requested','ready','poc-local',repeat('9',64),'approved-non-sensitive-poc',true,now()+interval '15 minutes');
     EXECUTE 'SET CONSTRAINTS sandbox_create_children_complete IMMEDIATE';
     RAISE EXCEPTION 'missing source coverage unexpectedly succeeded';
   EXCEPTION WHEN check_violation THEN NULL; END;
@@ -163,6 +195,8 @@ DO $$ BEGIN
     RAISE EXCEPTION 'cross-workspace version binding unexpectedly succeeded';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;
+
+SET ROLE blazn_runtime;
 
 DO $$ DECLARE secret_key text; BEGIN
   FOREACH secret_key IN ARRAY ARRAY['apiKey','api_key','private-key','clientSecret','client_secret','sessionToken','bearer-token','signing.key'] LOOP

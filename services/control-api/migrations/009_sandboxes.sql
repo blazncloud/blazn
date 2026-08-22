@@ -2,6 +2,7 @@
 -- Runtime routes/controllers are intentionally not enabled by this migration.
 
 ALTER TABLE sessions ADD CONSTRAINT sessions_id_user_unique UNIQUE (id, user_id);
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE OR REPLACE FUNCTION workspace_json_contains_secret_key(input_value jsonb) RETURNS boolean
 LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $$
@@ -88,6 +89,8 @@ CREATE TABLE sandbox_template_version_variants (
   image_index_digest text NOT NULL CHECK (image_index_digest ~ '^.+@sha256:[0-9a-f]{64}$'),
   image_child_digest text NOT NULL CHECK (image_child_digest ~ '^.+@sha256:[0-9a-f]{64}$'),
   placement_profile text NOT NULL CHECK (placement_profile IN ('poc-linux-amd64-v1', 'poc-mac-arm64-v1')),
+  command jsonb NOT NULL CHECK (jsonb_typeof(command) = 'array' AND NOT workspace_json_contains_secret_key(command)),
+  resources jsonb NOT NULL CHECK (jsonb_typeof(resources) = 'object' AND NOT workspace_json_contains_secret_key(resources)),
   PRIMARY KEY (version_id, architecture),
   UNIQUE (version_id, name),
   UNIQUE (version_id, workspace_id, name, architecture, image_index_digest, image_child_digest),
@@ -145,17 +148,21 @@ BEGIN
   IF jsonb_array_length(coalesce(template_spec->'variants', '[]'::jsonb)) < 1 OR
      jsonb_array_length(coalesce(template_spec->'variants', '[]'::jsonb)) <> (SELECT count(*) FROM public.sandbox_template_version_variants WHERE version_id=target_id) OR
      EXISTS (SELECT 1 FROM jsonb_array_elements(template_spec->'variants') item WHERE NOT EXISTS
-       (SELECT 1 FROM public.sandbox_template_version_variants v WHERE v.version_id=target_id AND v.name=item->>'name' AND v.architecture=item->>'architecture')) THEN
+       (SELECT 1 FROM public.sandbox_template_version_variants v WHERE v.version_id=target_id AND v.name=item->>'name' AND v.architecture=item->>'architecture'
+         AND v.image_index_digest=item->>'imageIndex' AND v.image_child_digest=item->>'imageDigest'
+         AND v.placement_profile=item->>'placementProfile' AND v.command=item->'command' AND v.resources=item->'resources')) THEN
     RAISE EXCEPTION 'normalized sandbox template variants do not exactly match spec' USING ERRCODE='23514';
   END IF;
   IF jsonb_array_length(coalesce(template_spec->'repositories', '[]'::jsonb)) <> (SELECT count(*) FROM public.sandbox_template_version_repositories WHERE version_id=target_id) OR
      EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(template_spec->'repositories', '[]'::jsonb)) item WHERE NOT EXISTS
-       (SELECT 1 FROM public.sandbox_template_version_repositories r WHERE r.version_id=target_id AND r.name=item->>'name' AND r.destination=item->>'destination')) THEN
+       (SELECT 1 FROM public.sandbox_template_version_repositories r WHERE r.version_id=target_id AND r.name=item->>'name' AND r.url=item->>'url'
+         AND r.destination=item->>'destination' AND r.writable=(item->>'writable')::boolean)) THEN
     RAISE EXCEPTION 'normalized sandbox template repositories do not exactly match spec' USING ERRCODE='23514';
   END IF;
   IF jsonb_array_length(coalesce(template_spec->'artifacts', '[]'::jsonb)) <> (SELECT count(*) FROM public.sandbox_template_version_artifacts WHERE version_id=target_id) OR
      EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(template_spec->'artifacts', '[]'::jsonb)) item WHERE NOT EXISTS
-       (SELECT 1 FROM public.sandbox_template_version_artifacts a WHERE a.version_id=target_id AND a.name=item->>'name' AND a.path=item->>'path')) THEN
+       (SELECT 1 FROM public.sandbox_template_version_artifacts a WHERE a.version_id=target_id AND a.name=item->>'name' AND a.path=item->>'path'
+         AND a.media_type=item->>'mediaType' AND a.required=(item->>'required')::boolean)) THEN
     RAISE EXCEPTION 'normalized sandbox template artifacts do not exactly match spec' USING ERRCODE='23514';
   END IF;
   RETURN NULL;
@@ -174,6 +181,53 @@ FOR EACH ROW EXECUTE FUNCTION sandbox_validate_template_version_children();
 CREATE CONSTRAINT TRIGGER sandbox_template_artifact_children_complete
 AFTER INSERT OR UPDATE OR DELETE ON sandbox_template_version_artifacts DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION sandbox_validate_template_version_children();
+
+CREATE FUNCTION sandbox_publish_template_version(
+  p_version_id uuid, p_workspace_id uuid, p_template_id uuid, p_expected_draft_revision bigint,
+  p_canonical_spec bytea, p_content_digest text, p_actor_user_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  template_row public.sandbox_templates%ROWTYPE;
+  decoded_spec jsonb;
+  item jsonb;
+BEGIN
+  SELECT * INTO template_row FROM public.sandbox_templates
+    WHERE id=p_template_id AND workspace_id=p_workspace_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'sandbox template not found' USING ERRCODE='P0002'; END IF;
+  IF template_row.draft_revision <> p_expected_draft_revision THEN RAISE EXCEPTION 'sandbox template draft version conflict' USING ERRCODE='40001'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.workspace_memberships m WHERE m.workspace_id=p_workspace_id AND m.user_id=p_actor_user_id AND m.status='active' AND m.role IN ('owner','administrator')) THEN
+    RAISE EXCEPTION 'sandbox template publish denied' USING ERRCODE='42501';
+  END IF;
+  BEGIN decoded_spec := convert_from(p_canonical_spec,'UTF8')::jsonb;
+  EXCEPTION WHEN others THEN RAISE EXCEPTION 'invalid canonical sandbox template bytes' USING ERRCODE='22023'; END;
+  IF decoded_spec <> template_row.draft_spec THEN RAISE EXCEPTION 'canonical sandbox template bytes do not equal draft spec' USING ERRCODE='23514'; END IF;
+  IF p_content_digest !~ '^[0-9a-f]{64}$' OR encode(public.digest(p_canonical_spec,'sha256'),'hex') <> p_content_digest THEN
+    RAISE EXCEPTION 'sandbox template canonical digest mismatch' USING ERRCODE='23514';
+  END IF;
+  INSERT INTO public.sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by)
+    VALUES(p_version_id,p_workspace_id,p_template_id,decoded_spec->>'version',p_canonical_spec,decoded_spec,p_content_digest,p_actor_user_id);
+  FOR item IN SELECT value FROM jsonb_array_elements(decoded_spec->'variants') LOOP
+    INSERT INTO public.sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile,command,resources)
+      VALUES(p_version_id,p_workspace_id,p_template_id,item->>'name',item->>'architecture',item->>'imageIndex',item->>'imageDigest',item->>'placementProfile',item->'command',item->'resources');
+  END LOOP;
+  FOR item IN SELECT value FROM jsonb_array_elements(coalesce(decoded_spec->'repositories','[]'::jsonb)) LOOP
+    INSERT INTO public.sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable)
+      VALUES(p_version_id,p_workspace_id,p_template_id,item->>'name',item->>'url',item->>'destination',(item->>'writable')::boolean);
+  END LOOP;
+  FOR item IN SELECT value FROM jsonb_array_elements(coalesce(decoded_spec->'artifacts','[]'::jsonb)) LOOP
+    INSERT INTO public.sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required)
+      VALUES(p_version_id,p_workspace_id,p_template_id,item->>'name',item->>'path',item->>'mediaType',(item->>'required')::boolean);
+  END LOOP;
+  INSERT INTO public.sandbox_template_version_status(version_id,workspace_id,template_id,status,changed_by)
+    VALUES(p_version_id,p_workspace_id,p_template_id,'published',p_actor_user_id);
+  UPDATE public.sandbox_templates SET current_published_version_id=p_version_id,updated_at=clock_timestamp() WHERE id=p_template_id;
+  RETURN p_version_id;
+END
+$$;
 
 CREATE FUNCTION sandbox_reject_immutable_version_mutation() RETURNS trigger
 LANGUAGE plpgsql
@@ -220,6 +274,7 @@ CREATE TABLE sandboxes (
   deleted_at timestamptz,
   UNIQUE (id, workspace_id),
   UNIQUE (id, workspace_id, requested_by),
+  UNIQUE (id, workspace_id, template_version_id),
   FOREIGN KEY (template_id, workspace_id, template_name) REFERENCES sandbox_templates(id, workspace_id, name),
   FOREIGN KEY (template_version_id, workspace_id, template_id, template_version, template_digest)
     REFERENCES sandbox_template_versions(id, workspace_id, template_id, version, content_digest),
@@ -238,7 +293,7 @@ CREATE TABLE sandbox_sources (
   repository_name text NOT NULL,
   commit text NOT NULL CHECK (commit ~ '^[0-9a-f]{40}([0-9a-f]{24})?$'),
   PRIMARY KEY (sandbox_id, repository_name),
-  FOREIGN KEY (sandbox_id, workspace_id) REFERENCES sandboxes(id, workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (sandbox_id, workspace_id, template_version_id) REFERENCES sandboxes(id, workspace_id, template_version_id) ON DELETE CASCADE,
   FOREIGN KEY (template_version_id, workspace_id, repository_name)
     REFERENCES sandbox_template_version_repositories(version_id, workspace_id, name)
 );
@@ -254,7 +309,7 @@ CREATE TABLE sandbox_artifact_contract_entries (
   PRIMARY KEY (sandbox_id, name),
   UNIQUE (sandbox_id, path),
   UNIQUE (sandbox_id, name, path),
-  FOREIGN KEY (sandbox_id, workspace_id) REFERENCES sandboxes(id, workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (sandbox_id, workspace_id, template_version_id) REFERENCES sandboxes(id, workspace_id, template_version_id) ON DELETE CASCADE,
   FOREIGN KEY (template_version_id, workspace_id, name, path, media_type, required)
     REFERENCES sandbox_template_version_artifacts(version_id, workspace_id, name, path, media_type, required)
 );
@@ -274,12 +329,22 @@ BEGIN
   END IF;
   SELECT template_version_id INTO selected_version FROM public.sandboxes WHERE id=target_id;
   IF selected_version IS NULL THEN RETURN NULL; END IF;
-  IF (SELECT count(*) FROM public.sandbox_sources WHERE sandbox_id=target_id) <>
-     (SELECT count(*) FROM public.sandbox_template_version_repositories WHERE version_id=selected_version) THEN
+  IF EXISTS (
+    (SELECT name FROM public.sandbox_template_version_repositories WHERE version_id=selected_version
+     EXCEPT SELECT repository_name FROM public.sandbox_sources WHERE sandbox_id=target_id)
+    UNION ALL
+    (SELECT repository_name FROM public.sandbox_sources WHERE sandbox_id=target_id
+     EXCEPT SELECT name FROM public.sandbox_template_version_repositories WHERE version_id=selected_version)
+  ) THEN
     RAISE EXCEPTION 'sandbox sources must cover every selected template repository exactly once' USING ERRCODE='23514';
   END IF;
-  IF (SELECT count(*) FROM public.sandbox_artifact_contract_entries WHERE sandbox_id=target_id) <>
-     (SELECT count(*) FROM public.sandbox_template_version_artifacts WHERE version_id=selected_version) THEN
+  IF EXISTS (
+    (SELECT name,path,media_type,required FROM public.sandbox_template_version_artifacts WHERE version_id=selected_version
+     EXCEPT SELECT name,path,media_type,required FROM public.sandbox_artifact_contract_entries WHERE sandbox_id=target_id)
+    UNION ALL
+    (SELECT name,path,media_type,required FROM public.sandbox_artifact_contract_entries WHERE sandbox_id=target_id
+     EXCEPT SELECT name,path,media_type,required FROM public.sandbox_template_version_artifacts WHERE version_id=selected_version)
+  ) THEN
     RAISE EXCEPTION 'sandbox artifact contract must bind every selected template artifact exactly once' USING ERRCODE='23514';
   END IF;
   RETURN NULL;
@@ -296,11 +361,72 @@ CREATE CONSTRAINT TRIGGER sandbox_artifact_contract_children_complete
 AFTER INSERT OR UPDATE OR DELETE ON sandbox_artifact_contract_entries DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION sandbox_validate_create_children();
 
+CREATE FUNCTION sandbox_create_bound_sandbox(
+  p_sandbox_id uuid, p_workspace_id uuid, p_template_version_id uuid, p_architecture text,
+  p_allocation_mode text, p_expires_at timestamptz, p_queue_name text, p_sources jsonb,
+  p_artifact_contract_canonical bytea, p_artifact_contract_digest text, p_actor_user_id uuid)
+RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  version_row public.sandbox_template_versions%ROWTYPE;
+  template_row public.sandbox_templates%ROWTYPE;
+  variant_row public.sandbox_template_version_variants%ROWTYPE;
+  expected_contract jsonb;
+  decoded_contract jsonb;
+  item jsonb;
+  effective_now timestamptz := clock_timestamp();
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM public.workspace_memberships m WHERE m.workspace_id=p_workspace_id AND m.user_id=p_actor_user_id AND m.status='active' AND m.role IN ('owner','administrator','operator')) THEN
+    RAISE EXCEPTION 'sandbox create denied' USING ERRCODE='42501';
+  END IF;
+  SELECT * INTO version_row FROM public.sandbox_template_versions WHERE id=p_template_version_id AND workspace_id=p_workspace_id;
+  IF NOT FOUND OR NOT EXISTS (SELECT 1 FROM public.sandbox_template_version_status s WHERE s.version_id=p_template_version_id AND s.status='published') THEN
+    RAISE EXCEPTION 'sandbox template version unavailable' USING ERRCODE='P0002';
+  END IF;
+  SELECT * INTO template_row FROM public.sandbox_templates WHERE id=version_row.template_id AND workspace_id=p_workspace_id;
+  SELECT * INTO variant_row FROM public.sandbox_template_version_variants WHERE version_id=p_template_version_id AND architecture=p_architecture;
+  IF NOT FOUND THEN RAISE EXCEPTION 'sandbox architecture unavailable' USING ERRCODE='P0002'; END IF;
+  IF p_expires_at < effective_now + interval '60 seconds' OR p_expires_at > effective_now + interval '7200 seconds' THEN RAISE EXCEPTION 'sandbox expiry out of bounds' USING ERRCODE='22023'; END IF;
+  IF jsonb_typeof(p_sources) <> 'array' OR jsonb_array_length(p_sources) <> (SELECT count(*) FROM public.sandbox_template_version_repositories WHERE version_id=p_template_version_id) OR
+     (SELECT count(DISTINCT value->>'repository') FROM jsonb_array_elements(p_sources)) <> jsonb_array_length(p_sources) OR
+     EXISTS (SELECT 1 FROM jsonb_array_elements(p_sources) source WHERE NOT EXISTS
+       (SELECT 1 FROM public.sandbox_template_version_repositories repository WHERE repository.version_id=p_template_version_id AND repository.name=source->>'repository')) THEN
+    RAISE EXCEPTION 'sandbox sources must exactly cover selected repositories' USING ERRCODE='23514';
+  END IF;
+  SELECT jsonb_build_object('items',coalesce(jsonb_agg(jsonb_build_object('name',a.name,'path',a.path,'mediaType',a.media_type,'required',a.required) ORDER BY a.name),'[]'::jsonb))
+    INTO expected_contract FROM public.sandbox_template_version_artifacts a WHERE a.version_id=p_template_version_id;
+  BEGIN decoded_contract := convert_from(p_artifact_contract_canonical,'UTF8')::jsonb;
+  EXCEPTION WHEN others THEN RAISE EXCEPTION 'invalid canonical artifact contract bytes' USING ERRCODE='22023'; END;
+  IF decoded_contract <> expected_contract OR p_artifact_contract_digest !~ '^[0-9a-f]{64}$' OR
+     encode(public.digest(p_artifact_contract_canonical,'sha256'),'hex') <> p_artifact_contract_digest THEN
+    RAISE EXCEPTION 'sandbox artifact contract digest mismatch' USING ERRCODE='23514';
+  END IF;
+  INSERT INTO public.sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,
+    variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,
+    isolation,approved_non_sensitive,expires_at)
+    VALUES(p_sandbox_id,p_workspace_id,p_actor_user_id,version_row.template_id,p_template_version_id,template_row.name,version_row.version,
+      version_row.content_digest,variant_row.name,variant_row.image_index_digest,variant_row.image_child_digest,p_architecture,p_allocation_mode,
+      'requested','ready',p_queue_name,p_artifact_contract_digest,'approved-non-sensitive-poc',true,p_expires_at);
+  FOR item IN SELECT value FROM jsonb_array_elements(p_sources) LOOP
+    INSERT INTO public.sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit)
+      VALUES(p_sandbox_id,p_workspace_id,p_template_version_id,item->>'repository',item->>'commit');
+  END LOOP;
+  INSERT INTO public.sandbox_artifact_contract_entries(sandbox_id,workspace_id,template_version_id,name,path,media_type,required)
+    SELECT p_sandbox_id,p_workspace_id,p_template_version_id,a.name,a.path,a.media_type,a.required
+      FROM public.sandbox_template_version_artifacts a WHERE a.version_id=p_template_version_id;
+  RETURN p_sandbox_id;
+END
+$$;
+
 CREATE TABLE sandbox_operation_terminal_receipts (
   id uuid PRIMARY KEY,
   operation_id uuid NOT NULL UNIQUE,
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   sandbox_id uuid NOT NULL,
+  operation_type text NOT NULL CHECK (operation_type IN ('create', 'stop', 'delete')),
   status text NOT NULL CHECK (status IN ('succeeded', 'failed', 'recovery_required')),
   result jsonb CHECK (result IS NULL OR NOT workspace_json_contains_secret_key(result)),
   error jsonb CHECK (error IS NULL OR NOT workspace_json_contains_secret_key(error)),
@@ -308,10 +434,17 @@ CREATE TABLE sandbox_operation_terminal_receipts (
   artifact_export_complete boolean NOT NULL,
   grants_revoked boolean NOT NULL,
   backend_destroyed boolean NOT NULL,
+  backend_present boolean NOT NULL,
+  backend_uid text,
+  backend_resource_version text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (id, operation_id, workspace_id, sandbox_id),
+  UNIQUE (id, operation_id, workspace_id, sandbox_id, operation_type, status),
   FOREIGN KEY (sandbox_id, workspace_id) REFERENCES sandboxes(id, workspace_id),
-  CHECK (status <> 'succeeded' OR (cleanup_complete AND artifact_export_complete AND grants_revoked AND backend_destroyed))
+  CHECK ((backend_uid IS NULL) = (backend_resource_version IS NULL)),
+  CHECK (backend_present = (backend_uid IS NOT NULL)),
+  CHECK (status <> 'succeeded' OR
+    (operation_type = 'create' AND backend_present AND NOT backend_destroyed) OR
+    (operation_type IN ('stop','delete') AND NOT backend_present AND cleanup_complete AND artifact_export_complete AND grants_revoked AND backend_destroyed))
 );
 
 CREATE TABLE sandbox_operations (
@@ -330,17 +463,18 @@ CREATE TABLE sandbox_operations (
   completed_at timestamptz,
   UNIQUE (requested_by, type, idempotency_key),
   UNIQUE (id, workspace_id, sandbox_id),
+  UNIQUE (id, workspace_id, sandbox_id, type, status),
   FOREIGN KEY (sandbox_id, workspace_id) REFERENCES sandboxes(id, workspace_id),
-  FOREIGN KEY (terminal_receipt_id, id, workspace_id, sandbox_id)
-    REFERENCES sandbox_operation_terminal_receipts(id, operation_id, workspace_id, sandbox_id)
+  FOREIGN KEY (terminal_receipt_id, id, workspace_id, sandbox_id, type, status)
+    REFERENCES sandbox_operation_terminal_receipts(id, operation_id, workspace_id, sandbox_id, operation_type, status)
     DEFERRABLE INITIALLY DEFERRED,
   CHECK ((status IN ('succeeded', 'failed', 'recovery_required')) = (completed_at IS NOT NULL)),
   CHECK ((status IN ('succeeded', 'failed', 'recovery_required')) = (terminal_receipt_id IS NOT NULL))
 );
 
 ALTER TABLE sandbox_operation_terminal_receipts ADD CONSTRAINT sandbox_operation_terminal_receipt_operation_fk
-  FOREIGN KEY (operation_id, workspace_id, sandbox_id)
-  REFERENCES sandbox_operations(id, workspace_id, sandbox_id)
+  FOREIGN KEY (operation_id, workspace_id, sandbox_id, operation_type, status)
+  REFERENCES sandbox_operations(id, workspace_id, sandbox_id, type, status)
   DEFERRABLE INITIALLY DEFERRED;
 
 CREATE TABLE sandbox_events (
@@ -353,6 +487,7 @@ CREATE TABLE sandbox_events (
   payload jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (NOT workspace_json_contains_secret_key(payload)),
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (sandbox_id, sequence),
+  FOREIGN KEY (sandbox_id, workspace_id) REFERENCES sandboxes(id, workspace_id) ON DELETE CASCADE,
   FOREIGN KEY (operation_id, workspace_id, sandbox_id)
     REFERENCES sandbox_operations(id, workspace_id, sandbox_id) ON DELETE CASCADE
 );
@@ -404,33 +539,33 @@ CREATE TRIGGER sandbox_access_grants_monotonic
 BEFORE UPDATE ON sandbox_access_grants
 FOR EACH ROW EXECUTE FUNCTION sandbox_enforce_grant_transition();
 
-CREATE FUNCTION sandbox_consume_access_grant(p_grant_id uuid, p_token_hash char(64), p_kind text, p_now timestamptz)
+CREATE FUNCTION sandbox_consume_access_grant(p_grant_id uuid, p_token_hash char(64), p_kind text)
 RETURNS boolean
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-DECLARE changed bigint;
+DECLARE changed bigint; effective_now timestamptz := clock_timestamp();
 BEGIN
   UPDATE public.sandbox_access_grants SET state='expired'
-    WHERE id=p_grant_id AND state='active' AND expires_at <= p_now;
-  UPDATE public.sandbox_access_grants SET state='consumed', consumed_at=p_now
-    WHERE id=p_grant_id AND state='active' AND expires_at > p_now
+    WHERE id=p_grant_id AND state='active' AND expires_at <= effective_now;
+  UPDATE public.sandbox_access_grants SET state='consumed', consumed_at=effective_now
+    WHERE id=p_grant_id AND state='active' AND expires_at > effective_now
       AND token_hash=p_token_hash AND kind=p_kind;
   GET DIAGNOSTICS changed = ROW_COUNT;
   RETURN changed = 1;
 END
 $$;
 
-CREATE FUNCTION sandbox_revoke_access_grants(p_workspace_id uuid, p_sandbox_id uuid, p_now timestamptz)
+CREATE FUNCTION sandbox_revoke_access_grants(p_workspace_id uuid, p_sandbox_id uuid)
 RETURNS bigint
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-DECLARE changed bigint;
+DECLARE changed bigint; effective_now timestamptz := clock_timestamp();
 BEGIN
-  UPDATE public.sandbox_access_grants SET state='revoked', revoked_at=p_now
+  UPDATE public.sandbox_access_grants SET state='revoked', revoked_at=effective_now
     WHERE workspace_id=p_workspace_id AND sandbox_id=p_sandbox_id AND state='active';
   GET DIAGNOSTICS changed = ROW_COUNT;
   RETURN changed;
@@ -494,21 +629,22 @@ REVOKE ALL ON TABLE sandbox_templates, sandbox_template_versions, sandbox_templa
   sandbox_access_grants, sandbox_artifacts, sandbox_idempotency_receipts, sandbox_audit_events
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker;
 REVOKE ALL ON FUNCTION sandbox_reject_immutable_version_mutation(), sandbox_validate_template_version_children(),
-  sandbox_validate_create_children(), sandbox_enforce_grant_transition(),
-  sandbox_consume_access_grant(uuid, char(64), text, timestamptz),
-  sandbox_revoke_access_grants(uuid, uuid, timestamptz)
+  sandbox_publish_template_version(uuid, uuid, uuid, bigint, bytea, text, uuid),
+  sandbox_validate_create_children(), sandbox_create_bound_sandbox(uuid, uuid, uuid, text, text, timestamptz, text, jsonb, bytea, text, uuid),
+  sandbox_enforce_grant_transition(), sandbox_consume_access_grant(uuid, char(64), text),
+  sandbox_revoke_access_grants(uuid, uuid)
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker;
 
 GRANT SELECT, INSERT ON TABLE sandbox_templates TO blazn_runtime;
-GRANT UPDATE (draft_revision, draft_spec, draft_digest, current_published_version_id, updated_at)
+GRANT UPDATE (draft_revision, draft_spec, draft_digest, updated_at)
   ON TABLE sandbox_templates TO blazn_runtime;
-GRANT SELECT, INSERT ON TABLE sandbox_template_versions TO blazn_runtime;
-GRANT SELECT, INSERT ON TABLE sandbox_template_version_variants, sandbox_template_version_repositories,
+GRANT SELECT ON TABLE sandbox_template_versions TO blazn_runtime;
+GRANT SELECT ON TABLE sandbox_template_version_variants, sandbox_template_version_repositories,
   sandbox_template_version_artifacts TO blazn_runtime;
-GRANT SELECT, INSERT ON TABLE sandbox_template_version_status TO blazn_runtime;
+GRANT SELECT ON TABLE sandbox_template_version_status TO blazn_runtime;
 GRANT UPDATE (status, version, changed_by, changed_at) ON TABLE sandbox_template_version_status TO blazn_runtime;
-GRANT SELECT, INSERT ON TABLE sandboxes TO blazn_runtime;
-GRANT SELECT, INSERT ON TABLE sandbox_sources, sandbox_artifact_contract_entries TO blazn_runtime;
+GRANT SELECT ON TABLE sandboxes TO blazn_runtime;
+GRANT SELECT ON TABLE sandbox_sources, sandbox_artifact_contract_entries TO blazn_runtime;
 GRANT UPDATE (state, desired_state, version, backend_uid, backend_resource_version, queue_name,
   admission_id, conditions, updated_at, stopped_at, deleted_at) ON TABLE sandboxes TO blazn_runtime;
 GRANT SELECT, INSERT ON TABLE sandbox_operation_terminal_receipts, sandbox_operations, sandbox_access_grants TO blazn_runtime;
@@ -516,8 +652,9 @@ GRANT UPDATE (status, terminal_receipt_id, started_at, completed_at) ON TABLE sa
 GRANT SELECT, INSERT ON TABLE sandbox_events, sandbox_artifacts,
   sandbox_idempotency_receipts, sandbox_audit_events TO blazn_runtime;
 
-GRANT EXECUTE ON FUNCTION sandbox_consume_access_grant(uuid, char(64), text, timestamptz),
-  sandbox_revoke_access_grants(uuid, uuid, timestamptz) TO blazn_runtime;
+GRANT EXECUTE ON FUNCTION sandbox_publish_template_version(uuid, uuid, uuid, bigint, bytea, text, uuid),
+  sandbox_create_bound_sandbox(uuid, uuid, uuid, text, text, timestamptz, text, jsonb, bytea, text, uuid),
+  sandbox_consume_access_grant(uuid, char(64), text), sandbox_revoke_access_grants(uuid, uuid) TO blazn_runtime;
 
 -- Immutable columns and stored grant bindings cannot be changed by the runtime role.
 REVOKE UPDATE, DELETE ON TABLE sandbox_template_versions FROM blazn_runtime;

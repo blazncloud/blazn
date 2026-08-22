@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,9 +25,9 @@ import (
 var clientTemplate []byte
 
 const (
-	openAPISHA256  = "ccb86d200b07b91de21b0447da0e5cc761300cb35b38046a2f01593bfb8965d0"
+	openAPISHA256  = "5ccadb92e20448475752101cdae00b06d54cd71c496824a8543980257f699f9c"
 	templateSHA256 = "e555682663c8c45c6813d65faf1937d5a860e670f2c816fdf31b7fbb96f932e1"
-	cliSHA256      = "83eeeb9d7574e4956acdd0026279f6be7b6fbcad16f0b3450a8d541459333b35"
+	cliSHA256      = "e40063e5f7b1edc107282a637e3d67f1d477467c8e9243d1ae082c0a44c3da83"
 )
 
 type source struct {
@@ -74,6 +78,7 @@ func main() {
 	generated = bytes.ReplaceAll(generated, []byte("SANDBOX_ERROR_STATUSES"), []byte(errorStatusSource(openapi)))
 	generated, err = format.Source(generated)
 	fatalIf(err)
+	fatalIf(validateGeneratedGo(generated, openapi))
 	output := filepath.Join(root, "internal", "client", "sandbox.gen.go")
 	if *check {
 		current, err := os.ReadFile(output)
@@ -165,15 +170,18 @@ func validate(sources map[string]source, template string) error {
 	if !requiredExactly(at(api, "components", "schemas", "Sandbox"), "id", "workspaceId", "requestedBy", "templateId", "templateVersionId", "templateName", "templateVersion", "templateDigest", "variantName", "imageIndexDigest", "imageDigest", "architecture", "allocationMode", "sourceBindings", "artifactContract", "state", "desiredState", "version", "queueName", "admissionId", "isolation", "expiresAt", "conditions", "createdAt", "updatedAt") {
 		return fmt.Errorf("Sandbox required fields changed")
 	}
-	if !requiredExactly(at(api, "components", "schemas", "SandboxOperationReceipt"), "id", "operationId", "status", "cleanupComplete", "artifactExportComplete", "grantsRevoked", "backendDestroyed", "result", "error", "createdAt") || !requiredExactly(at(api, "components", "schemas", "SandboxEvent"), "eventId", "sandboxId", "operationId", "sequence", "type", "payload", "createdAt") || !requiredExactly(at(api, "components", "schemas", "SandboxArtifact"), "id", "workspaceId", "sandboxId", "name", "path", "mediaType", "size", "sha256", "exportedAt", "download") {
+	if !requiredExactly(at(api, "components", "schemas", "SandboxOperationReceipt"), "id", "operationId", "operationType", "status", "cleanupComplete", "artifactExportComplete", "grantsRevoked", "backendDestroyed", "backend", "result", "error", "createdAt") || !requiredExactly(at(api, "components", "schemas", "SandboxEvent"), "eventId", "sandboxId", "operationId", "sequence", "type", "payload", "createdAt") || !requiredExactly(at(api, "components", "schemas", "SandboxArtifact"), "id", "workspaceId", "sandboxId", "name", "path", "mediaType", "size", "sha256", "exportedAt", "download") {
 		return fmt.Errorf("typed operation/event/artifact required fields changed")
+	}
+	if !requiredExactly(at(api, "components", "schemas", "CreateSandboxRequest"), "template", "architecture", "allocationMode", "expiresInSeconds", "sources", "approvedNonSensitive") || !requiredExactly(at(api, "components", "schemas", "CreateSandboxOperationRequest"), "type", "expectedVersion") || !requiredExactly(at(api, "components", "schemas", "CreateAccessGrantRequest"), "kind", "expiresInSeconds") {
+		return fmt.Errorf("sandbox request required fields changed")
 	}
 	if !enumExactly(at(api, "components", "schemas", "CreateSandboxOperationRequest", "properties", "type", "enum"), "delete", "stop") || !enumExactly(at(api, "components", "schemas", "CreateAccessGrantRequest", "properties", "kind", "enum"), "download", "exec", "upload") {
 		return fmt.Errorf("sandbox mutation enums changed")
 	}
-	for _, schemaName := range []string{"template", "templateVersion", "sandbox", "operation", "receipt", "event"} {
-		if at(cli, "$defs", schemaName, "additionalProperties") != false {
-			return fmt.Errorf("CLI schema %s must be closed", schemaName)
+	for schemaName, apiName := range map[string]string{"template": "SandboxTemplate", "templateVersion": "SandboxTemplateVersion", "sandbox": "Sandbox", "operation": "SandboxOperation", "receipt": "SandboxOperationReceipt", "event": "SandboxEvent"} {
+		if atString(cli, "$defs", schemaName, "$ref") != "https://blazn.dev/contracts/sandboxes.openapi.json#/components/schemas/"+apiName {
+			return fmt.Errorf("CLI schema %s must reference exact API schema", schemaName)
 		}
 	}
 	for _, unsafe := range []string{`PathEscape(grantToken)`, `query.Set("token"`} {
@@ -330,6 +338,211 @@ func enumExactly(value any, want ...string) bool {
 	sort.Strings(got)
 	sort.Strings(want)
 	return strings.Join(got, "\x00") == strings.Join(want, "\x00")
+}
+
+var generatedMethodSignatures = map[string]string{
+	"createSandboxTemplate":         "(context.Context,string,string,string,SandboxManifest)(SandboxTemplateEnvelope,error)",
+	"listSandboxTemplates":          "(context.Context,string,string,string)(SandboxTemplateList,error)",
+	"getSandboxTemplate":            "(context.Context,string,string)(SandboxTemplateEnvelope,error)",
+	"replaceSandboxTemplateDraft":   "(context.Context,string,string,string,ReplaceSandboxTemplateDraftRequest)(SandboxTemplateEnvelope,error)",
+	"publishSandboxTemplateVersion": "(context.Context,string,string,string,PublishSandboxTemplateVersionRequest)(SandboxTemplateVersionEnvelope,error)",
+	"listSandboxTemplateVersions":   "(context.Context,string,string,string)(SandboxTemplateVersionList,error)",
+	"getSandboxTemplateVersion":     "(context.Context,string,string)(SandboxTemplateVersionEnvelope,error)",
+	"createSandbox":                 "(context.Context,string,string,string,CreateSandboxRequest)(SandboxMutation,error)",
+	"listSandboxes":                 "(context.Context,string,string,string)(SandboxList,error)",
+	"getSandbox":                    "(context.Context,string,string)(Sandbox,error)",
+	"streamSandboxEvents":           "(context.Context,string,string,string)(*SandboxEventStream,error)",
+	"createSandboxOperation":        "(context.Context,string,string,string,CreateSandboxOperationRequest)(SandboxMutation,error)",
+	"createSandboxAccessGrant":      "(context.Context,string,string,CreateSandboxAccessGrantRequest)(SandboxAccessGrantCreated,error)",
+	"executeSandboxGrant":           "(context.Context,string,string,SandboxExecRequest)(SandboxExecResult,error)",
+	"uploadSandboxGrantFile":        "(context.Context,string,string,string,string,io.Reader,int64)(SandboxFileTransferResult,error)",
+	"downloadSandboxGrantFile":      "(context.Context,string,string,string)(io.ReadCloser,int64,string,error)",
+	"getSandboxOperation":           "(context.Context,string,string)(SandboxOperation,error)",
+	"listSandboxArtifacts":          "(context.Context,string,string,string)(SandboxArtifactList,error)",
+	"getSandboxArtifact":            "(context.Context,string,string)(SandboxArtifact,error)",
+	"downloadSandboxArtifact":       "(context.Context,string,string)(io.ReadCloser,int64,string,error)",
+}
+
+func validateGeneratedGo(source []byte, api map[string]any) error {
+	fileset := token.NewFileSet()
+	file, err := parser.ParseFile(fileset, "sandbox.gen.go", source, parser.ParseComments)
+	if err != nil {
+		return fmt.Errorf("parse generated sandbox client: %w", err)
+	}
+	methods := map[string]string{}
+	methodBodies := map[string]string{}
+	structs := map[string][]string{}
+	constants := map[string][]string{}
+	for _, declaration := range file.Decls {
+		switch typed := declaration.(type) {
+		case *ast.FuncDecl:
+			if typed.Recv != nil {
+				methods[typed.Name.Name] = goFunctionSignature(fileset, typed.Type)
+				var rendered bytes.Buffer
+				_ = printer.Fprint(&rendered, fileset, typed)
+				methodBodies[typed.Name.Name] = rendered.String()
+			}
+		case *ast.GenDecl:
+			if typed.Tok == token.CONST {
+				for _, specification := range typed.Specs {
+					valueSpec, ok := specification.(*ast.ValueSpec)
+					if !ok || valueSpec.Type == nil {
+						continue
+					}
+					typeName := goExpression(fileset, valueSpec.Type)
+					for _, value := range valueSpec.Values {
+						literal, ok := value.(*ast.BasicLit)
+						if !ok || literal.Kind != token.STRING {
+							continue
+						}
+						decoded, err := strconv.Unquote(literal.Value)
+						if err == nil {
+							constants[typeName] = append(constants[typeName], decoded)
+						}
+					}
+				}
+				continue
+			}
+			if typed.Tok != token.TYPE {
+				continue
+			}
+			for _, specification := range typed.Specs {
+				typeSpec, ok := specification.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				structure, ok := typeSpec.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range structure.Fields.List {
+					if field.Tag == nil {
+						continue
+					}
+					var tag string
+					if _, err := fmt.Sscanf(field.Tag.Value, "`json:%q`", &tag); err != nil {
+						continue
+					}
+					tag = strings.Split(tag, ",")[0]
+					if tag != "" && tag != "-" {
+						structs[typeSpec.Name.Name] = append(structs[typeSpec.Name.Name], tag)
+					}
+				}
+			}
+		}
+	}
+	for _, operation := range sandboxOperations {
+		name := strings.ToUpper(operation.id[:1]) + operation.id[1:]
+		want := generatedMethodSignatures[operation.id]
+		if want == "" || methods[name] != want {
+			return fmt.Errorf("generated Go signature %s=%q want %q", name, methods[name], want)
+		}
+		body := methodBodies[name]
+		for _, fragment := range openAPIPathFragments(operation.path) {
+			if !strings.Contains(body, strconv.Quote(fragment)) {
+				return fmt.Errorf("generated Go method %s lacks path fragment %q", name, fragment)
+			}
+		}
+		statusName := map[string]string{"200": "http.StatusOK", "201": "http.StatusCreated", "202": "http.StatusAccepted"}[operation.success]
+		if operation.id != "executeSandboxGrant" && !strings.Contains(body, statusName) {
+			return fmt.Errorf("generated Go method %s lacks success status %s", name, statusName)
+		}
+	}
+	bindings := map[string]string{"Sandbox": "Sandbox", "SandboxOperation": "SandboxOperation", "SandboxOperationReceipt": "SandboxOperationReceipt", "SandboxEvent": "SandboxEvent", "SandboxArtifact": "SandboxArtifact", "CreateSandboxRequest": "CreateSandboxRequest", "CreateSandboxOperationRequest": "CreateSandboxOperationRequest", "CreateAccessGrantRequest": "CreateSandboxAccessGrantRequest"}
+	for schemaName, goName := range bindings {
+		properties, _ := at(api, "components", "schemas", schemaName, "properties").(map[string]any)
+		want := make([]string, 0, len(properties))
+		for name := range properties {
+			want = append(want, name)
+		}
+		got := append([]string(nil), structs[goName]...)
+		sort.Strings(want)
+		sort.Strings(got)
+		if strings.Join(want, "\x00") != strings.Join(got, "\x00") {
+			return fmt.Errorf("generated Go fields %s=%v want %v", goName, got, want)
+		}
+	}
+	enumBindings := map[string]any{
+		"SandboxArchitecture":    at(api, "components", "schemas", "CreateSandboxRequest", "properties", "architecture", "enum"),
+		"SandboxAllocationMode":  at(api, "components", "schemas", "CreateSandboxRequest", "properties", "allocationMode", "enum"),
+		"SandboxState":           at(api, "components", "schemas", "Sandbox", "properties", "state", "enum"),
+		"SandboxDesiredState":    at(api, "components", "schemas", "Sandbox", "properties", "desiredState", "enum"),
+		"SandboxOperationType":   at(api, "components", "schemas", "SandboxOperation", "properties", "type", "enum"),
+		"SandboxOperationStatus": at(api, "components", "schemas", "SandboxOperation", "properties", "status", "enum"),
+		"SandboxGrantKind":       at(api, "components", "schemas", "AccessGrant", "properties", "kind", "enum"),
+		"SandboxGrantState":      at(api, "components", "schemas", "AccessGrant", "properties", "state", "enum"),
+	}
+	for typeName, enum := range enumBindings {
+		items, _ := enum.([]any)
+		want := make([]string, 0, len(items))
+		for _, item := range items {
+			if value, ok := item.(string); ok {
+				want = append(want, value)
+			}
+		}
+		got := append([]string(nil), constants[typeName]...)
+		sort.Strings(want)
+		sort.Strings(got)
+		if strings.Join(want, "\x00") != strings.Join(got, "\x00") {
+			return fmt.Errorf("generated Go enum %s=%v want %v", typeName, got, want)
+		}
+	}
+	compact := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(string(source))
+	for _, required := range []string{`Header.Set("Authorization","Bearer"+accessToken)`, `Header.Set("Authorization","Blazn-Grant"+grantToken)`, `Header.Set("Idempotency-Key",idempotencyKey)`, `Header.Set("Last-Event-ID",lastEventID)`, `Header.Set("X-Blazn-Sandbox-Path",sandboxPath)`, `Header.Set("X-Content-Size",strconv.FormatInt(size,10))`, `Header.Set("X-Content-SHA256",digest)`, `Header.Set("Content-Type","application/octet-stream")`, `Header.Set("Content-Type","application/json")`, `Header.Set("Accept","text/event-stream")`} {
+		if !strings.Contains(compact, required) {
+			return fmt.Errorf("generated Go transport parity lacks %s", required)
+		}
+	}
+	return nil
+}
+
+func openAPIPathFragments(path string) []string {
+	parts := []string{}
+	for len(path) > 0 {
+		open := strings.IndexByte(path, '{')
+		if open < 0 {
+			if path != "" {
+				parts = append(parts, path)
+			}
+			break
+		}
+		if open > 0 {
+			parts = append(parts, path[:open])
+		}
+		close := strings.IndexByte(path[open:], '}')
+		if close < 0 {
+			break
+		}
+		path = path[open+close+1:]
+	}
+	return parts
+}
+
+func goFunctionSignature(fileset *token.FileSet, function *ast.FuncType) string {
+	render := func(expression ast.Expr) string { return goExpression(fileset, expression) }
+	collect := func(fields *ast.FieldList) []string {
+		if fields == nil {
+			return nil
+		}
+		values := []string{}
+		for _, field := range fields.List {
+			count := len(field.Names)
+			if count == 0 {
+				count = 1
+			}
+			for range count {
+				values = append(values, render(field.Type))
+			}
+		}
+		return values
+	}
+	return "(" + strings.Join(collect(function.Params), ",") + ")(" + strings.Join(collect(function.Results), ",") + ")"
+}
+
+func goExpression(fileset *token.FileSet, expression ast.Expr) string {
+	var output bytes.Buffer
+	_ = printer.Fprint(&output, fileset, expression)
+	return output.String()
 }
 
 func containsString(value any, want string) bool {

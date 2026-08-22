@@ -42,6 +42,28 @@ func TestCanonicalSandboxTemplateDigestUsesOnlyJCSSpec(t *testing.T) {
 	}
 }
 
+func TestCanonicalSandboxArtifactContractDigestIsOrderedAndPinned(t *testing.T) {
+	entries := []SandboxArtifactContractEntry{{Name: "z-last", Path: "/workspace/artifacts/z", MediaType: "text/plain", Required: false}, {Name: "patch", Path: "/workspace/artifacts/change.patch", MediaType: "text/plain", Required: true}}
+	oneDigest, oneBytes, err := CanonicalSandboxArtifactContractDigest(entries[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oneDigest != "sha256:d139b2eb8bb329f61b85f95b4983c028fbbadcfd36fd73cdbb05d143a4ac0729" {
+		t.Fatalf("artifact digest=%s bytes=%s", oneDigest, oneBytes)
+	}
+	a, bytesA, err := CanonicalSandboxArtifactContractDigest(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, bytesB, err := CanonicalSandboxArtifactContractDigest([]SandboxArtifactContractEntry{entries[1], entries[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b || string(bytesA) != string(bytesB) {
+		t.Fatal("artifact contract digest depends on input order")
+	}
+}
+
 func TestSandboxGrantTokenUsesOnlyAuthorizationHeader(t *testing.T) {
 	const token = "top-secret-one-time-grant"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +111,7 @@ func TestSandboxTransferPathsAreConfined(t *testing.T) {
 			t.Errorf("valid path rejected: %s", value)
 		}
 	}
-	for _, value := range []string{"/etc/passwd", "/workspace/src/../secret", "/workspace/src/repo/../../secret", "/workspace/src/", `/workspace/src/repo\secret`} {
+	for _, value := range []string{"/etc/passwd", "/workspace/src/./escape", "/workspace/src/../secret", "/workspace/src/repo/../../secret", "/workspace/src/", `/workspace/src/repo\secret`} {
 		if validSandboxTransferPath(value) {
 			t.Errorf("unsafe path accepted: %s", value)
 		}
@@ -129,12 +151,8 @@ func TestChunkedSandboxDownloadVerifiesDeclaredSizeAndDigest(t *testing.T) {
 }
 
 func TestSandboxDownloadRejectsDotSegmentHeadersBeforeNetwork(t *testing.T) {
-	client, err := New("https://example.invalid", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, value := range []string{"/workspace/src/./escape", "/workspace/src/../escape"} {
-		if _, _, _, err := client.DownloadSandboxGrantFile(context.Background(), "11111111-1111-4111-8111-111111111111", "grant", value); err == nil {
+		if validSandboxTransferPath(value) {
 			t.Errorf("dot segment accepted: %s", value)
 		}
 	}

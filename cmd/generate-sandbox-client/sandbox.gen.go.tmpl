@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -50,6 +51,31 @@ const (
 	SandboxGrantExec SandboxGrantKind = "exec"
 	SandboxGrantUpload SandboxGrantKind = "upload"
 	SandboxGrantDownload SandboxGrantKind = "download"
+	SandboxRequested SandboxState = "requested"
+	SandboxQueued SandboxState = "queued"
+	SandboxProvisioning SandboxState = "provisioning"
+	SandboxReady SandboxState = "ready"
+	SandboxRunning SandboxState = "running"
+	SandboxStopping SandboxState = "stopping"
+	SandboxStopped SandboxState = "stopped"
+	SandboxDeleting SandboxState = "deleting"
+	SandboxDeleted SandboxState = "deleted"
+	SandboxFailed SandboxState = "failed"
+	SandboxDesiredReady SandboxDesiredState = "ready"
+	SandboxDesiredStopped SandboxDesiredState = "stopped"
+	SandboxDesiredDeleted SandboxDesiredState = "deleted"
+	SandboxOperationCreate SandboxOperationType = "create"
+	SandboxOperationStop SandboxOperationType = "stop"
+	SandboxOperationDelete SandboxOperationType = "delete"
+	SandboxOperationPending SandboxOperationStatus = "pending"
+	SandboxOperationRunning SandboxOperationStatus = "running"
+	SandboxOperationSucceeded SandboxOperationStatus = "succeeded"
+	SandboxOperationFailed SandboxOperationStatus = "failed"
+	SandboxOperationRecoveryRequired SandboxOperationStatus = "recovery_required"
+	SandboxGrantActive SandboxGrantState = "active"
+	SandboxGrantConsumed SandboxGrantState = "consumed"
+	SandboxGrantExpired SandboxGrantState = "expired"
+	SandboxGrantRevoked SandboxGrantState = "revoked"
 )
 
 type SandboxTemplate struct {
@@ -133,7 +159,8 @@ type Sandbox struct {
 type SandboxList struct { Items []Sandbox `json:"items"`; NextCursor *string `json:"nextCursor"` }
 type CreateSandboxOperationRequest struct { Type SandboxOperationType `json:"type"`; ExpectedVersion int64 `json:"expectedVersion"` }
 type SandboxCleanupResult struct { ArtifactIDs []string `json:"artifactIds"`; Warnings []string `json:"warnings"` }
-type SandboxOperationReceipt struct { ID string `json:"id"`; OperationID string `json:"operationId"`; Status SandboxOperationStatus `json:"status"`; CleanupComplete bool `json:"cleanupComplete"`; ArtifactExportComplete bool `json:"artifactExportComplete"`; GrantsRevoked bool `json:"grantsRevoked"`; BackendDestroyed bool `json:"backendDestroyed"`; Result *SandboxCleanupResult `json:"result"`; Error *SandboxError `json:"error"`; CreatedAt string `json:"createdAt"` }
+type SandboxBackendReceipt struct { Present bool `json:"present"`; UID *string `json:"uid"`; ResourceVersion *string `json:"resourceVersion"` }
+type SandboxOperationReceipt struct { ID string `json:"id"`; OperationID string `json:"operationId"`; OperationType SandboxOperationType `json:"operationType"`; Status SandboxOperationStatus `json:"status"`; CleanupComplete bool `json:"cleanupComplete"`; ArtifactExportComplete bool `json:"artifactExportComplete"`; GrantsRevoked bool `json:"grantsRevoked"`; BackendDestroyed bool `json:"backendDestroyed"`; Backend SandboxBackendReceipt `json:"backend"`; Result *SandboxCleanupResult `json:"result"`; Error *SandboxError `json:"error"`; CreatedAt string `json:"createdAt"` }
 type SandboxOperation struct { ID string `json:"id"`; SandboxID string `json:"sandboxId"`; Type SandboxOperationType `json:"type"`; Status SandboxOperationStatus `json:"status"`; ExpectedSandboxVersion int64 `json:"expectedSandboxVersion"`; Receipt *SandboxOperationReceipt `json:"receipt"`; CreatedAt string `json:"createdAt"`; CompletedAt *string `json:"completedAt"` }
 type SandboxMutation struct { Sandbox Sandbox `json:"sandbox"`; Operation SandboxOperation `json:"operation"` }
 type CreateSandboxAccessGrantRequest struct { Kind SandboxGrantKind `json:"kind"`; ExpiresInSeconds int64 `json:"expiresInSeconds"` }
@@ -161,6 +188,10 @@ func CanonicalSandboxTemplateDigest(manifest []byte) (string, []byte, error) {
 	if err != nil { return "", nil, fmt.Errorf("canonicalize sandbox template spec: %w", err) }
 	digest := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(digest[:]), canonical, nil
+}
+
+func CanonicalSandboxArtifactContractDigest(entries []SandboxArtifactContractEntry) (string, []byte, error) {
+	ordered:=append([]SandboxArtifactContractEntry(nil),entries...);sort.Slice(ordered,func(i,j int)bool{return ordered[i].Name<ordered[j].Name});encoded,err:=json.Marshal(struct{Items []SandboxArtifactContractEntry `json:"items"`}{Items:ordered});if err!=nil{return "",nil,err};canonical,err:=jcs.Transform(encoded);if err!=nil{return "",nil,fmt.Errorf("canonicalize sandbox artifact contract: %w",err)};digest:=sha256.Sum256(canonical);return "sha256:"+hex.EncodeToString(digest[:]),canonical,nil
 }
 
 func (c *Client) CreateSandboxTemplate(ctx context.Context, accessToken, workspaceID, idempotencyKey string, manifest SandboxManifest) (SandboxTemplateEnvelope, error) {
@@ -216,7 +247,7 @@ type sandboxVerifiedReadCloser struct { body io.ReadCloser; digest hash.Hash; ex
 func (r *sandboxVerifiedReadCloser) Read(p []byte)(int,error){if r.complete{return 0,io.EOF};n,err:=r.body.Read(p);if n>0{r.read+=int64(n);_,_=r.digest.Write(p[:n]);if (r.maximum>=0&&r.read>r.maximum)||r.read>r.expectedSize{return 0,fmt.Errorf("sandbox download exceeded declared size")}};if err==io.EOF{r.complete=true;if r.read!=r.expectedSize{return n,fmt.Errorf("sandbox download size %d does not match declared %d",r.read,r.expectedSize)};got:="sha256:"+hex.EncodeToString(r.digest.Sum(nil));if got!=r.expectedDigest{return n,fmt.Errorf("sandbox download digest mismatch")}};return n,err}
 func (r *sandboxVerifiedReadCloser) Close() error{return r.body.Close()}
 func verifiedSandboxDownload(resp *http.Response,maximum int64)(io.ReadCloser,int64,string,error){mediaType:=strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"),";")[0]);if !strings.EqualFold(mediaType,"application/octet-stream"){resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download has invalid content type")};size,err:=strconv.ParseInt(resp.Header.Get("X-Content-Size"),10,64);if err!=nil||size<0||(maximum>=0&&size>maximum){resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download has invalid X-Content-Size")};digest:=resp.Header.Get("X-Content-SHA256");if !validSandboxDigest(digest){resp.Body.Close();return nil,0,"",fmt.Errorf("sandbox download has invalid X-Content-SHA256")};return &sandboxVerifiedReadCloser{body:resp.Body,digest:sha256.New(),expectedSize:size,expectedDigest:digest,maximum:maximum},size,digest,nil}
-func validSandboxTransferPath(value string) bool { if strings.Contains(value,"\\")||strings.Contains(value,"//")||strings.Contains(value,"/../")||strings.HasSuffix(value,"/..")||strings.HasSuffix(value,"/."){return false};for _,prefix:=range []string{"/workspace/src/","/workspace/artifacts/","/workspace/tmp/"}{if strings.HasPrefix(value,prefix)&&len(value)>len(prefix){return true}};return false }
+func validSandboxTransferPath(value string) bool { if strings.Contains(value,"\\")||strings.Contains(value,"//")||strings.Contains(value,"/../")||strings.Contains(value,"/./")||strings.HasSuffix(value,"/..")||strings.HasSuffix(value,"/."){return false};for _,prefix:=range []string{"/workspace/src/","/workspace/artifacts/","/workspace/tmp/"}{if strings.HasPrefix(value,prefix)&&len(value)>len(prefix){return true}};return false }
 func validSandboxDigest(value string) bool { if len(value)!=71||!strings.HasPrefix(value,"sha256:"){return false};_,err:=hex.DecodeString(strings.TrimPrefix(value,"sha256:"));return err==nil }
 
 func (c *Client) sandboxGrantJSON(ctx context.Context, method,path,grantToken string,input,output any) error { body,err:=json.Marshal(input);if err!=nil{return err};req,err:=http.NewRequestWithContext(ctx,method,c.sandboxEndpoint(path,nil),bytes.NewReader(body));if err!=nil{return err};req.Header.Set("Authorization","Blazn-Grant "+grantToken);req.Header.Set("Content-Type","application/json");req.Header.Set("Accept","application/json");resp,err:=c.http.Do(req);if err!=nil{return err};defer resp.Body.Close();if resp.StatusCode!=http.StatusOK{return decodeSandboxAPIError(resp)};return json.NewDecoder(io.LimitReader(resp.Body,16<<20)).Decode(output) }

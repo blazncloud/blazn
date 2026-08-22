@@ -18,6 +18,7 @@ make test-sandbox-postgres
 - a cross-workspace version binding fails its composite foreign key;
 - recursive secret-bearing JSON is rejected;
 - normalized variant, repository, artifact, source, and artifact-contract identities are complete and unique;
+- trusted publish/create entrypoints reject canonical byte/spec/digest and artifact-contract mismatches while direct runtime inserts fail;
 - access grants can only move once from active to consumed, expired, or revoked through atomic functions;
 - terminal receipts cannot succeed until cleanup, artifact export, grant revocation, and backend destruction are all true;
 - event sequence is unique across the whole sandbox rather than per operation;

@@ -74,13 +74,58 @@ test("semantic template and source coverage rejects duplicate identities and inc
 test("CLI fixtures validate against exact output and requestId-preserving error schemas", async () => {
   const contract = await readJSON(path.join(contracts, "sandbox-cli-contract.json"));
   const template = await readJSON(path.join(contracts, "sandbox-template.schema.json"));
+  const openapi = await readJSON(path.join(contracts, "sandboxes.openapi.json"));
+  const manifest = await readJSON(path.join(fixtures, "template-good.json"));
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   addFormats(ajv);
-  ajv.addSchema(template, "sandbox-template.schema.json");
+  ajv.addSchema(template, "https://blazn.dev/contracts/sandbox-template.schema.json");
+  ajv.addSchema(openapi, "https://blazn.dev/contracts/sandboxes.openapi.json");
   ajv.addSchema(contract, "sandbox-cli");
-  const exec = ajv.getSchema("sandbox-cli#/$defs/execResult");
   const error = ajv.getSchema("sandbox-cli#/errorEnvelope");
-  assert.ok(exec && error);
-  assert.equal(exec(await readJSON(path.join(fixtures, "cli-exec-success.json"))), true, JSON.stringify(exec.errors));
+  assert.ok(error);
   assert.equal(error(await readJSON(path.join(fixtures, "cli-error.json"))), true, JSON.stringify(error.errors));
+
+  const ids = { workspace: "11111111-1111-4111-8111-111111111111", template: "22222222-2222-4222-8222-222222222222", version: "33333333-3333-4333-8333-333333333333", sandbox: "44444444-4444-4444-8444-444444444444", operation: "55555555-5555-4555-8555-555555555555", grant: "66666666-6666-4666-8666-666666666666", actor: "77777777-7777-4777-8777-777777777777", event: "88888888-8888-4888-8888-888888888888" };
+  const digest = `sha256:${"a".repeat(64)}`;
+  const templateResult = { id: ids.template, workspaceId: ids.workspace, name: "coding-small", draftVersion: 1, publishedVersionId: ids.version, createdAt: "2026-08-22T00:00:00Z", updatedAt: "2026-08-22T00:00:00Z" };
+  const versionResult = { id: ids.version, workspaceId: ids.workspace, templateId: ids.template, name: "coding-small", version: "bootstrap-1", contentDigest: digest, manifest, status: "published", createdAt: "2026-08-22T00:00:00Z" };
+  const sandbox = { id: ids.sandbox, workspaceId: ids.workspace, requestedBy: ids.actor, templateId: ids.template, templateVersionId: ids.version, templateName: "coding-small", templateVersion: "bootstrap-1", templateDigest: digest, variantName: "linux-amd64", imageIndexDigest: `registry.invalid/poc@${digest}`, imageDigest: `registry.invalid/poc@sha256:${"b".repeat(64)}`, architecture: "amd64", allocationMode: "direct", sourceBindings: [{ repository: "source", url: "https://github.com/blazncloud/blazn.git", destination: "/workspace/src/blazn", writable: true, commit: "1".repeat(40) }], artifactContract: { digest, items: [{ name: "patch", path: "/workspace/artifacts/change.patch", mediaType: "text/plain", required: true }] }, state: "requested", desiredState: "ready", version: 1, queueName: "poc-local", admissionId: null, isolation: "approved-non-sensitive-poc", expiresAt: "2026-08-22T00:15:00Z", conditions: [], createdAt: "2026-08-22T00:00:00Z", updatedAt: "2026-08-22T00:00:00Z" };
+  const pendingOperation = (type: "create" | "stop" | "delete") => ({ id: ids.operation, sandboxId: ids.sandbox, type, status: "pending", expectedSandboxVersion: 1, receipt: null, createdAt: "2026-08-22T00:00:00Z", completedAt: null });
+  const event = { eventId: ids.event, sandboxId: ids.sandbox, operationId: ids.operation, sequence: 0, type: "sandbox.requested", payload: {}, createdAt: "2026-08-22T00:00:00Z" };
+  const transfer = { sandboxId: ids.sandbox, grantId: ids.grant, source: "/tmp/source", destination: "/workspace/src/blazn/source", size: 2, sha256: digest };
+  const outputs: Record<string, unknown> = {
+    "template validate": { valid: true, manifestDigest: digest, errors: [], warnings: [] },
+    "template publish": { template: templateResult, version: versionResult },
+    "sandbox create": { sandbox, operation: pendingOperation("create") },
+    "sandbox list": { items: [sandbox], nextCursor: null },
+    "sandbox get": sandbox,
+    "sandbox watch": event,
+    "sandbox exec": await readJSON(path.join(fixtures, "cli-exec-success.json")),
+    "sandbox upload": transfer,
+    "sandbox download": transfer,
+    "sandbox stop": { sandbox, operation: pendingOperation("stop") },
+    "sandbox delete": { sandbox, operation: pendingOperation("delete") },
+  };
+  const commands = contract.commands as Record<string, { outputSchema?: { $ref: string } }>;
+  for (const [command, output] of Object.entries(outputs)) {
+    const ref = commands[command]?.outputSchema?.$ref;
+    assert.ok(ref, `missing output schema for ${command}`);
+    const validate = ajv.getSchema(`sandbox-cli${ref}`);
+    assert.ok(validate, `unresolved output schema for ${command}`);
+    assert.equal(validate(output), true, `${command}: ${JSON.stringify(validate.errors)}`);
+  }
+
+  const createReceipt = { id: ids.event, operationId: ids.operation, operationType: "create", status: "succeeded", cleanupComplete: false, artifactExportComplete: false, grantsRevoked: false, backendDestroyed: false, backend: { present: true, uid: "backend-uid", resourceVersion: "1" }, result: null, error: null, createdAt: "2026-08-22T00:00:01Z" };
+  const stopReceipt = { ...createReceipt, operationType: "stop", cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true, backendDestroyed: true, backend: { present: false, uid: null, resourceVersion: null }, result: { artifactIds: [], warnings: [] } };
+  const receipt = ajv.getSchema("sandbox-cli#/$defs/receipt"); assert.ok(receipt);
+  assert.equal(receipt(createReceipt), true, JSON.stringify(receipt.errors));
+  assert.equal(receipt(stopReceipt), true, JSON.stringify(receipt.errors));
+  assert.equal(receipt({ ...stopReceipt, cleanupComplete: false }), false, "incomplete successful stop receipt passed");
+  const operation = ajv.getSchema("sandbox-cli#/$defs/operation"); assert.ok(operation);
+  const completedStop = { ...pendingOperation("stop"), status: "succeeded", receipt: stopReceipt, completedAt: "2026-08-22T00:00:01Z" };
+  const completedCreate = { ...pendingOperation("create"), status: "succeeded", receipt: createReceipt, completedAt: "2026-08-22T00:00:01Z" };
+  assert.equal(operation(completedStop), true, JSON.stringify(operation.errors));
+  assert.equal(operation(completedCreate), true, JSON.stringify(operation.errors));
+  assert.equal(operation({ ...completedStop, receipt: { ...stopReceipt, status: "failed" } }), false, "operation accepted mismatched receipt status");
+  assert.equal(operation({ ...pendingOperation("delete"), receipt: stopReceipt }), false, "nonterminal operation accepted a receipt");
 });

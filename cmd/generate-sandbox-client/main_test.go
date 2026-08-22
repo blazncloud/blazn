@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -16,6 +18,26 @@ func TestPinnedSandboxContractsValidate(t *testing.T) {
 	}
 	if err := validate(sources, string(clientTemplate)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGeneratedGoASTMatchesEveryOperationAndSchema(t *testing.T) {
+	root, _ := repositoryRoot()
+	sources, err := loadSources(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := sources[filepath.Join("packages", "contracts", "sandboxes.openapi.json")].document
+	generated, err := os.ReadFile(filepath.Join(root, "internal", "client", "sandbox.gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateGeneratedGo(generated, api); err != nil {
+		t.Fatal(err)
+	}
+	broken := bytes.Replace(generated, []byte("func (c *Client) CreateSandboxAccessGrant(ctx context.Context, accessToken, sandboxID string, request CreateSandboxAccessGrantRequest)"), []byte("func (c *Client) CreateSandboxAccessGrant(ctx context.Context, accessToken, sandboxID, idempotencyKey string, request CreateSandboxAccessGrantRequest)"), 1)
+	if err := validateGeneratedGo(broken, api); err == nil {
+		t.Fatal("expected AST signature drift rejection")
 	}
 }
 

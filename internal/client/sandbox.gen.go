@@ -1,7 +1,7 @@
 // Code generated from the Blazn sandbox contracts; DO NOT EDIT.
-// Sandbox OpenAPI SHA256: ccb86d200b07b91de21b0447da0e5cc761300cb35b38046a2f01593bfb8965d0
+// Sandbox OpenAPI SHA256: 5ccadb92e20448475752101cdae00b06d54cd71c496824a8543980257f699f9c
 // SandboxTemplate SHA256: e555682663c8c45c6813d65faf1937d5a860e670f2c816fdf31b7fbb96f932e1
-// Sandbox CLI contract SHA256: 83eeeb9d7574e4956acdd0026279f6be7b6fbcad16f0b3450a8d541459333b35
+// Sandbox CLI contract SHA256: e40063e5f7b1edc107282a637e3d67f1d477467c8e9243d1ae082c0a44c3da83
 
 package client
 
@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -43,13 +44,38 @@ type SandboxGrantKind string
 type SandboxGrantState string
 
 const (
-	SandboxAMD64         SandboxArchitecture   = "amd64"
-	SandboxARM64         SandboxArchitecture   = "arm64"
-	SandboxDirect        SandboxAllocationMode = "direct"
-	SandboxClaim         SandboxAllocationMode = "claim"
-	SandboxGrantExec     SandboxGrantKind      = "exec"
-	SandboxGrantUpload   SandboxGrantKind      = "upload"
-	SandboxGrantDownload SandboxGrantKind      = "download"
+	SandboxAMD64                     SandboxArchitecture    = "amd64"
+	SandboxARM64                     SandboxArchitecture    = "arm64"
+	SandboxDirect                    SandboxAllocationMode  = "direct"
+	SandboxClaim                     SandboxAllocationMode  = "claim"
+	SandboxGrantExec                 SandboxGrantKind       = "exec"
+	SandboxGrantUpload               SandboxGrantKind       = "upload"
+	SandboxGrantDownload             SandboxGrantKind       = "download"
+	SandboxRequested                 SandboxState           = "requested"
+	SandboxQueued                    SandboxState           = "queued"
+	SandboxProvisioning              SandboxState           = "provisioning"
+	SandboxReady                     SandboxState           = "ready"
+	SandboxRunning                   SandboxState           = "running"
+	SandboxStopping                  SandboxState           = "stopping"
+	SandboxStopped                   SandboxState           = "stopped"
+	SandboxDeleting                  SandboxState           = "deleting"
+	SandboxDeleted                   SandboxState           = "deleted"
+	SandboxFailed                    SandboxState           = "failed"
+	SandboxDesiredReady              SandboxDesiredState    = "ready"
+	SandboxDesiredStopped            SandboxDesiredState    = "stopped"
+	SandboxDesiredDeleted            SandboxDesiredState    = "deleted"
+	SandboxOperationCreate           SandboxOperationType   = "create"
+	SandboxOperationStop             SandboxOperationType   = "stop"
+	SandboxOperationDelete           SandboxOperationType   = "delete"
+	SandboxOperationPending          SandboxOperationStatus = "pending"
+	SandboxOperationRunning          SandboxOperationStatus = "running"
+	SandboxOperationSucceeded        SandboxOperationStatus = "succeeded"
+	SandboxOperationFailed           SandboxOperationStatus = "failed"
+	SandboxOperationRecoveryRequired SandboxOperationStatus = "recovery_required"
+	SandboxGrantActive               SandboxGrantState      = "active"
+	SandboxGrantConsumed             SandboxGrantState      = "consumed"
+	SandboxGrantExpired              SandboxGrantState      = "expired"
+	SandboxGrantRevoked              SandboxGrantState      = "revoked"
 )
 
 type SandboxTemplate struct {
@@ -184,14 +210,21 @@ type SandboxCleanupResult struct {
 	ArtifactIDs []string `json:"artifactIds"`
 	Warnings    []string `json:"warnings"`
 }
+type SandboxBackendReceipt struct {
+	Present         bool    `json:"present"`
+	UID             *string `json:"uid"`
+	ResourceVersion *string `json:"resourceVersion"`
+}
 type SandboxOperationReceipt struct {
 	ID                     string                 `json:"id"`
 	OperationID            string                 `json:"operationId"`
+	OperationType          SandboxOperationType   `json:"operationType"`
 	Status                 SandboxOperationStatus `json:"status"`
 	CleanupComplete        bool                   `json:"cleanupComplete"`
 	ArtifactExportComplete bool                   `json:"artifactExportComplete"`
 	GrantsRevoked          bool                   `json:"grantsRevoked"`
 	BackendDestroyed       bool                   `json:"backendDestroyed"`
+	Backend                SandboxBackendReceipt  `json:"backend"`
 	Result                 *SandboxCleanupResult  `json:"result"`
 	Error                  *SandboxError          `json:"error"`
 	CreatedAt              string                 `json:"createdAt"`
@@ -327,6 +360,23 @@ func CanonicalSandboxTemplateDigest(manifest []byte) (string, []byte, error) {
 	canonical, err := jcs.Transform(root.Spec)
 	if err != nil {
 		return "", nil, fmt.Errorf("canonicalize sandbox template spec: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:]), canonical, nil
+}
+
+func CanonicalSandboxArtifactContractDigest(entries []SandboxArtifactContractEntry) (string, []byte, error) {
+	ordered := append([]SandboxArtifactContractEntry(nil), entries...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
+	encoded, err := json.Marshal(struct {
+		Items []SandboxArtifactContractEntry `json:"items"`
+	}{Items: ordered})
+	if err != nil {
+		return "", nil, err
+	}
+	canonical, err := jcs.Transform(encoded)
+	if err != nil {
+		return "", nil, fmt.Errorf("canonicalize sandbox artifact contract: %w", err)
 	}
 	digest := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(digest[:]), canonical, nil
@@ -628,7 +678,7 @@ func verifiedSandboxDownload(resp *http.Response, maximum int64) (io.ReadCloser,
 	return &sandboxVerifiedReadCloser{body: resp.Body, digest: sha256.New(), expectedSize: size, expectedDigest: digest, maximum: maximum}, size, digest, nil
 }
 func validSandboxTransferPath(value string) bool {
-	if strings.Contains(value, "\\") || strings.Contains(value, "//") || strings.Contains(value, "/../") || strings.HasSuffix(value, "/..") || strings.HasSuffix(value, "/.") {
+	if strings.Contains(value, "\\") || strings.Contains(value, "//") || strings.Contains(value, "/../") || strings.Contains(value, "/./") || strings.HasSuffix(value, "/..") || strings.HasSuffix(value, "/.") {
 		return false
 	}
 	for _, prefix := range []string{"/workspace/src/", "/workspace/artifacts/", "/workspace/tmp/"} {
