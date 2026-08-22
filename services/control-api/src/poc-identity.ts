@@ -26,7 +26,7 @@ try {
     await client.query("SELECT pg_advisory_xact_lock(hashtext('blazn-poc-second-identity'))");
     if (action === "provision") {
       const existing = await client.query<{ id: string; display_name: string; password_salt: string; password_hash: string }>(
-        "SELECT id,display_name,password_salt,password_hash FROM users WHERE email=$1 FOR UPDATE", [login]);
+        "SELECT id,display_name,password_salt,password_hash FROM users WHERE email=$1", [login]);
       let userId: string;
       let status: string;
       if (existing.rows[0]) {

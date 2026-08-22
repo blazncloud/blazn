@@ -27,8 +27,14 @@ second_login=$(jq -er '.login | select(type=="string")' "$second_profile")
 work=$(mktemp -d /tmp/blazn-workspace-live.XXXXXX)
 case $work in /tmp/blazn-workspace-live.*) ;; *) die "unsafe Workspace qualification path" ;; esac
 login_pid=
+owner_home=
+owner_data=
+second_home=
+second_data=
 cleanup() {
   [ -z "$login_pid" ] || kill "$login_pid" 2>/dev/null || true
+  if [ -n "$owner_home" ] && [ -n "$owner_data" ]; then owner_cli auth logout >/dev/null 2>&1 || true; fi
+  if [ -n "$second_home" ] && [ -n "$second_data" ]; then second_cli auth logout >/dev/null 2>&1 || true; fi
   if [ -d "$work" ] && [ ! -L "$work" ]; then
     find "$work" -xdev -type f -delete
     find "$work" -xdev -depth -type d -empty -delete
@@ -80,16 +86,16 @@ login_identity second "$second_login" "$second_password"
 owner_cli --output json auth status | jq -e '.authenticated==true' >/dev/null
 second_cli --output json auth status | jq -e '.authenticated==true' >/dev/null
 
-suffix=$(printf '%s' "$BLAZN_FENCING_TOKEN" | tail -c 8)
+suffix=$(printf '%s' "$BLAZN_CORRELATION_ID" | sha256sum | awk '{print substr($1,1,12)}')
 slug_a=poc-company-$suffix-a
 slug_b=poc-company-$suffix-b
 create_a=workspace-create-$suffix-a
 create_b=workspace-create-$suffix-b
 owner_cli --output json workspace create "POC Company A $suffix" --slug "$slug_a" --request-id "$create_a" >"$work/workspace-a.json"
-owner_cli --output json workspace create "POC Company B $suffix" --slug "$slug_b" --request-id "$create_b" >"$work/workspace-b.json"
 workspace_a=$(jq -er .workspace.id "$work/workspace-a.json")
-workspace_b=$(jq -er .workspace.id "$work/workspace-b.json")
 printf '%s\n' "$workspace_a" | "$SCRIPT_DIR/manage-poc-identity.sh" record-workspace >/dev/null
+owner_cli --output json workspace create "POC Company B $suffix" --slug "$slug_b" --request-id "$create_b" >"$work/workspace-b.json"
+workspace_b=$(jq -er .workspace.id "$work/workspace-b.json")
 printf '%s\n' "$workspace_b" | "$SCRIPT_DIR/manage-poc-identity.sh" record-workspace >/dev/null
 
 owner_cli --output json workspace invite "$workspace_a" --role member --expires-in 15m --request-id "workspace-invite-$suffix" \
