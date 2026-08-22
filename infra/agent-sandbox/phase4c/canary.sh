@@ -39,6 +39,21 @@ assert_absent_or_owned() {
 }
 mkdir -p "$transaction/uids" "$transaction/evidence"
 chmod 0700 "$transaction/uids" "$transaction/evidence"
+diagnose_exit() {
+  code=$?
+  trap - EXIT HUP INT TERM
+  phase4c_stop_uid_proxy
+  if [ "$code" -ne 0 ]; then
+    kubectl get sandbox,pod,workload.kueue.x-k8s.io -n blazn-poc -o yaml >"$transaction/evidence/failure-objects.yaml" 2>&1 || :
+    kubectl get events -n blazn-poc --sort-by=.metadata.creationTimestamp >"$transaction/evidence/failure-events.txt" 2>&1 || :
+    kubectl logs deployment/agent-sandbox-controller -n agent-sandbox-system --tail=300 >"$transaction/evidence/failure-controller.log" 2>&1 || :
+    kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding blazn-agent-sandbox-boundary -o yaml >"$transaction/evidence/failure-admission.yaml" 2>&1 || :
+    printf 'Phase 4C failed at journal phase %s; bounded evidence captured\n' "$(cat "$transaction/phase")" >&2
+  fi
+  exit "$code"
+}
+trap diagnose_exit EXIT
+trap 'exit 130' HUP INT TERM
 
 while :; do
   case "$phase" in
@@ -105,11 +120,11 @@ while :; do
       for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do [ "$(kubectl get crd "$crd" -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}')" = "$expected_ca" ]; done
       phase4c_write_phase "$transaction" bootstrap-ready; phase=bootstrap-ready ;;
     bootstrap-ready)
-      phase4c_start_uid_proxy "$transaction"; trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+      phase4c_start_uid_proxy "$transaction"
       [ -z "$(kubectl get job blazn-agent-sandbox-ca-bootstrap -n agent-sandbox-system --ignore-not-found -o name)" ] || phase4c_delete_uid '/apis/batch/v1/namespaces/agent-sandbox-system/jobs/blazn-agent-sandbox-ca-bootstrap' "$(cat "$transaction/uids/bootstrap-job")"
       [ -z "$(kubectl get clusterrolebinding blazn-agent-sandbox-ca-bootstrap --ignore-not-found -o name)" ] || phase4c_delete_uid '/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-agent-sandbox-ca-bootstrap' "$(cat "$transaction/uids/bootstrap-binding")"
       [ -z "$(kubectl get clusterrole blazn-agent-sandbox-ca-bootstrap --ignore-not-found -o name)" ] || phase4c_delete_uid '/apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-agent-sandbox-ca-bootstrap' "$(cat "$transaction/uids/bootstrap-role")"
-      phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
+      phase4c_stop_uid_proxy
       kubectl wait --for=delete job/blazn-agent-sandbox-ca-bootstrap -n agent-sandbox-system --timeout=120s
       phase4c_write_phase "$transaction" bootstrap-complete; phase=bootstrap-complete ;;
     bootstrap-complete)
@@ -137,9 +152,9 @@ while :; do
       kubectl get sandbox,pod,workload.kueue.x-k8s.io -n blazn-poc -o yaml >"$transaction/evidence/canary-objects.yaml"
       phase4c_write_phase "$transaction" canary-ready; phase=canary-ready ;;
     canary-ready)
-      phase4c_start_uid_proxy "$transaction"; trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+      phase4c_start_uid_proxy "$transaction"
       [ -z "$(kubectl get sandbox phase4c-canary -n blazn-poc --ignore-not-found -o name)" ] || phase4c_delete_uid '/apis/agents.x-k8s.io/v1beta1/namespaces/blazn-poc/sandboxes/phase4c-canary' "$(cat "$transaction/uids/canary-sandbox")" Background
-      phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
+      phase4c_stop_uid_proxy
       kubectl wait --for=delete sandbox/phase4c-canary -n blazn-poc --timeout=120s
       kubectl wait --for=delete pod/phase4c-canary -n blazn-poc --timeout=120s
       kubectl wait --for=delete workload.kueue.x-k8s.io --all -n blazn-poc --timeout=120s

@@ -42,6 +42,8 @@ check_namespace_contents() {
         !(($ns == "agent-sandbox-system") and (.kind == "ServiceAccount") and (.metadata.name == "default")) and
         !(($ns == "agent-sandbox-system") and (.kind == "ConfigMap") and (.metadata.name == "kube-root-ca.crt"))
         and !(($ns == "agent-sandbox-system") and (.kind == "Lease") and (.metadata.name == "a3317529.agent-sandbox.x-k8s.io"))
+        and !(($ns == "agent-sandbox-system") and (.kind == "Endpoints") and ((.metadata.name == "agent-sandbox-controller") or (.metadata.name == "agent-sandbox-webhook-service")))
+        and !(($ns == "agent-sandbox-system") and (.kind == "EndpointSlice") and ((.metadata.labels["kubernetes.io/service-name"] == "agent-sandbox-controller") or (.metadata.labels["kubernetes.io/service-name"] == "agent-sandbox-webhook-service")))
       )] | length == 0' >/dev/null || unexpected="$unexpected $resource"
   done
   [ -z "$unexpected" ] || { printf 'refusing namespace deletion with unexpected objects:%s\n' "$unexpected" >&2; exit 1; }
