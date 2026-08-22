@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1504,7 +1505,14 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 
 func validNodeControlPlaneOrigin(value string) bool {
 	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Path == "" && parsed.RawPath == "" && parsed.RawQuery == "" && parsed.Fragment == "" && !parsed.ForceQuery && parsed.String() == value
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.String() != value || strings.HasSuffix(parsed.Host, ":") {
+		return false
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		return err == nil && port >= 1 && port <= 65535
+	}
+	return true
 }
 
 func ValidateNodeComponentRedirect(profile NodeTrustedInstallProfile, component NodeInstallComponent, candidateURL string) error {

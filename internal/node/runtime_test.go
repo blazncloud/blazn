@@ -38,7 +38,10 @@ func TestControlPlaneOriginIsExactHTTPSOrigin(t *testing.T) {
 	if !validControlPlaneOrigin("https://control.example.test:8443") {
 		t.Fatal("exact HTTPS control-plane origin was rejected")
 	}
-	for _, value := range []string{"http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment"} {
+	if !validControlPlaneOrigin("https://[2001:db8::1]:443") {
+		t.Fatal("canonical bracketed IPv6 control-plane origin was rejected")
+	}
+	for _, value := range []string{"http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment", "https://control.example.test:", "https://control.example.test:0", "https://control.example.test:65536", "https://control.example.test:invalid", "https://2001:db8::1"} {
 		if validControlPlaneOrigin(value) {
 			t.Fatalf("unsafe control-plane origin %q was accepted", value)
 		}
@@ -76,7 +79,7 @@ func TestServiceAuthorizesBootstrapBeforeRuntimePersistenceAndInstall(t *testing
 	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
 	plan := authorization.Expected.Plan
 	profile := trustedBootstrapProfile(plan)
-	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: plan.WorkspaceID, IdempotencyKey: plan.IdempotencyKey, Name: plan.Hostname, Mode: plan.Mode, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, MachineFingerprint: plan.Target.MachineFingerprint, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
+	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: plan.WorkspaceID, IdempotencyKey: plan.IdempotencyKey, Name: plan.Hostname, Mode: plan.Mode, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, MachineFingerprint: plan.Target.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
 	if err == nil || platform.authorization == nil || platform.authorization.Token != authorization.Token || state.runtime.SchemaVersion != 0 || platform.applyCalls != 0 {
 		t.Fatalf("authorization=%#v runtime=%#v apply=%d err=%v", platform.authorization, state.runtime, platform.applyCalls, err)
 	}
@@ -94,6 +97,16 @@ func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
 	encoded, _ := json.Marshal(authority)
 	if strings.Contains(string(encoded), "token") {
 		t.Fatalf("root authority unexpectedly contains token material: %s", encoded)
+	}
+	if _, err := DecodeRootInstallAuthority(encoded); err != nil {
+		t.Fatal(err)
+	}
+	var unknown map[string]any
+	_ = json.Unmarshal(encoded, &unknown)
+	unknown["enrollmentToken"] = strings.Repeat("s", 43)
+	withToken, _ := json.Marshal(unknown)
+	if _, err := DecodeRootInstallAuthority(withToken); err == nil {
+		t.Fatal("token-like unknown root-authority field was accepted")
 	}
 	tamperedKey := authority
 	otherSigner := testIdentity(t)
@@ -585,11 +598,11 @@ func validBootstrapAuthorization(t *testing.T) (BootstrapAuthorization, Identity
 	}
 	plan.Digest = digest
 	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(planSigner.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	return BootstrapAuthorization{EnrollmentID: plan.EnrollmentID, Token: strings.Repeat("s", 43), MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodeIdentity.PublicBase64(), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, PlanSigningKey: client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: planSigner.PublicBase64(), Fingerprint: planFingerprint}, Expected: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: nodeFingerprint, IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, ProfileID: plan.InstallProfile, ProfilePath: "/etc/blazn/node/profiles/existing-linux-worker-adopt.json"}, nodeIdentity
+	return BootstrapAuthorization{EnrollmentID: plan.EnrollmentID, Token: strings.Repeat("s", 43), MachineFingerprint: plan.Target.MachineFingerprint, NodePublicKey: nodeIdentity.PublicBase64(), Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "7"}, PlanSigningKey: client.NodePlanSigningKey{KeyID: plan.SigningKeyID, PublicKey: planSigner.PublicBase64(), Fingerprint: planFingerprint}, Expected: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: nodeFingerprint, IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, ProfileID: plan.InstallProfile, ProfilePath: "/etc/blazn/node/profiles/existing-linux-worker-adopt.json"}, nodeIdentity
 }
 
 func trustedBootstrapProfile(plan client.NodeInstallPlan) client.NodeTrustedInstallProfile {
-	return client.NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
+	return client.NodeTrustedInstallProfile{ID: plan.InstallProfile, ControlPlaneOrigin: "https://control.example.test", AllowedClusterOrigins: []string{"https://cluster.example.test"}, AllowedDownloadOrigins: []string{"https://download.example.test"}, AllowedRegistryOrigins: []string{"https://registry.example.test"}, AllowedMutationRoots: []string{"/usr/local/bin", "/etc/systemd/system", "/var/lib/blazn/install-backups"}, CurrentBinaryVersion: "1.0", CurrentBinarySHA256: testHash, EmbeddedComponentSHA256: map[string]string{"service-definition": testHash}, VerifyNoSymlinkTraversal: func(string) error { return nil }}
 }
 func mustFingerprint(t *testing.T, identity Identity) string {
 	t.Helper()

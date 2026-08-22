@@ -1,16 +1,21 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/KingJammin/blazn/internal/client"
@@ -54,6 +59,12 @@ func (a BootstrapAuthorization) Validate() error {
 	plan := a.Expected.Plan
 	if plan.EnrollmentID != a.EnrollmentID || plan.InstallProfile != a.ProfileID || plan.Target.MachineFingerprint != a.MachineFingerprint || plan.Target.Platform != a.Platform || plan.Target.Architecture != a.Architecture || plan.SigningKeyID != a.PlanSigningKey.KeyID {
 		return errors.New("bootstrap authorization does not bind its expected plan")
+	}
+	if plan.Mode == client.NodeModeFresh && a.KubernetesBinding != nil {
+		return errors.New("fresh bootstrap authorization cannot pre-bind Kubernetes")
+	}
+	if plan.Mode == client.NodeModeAdopt && (a.KubernetesBinding == nil || a.KubernetesBinding.ClusterID != plan.Cluster.ID || a.KubernetesBinding.NodeName != plan.Hostname || a.KubernetesBinding.NodeUID == "" || a.KubernetesBinding.ResourceVersion == "") {
+		return errors.New("adopt bootstrap authorization does not match the signed Kubernetes binding")
 	}
 	planKey, err := base64.RawURLEncoding.DecodeString(a.PlanSigningKey.PublicKey)
 	if err != nil || len(planKey) != ed25519.PublicKeySize {
@@ -135,6 +146,22 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 	return nil
 }
 
+func DecodeRootInstallAuthority(encoded []byte) (RootInstallAuthority, error) {
+	var authority RootInstallAuthority
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&authority); err != nil {
+		return authority, errors.New("root install authority is invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return RootInstallAuthority{}, errors.New("root install authority has trailing data")
+	}
+	if err := ValidateRootInstallAuthority(authority); err != nil {
+		return RootInstallAuthority{}, err
+	}
+	return authority, nil
+}
+
 func VerifyRootInstallAuthority(authority RootInstallAuthority, trust RootInstallAuthorityTrust) error {
 	if err := ValidateRootInstallAuthority(authority); err != nil {
 		return err
@@ -168,5 +195,12 @@ func RootInstallAuthorityDigest(authority RootInstallAuthority) (string, error) 
 
 func validControlPlaneOrigin(value string) bool {
 	parsed, err := url.Parse(value)
-	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil && parsed.Path == "" && parsed.RawPath == "" && parsed.RawQuery == "" && parsed.Fragment == "" && !parsed.ForceQuery && parsed.String() == value
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery || parsed.String() != value || strings.HasSuffix(parsed.Host, ":") {
+		return false
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		return err == nil && port >= 1 && port <= 65535
+	}
+	return true
 }

@@ -45,6 +45,7 @@ export class NodeService {
       if(enrollment.mode==="fresh"&&input.kubernetesBinding) invalid("fresh enrollment cannot pre-bind Kubernetes");
       if(enrollment.status==="exchanged"){
         if(enrollment.machineBinding!==input.machineFingerprint||enrollment.nodePublicKey!==input.nodePublicKey||enrollment.nodePublicKeyFingerprint!==fingerprint) throw new NodeHttpError("enrollment_consumed","enrollment is bound to another machine identity");
+        const persistedBinding=await tx.exchangeBindingByEnrollment(enrollment.id),requestedBinding=input.kubernetesBinding??null;if(persistedBinding===undefined)throw new Error("exchanged enrollment has no persisted Kubernetes binding");if(canonicalJson(persistedBinding)!==canonicalJson(requestedBinding))throw new NodeHttpError("enrollment_consumed","enrollment is bound to another Kubernetes identity");
         const replay=await tx.exchangeByEnrollment(enrollment.id); if(!replay) throw new Error("exchanged enrollment has no plan and identity"); return replay;
       }
       if(enrollment.status!=="pending") throw new NodeHttpError("enrollment_consumed","enrollment is no longer exchangeable");

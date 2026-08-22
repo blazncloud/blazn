@@ -537,7 +537,7 @@ func TestVerifyNodeInstallPlanPinsSignatureExpiryAndLocalBindings(t *testing.T) 
 
 func TestTrustedInstallProfileRejectsOriginsRootsRedirectsAndSymlinks(t *testing.T) {
 	plan, trust := signedNodeInstallPlan(t)
-	for _, origin := range []string{"", "http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment"} {
+	for _, origin := range []string{"", "http://control.example.test", "https://user@control.example.test", "https://control.example.test/", "https://control.example.test/path", "https://control.example.test?query", "https://control.example.test#fragment", "https://control.example.test:", "https://control.example.test:0", "https://control.example.test:65536", "https://control.example.test:invalid", "https://2001:db8::1"} {
 		invalid := trust.Profile
 		invalid.ControlPlaneOrigin = origin
 		if err := ValidateNodeInstallProfile(plan, invalid); err == nil {
