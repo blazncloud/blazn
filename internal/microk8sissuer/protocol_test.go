@@ -35,6 +35,8 @@ func TestDeterministicTokenBindsEveryDomainField(t *testing.T) {
 	variants[0].ClusterID = "cluster-b"
 	variants[1].ExpectedNodeName = "worker-b"
 	variants[2].IssuanceID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	variants = append(variants, base)
+	variants[3].TTLSeconds = 61
 	for _, variant := range variants {
 		if service.token(variant) == token {
 			t.Fatal("binding did not change deterministic token")

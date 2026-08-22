@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -97,7 +98,7 @@ func TestCrashStateRevokesBeforeRetryAndRevokeIsIdempotent(t *testing.T) {
 	if _, err := service.Handle(context.Background(), requestFixture()); err != nil {
 		t.Fatal(err)
 	}
-	if backend.revokes != 1 {
+	if backend.revokes != 2 {
 		t.Fatal("retry did not revoke prior token")
 	}
 	req := Request{SchemaVersion: SchemaVersion, Operation: "revoke", ProviderHandle: requestFixture().IssuanceID}
@@ -107,7 +108,7 @@ func TestCrashStateRevokesBeforeRetryAndRevokeIsIdempotent(t *testing.T) {
 	if _, err := service.Handle(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
-	if backend.revokes != 2 {
+	if backend.revokes != 3 {
 		t.Fatalf("revoke count %d", backend.revokes)
 	}
 }
@@ -156,5 +157,67 @@ func TestLockWaitHonorsDeadline(t *testing.T) {
 	defer cancel()
 	if _, err := service.Handle(ctx, requestFixture()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("deadline error = %v", err)
+	}
+}
+
+func TestIssuedReplayRejectsEveryDurableBindingCorruption(t *testing.T) {
+	mutations := []func(*durableState){
+		func(state *durableState) { state.Status = "unknown" },
+		func(state *durableState) { state.RequestDigest = strings.Repeat("0", 64) },
+		func(state *durableState) { state.TokenHash = strings.Repeat("0", 64) },
+		func(state *durableState) { state.ExpiresAt = state.ExpiresAt.Add(time.Second) },
+		func(state *durableState) {
+			data, _ := base64.RawURLEncoding.DecodeString(state.Credential)
+			var payload credentialPayload
+			_ = json.Unmarshal(data, &payload)
+			payload.ClusterID = "other"
+			changed, _ := json.Marshal(payload)
+			state.Credential = base64.RawURLEncoding.EncodeToString(changed)
+		},
+	}
+	for index, mutate := range mutations {
+		t.Run(fmt.Sprintf("corruption-%d", index), func(t *testing.T) {
+			now := time.Now().UTC()
+			backend := &fakeBackend{now: now}
+			root := secureTempDir(t)
+			service, _ := NewService(root, []byte("0123456789abcdef0123456789abcdef"), backend)
+			service.now = func() time.Time { return now }
+			if _, err := service.Handle(context.Background(), requestFixture()); err != nil {
+				t.Fatal(err)
+			}
+			path := service.statePath(requestFixture().IssuanceID)
+			data, _ := os.ReadFile(path)
+			var state durableState
+			_ = json.Unmarshal(data, &state)
+			mutate(&state)
+			changed, _ := json.Marshal(state)
+			if err := os.WriteFile(path, changed, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Handle(context.Background(), requestFixture()); err == nil {
+				t.Fatal("corrupt issued replay accepted")
+			}
+			if backend.issues != 1 {
+				t.Fatal("corruption triggered new issuance")
+			}
+		})
+	}
+}
+
+func TestExpiredIssuedStateIsRevokedBeforeReissue(t *testing.T) {
+	now := time.Now().UTC()
+	backend := &fakeBackend{now: now}
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
+	service.now = func() time.Time { return now }
+	if _, err := service.Handle(context.Background(), requestFixture()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * time.Minute)
+	backend.now = now
+	if _, err := service.Handle(context.Background(), requestFixture()); err != nil {
+		t.Fatal(err)
+	}
+	if backend.issues != 2 || backend.revokes != 1 {
+		t.Fatalf("issues=%d revokes=%d", backend.issues, backend.revokes)
 	}
 }

@@ -9,6 +9,7 @@ import type {
 
 const schemaVersion = "blazn.dev/microk8s-worker-issuer/v1";
 const maxResponseBytes = 16 * 1024;
+export const defaultMicroK8sIssuerSocket = "/run/blazn/microk8s-worker-issuer.sock";
 
 function exactKeys(value: Record<string, unknown>, keys: string[]): void {
   const actual = Object.keys(value).sort();
@@ -92,7 +93,12 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
             const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
             if (res.statusCode !== 200) {
               const error = object(parsed);
-              throw new Error(typeof error.message === "string" ? error.message : "MicroK8s worker issuer request failed");
+              exactKeys(error, ["schemaVersion", "operation", "code", "message"]);
+              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "deadline_exceeded", "internal_error"]);
+              if (error.schemaVersion !== schemaVersion || error.operation !== "error" || typeof error.code !== "string" || !codes.has(error.code) || typeof error.message !== "string" || error.message.length < 1 || error.message.length > 256) {
+                throw new Error("MicroK8s worker issuer returned an invalid error response");
+              }
+              throw new Error(`MicroK8s worker issuer failed: ${error.code}`);
             }
             resolve(parsed);
           } catch (error) { reject(error); }

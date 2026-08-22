@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -20,6 +21,7 @@ type Peer struct{ UID, GID uint32 }
 type Server struct {
 	Service                *Service
 	AllowedUID, AllowedGID uint32
+	SocketUID              uint32
 	Timeout                time.Duration
 }
 
@@ -27,8 +29,8 @@ func (s *Server) Serve(socketPath string) error {
 	if s.Service == nil || s.Timeout < time.Second || s.Timeout > 30*time.Second {
 		return fmt.Errorf("server configuration is invalid")
 	}
-	if _, err := os.Lstat(socketPath); !os.IsNotExist(err) {
-		return fmt.Errorf("socket path already exists")
+	if err := s.prepareSocketPath(socketPath); err != nil {
+		return err
 	}
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -38,7 +40,7 @@ func (s *Server) Serve(socketPath string) error {
 	if err = os.Chmod(socketPath, 0660); err != nil {
 		return err
 	}
-	if err = os.Chown(socketPath, 0, int(s.AllowedGID)); err != nil {
+	if err = os.Chown(socketPath, int(s.SocketUID), int(s.AllowedGID)); err != nil {
 		return err
 	}
 	server := &http.Server{ReadHeaderTimeout: s.Timeout, ReadTimeout: s.Timeout, WriteTimeout: s.Timeout, IdleTimeout: s.Timeout, MaxHeaderBytes: 4096, ConnContext: func(ctx context.Context, c net.Conn) context.Context {
@@ -49,6 +51,54 @@ func (s *Server) Serve(socketPath string) error {
 		return context.WithValue(ctx, peerKey{}, peer)
 	}, Handler: http.HandlerFunc(s.handle)}
 	return server.Serve(listener)
+}
+
+func (s *Server) prepareSocketPath(socketPath string) error {
+	parent := filepath.Dir(socketPath)
+	info, err := os.Lstat(parent)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0750 || stat.Uid != s.SocketUID || stat.Gid != s.AllowedGID {
+		return fmt.Errorf("issuer socket directory is unsafe")
+	}
+	before, err := os.Lstat(socketPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	beforeStat, ok := before.Sys().(*syscall.Stat_t)
+	if !ok || before.Mode()&os.ModeSocket == 0 || before.Mode().Perm() != 0660 || beforeStat.Uid != s.SocketUID || beforeStat.Gid != s.AllowedGID || beforeStat.Nlink != 1 {
+		return fmt.Errorf("issuer socket path is unsafe")
+	}
+	connection, dialErr := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+	if dialErr == nil {
+		connection.Close()
+		return fmt.Errorf("issuer socket is already active")
+	}
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		return fmt.Errorf("issuer socket state is ambiguous")
+	}
+	after, err := os.Lstat(socketPath)
+	if err != nil {
+		return err
+	}
+	afterStat := after.Sys().(*syscall.Stat_t)
+	if afterStat.Dev != beforeStat.Dev || afterStat.Ino != beforeStat.Ino || after.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("issuer socket changed during stale recovery")
+	}
+	if err := os.Remove(socketPath); err != nil {
+		return err
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-type", "application/json")

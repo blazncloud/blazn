@@ -34,7 +34,7 @@ func backendFixture(t *testing.T, content string) (*MicroK8sBackend, *fakeRunner
 	uid := os.Getuid()
 	runner := &fakeRunner{}
 	runner.tokenFile = path
-	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: path, ExpectedUID: uint32(uid), Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
+	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: path, ExpectedUID: uint32(uid), ExpectedGID: uint32(os.Getgid()), ExpectedMode: 0600, Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
 }
 func TestBackendUsesOnlyFixedCommandAndParsesExactJSON(t *testing.T) {
 	backend, runner, _ := backendFixture(t, "")

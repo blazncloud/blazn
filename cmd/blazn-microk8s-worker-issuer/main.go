@@ -25,6 +25,7 @@ type config struct {
 	SchemaVersion string `json:"schemaVersion"`
 	BrokerUID     uint32 `json:"brokerUid"`
 	BrokerGID     uint32 `json:"brokerGid"`
+	MicroK8sGID   uint32 `json:"microk8sGid"`
 }
 
 func main() {
@@ -38,7 +39,7 @@ func run() error {
 	if err := readSecureJSON(configPath, &cfg); err != nil {
 		return err
 	}
-	if cfg.SchemaVersion != "blazn.dev/microk8s-worker-issuer-config/v1" || cfg.BrokerUID == 0 || cfg.BrokerGID == 0 {
+	if cfg.SchemaVersion != "blazn.dev/microk8s-worker-issuer-config/v1" || cfg.BrokerUID == 0 || cfg.BrokerGID == 0 || cfg.MicroK8sGID == 0 {
 		return fmt.Errorf("invalid config")
 	}
 	encoded, err := readSecure(keyPath)
@@ -49,7 +50,7 @@ func run() error {
 	if err != nil || len(key) != 32 {
 		return fmt.Errorf("invalid key")
 	}
-	backend := &microk8sissuer.MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: tokenFile, ExpectedUID: 0, Runner: microk8sissuer.ExecRunner{}}
+	backend := &microk8sissuer.MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", TokenFile: tokenFile, ExpectedUID: 0, ExpectedGID: cfg.MicroK8sGID, ExpectedMode: 0660, Runner: microk8sissuer.ExecRunner{}}
 	service, err := microk8sissuer.NewService(stateRoot, key, backend)
 	if err != nil {
 		return err
@@ -62,7 +63,7 @@ func readSecureJSON(path string, out any) error {
 		return err
 	}
 	var raw map[string]json.RawMessage
-	if json.Unmarshal(data, &raw) != nil || len(raw) != 3 || raw["schemaVersion"] == nil || raw["brokerUid"] == nil || raw["brokerGid"] == nil {
+	if json.Unmarshal(data, &raw) != nil || len(raw) != 4 || raw["schemaVersion"] == nil || raw["brokerUid"] == nil || raw["brokerGid"] == nil || raw["microk8sGid"] == nil {
 		return fmt.Errorf("invalid config")
 	}
 	return json.Unmarshal(data, out)

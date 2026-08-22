@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -55,6 +56,8 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 type MicroK8sBackend struct {
 	AddNodePath, TokenFile string
 	ExpectedUID            uint32
+	ExpectedGID            uint32
+	ExpectedMode           os.FileMode
 	Runner                 CommandRunner
 	Now                    func() time.Time
 	allowTestPaths         bool
@@ -73,10 +76,13 @@ func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
 			return err
 		}
 	}
-	return b.validateTokenFile()
+	return b.validateTokenFile(false)
 }
 func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (BackendIssue, error) {
 	if err := b.Healthy(ctx); err != nil {
+		return BackendIssue{}, err
+	}
+	if err := b.ensureTokenFile(); err != nil {
 		return BackendIssue{}, err
 	}
 	if !tokenLineAbsentOrExact(b.TokenFile, token) {
@@ -116,18 +122,65 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 	return BackendIssue{TokenCheck: parsed.Token, URLs: parsed.URLs, ExpiresAt: now().UTC().Add(time.Duration(ttl) * time.Second)}, nil
 }
 func (b *MicroK8sBackend) Revoke(ctx context.Context, token string) error {
+	if _, err := os.Lstat(b.TokenFile); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err := b.Healthy(ctx); err != nil {
 		return err
 	}
-	return rewriteTokenFile(b.TokenFile, b.ExpectedUID, token)
+	return rewriteTokenFile(b.TokenFile, b.ExpectedUID, b.ExpectedGID, b.ExpectedMode, token)
 }
-func (b *MicroK8sBackend) validateTokenFile() error {
+func (b *MicroK8sBackend) ensureTokenFile() error {
+	if !b.allowTestPaths {
+		parent, err := os.Lstat(filepath.Dir(b.TokenFile))
+		if err != nil {
+			return err
+		}
+		stat := parent.Sys().(*syscall.Stat_t)
+		if !parent.IsDir() || parent.Mode()&os.ModeSymlink != 0 || stat.Uid != b.ExpectedUID || stat.Gid != b.ExpectedGID || parent.Mode().Perm() != 0770 {
+			return fmt.Errorf("MicroK8s credential directory is unsafe")
+		}
+	}
+	file, err := os.OpenFile(b.TokenFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, b.ExpectedMode)
+	if err == nil {
+		if chownErr := file.Chown(int(b.ExpectedUID), int(b.ExpectedGID)); chownErr != nil {
+			file.Close()
+			return chownErr
+		}
+		if chmodErr := file.Chmod(b.ExpectedMode); chmodErr != nil {
+			file.Close()
+			return chmodErr
+		}
+		if syncErr := file.Sync(); syncErr != nil {
+			file.Close()
+			return syncErr
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			return closeErr
+		}
+		dir, openErr := os.Open(filepath.Dir(b.TokenFile))
+		if openErr != nil {
+			return openErr
+		}
+		defer dir.Close()
+		if syncErr := dir.Sync(); syncErr != nil {
+			return syncErr
+		}
+	} else if !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return b.validateTokenFile(true)
+}
+func (b *MicroK8sBackend) validateTokenFile(required bool) error {
 	info, err := os.Lstat(b.TokenFile)
+	if errors.Is(err, os.ErrNotExist) && !required {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || stat.Nlink != 1 || stat.Uid != b.ExpectedUID || info.Mode().Perm()&0022 != 0 {
+	if !ok || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || stat.Nlink != 1 || stat.Uid != b.ExpectedUID || stat.Gid != b.ExpectedGID || info.Mode().Perm() != b.ExpectedMode.Perm() {
 		return fmt.Errorf("MicroK8s token file is unsafe")
 	}
 	if b.Runner == nil {
@@ -177,13 +230,13 @@ func validatePinnedMicroK8s() error {
 	}
 	return nil
 }
-func rewriteTokenFile(path string, uid uint32, token string) error {
+func rewriteTokenFile(path string, uid, gid uint32, mode os.FileMode, token string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
 	st := info.Sys().(*syscall.Stat_t)
-	if !info.Mode().IsRegular() || st.Nlink != 1 || st.Uid != uid || info.Mode().Perm()&0022 != 0 {
+	if !info.Mode().IsRegular() || st.Nlink != 1 || st.Uid != uid || st.Gid != gid || info.Mode().Perm() != mode.Perm() {
 		return fmt.Errorf("MicroK8s token file is unsafe")
 	}
 	data, err := os.ReadFile(path)

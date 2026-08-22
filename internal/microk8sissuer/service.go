@@ -1,6 +1,7 @@
 package microk8sissuer
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -8,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -97,18 +100,17 @@ func (s *Service) issue(ctx context.Context, req Request) (IssueResponse, error)
 		}
 		issued, err := s.backend.Issue(ctx, token, req.TTLSeconds)
 		if err != nil {
-			state.Status = "revoke_required"
-			_ = s.writeState(path, state)
+			s.recordFailedIssue(ctx, path, &state, token)
 			return &ProtocolError{Code: "microk8s_unavailable", Message: "MicroK8s credential issuance failed"}
 		}
 		if subtleTokenCheck(issued.TokenCheck, token) == false || !issued.ExpiresAt.After(s.now()) {
-			state.Status = "revoke_required"
-			_ = s.writeState(path, state)
+			s.recordFailedIssue(ctx, path, &state, token)
 			return &ProtocolError{Code: "microk8s_unavailable", Message: "MicroK8s returned an invalid credential"}
 		}
 		urls := append([]string(nil), issued.URLs...)
 		sort.Strings(urls)
 		if len(urls) == 0 {
+			s.recordFailedIssue(ctx, path, &state, token)
 			return &ProtocolError{Code: "microk8s_unavailable", Message: "MicroK8s returned no worker endpoint"}
 		}
 		payload := credentialPayload{SchemaVersion: "blazn.dev/microk8s-worker-join/v1", IssuanceID: req.IssuanceID, ClusterID: req.ClusterID, ExpectedNodeName: req.ExpectedNodeName, BootstrapTaint: req.BootstrapTaint, WorkerOnly: true, ExpiresAt: issued.ExpiresAt.UTC(), URLs: urls}
@@ -151,7 +153,7 @@ func (s *Service) response(st durableState) IssueResponse {
 }
 func (s *Service) token(r Request) string {
 	mac := hmac.New(sha256.New, s.key)
-	fmt.Fprintf(mac, "blazn-microk8s-worker-token-v1\n%s\n%s\n%s\n%s", r.IssuanceID, r.ClusterID, r.ExpectedNodeName, r.BootstrapTaint)
+	fmt.Fprintf(mac, "blazn-microk8s-worker-token-v1\n%s\n%s\n%s\n%s\n%d\ntrue", r.IssuanceID, r.ClusterID, r.ExpectedNodeName, r.BootstrapTaint, r.TTLSeconds)
 	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 func requestDigest(r Request) string { raw, _ := json.Marshal(r); return hash(string(raw)) }
@@ -223,14 +225,103 @@ func (s *Service) readState(path string) (durableState, bool, error) {
 	if info.Mode().IsRegular() == false || info.Mode().Perm() != 0600 || info.Sys().(*syscall.Stat_t).Nlink != 1 || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
 		return st, false, fmt.Errorf("unsafe issuer state")
 	}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		return st, false, err
 	}
-	if err = json.Unmarshal(data, &st); err != nil {
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, MaxMessageBytes+1))
+	if err != nil || len(data) > MaxMessageBytes {
+		return st, false, fmt.Errorf("issuer state is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&st); err != nil {
+		return st, false, err
+	}
+	if err = s.validateState(st); err != nil {
 		return st, false, err
 	}
 	return st, true, nil
+}
+
+func (s *Service) recordFailedIssue(ctx context.Context, path string, state *durableState, token string) {
+	state.Status = "pending"
+	if err := s.backend.Revoke(ctx, token); err != nil {
+		state.Status = "revoke_required"
+	}
+	_ = s.writeState(path, *state)
+}
+
+func (s *Service) validateState(st durableState) error {
+	if st.SchemaVersion != SchemaVersion || !oneOfState(st.Status) {
+		return fmt.Errorf("issuer state is invalid")
+	}
+	raw, _ := json.Marshal(st.Request)
+	req, err := DecodeRequest(raw)
+	if err != nil || req.Operation != "issue" {
+		return fmt.Errorf("issuer state request is invalid")
+	}
+	if !hmac.Equal([]byte(st.RequestDigest), []byte(requestDigest(req))) || !hmac.Equal([]byte(st.TokenHash), []byte(hash(s.token(req)))) {
+		return fmt.Errorf("issuer state binding is invalid")
+	}
+	if st.Status == "issued" {
+		if st.Credential == "" || st.ExpiresAt.IsZero() {
+			return fmt.Errorf("issued state is incomplete")
+		}
+		return s.validateCredential(st)
+	}
+	if st.Credential != "" {
+		return fmt.Errorf("non-issued state contains a credential")
+	}
+	return nil
+}
+
+func oneOfState(value string) bool {
+	return value == "pending" || value == "issued" || value == "revoke_required" || value == "revoked"
+}
+
+func (s *Service) validateCredential(st durableState) error {
+	data, err := base64.RawURLEncoding.DecodeString(st.Credential)
+	if err != nil {
+		return fmt.Errorf("issued credential is invalid")
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(data, &raw) != nil || len(raw) != 8 {
+		return fmt.Errorf("issued credential is invalid")
+	}
+	for _, key := range []string{"schemaVersion", "issuanceId", "clusterId", "expectedNodeName", "bootstrapTaint", "workerOnly", "expiresAt", "urls"} {
+		if raw[key] == nil {
+			return fmt.Errorf("issued credential is invalid")
+		}
+	}
+	var payload credentialPayload
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&payload) != nil {
+		return fmt.Errorf("issued credential is invalid")
+	}
+	r := st.Request
+	if payload.SchemaVersion != "blazn.dev/microk8s-worker-join/v1" || payload.IssuanceID != r.IssuanceID || payload.ClusterID != r.ClusterID || payload.ExpectedNodeName != r.ExpectedNodeName || payload.BootstrapTaint != r.BootstrapTaint || !payload.WorkerOnly || !payload.ExpiresAt.Equal(st.ExpiresAt) || len(payload.URLs) == 0 {
+		return fmt.Errorf("issued credential binding is invalid")
+	}
+	prior := ""
+	token := s.token(r)
+	for _, candidate := range payload.URLs {
+		if prior != "" && candidate <= prior {
+			return fmt.Errorf("issued credential URLs are not canonical")
+		}
+		prior = candidate
+		u, parseErr := url.Parse("https://" + candidate)
+		if parseErr != nil {
+			return fmt.Errorf("issued credential URL is invalid")
+		}
+		parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+		if len(parts) != 2 || !hmac.Equal([]byte(parts[0]), []byte(token)) || !validJoinURL(candidate, strings.Join(parts, "/")) {
+			return fmt.Errorf("issued credential URL is invalid")
+		}
+	}
+	return nil
 }
 func (s *Service) writeState(path string, st durableState) error {
 	data, err := json.Marshal(st)
