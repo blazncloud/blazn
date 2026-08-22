@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { EnrollmentRecord, NodeArchitecture } from "./node-types.js";
 import type { NodePlanSigner } from "./node-crypto.js";
+import { NODE_INSTALL_PROFILES, type NodeInstallProfile, validateSignedNodeInstallPlan } from "./node-plan-validator.js";
 
 export interface NodePlanContext {
   planId: string; nodeId: string; enrollment: EnrollmentRecord; architecture: NodeArchitecture;
@@ -15,13 +16,16 @@ export class TemplateNodePlanFactory implements NodePlanFactory {
   async create(context: NodePlanContext): Promise<Record<string, unknown>> {
     const parsed: unknown = JSON.parse(await readFile(this.templateFile, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("node install plan template must be an object");
-    const template = parsed as Record<string, unknown>;
-    for (const forbidden of ["planId", "nodeId", "enrollmentId", "workspaceId", "idempotencyKey", "approvedBy", "approvedAt", "hostname", "mode", "installProfile", "target", "issuedAt", "expiresAt", "signingKeyId", "digest", "signature"]) {
-      if (forbidden in template) throw new Error(`node install plan template must not set ${forbidden}`);
-    }
-    const profile = context.enrollment.mode === "fresh" ? "ubuntu-26.04-amd64-worker/v1"
-      : context.enrollment.expectedPlatform === "macos" ? "macos-lima-worker-adopt/v1" : "existing-linux-worker-adopt/v1";
+    const bundle = parsed as Record<string, unknown>;
+    exactKeys(bundle,["schemaVersion","templateId","profiles"],"template bundle");
+    if(bundle.schemaVersion!=="blazn.dev/node-install-plan-templates/v1"||bundle.templateId!=="frontro-poc-worker/v1")throw new Error("node install plan template bundle identity is invalid");
+    if(!bundle.profiles||typeof bundle.profiles!=="object"||Array.isArray(bundle.profiles))throw new Error("node install plan template profiles must be an object");
+    const profiles=bundle.profiles as Record<string,unknown>;exactKeys(profiles,[...NODE_INSTALL_PROFILES],"template profiles");
+    const profile = (context.enrollment.mode === "fresh" ? "ubuntu-26.04-amd64-worker/v1"
+      : context.enrollment.expectedPlatform === "macos" ? "macos-lima-worker-adopt/v1" : "existing-linux-worker-adopt/v1") as NodeInstallProfile;
     if (profile === "ubuntu-26.04-amd64-worker/v1" && context.architecture !== "amd64") throw new Error("fresh POC install profile requires amd64");
+    const selected=profiles[profile];if(!selected||typeof selected!=="object"||Array.isArray(selected))throw new Error(`node install plan profile ${profile} is invalid`);
+    const template=selected as Record<string,unknown>;exactKeys(template,["cluster","registryTrust","components","nodeService","labels","taints","resourceBounds","mutations","validationTests","rollback"],`template profile ${profile}`);
     const unsigned = {
       ...template,
       schemaVersion: "nodes/v1alpha1",
@@ -48,18 +52,8 @@ export class TemplateNodePlanFactory implements NodePlanFactory {
       expiresAt: context.expiresAt.toISOString(),
     };
     const signed = await this.signer.sign(unsigned);
-    validateCompletePlan(signed);
+    validateSignedNodeInstallPlan(signed,profile,this.signer.keyId);
     return signed;
   }
 }
-
-const PLAN_KEYS=["schemaVersion","planId","nodeId","enrollmentId","workspaceId","idempotencyKey","approvedBy","approvedAt","hostname","mode","installProfile","cluster","target","registryTrust","components","nodeService","labels","taints","resourceBounds","mutations","validationTests","rollback","issuedAt","expiresAt","signingKeyId","digest","signature"];
-function validateCompletePlan(plan:Record<string,unknown>):void{
-  if(Object.keys(plan).length!==PLAN_KEYS.length||PLAN_KEYS.some(key=>!(key in plan))||Object.keys(plan).some(key=>!PLAN_KEYS.includes(key)))throw new Error("signed node install plan does not match the frozen top-level schema");
-  for(const field of ["cluster","target","nodeService","resourceBounds","rollback"]){if(!plan[field]||typeof plan[field]!=="object"||Array.isArray(plan[field]))throw new Error(`signed node install plan ${field} is invalid`);}
-  for(const field of ["registryTrust","components","taints","mutations","validationTests"]){if(!Array.isArray(plan[field]))throw new Error(`signed node install plan ${field} is invalid`);}
-  if(!plan.labels||typeof plan.labels!=="object"||Array.isArray(plan.labels))throw new Error("signed node install plan labels are invalid");
-  const cluster=plan.cluster as Record<string,unknown>;
-  if(cluster.workerOnly!==true||cluster.joinCredentialEndpoint!=="/v1/node-service/join-credentials"||typeof cluster.id!=="string"||!cluster.id)throw new Error("signed node install plan cluster is not worker-only");
-  if(typeof plan.digest!=="string"||!/^sha256:[0-9a-f]{64}$/.test(plan.digest)||typeof plan.signature!=="string"||!/^[A-Za-z0-9_-]{86}$/.test(plan.signature))throw new Error("signed node install plan proof is invalid");
-}
+function exactKeys(value:Record<string,unknown>,keys:string[],name:string){if(Object.keys(value).length!==keys.length||keys.some(k=>!(k in value))||Object.keys(value).some(k=>!keys.includes(k)))throw new Error(`${name} has unsupported or missing fields`);}

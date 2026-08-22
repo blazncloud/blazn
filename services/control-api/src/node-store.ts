@@ -6,6 +6,7 @@ export interface NodeIdempotencyReceipt { workspaceId: string; targetKey: string
 export interface NodeAuthority { workspaceId: string; role: "owner" | "administrator" | "operator" | "member" | "viewer"; workspaceStatus: string }
 export interface ActiveNodeIdentity { nodeId: string; workspaceId: string; generation: number; publicKey: string; publicKeyFingerprint: string; signingKeyId: string; lifecycleState: string; trustState: string; nodeVersion: number }
 export interface HeartbeatState { identityGeneration: number; bootId: string; sequence: number; sentAt: Date; capabilityDigest: string | null }
+export interface JoinConsumeReceipt { issuanceId: string; requestDigest: string }
 
 export interface NodeTransaction {
   lockIdempotency(principalId: string, operation: string, key: string): Promise<void>;
@@ -20,12 +21,12 @@ export interface NodeTransaction {
   listNodes(workspaceId: string): Promise<NodeView[]>;
   activeIdentity(nodeId: string, lockNode?: boolean): Promise<ActiveNodeIdentity | undefined>;
   heartbeatState(nodeId: string): Promise<HeartbeatState | undefined>;
+  bootObserved(nodeId: string, identityGeneration: number, bootId: string): Promise<boolean>;
+  observeBoot(nodeId: string, workspaceId: string, identityGeneration: number, bootId: string, sentAt: Date): Promise<void>;
   recordHeartbeat(input: { nodeId: string; identityGeneration: number; bootId: string; sequence: number; sentAt: Date; capabilityDigest: string; capability: Record<string, unknown>; health: unknown }): Promise<void>;
   insertOperation(input: { id: string; workspaceId: string; nodeId: string; type: NodeOperationType; expectedVersion: number; requestedBy: string; idempotencyKey: string; requestDigest: string; parameters: Record<string, unknown> }): Promise<NodeOperationView>;
   listEvents(nodeId: string, afterId: string): Promise<NodeEvent[]>;
-  consumeJoin(input: { issuanceId: string; nodeId: string; enrollmentId: string; planId: string; clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string }): Promise<NodeView>;
-  insertInstallReceipt(input: { id: string; workspaceId: string; nodeId: string; planId: string; receiptDigest: string; identityGeneration: number; signerFingerprint: string; signingKeyId: string; signature: string; payload: unknown }): Promise<void>;
-  completeOperation(input: { operationId: string; receiptId: string; status: "succeeded" | "failed" | "cancelled" | "partial" | "recovery_required"; result: unknown; error: unknown; receipt: { workspaceId: string; nodeId: string; operationType: NodeOperationType; receiptDigest: string; signerKind: "node_identity" | "control_plane"; identityGeneration: number | null; signerFingerprint: string; signingKeyId: string; signature: string; payload: unknown } }): Promise<void>;
+  consumeJoin(input: { issuanceId: string; nodeId: string; enrollmentId: string; planId: string; clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string; idempotencyKey: string; requestDigest: string }): Promise<NodeView>;
 }
 
 export interface NodeStore { transaction<T>(action: (tx: NodeTransaction) => Promise<T>): Promise<T> }
@@ -90,12 +91,18 @@ class PgNodeTransaction implements NodeTransaction {
   }
   async activeIdentity(nodeId: string, lockNode = false): Promise<ActiveNodeIdentity | undefined> {
     const result = await this.client.query(`SELECT n.id AS node_id,n.workspace_id,n.lifecycle_state,n.trust_state,n.version AS node_version,i.generation,i.public_key,i.public_key_fingerprint,i.signing_key_id
-      FROM nodes n JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation AND i.status='active' WHERE n.id=$1${lockNode ? " FOR UPDATE OF n" : ""}`, [nodeId]);
+      FROM nodes n JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation AND i.status='active' AND i.expires_at>statement_timestamp() WHERE n.id=$1${lockNode ? " FOR UPDATE OF n" : ""}`, [nodeId]);
     const r=result.rows[0]; return r ? { nodeId:r.node_id,workspaceId:r.workspace_id,generation:Number(r.generation),publicKey:r.public_key,publicKeyFingerprint:r.public_key_fingerprint.trim(),signingKeyId:r.signing_key_id,lifecycleState:r.lifecycle_state,trustState:r.trust_state,nodeVersion:Number(r.node_version) } : undefined;
   }
   async heartbeatState(nodeId: string): Promise<HeartbeatState | undefined> {
     const result=await this.client.query("SELECT * FROM node_heartbeat_state WHERE node_id=$1",[nodeId]); const r=result.rows[0];
     return r ? {identityGeneration:Number(r.identity_generation),bootId:r.boot_id,sequence:Number(r.sequence),sentAt:r.sent_at,capabilityDigest:r.capability_digest?.trim() ?? null}:undefined;
+  }
+  async bootObserved(nodeId:string,identityGeneration:number,bootId:string):Promise<boolean>{
+    const result=await this.client.query("SELECT 1 FROM node_audit_events WHERE node_id=$1 AND event_type='node.boot_observed' AND payload->>'identityGeneration'=$2 AND payload->>'bootId'=$3 LIMIT 1",[nodeId,String(identityGeneration),bootId]);return !!result.rowCount;
+  }
+  async observeBoot(nodeId:string,workspaceId:string,identityGeneration:number,bootId:string,sentAt:Date):Promise<void>{
+    await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,'node.boot_observed',$3)",[workspaceId,nodeId,{identityGeneration,bootId,sentAt:sentAt.toISOString()}]);
   }
   async recordHeartbeat(input: { nodeId:string;identityGeneration:number;bootId:string;sequence:number;sentAt:Date;capabilityDigest:string;capability:Record<string,unknown>;health:unknown }): Promise<void> {
     const existing=await this.client.query<{version:string;digest:string}>("SELECT version,digest FROM node_capability_versions WHERE node_id=$1 AND digest=$2",[input.nodeId,input.capabilityDigest]);
@@ -115,34 +122,26 @@ class PgNodeTransaction implements NodeTransaction {
     return operationRow(result.rows[0]);
   }
   async listEvents(nodeId:string,afterId:string):Promise<NodeEvent[]> {
+    if(afterId){const cursor=await this.client.query("SELECT 1 FROM node_operation_events e JOIN node_operations o ON o.id=e.operation_id WHERE e.id=$1 AND o.node_id=$2",[afterId,nodeId]);if(!cursor.rowCount)throw Object.assign(new Error("event cursor does not belong to this node"),{nodeCode:"invalid_request"});}
     const result=await this.client.query(`SELECT e.id,e.type,e.payload,e.created_at FROM node_operation_events e JOIN node_operations o ON o.id=e.operation_id WHERE o.node_id=$1 AND ($2='' OR (e.created_at,e.id)>(SELECT e2.created_at,e2.id FROM node_operation_events e2 JOIN node_operations o2 ON o2.id=e2.operation_id WHERE o2.node_id=$1 AND e2.id::text=$2)) ORDER BY e.created_at,e.id LIMIT 100`,[nodeId,afterId]);
     return result.rows.map((r)=>({id:r.id,type:r.type,payload:r.payload,createdAt:r.created_at.toISOString()}));
   }
-  async consumeJoin(input:{issuanceId:string;nodeId:string;enrollmentId:string;planId:string;clusterId:string;nodeName:string;nodeUid:string;resourceVersion:string}):Promise<NodeView> {
+  async consumeJoin(input:{issuanceId:string;nodeId:string;enrollmentId:string;planId:string;clusterId:string;nodeName:string;nodeUid:string;resourceVersion:string;idempotencyKey:string;requestDigest:string}):Promise<NodeView> {
     const result=await this.client.query(`SELECT id,workspace_id,enrollment_id,plan_id,node_id,expires_at,consumed_at,revoked_at FROM node_join_issuances WHERE id=$1 FOR UPDATE`,[input.issuanceId]);
     const row=result.rows[0];
     if (!row || row.node_id!==input.nodeId || row.enrollment_id!==input.enrollmentId || row.plan_id!==input.planId || row.revoked_at || row.expires_at.getTime()<=Date.now()) throw Object.assign(new Error("join credential is invalid"),{nodeCode:"join_credential_invalid"});
+    const replayResult=await this.client.query("SELECT payload FROM node_audit_events WHERE node_id=$1 AND event_type='node.join_consumed' AND payload->>'idempotencyKey'=$2 ORDER BY created_at DESC LIMIT 1",[input.nodeId,input.idempotencyKey]);
+    const replay=replayResult.rows[0]?.payload as Record<string,unknown>|undefined;
+    if(replay){if(replay.issuanceId!==input.issuanceId||replay.requestDigest!==input.requestDigest)throw Object.assign(new Error("idempotency key is bound to another join consumption"),{nodeCode:"idempotency_conflict"});const replayNode=await this.nodeById(input.nodeId);if(!replayNode)throw new Error("joined node disappeared");return replayNode;}
     if (row.consumed_at) {
-      const replay=await this.nodeById(input.nodeId);
-      if (replay?.kubernetesBinding?.clusterId===input.clusterId && replay.kubernetesBinding.nodeName===input.nodeName && replay.kubernetesBinding.nodeUid===input.nodeUid && replay.kubernetesBinding.resourceVersion===input.resourceVersion) return replay;
       throw Object.assign(new Error("join credential is consumed"),{nodeCode:"join_credential_consumed"});
     }
     await this.client.query("UPDATE nodes SET kubernetes_cluster_id=$2,kubernetes_node_name=$3,kubernetes_node_uid=$4,kubernetes_resource_version=$5,lifecycle_state='verifying',trust_state='verifying',version=version+1,updated_at=now() WHERE id=$1",[input.nodeId,input.clusterId,input.nodeName,input.nodeUid,input.resourceVersion]);
     await this.client.query("UPDATE node_join_issuances SET consumed_at=now(),joined_node_uid=$2 WHERE id=$1",[input.issuanceId,input.nodeUid]);
     await this.client.query("UPDATE node_enrollments SET status='consumed',consumed_by_node_id=$2,consumed_at=now(),version=version+1 WHERE id=$1 AND status='exchanged'",[input.enrollmentId,input.nodeId]);
     await this.client.query("UPDATE node_install_plans SET status='accepted',accepted_at=now() WHERE id=$1 AND status='issued'",[input.planId]);
+    await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,'node.join_consumed',$3)",[row.workspace_id,input.nodeId,{issuanceId:input.issuanceId,idempotencyKey:input.idempotencyKey,requestDigest:input.requestDigest}]);
     const node=await this.nodeById(input.nodeId); if(!node) throw new Error("joined node disappeared"); return node;
-  }
-  async insertInstallReceipt(input:{id:string;workspaceId:string;nodeId:string;planId:string;receiptDigest:string;identityGeneration:number;signerFingerprint:string;signingKeyId:string;signature:string;payload:unknown}):Promise<void>{
-    await this.client.query(`INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES($1,$2,$3,$4,$5,'node_identity',$6,$7,$8,$9,$10)`,[input.id,input.workspaceId,input.nodeId,input.planId,input.receiptDigest,input.identityGeneration,input.signerFingerprint,input.signingKeyId,input.signature,input.payload]);
-    const activated=await this.client.query(`UPDATE nodes SET lifecycle_state='active',trust_state='verified',agent_eligible=true,service_version=COALESCE($2::jsonb->>'serviceVersion',service_version),version=version+1,updated_at=now()
-      WHERE id=$1 AND workspace_id=$3 AND lifecycle_state='verifying' AND trust_state='verifying' AND kubernetes_node_uid IS NOT NULL AND current_identity_generation=$4 AND current_identity_status='active' RETURNING id`,[input.nodeId,input.payload,input.workspaceId,input.identityGeneration]);
-    if(!activated.rowCount)throw Object.assign(new Error("install receipt cannot activate node from current state"),{nodeCode:"state_conflict"});
-  }
-  async completeOperation(input:{operationId:string;receiptId:string;status:"succeeded"|"failed"|"cancelled"|"partial"|"recovery_required";result:unknown;error:unknown;receipt:{workspaceId:string;nodeId:string;operationType:NodeOperationType;receiptDigest:string;signerKind:"node_identity"|"control_plane";identityGeneration:number|null;signerFingerprint:string;signingKeyId:string;signature:string;payload:unknown}}):Promise<void>{
-    const r=input.receipt;
-    await this.client.query(`INSERT INTO node_operation_receipts(id,operation_id,workspace_id,node_id,operation_type,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,[input.receiptId,input.operationId,r.workspaceId,r.nodeId,r.operationType,r.receiptDigest,r.signerKind,r.identityGeneration,r.signerFingerprint,r.signingKeyId,r.signature,r.payload]);
-    await this.client.query("UPDATE node_operations SET status=$2,result=$3,error=$4,receipt_id=$5,completed_at=now() WHERE id=$1",[input.operationId,input.status,input.result,input.error,input.receiptId]);
   }
 }
 

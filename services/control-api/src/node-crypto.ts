@@ -54,10 +54,22 @@ export class FileNodePlanSigner implements NodePlanSigner {
     const normalized: Record<string, unknown> = { ...unsignedPlan, signingKeyId: this.keyId };
     delete normalized.digest; delete normalized.signature;
     const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
-    const key = createPrivateKey(await readFile(this.privateKeyFile));
+    const key = await readEd25519PrivateKey(this.privateKeyFile);
     const signature = sign(null, Buffer.from(`blazn-node-install-plan-v1\n${digest}`, "utf8"), key).toString("base64url");
     return { ...normalized, digest, signature };
   }
+}
+
+async function readEd25519PrivateKey(path: string) {
+  const value=await readFile(path);let key;
+  const text=value.toString("utf8");
+  if(/^[A-Za-z0-9_-]{43}\n$/.test(text)){
+    const seed=Buffer.from(text.slice(0,-1),"base64url");
+    key=createPrivateKey({key:Buffer.concat([Buffer.from("302e020100300506032b657004220420","hex"),seed]),format:"der",type:"pkcs8"});
+  }else if(text.startsWith("-----BEGIN PRIVATE KEY-----"))key=createPrivateKey(value);
+  else key=createPrivateKey({key:value,format:"der",type:"pkcs8"});
+  if(key.asymmetricKeyType!=="ed25519")throw new Error("node plan signing key must be Ed25519 PKCS8 or an exact raw seed");
+  return key;
 }
 
 export async function readNodeEnrollmentKey(path: string): Promise<Buffer> {

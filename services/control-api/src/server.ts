@@ -26,11 +26,11 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
-const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/control-plane/secrets/node-plan-signing-v1.pem");
+const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
 const nodeRouter = new NodeHttpRouter(new NodeService(
   new PgNodeStore(database),
   () => readNodeEnrollmentKey(process.env.NODE_ENROLLMENT_HMAC_FILE ?? `${nodeSecretsRoot}/enrollment-hmac-v1`),
-  new TemplateNodePlanFactory(process.env.NODE_INSTALL_PLAN_TEMPLATE_FILE ?? "/etc/blazn/control-plane/node-install-plan-template.json", nodePlanSigner),
+  new TemplateNodePlanFactory(process.env.NODE_INSTALL_PLAN_TEMPLATE_FILE ?? "/etc/blazn/node-plan/node-install-plan-template-v1.json", nodePlanSigner),
 ));
 
 function closeStream(sessionId: string): void {

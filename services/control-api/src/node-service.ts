@@ -62,7 +62,7 @@ export class NodeService {
     return this.store.transaction(async tx=>{const node=await requiredNode(tx,nodeId,false);await authorize(tx,principal,node.workspaceId,false,false);return node;});
   }
   async eventBatch(principal:NodePrincipal,nodeId:string,afterId=""):Promise<NodeEvent[]>{
-    return this.store.transaction(async tx=>{const node=await requiredNode(tx,nodeId,false);await authorize(tx,principal,node.workspaceId,false,false);return tx.listEvents(nodeId,afterId);});
+    return this.store.transaction(async tx=>{const node=await requiredNode(tx,nodeId,false);await authorize(tx,principal,node.workspaceId,false,false);return tx.listEvents(nodeId,afterId);}).catch(mapStoreError);
   }
 
   async createOperation(principal:NodePrincipal,nodeId:string,idempotencyKey:string,input:{type:NodeOperationType;expectedVersion:number;parameters:Record<string,unknown>}):Promise<NodeOperationView>{
@@ -92,18 +92,21 @@ export class NodeService {
       const prior=await tx.heartbeatState(input.nodeId);
       if(prior&&prior.identityGeneration===input.identityGeneration){
         if(prior.bootId===input.bootId&&input.sequence<=prior.sequence) throw new NodeHttpError("heartbeat_replay","heartbeat sequence was already observed");
-        if(prior.bootId!==input.bootId&&input.sequence!==0) throw new NodeHttpError("heartbeat_replay","a new boot must begin at sequence zero");
+        if(prior.bootId!==input.bootId&&(input.sequence!==0||sentAt.getTime()<=prior.sentAt.getTime()||await tx.bootObserved(input.nodeId,input.identityGeneration,input.bootId))) throw new NodeHttpError("heartbeat_replay","new boot epoch is invalid or already observed");
       }
       const version=input.capability.version;
       if(typeof version!=="number"||!Number.isSafeInteger(version)||version<1) invalid("capability version is invalid");
+      if(node.capabilityVersion!==null&&(version<node.capabilityVersion||(version===node.capabilityVersion&&prior?.capabilityDigest!==digest.slice(7))))throw new NodeHttpError("state_conflict","capability version cannot roll back or change content");
+      if(!prior||prior.bootId!==input.bootId)await tx.observeBoot(input.nodeId,node.workspaceId,input.identityGeneration,input.bootId,sentAt);
       await tx.recordHeartbeat({nodeId:input.nodeId,identityGeneration:input.identityGeneration,bootId:input.bootId,sequence:input.sequence,sentAt,capabilityDigest:digest.slice(7),capability:input.capability,health:capabilityHealth(input.capability)});
     }).catch(mapStoreError);
   }
 
-  async consumeJoin(issuanceId:string,input:{nodeId:string;enrollmentId:string;planId:string;joinedNodeUid:string;joinedNodeName:string;resourceVersion:string;clusterId:string},proof:string):Promise<NodeView>{
+  async consumeJoin(issuanceId:string,idempotencyKey:string,input:{nodeId:string;enrollmentId:string;planId:string;joinedNodeUid:string;joinedNodeName:string;resourceVersion:string;clusterId:string},proof:string):Promise<NodeView>{
+    validIdempotency(idempotencyKey);
     validUuid(issuanceId,"issuanceId"); for(const field of ["nodeId","enrollmentId","planId"] as const) validUuid(input[field],field); validateBinding({clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion});
     return this.store.transaction(async tx=>{const identity=await tx.activeIdentity(input.nodeId,true);if(!identity||!verifyNodeProof(identity.publicKey,"blazn-node-join-v1",input,proof))throw new NodeHttpError("identity_rejected","node proof could not be verified");
-      return tx.consumeJoin({issuanceId,nodeId:input.nodeId,enrollmentId:input.enrollmentId,planId:input.planId,clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion});}).catch(mapStoreError);
+      return tx.consumeJoin({issuanceId,nodeId:input.nodeId,enrollmentId:input.enrollmentId,planId:input.planId,clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion,idempotencyKey,requestDigest:requestDigest({issuanceId,...input})});}).catch(mapStoreError);
   }
 }
 
