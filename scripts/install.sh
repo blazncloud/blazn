@@ -76,11 +76,20 @@ blazn_configure_path() {
     blazn_shell_name=${SHELL##*/}
     case "$blazn_shell_name" in
       zsh)
-        blazn_profile="${HOME:?HOME is required}/.zprofile"
+        case "${ZDOTDIR:-}" in
+          '') blazn_profile="${HOME:?HOME is required}/.zprofile" ;;
+          /*) blazn_profile="$ZDOTDIR/.zprofile" ;;
+          *)
+            blazn_err "ignoring relative ZDOTDIR while selecting a shell profile"
+            blazn_profile="${HOME:?HOME is required}/.zprofile"
+            ;;
+        esac
         ;;
       bash)
         if [ -e "${HOME:?HOME is required}/.bash_profile" ]; then
           blazn_profile="$HOME/.bash_profile"
+        elif [ -e "$HOME/.bash_login" ]; then
+          blazn_profile="$HOME/.bash_login"
         else
           blazn_profile="$HOME/.profile"
         fi
