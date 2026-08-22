@@ -57,8 +57,11 @@ run_rollback() {
     BLAZN_NODE_INFRA_TEST_OBSERVED_SOURCE_DIGEST="$source_digest" BLAZN_NODE_INFRA_TEST_OBSERVED_CONFIG_DIGEST="$config_digest" \
     BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
     BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL="$root/ownership/secret-create.json" \
+    BLAZN_NODE_INFRA_TEST_PLAN_ROOT="$root/etc/node-plan" \
+    BLAZN_NODE_INFRA_TEST_PLAN_CREATE_JOURNAL="$root/ownership/plan-create.json" \
     BLAZN_NODE_INFRA_TEST_RETAIN_PARENT="$root/ownership" \
     BLAZN_NODE_BROKER_CREATE_JOURNAL="$root/ownership/secret-create.json" \
+    BLAZN_NODE_PLAN_CREATE_JOURNAL="$root/ownership/plan-create.json" \
     BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" \
     BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
     BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$root/ownership/node-broker-upgrade.json" \
@@ -84,6 +87,11 @@ run_upgrade() {
     BLAZN_NODE_UPGRADE_DEFER_CONFIG="$defer_config" \
     BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
     BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL="$root/ownership/secret-create.json" \
+    BLAZN_NODE_PLAN_TEST_MODE=1 \
+    BLAZN_NODE_INFRA_TEST_PLAN_ROOT="$root/etc/node-plan" \
+    BLAZN_NODE_INFRA_TEST_PLAN_CREATE_JOURNAL="$root/ownership/plan-create.json" \
+    BLAZN_NODE_PLAN_ROOT="$root/etc/node-plan" \
+    BLAZN_NODE_PLAN_CREATE_JOURNAL="$root/ownership/plan-create.json" \
     BLAZN_NODE_BROKER_SECRETS_ROOT="$root/etc/node-broker/secrets" \
     BLAZN_CONTROL_PLANE_ENV_FILE="$root/control-plane.env" \
     BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
@@ -123,6 +131,7 @@ grep -F 'config publication is deferred' "$deferred_root/deferred.out" >/dev/nul
 run_upgrade "$deferred_root" '' 0 0 1 >"$deferred_root/resumed-with-postgres-stopped.out"
 sudo jq -e '.phase=="complete"' "$deferred_root/ownership/node-broker-upgrade.json" >/dev/null
 sudo jq -e '.nodeBroker.schemaVersion=="blazn.dev/node-broker-infra/v1"' "$deferred_root/ownership/control-plane.json" >/dev/null
+sudo jq -e '.nodePlan.schemaVersion=="blazn.dev/node-plan-material/v1"' "$deferred_root/ownership/control-plane.json" >/dev/null
 
 for fault in secrets-published input-root-created main-backed-up environment-backed-up build-backed-up role-ready environment-bound build-ready complete; do
   root=$(fixture "$fault")
@@ -134,7 +143,9 @@ for fault in secrets-published input-root-created main-backed-up environment-bac
   run_upgrade "$root" >"$root/retry.out"
   sudo jq -e '.phase=="complete" and .schemaVersion=="blazn.dev/node-broker-upgrade/v2"' "$root/ownership/node-broker-upgrade.json" >/dev/null
   sudo jq -e '.nodeBroker.schemaVersion=="blazn.dev/node-broker-infra/v1"' "$root/ownership/control-plane.json" >/dev/null
+  sudo jq -e '.nodePlan.schemaVersion=="blazn.dev/node-plan-material/v1"' "$root/ownership/control-plane.json" >/dev/null
   sudo grep -Fx 'BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets' "$root/control-plane.env" >/dev/null
+  sudo grep -Fx 'BLAZN_NODE_PLAN_ROOT=/etc/blazn/node-plan' "$root/control-plane.env" >/dev/null
   before=$(sudo sha256sum "$root/etc/node-broker/secrets/database-url" "$root/etc/node-broker/secrets/enrollment-hmac-v1" "$root/etc/node-broker/secrets/join-credential-v1")
   run_upgrade "$root" >"$root/idempotent.out"
   after=$(sudo sha256sum "$root/etc/node-broker/secrets/database-url" "$root/etc/node-broker/secrets/enrollment-hmac-v1" "$root/etc/node-broker/secrets/join-credential-v1")
@@ -152,8 +163,9 @@ for fault in rollback-started role-removed secrets-retained environment-restored
   grep -F "injected rollback fault after $fault" "$root/rollback-first.err" >/dev/null
   if ! run_rollback "$root" >"$root/rollback-retry.out" 2>"$root/rollback-retry.err"; then sudo tail -80 "$root/rollback-retry.err" >&2; exit 1; fi
   sudo jq -e '(.nodeBroker|not)' "$root/ownership/control-plane.json" >/dev/null
+  sudo jq -e '(.nodePlan|not)' "$root/ownership/control-plane.json" >/dev/null
   sudo jq -e '.phase=="rolled-back"' "$root/ownership/node-broker-upgrade.json" >/dev/null
-  if ! sudo test ! -e "$root/etc/node-broker" || ! sudo test -d "$root/ownership/node-broker-rollback-rollback"; then printf 'rollback retention state is invalid after %s\n' "$fault" >&2; exit 1; fi
+  if ! sudo test ! -e "$root/etc/node-broker" || ! sudo test ! -e "$root/etc/node-plan" || ! sudo test -d "$root/ownership/node-broker-rollback-rollback/node-plan"; then printf 'rollback retention state is invalid after %s\n' "$fault" >&2; exit 1; fi
   [ ! -e "$root/role-ready" ] || { printf 'rollback retry left database role\n' >&2; exit 1; }
   sudo test ! -s "$root/control-plane.env" || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
 done

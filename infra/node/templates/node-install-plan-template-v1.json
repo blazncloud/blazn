@@ -1,0 +1,894 @@
+{
+  "schemaVersion": "blazn.dev/node-install-plan-templates/v1",
+  "templateId": "frontro-poc-worker/v1",
+  "profiles": {
+    "ubuntu-26.04-amd64-worker/v1": {
+      "amd64": {
+        "cluster": {
+          "id": "frontro-microk8s-8f109e68-f1bf-40e5-8482-c97d10997dc2",
+          "workerOnly": true,
+          "apiServer": "https://192.168.0.108:16443",
+          "kubernetesVersion": "v1.35.6",
+          "joinCredentialEndpoint": "/v1/node-service/join-credentials",
+          "bootstrapTaint": "blazn.dev/bootstrap=pending:NoSchedule",
+          "expectedCaFingerprint": "sha256:55b2aef691df35de3041b2c6d522aba9565305e524df296e82cab783ce0c81ff",
+          "registryEndpoints": [
+            "https://registry-1.docker.io"
+          ]
+        },
+        "registryTrust": [],
+        "components": [
+          {
+            "name": "blazn-linux-amd64",
+            "artifactType": "binary",
+            "sourceClass": "current_binary",
+            "version": "v0.1.0-poc.1",
+            "publisher": "KingJammin/blazn",
+            "sha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
+            "ownership": "adopt_exact"
+          },
+          {
+            "name": "microk8s",
+            "artifactType": "package",
+            "sourceClass": "https",
+            "version": "v1.35.6-rev9072",
+            "publisher": "Canonical",
+            "sourceHost": "api.snapcraft.io",
+            "source": "https://api.snapcraft.io/api/v1/snaps/download/EaXqgt1lyCaxKaQCU349mlodBkDCXRcg_9072.snap",
+            "repositoryOrigin": "https://api.snapcraft.io",
+            "sha256": "36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2",
+            "ownership": "install"
+          },
+          {
+            "name": "blazn-node-systemd",
+            "artifactType": "configuration",
+            "sourceClass": "embedded",
+            "version": "v1",
+            "publisher": "Blazn",
+            "sha256": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "ownership": "install"
+          }
+        ],
+        "nodeService": {
+          "manager": "systemd",
+          "unitName": "blazn-node.service",
+          "binaryPath": "/usr/local/bin/blazn",
+          "runAsUser": "blazn-node",
+          "runAsGroup": "blazn-node",
+          "definitionSha256": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea"
+        },
+        "labels": {
+          "blazn.dev/node": "true",
+          "blazn.dev/worker-profile": "linux-amd64"
+        },
+        "taints": [
+          {
+            "key": "blazn.dev/bootstrap",
+            "value": "pending",
+            "effect": "NoSchedule"
+          }
+        ],
+        "resourceBounds": {
+          "reservedCpuMillis": 1000,
+          "reservedMemoryBytes": 2147483648,
+          "maxPods": 64,
+          "maxConcurrentAgents": 8
+        },
+        "mutations": [
+          {
+            "ordinal": 1,
+            "kind": "group",
+            "action": "create",
+            "target": "blazn-node",
+            "desired": {
+              "name": "blazn-node",
+              "gid": 991,
+              "system": true
+            },
+            "desiredDigest": "sha256:92008edb8be49e37b3a109457ef6478423c92b01b79bd3d131f1fd50e0d63e71",
+            "mode": 0,
+            "uid": 0,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 2,
+            "kind": "user",
+            "action": "create",
+            "target": "blazn-node",
+            "desired": {
+              "name": "blazn-node",
+              "group": "blazn-node",
+              "uid": 991,
+              "gid": 991,
+              "home": "/var/lib/blazn",
+              "shell": "/usr/sbin/nologin",
+              "system": true
+            },
+            "desiredDigest": "sha256:cb026245ee602087079ca5f69fe579df42e0fc78edf9788588992d765d3fa019",
+            "mode": 0,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 3,
+            "kind": "directory",
+            "action": "create",
+            "target": "/etc/blazn/node",
+            "desired": {},
+            "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "mode": 448,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 4,
+            "kind": "directory",
+            "action": "create",
+            "target": "/var/lib/blazn",
+            "desired": {},
+            "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "mode": 448,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 5,
+            "kind": "package",
+            "action": "install",
+            "target": "microk8s",
+            "desired": {
+              "manager": "snap",
+              "version": "v1.35.6-rev9072",
+              "componentName": "microk8s"
+            },
+            "desiredDigest": "sha256:36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 6,
+            "kind": "file",
+            "action": "adopt_exact",
+            "target": "/usr/local/bin/blazn",
+            "desired": {
+              "sourceComponent": "blazn-linux-amd64",
+              "contentSha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a"
+            },
+            "desiredDigest": "sha256:5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
+            "mode": 493,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 7,
+            "kind": "systemd_unit",
+            "action": "write",
+            "target": "/etc/systemd/system/blazn-node.service",
+            "desired": {
+              "unitName": "blazn-node.service",
+              "sourceComponent": "blazn-node-systemd"
+            },
+            "desiredDigest": "sha256:b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "mode": 420,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 8,
+            "kind": "systemd_unit",
+            "action": "enable",
+            "target": "/etc/systemd/system/blazn-node.service",
+            "desired": {
+              "unitName": "blazn-node.service",
+              "sourceComponent": "blazn-node-systemd"
+            },
+            "desiredDigest": "sha256:b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 9,
+            "kind": "label",
+            "action": "apply",
+            "target": "blazn.dev/node",
+            "desired": {
+              "value": "true"
+            },
+            "desiredDigest": "sha256:b5bea41b6c623f7c09f1bf24dcae58eb6b4e505f39b733b388c0ba7136e106a4",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 10,
+            "kind": "taint",
+            "action": "apply",
+            "target": "blazn.dev/bootstrap",
+            "desired": {
+              "value": "pending",
+              "effect": "NoSchedule"
+            },
+            "desiredDigest": "sha256:bba81878542053629918290404761ca5f75b4cf7180af395d24ae2e5fd27b10f",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          }
+        ],
+        "validationTests": [
+          "binary_digest",
+          "service_account",
+          "service_active",
+          "node_identity",
+          "cluster_ca",
+          "worker_only",
+          "node_uid_binding",
+          "bootstrap_taint",
+          "capability_heartbeat",
+          "agent_eligibility"
+        ],
+        "rollback": {
+          "preserveUserData": true,
+          "preserveControlPlane": true,
+          "ambiguousOwnership": "recovery_required",
+          "backupRootClass": "linux_var_lib",
+          "backupRoot": "/var/lib/blazn/install-backups/node-install"
+        }
+      }
+    },
+    "existing-linux-worker-adopt/v1": {
+      "amd64": {
+        "cluster": {
+          "id": "frontro-microk8s-8f109e68-f1bf-40e5-8482-c97d10997dc2",
+          "workerOnly": true,
+          "apiServer": "https://192.168.0.108:16443",
+          "kubernetesVersion": "v1.35.6",
+          "joinCredentialEndpoint": "/v1/node-service/join-credentials",
+          "bootstrapTaint": "blazn.dev/bootstrap=pending:NoSchedule",
+          "expectedCaFingerprint": "sha256:55b2aef691df35de3041b2c6d522aba9565305e524df296e82cab783ce0c81ff",
+          "registryEndpoints": [
+            "https://registry-1.docker.io"
+          ]
+        },
+        "registryTrust": [],
+        "components": [
+          {
+            "name": "blazn-linux-amd64",
+            "artifactType": "binary",
+            "sourceClass": "current_binary",
+            "version": "v0.1.0-poc.1",
+            "publisher": "KingJammin/blazn",
+            "sha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
+            "ownership": "adopt_exact"
+          },
+          {
+            "name": "microk8s",
+            "artifactType": "package",
+            "sourceClass": "https",
+            "version": "v1.35.6-rev9072",
+            "publisher": "Canonical",
+            "sourceHost": "api.snapcraft.io",
+            "source": "https://api.snapcraft.io/api/v1/snaps/download/EaXqgt1lyCaxKaQCU349mlodBkDCXRcg_9072.snap",
+            "repositoryOrigin": "https://api.snapcraft.io",
+            "sha256": "36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2",
+            "ownership": "adopt_exact"
+          },
+          {
+            "name": "blazn-node-systemd",
+            "artifactType": "configuration",
+            "sourceClass": "embedded",
+            "version": "v1",
+            "publisher": "Blazn",
+            "sha256": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "ownership": "install"
+          }
+        ],
+        "nodeService": {
+          "manager": "systemd",
+          "unitName": "blazn-node.service",
+          "binaryPath": "/usr/local/bin/blazn",
+          "runAsUser": "blazn-node",
+          "runAsGroup": "blazn-node",
+          "definitionSha256": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea"
+        },
+        "labels": {
+          "blazn.dev/node": "true",
+          "blazn.dev/worker-profile": "linux-adopt"
+        },
+        "taints": [
+          {
+            "key": "blazn.dev/bootstrap",
+            "value": "pending",
+            "effect": "NoSchedule"
+          }
+        ],
+        "resourceBounds": {
+          "reservedCpuMillis": 1000,
+          "reservedMemoryBytes": 2147483648,
+          "maxPods": 64,
+          "maxConcurrentAgents": 8
+        },
+        "mutations": [
+          {
+            "ordinal": 1,
+            "kind": "group",
+            "action": "create",
+            "target": "blazn-node",
+            "desired": {
+              "name": "blazn-node",
+              "gid": 991,
+              "system": true
+            },
+            "desiredDigest": "sha256:92008edb8be49e37b3a109457ef6478423c92b01b79bd3d131f1fd50e0d63e71",
+            "mode": 0,
+            "uid": 0,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 2,
+            "kind": "user",
+            "action": "create",
+            "target": "blazn-node",
+            "desired": {
+              "name": "blazn-node",
+              "group": "blazn-node",
+              "uid": 991,
+              "gid": 991,
+              "home": "/var/lib/blazn",
+              "shell": "/usr/sbin/nologin",
+              "system": true
+            },
+            "desiredDigest": "sha256:cb026245ee602087079ca5f69fe579df42e0fc78edf9788588992d765d3fa019",
+            "mode": 0,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 3,
+            "kind": "directory",
+            "action": "create",
+            "target": "/var/lib/blazn",
+            "desired": {},
+            "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "mode": 448,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 4,
+            "kind": "package",
+            "action": "adopt_exact",
+            "target": "microk8s",
+            "desired": {
+              "manager": "snap",
+              "version": "v1.35.6-rev9072",
+              "componentName": "microk8s"
+            },
+            "desiredDigest": "sha256:36a2bcbe0f463a80145021a5b0506a1cca5d54f3e7b2f9b6cfe121e4a58169b2",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 5,
+            "kind": "file",
+            "action": "adopt_exact",
+            "target": "/usr/local/bin/blazn",
+            "desired": {
+              "sourceComponent": "blazn-linux-amd64",
+              "contentSha256": "5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a"
+            },
+            "desiredDigest": "sha256:5fb123c0933c6244514940b78dd8afa0cfb8cf9f35ab166d8c062821e6f7e49a",
+            "mode": 493,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 6,
+            "kind": "systemd_unit",
+            "action": "write",
+            "target": "/etc/systemd/system/blazn-node.service",
+            "desired": {
+              "unitName": "blazn-node.service",
+              "sourceComponent": "blazn-node-systemd"
+            },
+            "desiredDigest": "sha256:b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "mode": 420,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 7,
+            "kind": "systemd_unit",
+            "action": "enable",
+            "target": "/etc/systemd/system/blazn-node.service",
+            "desired": {
+              "unitName": "blazn-node.service",
+              "sourceComponent": "blazn-node-systemd"
+            },
+            "desiredDigest": "sha256:b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 8,
+            "kind": "label",
+            "action": "apply",
+            "target": "blazn.dev/node",
+            "desired": {
+              "value": "true"
+            },
+            "desiredDigest": "sha256:b5bea41b6c623f7c09f1bf24dcae58eb6b4e505f39b733b388c0ba7136e106a4",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 9,
+            "kind": "taint",
+            "action": "apply",
+            "target": "blazn.dev/bootstrap",
+            "desired": {
+              "value": "pending",
+              "effect": "NoSchedule"
+            },
+            "desiredDigest": "sha256:bba81878542053629918290404761ca5f75b4cf7180af395d24ae2e5fd27b10f",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          }
+        ],
+        "validationTests": [
+          "binary_digest",
+          "service_active",
+          "node_identity",
+          "cluster_ca",
+          "worker_only",
+          "node_uid_binding",
+          "bootstrap_taint",
+          "capability_heartbeat",
+          "agent_eligibility"
+        ],
+        "rollback": {
+          "preserveUserData": true,
+          "preserveControlPlane": true,
+          "ambiguousOwnership": "recovery_required",
+          "backupRootClass": "linux_var_lib",
+          "backupRoot": "/var/lib/blazn/install-backups/node-adopt"
+        }
+      },
+      "arm64": {
+        "cluster": {
+          "id": "frontro-microk8s-8f109e68-f1bf-40e5-8482-c97d10997dc2",
+          "workerOnly": true,
+          "apiServer": "https://192.168.0.108:16443",
+          "kubernetesVersion": "v1.35.6",
+          "joinCredentialEndpoint": "/v1/node-service/join-credentials",
+          "bootstrapTaint": "blazn.dev/bootstrap=pending:NoSchedule",
+          "expectedCaFingerprint": "sha256:55b2aef691df35de3041b2c6d522aba9565305e524df296e82cab783ce0c81ff",
+          "registryEndpoints": [
+            "https://registry-1.docker.io"
+          ]
+        },
+        "registryTrust": [],
+        "components": [
+          {
+            "name": "blazn-linux-arm64",
+            "artifactType": "binary",
+            "sourceClass": "current_binary",
+            "version": "v0.1.0-poc.1",
+            "publisher": "KingJammin/blazn",
+            "sha256": "cbd3631373c218391e6d11a814384ce8448ccf101323afdf3b300dc61a587d9e",
+            "ownership": "adopt_exact"
+          },
+          {
+            "name": "microk8s",
+            "artifactType": "package",
+            "sourceClass": "https",
+            "version": "v1.35.6-rev9075",
+            "publisher": "Canonical",
+            "sourceHost": "api.snapcraft.io",
+            "source": "https://api.snapcraft.io/api/v1/snaps/download/EaXqgt1lyCaxKaQCU349mlodBkDCXRcg_9075.snap",
+            "repositoryOrigin": "https://api.snapcraft.io",
+            "sha256": "7493e9842029ca74f32e05038b15b62bda635f24332c421fd62f8508f458f16a",
+            "ownership": "adopt_exact"
+          },
+          {
+            "name": "blazn-node-systemd",
+            "artifactType": "configuration",
+            "sourceClass": "embedded",
+            "version": "v1",
+            "publisher": "Blazn",
+            "sha256": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "ownership": "install"
+          }
+        ],
+        "nodeService": {
+          "manager": "systemd",
+          "unitName": "blazn-node.service",
+          "binaryPath": "/usr/local/bin/blazn",
+          "runAsUser": "blazn-node",
+          "runAsGroup": "blazn-node",
+          "definitionSha256": "b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea"
+        },
+        "labels": {
+          "blazn.dev/node": "true",
+          "blazn.dev/worker-profile": "linux-adopt-arm64"
+        },
+        "taints": [
+          {
+            "key": "blazn.dev/bootstrap",
+            "value": "pending",
+            "effect": "NoSchedule"
+          }
+        ],
+        "resourceBounds": {
+          "reservedCpuMillis": 1000,
+          "reservedMemoryBytes": 2147483648,
+          "maxPods": 64,
+          "maxConcurrentAgents": 8
+        },
+        "mutations": [
+          {
+            "ordinal": 1,
+            "kind": "group",
+            "action": "create",
+            "target": "blazn-node",
+            "desired": {
+              "name": "blazn-node",
+              "gid": 991,
+              "system": true
+            },
+            "desiredDigest": "sha256:92008edb8be49e37b3a109457ef6478423c92b01b79bd3d131f1fd50e0d63e71",
+            "mode": 0,
+            "uid": 0,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 2,
+            "kind": "user",
+            "action": "create",
+            "target": "blazn-node",
+            "desired": {
+              "name": "blazn-node",
+              "group": "blazn-node",
+              "uid": 991,
+              "gid": 991,
+              "home": "/var/lib/blazn",
+              "shell": "/usr/sbin/nologin",
+              "system": true
+            },
+            "desiredDigest": "sha256:cb026245ee602087079ca5f69fe579df42e0fc78edf9788588992d765d3fa019",
+            "mode": 0,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 3,
+            "kind": "directory",
+            "action": "create",
+            "target": "/var/lib/blazn",
+            "desired": {},
+            "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "mode": 448,
+            "uid": 991,
+            "gid": 991,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 4,
+            "kind": "package",
+            "action": "adopt_exact",
+            "target": "microk8s",
+            "desired": {
+              "manager": "snap",
+              "version": "v1.35.6-rev9075",
+              "componentName": "microk8s"
+            },
+            "desiredDigest": "sha256:7493e9842029ca74f32e05038b15b62bda635f24332c421fd62f8508f458f16a",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 5,
+            "kind": "file",
+            "action": "adopt_exact",
+            "target": "/usr/local/bin/blazn",
+            "desired": {
+              "sourceComponent": "blazn-linux-arm64",
+              "contentSha256": "cbd3631373c218391e6d11a814384ce8448ccf101323afdf3b300dc61a587d9e"
+            },
+            "desiredDigest": "sha256:cbd3631373c218391e6d11a814384ce8448ccf101323afdf3b300dc61a587d9e",
+            "mode": 493,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 6,
+            "kind": "systemd_unit",
+            "action": "write",
+            "target": "/etc/systemd/system/blazn-node.service",
+            "desired": {
+              "unitName": "blazn-node.service",
+              "sourceComponent": "blazn-node-systemd"
+            },
+            "desiredDigest": "sha256:b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "mode": 420,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 7,
+            "kind": "systemd_unit",
+            "action": "enable",
+            "target": "/etc/systemd/system/blazn-node.service",
+            "desired": {
+              "unitName": "blazn-node.service",
+              "sourceComponent": "blazn-node-systemd"
+            },
+            "desiredDigest": "sha256:b4780c5501d5e2a7d28fcc2b8cfa9a44211ac327d26801154d77d09334754eea",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 8,
+            "kind": "label",
+            "action": "apply",
+            "target": "blazn.dev/node",
+            "desired": {
+              "value": "true"
+            },
+            "desiredDigest": "sha256:b5bea41b6c623f7c09f1bf24dcae58eb6b4e505f39b733b388c0ba7136e106a4",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 9,
+            "kind": "taint",
+            "action": "apply",
+            "target": "blazn.dev/bootstrap",
+            "desired": {
+              "value": "pending",
+              "effect": "NoSchedule"
+            },
+            "desiredDigest": "sha256:bba81878542053629918290404761ca5f75b4cf7180af395d24ae2e5fd27b10f",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          }
+        ],
+        "validationTests": [
+          "binary_digest",
+          "service_active",
+          "node_identity",
+          "cluster_ca",
+          "worker_only",
+          "node_uid_binding",
+          "bootstrap_taint",
+          "capability_heartbeat",
+          "agent_eligibility"
+        ],
+        "rollback": {
+          "preserveUserData": true,
+          "preserveControlPlane": true,
+          "ambiguousOwnership": "recovery_required",
+          "backupRootClass": "linux_var_lib",
+          "backupRoot": "/var/lib/blazn/install-backups/node-adopt"
+        }
+      }
+    },
+    "macos-lima-worker-adopt/v1": {
+      "arm64": {
+        "cluster": {
+          "id": "frontro-microk8s-8f109e68-f1bf-40e5-8482-c97d10997dc2",
+          "workerOnly": true,
+          "apiServer": "https://192.168.0.108:16443",
+          "kubernetesVersion": "v1.35.6",
+          "joinCredentialEndpoint": "/v1/node-service/join-credentials",
+          "bootstrapTaint": "blazn.dev/bootstrap=pending:NoSchedule",
+          "expectedCaFingerprint": "sha256:55b2aef691df35de3041b2c6d522aba9565305e524df296e82cab783ce0c81ff",
+          "registryEndpoints": [
+            "https://registry-1.docker.io"
+          ]
+        },
+        "registryTrust": [],
+        "components": [
+          {
+            "name": "blazn-darwin-arm64",
+            "artifactType": "binary",
+            "sourceClass": "current_binary",
+            "version": "v0.1.0-poc.1",
+            "publisher": "KingJammin/blazn",
+            "sha256": "672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27",
+            "ownership": "adopt_exact"
+          },
+          {
+            "name": "blazn-node-launchd",
+            "artifactType": "configuration",
+            "sourceClass": "embedded",
+            "version": "v1",
+            "publisher": "Blazn",
+            "sha256": "f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18",
+            "ownership": "install"
+          },
+          {
+            "name": "lima-worker-binding",
+            "artifactType": "configuration",
+            "sourceClass": "embedded",
+            "version": "v1",
+            "publisher": "Blazn",
+            "sha256": "a77e917590c1899f3d5f158e815f70950fad88867be207ed7bfbf4713fead58d",
+            "ownership": "adopt_exact"
+          }
+        ],
+        "nodeService": {
+          "manager": "launchd",
+          "unitName": "com.blazn.node",
+          "binaryPath": "/usr/local/bin/blazn",
+          "runAsUser": "root",
+          "runAsGroup": "wheel",
+          "definitionSha256": "f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18"
+        },
+        "labels": {
+          "blazn.dev/node": "true",
+          "blazn.dev/worker-profile": "macos-lima-arm64"
+        },
+        "taints": [
+          {
+            "key": "blazn.dev/bootstrap",
+            "value": "pending",
+            "effect": "NoSchedule"
+          }
+        ],
+        "resourceBounds": {
+          "reservedCpuMillis": 1000,
+          "reservedMemoryBytes": 2147483648,
+          "maxPods": 64,
+          "maxConcurrentAgents": 8
+        },
+        "mutations": [
+          {
+            "ordinal": 1,
+            "kind": "file",
+            "action": "adopt_exact",
+            "target": "/Library/Application Support/Blazn/lima-worker-binding.json",
+            "desired": {
+              "sourceComponent": "lima-worker-binding",
+              "contentSha256": "a77e917590c1899f3d5f158e815f70950fad88867be207ed7bfbf4713fead58d"
+            },
+            "desiredDigest": "sha256:a77e917590c1899f3d5f158e815f70950fad88867be207ed7bfbf4713fead58d",
+            "mode": 384,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 2,
+            "kind": "file",
+            "action": "adopt_exact",
+            "target": "/usr/local/bin/blazn",
+            "desired": {
+              "sourceComponent": "blazn-darwin-arm64",
+              "contentSha256": "672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27"
+            },
+            "desiredDigest": "sha256:672916a3518eb192c3fb059e1d763d6538e6d555af2946b479ebeb27725f2f27",
+            "mode": 493,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "leave_and_report"
+          },
+          {
+            "ordinal": 3,
+            "kind": "launchd_unit",
+            "action": "write",
+            "target": "/Library/LaunchDaemons/com.blazn.node.plist",
+            "desired": {
+              "label": "com.blazn.node",
+              "sourceComponent": "blazn-node-launchd"
+            },
+            "desiredDigest": "sha256:f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18",
+            "mode": 420,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "remove_if_owned"
+          },
+          {
+            "ordinal": 4,
+            "kind": "launchd_unit",
+            "action": "enable",
+            "target": "/Library/LaunchDaemons/com.blazn.node.plist",
+            "desired": {
+              "label": "com.blazn.node",
+              "sourceComponent": "blazn-node-launchd"
+            },
+            "desiredDigest": "sha256:f50cf92825825b74eba8a3af469c898d4a69eb8d9cd40c04ed447584e80e5f18",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 5,
+            "kind": "label",
+            "action": "apply",
+            "target": "blazn.dev/node",
+            "desired": {
+              "value": "true"
+            },
+            "desiredDigest": "sha256:b5bea41b6c623f7c09f1bf24dcae58eb6b4e505f39b733b388c0ba7136e106a4",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          },
+          {
+            "ordinal": 6,
+            "kind": "taint",
+            "action": "apply",
+            "target": "blazn.dev/bootstrap",
+            "desired": {
+              "value": "pending",
+              "effect": "NoSchedule"
+            },
+            "desiredDigest": "sha256:bba81878542053629918290404761ca5f75b4cf7180af395d24ae2e5fd27b10f",
+            "mode": 0,
+            "uid": 0,
+            "gid": 0,
+            "rollback": "restore_prior"
+          }
+        ],
+        "validationTests": [
+          "binary_digest",
+          "service_active",
+          "node_identity",
+          "cluster_ca",
+          "worker_only",
+          "lima_worker_binding",
+          "node_uid_binding",
+          "bootstrap_taint",
+          "capability_heartbeat",
+          "agent_eligibility"
+        ],
+        "rollback": {
+          "preserveUserData": true,
+          "preserveControlPlane": true,
+          "ambiguousOwnership": "recovery_required",
+          "backupRootClass": "macos_library_application_support",
+          "backupRoot": "/Library/Application Support/Blazn/install-backups/node-adopt"
+        }
+      }
+    }
+  }
+}

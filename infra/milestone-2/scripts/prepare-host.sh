@@ -17,12 +17,26 @@ BACKUP_ROOT=${BLAZN_BACKUP_ROOT:-}
 SECRETS_ROOT=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}
 RECEIPT_PATH=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 NODE_SECRETS_ROOT=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
+NODE_PLAN_ROOT=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
 
 "$SCRIPT_DIR/preflight.sh" --plan >/dev/null
 [ ! -e "$RECEIPT_PATH" ] || die "ownership receipt already exists: $RECEIPT_PATH"
 [ ! -e "$DATA_ROOT" ] || die "data root already exists without an ownership receipt: $DATA_ROOT"
 [ ! -e "$SECRETS_ROOT" ] || die "secrets root already exists without an ownership receipt: $SECRETS_ROOT"
-[ ! -e /etc/blazn/node-broker ] || die "node broker secrets already exist without an ownership receipt"
+if [ -e /etc/blazn/node-broker ]; then
+  [ -f /var/lib/blazn/ownership/node-broker-secret-create.json ] || die "node broker secrets exist without their creation journal"
+fi
+if [ -e "$NODE_PLAN_ROOT" ]; then
+  [ -f /var/lib/blazn/ownership/node-plan-material-create.json ] || die "node plan material exists without its creation journal"
+fi
+
+# Run the independently journaled prerequisite publishers before creating the
+# main data/secrets trees. A crash at any injected material phase can therefore
+# be resumed by rerunning prepare-host without ambiguous partially-owned data.
+BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS_ROOT" \
+  "$ROOT_DIR/../node/scripts/create-secrets.sh" >/dev/null
+BLAZN_NODE_PLAN_ROOT="$NODE_PLAN_ROOT" \
+  "$ROOT_DIR/../node/scripts/create-plan-materials.sh" >/dev/null
 
 umask 077
 mkdir -p -- "$DATA_ROOT/postgres" "$DATA_ROOT/objects" "$SECRETS_ROOT" "$(dirname -- "$RECEIPT_PATH")"
@@ -59,9 +73,6 @@ printf '%s\n' "$initial_password" >"$SECRETS_ROOT/initial-password"
 # mode 0444 lets explicitly configured non-root container users read them.
 chmod 0444 -- "$SECRETS_ROOT"/*
 
-BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS_ROOT" \
-  "$ROOT_DIR/../node/scripts/create-secrets.sh" >/dev/null
-
 "$SCRIPT_DIR/build-control-api.sh" >/dev/null
 CONTROL_API_BUILD_RECEIPT=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
 control_api_source=$(jq -er .sourceDigest "$CONTROL_API_BUILD_RECEIPT")
@@ -74,6 +85,7 @@ node_enrollment_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/enrollment-hmac-
 node_join_digest=sha256:$(sha256_file "$NODE_SECRETS_ROOT/join-credential-v1")
 node_creation_journal=/var/lib/blazn/ownership/node-broker-secret-create.json
 node_creation_journal_digest=sha256:$(sha256_file "$node_creation_journal")
+node_plan_json=$(BLAZN_NODE_PLAN_ROOT="$NODE_PLAN_ROOT" "$ROOT_DIR/../node/scripts/plan-material-object.sh")
 
 config_digest=$(control_plane_config_digest "$ROOT_DIR")
 host=$(hostname)
@@ -102,11 +114,12 @@ jq -cn \
   --arg nodeJoinDigest "$node_join_digest" \
   --arg nodeCreationJournal "$node_creation_journal" \
   --arg nodeCreationJournalDigest "$node_creation_journal_digest" \
+  --argjson nodePlan "$node_plan_json" \
   --argjson postgresPort "${POSTGRES_PORT:-55432}" \
   --argjson s3Port "${S3_PORT:-59000}" \
   --argjson s3ConsolePort "${S3_CONSOLE_PORT:-59001}" \
   --argjson apiPort "${API_PORT:-58080}" \
-  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},secretDigests:{"workspace-invitation-hmac-v1":$workspaceInvitationHmacDigest},nodeBroker:{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:$nodeSecrets,databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}},ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
+  '{schemaVersion:"blazn.dev/control-plane-ownership/v1",owner:"blazn-poc",host:$host,createdAt:$createdAt,paths:{data:$data,backup:$backup,secrets:$secrets},backupMount:{target:$backupMount,source:$backupSource,fstype:$backupFstype},controlApi:{sourceDigest:$controlApiSource,image:$controlApiImage,imageId:$controlApiImageId},secretDigests:{"workspace-invitation-hmac-v1":$workspaceInvitationHmacDigest},nodeBroker:{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:$nodeSecrets,databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$nodeDatabaseDigest,"enrollment-hmac-v1":$nodeEnrollmentDigest,"join-credential-v1":$nodeJoinDigest},creationJournal:{path:$nodeCreationJournal,digest:$nodeCreationJournalDigest}},nodePlan:$nodePlan,ports:[$postgresPort,$s3Port,$s3ConsolePort,$apiPort],units:["blazn-control-plane.service"],images:[$postgresImage,$minioImage,$minioMcImage],configDigest:$configDigest}' \
   >"$receipt_tmp"
 chmod 0600 "$receipt_tmp"
 mv -- "$receipt_tmp" "$RECEIPT_PATH"

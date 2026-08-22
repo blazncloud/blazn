@@ -207,7 +207,7 @@ grep -F 'assert_directory_owned_mode "$SECRETS_ROOT" 0 700' "$ROOT_DIR/scripts/p
 grep -F 'assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
 grep -F 'objects.before.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'objects.after.jsonl' "$ROOT_DIR/scripts/backup.sh" >/dev/null
-grep -F 'control-plane-backup/v2' "$ROOT_DIR/scripts/backup.sh" >/dev/null
+grep -F 'control-plane-backup/v3' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'workspace-invitation-hmac-v1' "$ROOT_DIR/scripts/backup.sh" >/dev/null
 grep -F 'controlApi' "$ROOT_DIR/backup-metadata.schema.json" >/dev/null
 grep -F 'secretDigests' "$ROOT_DIR/backup-metadata.schema.json" >/dev/null

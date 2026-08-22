@@ -54,6 +54,7 @@ test-infra:
 	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
 	./infra/node/tests/test-contract.sh
 	./infra/node/tests/test-secret-create-resume.sh
+	./infra/node/tests/test-plan-materials.sh
 	./infra/node/tests/test-upgrade-resume.sh
 	./infra/node/tests/test-backup-metadata.sh
 	./infra/node/tests/test-postgres-privileges.sh

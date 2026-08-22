@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.dev/schemas/poc/control-plane-backup-v2.json",
+  "$id": "https://blazn.dev/schemas/poc/control-plane-backup-v3.json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "correlationId", "fencingToken", "createdAt", "database", "bucket", "configDigest", "controlApi", "secretDigests", "nodeBrokerReceiptDigest"],
   "properties": {
-    "schemaVersion": { "const": "blazn.dev/control-plane-backup/v2" },
+    "schemaVersion": { "enum": ["blazn.dev/control-plane-backup/v2", "blazn.dev/control-plane-backup/v3"] },
     "correlationId": { "type": "string", "pattern": "^[a-zA-Z0-9._-]+$" },
     "fencingToken": { "type": "integer", "minimum": 1 },
     "createdAt": { "type": "string", "minLength": 1 },
@@ -30,6 +30,8 @@
         "workspace-invitation-hmac-v1": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
       }
     },
-    "nodeBrokerReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
-  }
+    "nodeBrokerReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "nodePlanReceiptDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  },
+  "allOf": [{"if":{"properties":{"schemaVersion":{"const":"blazn.dev/control-plane-backup/v3"}},"required":["schemaVersion"]},"then":{"required":["nodePlanReceiptDigest"]},"else":{"not":{"required":["nodePlanReceiptDigest"]}}}]
 }

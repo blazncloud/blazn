@@ -1,0 +1,1923 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-install-plan-template-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "templateId",
+    "profiles"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "blazn.dev/node-install-plan-templates/v1"
+    },
+    "templateId": {
+      "const": "frontro-poc-worker/v1"
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ubuntu-26.04-amd64-worker/v1",
+        "existing-linux-worker-adopt/v1",
+        "macos-lima-worker-adopt/v1"
+      ],
+      "properties": {
+        "ubuntu-26.04-amd64-worker/v1": {
+          "$ref": "#/$defs/freshVariants"
+        },
+        "existing-linux-worker-adopt/v1": {
+          "$ref": "#/$defs/existingLinuxVariants"
+        },
+        "macos-lima-worker-adopt/v1": {
+          "$ref": "#/$defs/macosLimaVariants"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "workerOnly",
+        "apiServer",
+        "kubernetesVersion",
+        "joinCredentialEndpoint",
+        "bootstrapTaint",
+        "expectedCaFingerprint",
+        "registryEndpoints"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "workerOnly": {
+          "const": true
+        },
+        "apiServer": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "kubernetesVersion": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "joinCredentialEndpoint": {
+          "const": "/v1/node-service/join-credentials"
+        },
+        "bootstrapTaint": {
+          "const": "blazn.dev/bootstrap=pending:NoSchedule"
+        },
+        "expectedCaFingerprint": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "registryEndpoints": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          }
+        }
+      }
+    },
+    "registryTrust": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hostname",
+          "caBundleSha256"
+        ],
+        "properties": {
+          "hostname": {
+            "type": "string",
+            "format": "hostname"
+          },
+          "caBundleSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "artifactType",
+          "sourceClass",
+          "version",
+          "publisher",
+          "sha256",
+          "ownership"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "artifactType": {
+            "enum": [
+              "package",
+              "binary",
+              "image",
+              "certificate",
+              "configuration"
+            ]
+          },
+          "sourceClass": {
+            "enum": [
+              "https",
+              "current_binary",
+              "embedded"
+            ]
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "publisher": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "sourceHost": {
+            "type": "string",
+            "format": "hostname"
+          },
+          "source": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "repositoryOrigin": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "registryHost": {
+            "type": "string",
+            "format": "hostname"
+          },
+          "ociReference": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "ownership": {
+            "enum": [
+              "install",
+              "adopt_exact"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "sourceClass": {
+                  "const": "https"
+                }
+              },
+              "required": [
+                "sourceClass"
+              ]
+            },
+            "then": {
+              "required": [
+                "sourceHost",
+                "source"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "sourceClass": {
+                  "enum": [
+                    "current_binary",
+                    "embedded"
+                  ]
+                }
+              },
+              "required": [
+                "sourceClass"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "sourceHost"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "source"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "repositoryOrigin"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "registryHost"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "ociReference"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "sourceClass": {
+                  "const": "current_binary"
+                }
+              },
+              "required": [
+                "sourceClass"
+              ]
+            },
+            "then": {
+              "properties": {
+                "artifactType": {
+                  "const": "binary"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "sourceClass": {
+                  "const": "embedded"
+                }
+              },
+              "required": [
+                "sourceClass"
+              ]
+            },
+            "then": {
+              "properties": {
+                "artifactType": {
+                  "enum": [
+                    "certificate",
+                    "configuration"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "artifactType": {
+                  "const": "package"
+                }
+              },
+              "required": [
+                "artifactType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "sourceClass": {
+                  "const": "https"
+                }
+              },
+              "required": [
+                "repositoryOrigin"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "registryHost"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "ociReference"
+                    ]
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "artifactType": {
+                  "const": "image"
+                }
+              },
+              "required": [
+                "artifactType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "sourceClass": {
+                  "const": "https"
+                }
+              },
+              "required": [
+                "registryHost",
+                "ociReference"
+              ],
+              "not": {
+                "required": [
+                  "repositoryOrigin"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "nodeService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manager",
+        "unitName",
+        "binaryPath",
+        "runAsUser",
+        "runAsGroup",
+        "definitionSha256"
+      ],
+      "properties": {
+        "manager": {
+          "enum": [
+            "systemd",
+            "launchd"
+          ]
+        },
+        "unitName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "binaryPath": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "runAsUser": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "runAsGroup": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "definitionSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "labels": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^blazn\\.dev/[a-z0-9][a-z0-9._-]{0,62}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "taints": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "value",
+          "effect"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^blazn\\.dev/[a-z0-9][a-z0-9._-]{0,62}$"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "effect": {
+            "enum": [
+              "NoSchedule",
+              "PreferNoSchedule",
+              "NoExecute"
+            ]
+          }
+        }
+      }
+    },
+    "resourceBounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservedCpuMillis",
+        "reservedMemoryBytes",
+        "maxPods",
+        "maxConcurrentAgents"
+      ],
+      "properties": {
+        "reservedCpuMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reservedMemoryBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxPods": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "maxConcurrentAgents": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        }
+      }
+    },
+    "mutations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ordinal",
+          "kind",
+          "action",
+          "target",
+          "desired",
+          "desiredDigest",
+          "mode",
+          "uid",
+          "gid",
+          "rollback"
+        ],
+        "properties": {
+          "ordinal": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "enum": [
+              "group",
+              "user",
+              "package",
+              "file",
+              "directory",
+              "systemd_unit",
+              "launchd_unit",
+              "certificate",
+              "image",
+              "label",
+              "taint",
+              "firewall"
+            ]
+          },
+          "action": {
+            "enum": [
+              "install",
+              "write",
+              "create",
+              "enable",
+              "pull",
+              "apply",
+              "adopt_exact"
+            ]
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "not": {
+              "anyOf": [
+                {
+                  "const": "/"
+                },
+                {
+                  "pattern": "(?:^|/)\\.\\.(?:/|$)"
+                }
+              ]
+            }
+          },
+          "desired": {
+            "type": "object",
+            "maxProperties": 32
+          },
+          "desiredDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "mode": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "uid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "gid": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "rollback": {
+            "enum": [
+              "restore_prior",
+              "remove_if_owned",
+              "leave_and_report"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "group"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "create",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+                },
+                "mode": {
+                  "const": 0
+                },
+                "uid": {
+                  "const": 0
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "gid",
+                    "system"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+                    },
+                    "gid": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "system": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "user"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "create",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+                },
+                "mode": {
+                  "const": 0
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "group",
+                    "uid",
+                    "gid",
+                    "home",
+                    "shell",
+                    "system"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+                    },
+                    "group": {
+                      "type": "string",
+                      "pattern": "^[a-z_][a-z0-9_-]{0,31}$"
+                    },
+                    "uid": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "gid": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "home": {
+                      "type": "string",
+                      "pattern": "^/var/lib/blazn$"
+                    },
+                    "shell": {
+                      "enum": [
+                        "/usr/sbin/nologin",
+                        "/sbin/nologin"
+                      ]
+                    },
+                    "system": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "package"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "install",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^[a-z0-9][a-z0-9+.-]{0,127}$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "manager",
+                    "version",
+                    "componentName"
+                  ],
+                  "properties": {
+                    "manager": {
+                      "enum": [
+                        "apt",
+                        "snap",
+                        "brew"
+                      ]
+                    },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "componentName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "file",
+                    "certificate"
+                  ]
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "write",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^/(?:usr/local/bin|etc/blazn|var/lib/blazn|Library/Application Support/Blazn)/"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "sourceComponent",
+                    "contentSha256"
+                  ],
+                  "properties": {
+                    "sourceComponent": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    "contentSha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "directory"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "create",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^/(?:etc/blazn|var/lib/blazn|opt/blazn|Library/Application Support/Blazn)(?:/|$)"
+                },
+                "desired": {
+                  "maxProperties": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "systemd_unit"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "write",
+                    "enable",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^/etc/systemd/system/[A-Za-z0-9_.@-]+\\.service$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "unitName",
+                    "sourceComponent"
+                  ],
+                  "properties": {
+                    "unitName": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.@-]+\\.service$"
+                    },
+                    "sourceComponent": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "launchd_unit"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "write",
+                    "enable",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^/Library/LaunchDaemons/[A-Za-z0-9_.-]+\\.plist$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "label",
+                    "sourceComponent"
+                  ],
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 256
+                    },
+                    "sourceComponent": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "image"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "enum": [
+                    "pull",
+                    "adopt_exact"
+                  ]
+                },
+                "target": {
+                  "pattern": "^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "platform",
+                    "componentName"
+                  ],
+                  "properties": {
+                    "platform": {
+                      "enum": [
+                        "linux/amd64",
+                        "linux/arm64"
+                      ]
+                    },
+                    "componentName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "label"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "const": "apply"
+                },
+                "target": {
+                  "pattern": "^blazn\\.dev/[a-z0-9][a-z0-9._-]{0,62}$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "value"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 128
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "taint"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "const": "apply"
+                },
+                "target": {
+                  "pattern": "^blazn\\.dev/[a-z0-9][a-z0-9._-]{0,62}$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "effect"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "maxLength": 128
+                    },
+                    "effect": {
+                      "enum": [
+                        "NoSchedule",
+                        "PreferNoSchedule",
+                        "NoExecute"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "firewall"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action": {
+                  "const": "apply"
+                },
+                "target": {
+                  "pattern": "^blazn:[a-z0-9_-]{1,64}$"
+                },
+                "desired": {
+                  "additionalProperties": false,
+                  "required": [
+                    "protocol",
+                    "port",
+                    "direction"
+                  ],
+                  "properties": {
+                    "protocol": {
+                      "enum": [
+                        "tcp",
+                        "udp"
+                      ]
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    "direction": {
+                      "enum": [
+                        "ingress",
+                        "egress"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "validationTests": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "binary_digest",
+          "service_account",
+          "service_active",
+          "node_identity",
+          "cluster_ca",
+          "worker_only",
+          "lima_worker_binding",
+          "node_uid_binding",
+          "bootstrap_taint",
+          "capability_heartbeat",
+          "agent_eligibility"
+        ]
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preserveUserData",
+        "preserveControlPlane",
+        "ambiguousOwnership",
+        "backupRootClass",
+        "backupRoot"
+      ],
+      "properties": {
+        "preserveUserData": {
+          "const": true
+        },
+        "preserveControlPlane": {
+          "const": true
+        },
+        "ambiguousOwnership": {
+          "const": "recovery_required"
+        },
+        "backupRootClass": {
+          "enum": [
+            "linux_var_lib",
+            "macos_library_application_support"
+          ]
+        },
+        "backupRoot": {
+          "type": "string",
+          "not": {
+            "pattern": "(?:^|/)\\.\\.(?:/|$)"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "backupRootClass": {
+                "const": "linux_var_lib"
+              }
+            },
+            "required": [
+              "backupRootClass"
+            ]
+          },
+          "then": {
+            "properties": {
+              "backupRoot": {
+                "pattern": "^/var/lib/blazn/install-backups/[A-Za-z0-9_-]{1,128}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "backupRootClass": {
+                "const": "macos_library_application_support"
+              }
+            },
+            "required": [
+              "backupRootClass"
+            ]
+          },
+          "then": {
+            "properties": {
+              "backupRoot": {
+                "pattern": "^/Library/Application Support/Blazn/install-backups/[A-Za-z0-9_-]{1,128}$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cluster",
+        "registryTrust",
+        "components",
+        "nodeService",
+        "labels",
+        "taints",
+        "resourceBounds",
+        "mutations",
+        "validationTests",
+        "rollback"
+      ],
+      "properties": {
+        "cluster": {
+          "$ref": "#/$defs/cluster"
+        },
+        "registryTrust": {
+          "$ref": "#/$defs/registryTrust"
+        },
+        "components": {
+          "$ref": "#/$defs/components"
+        },
+        "nodeService": {
+          "$ref": "#/$defs/nodeService"
+        },
+        "labels": {
+          "$ref": "#/$defs/labels"
+        },
+        "taints": {
+          "$ref": "#/$defs/taints"
+        },
+        "resourceBounds": {
+          "$ref": "#/$defs/resourceBounds"
+        },
+        "mutations": {
+          "$ref": "#/$defs/mutations"
+        },
+        "validationTests": {
+          "$ref": "#/$defs/validationTests"
+        },
+        "rollback": {
+          "$ref": "#/$defs/rollback"
+        }
+      }
+    },
+    "freshProfile": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/profile"
+        },
+        {
+          "properties": {
+            "nodeService": {
+              "properties": {
+                "manager": {
+                  "const": "systemd"
+                },
+                "unitName": {
+                  "const": "blazn-node.service"
+                },
+                "binaryPath": {
+                  "const": "/usr/local/bin/blazn"
+                },
+                "runAsUser": {
+                  "const": "blazn-node"
+                },
+                "runAsGroup": {
+                  "const": "blazn-node"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "components": {
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "artifactType": {
+                        "const": "binary"
+                      },
+                      "sourceClass": {
+                        "const": "current_binary"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "artifactType": {
+                        "const": "configuration"
+                      },
+                      "sourceClass": {
+                        "const": "embedded"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "mutations": {
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "group"
+                      },
+                      "action": {
+                        "const": "create"
+                      },
+                      "target": {
+                        "const": "blazn-node"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "name"
+                        ],
+                        "properties": {
+                          "name": {
+                            "const": "blazn-node"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "user"
+                      },
+                      "action": {
+                        "const": "create"
+                      },
+                      "target": {
+                        "const": "blazn-node"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "group"
+                        ],
+                        "properties": {
+                          "name": {
+                            "const": "blazn-node"
+                          },
+                          "group": {
+                            "const": "blazn-node"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "directory"
+                      },
+                      "action": {
+                        "const": "create"
+                      },
+                      "target": {
+                        "const": "/var/lib/blazn"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "systemd_unit"
+                      },
+                      "action": {
+                        "const": "write"
+                      },
+                      "target": {
+                        "const": "/etc/systemd/system/blazn-node.service"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "unitName",
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "unitName": {
+                            "const": "blazn-node.service"
+                          },
+                          "sourceComponent": {
+                            "const": "blazn-node-systemd"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "systemd_unit"
+                      },
+                      "action": {
+                        "const": "enable"
+                      },
+                      "target": {
+                        "const": "/etc/systemd/system/blazn-node.service"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "unitName",
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "unitName": {
+                            "const": "blazn-node.service"
+                          },
+                          "sourceComponent": {
+                            "const": "blazn-node-systemd"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              ]
+            },
+            "validationTests": {
+              "contains": {
+                "const": "service_account"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          }
+        }
+      ]
+    },
+    "existingLinuxProfile": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/profile"
+        },
+        {
+          "properties": {
+            "nodeService": {
+              "properties": {
+                "manager": {
+                  "const": "systemd"
+                },
+                "unitName": {
+                  "const": "blazn-node.service"
+                },
+                "binaryPath": {
+                  "const": "/usr/local/bin/blazn"
+                },
+                "runAsUser": {
+                  "const": "blazn-node"
+                },
+                "runAsGroup": {
+                  "const": "blazn-node"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "components": {
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "artifactType": {
+                        "const": "binary"
+                      },
+                      "sourceClass": {
+                        "const": "current_binary"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "artifactType": {
+                        "const": "configuration"
+                      },
+                      "sourceClass": {
+                        "const": "embedded"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "mutations": {
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "systemd_unit"
+                      },
+                      "action": {
+                        "const": "write"
+                      },
+                      "target": {
+                        "const": "/etc/systemd/system/blazn-node.service"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "unitName",
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "unitName": {
+                            "const": "blazn-node.service"
+                          },
+                          "sourceComponent": {
+                            "const": "blazn-node-systemd"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "systemd_unit"
+                      },
+                      "action": {
+                        "const": "enable"
+                      },
+                      "target": {
+                        "const": "/etc/systemd/system/blazn-node.service"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "unitName",
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "unitName": {
+                            "const": "blazn-node.service"
+                          },
+                          "sourceComponent": {
+                            "const": "blazn-node-systemd"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "macosLimaProfile": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/profile"
+        },
+        {
+          "properties": {
+            "nodeService": {
+              "properties": {
+                "manager": {
+                  "const": "launchd"
+                },
+                "unitName": {
+                  "const": "com.blazn.node"
+                },
+                "binaryPath": {
+                  "const": "/usr/local/bin/blazn"
+                },
+                "runAsUser": {
+                  "const": "root"
+                },
+                "runAsGroup": {
+                  "const": "wheel"
+                }
+              }
+            },
+            "components": {
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "artifactType": {
+                        "const": "binary"
+                      },
+                      "sourceClass": {
+                        "const": "current_binary"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "name": {
+                        "const": "blazn-node-launchd"
+                      },
+                      "artifactType": {
+                        "const": "configuration"
+                      },
+                      "sourceClass": {
+                        "const": "embedded"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "artifactType",
+                      "sourceClass"
+                    ],
+                    "properties": {
+                      "name": {
+                        "const": "lima-worker-binding"
+                      },
+                      "artifactType": {
+                        "const": "configuration"
+                      },
+                      "sourceClass": {
+                        "const": "embedded"
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              ]
+            },
+            "mutations": {
+              "allOf": [
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "launchd_unit"
+                      },
+                      "action": {
+                        "const": "write"
+                      },
+                      "target": {
+                        "const": "/Library/LaunchDaemons/com.blazn.node.plist"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "label",
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "label": {
+                            "const": "com.blazn.node"
+                          },
+                          "sourceComponent": {
+                            "const": "blazn-node-launchd"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "action",
+                      "target",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "launchd_unit"
+                      },
+                      "action": {
+                        "const": "enable"
+                      },
+                      "target": {
+                        "const": "/Library/LaunchDaemons/com.blazn.node.plist"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "label",
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "label": {
+                            "const": "com.blazn.node"
+                          },
+                          "sourceComponent": {
+                            "const": "blazn-node-launchd"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                },
+                {
+                  "contains": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "target",
+                      "action",
+                      "desired"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "file"
+                      },
+                      "target": {
+                        "const": "/Library/Application Support/Blazn/lima-worker-binding.json"
+                      },
+                      "action": {
+                        "const": "adopt_exact"
+                      },
+                      "desired": {
+                        "type": "object",
+                        "required": [
+                          "sourceComponent"
+                        ],
+                        "properties": {
+                          "sourceComponent": {
+                            "const": "lima-worker-binding"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              ]
+            },
+            "validationTests": {
+              "contains": {
+                "const": "lima_worker_binding"
+              },
+              "minContains": 1,
+              "maxContains": 1
+            }
+          }
+        }
+      ]
+    },
+    "freshVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amd64"
+      ],
+      "properties": {
+        "amd64": {
+          "$ref": "#/$defs/freshProfile"
+        }
+      }
+    },
+    "existingLinuxVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "amd64",
+        "arm64"
+      ],
+      "properties": {
+        "amd64": {
+          "$ref": "#/$defs/existingLinuxProfile"
+        },
+        "arm64": {
+          "$ref": "#/$defs/existingLinuxProfile"
+        }
+      }
+    },
+    "macosLimaVariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arm64"
+      ],
+      "properties": {
+        "arm64": {
+          "$ref": "#/$defs/macosLimaProfile"
+        }
+      }
+    }
+  }
+}

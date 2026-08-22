@@ -58,6 +58,25 @@ for secret_file in /etc/blazn/control-plane/secrets/*; do
   esac
 done
 
+node_plan_root=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
+assert_directory_owned_mode "$node_plan_root" 0 700
+assert_regular_file_owned_mode "$node_plan_root/signing-private-v1.b64url" 0 444
+node_plan_private=$(sed -n '1p' "$node_plan_root/signing-private-v1.b64url")
+assert_absent "$node_plan_private" "Node plan signing private seed"
+node_plan_private_standard=$(printf '%s' "$node_plan_private" | tr '_-' '/+')
+node_plan_private_standard_padded=${node_plan_private_standard}=
+node_plan_private_hex=$(printf '%s' "$node_plan_private_standard_padded" | base64 -d | od -An -v -tx1 | tr -d ' \n')
+assert_absent "$node_plan_private_standard" "Node plan signing private seed standard-base64"
+assert_absent "$node_plan_private_standard_padded" "Node plan signing private seed padded-base64"
+assert_absent "$node_plan_private_hex" "Node plan signing private seed hex"
+for container in $(docker compose -f "$ROOT_DIR/compose.yaml" --env-file /etc/blazn/control-plane/control-plane.env ps -a -q); do
+  service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")
+  has_plan_key=$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$container" | grep -Fx "$node_plan_root/signing-private-v1.b64url" || true)
+  if [ -n "$has_plan_key" ]; then
+    case "$service" in api|node-plan-verify) ;; *) die "Node plan signing key is mounted into an unapproved service: $service" ;; esac
+  fi
+done
+
 poc_identity_root=${BLAZN_POC_IDENTITY_ROOT:-/var/lib/blazn/poc-identities/second}
 if [ -d "$poc_identity_root" ]; then
   assert_directory_owned_mode "$poc_identity_root" 0 700

@@ -225,6 +225,17 @@ verify_node_prerequisite_containers() {
   done
 }
 
+verify_node_plan_container() {
+  infra_root=$1
+  env_file=$2
+  expected_id=$(docker image inspect "$CONTROL_API_IMAGE" --format '{{.Id}}') || die "receipt-bound control API image is unavailable"
+  container=$(docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" ps -a -q node-plan-verify)
+  [ -n "$container" ] || die "Node plan validation service has no container"
+  identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
+  [ "$identity" = "blazn-m2/node-plan-verify/$expected_id" ] || die "Node plan validation container does not match its receipt"
+  [ "$(docker inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$container")" = exited/0 ] || die "Node plan validation service did not pass"
+}
+
 control_plane_config_digest() {
   root=$1
   (

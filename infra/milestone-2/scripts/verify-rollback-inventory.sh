@@ -30,6 +30,7 @@ secret_digest=sha256:$(sha256_file "$SECRETS_ROOT/workspace-invitation-hmac-v1")
 source_digest=sha256:$(control_api_source_digest "$ROOT_DIR")
 image_id=$(docker image inspect "$CONTROL_API_IMAGE" --format '{{.Id}}')
 config_digest=sha256:$(control_plane_config_digest "$ROOT_DIR")
+node_plan_receipt_digest=sha256:$(jq -cS .nodePlan "$RECEIPT_PATH" | sha256sum | awk '{print $1}')
 
 jq -e \
   --arg secretDigest "$secret_digest" \
@@ -37,10 +38,12 @@ jq -e \
   --arg image "$CONTROL_API_IMAGE" \
   --arg imageId "$image_id" \
   --arg configDigest "$config_digest" \
-  '.schemaVersion == "blazn.dev/control-plane-backup/v2" and
+  --arg nodePlanReceiptDigest "$node_plan_receipt_digest" \
+  '.schemaVersion == "blazn.dev/control-plane-backup/v3" and
    .configDigest == $configDigest and
    .controlApi == {sourceDigest:$sourceDigest,image:$image,imageId:$imageId} and
-   .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest}' \
+   .secretDigests == {"workspace-invitation-hmac-v1":$secretDigest} and
+   .nodePlanReceiptDigest == $nodePlanReceiptDigest' \
   "$backup/metadata.json" >/dev/null || die "backup inventory does not match the staged rollback release and installed invitation key"
 jq -e \
   --arg secretDigest "$secret_digest" \

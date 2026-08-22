@@ -28,5 +28,6 @@ while :; do
   done
   verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
   verify_node_prerequisite_containers "$ROOT_DIR" "$ENV_FILE"
+  verify_node_plan_container "$ROOT_DIR" "$ENV_FILE"
   sleep 5
 done

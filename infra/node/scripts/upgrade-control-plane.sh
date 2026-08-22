@@ -18,15 +18,20 @@ UPGRADE_RECEIPT=${BLAZN_NODE_BROKER_UPGRADE_RECEIPT:-/var/lib/blazn/ownership/no
 BACKUP_ROOT=${BLAZN_NODE_BROKER_UPGRADE_BACKUP_ROOT:-/var/lib/blazn/ownership/node-broker-upgrade-inputs}
 NODE_ROOT=/etc/blazn/node-broker
 CREATE_JOURNAL=/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json
+PLAN_ROOT=/etc/blazn/node-plan
+PLAN_CREATE_JOURNAL=/var/lib/blazn/ownership/node-plan-material-upgrade-create.json
 if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ]; then
   NODE_ROOT=${BLAZN_NODE_INFRA_TEST_NODE_ROOT:?test Node root is required}
   CREATE_JOURNAL=${BLAZN_NODE_INFRA_TEST_CREATE_JOURNAL:?test create journal is required}
+  PLAN_ROOT=${BLAZN_NODE_INFRA_TEST_PLAN_ROOT:?test plan root is required}
+  PLAN_CREATE_JOURNAL=${BLAZN_NODE_INFRA_TEST_PLAN_CREATE_JOURNAL:?test plan create journal is required}
 fi
 NODE_SECRETS=${BLAZN_NODE_BROKER_SECRETS_ROOT:-$NODE_ROOT/secrets}
 DEFER_CONFIG=${BLAZN_NODE_UPGRADE_DEFER_CONFIG:-0}
 case "$DEFER_CONFIG" in 0|1) ;; *) die "BLAZN_NODE_UPGRADE_DEFER_CONFIG must be 0 or 1" ;; esac
 [ "$NODE_SECRETS" = "$NODE_ROOT/secrets" ] || die "Node broker secrets root differs from the reviewed path"
 export BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS"
+export BLAZN_NODE_PLAN_ROOT="$PLAN_ROOT" BLAZN_NODE_PLAN_CREATE_JOURNAL="$PLAN_CREATE_JOURNAL"
 
 for path in "$ENV_FILE" "$MAIN_RECEIPT"; do assert_regular_file_owned_mode "$path" 0 600; done
 for path in "$UPGRADE_RECEIPT" "$BACKUP_ROOT" "$CREATE_JOURNAL"; do require_absolute_path node-infra-path "$path"; assert_not_symlink_chain "$path"; done
@@ -42,6 +47,10 @@ node_object() {
     --arg journal "/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json" --arg journalDigest "sha256:$(sha "$CREATE_JOURNAL")" \
     '{schemaVersion:"blazn.dev/node-broker-infra/v1",secretsRoot:"/etc/blazn/node-broker/secrets",databaseRole:"blazn_node_broker",keyIds:{enrollment:"node-enrollment/v1",joinCredential:"node-join-credential/v1"},digests:{"database-url":$database,"enrollment-hmac-v1":$enrollment,"join-credential-v1":$join},creationJournal:{path:$journal,digest:$journalDigest}}'
 }
+plan_object() {
+  BLAZN_NODE_PLAN_TEST_MODE=${BLAZN_NODE_PLAN_TEST_MODE:-${BLAZN_NODE_INFRA_TEST_MODE:-0}} \
+    "$SCRIPT_DIR/plan-material-object.sh"
+}
 write_phase() {
   next=$1; tmp=$UPGRADE_RECEIPT.tmp.$$
   jq --arg phase "$next" --arg updatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '.phase=$phase | .updatedAt=$updatedAt' "$UPGRADE_RECEIPT" >"$tmp"
@@ -55,18 +64,22 @@ backup_input() {
   [ "$(sha "$destination")" = "$(sha "$source")" ] || die "unbound upgrade input backup differs from its source"
 }
 ensure_env_binding() {
-  expected="BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets"
-  count=$(grep -c '^BLAZN_NODE_BROKER_SECRETS_ROOT=' "$ENV_FILE" || true)
-  case "$count" in
-    0) tmp=$ENV_FILE.tmp.$$; { sed -n '1,$p' "$ENV_FILE"; printf '%s\n' "$expected"; } >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$ENV_FILE"; sync_path "$(dirname -- "$ENV_FILE")" ;;
-    1) grep -Fx "$expected" "$ENV_FILE" >/dev/null || die "existing Node broker secrets-root environment binding conflicts" ;;
-    *) die "duplicate Node broker secrets-root environment bindings" ;;
-  esac
+  for binding in 'BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets' 'BLAZN_NODE_PLAN_ROOT=/etc/blazn/node-plan'; do
+    name=${binding%%=*}; count=$(grep -c "^$name=" "$ENV_FILE" || true)
+    case "$count" in
+      0) tmp=$ENV_FILE.tmp.$$; { sed -n '1,$p' "$ENV_FILE"; printf '%s\n' "$binding"; } >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$ENV_FILE"; sync_path "$(dirname -- "$ENV_FILE")" ;;
+      1) grep -Fx "$binding" "$ENV_FILE" >/dev/null || die "existing $name environment binding conflicts" ;;
+      *) die "duplicate $name environment bindings" ;;
+    esac
+  done
 }
 
 BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS" \
 BLAZN_NODE_BROKER_CREATE_JOURNAL="$CREATE_JOURNAL" \
   "$SCRIPT_DIR/create-secrets.sh" >/dev/null
+BLAZN_NODE_PLAN_TEST_MODE=${BLAZN_NODE_PLAN_TEST_MODE:-${BLAZN_NODE_INFRA_TEST_MODE:-0}} \
+BLAZN_NODE_PLAN_CREATE_JOURNAL="$PLAN_CREATE_JOURNAL" \
+  "$SCRIPT_DIR/create-plan-materials.sh" >/dev/null
 test_fault secrets-published
 
 if [ ! -e "$UPGRADE_RECEIPT" ]; then
@@ -80,15 +93,15 @@ if [ ! -e "$UPGRADE_RECEIPT" ]; then
   build_present=false; build_digest=
   if [ -e "$BUILD_RECEIPT" ]; then backup_input "$BUILD_RECEIPT" "$BACKUP_ROOT/control-api-build.json"; build_present=true; build_digest=sha256:$(sha "$BUILD_RECEIPT"); fi
   test_fault build-backed-up
-  node_json=$(node_object); tmp=$UPGRADE_RECEIPT.tmp.$$
+  node_json=$(node_object); plan_json=$(plan_object); tmp=$UPGRADE_RECEIPT.tmp.$$
   jq -cn \
     --arg host "$(hostname)" --arg createdAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg main "$MAIN_RECEIPT" --arg mainBackup "$BACKUP_ROOT/control-plane.json" --arg mainDigest "sha256:$(sha "$MAIN_RECEIPT")" \
     --arg env "$ENV_FILE" --arg envBackup "$BACKUP_ROOT/control-plane.env" --arg envDigest "sha256:$(sha "$ENV_FILE")" \
     --arg build "$BUILD_RECEIPT" --arg buildBackup "$BACKUP_ROOT/control-api-build.json" --arg buildDigest "$build_digest" \
     --argjson buildPresent "$build_present" --arg sourceDigest "$(jq -er '.controlApi.sourceDigest // ""' "$MAIN_RECEIPT")" \
-    --arg configDigest "$(jq -er '.configDigest // ""' "$MAIN_RECEIPT")" --argjson nodeBroker "$node_json" \
-    '{schemaVersion:"blazn.dev/node-broker-upgrade/v2",owner:"blazn-poc",host:$host,phase:"inputs-backed-up",createdAt:$createdAt,inputs:{mainReceipt:{path:$main,backupPath:$mainBackup,digest:$mainDigest},environment:{path:$env,backupPath:$envBackup,digest:$envDigest},buildReceipt:{path:$build,backupPath:$buildBackup,present:$buildPresent,digest:$buildDigest},sourceDigest:$sourceDigest,configDigest:$configDigest},nodeBroker:$nodeBroker}' >"$tmp"
+    --arg configDigest "$(jq -er '.configDigest // ""' "$MAIN_RECEIPT")" --argjson nodeBroker "$node_json" --argjson nodePlan "$plan_json" \
+    '{schemaVersion:"blazn.dev/node-broker-upgrade/v2",owner:"blazn-poc",host:$host,phase:"inputs-backed-up",createdAt:$createdAt,inputs:{mainReceipt:{path:$main,backupPath:$mainBackup,digest:$mainDigest},environment:{path:$env,backupPath:$envBackup,digest:$envDigest},buildReceipt:{path:$build,backupPath:$buildBackup,present:$buildPresent,digest:$buildDigest},sourceDigest:$sourceDigest,configDigest:$configDigest},nodeBroker:$nodeBroker,nodePlan:$nodePlan}' >"$tmp"
   chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$UPGRADE_RECEIPT"; sync_path "$(dirname -- "$UPGRADE_RECEIPT")"
 fi
 
@@ -96,6 +109,7 @@ assert_regular_file_owned_mode "$UPGRADE_RECEIPT" 0 600
 jq -e --arg host "$(hostname)" '.schemaVersion=="blazn.dev/node-broker-upgrade/v2" and .owner=="blazn-poc" and .host==$host' "$UPGRADE_RECEIPT" >/dev/null || die "upgrade receipt is invalid"
 for pair in mainReceipt environment; do backup=$(jq -er --arg pair "$pair" '.inputs[$pair].backupPath' "$UPGRADE_RECEIPT"); expected=$(jq -er --arg pair "$pair" '.inputs[$pair].digest' "$UPGRADE_RECEIPT"); [ "$expected" = "sha256:$(sha "$backup")" ] || die "upgrade input backup changed: $pair"; done
 [ "$(node_object)" = "$(jq -cS .nodeBroker "$UPGRADE_RECEIPT")" ] || die "installed Node broker secrets differ from upgrade receipt"
+[ "$(plan_object)" = "$(jq -cS .nodePlan "$UPGRADE_RECEIPT")" ] || die "installed Node plan material differs from upgrade receipt"
 phase=$(jq -er .phase "$UPGRADE_RECEIPT")
 case "$phase" in inputs-backed-up|role-ready|environment-bound|build-ready|complete) ;; rollback-*) die "upgrade is in rollback recovery" ;; rolled-back) die "upgrade was rolled back" ;; *) die "upgrade phase is invalid" ;; esac
 
@@ -133,6 +147,7 @@ fi
 if [ "$phase" = role-ready ]; then ensure_env_binding; write_phase environment-bound; phase=environment-bound; test_fault environment-bound; fi
 if [ "$phase" = environment-bound ] && [ "$DEFER_CONFIG" = 1 ]; then
   grep -Fx 'BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets' "$ENV_FILE" >/dev/null || die "environment binding is absent"
+  grep -Fx 'BLAZN_NODE_PLAN_ROOT=/etc/blazn/node-plan' "$ENV_FILE" >/dev/null || die "plan environment binding is absent"
   printf 'Node broker prerequisites are environment-bound; config publication is deferred until after release promotion\n'
   exit 0
 fi
@@ -141,19 +156,21 @@ if [ "$phase" = environment-bound ]; then
   write_phase build-ready; phase=build-ready; test_fault build-ready
 fi
 if [ "$phase" = build-ready ]; then
-  node_json=$(jq -cS .nodeBroker "$UPGRADE_RECEIPT"); tmp=$MAIN_RECEIPT.tmp.$$
+  node_json=$(jq -cS .nodeBroker "$UPGRADE_RECEIPT"); plan_json=$(jq -cS .nodePlan "$UPGRADE_RECEIPT"); tmp=$MAIN_RECEIPT.tmp.$$
   if [ -f "$BUILD_RECEIPT" ]; then
-    jq --argjson nodeBroker "$node_json" --arg digest "sha256:$(control_plane_config_digest "$M2_ROOT")" \
+    jq --argjson nodeBroker "$node_json" --argjson nodePlan "$plan_json" --arg digest "sha256:$(control_plane_config_digest "$M2_ROOT")" \
       --arg updatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg source "$(jq -er .sourceDigest "$BUILD_RECEIPT")" \
       --arg image "$(jq -er .image "$BUILD_RECEIPT")" --arg imageId "$(jq -er .imageId "$BUILD_RECEIPT")" \
-      '.nodeBroker=$nodeBroker | .configDigest=$digest | .configUpdatedAt=$updatedAt | .controlApi={sourceDigest:$source,image:$image,imageId:$imageId}' "$MAIN_RECEIPT" >"$tmp"
+      '.nodeBroker=$nodeBroker | .nodePlan=$nodePlan | .configDigest=$digest | .configUpdatedAt=$updatedAt | .controlApi={sourceDigest:$source,image:$image,imageId:$imageId}' "$MAIN_RECEIPT" >"$tmp"
   else
-    jq --argjson nodeBroker "$node_json" '.nodeBroker=$nodeBroker' "$MAIN_RECEIPT" >"$tmp"
+    jq --argjson nodeBroker "$node_json" --argjson nodePlan "$plan_json" '.nodeBroker=$nodeBroker | .nodePlan=$nodePlan' "$MAIN_RECEIPT" >"$tmp"
   fi
   chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$MAIN_RECEIPT"; sync_path "$(dirname -- "$MAIN_RECEIPT")"
   write_phase complete; phase=complete; test_fault complete
 fi
 
 [ "$(jq -cS .nodeBroker "$MAIN_RECEIPT")" = "$(jq -cS .nodeBroker "$UPGRADE_RECEIPT")" ] || die "main receipt is not bound to Node broker prerequisites"
+[ "$(jq -cS .nodePlan "$MAIN_RECEIPT")" = "$(jq -cS .nodePlan "$UPGRADE_RECEIPT")" ] || die "main receipt is not bound to Node plan material"
 grep -Fx 'BLAZN_NODE_BROKER_SECRETS_ROOT=/etc/blazn/node-broker/secrets' "$ENV_FILE" >/dev/null || die "environment binding is absent"
+grep -Fx 'BLAZN_NODE_PLAN_ROOT=/etc/blazn/node-plan' "$ENV_FILE" >/dev/null || die "plan environment binding is absent"
 printf 'Node broker infrastructure upgrade is complete and config-reconciled\n'

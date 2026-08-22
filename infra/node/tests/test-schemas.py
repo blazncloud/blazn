@@ -12,10 +12,12 @@ except ImportError:
 root = pathlib.Path(__file__).resolve().parents[1]
 m2 = root.parent / "milestone-2"
 node = json.loads((root / "node-broker-receipt.schema.json").read_text())
+plan = json.loads((root / "node-plan-material-receipt.schema.json").read_text())
+template = json.loads((root / "node-install-plan-template.schema.json").read_text())
 upgrade = json.loads((root / "node-broker-upgrade-receipt.schema.json").read_text())
 ownership = json.loads((m2 / "ownership-receipt.schema.json").read_text())
 metadata = json.loads((m2 / "backup-metadata.schema.json").read_text())
-for schema in (node, upgrade, ownership, metadata):
+for schema in (node, plan, template, upgrade, ownership, metadata):
     jsonschema.Draft202012Validator.check_schema(schema)
 
 digest = "sha256:" + "a" * 64
@@ -27,7 +29,16 @@ node_value = {
     "digests": {"database-url": digest, "enrollment-hmac-v1": digest, "join-credential-v1": digest},
     "creationJournal": {"path": "/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json", "digest": digest},
 }
-store = {node["$id"]: node}
+plan_value = {
+    "schemaVersion": "blazn.dev/node-plan-material/v1",
+    "root": "/etc/blazn/node-plan",
+    "keyId": "control-plane-node-plan/v1",
+    "publicKeyFingerprint": digest,
+    "templateId": "frontro-poc-worker/v1",
+    "templateDigest": digest,
+    "creationJournal": {"path": "/var/lib/blazn/ownership/node-plan-material-upgrade-create.json", "digest": digest},
+}
+store = {node["$id"]: node, plan["$id"]: plan}
 resolver = jsonschema.RefResolver.from_schema(upgrade, store=store)
 jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
     "schemaVersion": "blazn.dev/node-broker-upgrade/v2",
@@ -43,9 +54,11 @@ jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
         "configDigest": digest,
     },
     "nodeBroker": node_value,
+    "nodePlan": plan_value,
 })
-jsonschema.Draft202012Validator(metadata).validate({
-    "schemaVersion": "blazn.dev/control-plane-backup/v2",
+metadata_validator = jsonschema.Draft202012Validator(metadata)
+metadata_value = {
+    "schemaVersion": "blazn.dev/control-plane-backup/v3",
     "correlationId": "test",
     "fencingToken": 1,
     "createdAt": "20260822T080000Z",
@@ -59,5 +72,11 @@ jsonschema.Draft202012Validator(metadata).validate({
     },
     "secretDigests": {"workspace-invitation-hmac-v1": digest},
     "nodeBrokerReceiptDigest": digest,
-})
+    "nodePlanReceiptDigest": digest,
+}
+metadata_validator.validate(metadata_value)
+v2_metadata_value = {**metadata_value, "schemaVersion": "blazn.dev/control-plane-backup/v2"}
+del v2_metadata_value["nodePlanReceiptDigest"]
+metadata_validator.validate(v2_metadata_value)
+jsonschema.Draft202012Validator(template).validate(json.loads((root / "templates" / "node-install-plan-template-v1.json").read_text()))
 print("Node JSON Schemas and external references validated")
