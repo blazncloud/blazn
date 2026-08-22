@@ -36,7 +36,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 docker compose -f "$ROOT_DIR/compose.yaml" exec -T postgres \
-  pg_dump --format=custom --no-owner --no-privileges -U "${POSTGRES_USER:-blazn}" "${POSTGRES_DB:-blazn}" \
+  pg_dump --format=custom --no-owner --no-privileges -U blazn_migration "${POSTGRES_DB:-blazn}" \
   >"$staging/postgres.dump"
 
 docker compose -f "$ROOT_DIR/compose.yaml" --profile tools run --rm \
