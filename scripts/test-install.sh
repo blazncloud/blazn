@@ -130,6 +130,17 @@ run_installer_restore_fault() {
     sh "$test_repo_root/scripts/install.sh"
 }
 
+run_installer_recovery_pause() {
+  BLAZN_ALLOW_INSECURE_TEST_ORIGIN=1 \
+  BLAZN_DIST_URL="file://$test_dist" \
+  BLAZN_VERSION="$test_version" \
+  BLAZN_INSTALL_DIR="$test_install" \
+  BLAZN_ALLOWED_SIGNERS="$test_root/allowed_signers" \
+  BLAZN_SIGNING_FINGERPRINT="$test_fingerprint" \
+  BLAZN_TEST_RECOVERY_PAUSE_FILE=$1 \
+    sh "$test_repo_root/scripts/install.sh"
+}
+
 inode_of() {
   if [ "$test_os" = "darwin" ]; then
     stat -f '%i' "$1"
@@ -321,22 +332,29 @@ rm "$stale_owner"
   printf 'had_binary=1\n'
   printf 'had_receipt=1\n'
 } > "$test_install/.blazn-install.journal"
+recovery_pause="$test_root/recovery-pause"
+: > "$recovery_pause"
 set +e
-run_installer >"$test_root/concurrent-recovery-1.out" 2>&1 &
+run_installer_recovery_pause "$recovery_pause" >"$test_root/concurrent-recovery-1.out" 2>&1 &
 recovery_one=$!
-run_installer >"$test_root/concurrent-recovery-2.out" 2>&1 &
-recovery_two=$!
+wait_count=0
+while [ ! -e "$recovery_pause.ready" ] && [ "$wait_count" -lt 10 ]; do
+  sleep 1
+  wait_count=$((wait_count + 1))
+done
+[ -e "$recovery_pause.ready" ] || fail "first recoverer did not reach the claim barrier"
+run_installer >"$test_root/concurrent-recovery-2.out" 2>&1
+status_two=$?
+rm "$recovery_pause"
 wait "$recovery_one"
 status_one=$?
-wait "$recovery_two"
-status_two=$?
 set -e
-if [ "$status_one" -ne 0 ] && [ "$status_two" -ne 0 ]; then
-  fail "all concurrent stale-lock recoverers failed"
-fi
+[ "$status_one" -eq 0 ] || fail "fenced stale-lock owner failed"
+[ "$status_two" -ne 0 ] || fail "second recoverer bypassed the recovery claim"
 [ -f "$test_install/blazn" ] && [ -f "$test_install/.blazn-install-receipt" ] || fail "concurrent recovery damaged owned pair"
 [ ! -e "$test_install/.blazn-install.lock" ] && [ ! -e "$test_install/.blazn-install.journal" ] && \
-  [ ! -e "$test_install/.blazn-install.recovery" ] || fail "concurrent recovery left lifecycle state"
+  [ ! -e "$test_install/.blazn-install.recovery" ] && [ ! -e "$test_install/.blazn-install.recovery-fence" ] || \
+  fail "concurrent recovery left lifecycle state"
 pass "concurrent stale-lock recovery has one fenced owner"
 
 active_lock_candidate="$test_install/.blazn-active-lock-owner"
