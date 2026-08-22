@@ -11,8 +11,12 @@ ROOT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 require_command jq
 
 receipt=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
-[ -f "$receipt" ] && [ ! -L "$receipt" ] || die "control-plane ownership receipt is unavailable"
-[ "$(stat -c '%u' "$receipt")" -eq 0 ] && [ "$(stat -c '%a' "$receipt")" = 600 ] || die "control-plane ownership receipt has unsafe ownership or mode"
+if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
+  die "control-plane ownership receipt is unavailable"
+fi
+if [ "$(stat -c '%u' "$receipt")" -ne 0 ] || [ "$(stat -c '%a' "$receipt")" != 600 ]; then
+  die "control-plane ownership receipt has unsafe ownership or mode"
+fi
 
 jq -e \
   --arg host "$(hostname)" \

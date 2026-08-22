@@ -8,7 +8,10 @@ login=$3
 password_file=$4
 [ -x "$cli" ] || { printf 'CLI is not executable\n' >&2; exit 2; }
 case "$api" in https://*) ;; *) printf 'API URL must use HTTPS\n' >&2; exit 2 ;; esac
-[ -f "$password_file" ] && [ ! -L "$password_file" ] || { printf 'password file is unavailable\n' >&2; exit 2; }
+if [ ! -f "$password_file" ] || [ -L "$password_file" ]; then
+  printf 'password file is unavailable\n' >&2
+  exit 2
+fi
 command -v curl >/dev/null
 command -v jq >/dev/null
 
@@ -57,7 +60,10 @@ jq -e '.authenticated == true and .user.status == "active" and .device.status ==
 device_id=$(jq -r '.device.id' "$work/status.json")
 
 credential=$work/data/blazn/credentials/session.v1
-[ -f "$credential" ] && [ "$(stat -c '%a' "$credential")" = 600 ] || { printf 'credential file is missing or unsafe\n' >&2; exit 1; }
+if [ ! -f "$credential" ] || [ "$(stat -c '%a' "$credential")" != 600 ]; then
+  printf 'credential file is missing or unsafe\n' >&2
+  exit 1
+fi
 access_token=$(jq -r '.accessToken' "$credential")
 printf 'header = "Authorization: Bearer %s"\n' "$access_token" >"$work/auth.curl"
 unset access_token

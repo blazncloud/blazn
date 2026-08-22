@@ -35,7 +35,9 @@ assert_not_symlink_chain "$plugin_dir"
 assert_not_symlink_chain "$receipt"
 
 if [ -e "$plugin" ]; then
-  [ -f "$plugin" ] && [ ! -L "$plugin" ] || die "existing Compose plugin is not a regular owned file"
+  if [ ! -f "$plugin" ] || [ -L "$plugin" ]; then
+    die "existing Compose plugin is not a regular owned file"
+  fi
   [ "$(stat -c '%u' "$plugin")" -eq 0 ] || die "Compose plugin must be owned by root"
   [ "$(stat -c '%a' "$plugin")" = 755 ] || die "Compose plugin must have mode 0755"
   [ -f "$receipt" ] || die "existing Compose plugin has no Blazn ownership receipt"

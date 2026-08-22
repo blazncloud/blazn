@@ -71,7 +71,9 @@ ports="${POSTGRES_PORT:-55432} ${S3_PORT:-59000} ${S3_CONSOLE_PORT:-59001} ${API
 seen=' '
 for port in $ports; do
   is_uint "$port" || die "invalid port: $port"
-  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "port is out of range: $port"
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    die "port is out of range: $port"
+  fi
   case "$seen" in
     *" $port "*) die "duplicate port in control-plane plan: $port" ;;
   esac

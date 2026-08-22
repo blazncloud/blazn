@@ -23,7 +23,9 @@ DATA_ROOT=${BLAZN_DATA_ROOT:-/srv/frontro/blazn-poc/control-plane}
 timestamp=$(date -u '+%Y%m%dT%H%M%SZ')
 staging=$BACKUP_ROOT/.staging-$timestamp-$correlation
 final=$BACKUP_ROOT/backup-$timestamp-$correlation
-[ ! -e "$staging" ] && [ ! -e "$final" ] || die "backup destination already exists"
+if [ -e "$staging" ] || [ -e "$final" ]; then
+  die "backup destination already exists"
+fi
 umask 077
 mkdir -p -- "$staging/objects"
 
