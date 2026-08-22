@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "secretsRoot", "databaseRole", "keyIds", "digests"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/node-broker-infra/v1" },
+    "secretsRoot": { "const": "/etc/blazn/node-broker/secrets" },
+    "databaseRole": { "const": "blazn_node_broker" },
+    "keyIds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enrollment", "joinCredential"],
+      "properties": {
+        "enrollment": { "const": "node-enrollment/v1" },
+        "joinCredential": { "const": "node-join-credential/v1" }
+      }
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["database-url", "enrollment-hmac-v1", "join-credential-v1"],
+      "properties": {
+        "database-url": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "enrollment-hmac-v1": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "join-credential-v1": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    }
+  }
+}

@@ -35,10 +35,16 @@ non-superuser schema-owner URL, then a one-shot bootstrap service receives the
 dedicated bootstrap URL and initial-login password. Neither elevated secret reaches the
 runtime API.
 
-Fresh PostgreSQL initialization creates three distinct identities: the
+Fresh PostgreSQL initialization creates four distinct identities: the
 container-only administrative user, `blazn_migration` as the non-superuser
 database/schema owner, `blazn_bootstrap` for the initial identity only, and
-`blazn_runtime` for request handling. Migration SQL grants table-specific
+`blazn_runtime` for request handling, plus `blazn_node_broker` for the narrow
+Node join-issuance boundary. The broker authenticates through its own root-owned
+database URL. A pre-migration gate proves its restricted role attributes,
+CONNECT, and schema USAGE; a post-migration gate proves the exact positive and
+negative grants from `004_nodes.sql` before API bootstrap. The Node enrollment
+HMAC and join-credential AES-256-GCM keys remain root-owned and are not mounted
+into the current API, bootstrap, or migration services. Migration SQL grants table-specific
 operations to bootstrap and runtime; initialization does not grant blanket
 future-table DML.
 

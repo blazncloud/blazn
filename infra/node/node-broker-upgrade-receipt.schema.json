@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-broker-upgrade-receipt-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "host", "phase", "createdAt", "mainReceipt", "nodeBroker"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/node-broker-upgrade/v1" },
+    "owner": { "const": "blazn-poc" },
+    "host": { "type": "string", "minLength": 1 },
+    "phase": { "enum": ["staged", "secrets-installed", "role-ready", "receipt-bound", "rolled-back"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "mainReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "backupPath", "backupDigest"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "backupPath": { "type": "string", "minLength": 1 },
+        "backupDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "nodeBroker": { "$ref": "https://blazn.dev/schemas/poc/node-broker-receipt-v1.json" },
+    "rolledBackAt": { "type": "string", "format": "date-time" },
+    "retainedSecretsPath": { "type": "string", "minLength": 1 }
+  }
+}

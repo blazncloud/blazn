@@ -201,6 +201,19 @@ verify_control_api_containers() {
   done
 }
 
+verify_node_prerequisite_containers() {
+  infra_root=$1
+  env_file=$2
+  expected_id=$(docker image inspect "$POSTGRES_IMAGE" --format '{{.Id}}') || die "pinned PostgreSQL image is unavailable"
+  for service in node-migration-preflight node-broker-verify; do
+    container=$(docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" ps -a -q "$service")
+    [ -n "$container" ] || die "Node prerequisite service has no container: $service"
+    identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
+    [ "$identity" = "blazn-m2/$service/$expected_id" ] || die "Node prerequisite container does not match its pinned image: $service"
+    [ "$(docker inspect --format '{{.State.Status}}/{{.State.ExitCode}}' "$container")" = exited/0 ] || die "Node prerequisite service did not pass: $service"
+  done
+}
+
 control_plane_config_digest() {
   root=$1
   (
@@ -215,6 +228,7 @@ control_plane_config_digest() {
         systemd/blazn-ngrok-qualification.service
       find . -maxdepth 1 -type f -name '*.schema.json' -print0
       find scripts -maxdepth 1 -type f -name '*.sh' -print0
+      find ../node -type f -print0
     } | LC_ALL=C sort -z | xargs -0 sha256sum
     printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"
   ) | sha256sum | awk '{ print $1 }'
