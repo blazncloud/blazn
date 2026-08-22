@@ -31,7 +31,7 @@ var socialDefinition = Definition{
 	Aliases:            []string{"person", "company", "contact", "connections", "post", "evidence", "entity", "data", "providers"},
 	SigningIdentity:    "blazn-social-release",
 	SignatureNamespace: "blazn-social-release",
-	AllowedSigner:      `blazn-social-release namespaces="blazn-social-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5dgrZCi276ezBnP1qZBMvwK8bRBAzkXhC5nk/VC7uT blazn-social-release-v1`,
+	AllowedSigner:      `blazn-social-release namespaces="blazn-social-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAzo2yaJyPad2eD4Y886dhE831MQxLQt+5+wCiE+leNA blazn-social-release-v2`,
 }
 
 var contentDefinition = Definition{
