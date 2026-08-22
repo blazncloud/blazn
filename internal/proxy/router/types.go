@@ -56,15 +56,15 @@ type Config struct {
 	Credentials     CredentialProvider
 	CredentialApply CredentialAdapter
 	Resolver        EndpointResolver
-	ClientFactory   func(proxycontract.Route, ResolvedEndpoint) *http.Client
 	Events          EventSink
 	Now             func() time.Time
 }
 
 type Handler struct {
-	config Config
-	routes *routeIndex
-	cursor atomic.Uint64
+	config           Config
+	routes           *routeIndex
+	cursor           atomic.Uint64
+	transportFactory func(proxycontract.Route, ResolvedEndpoint) http.RoundTripper
 }
 
 func NewHandler(config Config) (*Handler, error) {

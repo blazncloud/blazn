@@ -106,26 +106,34 @@ func newRouteIndex(policy proxycontract.Policy) (*routeIndex, error) {
 }
 
 func (r *routeIndex) selectRoutes(request proxycontract.NormalizedRequest) ([]proxycontract.Route, error) {
-	alias, ok := r.policy.Aliases[request.ModelAlias]
+	return r.selectRoutesFor(routedRequest{normalized: request})
+}
+
+func (r *routeIndex) selectRoutesFor(request routedRequest) ([]proxycontract.Route, error) {
+	normalized := request.normalized
+	alias, ok := r.policy.Aliases[normalized.ModelAlias]
 	if !ok {
 		return nil, safeError("model_not_found", "model alias is not defined by policy", 404, false)
 	}
-	if request.DataClass != alias.DataClass {
+	if normalized.DataClass != alias.DataClass {
 		return nil, safeError("policy_denied", "request data class does not match the model alias", 403, false)
 	}
-	if request.Limits.MaxOutputTokens > r.policy.RequestLimits.MaxOutputTokens {
+	if normalized.Limits.MaxOutputTokens > r.policy.RequestLimits.MaxOutputTokens {
 		return nil, safeError("policy_denied", "requested output exceeds policy limit", 403, false)
 	}
-	if request.Stream && !r.policy.RequestLimits.Streaming {
+	if normalized.Stream && !r.policy.RequestLimits.Streaming {
 		return nil, safeError("unsupported_capability", "streaming is disabled by policy", 400, false)
 	}
 	selected := make([]proxycontract.Route, 0, len(alias.RouteIDs))
 	for _, id := range alias.RouteIDs {
 		route := r.byID[id]
-		if !containsProtocol(route.SourceProtocols, request.Protocol) || !containsDataClass(route.AcceptedDataClasses, request.DataClass) || !containsBoundary(alias.AllowedDestinationBoundaries, route.DataBoundary) {
+		if !containsProtocol(route.SourceProtocols, normalized.Protocol) || !containsDataClass(route.AcceptedDataClasses, normalized.DataClass) || !containsBoundary(alias.AllowedDestinationBoundaries, route.DataBoundary) {
 			continue
 		}
-		if !capabilitiesCover(route.Capabilities, request.CapabilitiesRequired) || costRank(route.CostClass) > costRank(r.policy.RequestLimits.MaxCostClass) {
+		if !capabilitiesCover(route.Capabilities, normalized.CapabilitiesRequired) || costRank(route.CostClass) > costRank(r.policy.RequestLimits.MaxCostClass) {
+			continue
+		}
+		if !routePreservesRequest(route, request) {
 			continue
 		}
 		selected = append(selected, route)
@@ -137,6 +145,18 @@ func (r *routeIndex) selectRoutes(request proxycontract.NormalizedRequest) ([]pr
 		selected = selected[:r.policy.Fallback.MaxAttempts]
 	}
 	return selected, nil
+}
+
+func routePreservesRequest(route proxycontract.Route, request routedRequest) bool {
+	if len(request.normalized.Limits.Stop) > 0 && route.DestinationProtocol != proxycontract.ProtocolOpenAIChat {
+		return false
+	}
+	metadata := request.source.responses
+	if metadata == nil {
+		return true
+	}
+	requiresResponses := len(metadata.include) > 0 || len(metadata.reasoning) > 0 && string(metadata.reasoning) != "null" || len(metadata.reasoningItems) > 0 || len(metadata.streamOptions) > 0 && string(metadata.streamOptions) != "null" || len(metadata.clientMetadata) > 0 && string(metadata.clientMetadata) != "null"
+	return !requiresResponses || route.DestinationProtocol == proxycontract.ProtocolOpenAIResponses
 }
 
 func containsProtocol(values []proxycontract.Protocol, want proxycontract.Protocol) bool {

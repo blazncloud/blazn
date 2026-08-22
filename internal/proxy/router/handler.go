@@ -23,7 +23,12 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(writer).Encode(map[string]string{"status": "ready"})
+		status, code := "not_ready", http.StatusServiceUnavailable
+		if h.ready(request.Context()) {
+			status, code = "ready", http.StatusOK
+		}
+		writer.WriteHeader(code)
+		_ = json.NewEncoder(writer).Encode(map[string]string{"status": status})
 		return
 	}
 	if !authenticateAndStrip(request.Header, h.config.ListenerToken) {
@@ -48,13 +53,13 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	limited := http.MaxBytesReader(writer, request.Body, maxRequestBytes)
 	defer limited.Close()
-	var normalized proxycontract.NormalizedRequest
+	var routed routedRequest
 	var err error
 	switch request.URL.Path {
 	case "/v1/chat/completions":
-		normalized, err = normalizeChat(limited, h.config.Policy, h.config.Now())
+		routed, err = normalizeChatIncoming(limited, h.config.Policy, h.config.Now())
 	case "/v1/responses":
-		normalized, err = normalizeResponses(limited, h.config.Policy, h.config.Now())
+		routed, err = normalizeResponsesIncoming(limited, h.config.Policy, h.config.Now())
 	case "/v1/messages":
 		writeError(writer, unsupported("Anthropic source handling is provided by the isolated Anthropic lane"))
 		return
@@ -66,31 +71,51 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, err)
 		return
 	}
+	normalized := routed.normalized
 	if err = ensureContextLimit(normalized, h.config.Policy); err != nil {
 		writeError(writer, err)
 		return
 	}
-	routes, err := h.routes.selectRoutes(normalized)
+	routes, err := h.routes.selectRoutesFor(routed)
 	if err != nil {
 		writeError(writer, err)
 		return
 	}
 	h.emit(normalized, routes[0], 1, proxycontract.EventRequestStarted, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
-	result, err := h.dispatch(request.Context(), normalized, routes)
+	deadline, parseErr := time.Parse(time.RFC3339, normalized.Limits.DeadlineAt)
+	if parseErr != nil {
+		writeError(writer, safeError("invalid_request", "request deadline is invalid", 400, false))
+		return
+	}
+	remaining := deadline.Sub(h.config.Now())
+	if remaining <= 0 {
+		writeError(writer, safeError("timeout_before_first_byte", "request deadline elapsed", 504, false))
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), remaining)
+	defer cancel()
+	started := h.config.Now()
+	result, err := h.dispatch(ctx, routed, routes)
 	if err != nil {
-		if errors.Is(request.Context().Err(), context.Canceled) {
-			h.emit(normalized, routes[0], 1, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, 0, nil)
+		if errors.Is(ctx.Err(), context.Canceled) {
+			h.emit(normalized, routes[0], 1, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, h.config.Now().Sub(started), nil)
+		} else {
+			h.emit(normalized, routes[0], 1, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
 		}
 		writeError(writer, err)
 		return
 	}
 	if normalized.Stream {
-		err = streamResponse(request.Context(), writer, result, normalized)
-		if errors.Is(err, request.Context().Err()) {
-			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, 0, nil)
+		usage, err := streamResponse(ctx, writer, result, normalized)
+		latency := h.config.Now().Sub(started)
+		if errors.Is(err, ctx.Err()) {
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, latency, nil)
 		} else if err == nil {
-			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
-			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, usage)
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, usage)
+		} else {
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(err), latency, usage)
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), latency, usage)
 		}
 		return
 	}
@@ -102,8 +127,54 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if err = writeSourceResponse(writer, normalized.Protocol, response); err != nil {
 		return
 	}
-	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, &response.Usage)
-	h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, &response.Usage)
+	latency := h.config.Now().Sub(started)
+	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, &response.Usage)
+	h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, &response.Usage)
+}
+
+func (h *Handler) ready(parent context.Context) bool {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	for _, route := range h.config.Policy.Routes {
+		resolved, err := h.config.Resolver.Resolve(ctx, route)
+		if err != nil || len(resolved.Addresses) == 0 {
+			continue
+		}
+		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
+		if err == nil && credential != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func reasonForError(err error) proxycontract.EventReasonCode {
+	var api *APIError
+	if !errors.As(err, &api) {
+		return proxycontract.EventReasonPolicyDenied
+	}
+	switch api.Code {
+	case "cancelled":
+		return proxycontract.EventReasonCancelled
+	case "authentication_failed", "credential_unavailable":
+		return proxycontract.EventReasonAuthenticationFailed
+	case "connection_failure":
+		return proxycontract.EventReasonConnectionFailure
+	case "timeout_before_first_byte":
+		return proxycontract.EventReasonTimeoutBeforeFirstByte
+	case "rate_limited":
+		return proxycontract.EventReasonRateLimited
+	case "upstream_5xx":
+		return proxycontract.EventReasonUpstream5xx
+	case "model_unavailable":
+		return proxycontract.EventReasonModelUnavailable
+	case "context_overflow":
+		return proxycontract.EventReasonCompatibleContextOverflow
+	case "unsupported_capability":
+		return proxycontract.EventReasonUnsupportedCapability
+	default:
+		return proxycontract.EventReasonPolicyDenied
+	}
 }
 
 func (h *Handler) writeModels(writer http.ResponseWriter) {

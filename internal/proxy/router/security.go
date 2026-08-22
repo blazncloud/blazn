@@ -137,6 +137,10 @@ func redirectPolicy(route proxycontract.Route) func(*http.Request, []*http.Reque
 		if next.URL.Scheme != route.Endpoint.Scheme || !strings.EqualFold(next.URL.Hostname(), route.Endpoint.Hostname) || port != strconv.Itoa(route.Endpoint.Port) {
 			return errors.New("redirect leaves the validated route")
 		}
+		base := strings.TrimRight(route.Endpoint.BasePath, "/") + "/"
+		if next.URL.Path != strings.TrimRight(route.Endpoint.BasePath, "/") && !strings.HasPrefix(next.URL.Path, base) {
+			return errors.New("redirect leaves the validated route base path")
+		}
 		return nil
 	}
 }

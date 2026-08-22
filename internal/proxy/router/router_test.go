@@ -66,12 +66,13 @@ type upstreamCall struct{ RouteID, Authorization, ListenerToken, Path, Body stri
 func testHandler(t *testing.T, transport func(proxycontract.Route, *http.Request) (*http.Response, error), sink EventSink) (*Handler, *proxycontract.Policy) {
 	t.Helper()
 	policy := fixturePolicy(t)
-	config := Config{Policy: policy, ActivationID: activationID, ListenerToken: "listener-secret", Credentials: credentialMap{"node-route://qwen38": "local-destination", "workspace-vault://poc/model-providers/openai": "cloud-destination"}, Resolver: EndpointResolver{DNS: staticDNS{"127.0.0.1": {netip.MustParseAddr("127.0.0.1")}, "api.openai.com": {netip.MustParseAddr("93.184.216.34")}}}, ClientFactory: func(route proxycontract.Route, _ ResolvedEndpoint) *http.Client {
-		return &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) { return transport(route, request) }), CheckRedirect: redirectPolicy(route)}
-	}, Events: sink, Now: func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }}
+	config := Config{Policy: policy, ActivationID: activationID, ListenerToken: "listener-secret", Credentials: credentialMap{"node-route://qwen38": "local-destination", "workspace-vault://poc/model-providers/openai": "cloud-destination"}, Resolver: EndpointResolver{DNS: staticDNS{"127.0.0.1": {netip.MustParseAddr("127.0.0.1")}, "api.openai.com": {netip.MustParseAddr("93.184.216.34")}}}, Events: sink, Now: func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }}
 	handler, err := NewHandler(config)
 	if err != nil {
 		t.Fatal(err)
+	}
+	handler.transportFactory = func(route proxycontract.Route, _ ResolvedEndpoint) http.RoundTripper {
+		return roundTripFunc(func(request *http.Request) (*http.Response, error) { return transport(route, request) })
 	}
 	return handler, &policy
 }

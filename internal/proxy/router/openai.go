@@ -51,16 +51,24 @@ type chatToolCall struct {
 }
 
 type responsesRequest struct {
-	Model           string          `json:"model"`
-	Instructions    string          `json:"instructions,omitempty"`
-	Input           json.RawMessage `json:"input"`
-	Stream          bool            `json:"stream,omitempty"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	Tools           []responseTool  `json:"tools,omitempty"`
-	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
-	Text            json.RawMessage `json:"text,omitempty"`
+	Model             string          `json:"model"`
+	Instructions      string          `json:"instructions,omitempty"`
+	Input             json.RawMessage `json:"input"`
+	Stream            bool            `json:"stream,omitempty"`
+	MaxOutputTokens   int             `json:"max_output_tokens,omitempty"`
+	Temperature       *float64        `json:"temperature,omitempty"`
+	TopP              *float64        `json:"top_p,omitempty"`
+	Tools             []responseTool  `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage `json:"tool_choice,omitempty"`
+	Text              json.RawMessage `json:"text,omitempty"`
+	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
+	Store             *bool           `json:"store,omitempty"`
+	Include           []string        `json:"include,omitempty"`
+	Reasoning         json.RawMessage `json:"reasoning,omitempty"`
+	StreamOptions     json.RawMessage `json:"stream_options,omitempty"`
+	ServiceTier       string          `json:"service_tier,omitempty"`
+	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
+	ClientMetadata    json.RawMessage `json:"client_metadata,omitempty"`
 }
 type responseTool struct {
 	Type        string         `json:"type"`
@@ -69,13 +77,39 @@ type responseTool struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 type responseInput struct {
-	Type      string          `json:"type,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Output    json.RawMessage `json:"output,omitempty"`
+	Type             string          `json:"type,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Arguments        json.RawMessage `json:"arguments,omitempty"`
+	Output           json.RawMessage `json:"output,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Summary          json.RawMessage `json:"summary,omitempty"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+}
+
+type sourceMetadata struct {
+	responses            *responsesMetadata
+	responseSchemaName   string
+	responseSchemaStrict bool
+}
+
+type responsesMetadata struct {
+	parallelToolCalls *bool
+	store             *bool
+	include           []string
+	reasoning         json.RawMessage
+	streamOptions     json.RawMessage
+	serviceTier       string
+	promptCacheKey    string
+	clientMetadata    json.RawMessage
+	reasoningItems    []json.RawMessage
+}
+
+type routedRequest struct {
+	normalized proxycontract.NormalizedRequest
+	source     sourceMetadata
 }
 
 func decodeStrictJSON[T any](body io.Reader, target *T) error {
@@ -224,6 +258,10 @@ func normalizeResponses(body io.Reader, policy proxycontract.Policy, now time.Ti
 				blocks = append(blocks, proxycontract.RequestBlock{Role: "assistant", Type: "tool_call", CallID: stringPtr(input.CallID), ToolName: stringPtr(input.Name), Arguments: normalizeJSONValue(input.Arguments)})
 			case "function_call_output":
 				blocks = append(blocks, proxycontract.RequestBlock{Role: "tool", Type: "tool_result", CallID: stringPtr(input.CallID), Result: normalizeJSONValue(input.Output)})
+			case "reasoning":
+				if input.ID == "" {
+					return proxycontract.NormalizedRequest{}, unsupported("reasoning item requires an id")
+				}
 			default:
 				return proxycontract.NormalizedRequest{}, unsupported("Responses input item type is unsupported")
 			}
@@ -263,6 +301,185 @@ func normalizeResponses(body io.Reader, policy proxycontract.Policy, now time.Ti
 		return proxycontract.NormalizedRequest{}, safeError("invalid_request", "request is outside the supported Responses subset", 400, false)
 	}
 	return request, nil
+}
+
+func normalizeChatIncoming(body io.Reader, policy proxycontract.Policy, now time.Time) (routedRequest, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxRequestBytes+1))
+	if err != nil {
+		return routedRequest{}, err
+	}
+	if len(raw) > maxRequestBytes {
+		return routedRequest{}, safeError("invalid_request", "request exceeds the body limit", 413, false)
+	}
+	normalized, err := normalizeChat(bytes.NewReader(raw), policy, now)
+	if err != nil {
+		return routedRequest{}, err
+	}
+	var source chatRequest
+	if err = decodeStrictJSON(bytes.NewReader(raw), &source); err != nil {
+		return routedRequest{}, safeError("invalid_request", "invalid OpenAI Chat request", 400, false)
+	}
+	name, strict, err := inspectChatSchema(source.ResponseFormat)
+	if err != nil {
+		return routedRequest{}, err
+	}
+	return routedRequest{normalized: normalized, source: sourceMetadata{responseSchemaName: name, responseSchemaStrict: strict}}, nil
+}
+
+func normalizeResponsesIncoming(body io.Reader, policy proxycontract.Policy, now time.Time) (routedRequest, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, maxRequestBytes+1))
+	if err != nil {
+		return routedRequest{}, err
+	}
+	if len(raw) > maxRequestBytes {
+		return routedRequest{}, safeError("invalid_request", "request exceeds the body limit", 413, false)
+	}
+	normalized, err := normalizeResponses(bytes.NewReader(raw), policy, now)
+	if err != nil {
+		return routedRequest{}, err
+	}
+	var source responsesRequest
+	if err = decodeStrictJSON(bytes.NewReader(raw), &source); err != nil {
+		return routedRequest{}, safeError("invalid_request", "invalid OpenAI Responses request", 400, false)
+	}
+	metadata, err := inspectResponsesMetadata(source)
+	if err != nil {
+		return routedRequest{}, err
+	}
+	name, strict, err := inspectResponsesSchema(source.Text)
+	if err != nil {
+		return routedRequest{}, err
+	}
+	metadata.reasoningItems, err = extractReasoningItems(source.Input)
+	if err != nil {
+		return routedRequest{}, err
+	}
+	return routedRequest{normalized: normalized, source: sourceMetadata{responses: &metadata, responseSchemaName: name, responseSchemaStrict: strict}}, nil
+}
+
+func inspectResponsesMetadata(source responsesRequest) (responsesMetadata, error) {
+	metadata := responsesMetadata{parallelToolCalls: source.ParallelToolCalls, store: source.Store, include: append([]string(nil), source.Include...), reasoning: append(json.RawMessage(nil), source.Reasoning...), streamOptions: append(json.RawMessage(nil), source.StreamOptions...), serviceTier: source.ServiceTier, promptCacheKey: source.PromptCacheKey, clientMetadata: append(json.RawMessage(nil), source.ClientMetadata...)}
+	if source.Store != nil && *source.Store {
+		return metadata, unsupported("store=true is forbidden by the proxy data-retention policy")
+	}
+	for _, item := range source.Include {
+		if item != "reasoning.encrypted_content" {
+			return metadata, unsupported("Responses include value is unsupported")
+		}
+	}
+	if len(source.Reasoning) > 0 && string(source.Reasoning) != "null" {
+		var value struct {
+			Effort  string `json:"effort,omitempty"`
+			Summary string `json:"summary,omitempty"`
+		}
+		if err := decodeRawStrict(source.Reasoning, &value); err != nil {
+			return metadata, unsupported("Responses reasoning options are unsupported")
+		}
+		if value.Effort != "" && value.Effort != "none" && value.Effort != "minimal" && value.Effort != "low" && value.Effort != "medium" && value.Effort != "high" && value.Effort != "xhigh" {
+			return metadata, unsupported("Responses reasoning effort is unsupported")
+		}
+		if value.Summary != "" && value.Summary != "auto" && value.Summary != "concise" && value.Summary != "detailed" {
+			return metadata, unsupported("Responses reasoning summary is unsupported")
+		}
+	}
+	if len(source.StreamOptions) > 0 && string(source.StreamOptions) != "null" {
+		var value struct {
+			IncludeObfuscation bool `json:"include_obfuscation"`
+		}
+		if err := decodeRawStrict(source.StreamOptions, &value); err != nil {
+			return metadata, unsupported("Responses stream_options are unsupported")
+		}
+	}
+	if source.ServiceTier != "" && source.ServiceTier != "auto" && source.ServiceTier != "default" {
+		return metadata, unsupported("Responses service_tier is unsupported")
+	}
+	if len(source.PromptCacheKey) > 256 {
+		return metadata, safeError("invalid_request", "prompt_cache_key is too long", 400, false)
+	}
+	if len(source.ClientMetadata) > 0 && string(source.ClientMetadata) != "null" {
+		var value map[string]string
+		if err := decodeRawStrict(source.ClientMetadata, &value); err != nil || len(value) > 16 {
+			return metadata, unsupported("client_metadata must be a small string map")
+		}
+		for key, item := range value {
+			if len(key) > 64 || len(item) > 512 {
+				return metadata, safeError("invalid_request", "client_metadata entry is too long", 400, false)
+			}
+		}
+	}
+	return metadata, nil
+}
+
+func extractReasoningItems(raw json.RawMessage) ([]json.RawMessage, error) {
+	var inputs []json.RawMessage
+	if len(raw) == 0 || json.Unmarshal(raw, &inputs) != nil {
+		return nil, nil
+	}
+	out := []json.RawMessage{}
+	for _, item := range inputs {
+		var header struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(item, &header) != nil {
+			continue
+		}
+		if header.Type == "reasoning" {
+			var value responseInput
+			if err := decodeRawStrict(item, &value); err != nil {
+				return nil, unsupported("reasoning input item is unsupported")
+			}
+			out = append(out, append(json.RawMessage(nil), item...))
+		}
+	}
+	return out, nil
+}
+
+func inspectChatSchema(raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false, nil
+	}
+	var value struct {
+		Type       string `json:"type"`
+		JSONSchema struct {
+			Name   string         `json:"name"`
+			Schema map[string]any `json:"schema"`
+			Strict bool           `json:"strict,omitempty"`
+		} `json:"json_schema"`
+	}
+	if err := decodeRawStrict(raw, &value); err != nil {
+		return "", false, unsupported("response_format is unsupported")
+	}
+	if value.Type != "json_schema" {
+		return "", false, nil
+	}
+	if value.JSONSchema.Name == "" {
+		return "", false, safeError("invalid_request", "json_schema name is required", 400, false)
+	}
+	return value.JSONSchema.Name, value.JSONSchema.Strict, nil
+}
+
+func inspectResponsesSchema(raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false, nil
+	}
+	var value struct {
+		Format struct {
+			Type   string         `json:"type"`
+			Name   string         `json:"name"`
+			Schema map[string]any `json:"schema"`
+			Strict bool           `json:"strict,omitempty"`
+		} `json:"format"`
+	}
+	if err := decodeRawStrict(raw, &value); err != nil {
+		return "", false, unsupported("Responses text format is unsupported")
+	}
+	if value.Format.Type != "json_schema" {
+		return "", false, nil
+	}
+	if value.Format.Name == "" {
+		return "", false, safeError("invalid_request", "json_schema name is required", 400, false)
+	}
+	return value.Format.Name, value.Format.Strict, nil
 }
 
 func unsupported(message string) error {
@@ -417,18 +634,18 @@ func parseResponsesText(raw json.RawMessage) (map[string]any, error) {
 	}
 	return value.Format.Schema, nil
 }
-func estimateInputTokens(blocks []proxycontract.RequestBlock) int {
-	count := 0
-	for _, block := range blocks {
-		if block.Text != nil {
-			count += len([]rune(*block.Text))
-		}
-		count += len(block.Arguments) + len(block.Result)
-	}
-	return (count + 3) / 4
+func estimateInputTokens(request proxycontract.NormalizedRequest) int {
+	encoded, _ := json.Marshal(struct {
+		Blocks         []proxycontract.RequestBlock `json:"blocks"`
+		Tools          []proxycontract.Tool         `json:"tools"`
+		ResponseSchema map[string]any               `json:"responseSchema,omitempty"`
+	}{request.Blocks, request.Tools, request.ResponseSchema})
+	// The POC uses a conservative tokenizer-independent ceiling: four UTF-8
+	// bytes per token plus fixed protocol framing for every block and tool.
+	return (len(encoded)+3)/4 + 16*(len(request.Blocks)+len(request.Tools)+1)
 }
 func ensureContextLimit(request proxycontract.NormalizedRequest, policy proxycontract.Policy) error {
-	if estimateInputTokens(request.Blocks)+request.Limits.MaxOutputTokens > policy.RequestLimits.MaxContextTokens {
+	if estimateInputTokens(request)+request.Limits.MaxOutputTokens > policy.RequestLimits.MaxContextTokens {
 		return safeError("context_overflow", "request exceeds the policy context limit", 400, false)
 	}
 	return nil
