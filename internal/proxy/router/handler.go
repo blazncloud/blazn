@@ -83,11 +83,13 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, err)
 		return
 	}
-	h.emit(normalized, result.route, result.attempt, proxycontract.EventRouteSelected, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
 	if normalized.Stream {
 		err = streamResponse(request.Context(), writer, result, normalized)
 		if errors.Is(err, request.Context().Err()) {
 			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestCancelled, proxycontract.OutcomeCancelled, proxycontract.EventReasonCancelled, 0, nil)
+		} else if err == nil {
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
+			h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
 		}
 		return
 	}
@@ -99,6 +101,7 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if err = writeSourceResponse(writer, normalized.Protocol, response); err != nil {
 		return
 	}
+	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, &response.Usage)
 	h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, &response.Usage)
 }
 

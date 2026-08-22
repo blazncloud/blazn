@@ -28,6 +28,13 @@ func (h *Handler) dispatch(ctx context.Context, request proxycontract.Normalized
 		if attempt > 0 && !h.fallbackAllowed(last) {
 			break
 		}
+		selectionOutcome := proxycontract.OutcomeSuccess
+		selectionReason := proxycontract.EventReasonNone
+		if attempt > 0 {
+			selectionOutcome = proxycontract.OutcomeFallback
+			selectionReason = proxycontract.EventReasonFallbackSelected
+		}
+		h.emit(request, route, attempt+1, proxycontract.EventRouteSelected, selectionOutcome, selectionReason, 0, nil)
 		resolved, err := h.config.Resolver.Resolve(ctx, route)
 		if err != nil {
 			last = &APIError{Code: "connection_failure", Message: "upstream route is unavailable", Status: 502, Retryable: true, Reason: proxycontract.ReasonConnectionFailure, Cause: err}

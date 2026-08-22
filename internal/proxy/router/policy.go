@@ -33,6 +33,13 @@ func LoadPolicy(path string) (proxycontract.Policy, string, error) {
 		return zero, "", fmt.Errorf("POLICY_INVALID: open: %w", err)
 	}
 	defer f.Close()
+	openedInfo, err := f.Stat()
+	if err != nil || !os.SameFile(info, openedInfo) {
+		return zero, "", fmt.Errorf("POLICY_INVALID: policy changed while opening")
+	}
+	if err := verifyPolicyOwner(openedInfo); err != nil {
+		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
+	}
 	policy, err := proxycontract.DecodePolicy(io.LimitReader(f, maxPolicyBytes+1))
 	if err != nil {
 		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
@@ -68,6 +75,12 @@ func validatePolicySemantics(policy proxycontract.Policy) error {
 		}
 		if route.Endpoint.BasePath != "/v1" {
 			return fmt.Errorf("route %s basePath must be /v1 for the POC", route.ID)
+		}
+		if route.DestinationClass == proxycontract.DestinationLocalNode && !strings.HasPrefix(route.CredentialRef, "node-route://") {
+			return fmt.Errorf("route %s local credentialRef must use node-route://", route.ID)
+		}
+		if (route.DestinationClass == proxycontract.DestinationProvider || route.DestinationClass == proxycontract.DestinationBlaznCloud) && !strings.HasPrefix(route.CredentialRef, "workspace-vault://") {
+			return fmt.Errorf("route %s external credentialRef must use workspace-vault://", route.ID)
 		}
 		if route.DestinationProtocol == proxycontract.ProtocolAnthropicMessages {
 			return fmt.Errorf("route %s: Anthropic destination translation is outside this lane", route.ID)

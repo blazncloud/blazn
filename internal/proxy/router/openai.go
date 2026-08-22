@@ -103,6 +103,12 @@ func normalizeChat(body io.Reader, policy proxycontract.Policy, now time.Time) (
 	if len(source.Messages) == 0 {
 		return proxycontract.NormalizedRequest{}, safeError("invalid_request", "messages must not be empty", 400, false)
 	}
+	if source.MaxTokens > 0 && source.MaxCompletionTokens > 0 {
+		return proxycontract.NormalizedRequest{}, safeError("invalid_request", "max_tokens and max_completion_tokens are mutually exclusive", 400, false)
+	}
+	if err := validateStreamOptions(source.Stream, source.StreamOptions); err != nil {
+		return proxycontract.NormalizedRequest{}, err
+	}
 	maxOutput := source.MaxCompletionTokens
 	if maxOutput == 0 {
 		maxOutput = source.MaxTokens
@@ -303,6 +309,22 @@ func parseStop(raw json.RawMessage) ([]string, error) {
 		return many, nil
 	}
 	return nil, safeError("invalid_request", "stop must be a string or string array", 400, false)
+}
+
+func validateStreamOptions(stream bool, raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	if !stream {
+		return safeError("invalid_request", "stream_options requires streaming", 400, false)
+	}
+	var options struct {
+		IncludeUsage bool `json:"include_usage"`
+	}
+	if err := decodeRawStrict(raw, &options); err != nil || !options.IncludeUsage {
+		return unsupported("only stream_options.include_usage=true is supported")
+	}
+	return nil
 }
 func parseToolChoice(raw json.RawMessage) (proxycontract.ToolChoice, error) {
 	if len(raw) == 0 || string(raw) == "null" {

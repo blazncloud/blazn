@@ -97,7 +97,7 @@ func validateAddress(policy proxycontract.ResolvedAddressPolicy, address netip.A
 			return errors.New("POC node tunnel must terminate on loopback")
 		}
 	case proxycontract.AddressPublicUnicast:
-		if address.IsLoopback() || address.IsPrivate() || isMetadataAddress(address) {
+		if address.IsLoopback() || address.IsPrivate() || isNonPublicAddress(address) {
 			return errors.New("external endpoint resolved to a non-public address")
 		}
 	default:
@@ -106,8 +106,13 @@ func validateAddress(policy proxycontract.ResolvedAddressPolicy, address netip.A
 	return nil
 }
 
-func isMetadataAddress(address netip.Addr) bool {
-	for _, prefix := range []string{"169.254.169.254/32", "100.100.100.200/32", "fd00:ec2::254/128"} {
+func isNonPublicAddress(address netip.Addr) bool {
+	for _, prefix := range []string{
+		"0.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+		"192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24",
+		"203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4", "::/128", "::1/128",
+		"100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "ff00::/8",
+	} {
 		parsed := netip.MustParsePrefix(prefix)
 		if parsed.Contains(address) {
 			return true
@@ -117,15 +122,19 @@ func isMetadataAddress(address netip.Addr) bool {
 }
 
 func redirectPolicy(route proxycontract.Route) func(*http.Request, []*http.Request) error {
-	allowed := make(map[string]bool, len(route.Endpoint.HostnameAllowlist))
-	for _, host := range route.Endpoint.HostnameAllowlist {
-		allowed[strings.ToLower(host)] = true
-	}
 	return func(next *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return errors.New("redirect limit exceeded")
 		}
-		if next.URL.Scheme != route.Endpoint.Scheme || !allowed[strings.ToLower(next.URL.Hostname())] || next.URL.Port() != strconv.Itoa(route.Endpoint.Port) {
+		port := next.URL.Port()
+		if port == "" {
+			if next.URL.Scheme == "https" {
+				port = "443"
+			} else if next.URL.Scheme == "http" {
+				port = "80"
+			}
+		}
+		if next.URL.Scheme != route.Endpoint.Scheme || !strings.EqualFold(next.URL.Hostname(), route.Endpoint.Hostname) || port != strconv.Itoa(route.Endpoint.Port) {
 			return errors.New("redirect leaves the validated route")
 		}
 		return nil

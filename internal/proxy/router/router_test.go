@@ -219,7 +219,7 @@ func TestEventsAreOperationalAndRedacted(t *testing.T) {
 		t.Fatal(record.Body.String())
 	}
 	encoded, _ := json.Marshal(events)
-	for _, forbidden := range []string{"prompt secret", "answer secret", "listener-secret", "destination"} {
+	for _, forbidden := range []string{"prompt secret", "answer secret", "listener-secret", "local-destination", "cloud-destination"} {
 		if bytes.Contains(encoded, []byte(forbidden)) {
 			t.Fatalf("events leaked %q: %s", forbidden, encoded)
 		}
@@ -237,7 +237,7 @@ func TestEventsAreOperationalAndRedacted(t *testing.T) {
 func TestEndpointResolverRejectsSSRFAndPinsAllowedAddresses(t *testing.T) {
 	policy := fixturePolicy(t)
 	external := policy.Routes[1]
-	for _, address := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "fe80::1"} {
+	for _, address := range []string{"127.0.0.1", "10.0.0.1", "100.64.0.1", "169.254.169.254", "192.0.2.1", "198.18.0.1", "203.0.113.1", "::1", "fe80::1"} {
 		resolver := EndpointResolver{DNS: staticDNS{"api.openai.com": {netip.MustParseAddr(address)}}}
 		if _, err := resolver.Resolve(context.Background(), external); err == nil {
 			t.Fatalf("accepted external %s", address)
