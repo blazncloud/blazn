@@ -42,6 +42,10 @@ PATH="$tmp/bin:$PATH" \
 grep -F 'blazn.dev/runtime-trust: orchestration-only' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null
 if grep -F 'runtimeClassName:' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null; then exit 1; fi
 grep -F "object.metadata.labels['blazn.dev/runtime-trust'] == 'orchestration-only'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/blazn-poc.yaml")" -eq 4 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/bootstrap.yaml")" -eq 6 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/controller-boundary.yaml")" -eq 8 ]
+[ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/synthetic-canary.yaml")" -eq 2 ]
 PATH="$tmp/bin:$PATH" \
   BLAZN_EXISTING_CLUSTER_QUEUE=shared-capacity \
   BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \

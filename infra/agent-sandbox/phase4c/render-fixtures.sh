@@ -89,7 +89,13 @@ sed \
   -e "s|BLAZN_TRANSACTION_ID|$BLAZN_PHASE4C_TRANSACTION_ID|g" \
   "$ROOT/synthetic-canary.yaml.in" >"$output/synthetic-canary.yaml"
 for rendered in "$output"/*.yaml; do
-  awk '$0 == "metadata:" { print; print "  annotations:"; print "    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"]; next } { print }' "$rendered" >"$tmp/annotated.yaml"
+  awk '
+    $0 == "metadata:" { inmeta=1; has_annotations=0; print; next }
+    inmeta && $0 == "  annotations:" { has_annotations=1; print; print "    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"]; next }
+    inmeta && $0 !~ /^  / { if (!has_annotations) { print "  annotations:"; print "    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] }; inmeta=0 }
+    { print }
+    END { if (inmeta && !has_annotations) { print "  annotations:"; print "    blazn.dev/phase4c-transaction: " ENVIRON["BLAZN_PHASE4C_TRANSACTION_ID"] } }
+  ' "$rendered" >"$tmp/annotated.yaml"
   mv "$tmp/annotated.yaml" "$rendered"
 done
 chmod 0400 "$output"/*.yaml
