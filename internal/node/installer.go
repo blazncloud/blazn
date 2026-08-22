@@ -196,6 +196,9 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 }
 
 func (i *Installer) receipt(plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity, servicePrior ServicePriorState, wal InstallWAL, state string, residues []client.NodeReceiptResidue) (client.NodeInstallReceipt, error) {
+	if residues == nil {
+		residues = []client.NodeReceiptResidue{}
+	}
 	fingerprint, err := identity.Fingerprint()
 	if err != nil {
 		return client.NodeInstallReceipt{}, err
