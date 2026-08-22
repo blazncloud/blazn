@@ -90,9 +90,9 @@ class PgNodeTransaction implements NodeTransaction {
     return result.rows.map(nodeRow);
   }
   async activeIdentity(nodeId: string, lockNode = false): Promise<ActiveNodeIdentity | undefined> {
-    const result = await this.client.query(`SELECT n.id AS node_id,n.workspace_id,n.lifecycle_state,n.trust_state,n.version AS node_version,i.generation,i.public_key,i.public_key_fingerprint,i.signing_key_id
-      FROM nodes n JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation AND i.status='active' AND i.expires_at>statement_timestamp() WHERE n.id=$1${lockNode ? " FOR UPDATE OF n" : ""}`, [nodeId]);
-    const r=result.rows[0]; return r ? { nodeId:r.node_id,workspaceId:r.workspace_id,generation:Number(r.generation),publicKey:r.public_key,publicKeyFingerprint:r.public_key_fingerprint.trim(),signingKeyId:r.signing_key_id,lifecycleState:r.lifecycle_state,trustState:r.trust_state,nodeVersion:Number(r.node_version) } : undefined;
+    const result = await this.client.query(`SELECT n.id AS node_id,n.workspace_id,n.lifecycle_state,n.trust_state,n.version AS node_version,i.generation,i.public_key,i.public_key_fingerprint,i.signing_key_id,i.expires_at
+      FROM nodes n JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation AND i.status='active' WHERE n.id=$1${lockNode ? " FOR UPDATE OF n,i" : ""}`, [nodeId]);
+    const r=result.rows[0];if(!r)return undefined;const clock=await this.client.query<{now:Date}>("SELECT clock_timestamp() AS now");if(r.expires_at.getTime()<=clock.rows[0]!.now.getTime())return undefined;return { nodeId:r.node_id,workspaceId:r.workspace_id,generation:Number(r.generation),publicKey:r.public_key,publicKeyFingerprint:r.public_key_fingerprint.trim(),signingKeyId:r.signing_key_id,lifecycleState:r.lifecycle_state,trustState:r.trust_state,nodeVersion:Number(r.node_version) };
   }
   async heartbeatState(nodeId: string): Promise<HeartbeatState | undefined> {
     const result=await this.client.query("SELECT * FROM node_heartbeat_state WHERE node_id=$1",[nodeId]); const r=result.rows[0];
