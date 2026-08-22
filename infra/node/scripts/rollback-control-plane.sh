@@ -101,7 +101,7 @@ DROP ROLE blazn_node_broker;
 COMMIT;
 SQL
   elif [ "$role_count" != 0 ]; then die "could not determine broker role state"; fi
-  controller_role_preexisting=$(jq -r '.databaseRoles.sandboxControllerPreexisting // "unrecorded"' "$UPGRADE_RECEIPT")
+  controller_role_preexisting=$(jq -r 'if ((.databaseRoles? | type)=="object" and (.databaseRoles | has("sandboxControllerPreexisting"))) then .databaseRoles.sandboxControllerPreexisting else "unrecorded" end' "$UPGRADE_RECEIPT")
   case "$controller_role_preexisting" in
     true)
       controller_role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_sandbox_controller'")

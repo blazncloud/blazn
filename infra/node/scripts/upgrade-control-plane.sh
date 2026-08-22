@@ -124,8 +124,8 @@ if [ "$phase" = inputs-backed-up ]; then
   postgres_container=$(compose ps -q postgres)
   [ -n "$postgres_container" ] || die "the exact Blazn PostgreSQL container is not running"
   [ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.State.Status}}' "$postgres_container")" = blazn-m2/postgres/running ] || die "the running PostgreSQL container is not the expected Compose service"
-  controller_role_preexisting=$(jq -r '.databaseRoles.sandboxControllerPreexisting // empty' "$UPGRADE_RECEIPT")
-  if [ -z "$controller_role_preexisting" ]; then
+  controller_role_preexisting=$(jq -r 'if ((.databaseRoles? | type)=="object" and (.databaseRoles | has("sandboxControllerPreexisting"))) then .databaseRoles.sandboxControllerPreexisting else "unrecorded" end' "$UPGRADE_RECEIPT")
+  if [ "$controller_role_preexisting" = unrecorded ]; then
     controller_role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_sandbox_controller'")
     case "$controller_role_count" in 0) controller_role_preexisting=false ;; 1) controller_role_preexisting=true ;; *) die "could not determine Sandbox controller role state" ;; esac
     tmp=$UPGRADE_RECEIPT.tmp.$$
@@ -153,6 +153,7 @@ if [ "$phase" = inputs-backed-up ]; then
     printf "ALTER ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s';\n" "$password"
     printf 'GRANT CONNECT ON DATABASE "%s" TO blazn_node_broker, blazn_sandbox_controller; GRANT USAGE ON SCHEMA public TO blazn_node_broker, blazn_sandbox_controller; COMMIT;\n' "${POSTGRES_DB:-blazn}"
   } | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+  test_fault role-transaction-committed
   compose run --rm -T node-migration-preflight >/dev/null
   write_phase role-ready; phase=role-ready; test_fault role-ready
 fi

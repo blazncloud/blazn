@@ -33,6 +33,7 @@ case "$*" in
     elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_node_broker'; then : >"$FAKE_ROLE_STATE"; fi
     if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_sandbox_controller'; then rm -f "$FAKE_CONTROLLER_ROLE_STATE"
     elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_sandbox_controller'; then : >"$FAKE_CONTROLLER_ROLE_STATE"; fi
+    exit 0
     ;;
   "compose "*" run --rm -T node-migration-preflight") [ -f "$FAKE_ROLE_STATE" ] ;;
   *) printf 'unexpected synthetic docker call: %s\n' "$*" >&2; exit 97 ;;
@@ -116,6 +117,15 @@ if run_upgrade "$sql_root" '' 1 >"$sql_root/sql-first.out" 2>"$sql_root/sql-firs
 sudo jq -e '.phase=="inputs-backed-up"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
 run_upgrade "$sql_root" >"$sql_root/sql-retry.out"
 sudo jq -e '.phase=="complete"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
+
+role_commit_root=$(fixture role-transaction-committed)
+if run_upgrade "$role_commit_root" role-transaction-committed >"$role_commit_root/first.out" 2>"$role_commit_root/first.err"; then printf 'role transaction fault unexpectedly passed\n' >&2; exit 1; fi
+sudo jq -e '.phase=="inputs-backed-up" and .databaseRoles.sandboxControllerPreexisting==false' "$role_commit_root/ownership/node-broker-upgrade.json" >/dev/null
+[ -e "$role_commit_root/controller-role-ready" ] || { printf 'role transaction fault did not leave the created controller role\n' >&2; exit 1; }
+run_upgrade "$role_commit_root" >"$role_commit_root/retry.out"
+sudo jq -e '.phase=="complete" and .databaseRoles.sandboxControllerPreexisting==false' "$role_commit_root/ownership/node-broker-upgrade.json" >/dev/null
+run_rollback "$role_commit_root" >"$role_commit_root/rollback.out"
+[ ! -e "$role_commit_root/controller-role-ready" ] || { printf 'resumed rollback retained the upgrade-created controller role\n' >&2; exit 1; }
 
 partial_sql_root=$(fixture partial-inputs-backed-up)
 if run_upgrade "$partial_sql_root" '' 1 >"$partial_sql_root/upgrade.out" 2>"$partial_sql_root/upgrade.err"; then printf 'partial SQL failure unexpectedly passed\n' >&2; exit 1; fi

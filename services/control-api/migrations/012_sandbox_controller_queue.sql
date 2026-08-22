@@ -123,6 +123,31 @@ RETURN CASE p_type
   ELSE false
 END;
 
+CREATE FUNCTION sandbox_controller_quarantine_stale(
+  p_operation_id uuid, p_workspace_id uuid, p_sandbox_id uuid, p_operation_type text,
+  p_backend_uid text, p_backend_resource_version text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE effective_now timestamptz := clock_timestamp(); recovery_receipt uuid := gen_random_uuid();
+BEGIN
+  INSERT INTO public.sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,
+    result,error,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version)
+  VALUES(recovery_receipt,p_operation_id,p_workspace_id,p_sandbox_id,p_operation_type,'recovery_required',NULL,
+    jsonb_build_object('code','stale_sandbox_operation','message','operation no longer matches Sandbox state','requestId',gen_random_uuid()::text),
+    false,false,false,false,p_backend_uid IS NOT NULL,p_backend_uid,p_backend_resource_version);
+  UPDATE public.sandbox_operations SET status='recovery_required',terminal_receipt_id=recovery_receipt,completed_at=effective_now
+    WHERE id=p_operation_id;
+  UPDATE public.sandbox_reconcile_jobs SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,completed_at=effective_now,
+    last_error_code='stale_sandbox_operation',last_error_message='operation no longer matches Sandbox state',updated_at=effective_now
+    WHERE operation_id=p_operation_id;
+  PERFORM public.sandbox_controller_append_event(p_operation_id,p_workspace_id,p_sandbox_id,
+    'sandbox.operation.recovery_required','stale_sandbox_operation','operation no longer matches Sandbox state');
+END
+$$;
+
 -- Only pristine API-created pending operations are safe to activate during the
 -- upgrade.  A legacy running row or a row whose optimistic version/state no
 -- longer identifies the same Sandbox intent is terminally quarantined without
@@ -209,19 +234,8 @@ BEGIN
     IF NOT public.sandbox_controller_operation_is_current(selected.operation_type,selected.status,
         selected.expected_sandbox_version,selected.attempt_count,selected.state,selected.desired_state,
         selected.version,selected.backend_uid,selected.backend_resource_version,selected.admission_id) THEN
-      recovery_receipt := gen_random_uuid();
-      INSERT INTO public.sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,
-        result,error,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version)
-      VALUES(recovery_receipt,selected.operation_id,selected.workspace_id,selected.sandbox_id,selected.operation_type,'recovery_required',NULL,
-        jsonb_build_object('code','stale_sandbox_operation','message','operation no longer matches Sandbox state','requestId',gen_random_uuid()::text),
-        false,false,false,false,selected.backend_uid IS NOT NULL,selected.backend_uid,selected.backend_resource_version);
-      UPDATE public.sandbox_operations SET status='recovery_required',terminal_receipt_id=recovery_receipt,completed_at=effective_now
-        WHERE id=selected.operation_id;
-      UPDATE public.sandbox_reconcile_jobs SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,completed_at=effective_now,
-        last_error_code='stale_sandbox_operation',last_error_message='operation no longer matches Sandbox state',updated_at=effective_now
-        WHERE operation_id=selected.operation_id;
-      PERFORM public.sandbox_controller_append_event(selected.operation_id,selected.workspace_id,selected.sandbox_id,
-        'sandbox.operation.recovery_required','stale_sandbox_operation','operation no longer matches Sandbox state');
+      PERFORM public.sandbox_controller_quarantine_stale(selected.operation_id,selected.workspace_id,selected.sandbox_id,
+        selected.operation_type,selected.backend_uid,selected.backend_resource_version);
       CONTINUE;
     END IF;
 
@@ -234,9 +248,9 @@ BEGIN
         false,false,false,false,selected.backend_uid IS NOT NULL,selected.backend_uid,selected.backend_resource_version);
       UPDATE public.sandbox_operations SET status='recovery_required',terminal_receipt_id=recovery_receipt,completed_at=effective_now
         WHERE id=selected.operation_id;
-      UPDATE public.sandbox_reconcile_jobs SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,completed_at=effective_now,
+      UPDATE public.sandbox_reconcile_jobs j SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,completed_at=effective_now,
         last_error_code='lease_attempts_exhausted',last_error_message='controller lease attempts exhausted',updated_at=effective_now
-        WHERE operation_id=selected.operation_id;
+        WHERE j.operation_id=selected.operation_id;
       UPDATE public.sandboxes SET state='failed',version=version+1,updated_at=effective_now WHERE id=selected.sandbox_id;
       PERFORM public.sandbox_controller_append_event(selected.operation_id,selected.workspace_id,selected.sandbox_id,
         'sandbox.operation.recovery_required','lease_attempts_exhausted','controller lease attempts exhausted');
@@ -291,18 +305,29 @@ CREATE FUNCTION sandbox_controller_renew(
 RETURNS timestamptz
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
-DECLARE effective_now timestamptz := clock_timestamp(); renewed_until timestamptz;
+DECLARE effective_now timestamptz := clock_timestamp(); renewed_until timestamptz; target record;
 BEGIN
   IF p_worker_id IS NULL OR p_lease_seconds IS NULL OR
      p_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' OR p_lease_seconds NOT BETWEEN 5 AND 300 THEN
     RAISE EXCEPTION 'invalid sandbox controller lease renewal' USING ERRCODE='22023';
   END IF;
+  SELECT o.workspace_id,o.sandbox_id,o.type,o.status,o.expected_sandbox_version,j.attempt_count,
+      s.state,s.desired_state,s.version,s.backend_uid,s.backend_resource_version,s.admission_id INTO target
+    FROM public.sandbox_reconcile_jobs j JOIN public.sandbox_operations o ON o.id=j.operation_id
+    JOIN public.sandboxes s ON s.id=o.sandbox_id AND s.workspace_id=o.workspace_id
+    WHERE j.operation_id=p_operation_id AND j.completed_at IS NULL AND j.lease_owner=p_worker_id
+      AND j.lease_token=p_lease_token AND j.lease_expires_at>effective_now AND o.status='running'
+    FOR UPDATE OF j,o,s;
+  IF NOT FOUND THEN RETURN NULL; END IF;
+  IF NOT public.sandbox_controller_operation_is_current(target.type,target.status,target.expected_sandbox_version,
+      target.attempt_count,target.state,target.desired_state,target.version,target.backend_uid,
+      target.backend_resource_version,target.admission_id) THEN
+    PERFORM public.sandbox_controller_quarantine_stale(p_operation_id,target.workspace_id,target.sandbox_id,target.type,
+      target.backend_uid,target.backend_resource_version);
+    RETURN NULL;
+  END IF;
   UPDATE public.sandbox_reconcile_jobs SET lease_expires_at=effective_now+make_interval(secs=>p_lease_seconds),updated_at=effective_now
-    FROM public.sandbox_operations o
-    WHERE sandbox_reconcile_jobs.operation_id=p_operation_id AND o.id=sandbox_reconcile_jobs.operation_id
-      AND o.status='running' AND sandbox_reconcile_jobs.completed_at IS NULL AND lease_owner=p_worker_id
-      AND lease_token=p_lease_token AND lease_expires_at>effective_now
-    RETURNING sandbox_reconcile_jobs.lease_expires_at INTO renewed_until;
+    WHERE operation_id=p_operation_id RETURNING lease_expires_at INTO renewed_until;
   RETURN renewed_until;
 END
 $$;
@@ -313,24 +338,31 @@ CREATE FUNCTION sandbox_controller_bind_backend(
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
-DECLARE target record; current_backend record; effective_now timestamptz := clock_timestamp();
+DECLARE target record; effective_now timestamptz := clock_timestamp();
 BEGIN
   IF p_backend_uid IS NULL OR p_backend_resource_version IS NULL OR p_admission_id IS NULL OR
      char_length(p_backend_uid) NOT BETWEEN 1 AND 128 OR char_length(p_backend_resource_version) NOT BETWEEN 1 AND 128 OR
      char_length(p_admission_id) NOT BETWEEN 1 AND 128 THEN
     RAISE EXCEPTION 'invalid sandbox backend identity' USING ERRCODE='22023';
   END IF;
-  SELECT o.workspace_id,o.sandbox_id,o.type INTO target
+  SELECT o.workspace_id,o.sandbox_id,o.type,o.status,o.expected_sandbox_version,j.attempt_count,
+      s.state,s.desired_state,s.version,s.backend_uid,s.backend_resource_version,s.admission_id INTO target
     FROM public.sandbox_reconcile_jobs j JOIN public.sandbox_operations o ON o.id=j.operation_id
+    JOIN public.sandboxes s ON s.id=o.sandbox_id AND s.workspace_id=o.workspace_id
     WHERE j.operation_id=p_operation_id AND j.completed_at IS NULL AND j.lease_owner=p_worker_id
       AND j.lease_token=p_lease_token AND j.lease_expires_at>effective_now AND o.status='running'
-    FOR UPDATE OF j,o;
+    FOR UPDATE OF j,o,s;
   IF NOT FOUND OR target.type<>'create' THEN RETURN false; END IF;
-  SELECT backend_uid,backend_resource_version,admission_id INTO current_backend
-    FROM public.sandboxes WHERE id=target.sandbox_id AND workspace_id=target.workspace_id FOR UPDATE;
-  IF (current_backend.backend_uid,current_backend.backend_resource_version,current_backend.admission_id) IS NOT DISTINCT FROM
+  IF NOT public.sandbox_controller_operation_is_current(target.type,target.status,target.expected_sandbox_version,
+      target.attempt_count,target.state,target.desired_state,target.version,target.backend_uid,
+      target.backend_resource_version,target.admission_id) THEN
+    PERFORM public.sandbox_controller_quarantine_stale(p_operation_id,target.workspace_id,target.sandbox_id,target.type,
+      target.backend_uid,target.backend_resource_version);
+    RETURN false;
+  END IF;
+  IF (target.backend_uid,target.backend_resource_version,target.admission_id) IS NOT DISTINCT FROM
       (p_backend_uid,p_backend_resource_version,p_admission_id) THEN RETURN true; END IF;
-  IF current_backend.backend_uid IS NOT NULL OR current_backend.backend_resource_version IS NOT NULL OR current_backend.admission_id IS NOT NULL THEN
+  IF target.backend_uid IS NOT NULL OR target.backend_resource_version IS NOT NULL OR target.admission_id IS NOT NULL THEN
     RETURN false;
   END IF;
   UPDATE public.sandboxes SET backend_uid=p_backend_uid,backend_resource_version=p_backend_resource_version,
@@ -356,7 +388,8 @@ BEGIN
      char_length(p_safe_message) NOT BETWEEN 1 AND 512 THEN
     RAISE EXCEPTION 'invalid sandbox controller retry' USING ERRCODE='22023';
   END IF;
-  SELECT o.workspace_id,o.sandbox_id,o.type,j.attempt_count,s.backend_uid,s.backend_resource_version
+  SELECT o.workspace_id,o.sandbox_id,o.type,o.status,o.expected_sandbox_version,j.attempt_count,
+      s.state,s.desired_state,s.version,s.backend_uid,s.backend_resource_version,s.admission_id
     INTO target
     FROM public.sandbox_reconcile_jobs j JOIN public.sandbox_operations o ON o.id=j.operation_id
     JOIN public.sandboxes s ON s.id=o.sandbox_id AND s.workspace_id=o.workspace_id
@@ -364,6 +397,13 @@ BEGIN
       AND j.lease_token=p_lease_token AND j.lease_expires_at>effective_now AND o.status='running'
     FOR UPDATE OF j,o,s;
   IF NOT FOUND THEN RETURN 'fenced'; END IF;
+  IF NOT public.sandbox_controller_operation_is_current(target.type,target.status,target.expected_sandbox_version,
+      target.attempt_count,target.state,target.desired_state,target.version,target.backend_uid,
+      target.backend_resource_version,target.admission_id) THEN
+    PERFORM public.sandbox_controller_quarantine_stale(p_operation_id,target.workspace_id,target.sandbox_id,target.type,
+      target.backend_uid,target.backend_resource_version);
+    RETURN 'fenced';
+  END IF;
   IF target.attempt_count<5 THEN
     UPDATE public.sandbox_reconcile_jobs SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
       next_attempt_at=effective_now+make_interval(secs=>p_delay_seconds),last_error_code=p_error_code,
@@ -412,14 +452,23 @@ BEGIN
        p_error_code !~ '^[a-z][a-z0-9_]{0,95}$' OR char_length(p_safe_message) NOT BETWEEN 1 AND 512) THEN
     RAISE EXCEPTION 'invalid sandbox completion error identity' USING ERRCODE='22023';
   END IF;
-  SELECT o.workspace_id,o.sandbox_id,o.type,s.backend_uid,s.backend_resource_version,s.admission_id
+  SELECT o.workspace_id,o.sandbox_id,o.type,o.status,o.expected_sandbox_version,j.attempt_count,
+      s.state,s.desired_state,s.version,s.backend_uid,s.backend_resource_version,s.admission_id
     INTO target
     FROM public.sandbox_reconcile_jobs j JOIN public.sandbox_operations o ON o.id=j.operation_id
     JOIN public.sandboxes s ON s.id=o.sandbox_id AND s.workspace_id=o.workspace_id
     WHERE j.operation_id=p_operation_id AND j.completed_at IS NULL AND j.lease_owner=p_worker_id
       AND j.lease_token=p_lease_token AND j.lease_expires_at>effective_now AND o.status='running'
     FOR UPDATE OF j,o,s;
-  IF NOT FOUND OR (target.backend_uid,target.backend_resource_version,target.admission_id) IS DISTINCT FROM
+  IF NOT FOUND THEN RETURN false; END IF;
+  IF NOT public.sandbox_controller_operation_is_current(target.type,target.status,target.expected_sandbox_version,
+      target.attempt_count,target.state,target.desired_state,target.version,target.backend_uid,
+      target.backend_resource_version,target.admission_id) THEN
+    PERFORM public.sandbox_controller_quarantine_stale(p_operation_id,target.workspace_id,target.sandbox_id,target.type,
+      target.backend_uid,target.backend_resource_version);
+    RETURN false;
+  END IF;
+  IF (target.backend_uid,target.backend_resource_version,target.admission_id) IS DISTINCT FROM
       (p_expected_backend_uid,p_expected_backend_resource_version,p_expected_admission_id) THEN RETURN false; END IF;
   IF EXISTS(SELECT 1 FROM unnest(coalesce(p_artifact_ids,'{}')) id WHERE NOT EXISTS
       (SELECT 1 FROM public.sandbox_artifacts a WHERE a.id=id AND a.sandbox_id=target.sandbox_id)) THEN
@@ -510,6 +559,7 @@ REVOKE ALL ON TABLE sandbox_reconcile_jobs FROM PUBLIC, blazn_runtime, blazn_boo
 REVOKE ALL ON FUNCTION sandbox_controller_enqueue_operation(), sandbox_controller_finish_job(),
   sandbox_controller_append_event(uuid,uuid,uuid,text,text,text),
   sandbox_controller_operation_is_current(text,text,bigint,integer,text,text,bigint,text,text,text),
+  sandbox_controller_quarantine_stale(uuid,uuid,uuid,text,text,text),
   sandbox_controller_claim(text,integer), sandbox_controller_renew(uuid,text,uuid,integer),
   sandbox_controller_bind_backend(uuid,text,uuid,text,text,text),
   sandbox_controller_retry(uuid,text,uuid,integer,text,text,uuid),

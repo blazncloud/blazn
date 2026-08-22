@@ -63,6 +63,53 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.deepEqual(completed.rows[0]?.result, { artifactIds: [], warnings: [] });
     assert.ok(completed.rows[0]?.job_completed_at);
 
+    const renewDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const renewDriftOperationId = await insertOperation(admin, workspaceId, renewDriftSandboxId, userId, "create");
+    const renewDrift = await first.claim("controller-renew-drift", 30); assert.equal(renewDrift?.operationId, renewDriftOperationId);
+    await admin.query("UPDATE sandboxes SET version=version+1 WHERE id=$1", [renewDriftSandboxId]);
+    const renewSnapshot = await sandboxSnapshot(admin, renewDriftSandboxId);
+    assert.equal(await first.renew(renewDriftOperationId, "controller-renew-drift", renewDrift!.leaseToken, 30), undefined);
+    await assertStaleQuarantine(admin, renewDriftOperationId, renewDriftSandboxId, renewSnapshot);
+
+    const bindDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const bindDriftOperationId = await insertOperation(admin, workspaceId, bindDriftSandboxId, userId, "create");
+    const bindDrift = await first.claim("controller-bind-drift", 30); assert.equal(bindDrift?.operationId, bindDriftOperationId);
+    await admin.query("UPDATE sandboxes SET desired_state='deleted' WHERE id=$1", [bindDriftSandboxId]);
+    const bindSnapshot = await sandboxSnapshot(admin, bindDriftSandboxId);
+    assert.equal(await first.bindBackend(bindDriftOperationId, "controller-bind-drift", bindDrift!.leaseToken,
+      { uid: "must-not-bind", resourceVersion: "must-not-bind", admissionId: "must-not-bind" }), false);
+    await assertStaleQuarantine(admin, bindDriftOperationId, bindDriftSandboxId, bindSnapshot);
+
+    const retryDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const retryDriftOperationId = await insertOperation(admin, workspaceId, retryDriftSandboxId, userId, "create");
+    const retryDrift = await first.claim("controller-retry-drift", 30); assert.equal(retryDrift?.operationId, retryDriftOperationId);
+    await admin.query("UPDATE sandboxes SET version=version+1 WHERE id=$1", [retryDriftSandboxId]);
+    const retrySnapshot = await sandboxSnapshot(admin, retryDriftSandboxId);
+    assert.equal(await first.retry(retryDriftOperationId, "controller-retry-drift", retryDrift!.leaseToken, 1,
+      { code: "backend_temporarily_unavailable", message: "backend is temporarily unavailable", requestId: randomUUID() }), "fenced");
+    await assertStaleQuarantine(admin, retryDriftOperationId, retryDriftSandboxId, retrySnapshot);
+
+    const exhaustedDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const exhaustedDriftOperationId = await insertOperation(admin, workspaceId, exhaustedDriftSandboxId, userId, "create");
+    const exhaustedDrift = await first.claim("controller-exhausted-drift", 30); assert.equal(exhaustedDrift?.operationId, exhaustedDriftOperationId);
+    await admin.query("UPDATE sandbox_reconcile_jobs SET attempt_count=5 WHERE operation_id=$1", [exhaustedDriftOperationId]);
+    await admin.query("UPDATE sandboxes SET version=version+1 WHERE id=$1", [exhaustedDriftSandboxId]);
+    const exhaustedDriftSnapshot = await sandboxSnapshot(admin, exhaustedDriftSandboxId);
+    assert.equal(await first.retry(exhaustedDriftOperationId, "controller-exhausted-drift", exhaustedDrift!.leaseToken, 1,
+      { code: "backend_temporarily_unavailable", message: "backend is temporarily unavailable", requestId: randomUUID() }), "fenced");
+    await assertStaleQuarantine(admin, exhaustedDriftOperationId, exhaustedDriftSandboxId, exhaustedDriftSnapshot);
+
+    const completeDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const completeDriftOperationId = await insertOperation(admin, workspaceId, completeDriftSandboxId, userId, "create");
+    const completeDrift = await first.claim("controller-complete-drift", 30); assert.equal(completeDrift?.operationId, completeDriftOperationId);
+    assert.equal(await first.bindBackend(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
+      { uid: "backend-complete-drift", resourceVersion: "resource-complete-drift", admissionId: "admission-complete-drift" }), true);
+    await admin.query("UPDATE sandboxes SET version=version+1 WHERE id=$1", [completeDriftSandboxId]);
+    const completeSnapshot = await sandboxSnapshot(admin, completeDriftSandboxId);
+    assert.equal(await first.complete(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
+      { ...successCreate("backend-complete-drift"), expectedBackendResourceVersion: "resource-complete-drift", expectedAdmissionId: "stale-caller-admission" }), false);
+    await assertStaleQuarantine(admin, completeDriftOperationId, completeDriftSandboxId, completeSnapshot);
+
     const staleSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
     const staleOperationId = await insertOperation(admin, workspaceId, staleSandboxId, userId, "create");
     const stale = await first.claim("controller-stale", 30); assert.equal(stale?.operationId, staleOperationId);
@@ -94,8 +141,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.equal(exhaustedState.rows[0]?.error.code, "lease_attempts_exhausted");
     assert.equal(await first.complete(exhaustedOperationId, "controller-exhausted", exhausted!.leaseToken, successCreate("never-bound")), false);
 
-    const stopSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", backend: ["backend-stop", "resource-stop", "admission-stop"] });
-    const stopOperationId = await insertOperation(admin, workspaceId, stopSandboxId, userId, "stop");
+    const stopSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", version: 2, backend: ["backend-stop", "resource-stop", "admission-stop"] });
+    const stopOperationId = await insertOperation(admin, workspaceId, stopSandboxId, userId, "stop", 1);
     const stop = await first.claim("controller-stop", 30); assert.equal(stop?.operationId, stopOperationId);
     const stopCompletion = { status: "succeeded" as const, expectedBackendUid: "backend-stop", expectedBackendResourceVersion: "resource-stop",
       expectedAdmissionId: "admission-stop", cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true,
@@ -130,7 +177,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
 
 async function seedSandbox(admin: Pool, workspaceId: string, userId: string, options: {
   state: "requested" | "ready" | "stopping"; desiredState?: "ready" | "stopped"; expired?: boolean;
-  backend?: [uid: string, resourceVersion: string, admissionId: string];
+  version?: number; backend?: [uid: string, resourceVersion: string, admissionId: string];
 }): Promise<string> {
   const sandboxId = randomUUID(), templateId = randomUUID(), versionId = randomUUID(), suffix = sandboxId.slice(0, 8);
   const spec = { version: "1", variants: [{ name: "linux-amd64", architecture: "amd64",
@@ -149,20 +196,20 @@ async function seedSandbox(admin: Pool, workspaceId: string, userId: string, opt
     await admin.query("UPDATE sandbox_templates SET current_published_version_id=$1 WHERE id=$2", [versionId, templateId]);
     await admin.query(`INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,
       variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,backend_uid,backend_resource_version,
-      queue_name,admission_id,artifact_contract_digest,isolation,approved_non_sensitive,expires_at,created_at,updated_at)
+      queue_name,admission_id,artifact_contract_digest,isolation,approved_non_sensitive,expires_at,created_at,updated_at,version)
       VALUES($1,$2,$3,$4,$5,$6,'1',$7,'linux-amd64',$8,$9,'amd64','direct',$10,$11,$12,$13,'blazn-poc-sandboxes',$14,$15,
-      'approved-non-sensitive-poc',true,$16,$17,$17)`, [sandboxId, workspaceId, userId, templateId, versionId, `template-${suffix}`, "a".repeat(64),
+      'approved-non-sensitive-poc',true,$16,$17,$17,$18)`, [sandboxId, workspaceId, userId, templateId, versionId, `template-${suffix}`, "a".repeat(64),
       `registry.invalid/poc@sha256:${"b".repeat(64)}`, `registry.invalid/poc@sha256:${"c".repeat(64)}`, options.state,
       options.desiredState ?? "ready", options.backend?.[0] ?? null, options.backend?.[1] ?? null, options.backend?.[2] ?? null,
-      "d".repeat(64), expiresAt, createdAt]);
+      "d".repeat(64), expiresAt, createdAt, options.version ?? 1]);
     await admin.query("INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES($1,$2,$3,'source',$4)", [sandboxId, workspaceId, versionId, "1".repeat(40)]);
     await admin.query("COMMIT"); return sandboxId;
   } catch (error) { await admin.query("ROLLBACK"); throw error; }
 }
 
-async function insertOperation(admin: Pool, workspaceId: string, sandboxId: string, userId: string, type: "create" | "stop" | "delete"): Promise<string> {
+async function insertOperation(admin: Pool, workspaceId: string, sandboxId: string, userId: string, type: "create" | "stop" | "delete", expectedVersion?: number): Promise<string> {
   const id = randomUUID();
-  await admin.query("INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) SELECT $1,$2,$3,$4,'pending',version,$5,$6,$7 FROM sandboxes WHERE id=$3", [id, workspaceId, sandboxId, type, userId, `${type}-${id}`, "e".repeat(64)]);
+  await admin.query("INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) SELECT $1,$2,$3,$4,'pending',coalesce($8,version),$5,$6,$7 FROM sandboxes WHERE id=$3", [id, workspaceId, sandboxId, type, userId, `${type}-${id}`, "e".repeat(64), expectedVersion ?? null]);
   return id;
 }
 
@@ -174,4 +221,16 @@ function successCreate(uid: string) {
 
 function hasCode(code: string): (error: unknown) => boolean {
   return (error) => !!error && typeof error === "object" && "code" in error && error.code === code;
+}
+
+async function sandboxSnapshot(admin: Pool, sandboxId: string): Promise<Record<string, unknown>> {
+  const result = await admin.query("SELECT state,desired_state,version,backend_uid,backend_resource_version,admission_id FROM sandboxes WHERE id=$1", [sandboxId]);
+  return result.rows[0]!;
+}
+
+async function assertStaleQuarantine(admin: Pool, operationId: string, sandboxId: string, snapshot: Record<string, unknown>): Promise<void> {
+  const operation = await admin.query("SELECT o.status,r.error FROM sandbox_operations o JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id WHERE o.id=$1", [operationId]);
+  assert.equal(operation.rows[0]?.status, "recovery_required");
+  assert.equal(operation.rows[0]?.error.code, "stale_sandbox_operation");
+  assert.deepEqual(await sandboxSnapshot(admin, sandboxId), snapshot, "stale post-claim authority changed the newer Sandbox");
 }
