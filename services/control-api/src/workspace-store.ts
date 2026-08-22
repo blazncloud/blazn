@@ -30,7 +30,7 @@ export interface WorkspaceTransaction {
   getInvitationById(workspaceId: string, invitationId: string, lock?: boolean): Promise<Invitation | undefined>;
   getInvitationByHash(tokenHash: string, lock?: boolean): Promise<(Invitation & { acceptedBy?: string; createdBy: string }) | undefined>;
   revokeInvitation(workspaceId: string, invitationId: string, expectedVersion: number): Promise<Invitation | undefined>;
-  acceptInvitation(invitationId: string, userId: string): Promise<void>;
+  acceptInvitation(invitationId: string, userId: string): Promise<boolean>;
   upsertMembership(workspaceId: string, userId: string, role: WorkspaceRole, invitedBy: string): Promise<void>;
   getMembershipView(workspaceId: string, userId: string): Promise<Membership | undefined>;
   updateMembership(workspaceId: string, userId: string, role: WorkspaceRole, expectedVersion: number): Promise<Membership | undefined>;
@@ -83,7 +83,7 @@ export class PgWorkspaceStore implements WorkspaceStore {
   }
 
   async listInvitations(workspaceId: string, cursor = ""): Promise<{ items: Invitation[]; nextCursor: string | null }> {
-    const result = await this.database.query("SELECT * FROM workspace_invitations WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101", [workspaceId, cursor]);
+    const result = await this.database.query("SELECT *,expires_at<=now() AS is_expired FROM workspace_invitations WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101", [workspaceId, cursor]);
     const items = result.rows.slice(0, 100).map(invitationRow);
     return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.id ?? null : null };
   }
@@ -146,19 +146,20 @@ class PgWorkspaceTransaction implements WorkspaceTransaction {
     return invitationRow(result.rows[0]);
   }
   async getInvitationById(workspaceId: string, invitationId: string, lock = false): Promise<Invitation | undefined> {
-    const result = await this.client.query(`SELECT * FROM workspace_invitations WHERE workspace_id=$1 AND id=$2${lock ? " FOR UPDATE" : ""}`, [workspaceId, invitationId]);
+    const result = await this.client.query(`SELECT *,expires_at<=now() AS is_expired FROM workspace_invitations WHERE workspace_id=$1 AND id=$2${lock ? " FOR UPDATE" : ""}`, [workspaceId, invitationId]);
     return result.rows[0] ? invitationRow(result.rows[0]) : undefined;
   }
   async getInvitationByHash(tokenHash: string, lock = false): Promise<(Invitation & { acceptedBy?: string; createdBy: string }) | undefined> {
-    const result = await this.client.query(`SELECT * FROM workspace_invitations WHERE token_hash=$1${lock ? " FOR UPDATE" : ""}`, [tokenHash]);
+    const result = await this.client.query(`SELECT *,expires_at<=now() AS is_expired FROM workspace_invitations WHERE token_hash=$1${lock ? " FOR UPDATE" : ""}`, [tokenHash]);
     return result.rows[0] ? { ...invitationRow(result.rows[0]), createdBy: result.rows[0].created_by, ...(result.rows[0].accepted_by ? { acceptedBy: result.rows[0].accepted_by } : {}) } : undefined;
   }
   async revokeInvitation(workspaceId: string, invitationId: string, expectedVersion: number): Promise<Invitation | undefined> {
     const result = await this.client.query("UPDATE workspace_invitations SET status='revoked',version=version+1 WHERE workspace_id=$1 AND id=$2 AND version=$3 AND status='pending' RETURNING *", [workspaceId, invitationId, expectedVersion]);
     return result.rows[0] ? invitationRow(result.rows[0]) : undefined;
   }
-  async acceptInvitation(invitationId: string, userId: string): Promise<void> {
-    await this.client.query("UPDATE workspace_invitations SET status='accepted',accepted_by=$2,accepted_at=now(),version=version+1 WHERE id=$1", [invitationId, userId]);
+  async acceptInvitation(invitationId: string, userId: string): Promise<boolean> {
+    const result = await this.client.query("UPDATE workspace_invitations SET status='accepted',accepted_by=$2,accepted_at=now(),version=version+1 WHERE id=$1 AND status='pending' AND expires_at>now() RETURNING id", [invitationId, userId]);
+    return !!result.rowCount;
   }
   async upsertMembership(workspaceId: string, userId: string, role: WorkspaceRole, invitedBy: string): Promise<void> {
     await this.client.query(`INSERT INTO workspace_memberships(workspace_id,user_id,role,invited_by) VALUES($1,$2,$3,$4)
@@ -182,7 +183,7 @@ class PgWorkspaceTransaction implements WorkspaceTransaction {
     await this.client.query("INSERT INTO workspace_audit_events(id,workspace_id,actor_user_id,event_type,subject_user_id,invitation_id,payload) VALUES($1,$2,$3,$4,$5,$6,$7)", [id, workspaceId, actorUserId, type, subjectUserId ?? null, invitationId ?? null, payload]);
   }
   async listInvitations(workspaceId: string, cursor = ""): Promise<{ items: Invitation[]; nextCursor: string | null }> {
-    const result = await this.client.query("SELECT * FROM workspace_invitations WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101", [workspaceId, cursor]);
+    const result = await this.client.query("SELECT *,expires_at<=now() AS is_expired FROM workspace_invitations WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101", [workspaceId, cursor]);
     const items = result.rows.slice(0, 100).map(invitationRow);
     return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.id ?? null : null };
   }
@@ -204,7 +205,7 @@ function workspaceRow(row: QueryResultRow): Workspace {
   return { id: row.id, slug: row.slug, name: row.name, status: row.status, version: Number(row.version), currentUserRole: row.role, createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString() };
 }
 function invitationRow(row: QueryResultRow): Invitation {
-  const status = row.status === "pending" && row.expires_at.getTime() <= Date.now() ? "expired" : row.status;
+  const status = row.status === "pending" && (row.is_expired === true || (row.is_expired === undefined && row.expires_at.getTime() <= Date.now())) ? "expired" : row.status;
   return { id: row.id, workspaceId: row.workspace_id, role: row.role, status, version: Number(row.version), createdAt: row.created_at.toISOString(), expiresAt: row.expires_at.toISOString() };
 }
 function membershipRow(row: QueryResultRow): Membership {

@@ -343,7 +343,11 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   }
   if (workspaceRouter.matches(url.pathname)) {
     const session = await authenticate(request);
-    return workspaceRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+    const principal = { userId: session.userId, email: session.email, displayName: session.displayName };
+    return workspaceRouter.handle(request, response, url, principal, async () => {
+      const current = await authenticate(request);
+      return { userId: current.userId, email: current.email, displayName: current.displayName };
+    });
   }
   const known = new Set(["/healthz", "/activate", "/v1/auth/device/authorizations", "/v1/auth/device/approve", "/v1/auth/device/sessions", "/v1/auth/sessions/refresh", "/v1/auth/sessions/revoke", "/v1/auth/me", "/v1/auth/session", "/v1/auth/devices", "/v1/events"]);
   if (known.has(url.pathname) || deviceMatch) throw new HttpError("method_not_allowed", "method is not allowed for this route");

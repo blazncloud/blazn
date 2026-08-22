@@ -12,7 +12,7 @@ export class WorkspaceHttpRouter {
     return pathname === "/v1/workspaces" || pathname === "/v1/workspace-invitations/accept" || pathname.startsWith("/v1/workspaces/");
   }
 
-  async handle(request: IncomingMessage, response: ServerResponse, url: URL, principal: WorkspacePrincipal): Promise<void> {
+  async handle(request: IncomingMessage, response: ServerResponse, url: URL, principal: WorkspacePrincipal, reauthorize?: () => Promise<WorkspacePrincipal>): Promise<void> {
     const path = url.pathname;
     if (path === "/v1/workspaces" && request.method === "POST") {
       const body = await jsonBody(request); requireExactKeysOptional(body, ["name"], ["slug"]);
@@ -64,11 +64,11 @@ export class WorkspaceHttpRouter {
     if (ownMembership && request.method === "DELETE") return sendJson(response, 200, await this.service.leaveWorkspace(principal, uuid(ownMembership[1] ?? "", "workspaceId"), expectedVersion(url), idempotency(request)));
 
     const events = path.match(/^\/v1\/workspaces\/([^/]+)\/events$/);
-    if (events && request.method === "GET") return this.streamEvents(request, response, principal, uuid(events[1] ?? "", "workspaceId"));
+    if (events && request.method === "GET") return this.streamEvents(request, response, principal, uuid(events[1] ?? "", "workspaceId"), reauthorize);
     throw new WorkspaceHttpError("workspace_not_found", "workspace route was not found");
   }
 
-  private async streamEvents(request: IncomingMessage, response: ServerResponse, principal: WorkspacePrincipal, workspaceId: string): Promise<void> {
+  private async streamEvents(request: IncomingMessage, response: ServerResponse, principal: WorkspacePrincipal, workspaceId: string, reauthorize?: () => Promise<WorkspacePrincipal>): Promise<void> {
     const distinct = request.headersDistinct["last-event-id"] ?? [];
     if (distinct.length > 1 || (distinct[0]?.length ?? 0) > 128) throw new WorkspaceHttpError("invalid_request", "Last-Event-ID is invalid");
     let cursor = distinct[0] ?? "";
@@ -80,7 +80,8 @@ export class WorkspaceHttpRouter {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         if (response.destroyed || response.writableEnded) break;
         try {
-          const events = await this.service.eventBatch(principal, workspaceId, cursor);
+          const currentPrincipal = reauthorize ? await reauthorize() : principal;
+          const events = await this.service.eventBatch(currentPrincipal, workspaceId, cursor);
           for (const event of events) {
             cursor = event.id;
             response.write(`event: ${event.type}\nid: ${event.id}\ndata: ${JSON.stringify(event.payload)}\n\n`);

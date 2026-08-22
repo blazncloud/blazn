@@ -131,7 +131,7 @@ export class WorkspaceService {
       if (invitation.status === "revoked") throw new WorkspaceHttpError("invitation_revoked", "invitation is revoked");
       if (invitation.status === "accepted") throw new WorkspaceHttpError("invitation_consumed", "invitation is consumed");
       await transaction.upsertMembership(invitation.workspaceId, principal.userId, invitation.role, invitation.createdBy);
-      await transaction.acceptInvitation(invitation.id, principal.userId);
+      if (!await transaction.acceptInvitation(invitation.id, principal.userId)) throw new WorkspaceHttpError("invitation_expired", "invitation is expired");
       const workspace = await transaction.getWorkspace(invitation.workspaceId, principal.userId);
       if (!workspace) throw new Error("workspace membership was not created");
       const response = { workspace };
