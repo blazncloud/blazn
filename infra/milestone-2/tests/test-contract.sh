@@ -62,7 +62,7 @@ done
 
 runtime_api=$(awk '
   /^  api:$/ { in_api=1; next }
-  in_api && /^[^ ]/ { exit }
+  in_api && /^  [a-zA-Z0-9_-]+:$/ { exit }
   in_api { print }
 ' "$compose")
 printf '%s\n' "$runtime_api" | grep -F 'object-init:' >/dev/null
