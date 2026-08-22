@@ -9,7 +9,7 @@ command -v docker >/dev/null 2>&1 || {
   exit 1
 }
 
-tar -C "$repo_root" -cf - services/control-api packages/contracts | docker run --rm -i "$node_image" sh -euc '
+tar -C "$repo_root" -cf - services/control-api packages/contracts infra/node/templates | docker run --rm -i "$node_image" sh -euc '
   mkdir /work
   tar -xf - -C /work
   cd /work/services/control-api

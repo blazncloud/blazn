@@ -97,9 +97,9 @@ BEGIN
       'nodes', 'node_enrollments', 'node_identities', 'node_capability_versions',
       'node_heartbeat_state', 'node_install_plans', 'node_install_receipts',
       'node_operation_receipts', 'node_operations', 'node_operation_events',
-      'node_join_issuances', 'node_audit_events'
+      'node_join_issuances', 'node_join_issuance_intents', 'node_audit_events'
     ]);
-  IF table_count <> 12 THEN RAISE EXCEPTION 'Node table count is %, want 12', table_count; END IF;
+  IF table_count <> 13 THEN RAISE EXCEPTION 'Node table count is %, want 13', table_count; END IF;
 END $$;
 
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
@@ -272,6 +272,9 @@ SELECT has_table_privilege('blazn_node_broker','nodes','SELECT') AS broker_nodes
        has_table_privilege('blazn_node_broker','node_enrollments','SELECT') AS broker_enrollment_read,
        has_table_privilege('blazn_node_broker','node_install_plans','SELECT') AS broker_plan_read,
        has_table_privilege('blazn_node_broker','node_join_issuances','INSERT') AS broker_issue,
+       has_column_privilege('blazn_node_broker','node_join_issuances','id','INSERT') AS broker_issue_id,
+       has_column_privilege('blazn_node_broker','node_join_issuances','joined_node_uid','INSERT') AS broker_issue_joined_uid,
+       has_table_privilege('blazn_node_broker','node_join_issuances','UPDATE') AS broker_issue_update,
        has_table_privilege('blazn_node_broker','nodes','UPDATE') AS broker_node_update,
        has_table_privilege('blazn_node_broker','users','SELECT') AS broker_user_read,
        has_table_privilege('blazn_runtime','node_join_issuances','INSERT') AS runtime_issue,
@@ -294,7 +297,10 @@ BEGIN
   IF NOT has_table_privilege('blazn_node_broker','nodes','SELECT')
     OR NOT has_table_privilege('blazn_node_broker','node_enrollments','SELECT')
     OR NOT has_table_privilege('blazn_node_broker','node_install_plans','SELECT')
-    OR NOT has_table_privilege('blazn_node_broker','node_join_issuances','INSERT')
+    OR has_table_privilege('blazn_node_broker','node_join_issuances','INSERT')
+    OR NOT has_column_privilege('blazn_node_broker','node_join_issuances','id','INSERT')
+    OR has_column_privilege('blazn_node_broker','node_join_issuances','joined_node_uid','INSERT')
+    OR has_table_privilege('blazn_node_broker','node_join_issuances','UPDATE')
     OR has_table_privilege('blazn_node_broker','nodes','UPDATE')
     OR has_table_privilege('blazn_node_broker','users','SELECT')
     OR has_table_privilege('blazn_runtime','node_join_issuances','INSERT')
@@ -307,6 +313,23 @@ BEGIN
     OR NOT has_column_privilege('blazn_runtime','node_join_issuances','joined_node_uid','UPDATE')
     OR has_column_privilege('blazn_runtime','node_join_issuances','credential_ciphertext','UPDATE') THEN
     RAISE EXCEPTION 'Node broker/runtime privilege matrix is invalid';
+  END IF;
+END $$;
+
+DO $$
+DECLARE owner_name text; config text; acl text;
+BEGIN
+  SELECT r.rolname,array_to_string(p.proconfig,','),array_to_string(p.proacl,',')
+    INTO owner_name,config,acl FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner
+    WHERE p.oid='node_broker_lock_join_binding(uuid,uuid,uuid)'::regprocedure;
+  IF owner_name <> 'blazn_migration'
+    OR config NOT LIKE '%search_path=pg_catalog, public%'
+    OR coalesce(acl,'') LIKE '=X/%'
+    OR coalesce(acl,'') LIKE '%,=X/%'
+    OR NOT has_function_privilege('blazn_node_broker','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')
+    OR has_function_privilege('blazn_runtime','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')
+    OR has_function_privilege('blazn_bootstrap','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE') THEN
+    RAISE EXCEPTION 'Node broker row-lock function ownership, search_path, or ACL is invalid';
   END IF;
 END $$;
 SQL
@@ -323,6 +346,10 @@ expect_denied "SET ROLE blazn_node_broker; UPDATE nodes SET name='changed';" bro
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM users;" broker_user_read
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_capability_versions;" broker_capability_read
 expect_denied "SET ROLE blazn_node_broker; SELECT * FROM node_operations;" broker_operation_read
+expect_denied "SET ROLE blazn_node_broker; UPDATE node_join_issuances SET credential_hash=repeat('f',64);" broker_issuance_update
+expect_denied "SET ROLE blazn_node_broker; INSERT INTO node_join_issuances(joined_node_uid) VALUES('uid');" broker_issuance_unreviewed_insert
+expect_denied "SET ROLE blazn_runtime; SELECT node_broker_lock_join_binding('55555555-5555-4555-8555-555555555555','99999999-9999-4999-8999-999999999999','33333333-3333-4333-8333-333333333333');" runtime_broker_lock
+expect_denied "SET ROLE blazn_bootstrap; SELECT node_broker_lock_join_binding('55555555-5555-4555-8555-555555555555','99999999-9999-4999-8999-999999999999','33333333-3333-4333-8333-333333333333');" bootstrap_broker_lock
 expect_denied "SET ROLE blazn_runtime; INSERT INTO node_join_issuances DEFAULT VALUES;" runtime_issue
 expect_denied "SET ROLE blazn_runtime; SELECT credential_hash FROM node_join_issuances;" runtime_select_hash
 expect_denied "SET ROLE blazn_runtime; SELECT credential_ciphertext FROM node_join_issuances;" runtime_select_ciphertext
@@ -332,18 +359,22 @@ expect_denied "SET ROLE blazn_runtime; UPDATE node_join_issuances SET credential
 expect_denied "SET ROLE blazn_bootstrap; SELECT * FROM nodes;" bootstrap_node_read
 
 runtime_password=node-runtime-ci
+broker_password=node-broker-ci
 psql_admin <<SQL
 ALTER ROLE blazn_runtime LOGIN PASSWORD '$runtime_password';
+ALTER ROLE blazn_node_broker LOGIN PASSWORD '$broker_password';
 SQL
 created_node_runner=true
 docker create --name "$node_runner" --network "$network" --read-only \
   --tmpfs /work:rw,nosuid,nodev,size=256m,mode=0700,uid=1000,gid=1000 \
   --tmpfs /tmp:rw,nosuid,nodev,size=64m,mode=1777 \
-  -v "$repo_root/services/control-api:/source:ro" -w /work \
+  -v "$repo_root/services/control-api:/source:ro" -v "$repo_root:/repo:ro" -w /work \
   -e HOME=/work/home -e npm_config_cache=/work/.npm \
   -e NODE_TEST_ADMIN_DATABASE_URL="postgresql://postgres:$admin_password@$postgres:5432/blazn" \
   -e NODE_TEST_RUNTIME_DATABASE_URL="postgresql://blazn_runtime:$runtime_password@$postgres:5432/blazn" \
-  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; node node_modules/typescript/bin/tsc -p tsconfig.json; node --test dist/node-store.integration.test.js' >/dev/null
+  -e NODE_TEST_BROKER_DATABASE_URL="postgresql://blazn_node_broker:$broker_password@$postgres:5432/blazn" \
+  -e NODE_TEST_REPO_ROOT=/repo \
+  "$node_image" sh -eu -c 'cp /source/package.json /source/package-lock.json /source/tsconfig.json /work/; cp -a /source/src /work/src; npm ci >/dev/null; node node_modules/typescript/bin/tsc -p tsconfig.json; node --test dist/node-store.integration.test.js dist/node-broker-store.integration.test.js' >/dev/null
 docker start -a "$node_runner"
 
 printf 'Node PostgreSQL 17.6 qualification passed\n'

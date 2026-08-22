@@ -76,8 +76,13 @@ assert_empty "select nspname from pg_namespace where nspname !~ '^pg_' and nspna
 assert_empty "select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
   where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind='S' and
   (has_sequence_privilege(current_user,c.oid,'USAGE') or has_sequence_privilege(current_user,c.oid,'SELECT') or has_sequence_privilege(current_user,c.oid,'UPDATE')) order by 1" sequence
-assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
-  where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+if [ "$mode" = post-migration ]; then
+  assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and p.oid<>'node_broker_lock_join_binding(uuid,uuid,uuid)'::regprocedure and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+else
+  assert_empty "select n.nspname || '.' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+    where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and has_function_privilege(current_user,p.oid,'EXECUTE') order by 1" function
+fi
 assert_empty "select pg_get_userbyid(d.defaclrole) || ':' || coalesce(n.nspname,'*') || ':' || d.defaclobjtype::text || ':' || coalesce(r.rolname,'PUBLIC') || ':' || x.privilege_type
   from pg_default_acl d left join pg_namespace n on n.oid=d.defaclnamespace cross join lateral aclexplode(d.defaclacl) x left join pg_roles r on r.oid=x.grantee
   where (x.grantee=0 or x.grantee=(select oid from pg_roles where rolname=current_user)) order by 1" default
@@ -95,17 +100,21 @@ if [ "$mode" = post-migration ]; then
       ('nodes'), ('node_enrollments'), ('node_identities'), ('node_capability_versions'),
       ('node_heartbeat_state'), ('node_install_plans'), ('node_install_receipts'),
       ('node_operation_receipts'), ('node_operations'), ('node_operation_events'),
-      ('node_join_issuances'), ('node_audit_events')) as expected_tables(table_name)")
-  required='node_audit_events=false,false,false,false,false,false,false;node_capability_versions=false,false,false,false,false,false,false;node_enrollments=true,false,false,false,false,false,false;node_heartbeat_state=false,false,false,false,false,false,false;node_identities=false,false,false,false,false,false,false;node_install_plans=true,false,false,false,false,false,false;node_install_receipts=false,false,false,false,false,false,false;node_join_issuances=true,true,true,false,false,false,false;node_operation_events=false,false,false,false,false,false,false;node_operation_receipts=false,false,false,false,false,false,false;node_operations=false,false,false,false,false,false,false;nodes=true,false,false,false,false,false,false'
+      ('node_join_issuances'), ('node_join_issuance_intents'), ('node_audit_events')) as expected_tables(table_name)")
+  required='node_audit_events=false,false,false,false,false,false,false;node_capability_versions=false,false,false,false,false,false,false;node_enrollments=true,false,false,false,false,false,false;node_heartbeat_state=false,false,false,false,false,false,false;node_identities=false,false,false,false,false,false,false;node_install_plans=true,false,false,false,false,false,false;node_install_receipts=false,false,false,false,false,false,false;node_join_issuance_intents=true,false,false,false,false,false,false;node_join_issuances=true,false,false,false,false,false,false;node_operation_events=false,false,false,false,false,false,false;node_operation_receipts=false,false,false,false,false,false,false;node_operations=false,false,false,false,false,false,false;nodes=true,false,false,false,false,false,false'
   [ "$expected" = "$required" ] || {
     printf 'node broker table privilege matrix differs from migration 004: %s\n' "$expected" >&2
     exit 1
   }
-  assert_empty "with expected(name) as (values ('nodes'),('node_enrollments'),('node_install_plans'),('node_join_issuances'))
+  assert_empty "with expected(name) as (values ('nodes'),('node_enrollments'),('node_install_plans'),('node_join_issuances'),('node_join_issuance_intents'))
     select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace left join expected e on e.name=c.relname
     where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind in ('r','p','v','m','f') and e.name is null and
       (has_table_privilege(current_user,c.oid,'SELECT') or has_table_privilege(current_user,c.oid,'INSERT') or has_table_privilege(current_user,c.oid,'UPDATE') or
        has_table_privilege(current_user,c.oid,'DELETE') or has_table_privilege(current_user,c.oid,'TRUNCATE') or has_table_privilege(current_user,c.oid,'REFERENCES') or has_table_privilege(current_user,c.oid,'TRIGGER')) order by 1" relation
+  [ "$(query "select has_function_privilege(current_user,'node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')")" = t ] || {
+    printf 'node broker cannot execute its reviewed row-lock function\n' >&2
+    exit 1
+  }
 else
   assert_empty "select n.nspname || '.' || c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
     where n.nspname !~ '^pg_' and n.nspname <> 'information_schema' and c.relkind in ('r','p','v','m','f') and

@@ -78,7 +78,7 @@ if [ "$phase" = source-restore-required ]; then complete_source_restore; printf 
 if [ -f "$BUILD_RECEIPT" ]; then CONTROL_API_IMAGE=$(jq -er .image "$BUILD_RECEIPT"); else CONTROL_API_IMAGE=blazn-control-api:rollback-placeholder; fi
 export CONTROL_API_IMAGE BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_ROOT/secrets"
 compose() { docker compose -f "$M2_ROOT/compose.yaml" --env-file "$ENV_FILE" "$@"; }
-applied=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from schema_migrations where version in ('004_nodes.sql','005_node_broker_security.sql','006_node_plan_signing_trust.sql')")
+applied=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from schema_migrations where version in ('004_nodes.sql','005_node_broker_security.sql','006_node_plan_signing_trust.sql','007_node_broker_connect.sql','008_node_broker_intents.sql')")
 [ "$applied" = 0 ] || die "Node migrations are applied; automatic prerequisite rollback is forbidden"
 
 if [ "$phase" = rollback-started ]; then
