@@ -72,6 +72,20 @@ func NewService(api API, sessions SessionProvider, contexts ContextStore) *Servi
 	return &Service{api: api, streamAPI: api, sessions: sessions, contexts: contexts, now: time.Now}
 }
 
+func (s *Service) CurrentSelection(ctx context.Context) (Selection, error) {
+	selection := Selection{SchemaVersion: 1, APIOrigin: s.sessions.Origin()}
+	session, err := s.sessions.Session(ctx, false)
+	if err != nil {
+		return selection, err
+	}
+	selection.UserID = session.UserID
+	stored, err := s.contexts.Load(selection.APIOrigin, session.UserID)
+	if err != nil {
+		return selection, err
+	}
+	return stored, nil
+}
+
 func (s *Service) Create(ctx context.Context, name, slug, requestID string) (client.WorkspaceEnvelope, error) {
 	key, err := s.idempotencyKey(requestID)
 	if err != nil {

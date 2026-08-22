@@ -16,6 +16,15 @@ type fakeWorkspaceCommands struct {
 	joinedToken, workspaceValue, requestID string
 	joinResult                             workspacepkg.JoinResult
 	joinErr                                error
+	selection                             workspacepkg.Selection
+	selectionErr                          error
+}
+
+func (f *fakeWorkspaceCommands) CurrentSelection(context.Context) (workspacepkg.Selection, error) {
+	if f.selectionErr != nil || f.selection.WorkspaceID != "" {
+		return f.selection, f.selectionErr
+	}
+	return workspacepkg.Selection{SchemaVersion: 1, APIOrigin: "https://example.test", UserID: "user-1", WorkspaceID: "workspace-1"}, nil
 }
 
 func (f *fakeWorkspaceCommands) Create(context.Context, string, string, string) (client.WorkspaceEnvelope, error) {

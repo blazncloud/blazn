@@ -18,6 +18,7 @@ type fakePlugins struct {
 	args      []string
 	format    string
 	name      string
+	context   pluginpkg.RuntimeContext
 }
 
 func (f *fakePlugins) definition() pluginpkg.Definition {
@@ -46,9 +47,10 @@ func (f *fakePlugins) Rollback(string) (pluginpkg.Receipt, error) {
 	return pluginpkg.Receipt{Version: "v0.9.0"}, nil
 }
 func (f *fakePlugins) Remove(string) error { f.installed = false; return nil }
-func (f *fakePlugins) Run(_ context.Context, definition pluginpkg.Definition, args []string, format string, streams pluginpkg.Stdio) (int, error) {
+func (f *fakePlugins) Run(_ context.Context, definition pluginpkg.Definition, args []string, format string, runtimeContext pluginpkg.RuntimeContext, streams pluginpkg.Stdio) (int, error) {
 	f.runs++
 	f.args, f.format, f.name = append([]string(nil), args...), format, definition.Name
+	f.context = runtimeContext
 	_, _ = streams.Stdout.Write([]byte("plugin output\n"))
 	return 3, nil
 }
@@ -103,6 +105,9 @@ func pluginApp(input string, tty bool, plugins pluginCommands) (*App, *bytes.Buf
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	app := New(stdout, stderr, testBuild)
 	app.stdin, app.stdinTTY, app.plugins = strings.NewReader(input), func() bool { return tty }, plugins
+	app.pluginContext = func(_ context.Context, format OutputFormat) (pluginpkg.RuntimeContext, error) {
+		return pluginpkg.RuntimeContext{SchemaVersion: 1, ProtocolVersion: 1, InvocationID: strings.Repeat("a", 32), CoreVersion: testBuild.Version, OutputFormat: string(format), Status: "unavailable", ReasonCode: "workspace_context_unavailable"}, nil
+	}
 	return app, stdout, stderr
 }
 
@@ -177,6 +182,9 @@ func TestInstalledCanonicalDispatchAndJSONForwarding(t *testing.T) {
 	}
 	if !reflect.DeepEqual(fake.args, []string{"person", "search"}) || fake.format != "json" {
 		t.Fatalf("args=%v format=%s", fake.args, fake.format)
+	}
+	if fake.context.OutputFormat != "json" || fake.context.InvocationID == "" {
+		t.Fatalf("runtime context=%#v", fake.context)
 	}
 }
 

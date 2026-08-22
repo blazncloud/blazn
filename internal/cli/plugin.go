@@ -50,7 +50,12 @@ func (a *App) runPlugin(format OutputFormat, definition pluginpkg.Definition, ar
 		}
 		fmt.Fprintf(a.stderr, "Installed %s. Continuing original command.\n", definition.Name)
 	}
-	code, err := a.plugins.Run(context.Background(), definition, args, string(format), pluginpkg.Stdio{Stdin: a.stdin, Stdout: a.stdout, Stderr: a.stderr})
+	ctx := context.Background()
+	runtimeContext, err := a.pluginContext(ctx, format)
+	if err != nil {
+		return a.writeError(format, ExitUnavailable, "plugin_context_failed", err.Error())
+	}
+	code, err := a.plugins.Run(ctx, definition, args, string(format), runtimeContext, pluginpkg.Stdio{Stdin: a.stdin, Stdout: a.stdout, Stderr: a.stderr})
 	if err != nil {
 		return a.writeError(format, ExitUnavailable, "plugin_execution_failed", err.Error())
 	}

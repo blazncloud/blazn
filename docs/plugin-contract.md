@@ -45,6 +45,29 @@ Social and Content releases use independently pinned `blazn-social-release`
 and `blazn-content-release` signing identities and namespaces. Compromise of
 one plugin's release key does not authorize releases for the other.
 
+## Runtime context
+
+Before dispatch, root `blazn` creates a versioned runtime envelope and replaces
+any inherited `BLAZN_PLUGIN_CONTEXT` value. The JSON envelope contains the core
+and plugin protocol versions, a unique invocation ID, output format, API
+origin, and the authenticated selected Workspace identity when available.
+
+The context status is explicit:
+
+- `selected` includes the API origin, user ID, and Workspace ID;
+- `unselected` means authentication succeeded but no Workspace is selected;
+- `unavailable` means root could not resolve authenticated Workspace context.
+
+The envelope never includes access tokens, refresh tokens, integration
+credentials, provider keys, local model addresses, or credential-store paths.
+Plugins reject unknown fields, incoherent states, unsafe origins, unsupported
+versions, and contexts larger than 16 KiB. The runtime envelope is metadata,
+not authorization; future Management API and model operations use a separately
+scoped root/Workspace broker rather than credentials copied to plugins.
+
+The normative schema is
+`packages/contracts/plugin-runtime-context.schema.json`.
+
 ## Manifest
 
 The strict JSON manifest contains integer `schemaVersion`, plugin name and

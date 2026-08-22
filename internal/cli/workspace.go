@@ -15,6 +15,7 @@ import (
 )
 
 type workspaceCommands interface {
+	CurrentSelection(context.Context) (workspacepkg.Selection, error)
 	Create(context.Context, string, string, string) (client.WorkspaceEnvelope, error)
 	List(context.Context) (client.WorkspaceList, error)
 	Get(context.Context, string) (client.WorkspaceEnvelope, error)

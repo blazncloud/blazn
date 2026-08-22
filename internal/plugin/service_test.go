@@ -8,7 +8,7 @@ import (
 
 type countingRunner struct{ calls int }
 
-func (r *countingRunner) Run(context.Context, string, []string, Stdio) (int, error) {
+func (r *countingRunner) Run(context.Context, string, []string, RuntimeContext, Stdio) (int, error) {
 	r.calls++
 	return 0, nil
 }
@@ -40,7 +40,11 @@ func TestServiceRechecksCompatibilityForHealthAndDispatch(t *testing.T) {
 	if content := byName["content"]; content.Installed || content.Healthy || content.Message != "not installed" {
 		t.Fatalf("content status=%+v", content)
 	}
-	if _, err := service.Run(context.Background(), definition, []string{"person", "search"}, "human", Stdio{}); err == nil {
+	runtimeContext, err := NewRuntimeContext("v1.0.0", "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background(), definition, []string{"person", "search"}, "human", runtimeContext, Stdio{}); err == nil {
 		t.Fatal("incompatible installed plugin was dispatched")
 	}
 	if runner.calls != 0 {
