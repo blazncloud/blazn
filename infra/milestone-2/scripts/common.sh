@@ -71,6 +71,7 @@ control_plane_config_digest() {
       compose.yaml \
       postgres-init/01-roles.sh \
       ngrok.example.yml \
-      systemd/blazn-control-plane.service
+      systemd/blazn-control-plane.service \
+      systemd/blazn-ngrok.service
   ) | sha256sum | awk '{ print $1 }'
 }

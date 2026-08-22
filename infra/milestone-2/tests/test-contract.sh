@@ -6,6 +6,7 @@ ROOT_DIR=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 compose=$ROOT_DIR/compose.yaml
 ngrok=$ROOT_DIR/ngrok.example.yml
 unit=$ROOT_DIR/systemd/blazn-control-plane.service
+ngrok_unit=$ROOT_DIR/systemd/blazn-ngrok.service
 
 # The first four strings intentionally assert unexpanded Compose interpolation.
 # shellcheck disable=SC2016
@@ -84,6 +85,9 @@ if grep -E '^[[:space:]]+addr:' "$ngrok" | grep -Ev 'http://127\.0\.0\.1:58080$'
 fi
 grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
 grep -F 'Environment=COMPOSE_BAKE=false' "$unit" >/dev/null
+grep -F -- '--url https://blazn.benpelo.com' "$ngrok_unit" >/dev/null
+grep -F -- '--inspect=false' "$ngrok_unit" >/dev/null
+grep -F '127.0.0.1:58080' "$ngrok_unit" >/dev/null
 
 for script in "$ROOT_DIR"/scripts/*.sh "$ROOT_DIR"/postgres-init/*.sh "$ROOT_DIR"/tests/*.sh; do
   sh -n "$script"
