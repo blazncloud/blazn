@@ -1,0 +1,25 @@
+[Unit]
+Description=Blazn POC control plane
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/blazn/control-plane/control-plane.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/blazn/control-plane/control-plane.env
+WorkingDirectory=/opt/blazn/infra/milestone-2
+ExecStartPre=/opt/blazn/infra/milestone-2/scripts/preflight.sh --deploy
+ExecStart=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env up --detach --wait --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /etc/blazn/control-plane/control-plane.env stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/srv/frontro/blazn-poc /var/lib/blazn /run/lock/blazn-poc
+
+[Install]
+WantedBy=multi-user.target

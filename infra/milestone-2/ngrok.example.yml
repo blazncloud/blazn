@@ -1,0 +1,12 @@
+version: "3"
+agent:
+  authtoken: ${NGROK_AUTHTOKEN}
+tunnels:
+  blazn-api:
+    proto: http
+    addr: http://127.0.0.1:58080
+    domain: blazn.benpelo.com
+    schemes: [https]
+
+# This file deliberately exposes only the loopback API listener. PostgreSQL,
+# the S3 API, and the S3 administration console have no ngrok tunnel.
