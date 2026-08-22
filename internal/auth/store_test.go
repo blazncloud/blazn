@@ -68,6 +68,22 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 	}
 }
 
+func TestDarwinTestKeychainRequiresExplicitSafePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.keychain-db")
+	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BLAZN_TEST_KEYCHAIN_PATH", path)
+	if _, err := darwinKeychainArgs([]string{"lookup"}); err == nil {
+		t.Fatal("test keychain path worked without explicit opt-in")
+	}
+	t.Setenv("BLAZN_ALLOW_TEST_KEYCHAIN", "1")
+	args, err := darwinKeychainArgs([]string{"lookup"})
+	if err != nil || !reflect.DeepEqual(args, []string{"lookup", path}) {
+		t.Fatalf("args=%v err=%v", args, err)
+	}
+}
+
 func TestLinuxWithoutSecretServiceUsesProtectedStandaloneStore(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	store, err := newSystemStore("linux", &fakeRunner{})
