@@ -86,8 +86,8 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 		return nil, ErrUnavailable
 	}
 	bootstrap := Bootstrap{Version: ProtocolVersion, Kind: "bootstrap", Metadata: request.Metadata, Policy: append([]byte(nil), request.Policy...), Credentials: cloneCredentials(request.Credentials)}
-	defer zeroBootstrap(&bootstrap)
 	if validateBootstrap(bootstrap) != nil {
+		zeroBootstrap(&bootstrap)
 		return nil, ErrProtocol
 	}
 	bootstrapReader, bootstrapWriter := io.Pipe()
@@ -98,11 +98,18 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 		_ = bootstrapWriter.Close()
 		_ = handshakeReader.Close()
 		_ = handshakeWriter.Close()
+		zeroBootstrap(&bootstrap)
 		return nil, safeError(err)
 	}
+	writeDone := make(chan error, 1)
+	writeComplete := false
 	cleanup := true
 	defer func() {
 		_ = bootstrapWriter.Close()
+		if !writeComplete {
+			<-writeDone
+		}
+		zeroBootstrap(&bootstrap)
 		_ = handshakeReader.Close()
 		if cleanup {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), c.stopGrace())
@@ -110,7 +117,6 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 			_ = c.cleanupChild(cleanupCtx, child)
 		}
 	}()
-	writeDone := make(chan error, 1)
 	go func() {
 		writeDone <- writeFrame(bootstrapWriter, MaxBootstrapBytes, bootstrap)
 		_ = bootstrapWriter.Close()
@@ -121,8 +127,10 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 	if err := readFrameContext(handshakeCtx, handshakeReader, MaxHandshakeBytes, &handshake); err != nil {
 		return nil, safeError(err)
 	}
-	if err := <-writeDone; err != nil {
-		return nil, safeError(err)
+	writeErr := <-writeDone
+	writeComplete = true
+	if writeErr != nil {
+		return nil, safeError(writeErr)
 	}
 	proof, evidence, err := c.verifyHandshake(handshakeCtx, child.PID(), request.Metadata, handshake)
 	if err != nil {
