@@ -65,7 +65,23 @@ type RecoveryResult struct {
 	ReceiptRepaired       bool
 }
 
+type ExpectedRecovery struct {
+	ActivationID string
+	Generation   int64
+}
+
 func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, listener ListenerController) (result RecoveryResult, err error) {
+	return s.recover(ctx, environment, listener, nil)
+}
+
+func (s *Store) RecoverExpected(ctx context.Context, environment EnvironmentRestorer, listener ListenerController, expected ExpectedRecovery) (result RecoveryResult, err error) {
+	if !uuidPattern.MatchString(expected.ActivationID) || expected.Generation < 1 {
+		return result, ErrInvalidState
+	}
+	return s.recover(ctx, environment, listener, &expected)
+}
+
+func (s *Store) recover(ctx context.Context, environment EnvironmentRestorer, listener ListenerController, expected *ExpectedRecovery) (result RecoveryResult, err error) {
 	var semanticErr error
 	err = s.withInternalReservation(ctx, func(locked *lockedStore) error {
 		journal, journalErr := locked.readJournal()
@@ -76,6 +92,17 @@ func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, li
 		}
 		journalValid := journalErr == nil
 		receiptValid := receiptErr == nil
+		if expected != nil {
+			activationID, generation := "", int64(0)
+			if journalValid {
+				activationID, generation = journal.ActivationID, journal.Generation
+			} else if receiptValid {
+				activationID, generation = receipt.ActivationID, receipt.Generation
+			}
+			if activationID != expected.ActivationID || generation != expected.Generation {
+				return ErrLifecycleConflict
+			}
+		}
 
 		if !journalValid && !receiptValid {
 			if errors.Is(journalErr, ErrNotFound) && errors.Is(receiptErr, ErrNotFound) {
