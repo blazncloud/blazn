@@ -27,8 +27,12 @@ export interface Artifact {
   digest?: string; sizeBytes?: number; createdBy: string; createdAt: string; updatedAt: string;
   downloadAvailable: boolean;
 }
+export interface SyntheticRunProgressInput { sequence:number; phase:string; percent:number; message?:string }
+export interface SyntheticRunProgressAck { runId:string; sequence:number; runVersion:number; status:"running" }
+export interface CompleteSyntheticRunInput { expectedVersion:number; planDigest:string; artifactIds:string[]; summary:{steps:number;warnings:string[]} }
+export interface SyntheticArtifactUploadMetadata { name:string;kind:string;mediaType:ArtifactMediaType;sizeBytes:number;digest:string }
 export interface RunAccess { workspaceStatus: "active" | "archived"; role: WorkspaceRole; projectStatus?: "active" | "archived" }
 
-export type RunErrorCode = "run_not_found" | "run_terminal" | "artifact_not_found" | "project_not_found" | "workspace_not_found" | "membership_required" | "permission_denied" | "version_conflict" | "idempotency_conflict" | "invalid_request" | "method_not_allowed";
-const statuses: Record<RunErrorCode, number> = { run_not_found:404,run_terminal:409,artifact_not_found:404,project_not_found:404,workspace_not_found:404,membership_required:403,permission_denied:403,version_conflict:409,idempotency_conflict:409,invalid_request:400,method_not_allowed:405 };
+export type RunErrorCode = "run_not_found" | "run_terminal" | "run_sequence_conflict" | "artifact_not_found" | "artifact_name_conflict" | "artifact_digest_mismatch" | "artifact_size_mismatch" | "upload_too_large" | "project_not_found" | "workspace_not_found" | "membership_required" | "permission_denied" | "version_conflict" | "idempotency_conflict" | "invalid_request" | "method_not_allowed";
+const statuses: Record<RunErrorCode, number> = { run_not_found:404,run_terminal:409,run_sequence_conflict:409,artifact_not_found:404,artifact_name_conflict:409,artifact_digest_mismatch:400,artifact_size_mismatch:400,upload_too_large:413,project_not_found:404,workspace_not_found:404,membership_required:403,permission_denied:403,version_conflict:409,idempotency_conflict:409,invalid_request:400,method_not_allowed:405 };
 export class RunHttpError extends Error { readonly status:number; constructor(readonly code:RunErrorCode,message:string){super(message);this.status=statuses[code];} }

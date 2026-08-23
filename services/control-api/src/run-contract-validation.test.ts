@@ -14,6 +14,7 @@ const formatsModule = require("ajv-formats") as { default?: FormatsPlugin } | Fo
 const addFormats = ("default" in formatsModule ? formatsModule.default : formatsModule) as FormatsPlugin;
 const contract = path.resolve(here, "../../../packages/contracts/runs.openapi.json");
 const migration = path.resolve(here, "../migrations/012_runs_artifacts.sql");
+const syntheticMigration = path.resolve(here, "../migrations/017_run_synthetic_execution.sql");
 
 test("Run and Artifact OpenAPI exposes only Project-scoped routes", async () => {
   const document = await SwaggerParser.validate(contract) as unknown as { paths: Record<string, Record<string, { operationId?: string }>> };
@@ -90,5 +91,23 @@ test("Run migration binds every resource to Project tenant and denies runtime de
   assert.match(sql, /REVOKE ALL ON FUNCTION run_output_names_valid\(text\[\]\) FROM PUBLIC/);
   assert.match(sql, /object_key !~ '\[\?#@\]'/);
   assert.match(sql, /REVOKE DELETE ON TABLE runs, run_events, run_receipts, artifacts, run_input_artifacts FROM blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT[^;]*DELETE[^;]*TO blazn_runtime/);
+});
+
+test("synthetic execution migration keeps progress and bytes tenant-bound and append-only", async () => {
+  const sql = await readFile(syntheticMigration, "utf8");
+  assert.match(sql, /PRIMARY KEY \(run_id, sequence\)/);
+  assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, project_id\) REFERENCES runs\(id, workspace_id, project_id\)/);
+  assert.match(sql, /content bytea NOT NULL CHECK \(octet_length\(content\) <= 16777216\)/);
+  assert.match(sql, /CREATE UNIQUE INDEX artifacts_source_run_live_name_idx/);
+  assert.match(sql, /GRANT SELECT, INSERT ON TABLE run_synthetic_progress TO blazn_runtime/);
+  assert.match(sql, /GRANT SELECT, INSERT ON TABLE synthetic_artifact_blobs TO blazn_runtime/);
+  assert.match(sql, /REVOKE UPDATE, DELETE ON TABLE run_synthetic_progress, synthetic_artifact_blobs FROM blazn_runtime/);
+  assert.match(sql, /CREATE CONSTRAINT TRIGGER synthetic_artifact_consistency_from_artifact/);
+  assert.match(sql, /CREATE CONSTRAINT TRIGGER synthetic_artifact_consistency_from_blob/);
+  assert.match(sql, /artifact_row\.digest <> 'sha256:' \|\| encode\(digest\(blob_content, 'sha256'\), 'hex'\)/);
+  assert.match(sql, /run_proof_class <> 'synthetic' OR artifact_row\.created_by <> run_requested_by/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION validate_synthetic_artifact_consistency\(\) FROM PUBLIC/);
+  assert.doesNotMatch(sql, /GRANT[^;]*UPDATE[^;]*TO blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT[^;]*DELETE[^;]*TO blazn_runtime/);
 });
