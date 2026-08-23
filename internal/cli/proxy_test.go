@@ -221,6 +221,10 @@ func TestProxyCLIRecoveryErrorsPreserveSafeCleanupAndRemediation(t *testing.T) {
 			name string
 			err  error
 		}{
+			{name: "session unsupported", err: activation.ErrSessionUnsupported},
+			{name: "policy invalid", err: activation.ErrPolicyInvalid},
+			{name: "credential unavailable", err: activation.ErrCredentialUnavailable},
+			{name: "listener unavailable", err: activation.ErrListenerUnavailable},
 			{name: "lifecycle conflict", err: activation.ErrLifecycleConflict},
 			{name: "lifecycle deadline", err: activation.ErrLifecycleDeadline},
 		} {
@@ -252,6 +256,11 @@ func TestProxyCLIRecoveryErrorsPreserveSafeCleanupAndRemediation(t *testing.T) {
 					}
 					if strings.Contains(combined, "PROXY_LIFECYCLE_") {
 						t.Fatalf("joined lifecycle cause overrode recovery classification: %s", combined)
+					}
+					for _, lowerPriority := range []string{"PROXY_SESSION_UNSUPPORTED", "POLICY_INVALID", "CREDENTIAL_UNAVAILABLE", "LISTENER_UNHEALTHY"} {
+						if strings.Contains(combined, lowerPriority) {
+							t.Fatalf("joined lower-boundary cause %q overrode recovery classification: %s", lowerPriority, combined)
+						}
 					}
 				})
 			}

@@ -242,6 +242,10 @@ func publicProxyError(err error, suggested int) (int, string, string) {
 	code := "PROXY_FAILED"
 	message := "proxy operation failed"
 	switch {
+	case errors.Is(err, activation.ErrRecovery):
+		code = "RECOVERY_REQUIRED"
+		message = "proxy recovery is required"
+		exit = 9
 	case errors.Is(err, activation.ErrSessionUnsupported):
 		code = "PROXY_SESSION_UNSUPPORTED"
 		message = "proxy session activation is unsupported"
@@ -266,10 +270,6 @@ func publicProxyError(err error, suggested int) (int, string, string) {
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE"
 		message = "proxy is already active in a different mode or OS session"
 		exit = 6
-	case errors.Is(err, activation.ErrRecovery):
-		code = "RECOVERY_REQUIRED"
-		message = "proxy recovery is required"
-		exit = 9
 	case errors.Is(err, activation.ErrLifecycleDeadline):
 		code = "PROXY_LIFECYCLE_DEADLINE"
 		message = "proxy lifecycle operation exceeded its deadline"
