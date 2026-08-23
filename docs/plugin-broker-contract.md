@@ -59,9 +59,13 @@ a bounded drain.
 
 ## Replay and evidence
 
-Mutations require caller-generated idempotency keys. Root scopes them to the
-authenticated principal, selected Workspace/Project, plugin, method, and exact
-request digest. Progress sequence is monotonic. Synthetic completion must bind
+Mutations carry caller-generated idempotency keys where the request schema
+defines one. Root scopes them to the authenticated principal, selected
+Workspace/Project, plugin, method, and exact request digest. Progress has no
+plugin-chosen key: root derives it from the same authority scope plus Run ID,
+sequence, and exact progress digest, so an exact replay is stable while changed
+content at the same sequence conflicts. Progress sequence is monotonic.
+Synthetic completion must bind
 the Run's proof class and plan digest and may reference only Artifacts uploaded
 for that Run. Receipts never include broker descriptors, absolute temporary
 paths, credentials, or internal object keys.
