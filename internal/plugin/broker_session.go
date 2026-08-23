@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,14 +42,21 @@ type brokerDescription struct {
 type brokerSession struct {
 	connection *os.File
 	pluginName string
-	context    RuntimeContext
+	runtimeContext RuntimeContext
+	requestContext context.Context
+	handler brokerMethodHandler
 	writeMu    sync.Mutex
 	seenMu     sync.Mutex
 	seen       map[uint32]bool
 }
 
 func newBrokerSession(connection *os.File, pluginName string, runtimeContext RuntimeContext) *brokerSession {
-	return &brokerSession{connection: connection, pluginName: pluginName, context: runtimeContext, seen: map[uint32]bool{}}
+	return newBrokerSessionWithHandler(context.Background(), connection, pluginName, runtimeContext, describeOnlyBrokerHandler{})
+}
+func newBrokerSessionWithHandler(ctx context.Context, connection *os.File, pluginName string, runtimeContext RuntimeContext, handler brokerMethodHandler) *brokerSession {
+	if ctx == nil { ctx = context.Background() }
+	if handler == nil { handler = describeOnlyBrokerHandler{} }
+	return &brokerSession{connection: connection, pluginName: pluginName, runtimeContext: runtimeContext, requestContext: ctx, handler: handler, seen: map[uint32]bool{}}
 }
 func (s *brokerSession) close() error { return s.connection.Close() }
 func (s *brokerSession) cancel() {
@@ -82,7 +90,7 @@ func (s *brokerSession) serve() error {
 		if overLimit {
 			return errors.New("plugin exceeded the broker stream limit")
 		}
-		response := s.handle(frame.Payload)
+	response := s.handle(frame.Payload)
 		encoded, err := json.Marshal(response)
 		if err != nil {
 			return err
@@ -100,16 +108,15 @@ func (s *brokerSession) handle(payload []byte) brokerResponse {
 	if err != nil {
 		return brokerFailure("00000000000000000000000000000000", "invalid_request", err.Error(), false)
 	}
-	if request.Method != "broker.describe" {
-		return brokerFailure(request.RequestID, "broker_method_unavailable", "broker method is not available in this runtime", false)
+	resultSchema, value, failure := s.handler.Handle(s.requestContext, s.pluginName, s.runtimeContext, request)
+	if failure != nil {
+		return brokerFailure(request.RequestID, failure.Code, failure.Message, failure.Retryable)
 	}
-	var params map[string]json.RawMessage
-	if json.Unmarshal(request.Params, &params) != nil || len(params) != 0 {
-		return brokerFailure(request.RequestID, "invalid_request", "broker.describe params must be empty", false)
+	result, err := json.Marshal(value)
+	if err != nil || len(result) == 0 || len(result) > brokerMaxControlBytes {
+		return brokerFailure(request.RequestID, "broker_response_invalid", "broker response could not be encoded safely", false)
 	}
-	description := brokerDescription{ProtocolVersion: brokerProtocolVersion, Transport: "inherited-socket", MaxControlBytes: brokerMaxControlBytes, MaxDataBytes: brokerMaxDataBytes, MaxStreams: brokerMaxStreams, AvailableCapabilities: []string{"broker.describe"}}
-	result, _ := json.Marshal(description)
-	return brokerResponse{SchemaVersion: 1, RequestID: request.RequestID, OK: true, ResultSchema: "broker-description/v1", Payload: string(result)}
+	return brokerResponse{SchemaVersion: 1, RequestID: request.RequestID, OK: true, ResultSchema: resultSchema, Payload: string(result)}
 }
 func decodeBrokerRequest(payload []byte) (brokerRequest, error) {
 	if len(payload) == 0 || len(payload) > brokerMaxControlBytes {
