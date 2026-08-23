@@ -27,10 +27,14 @@ type fakePolicies struct {
 	policy proxycontract.Policy
 	digest string
 	calls  int
+	err    error
 }
 
 func (f *fakePolicies) Load(string) (proxycontract.Policy, string, error) {
 	f.calls++
+	if f.err != nil {
+		return proxycontract.Policy{}, "", f.err
+	}
 	return f.policy, f.digest, nil
 }
 
@@ -42,6 +46,8 @@ type fakeEnvironment struct {
 	publishErr     error
 	modeErr        error
 	resolvedMode   string
+	mechanism      string
+	platform       string
 	session        string
 	afterPublish   func()
 	beforeSnapshot func()
@@ -51,7 +57,12 @@ type fakeEnvironment struct {
 func newFakeEnvironment() *fakeEnvironment {
 	return &fakeEnvironment{values: map[string]string{"OPENAI_API_KEY": "prior-openai", "HTTP_PROXY": "direct"}, markers: map[string]string{}, configs: map[string]string{"codex": "before", "claude": "before", "hermes": "before"}}
 }
-func (*fakeEnvironment) Platform() string { return "linux" }
+func (f *fakeEnvironment) Platform() string {
+	if f.platform != "" {
+		return f.platform
+	}
+	return "linux"
+}
 func (f *fakeEnvironment) SessionIdentity(context.Context) (string, error) {
 	if f.session != "" {
 		return f.session, nil
@@ -69,7 +80,11 @@ func (f *fakeEnvironment) ResolveMode(value string) (string, string, error) {
 	if mode == "" {
 		mode = "session"
 	}
-	return mode, "systemd_user_environment", nil
+	mechanism := f.mechanism
+	if mechanism == "" {
+		mechanism = "systemd_user_environment"
+	}
+	return mode, mechanism, nil
 }
 func (f *fakeEnvironment) Snapshot(_ context.Context, names []string) (map[string]PriorValue, error) {
 	if f.beforeSnapshot != nil {
@@ -183,10 +198,14 @@ type fakeFactory struct {
 	shutdownErr    error
 	mutateIdentity bool
 	startDead      bool
+	startErr       error
 }
 
 func (f *fakeFactory) Start(_ context.Context, _ proxycontract.Policy, _ string, metadata ListenerMetadata) (ManagedListener, error) {
 	f.starts++
+	if f.startErr != nil {
+		return nil, f.startErr
+	}
 	listener := &fakeListener{token: "listener-secret-value", alive: !f.startDead, shutdownErr: f.shutdownErr, identity: state.ListenerIdentity{PID: 4000 + f.starts, ProcessStartIdentity: fmt.Sprintf("start-%d", f.starts), ExecutableIdentity: "exe-identity", Address: "127.0.0.1:8123", ListenerKeyFingerprint: testDigest}}
 	listener.proof = listenerProof(listener.identity, metadata)
 	if f.mutateIdentity {
@@ -482,7 +501,7 @@ func TestIdempotencyRequiresExactModeAndSession(t *testing.T) {
 	}
 	environment.session = "uid:1000/session:test"
 	environment.resolvedMode = "global"
-	if result, err := service.On(context.Background(), "policy.json", "auto"); !errors.Is(err, ErrDifferentScope) || result.Status != "conflict" {
+	if result, err := service.On(context.Background(), "policy.json", "auto"); !errors.Is(err, ErrSessionUnsupported) || result.Status != "unsupported" || result.ExitCode != 2 {
 		t.Fatalf("cross-mode=%+v err=%v", result, err)
 	}
 }
@@ -712,9 +731,61 @@ func TestRunUsesExactArgvAndAlwaysRestores(t *testing.T) {
 	if strings.Join(runner.argv, "|") != "tool|a b|$HOME|;rm" || store.journal != nil {
 		t.Fatalf("argv=%q journal=%v", runner.argv, store.journal)
 	}
+	if environment.publishCalls != 0 || len(result.PublishedVariables) != 0 {
+		t.Fatalf("scoped run crossed the process-environment boundary: publishes=%d variables=%v", environment.publishCalls, result.PublishedVariables)
+	}
 	joined := strings.Join(runner.environment, "\n")
 	if !strings.Contains(joined, "OPENAI_API_KEY=listener-secret-value") || environment.values["OPENAI_API_KEY"] != "prior-openai" {
 		t.Fatal("scoped environment was not exact or restored")
+	}
+}
+
+func TestOnRejectsNonSessionAndMismatchedNativePublicationBeforeMutation(t *testing.T) {
+	for _, testCase := range []struct {
+		name, platform, mode, mechanism string
+		want                            error
+	}{
+		{name: "linux auto cannot invent scoped mode", platform: "linux", mode: "scoped_run", mechanism: "process_environment", want: ErrSessionUnsupported},
+		{name: "linux session cannot publish to parent process", platform: "linux", mode: "session", mechanism: "process_environment", want: ErrSessionUnsupported},
+		{name: "mac session requires launchctl", platform: "darwin", mode: "session", mechanism: "systemd_user_environment", want: ErrSessionUnsupported},
+		{name: "unknown platform is unavailable", platform: "windows", mode: "session", mechanism: "systemd_user_environment", want: ErrUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			service, store, environment, factory, _, _ := testService(t)
+			environment.platform, environment.resolvedMode, environment.mechanism = testCase.platform, testCase.mode, testCase.mechanism
+			result, err := service.On(context.Background(), "policy.json", "auto")
+			if !errors.Is(err, testCase.want) || result.State != "inactive" || store.journal != nil || factory.starts != 0 || environment.publishCalls != 0 {
+				t.Fatalf("result=%+v err=%v journal=%v starts=%d publishes=%d", result, err, store.journal, factory.starts, environment.publishCalls)
+			}
+			if errors.Is(testCase.want, ErrSessionUnsupported) && result.ExitCode != 2 {
+				t.Fatalf("unsupported exit=%d", result.ExitCode)
+			}
+		})
+	}
+}
+
+func TestOnTypedPreflightFailuresNeverPublishOrPersist(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		policyErr error
+		startErr  error
+		want      error
+	}{
+		{name: "policy", policyErr: errors.Join(ErrPolicyInvalid, errors.New("secret policy detail")), want: ErrPolicyInvalid},
+		{name: "credential", startErr: errors.Join(ErrCredentialUnavailable, errors.New("secret credential detail")), want: ErrCredentialUnavailable},
+		{name: "listener", startErr: errors.Join(ErrListenerUnavailable, errors.New("secret listener detail")), want: ErrListenerUnavailable},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			service, store, environment, factory, policies, _ := testService(t)
+			policies.err, factory.startErr = testCase.policyErr, testCase.startErr
+			result, err := service.On(context.Background(), "policy.json", "auto")
+			if !errors.Is(err, testCase.want) || result.State != "inactive" || store.journal != nil || environment.publishCalls != 0 {
+				t.Fatalf("result=%+v err=%v journal=%v publishes=%d", result, err, store.journal, environment.publishCalls)
+			}
+			if testCase.policyErr != nil && factory.starts != 0 {
+				t.Fatalf("policy failure started %d listeners", factory.starts)
+			}
+		})
 	}
 }
 
@@ -1012,6 +1083,8 @@ func TestEmbeddedFactoryRejectsSubstitutedRuntimeIdentity(t *testing.T) {
 		if managed, err := (EmbeddedListenerFactory{Address: "127.0.0.1", Router: base, Identity: identity}).Start(context.Background(), policy, testDigest, metadata); err == nil {
 			_ = managed.Shutdown(context.Background())
 			t.Fatal("substituted listener identity was accepted")
+		} else if !errors.Is(err, ErrListenerUnavailable) {
+			t.Fatalf("substituted identity lost listener classification: %v", err)
 		}
 	}
 }

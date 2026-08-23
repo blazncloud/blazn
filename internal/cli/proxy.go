@@ -242,6 +242,22 @@ func publicProxyError(err error, suggested int) (int, string, string) {
 	code := "PROXY_FAILED"
 	message := "proxy operation failed"
 	switch {
+	case errors.Is(err, activation.ErrSessionUnsupported):
+		code = "PROXY_SESSION_UNSUPPORTED"
+		message = "proxy session activation is unsupported"
+		exit = 2
+	case errors.Is(err, activation.ErrPolicyInvalid):
+		code = "POLICY_INVALID"
+		message = "proxy policy is invalid"
+		exit = 2
+	case errors.Is(err, activation.ErrCredentialUnavailable):
+		code = "CREDENTIAL_UNAVAILABLE"
+		message = "proxy destination credential is unavailable"
+		exit = 3
+	case errors.Is(err, activation.ErrListenerUnavailable):
+		code = "LISTENER_UNHEALTHY"
+		message = "proxy listener is unavailable or unhealthy"
+		exit = 3
 	case errors.Is(err, activation.ErrDifferentPolicy):
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_POLICY"
 		message = "proxy is already active with a different policy"

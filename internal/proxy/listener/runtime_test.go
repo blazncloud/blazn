@@ -89,6 +89,8 @@ func TestRuntimeRejectsNonLoopbackAndShutsDownGracefully(t *testing.T) {
 		if runtime, err := Start(Config{Address: address, Router: routerConfig(t)}); err == nil {
 			_ = runtime.Shutdown(context.Background())
 			t.Fatalf("accepted unsafe listener address %q", address)
+		} else if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("listener error lost typed classification: %v", err)
 		}
 	}
 	runtime, err := Start(Config{Address: "127.0.0.1", Router: routerConfig(t)})
@@ -120,6 +122,19 @@ func TestRuntimeRejectsNonLoopbackAndShutsDownGracefully(t *testing.T) {
 	case <-runtime.Done():
 	default:
 		t.Fatal("runtime did not stop")
+	}
+}
+
+func TestRuntimePreservesCredentialPreflightClassification(t *testing.T) {
+	config := routerConfig(t)
+	config.Credentials = credentials{}
+	runtime, err := Start(Config{Address: "127.0.0.1", Router: config})
+	if runtime != nil {
+		_ = runtime.Shutdown(context.Background())
+		t.Fatal("listener started without required destination credentials")
+	}
+	if !errors.Is(err, router.ErrCredentialUnavailable) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("credential preflight classification = %v", err)
 	}
 }
 

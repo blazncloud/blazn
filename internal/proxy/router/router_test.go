@@ -782,6 +782,8 @@ func TestLoadPolicyRequiresOwnerOnlyRegularFile(t *testing.T) {
 	}
 	if _, _, err = LoadPolicy(path); err == nil {
 		t.Fatal("accepted group/world-readable policy")
+	} else if !errors.Is(err, ErrPolicyInvalid) {
+		t.Fatalf("policy error lost typed classification: %v", err)
 	}
 }
 

@@ -20,39 +20,39 @@ func LoadPolicy(path string) (proxycontract.Policy, string, error) {
 	clean := filepath.Clean(path)
 	info, err := os.Lstat(clean)
 	if err != nil {
-		return zero, "", fmt.Errorf("POLICY_INVALID: stat: %w", err)
+		return zero, "", fmt.Errorf("%w: stat: %v", ErrPolicyInvalid, err)
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return zero, "", fmt.Errorf("POLICY_INVALID: policy must be a regular file")
+		return zero, "", fmt.Errorf("%w: policy must be a regular file", ErrPolicyInvalid)
 	}
 	f, err := openPolicyFile(clean)
 	if err != nil {
-		return zero, "", fmt.Errorf("POLICY_INVALID: open: %w", err)
+		return zero, "", fmt.Errorf("%w: open: %v", ErrPolicyInvalid, err)
 	}
 	defer f.Close()
 	openedInfo, err := f.Stat()
 	if err != nil || !os.SameFile(info, openedInfo) {
-		return zero, "", fmt.Errorf("POLICY_INVALID: policy changed while opening")
+		return zero, "", fmt.Errorf("%w: policy changed while opening", ErrPolicyInvalid)
 	}
 	if runtime.GOOS != "windows" && openedInfo.Mode().Perm()&0o077 != 0 {
-		return zero, "", fmt.Errorf("POLICY_INVALID: policy must not be accessible by group or others")
+		return zero, "", fmt.Errorf("%w: policy must not be accessible by group or others", ErrPolicyInvalid)
 	}
 	if err := verifyPolicyOwner(openedInfo); err != nil {
-		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
+		return zero, "", fmt.Errorf("%w: %v", ErrPolicyInvalid, err)
 	}
 	policy, err := proxycontract.DecodePolicy(io.LimitReader(f, maxPolicyBytes+1))
 	if err != nil {
-		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
+		return zero, "", fmt.Errorf("%w: %v", ErrPolicyInvalid, err)
 	}
 	if openedInfo.Size() > maxPolicyBytes {
-		return zero, "", fmt.Errorf("POLICY_INVALID: policy exceeds %d bytes", maxPolicyBytes)
+		return zero, "", fmt.Errorf("%w: policy exceeds %d bytes", ErrPolicyInvalid, maxPolicyBytes)
 	}
 	if err := validatePolicySemantics(policy); err != nil {
-		return zero, "", fmt.Errorf("POLICY_INVALID: %w", err)
+		return zero, "", fmt.Errorf("%w: %v", ErrPolicyInvalid, err)
 	}
 	digest, err := proxycontract.ContractDigest(policy)
 	if err != nil {
-		return zero, "", fmt.Errorf("POLICY_INVALID: digest: %w", err)
+		return zero, "", fmt.Errorf("%w: digest: %v", ErrPolicyInvalid, err)
 	}
 	return policy, digest, nil
 }

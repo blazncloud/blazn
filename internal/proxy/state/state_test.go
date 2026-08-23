@@ -373,6 +373,16 @@ func TestRecoverValidRecordsRestoresAndVerifiesListenerStop(t *testing.T) {
 	if listener.stopCalls != 1 || len(environment.requests) != 5 {
 		t.Fatalf("stop=%d CAS=%d", listener.stopCalls, len(environment.requests))
 	}
+	authority := map[string]JournalEnvironment{}
+	for _, item := range journal.Environment {
+		authority[item.Name] = item
+	}
+	for _, request := range environment.requests {
+		item, ok := authority[request.Name]
+		if !ok || request.ActivationMarker != item.ActivationMarker || request.ExpectedValueDigest != item.DesiredValueDigest {
+			t.Fatalf("CAS request was not bound to journal marker and live-value digest: %+v", request)
+		}
+	}
 	for _, path := range []string{store.paths.Journal, store.paths.Receipt} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("record remains at %s: %v", path, err)

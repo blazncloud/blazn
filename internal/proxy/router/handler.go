@@ -262,7 +262,7 @@ func (h *Handler) Preflight(ctx context.Context) error {
 		}
 		credential, err := h.config.Credentials.DestinationCredential(ctx, route.CredentialRef)
 		if err != nil || credential == "" {
-			return fmt.Errorf("route %s credential is unavailable", route.ID)
+			return fmt.Errorf("%w for route %s", ErrCredentialUnavailable, route.ID)
 		}
 		delete(required, route.ID)
 	}

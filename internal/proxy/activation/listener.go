@@ -14,9 +14,16 @@ type ListenerProofProvider interface {
 	Proof(context.Context, string, string, ListenerMetadata) (state.ListenerIdentity, state.LiveListenerProof, error)
 }
 
-// EmbeddedListenerFactory is the platform-neutral bridge to the merged
-// authenticated loopback runtime. Credential resolution and exact process
-// identity remain injected so this slice cannot invent platform authority.
+var (
+	ErrPolicyInvalid         = router.ErrPolicyInvalid
+	ErrCredentialUnavailable = router.ErrCredentialUnavailable
+	ErrListenerUnavailable   = listener.ErrUnavailable
+)
+
+// EmbeddedListenerFactory is the core/test bridge to the merged authenticated
+// loopback runtime. It is not a production session-listener factory: credential
+// resolution and exact process identity remain injected, and the runtime dies
+// with its caller rather than supplying durable child/control proof.
 type EmbeddedListenerFactory struct {
 	Address  string
 	Router   router.Config
@@ -38,13 +45,13 @@ func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract
 		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		_ = runtime.Shutdown(cleanup)
-		return nil, err
+		return nil, errors.Join(ErrListenerUnavailable, err)
 	}
 	if identity.PID < 1 || identity.ProcessStartIdentity == "" || identity.ExecutableIdentity == "" || identity.Address != runtime.Address() || identity.ListenerKeyFingerprint != runtime.ListenerKeyFingerprint() || proof != listenerProof(identity, metadata) {
 		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		_ = runtime.Shutdown(cleanup)
-		return nil, errors.New("listener identity does not match the authenticated runtime")
+		return nil, errors.Join(ErrListenerUnavailable, errors.New("listener identity does not match the authenticated runtime"))
 	}
 	return &embeddedListener{Runtime: runtime, identity: identity, proof: proof}, nil
 }

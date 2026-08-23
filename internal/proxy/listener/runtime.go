@@ -29,6 +29,8 @@ const (
 	defaultMaxHeaderBytes    = 32 << 10
 )
 
+var ErrUnavailable = errors.New("proxy listener is unavailable")
+
 type Config struct {
 	Address           string
 	Port              uint16
@@ -58,11 +60,11 @@ func (*Runtime) GoString() string { return "[REDACTED proxy listener runtime]" }
 func Start(config Config) (*Runtime, error) {
 	address, err := netip.ParseAddr(config.Address)
 	if err != nil || !address.IsLoopback() {
-		return nil, errors.New("listener address must be an explicit loopback IP")
+		return nil, fmt.Errorf("%w: address must be an explicit loopback IP", ErrUnavailable)
 	}
 	credential, err := GenerateCredential()
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(ErrUnavailable, err)
 	}
 	config.Router.ListenerToken = credential.authenticateValue()
 	// The POC wire contract permits destination credentials only as Bearer.
@@ -101,12 +103,12 @@ func Start(config Config) (*Runtime, error) {
 	bind := net.JoinHostPort(address.String(), strconv.Itoa(int(config.Port)))
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", bind)
 	if err != nil {
-		return nil, fmt.Errorf("bind loopback listener: %w", err)
+		return nil, fmt.Errorf("%w: bind loopback listener: %v", ErrUnavailable, err)
 	}
 	bound, err := netip.ParseAddrPort(ln.Addr().String())
 	if err != nil || !bound.Addr().Unmap().IsLoopback() {
 		_ = ln.Close()
-		return nil, errors.New("listener did not bind to loopback")
+		return nil, fmt.Errorf("%w: listener did not bind to loopback", ErrUnavailable)
 	}
 	rootContext, rootCancel := context.WithCancel(context.Background())
 	runtime := &Runtime{listener: ln, done: make(chan struct{}), credential: credential, rootCancel: rootCancel, connections: map[net.Conn]http.ConnState{}}

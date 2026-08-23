@@ -130,6 +130,32 @@ func TestProxyCLIRejectsAmbiguousFlagsAndMapsStableErrors(t *testing.T) {
 	}
 }
 
+func TestProxyCLIMapsTypedPreflightErrorsToStableRedactedCodes(t *testing.T) {
+	const secret = "sk-proj-must-not-cross-cli"
+	for _, testCase := range []struct {
+		name, code, message string
+		err                 error
+		exit                int
+	}{
+		{name: "session", code: "PROXY_SESSION_UNSUPPORTED", message: "proxy session activation is unsupported", err: activation.ErrSessionUnsupported, exit: 2},
+		{name: "policy", code: "POLICY_INVALID", message: "proxy policy is invalid", err: activation.ErrPolicyInvalid, exit: 2},
+		{name: "credential", code: "CREDENTIAL_UNAVAILABLE", message: "proxy destination credential is unavailable", err: activation.ErrCredentialUnavailable, exit: 3},
+		{name: "listener", code: "LISTENER_UNHEALTHY", message: "proxy listener is unavailable or unhealthy", err: activation.ErrListenerUnavailable, exit: 3},
+	} {
+		for _, format := range []string{"human", "json"} {
+			t.Run(testCase.name+"/"+format, func(t *testing.T) {
+				fake := &fakeProxyCommands{result: activation.Result{Command: "proxy on", Status: "failed", State: "inactive", ExitCode: 7}, err: errors.Join(testCase.err, errors.New(secret))}
+				app, stdout, stderr := proxyApp(fake)
+				exit := app.Run([]string{"--output=" + format, "proxy", "on", "--policy", "policy.json"})
+				output := stdout.String() + stderr.String()
+				if exit != testCase.exit || !strings.Contains(output, testCase.message) || strings.Contains(output, secret) || (format == "json" && !strings.Contains(output, testCase.code)) {
+					t.Fatalf("exit=%d output=%s", exit, output)
+				}
+			})
+		}
+	}
+}
+
 func TestProxyCLIUnavailableAndHelpNeedNoPlatformMutation(t *testing.T) {
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	app := New(stdout, stderr, BuildInfo{})

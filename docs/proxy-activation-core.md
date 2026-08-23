@@ -37,7 +37,11 @@ error or recovered panic leaves `recovery_required` evidence. A crash after the
 write-ahead journal remains recoverable after the short reservation expires.
 
 The journal contains exact prior values but only digests and markers for new
-values. Receipts, status, CLI results, routes, and events contain neither prior
+values. Its per-record marker is the rollback authority, and an adapter may
+restore a value only when both that marker and the digest of the live value
+match the journal (compare-and-set). No sixth environment marker is published;
+the environment contract remains exactly the five named variables. Receipts,
+status, CLI results, routes, and events contain neither prior
 values nor listener/provider credentials. The listener token stays only in the
 listener and activated child/session environment; state stores its fingerprint.
 Proxy command errors cross the CLI boundary through stable public messages;
@@ -67,6 +71,18 @@ Real launchctl and user-systemd publication, OS process inspection after a
 restart, platform credential stores, signal-forwarding runners, and the native
 twenty-cycle/crash/reboot/config-snapshot matrix remain in the next PRs. Until
 one of those adapters is selected, the root CLI fails unavailable before any
-platform mutation. The core's injected fake adapters exercise journal crash
+platform mutation. `process_environment` is a no-op publication mechanism used
+only by `proxy run`; the five selected values are passed to that exact child and
+are not written into the parent or OS session. `on` accepts only the journaled
+`session` mode with the matching native publication mechanism. Linux or macOS
+`auto` therefore fails `PROXY_SESSION_UNSUPPORTED` when the adapter cannot prove
+that durable session boundary; it never writes a synthetic `scoped_only` or
+other out-of-contract journal mode.
+
+`EmbeddedListenerFactory` and the default unavailable CLI factory are core/test
+boundaries, not production session implementations. Production `proxy on`
+remains unavailable until a native adapter supplies a durable listener child,
+an authenticated control channel, and restart-safe process proof. The core's
+injected fake adapters exercise journal crash
 points, stale state, API independence, abrupt listener loss, idempotency, exact
 argv, compare-and-set restoration, and application-config non-mutation.

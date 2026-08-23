@@ -291,9 +291,9 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 	if result, resultErr, handled := s.reconcileOn(ctx, current, reconcileErr, digest, requestedMode); handled {
 		return result, resultErr
 	}
-	mode, mechanism, err := s.deps.Environment.ResolveMode(requestedMode)
+	mode, mechanism, err := s.resolveSessionMode(requestedMode)
 	if err != nil {
-		return s.result("proxy on", "unsupported", "inactive", 7), err
+		return s.result("proxy on", "unsupported", "inactive", modeExitCode(err)), err
 	}
 	result, activateErr := s.activate(ctx, "proxy on", policy, digest, mode, mechanism)
 	if !errors.Is(activateErr, errActivationRace) {
@@ -343,9 +343,9 @@ func (s *Service) reconcileOn(ctx context.Context, current state.Reconciliation,
 			return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery, true
 		}
 		if current.PolicyDigest == digest {
-			mode, _, modeErr := s.deps.Environment.ResolveMode(requestedMode)
+			mode, _, modeErr := s.resolveSessionMode(requestedMode)
 			if modeErr != nil {
-				return s.result("proxy on", "unsupported", "active", 7), modeErr, true
+				return s.result("proxy on", "unsupported", "active", modeExitCode(modeErr)), modeErr, true
 			}
 			session, sessionErr := s.deps.Environment.SessionIdentity(ctx)
 			if sessionErr != nil {
@@ -495,6 +495,9 @@ func (s *Service) reconcileRun(ctx context.Context, current state.Reconciliation
 }
 
 func (s *Service) activate(ctx context.Context, command string, policy proxycontract.Policy, digest, mode, mechanism string) (Result, error) {
+	if err := s.validateActivationBoundary(mode, mechanism); err != nil {
+		return s.result(command, "unsupported", "inactive", 7), err
+	}
 	activationID, nonce, err := randomIdentity()
 	if err != nil {
 		return s.result(command, "failed", "inactive", 1), err
@@ -518,7 +521,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	expectedProof := listenerProof(identity, metadata)
 	observedProof, live, inspectErr := managed.Inspect(ctx)
 	if inspectErr != nil || !live || observedProof != expectedProof {
-		return s.result(command, "failed", "inactive", 7), errors.Join(errors.New("listener identity could not be verified before publication"), inspectErr)
+		return s.result(command, "failed", "inactive", 3), errors.Join(ErrListenerUnavailable, inspectErr)
 	}
 	desiredEnvironment, err := managed.ChildEnvironment(s.deps.Environment.BaseEnvironment())
 	if err != nil {
@@ -536,7 +539,10 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	journal := &state.Journal{SchemaVersion: state.SchemaVersion, ActivationID: activationID, Nonce: nonce, Generation: 1, State: "prepared", OwnerUID: s.deps.OwnerUID, Platform: s.deps.Environment.Platform(), Mode: mode, SessionIdentity: session, Policy: state.PolicyIdentity{ID: policy.ID, Version: int64(policy.Version), Digest: digest}, Binary: s.deps.Binary, Listener: identity, CA: nil, CreatedAt: now, UpdatedAt: now}
 	journal.Environment = journalEnvironment(prior, desired)
 	journal.RollbackActions = rollbackActions(mode)
-	publish := func() error { return s.deps.Environment.Publish(ctx, mechanism, desired) }
+	publish := func() error { return nil }
+	if mechanism != "process_environment" {
+		publish = func() error { return s.deps.Environment.Publish(ctx, mechanism, desired) }
+	}
 	if err := s.deps.Store.Activate(ctx, journal, mechanism, publish); err != nil {
 		return s.result(command, "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, err)
 	}
@@ -548,7 +554,9 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	keep = true
 	result := s.result(command, "active", "active", 0)
 	result.ActivationID, result.Generation, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, 1, digest, mode, identity.Address
-	result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
+	if mechanism != "process_environment" {
+		result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
+	}
 	verificationCtx, verificationCancel := boundedContext(ctx)
 	observedProof, live, postErr := managed.Inspect(verificationCtx)
 	current, reconcileErr := s.deps.Store.Reconcile(verificationCtx)
@@ -572,7 +580,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 			return recovery, errors.Join(ErrRecovery, verificationErr, recoveryErr)
 		}
 		recovery.Status, recovery.ExitCode = "failed", 7
-		return recovery, errors.Join(errors.New("listener or activation authority changed after publication"), verificationErr)
+		return recovery, errors.Join(ErrListenerUnavailable, verificationErr)
 	}
 	return result, nil
 }
@@ -756,7 +764,7 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	if err != nil {
 		return s.result("proxy doctor", "failed", "inactive", 2), err
 	}
-	mode, _, err := s.deps.Environment.ResolveMode("auto")
+	mode, _, err := s.resolveSessionMode("auto")
 	if err != nil {
 		if errors.Is(err, ErrSessionUnsupported) {
 			return s.result("proxy doctor", "warning", "inactive", 0), nil
@@ -791,6 +799,53 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	result := s.result("proxy doctor", "ready", "inactive", 0)
 	result.PolicyDigest, result.ListenerAddress = digest, identity.Address
 	return result, nil
+}
+
+func (s *Service) resolveSessionMode(requested string) (string, string, error) {
+	if requested != "auto" && requested != "session" {
+		return "", "", ErrSessionUnsupported
+	}
+	mode, mechanism, err := s.deps.Environment.ResolveMode(requested)
+	if err != nil {
+		return "", "", err
+	}
+	if mode != "session" {
+		return "", "", ErrSessionUnsupported
+	}
+	if err := s.validateActivationBoundary(mode, mechanism); err != nil {
+		return "", "", err
+	}
+	return mode, mechanism, nil
+}
+
+func (s *Service) validateActivationBoundary(mode, mechanism string) error {
+	switch mode {
+	case "scoped_run":
+		if mechanism == "process_environment" {
+			return nil
+		}
+	case "session":
+		switch s.deps.Environment.Platform() {
+		case "linux":
+			if mechanism == "systemd_user_environment" {
+				return nil
+			}
+		case "darwin":
+			if mechanism == "launchctl_user_environment" {
+				return nil
+			}
+		default:
+			return ErrUnavailable
+		}
+	}
+	return ErrSessionUnsupported
+}
+
+func modeExitCode(err error) int {
+	if errors.Is(err, ErrSessionUnsupported) {
+		return 2
+	}
+	return 7
 }
 func boundedContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) <= cleanupTimeout {

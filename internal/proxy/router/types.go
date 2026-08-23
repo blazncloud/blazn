@@ -14,6 +14,11 @@ import (
 
 const maxRequestBytes = 8 << 20
 
+var (
+	ErrPolicyInvalid         = errors.New("proxy policy is invalid")
+	ErrCredentialUnavailable = errors.New("proxy destination credential is unavailable")
+)
+
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type APIError struct {
@@ -95,7 +100,7 @@ func NewHandler(config Config) (*Handler, error) {
 	}
 	index, err := newRouteIndex(config.Policy)
 	if err != nil {
-		return nil, fmt.Errorf("POLICY_INVALID: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrPolicyInvalid, err)
 	}
 	return &Handler{config: config, routes: index}, nil
 }

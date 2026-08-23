@@ -215,9 +215,10 @@ and does not follow a redirect outside the route allowlist.
 - macOS ARM64: scoped run; qualified launchctl user-session publication for new
   apps; default Keychain destination storage.
 - Ubuntu AMD64/ARM64: scoped `proxy run` is the POC requirement. `on --mode
-  session` fails `PROXY_SESSION_UNSUPPORTED`; `auto` starts a `scoped_only`
-  listener unless doctor proves a user-systemd environment inherited by newly
-  launched applications.
+  session` fails `PROXY_SESSION_UNSUPPORTED`; `auto` also fails that stable code
+  unless doctor proves a durable user-systemd environment inherited by newly
+  launched applications. Scoped execution is recorded only as `scoped_run` and
+  never as a synthetic session mode.
 - Required fixtures: generic OpenAI fixture `proxy-fixture/v1`, Hermes Agent
   `0.19.0`, and Codex CLI `0.147.0` Responses including a nested child. The
   checked Claude Code `2.1.212` file is a reproducible non-streaming harness
