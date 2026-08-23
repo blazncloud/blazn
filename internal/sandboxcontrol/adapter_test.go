@@ -99,17 +99,29 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 }
 
 type fakeAPI struct {
-	t                     *testing.T
-	server                *httptest.Server
-	mu                    sync.Mutex
-	object                kubeSandbox
-	lastMethod            string
-	lastQuery             url.Values
-	stripQueue            bool
-	runtimeMissing        bool
-	patchRetainsFinalizer bool
-	patchChangesUID       bool
-	patchChangesArtifacts bool
+	t                       *testing.T
+	server                  *httptest.Server
+	mu                      sync.Mutex
+	object                  kubeSandbox
+	lastMethod              string
+	lastQuery               url.Values
+	stripQueue              bool
+	runtimeMissing          bool
+	patchRetainsFinalizer   bool
+	patchChangesUID         bool
+	patchChangesArtifacts   bool
+	postCount               int
+	ambiguousPost           bool
+	mutatePostIntent        bool
+	mutatePostSpec          bool
+	duplicatePod            bool
+	duplicateWorkload       bool
+	substitutePodOwner      bool
+	substituteWorkloadOwner bool
+	driftAdmissionAPI       bool
+	sandboxAbsent           bool
+	podsAbsent              bool
+	workloadsAbsent         bool
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -127,6 +139,8 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		f.t.Errorf("unsafe auth or user agent: auth=%q agent=%q", request.Header.Get("Authorization"), request.Header.Get("User-Agent"))
 	}
 	collection := "/apis/agents.x-k8s.io/v1beta1/namespaces/" + Namespace + "/sandboxes"
+	podCollection := "/api/v1/namespaces/" + Namespace + "/pods"
+	workloadCollection := "/apis/" + AdmissionAPIVersion + "/namespaces/" + Namespace + "/workloads"
 	switch {
 	case request.Method == http.MethodGet && request.URL.Path == "/apis/node.k8s.io/v1/runtimeclasses/gvisor":
 		if f.runtimeMissing {
@@ -135,6 +149,7 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"apiVersion": "node.k8s.io/v1", "kind": "RuntimeClass", "metadata": map[string]string{"name": "gvisor"}, "handler": "runsc"})
 	case request.Method == http.MethodPost && request.URL.Path == collection:
+		f.postCount++
 		if request.Header.Get("Content-Type") != "application/json" {
 			f.t.Errorf("create content type=%q", request.Header.Get("Content-Type"))
 		}
@@ -146,8 +161,45 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		if f.stripQueue {
 			delete(object.Spec.PodTemplate.Metadata.Labels, QueueLabel)
 		}
+		if f.mutatePostIntent {
+			object.Metadata.Annotations[CreateIntentAnnotation] = "sha256:" + strings.Repeat("f", 64)
+		}
+		if f.mutatePostSpec {
+			object.Spec.PodTemplate.Spec.Containers[0].Image = "registry.example.test/other@sha256:" + strings.Repeat("b", 64)
+		}
 		f.object = object
+		if f.ambiguousPost {
+			writeJSON(response, http.StatusInternalServerError, map[string]any{"reason": "InternalError", "code": 500})
+			return
+		}
 		writeJSON(response, http.StatusCreated, object)
+	case request.Method == http.MethodGet && request.URL.Path == podCollection:
+		list := observedPodList{APIVersion: podAPIVersion, Kind: "PodList"}
+		if !f.podsAbsent && f.object.Metadata.UID != "" {
+			pod := f.observedPod()
+			list.Items = append(list.Items, pod)
+			if f.duplicatePod {
+				copy := pod
+				copy.Metadata.Name, copy.Metadata.UID = "sandbox-a-pod-2", "pod-uid-2"
+				list.Items = append(list.Items, copy)
+			}
+		}
+		writeJSON(response, http.StatusOK, list)
+	case request.Method == http.MethodGet && request.URL.Path == workloadCollection:
+		list := observedWorkloadList{APIVersion: AdmissionAPIVersion, Kind: "WorkloadList"}
+		if f.driftAdmissionAPI {
+			list.APIVersion = "kueue.x-k8s.io/v1"
+		}
+		if !f.workloadsAbsent && f.object.Metadata.UID != "" {
+			workload := f.observedWorkload()
+			list.Items = append(list.Items, workload)
+			if f.duplicateWorkload {
+				copy := workload
+				copy.Metadata.Name, copy.Metadata.UID = "sandbox-a-workload-2", "workload-uid-2"
+				list.Items = append(list.Items, copy)
+			}
+		}
+		writeJSON(response, http.StatusOK, list)
 	case request.Method == http.MethodGet && request.URL.Path == collection && request.URL.Query().Get("watch") == "true":
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
@@ -160,6 +212,10 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 	case request.Method == http.MethodGet && request.URL.Path == collection+"/sandbox-a/status":
 		writeJSON(response, http.StatusOK, f.object)
 	case request.Method == http.MethodGet && request.URL.Path == collection+"/sandbox-a":
+		if f.sandboxAbsent || f.object.Metadata.UID == "" {
+			writeJSON(response, http.StatusNotFound, map[string]any{"reason": "NotFound", "code": 404})
+			return
+		}
 		writeJSON(response, http.StatusOK, f.object)
 	case request.Method == http.MethodDelete && request.URL.Path == collection+"/sandbox-a":
 		var options map[string]any
@@ -206,6 +262,36 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 	}
 }
 
+func (f *fakeAPI) observedPod() observedPod {
+	ownerUID := f.object.Metadata.UID
+	if f.substitutePodOwner {
+		ownerUID = "replacement-sandbox-uid"
+	}
+	return observedPod{
+		APIVersion: podAPIVersion, Kind: podKind,
+		Metadata: observedMetadata{Name: "sandbox-a-pod", Namespace: Namespace, UID: "pod-uid-1", ResourceVersion: "11", Labels: cloneMap(f.object.Spec.PodTemplate.Metadata.Labels),
+			OwnerReferences: []kubeOwnerReference{{APIVersion: APIVersion, Kind: Kind, Name: f.object.Metadata.Name, UID: ownerUID, Controller: true}}},
+		Spec: f.object.Spec.PodTemplate.Spec,
+	}
+}
+
+func (f *fakeAPI) observedWorkload() observedWorkload {
+	podUID := "pod-uid-1"
+	if f.substituteWorkloadOwner {
+		podUID = "replacement-pod-uid"
+	}
+	value := observedWorkload{
+		APIVersion: AdmissionAPIVersion, Kind: workloadKind,
+		Metadata: observedMetadata{Name: "sandbox-a-workload", Namespace: Namespace, UID: "workload-uid-1", ResourceVersion: "21", Labels: cloneMap(f.object.Spec.PodTemplate.Metadata.Labels),
+			OwnerReferences: []kubeOwnerReference{{APIVersion: podAPIVersion, Kind: podKind, Name: "sandbox-a-pod", UID: podUID, Controller: true}}},
+	}
+	value.Status.Admission = &struct {
+		ClusterQueue string `json:"clusterQueue"`
+	}{ClusterQueue: "poc-cluster"}
+	value.Status.Conditions = []kubeCondition{{Type: "Admitted", Status: "True"}}
+	return value
+}
+
 func TestCreateInjectsQueueIdentityRuntimeAndSecurity(t *testing.T) {
 	fake := newFakeAPI(t)
 	exporter := &fakeExporter{}
@@ -222,6 +308,201 @@ func TestCreateInjectsQueueIdentityRuntimeAndSecurity(t *testing.T) {
 	}
 	if receipt.Operation != OperationCreate || receipt.RuntimeClass != "gvisor" || receipt.QueueName != QueueName {
 		t.Fatalf("receipt=%#v", receipt)
+	}
+}
+
+func TestCreateIntentDigestBindsEveryMaterialRequestField(t *testing.T) {
+	base := testCreate()
+	base.ExpiresAt = time.Date(2026, 8, 23, 12, 0, 0, 123, time.UTC)
+	want, err := createIntentDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := []struct {
+		name   string
+		mutate func(*CreateRequest)
+	}{
+		{"request id", func(v *CreateRequest) { v.RequestID = "request-create-2" }},
+		{"name", func(v *CreateRequest) { v.Name = "sandbox-b" }},
+		{"workspace", func(v *CreateRequest) { v.WorkspaceID = "workspace-b" }},
+		{"owner", func(v *CreateRequest) { v.OwnerID = "owner-b" }},
+		{"image", func(v *CreateRequest) { v.Image = "registry.example.test/other@sha256:" + strings.Repeat("b", 64) }},
+		{"command", func(v *CreateRequest) { v.Command[0] = "bash" }},
+		{"architecture", func(v *CreateRequest) { v.Architecture = "arm64" }},
+		{"runtime", func(v *CreateRequest) { v.RuntimeClassName = "kata" }},
+		{"trust", func(v *CreateRequest) { v.TrustLevel = TrustApprovedPOC }},
+		{"sensitivity", func(v *CreateRequest) { v.NonSensitive = !v.NonSensitive }},
+		{"cpu request", func(v *CreateRequest) { v.CPURequest = "101m" }},
+		{"memory request", func(v *CreateRequest) { v.MemoryRequest = "65Mi" }},
+		{"ephemeral request", func(v *CreateRequest) { v.EphemeralStorageRequest = "2Gi" }},
+		{"cpu limit", func(v *CreateRequest) { v.CPULimit = "201m" }},
+		{"memory limit", func(v *CreateRequest) { v.MemoryLimit = "129Mi" }},
+		{"ephemeral limit", func(v *CreateRequest) { v.EphemeralStorageLimit = "7Gi" }},
+		{"expiry", func(v *CreateRequest) { v.ExpiresAt = v.ExpiresAt.Add(time.Nanosecond) }},
+		{"artifacts", func(v *CreateRequest) { v.Artifacts[0].Required = false }},
+	}
+	for _, testCase := range mutations {
+		t.Run(testCase.name, func(t *testing.T) {
+			changed := base
+			changed.Command = append([]string(nil), base.Command...)
+			changed.Artifacts = append([]ArtifactExport(nil), base.Artifacts...)
+			testCase.mutate(&changed)
+			got, err := createIntentDigest(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == want {
+				t.Fatalf("material %s change did not change digest", testCase.name)
+			}
+		})
+	}
+	ordered := base
+	ordered.Artifacts = append(ordered.Artifacts, ArtifactExport{Name: "archive", Path: "/workspace/artifacts/archive.zip", MediaType: "application/zip"})
+	reversed := ordered
+	reversed.Artifacts = []ArtifactExport{ordered.Artifacts[1], ordered.Artifacts[0]}
+	left, _ := createIntentDigest(ordered)
+	right, _ := createIntentDigest(reversed)
+	if left != right {
+		t.Fatal("artifact set order changed canonical create intent")
+	}
+}
+
+func TestCreateRequiresBothEphemeralStorageBounds(t *testing.T) {
+	for _, mutate := range []func(*CreateRequest){
+		func(request *CreateRequest) { request.EphemeralStorageRequest = "" },
+		func(request *CreateRequest) { request.EphemeralStorageLimit = "" },
+	} {
+		request := testCreate()
+		mutate(&request)
+		assertCode(t, ValidateCreate(request, trustedRuntimes()), ErrInvalidRequest)
+	}
+}
+
+func TestEnsureCreatedRecoversAmbiguousPOSTByExactIntent(t *testing.T) {
+	fake := newFakeAPI(t)
+	fake.ambiguousPost = true
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, receipt, err := adapter.EnsureCreated(context.Background(), request, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.UID != "uid-1" || record.CreateIntentDigest == "" || receipt.UID != record.UID || fake.postCount != 1 {
+		t.Fatalf("record=%#v receipt=%#v posts=%d", record, receipt, fake.postCount)
+	}
+	if _, _, err := adapter.EnsureCreated(context.Background(), request, ""); err == nil {
+		t.Fatal("name-only retry adopted an existing Sandbox")
+	}
+	if _, _, err := adapter.EnsureCreated(context.Background(), request, record.UID); err != nil {
+		t.Fatalf("exact UID/spec/intent adoption failed: %v", err)
+	}
+	if fake.postCount != 1 {
+		t.Fatalf("idempotent adoption issued %d POSTs", fake.postCount)
+	}
+}
+
+func TestEnsureCreatedRejectsAmbiguousPOSTSubstitution(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		configure func(*fakeAPI)
+	}{
+		{"intent", func(f *fakeAPI) { f.mutatePostIntent = true }},
+		{"spec", func(f *fakeAPI) { f.mutatePostSpec = true }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			fake.ambiguousPost = true
+			testCase.configure(fake)
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			_, _, err := adapter.EnsureCreated(context.Background(), testCreate(), "")
+			assertCode(t, err, ErrConflict)
+			if fake.object.Metadata.DeletionTimestamp != "" {
+				t.Fatal("ambiguous substituted object was deleted without ownership proof")
+			}
+		})
+	}
+}
+
+func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Pod.UID != "pod-uid-1" || observation.Workload.UID != "workload-uid-1" || observation.Workload.Owner.UID != record.UID || observation.Workload.Digest == "" {
+		t.Fatalf("observation=%#v", observation)
+	}
+	if _, err := adapter.ObserveAdmission(context.Background(), request, record, &observation); err != nil {
+		t.Fatalf("stable re-observation failed: %v", err)
+	}
+	drifted := observation
+	drifted.Pod.ResourceVersion = "12"
+	if _, err := adapter.ObserveAdmission(context.Background(), request, record, &drifted); err == nil {
+		t.Fatal("resourceVersion drift was accepted")
+	}
+}
+
+func TestObserveAdmissionRejectsDuplicatesSubstitutionsAndAPIDrift(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*fakeAPI)
+	}{
+		{"duplicate Pod", func(f *fakeAPI) { f.duplicatePod = true }},
+		{"duplicate Workload", func(f *fakeAPI) { f.duplicateWorkload = true }},
+		{"Sandbox owner substitution", func(f *fakeAPI) { f.substitutePodOwner = true }},
+		{"Pod owner substitution", func(f *fakeAPI) { f.substituteWorkloadOwner = true }},
+		{"Workload API drift", func(f *fakeAPI) { f.driftAdmissionAPI = true }},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			request := testCreate()
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			record, _, err := adapter.Create(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			testCase.configure(fake)
+			_, err = adapter.ObserveAdmission(context.Background(), request, record, nil)
+			assertCode(t, err, ErrConflict)
+		})
+	}
+}
+
+func TestObserveAbsenceFindsExactOwnedOrphansWithoutLabels(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.sandboxAbsent = true
+	for key := range fake.object.Spec.PodTemplate.Metadata.Labels {
+		delete(fake.object.Spec.PodTemplate.Metadata.Labels, key)
+	}
+	fake.mu.Unlock()
+	assertCode(t, adapter.ObserveAbsence(context.Background(), observation), ErrCleanupIncomplete)
+	fake.mu.Lock()
+	fake.podsAbsent = true
+	fake.mu.Unlock()
+	assertCode(t, adapter.ObserveAbsence(context.Background(), observation), ErrCleanupIncomplete)
+	fake.mu.Lock()
+	fake.workloadsAbsent = true
+	fake.mu.Unlock()
+	if err := adapter.ObserveAbsence(context.Background(), observation); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -563,7 +844,7 @@ func testCreate() CreateRequest {
 	return CreateRequest{
 		RequestID: "request-create-1", Name: "sandbox-a", WorkspaceID: "workspace-a", OwnerID: "owner-a", Image: testImage,
 		Command: []string{"sh", "-c", "sleep 3600"}, Architecture: "amd64", RuntimeClassName: "gvisor", TrustLevel: TrustUntrusted,
-		CPURequest: "100m", MemoryRequest: "64Mi", CPULimit: "200m", MemoryLimit: "128Mi", ExpiresAt: time.Now().Add(time.Hour),
+		CPURequest: "100m", MemoryRequest: "64Mi", EphemeralStorageRequest: "1Gi", CPULimit: "200m", MemoryLimit: "128Mi", EphemeralStorageLimit: "6Gi", ExpiresAt: time.Now().Add(time.Hour),
 		Artifacts: []ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.txt", MediaType: "text/plain", Required: true}},
 	}
 }
@@ -584,6 +865,10 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 	security := pod.Spec.Containers[0].SecurityContext
 	if security["allowPrivilegeEscalation"] != false || security["readOnlyRootFilesystem"] != true || pod.Spec.SecurityContext["runAsUser"] != float64(65532) && pod.Spec.SecurityContext["runAsUser"] != int64(65532) || pod.Spec.Containers[0].Image != testImage {
 		t.Fatalf("container=%#v", pod.Spec.Containers[0])
+	}
+	resources := pod.Spec.Containers[0].Resources
+	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) {
+		t.Fatalf("resource or create-intent boundary missing: resources=%#v annotations=%#v", resources, object.Metadata.Annotations)
 	}
 }
 

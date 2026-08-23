@@ -25,6 +25,36 @@ administrator kubeconfig on behalf of callers, or fall back to unmanaged Pods.
 - Delete uses exact UID and resourceVersion preconditions with foreground
   propagation. Finalizer removal uses the latest resourceVersion.
 
+## Phase 5 backend admission slice
+
+The first Phase 5 backend slice remains inside the adapter and is not a
+controller deployment. Every material create input, including request and
+tenant identity, pinned image, ordered command, architecture, RuntimeClass,
+trust acknowledgement, CPU/memory/ephemeral-storage requests and limits,
+expiry, and canonical artifact set, is bound into the internal
+`sandboxes.blazn.dev/create-intent-digest` annotation. The persisted Sandbox
+must preserve that digest and the exact rendered spec.
+
+`EnsureCreated` performs a NotFound preflight and never adopts a pre-existing
+same-name object without an exact UID precondition. It may resolve an ambiguous
+POST once by reading the persisted object, but accepts it only when the object
+has a concrete UID and resourceVersion and its full material spec and intent
+digest match. A retry with a known UID refuses to create a replacement if that
+UID is absent.
+
+Admission observation requires exactly one admitted Kueue Workload and one Pod.
+It verifies API versions, non-empty UIDs and resourceVersions, the Workload's
+single controller owner as that exact Pod, the Pod's single controller owner as
+that exact Sandbox UID, the complete tokenless Pod spec, fixed queue, and
+workspace/owner/sandbox identity. Re-observation can be fenced by the complete
+prior observation and rejects UID, resourceVersion, or API drift. Cleanup
+absence scans namespace Pod and Workload collections without trusting mutable
+labels and rejects the frozen identities or exact controller-owner orphans.
+
+This slice does not wire `cmd/controller`, install or change Kubernetes
+resources, publish an image, or claim Gate 4C or Gate 5. Those remain subsequent
+stacked work and live qualification.
+
 ## Runtime trust
 
 An untrusted workload requires a named RuntimeClass whose local capability is

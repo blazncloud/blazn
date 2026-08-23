@@ -180,6 +180,14 @@ func New(config Config) (*Adapter, error) {
 }
 
 func (a *Adapter) Create(ctx context.Context, request CreateRequest) (SandboxRecord, OperationReceipt, error) {
+	return a.EnsureCreated(ctx, request, "")
+}
+
+// EnsureCreated creates a Sandbox once or adopts only the exact UID requested
+// by a recovering caller. A response-lost POST may be recovered without a
+// prior UID, but only after a preflight NotFound and exact spec/intent checks.
+// An object that existed before the POST is never adopted by name or labels.
+func (a *Adapter) EnsureCreated(ctx context.Context, request CreateRequest, expectedUID string) (SandboxRecord, OperationReceipt, error) {
 	if err := ValidateCreate(request, a.runtimes); err != nil {
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
@@ -191,32 +199,101 @@ func (a *Adapter) Create(ctx context.Context, request CreateRequest) (SandboxRec
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
 	request.Artifacts = canonicalArtifacts
-	manifest := render(request, artifactDigest)
-	var created kubeSandbox
-	if err := a.call(ctx, http.MethodPost, a.collectionPath(), nil, manifest, &created, "application/json"); err != nil {
-		return SandboxRecord{}, OperationReceipt{}, err
+	intentDigest, err := createIntentDigest(request)
+	if err != nil {
+		return SandboxRecord{}, OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "create intent cannot be canonicalized", err)
 	}
+	manifest := render(request, artifactDigest, intentDigest)
+	var existing kubeSandbox
+	preflightErr := a.call(ctx, http.MethodGet, a.resourcePath(request.Name), nil, nil, &existing, "")
+	if preflightErr == nil {
+		if expectedUID == "" {
+			return SandboxRecord{}, OperationReceipt{}, adapterError(ErrConflict, 409, "Sandbox name is already occupied without an exact UID precondition", nil)
+		}
+		return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, expectedUID, manifest, existing, false)
+	}
+	var preflightAdapterErr *AdapterError
+	if !errors.As(preflightErr, &preflightAdapterErr) || preflightAdapterErr.Code != ErrNotFound {
+		return SandboxRecord{}, OperationReceipt{}, preflightErr
+	}
+	if expectedUID != "" {
+		return SandboxRecord{}, OperationReceipt{}, adapterError(ErrConflict, 409, "expected Sandbox UID is absent; refusing replacement creation", nil)
+	}
+	var created kubeSandbox
+	postErr := a.call(ctx, http.MethodPost, a.collectionPath(), nil, manifest, &created, "application/json")
+	if postErr != nil {
+		// POST failures can be ambiguous (transport loss, timeout, apiserver
+		// conflict after accepting the object). Resolve once by exact persisted
+		// UID/spec/intent, never by the deterministic name or labels alone.
+		if err := a.call(ctx, http.MethodGet, a.resourcePath(request.Name), nil, nil, &created, ""); err != nil {
+			return SandboxRecord{}, OperationReceipt{}, postErr
+		}
+		return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, "", manifest, created, false)
+	}
+	return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, "", manifest, created, true)
+}
+
+func (a *Adapter) finishEnsureCreated(ctx context.Context, request CreateRequest, artifactDigest, intentDigest, expectedUID string, manifest, created kubeSandbox, cleanup bool) (SandboxRecord, OperationReceipt, error) {
 	record, err := a.record(created)
 	if err != nil {
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
+	reject := func(err error) error {
+		if cleanup {
+			return a.rejectCreated(ctx, record, err)
+		}
+		return err
+	}
+	if expectedUID != "" && record.UID != expectedUID {
+		return SandboxRecord{}, OperationReceipt{}, reject(adapterError(ErrConflict, 409, "persisted Sandbox UID differs from the exact adoption precondition", nil))
+	}
 	if err := verifyManaged(record, request.WorkspaceID, request.OwnerID); err != nil {
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
 	if record.QueueName != QueueName {
 		err := adapterError(ErrQueueRequired, 502, "backend did not preserve mandatory queue label", nil)
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
 	if record.RuntimeClassName != request.RuntimeClassName || !contains(record.Finalizers, CleanupFinalizer) {
 		err := adapterError(ErrBackend, 502, "backend did not preserve runtime or cleanup boundary", nil)
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
-	if record.ArtifactContractDigest != artifactDigest || !sameArtifactExports(record.Artifacts, canonicalArtifacts) {
+	if record.ArtifactContractDigest != artifactDigest || !sameArtifactExports(record.Artifacts, request.Artifacts) {
 		err := adapterError(ErrBackend, 502, "backend did not preserve artifact contract", nil)
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
+	}
+	if created.Metadata.Annotations[CreateIntentAnnotation] != intentDigest || !sameCreateSpec(created, manifest) {
+		err := adapterError(ErrConflict, 409, "persisted Sandbox differs from the exact create intent", nil)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
 	receipt, err := NewReceipt(request.RequestID, OperationCreate, record, nil, a.now())
 	return record, receipt, err
+}
+
+func sameCreateSpec(observed, expected kubeSandbox) bool {
+	if observed.APIVersion != expected.APIVersion || observed.Kind != expected.Kind ||
+		observed.Metadata.Name != expected.Metadata.Name || observed.Metadata.Namespace != expected.Metadata.Namespace ||
+		observed.Metadata.UID == "" || observed.Metadata.ResourceVersion == "" ||
+		!sameJSON(observed.Spec, expected.Spec) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
+		return false
+	}
+	for key, value := range expected.Metadata.Labels {
+		if observed.Metadata.Labels[key] != value {
+			return false
+		}
+	}
+	for key, value := range expected.Metadata.Annotations {
+		if observed.Metadata.Annotations[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func sameJSON(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func (a *Adapter) rejectCreated(ctx context.Context, record SandboxRecord, original error) error {
@@ -469,7 +546,7 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	return NewReceipt(requestID, OperationFinalize, updatedRecord, artifacts, a.now())
 }
 
-func render(request CreateRequest, artifactContractDigest string) kubeSandbox {
+func render(request CreateRequest, artifactContractDigest, createIntentDigest string) kubeSandbox {
 	labels := map[string]string{ManagedLabel: "true", WorkspaceLabel: request.WorkspaceID, OwnerLabel: request.OwnerID, SandboxIDLabel: request.Name}
 	podLabels := cloneMap(labels)
 	podLabels[QueueLabel] = QueueName
@@ -478,6 +555,7 @@ func render(request CreateRequest, artifactContractDigest string) kubeSandbox {
 		annotations["sandboxes.blazn.dev/artifact-exports"] = string(encoded)
 	}
 	annotations["sandboxes.blazn.dev/artifact-contract-digest"] = artifactContractDigest
+	annotations[CreateIntentAnnotation] = createIntentDigest
 	return kubeSandbox{
 		APIVersion: APIVersion, Kind: Kind,
 		Metadata: kubeMetadata{Name: request.Name, Namespace: Namespace, Labels: labels, Annotations: annotations, Finalizers: []string{CleanupFinalizer}},
@@ -487,8 +565,11 @@ func render(request CreateRequest, artifactContractDigest string) kubeSandbox {
 			SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 			Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
 				SecurityContext: map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}},
-				Resources:       map[string]map[string]string{"requests": {"cpu": request.CPURequest, "memory": request.MemoryRequest}, "limits": {"cpu": request.CPULimit, "memory": request.MemoryLimit}},
-				VolumeMounts:    []map[string]any{{"name": "workspace", "mountPath": "/workspace"}}}},
+				Resources: map[string]map[string]string{
+					"requests": {"cpu": request.CPURequest, "memory": request.MemoryRequest, "ephemeral-storage": request.EphemeralStorageRequest},
+					"limits":   {"cpu": request.CPULimit, "memory": request.MemoryLimit, "ephemeral-storage": request.EphemeralStorageLimit},
+				},
+				VolumeMounts: []map[string]any{{"name": "workspace", "mountPath": "/workspace"}}}},
 			Volumes: []kubeVolume{{Name: "workspace", EmptyDir: map[string]any{"sizeLimit": "6Gi"}}},
 		}}},
 	}
@@ -499,6 +580,10 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend Sandbox identity is invalid", nil)
 	}
 	artifactValue, artifactDigest := object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"], object.Metadata.Annotations["sandboxes.blazn.dev/artifact-contract-digest"]
+	createIntent := object.Metadata.Annotations[CreateIntentAnnotation]
+	if !digestPattern.MatchString(createIntent) {
+		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend create intent digest is invalid", nil)
+	}
 	trimmedArtifacts := strings.TrimSpace(artifactValue)
 	artifacts := []ArtifactExport{}
 	if len(trimmedArtifacts) < 2 || trimmedArtifacts[0] != '[' || trimmedArtifacts[len(trimmedArtifacts)-1] != ']' || len(artifactValue) > 32768 || json.Unmarshal([]byte(artifactValue), &artifacts) != nil {
@@ -521,7 +606,7 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 		Generation: object.Metadata.Generation, WorkspaceID: object.Metadata.Labels[WorkspaceLabel], OwnerID: object.Metadata.Labels[OwnerLabel],
 		QueueName: object.Spec.PodTemplate.Metadata.Labels[QueueLabel], RuntimeClassName: object.Spec.PodTemplate.Spec.RuntimeClassName,
 		TrustLevel: trustLevel, State: state,
-		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: canonicalArtifacts, ArtifactContractDigest: artifactDigest, Labels: cloneMap(object.Metadata.Labels),
+		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: canonicalArtifacts, ArtifactContractDigest: artifactDigest, CreateIntentDigest: createIntent, Labels: cloneMap(object.Metadata.Labels),
 	}, nil
 }
 
