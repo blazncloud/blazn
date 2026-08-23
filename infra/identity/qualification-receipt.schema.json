@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/contracts/identity-qualification-receipt-v2.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "issuer", "driverDigest", "environmentDigest", "services", "backupUtility", "gates", "backup", "startedAt", "observedAt"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.identity.qualification/v2"}, "issuer": {"type": "string", "pattern": "^https://"},
+    "driverDigest": {"$ref": "#/$defs/digest"}, "environmentDigest": {"$ref": "#/$defs/digest"},
+    "services": {"type": "object", "additionalProperties": false, "required": ["postgres", "proxy", "zitadel-api", "zitadel-login"], "properties": {"postgres": {"$ref": "#/$defs/service"}, "proxy": {"$ref": "#/$defs/service"}, "zitadel-api": {"$ref": "#/$defs/service"}, "zitadel-login": {"$ref": "#/$defs/service"}}},
+    "backupUtility": {"type": "object", "additionalProperties": false, "required": ["configuredImage", "beforeImageId", "afterImageId"], "properties": {"configuredImage": {"$ref": "#/$defs/imageRef"}, "beforeImageId": {"$ref": "#/$defs/digest"}, "afterImageId": {"$ref": "#/$defs/digest"}}},
+    "gates": {"type": "object", "additionalProperties": false, "required": ["composeBootstrap", "tlsIssuer", "oidcDiscovery", "authorizationCodePkce", "verifiedEmail", "reviewedAcrMfa", "legacyLogin", "oidcAwareHealth", "deviceConfirmation"], "properties": {
+      "composeBootstrap": {"$ref": "#/$defs/evidence"}, "tlsIssuer": {"$ref": "#/$defs/evidence"}, "oidcDiscovery": {"$ref": "#/$defs/evidence"}, "authorizationCodePkce": {"$ref": "#/$defs/evidence"}, "verifiedEmail": {"$ref": "#/$defs/evidence"}, "reviewedAcrMfa": {"$ref": "#/$defs/evidence"}, "legacyLogin": {"$ref": "#/$defs/evidence"}, "oidcAwareHealth": {"$ref": "#/$defs/evidence"}, "deviceConfirmation": {"$ref": "#/$defs/evidence"}
+    }},
+    "backup": {"type": "object", "additionalProperties": false, "required": ["manifestDigest", "databaseDigest", "masterKeyBefore", "masterKeyAfter", "patBefore", "patAfter", "preRestorePatSnapshotDigest"], "properties": {"manifestDigest": {"$ref": "#/$defs/digest"}, "databaseDigest": {"$ref": "#/$defs/digest"}, "masterKeyBefore": {"$ref": "#/$defs/digest"}, "masterKeyAfter": {"$ref": "#/$defs/digest"}, "patBefore": {"$ref": "#/$defs/digest"}, "patAfter": {"$ref": "#/$defs/digest"}, "preRestorePatSnapshotDigest": {"$ref": "#/$defs/digest"}}},
+	"startedAt": {"type": "string", "format": "date-time"}, "observedAt": {"type": "string", "format": "date-time"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "imageRef": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$"}, "observation": {"type": "object", "additionalProperties": false, "required": ["containerId", "observedConfigImage", "imageId"], "properties": {"containerId": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "observedConfigImage": {"$ref": "#/$defs/imageRef"}, "imageId": {"$ref": "#/$defs/digest"}}}, "service": {"type": "object", "additionalProperties": false, "required": ["configuredImage", "before", "after"], "properties": {"configuredImage": {"$ref": "#/$defs/imageRef"}, "before": {"$ref": "#/$defs/observation"}, "after": {"$ref": "#/$defs/observation"}}}, "evidence": {"type": "object", "additionalProperties": false, "required": ["evidenceDigest", "observedAt"], "properties": {"evidenceDigest": {"$ref": "#/$defs/digest"}, "observedAt": {"type": "string", "format": "date-time"}}}}
+}

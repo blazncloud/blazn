@@ -38,7 +38,13 @@ export interface Config {
     clientId: string;
     clientSecret: string;
     cookieKey: string;
-    requireMfa: boolean;
+		assurancePolicy: {
+			provider: "zitadel";
+			reviewedRelease: string;
+			policyDigest: string;
+			acrValues: string[];
+			acceptedAmrSets: string[][];
+		};
   };
 }
 
@@ -58,7 +64,13 @@ function zitadelConfig(): Config["zitadel"] {
   if (!issuerUrl || !clientId) throw new Error("ZITADEL_ISSUER_URL and ZITADEL_CLIENT_ID are required when ZITADEL is configured");
   const issuer = new URL(issuerUrl);
   if (issuer.protocol !== "https:" || issuer.search || issuer.hash || issuer.username || issuer.password) throw new Error("ZITADEL_ISSUER_URL must be an HTTPS origin");
-  return { issuerUrl: issuer.href.replace(/\/$/, ""), clientId, clientSecret: valueOrFile("ZITADEL_CLIENT_SECRET"), cookieKey: valueOrFile("OIDC_COOKIE_KEY"), requireMfa: booleanValue("ZITADEL_REQUIRE_MFA", true) };
+	if (!booleanValue("ZITADEL_REQUIRE_MFA", true)) throw new Error("ZITADEL_REQUIRE_MFA must remain true for the qualified provider");
+	const reviewedRelease = process.env.ZITADEL_REVIEWED_RELEASE?.trim() ?? "";
+	const policyDigest = process.env.ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST?.trim() ?? "";
+	const acrValues = (process.env.ZITADEL_REVIEWED_ACR_VALUES ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+	const acceptedAmrSets = (process.env.ZITADEL_REVIEWED_MFA_AMR_SETS ?? "").split(";").filter(Boolean).map((set) => set.split("+").map((value) => value.trim().toLowerCase()).filter(Boolean));
+	if (!/^v?[0-9]+\.[0-9]+\.[0-9]+$/.test(reviewedRelease) || !/^sha256:[0-9a-f]{64}$/.test(policyDigest) || acrValues.length === 0 || acrValues.some((value) => !/^[A-Za-z0-9:._/-]{1,256}$/.test(value)) || acceptedAmrSets.length === 0 || acceptedAmrSets.some((set) => set.length < 2 || new Set(set).size !== set.length || set.some((value) => !/^[a-z0-9._:-]{1,64}$/.test(value)))) throw new Error("reviewed ZITADEL ACR/MFA policy configuration is required");
+	return { issuerUrl: issuer.href.replace(/\/$/, ""), clientId, clientSecret: valueOrFile("ZITADEL_CLIENT_SECRET"), cookieKey: valueOrFile("OIDC_COOKIE_KEY"), assurancePolicy: { provider: "zitadel", reviewedRelease, policyDigest, acrValues, acceptedAmrSets } };
 }
 
 function cidrList(name: string): string[] {

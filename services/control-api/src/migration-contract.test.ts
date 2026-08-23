@@ -101,6 +101,18 @@ test("sandbox persistence freezes immutable versions and workspace-scoped bindin
   assert.doesNotMatch(sql, /GRANT SELECT, INSERT, UPDATE(?:, DELETE)? ON TABLE sandbox_template_versions/);
 });
 
+test("OIDC migration records complete reviewed assurance without removing legacy password identity", async () => {
+	const here = path.dirname(fileURLToPath(import.meta.url));
+	const sql = await readFile(path.resolve(here, "../migrations/014_oidc_identities.sql"), "utf8");
+	assert.match(sql, /approved_identity_provider/);
+	assert.match(sql, /approved_identity_policy_digest/);
+	assert.match(sql, /approved_identity_acr/);
+	assert.match(sql, /approved_identity_amr/);
+	assert.match(sql, /cardinality\(approved_identity_amr\) >= 2/);
+	assert.match(sql, /ALTER TABLE users ALTER COLUMN password_salt DROP NOT NULL/);
+	assert.doesNotMatch(sql, /DROP (?:TABLE|COLUMN).*password/i);
+});
+
 test("sandbox duration migration derives expiry from one database clock and retires timestamp authority", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/011_sandbox_expiry_duration.sql"), "utf8");

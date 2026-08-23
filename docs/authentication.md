@@ -13,8 +13,11 @@ accounts continue to work while ZITADEL identities are enabled and tested.
 1. `blazn auth login` creates a device-bound authorization in the Blazn API.
 2. The CLI opens the branded `/activate` page and displays the same one-time
    code shown in the browser.
-3. The browser starts Authorization Code flow with PKCE against the self-hosted
-   ZITADEL issuer.
+3. The activation page displays the device and Ed25519 public-key fingerprint.
+   Only an explicit same-origin POST carrying an authenticated, expiring
+   confirmation bound to the authorization row, code, mode, and public-key
+   digest may start Authorization Code flow with PKCE. A GET cannot approve or
+   start identity authorization.
 4. ZITADEL performs registration or login, email verification, social
    federation, and the configured MFA challenge.
 5. The Blazn callback verifies the issuer, audience, nonce, signature, verified
@@ -39,16 +42,24 @@ The isolated stack is in `infra/identity`:
   ZITADEL to the login application.
 - Only the Traefik loopback port `58081` is published by default.
 
-Copy `infra/identity/env.example` to an operator-owned environment file, replace
-all image tags with reviewed immutable digests, and generate root-owned secrets:
+Copy `infra/identity/env.example` to an operator-owned mode-0600 environment
+file, replace every invalid placeholder with a reviewed immutable
+`repository@sha256` digest, validate it, and generate root-owned secrets:
 
 ```sh
 sudo install -d -m 0700 /etc/blazn/identity/secrets
+sudo ./infra/identity/validate-environment.sh /etc/blazn/identity/env
 sudo ./infra/identity/generate-secrets.sh \
   /etc/blazn/identity/secrets admin@your-company.example
 ```
 
-The generated ZITADEL master key is not rotatable in place. Back it up before
+All identity mutation scripts reject `/`, non-canonical dot segments, paths
+outside their fixed production/disposable prefixes, nested or overlapping
+data/secrets/backup/receipt roots, and any symlink component before mutation.
+The generator also rejects non-root execution, non-regular
+or multiply-linked secrets, and owner/mode drift. Writes use owner-only
+same-directory temporaries, atomic rename, and filesystem sync. The generated
+ZITADEL master key is not rotatable in place. Back it up before
 first start. Rotate the initial administrator password on first login, then
 remove `initial-admin-password` after recording the completed bootstrap.
 
@@ -94,6 +105,10 @@ ZITADEL_ISSUER_URL=https://<identity-hostname>
 ZITADEL_CLIENT_ID=<blazn-control-api-client-id>
 ZITADEL_CLIENT_SECRET_FILE=/run/secrets/zitadel_client_secret
 ZITADEL_REQUIRE_MFA=true
+ZITADEL_REVIEWED_RELEASE=v4.17.1
+ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST=sha256:<review-receipt-digest>
+ZITADEL_REVIEWED_ACR_VALUES=<exact-ZITADEL-ACR>
+ZITADEL_REVIEWED_MFA_AMR_SETS=pwd+otp;pwd+webauthn
 OIDC_COOKIE_KEY_FILE=/run/secrets/oidc_cookie_key
 ```
 
@@ -122,10 +137,31 @@ Require MFA for Blazn. Prefer passkeys/WebAuthn, allow TOTP as the recovery-
 compatible fallback, and require recovery setup before production access. SMS
 is not a primary factor.
 
-The callback intentionally fails closed when the identity token lacks a
-verified email or an accepted MFA `amr` value. Validate the exact `amr` values
-emitted by the reviewed ZITADEL release during qualification before enabling
-production traffic.
+The callback intentionally fails closed unless the identity token has verified
+email, an exact ACR from the reviewed ZITADEL release, and every method in one
+reviewed multi-method AMR set. A generic `mfa`, `passwordless`, or other single
+AMR value is insufficient. The release, assurance-policy digest, ACR, and AMR
+set are recorded on the device authorization for audit.
+
+## Backup, restore, and exact rollback
+
+The identity backup includes a clean PostgreSQL dump, root-owned secrets and
+master key, the private login-client PAT volume, immutable image environment,
+and exact Compose/proxy/config definitions under one checksum manifest:
+
+```sh
+sudo ./infra/identity/backup.sh /etc/blazn/identity/env /srv/backups/blazn/identity/001
+sudo ./infra/identity/restore.sh /srv/backups/blazn/identity/001 /etc/blazn/identity/env
+```
+
+Restore refuses checksum drift, a different image environment, or different
+checked-out deployment definitions. Pre-restore database and secret trees are
+moved aside rather than deleted. Before `down -v`, restore snapshots and
+checksums the currently running login-client PAT volume. Any failed forward
+restore invokes the independently tested PAT repair path; the same verified
+repair command can roll backward to the pre-restore snapshot or forward to the
+backup snapshot. The disposable qualifier verifies the restored master-key and
+PAT-volume digests and retains a recoverable pre-restore tree until cleanup.
 
 ## Qualification gate
 
@@ -141,6 +177,37 @@ Do not replace the current live authentication route until all of these pass:
 8. duplicate-email and social-account-linking takeover tests;
 9. database backup/restore and ZITADEL master-key recovery;
 10. exact deployed-image digest, TLS, h2c proxy, and public issuer validation.
+
+`infra/identity/test-disposable.sh` is the fail-closed dynamic gate. It requires
+reviewed image digests, `/tmp`-scoped disposable roots, a real TLS issuer, the
+control API overlay, and an executable browser/email/MFA driver that emits the
+strict qualification receipt. It exercises Compose bootstrap/readiness, exact
+OIDC discovery and PKCE, verified email, reviewed ACR plus multi-method MFA,
+legacy login, explicit device confirmation, OIDC-aware health, backup/restore,
+exact image rollback, master-key recovery, and PAT-volume recovery. Absence of
+the reviewed images, mail delivery, provider/bootstrap configuration, or driver
+is a hard blocker rather than a skipped green gate.
+The browser driver must be a root-owned, single-link mode-0500/0700 file at the
+fixed driver path and must match a separately reviewed SHA-256 digest. It emits
+per-gate evidence digests and timestamps, not self-authored pass booleans. The
+harness independently constructs the final receipt and binds the reviewed
+issuer and operator environment digest. Each Compose service is recorded by
+service name with its configured repository@manifest digest, exact before/after
+container IDs, observed `Config.Image`, and image ID; rollback requires the
+configured and image identities to match while the recreated container identity
+changes. The backup utility has a separate configured repository@manifest and
+observed image-ID binding, preventing a substituted restore helper. The receipt
+also binds backup/database/PAT/master-key digests, driver digest, and gate
+evidence. OIDC-aware health uses a bounded ten-second cache and
+singleflight probe; discovery, JWKS, and token responses are streamed under a
+hard one-megabyte cap so health traffic cannot amplify provider responses.
+The disposable environment must therefore set
+`ZITADEL_QUALIFICATION_DRIVER_SHA256` and a new receipt path under
+`/var/lib/blazn/identity-qualification/`; neither the environment nor receipt
+may be nested under any disposable data, secrets, backup, or recovery root.
+Temporary databases, secrets, PAT volumes, and secret-bearing backup archives
+are removed on every exit; only the validated redacted receipt is installed at
+the new root-owned `BLAZN_IDENTITY_QUALIFICATION_RECEIPT` path.
 
 ZITADEL is AGPL-3.0 licensed. Running the unmodified upstream images is isolated
 from Blazn source, but any ZITADEL modifications must receive an explicit
