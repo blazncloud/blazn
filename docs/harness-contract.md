@@ -37,6 +37,10 @@ Credential declarations use typed route, repository, or tool scopes. Every
 run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
 revoked lease metadata and never secret material.
+Authenticated proxy profiles must use `model.proxy`. A broader provider
+credential is refused unless the Profile carries an explicit DIRECT
+authorization and the Run records a matching `DIRECT` decision authenticated
+with provider-capability proof; proxy-routed Runs cannot silently become direct.
 
 ## Normalized execution
 
@@ -57,6 +61,9 @@ into success.
 
 Messages are normalized resources with exact Run, Session, Conversation,
 generation, ordinal, parent, follow-up target, and content-digest identity.
+Parents and follow-up targets must precede the child, empty cursors remain zero,
+and resume generations are contiguous and occur only after the matching
+follow-up cursor boundary.
 Terminal patch, summary, and other result Artifacts resolve to the same tenant
 with distinct role, kind, media type, and content digest. The complete terminal
 snapshot is bound by a domain-separated receipt digest.
