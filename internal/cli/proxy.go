@@ -12,7 +12,7 @@ import (
 
 type proxyCommands interface {
 	On(context.Context, string, string) (activation.Result, error)
-	Off(context.Context) (activation.Result, error)
+	Off(context.Context, bool) (activation.Result, error)
 	Status(context.Context) (activation.Result, error)
 	Doctor(context.Context, string) (activation.Result, error)
 	Routes(context.Context, string) ([]activation.Route, error)
@@ -55,7 +55,7 @@ func (a *App) runProxy(format OutputFormat, args []string) int {
 		if err != nil || len(values.positionals) != 0 {
 			return a.proxyUsage(format, "proxy off accepts only --remove-ca")
 		}
-		result, callErr := runtime.Off(ctx)
+		result, callErr := runtime.Off(ctx, values.present["remove-ca"])
 		return a.writeProxyResult(format, result, callErr)
 	case "status":
 		if len(args) != 1 {
@@ -206,11 +206,17 @@ func (a *App) writeProxyError(format OutputFormat, err error, suggested int) int
 	case errors.Is(err, activation.ErrDifferentPolicy):
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_POLICY"
 		exit = 6
+	case errors.Is(err, activation.ErrDifferentScope):
+		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE"
+		exit = 6
 	case errors.Is(err, activation.ErrRecovery):
 		code = "RECOVERY_REQUIRED"
 		exit = 9
 	case errors.Is(err, activation.ErrUnavailable):
 		code = "PROXY_PLATFORM_UNAVAILABLE"
+		exit = 7
+	case errors.Is(err, activation.ErrCARemovalUnsupported):
+		code = "PROXY_CA_REMOVAL_UNSUPPORTED"
 		exit = 7
 	}
 	return a.writeError(format, exit, code, err.Error())

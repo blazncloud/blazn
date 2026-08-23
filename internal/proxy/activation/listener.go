@@ -35,11 +35,15 @@ func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract
 	}
 	identity, err := f.Identity.Identity(ctx, runtime.Address(), runtime.ListenerKeyFingerprint(), metadata)
 	if err != nil {
-		_ = runtime.Shutdown(context.Background())
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		_ = runtime.Shutdown(cleanup)
 		return nil, err
 	}
 	if identity.PID < 1 || identity.ProcessStartIdentity == "" || identity.ExecutableIdentity == "" || identity.Address != runtime.Address() || identity.ListenerKeyFingerprint != runtime.ListenerKeyFingerprint() {
-		_ = runtime.Shutdown(context.Background())
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		_ = runtime.Shutdown(cleanup)
 		return nil, errors.New("listener identity does not match the authenticated runtime")
 	}
 	return &embeddedListener{Runtime: runtime, identity: identity}, nil
