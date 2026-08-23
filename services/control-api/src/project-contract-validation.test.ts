@@ -14,6 +14,7 @@ const formatsModule = require("ajv-formats") as { default?: FormatsPlugin } | Fo
 const addFormats = ("default" in formatsModule ? formatsModule.default : formatsModule) as FormatsPlugin;
 const contract = path.resolve(here, "../../../packages/contracts/projects.openapi.json");
 const migration = path.resolve(here, "../migrations/010_projects.sql");
+const profileMigration=path.resolve(here,"../migrations/018_project_profiles.sql");
 
 test("Project OpenAPI is valid and exposes only workspace-scoped routes", async () => {
   const document = await SwaggerParser.validate(contract) as unknown as { paths: Record<string, Record<string, { operationId?: string }>> };
@@ -82,3 +83,4 @@ test("Project migration enforces tenant identity, archive lifecycle, and no runt
   assert.match(sql, /REVOKE DELETE ON TABLE projects FROM blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT[^;]*DELETE[^;]*TO blazn_runtime/);
 });
+test("Project profile migration defers same-tenant ready Artifact integrity",async()=>{const sql=await readFile(profileMigration,"utf8");assert.match(sql,/PRIMARY KEY \(workspace_id, project_id, kind\)/);assert.match(sql,/FOREIGN KEY \(artifact_id, workspace_id, project_id\) REFERENCES artifacts\(id, workspace_id, project_id\)/);assert.match(sql,/CREATE CONSTRAINT TRIGGER project_profile_artifact_from_profile/);assert.match(sql,/CREATE CONSTRAINT TRIGGER project_profile_artifact_from_artifact/);assert.match(sql,/artifact_row\.status <> 'ready' OR artifact_row\.digest <> profile_row\.digest/);assert.match(sql,/REVOKE DELETE ON TABLE project_profiles FROM blazn_runtime/);assert.match(sql,/REVOKE ALL ON FUNCTION validate_project_profile_artifact\(\) FROM PUBLIC/);assert.doesNotMatch(sql,/GRANT[^;]*DELETE[^;]*TO blazn_runtime/);});

@@ -3,7 +3,7 @@ import { requestDigest } from "./workspace-crypto.js";
 import type { IdempotencyReceipt } from "./workspace-store.js";
 import { roleAllows } from "./workspace-types.js";
 import type { ProjectStore, ProjectTransaction } from "./project-store.js";
-import { ProjectHttpError, type Project, type ProjectPrincipal, type ProjectStatus } from "./project-types.js";
+import { ProjectHttpError, type Project, type ProjectPrincipal, type ProjectProfile, type ProjectProfileStatus, type ProjectStatus, type PutProjectProfileInput } from "./project-types.js";
 
 export interface CreateProjectInput {
   name: string;
@@ -82,6 +82,8 @@ export class ProjectService {
       return { project };
     }, 200);
   }
+  async getProjectProfile(principal:ProjectPrincipal,workspaceId:string,projectId:string,kind:string):Promise<{profile:ProjectProfile}>{const normalizedKind=normalizeKind(kind);return this.store.transaction(async transaction=>{await this.authorize(transaction,principal,workspaceId,"read",true);const profile=await transaction.getProjectProfile(workspaceId,projectId,normalizedKind);if(!profile)throw new ProjectHttpError("project_profile_not_found","Project profile was not found");return{profile};});}
+  async putProjectProfile(principal:ProjectPrincipal,workspaceId:string,projectId:string,kind:string,idempotencyKey:string,input:PutProjectProfileInput):Promise<{profile:ProjectProfile}>{const normalizedKind=normalizeKind(kind),normalized=validateProfileInput(input),digest=requestDigest({workspaceId,projectId,kind:normalizedKind,...normalized});return this.idempotent(principal,workspaceId,"project.profile.put",idempotencyKey,`project:${projectId}:profile:${normalizedKind}`,digest,"edit",async transaction=>{const project=await transaction.getProject(workspaceId,projectId,true);if(!project||project.status!=="active")throw new ProjectHttpError("project_not_found","project was not found");const current=await transaction.getProjectProfile(workspaceId,projectId,normalizedKind,true);if((normalized.expectedVersion===0&&current)||(normalized.expectedVersion>0&&(!current||current.version!==normalized.expectedVersion)))throw new ProjectHttpError("version_conflict","Project profile version changed");const artifact=await transaction.getProfileArtifact(workspaceId,projectId,normalized.artifactId);if(!artifact||artifact.status!=="ready"||artifact.digest!==normalized.digest)throw new ProjectHttpError("artifact_not_found","profile Artifact was unavailable or digest-mismatched");const profile=await transaction.putProjectProfile({workspaceId,projectId,kind:normalizedKind,...normalized,userId:principal.userId});if(!profile)throw new ProjectHttpError("version_conflict","Project profile version changed");await transaction.insertAudit(randomUUID(),workspaceId,principal.userId,"project.profile_put",{projectId,kind:normalizedKind,version:profile.version,draftId:profile.draftId,artifactId:profile.artifactId,digest:profile.digest,status:profile.status});return{profile};},200);}
 
   private async authorize(transaction: ProjectTransaction, principal: ProjectPrincipal, workspaceId: string, capability: "read" | "edit", lock: boolean): Promise<void> {
     const access = await transaction.getWorkspaceAccess(workspaceId, principal.userId, lock);
@@ -138,6 +140,8 @@ function descriptionValue(value: string): string {
 function positiveVersion(value: number): void {
   if (!Number.isSafeInteger(value) || value < 1) throw new ProjectHttpError("invalid_request", "expectedVersion must be a positive integer");
 }
+function validateProfileInput(input:PutProjectProfileInput):PutProjectProfileInput{if(!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(input.schemaVersion)||!uuid(input.draftId)||!uuid(input.artifactId)||!/^sha256:[0-9a-f]{64}$/.test(input.digest)||(input.status!=="active"&&input.status!=="archived")||!Number.isSafeInteger(input.expectedVersion)||input.expectedVersion<0)throw new ProjectHttpError("invalid_request","Project profile request is invalid");return{schemaVersion:input.schemaVersion,draftId:input.draftId,artifactId:input.artifactId,digest:input.digest,status:input.status as ProjectProfileStatus,expectedVersion:input.expectedVersion};}
+function uuid(value:string):boolean{return/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);}
 
 function validIdempotencyKey(value: string): void {
   if (value.length < 8 || value.length > 128) throw new ProjectHttpError("invalid_request", "Idempotency-Key is invalid");

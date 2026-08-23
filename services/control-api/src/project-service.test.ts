@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ProjectService } from "./project-service.js";
 import type { ProjectStore, ProjectTransaction } from "./project-store.js";
-import { ProjectHttpError, type Project, type ProjectAccess, type ProjectPrincipal, type ProjectStatus } from "./project-types.js";
+import { ProjectHttpError, type Project, type ProjectAccess, type ProjectPrincipal, type ProjectProfile, type ProjectProfileStatus, type ProjectStatus } from "./project-types.js";
 import type { IdempotencyReceipt } from "./workspace-store.js";
 
 const owner: ProjectPrincipal = { userId: "00000000-0000-4000-8000-000000000003", email: "owner@example.test", displayName: "Owner" };
 const viewer: ProjectPrincipal = { userId: "00000000-0000-4000-8000-000000000004", email: "viewer@example.test", displayName: "Viewer" };
 const workspaceId = "00000000-0000-4000-8000-000000000001";
+const profileArtifactId="00000000-0000-4000-8000-000000000005",profileDigest=`sha256:${"a".repeat(64)}`;
 
 class MemoryProjectStore implements ProjectStore, ProjectTransaction {
   readonly projects = new Map<string, Project>();
   readonly receipts = new Map<string, IdempotencyReceipt>();
+  readonly profiles=new Map<string,ProjectProfile>();
+  readonly artifacts=new Map<string,{workspaceId:string;projectId:string;digest:string;status:string}>();
   readonly audits: Array<{ type: string; payload: unknown }> = [];
   readonly access = new Map<string, ProjectAccess>([
     [`${workspaceId}:${owner.userId}`, { workspaceStatus: "active", role: "owner" }],
@@ -45,6 +48,9 @@ class MemoryProjectStore implements ProjectStore, ProjectTransaction {
     this.projects.set(projectId, updated);
     return structuredClone(updated);
   }
+  async getProjectProfile(workspace:string,projectId:string,kind:string){const value=this.profiles.get(`${workspace}:${projectId}:${kind}`);return value?structuredClone(value):undefined;}
+  async getProfileArtifact(workspace:string,projectId:string,artifactId:string){const value=this.artifacts.get(artifactId);return value?.workspaceId===workspace&&value.projectId===projectId?{digest:value.digest,status:value.status}:undefined;}
+  async putProjectProfile(input:{workspaceId:string;projectId:string;kind:string;schemaVersion:string;draftId:string;artifactId:string;digest:string;status:ProjectProfileStatus;expectedVersion:number;userId:string}){const key=`${input.workspaceId}:${input.projectId}:${input.kind}`,current=this.profiles.get(key);if(input.expectedVersion===0&&current||input.expectedVersion>0&&(!current||current.version!==input.expectedVersion))return undefined;const now="2026-08-23T00:00:00.000Z",profile:ProjectProfile={workspaceId:input.workspaceId,projectId:input.projectId,kind:input.kind,schemaVersion:input.schemaVersion,version:(current?.version??0)+1,draftId:input.draftId,artifactId:input.artifactId,digest:input.digest,status:input.status,createdBy:current?.createdBy??input.userId,updatedBy:input.userId,createdAt:current?.createdAt??now,updatedAt:now};this.profiles.set(key,profile);return structuredClone(profile);}
   async insertAudit(_id: string, _workspace: string, _actor: string, type: string, payload: unknown): Promise<void> { this.audits.push({ type, payload }); }
 }
 
@@ -93,3 +99,7 @@ test("Project slug uniqueness is scoped to the Workspace", async () => {
   await service.createProject(owner, workspaceId, "project-create-5", { name: "Same Name" });
   await assert.rejects(() => service.createProject(owner, workspaceId, "project-create-6", { name: "Same Name" }), (error: unknown) => error instanceof ProjectHttpError && error.code === "project_slug_conflict");
 });
+
+test("Project profiles bind ready Artifacts with optimistic idempotent versions",async()=>{const store=new MemoryProjectStore(),service=new ProjectService(store),created=await service.createProject(owner,workspaceId,"project-profile-create",{name:"Content",kind:"content"});store.artifacts.set(profileArtifactId,{workspaceId,projectId:created.project.id,digest:profileDigest,status:"ready"});const input={schemaVersion:"blazn.content/project/v1alpha1",draftId:"00000000-0000-4000-8000-000000000004",artifactId:profileArtifactId,digest:profileDigest,status:"active" as const,expectedVersion:0};const first=await service.putProjectProfile(owner,workspaceId,created.project.id,"content","profile-put-1",input),replay=await service.putProjectProfile(owner,workspaceId,created.project.id,"content","profile-put-1",input);assert.equal(first.profile.version,1);assert.equal(replay.profile.artifactId,profileArtifactId);assert.equal((await service.getProjectProfile(viewer,workspaceId,created.project.id,"content")).profile.draftId,input.draftId);const second=await service.putProjectProfile(owner,workspaceId,created.project.id,"content","profile-put-2",{...input,expectedVersion:1,status:"archived"});assert.equal(second.profile.version,2);assert.equal(second.profile.status,"archived");await assert.rejects(()=>service.putProjectProfile(owner,workspaceId,created.project.id,"content","profile-put-stale",{...input,expectedVersion:1}),isCode("version_conflict"));await assert.rejects(()=>service.putProjectProfile(viewer,workspaceId,created.project.id,"content","profile-put-viewer",{...input,expectedVersion:2}),isCode("permission_denied"));store.artifacts.get(profileArtifactId)!.status="deleted";await assert.rejects(()=>service.putProjectProfile(owner,workspaceId,created.project.id,"content","profile-put-deleted",{...input,expectedVersion:2}),isCode("artifact_not_found"));});
+
+function isCode(code:string){return(error:unknown)=>error instanceof ProjectHttpError&&error.code===code;}

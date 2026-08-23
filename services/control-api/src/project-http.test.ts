@@ -21,6 +21,8 @@ test("Project HTTP routes normalize requests and preserve explicit idempotency",
     async listProjects(...values: unknown[]) { calls.push({ method: "list", values }); return { items: [fixture()], nextCursor: null }; },
     async getProject(...values: unknown[]) { calls.push({ method: "get", values }); return { project: fixture() }; },
     async updateProject(...values: unknown[]) { calls.push({ method: "update", values }); return { project: { ...fixture(), version: 2, status: "archived" as const } }; },
+    async getProjectProfile(...values:unknown[]){calls.push({method:"getProfile",values});return{profile:{kind:"content"}};},
+    async putProjectProfile(...values:unknown[]){calls.push({method:"putProfile",values});return{profile:{kind:"content"}};},
   } as unknown as ProjectService;
   const server = projectServer(new ProjectHttpRouter(service));
   await listen(server);
@@ -34,7 +36,9 @@ test("Project HTTP routes normalize requests and preserve explicit idempotency",
     assert.equal(response.status, 200);
     response = await fetch(`${origin}/v1/workspaces/${workspaceId}/projects/${projectId}`, { method: "PATCH", headers: { "content-type": "application/json", "idempotency-key": "project-update-1" }, body: JSON.stringify({ expectedVersion: 1, status: "archived" }) });
     assert.equal(response.status, 200);
-    assert.deepEqual(calls.map((call) => call.method), ["create", "list", "get", "update"]);
+    response=await fetch(`${origin}/v1/workspaces/${workspaceId}/projects/${projectId}/profiles/content`);assert.equal(response.status,200);
+    response=await fetch(`${origin}/v1/workspaces/${workspaceId}/projects/${projectId}/profiles/content`,{method:"PUT",headers:{"content-type":"application/json","idempotency-key":"profile-put-1"},body:JSON.stringify({schemaVersion:"blazn.content/project/v1alpha1",draftId:"00000000-0000-4000-8000-000000000004",artifactId:"00000000-0000-4000-8000-000000000005",digest:`sha256:${"a".repeat(64)}`,status:"active",expectedVersion:0})});assert.equal(response.status,200);
+    assert.deepEqual(calls.map((call) => call.method), ["create", "list", "get", "update","getProfile","putProfile"]);
     assert.equal(calls[0]!.values[2], "project-create-1");
     assert.deepEqual(calls[1]!.values.slice(2), ["all", projectId]);
   } finally {
