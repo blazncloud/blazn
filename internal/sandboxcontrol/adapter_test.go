@@ -568,7 +568,7 @@ func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Pod.UID != "pod-uid-1" || observation.Workload.UID != "workload-uid-1" || observation.Workload.Owner.UID != record.UID || observation.Workload.Digest == "" {
+	if observation.Pod.UID != "pod-uid-1" || observation.Workload.UID != "workload-uid-1" || observation.Workload.Owner.UID != record.UID || observation.Workload.Digest == "" || observation.Digest == "" {
 		t.Fatalf("observation=%#v", observation)
 	}
 	if _, err := adapter.ObserveAdmission(context.Background(), request, record, &observation); err != nil {
@@ -709,11 +709,35 @@ func TestObserveAbsenceRejectsSubstitutedOrIncompleteFrozenIdentity(t *testing.T
 	fake.podsAbsent, fake.workloadsAbsent = true, true
 	tests := map[string]func(*AdmissionObservation){
 		"substituted Sandbox name": func(value *AdmissionObservation) { value.Sandbox.Name = "sandbox-b" },
-		"invalid Sandbox UID":      func(value *AdmissionObservation) { value.Sandbox.UID = "" },
-		"invalid Sandbox version":  func(value *AdmissionObservation) { value.Sandbox.ResourceVersion = "" },
-		"invalid Pod name":         func(value *AdmissionObservation) { value.Pod.Name = "bad..pod" },
-		"invalid Pod UID":          func(value *AdmissionObservation) { value.Pod.UID = "" },
-		"invalid Pod version":      func(value *AdmissionObservation) { value.Pod.ResourceVersion = "" },
+		"substituted Sandbox UID": func(value *AdmissionObservation) {
+			value.Sandbox.UID = "sandbox-uid-b"
+			value.Workload.Owner.UID = value.Sandbox.UID
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"substituted Pod name":    func(value *AdmissionObservation) { value.Pod.Name = "sandbox-a-pod-b" },
+		"substituted Pod UID":     func(value *AdmissionObservation) { value.Pod.UID = "pod-uid-b" },
+		"substituted Pod version": func(value *AdmissionObservation) { value.Pod.ResourceVersion = "12" },
+		"substituted Workload name": func(value *AdmissionObservation) {
+			value.Workload.Name = "sandbox-a-workload-b"
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"substituted Workload UID": func(value *AdmissionObservation) {
+			value.Workload.UID = "workload-uid-b"
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"substituted Workload version": func(value *AdmissionObservation) {
+			value.Workload.ResourceVersion = "22"
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"substituted cluster queue": func(value *AdmissionObservation) {
+			value.Workload.ClusterQueue = "other-cluster"
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"invalid Sandbox UID":     func(value *AdmissionObservation) { value.Sandbox.UID = "" },
+		"invalid Sandbox version": func(value *AdmissionObservation) { value.Sandbox.ResourceVersion = "" },
+		"invalid Pod name":        func(value *AdmissionObservation) { value.Pod.Name = "bad..pod" },
+		"invalid Pod UID":         func(value *AdmissionObservation) { value.Pod.UID = "" },
+		"invalid Pod version":     func(value *AdmissionObservation) { value.Pod.ResourceVersion = "" },
 		"invalid Workload name": func(value *AdmissionObservation) {
 			value.Workload.Name = "bad..workload"
 			value.Workload.Digest = workloadIdentityDigest(value.Workload)

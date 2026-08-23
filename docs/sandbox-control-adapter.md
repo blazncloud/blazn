@@ -56,6 +56,10 @@ workspace/owner/sandbox identity. Re-observation can be fenced by the complete
 prior observation and rejects UID, resourceVersion, or API drift. Cleanup
 absence scans namespace Pod and Workload collections without trusting mutable
 labels and rejects the frozen identities or exact controller-owner orphans.
+The observation's canonical digest covers every Sandbox, Pod, and Workload
+identity field plus the admitted condition and cluster queue, so a
+syntactically valid substitution cannot rewrite cleanup evidence independently
+of the terminal create receipt's own admission digest.
 
 This slice does not wire `cmd/controller`, install or change Kubernetes
 resources, publish an image, or claim Gate 4C or Gate 5. Those remain subsequent
