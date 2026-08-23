@@ -26,6 +26,8 @@ POST  /v1/workspaces/{workspaceId}/projects
 GET   /v1/workspaces/{workspaceId}/projects
 GET   /v1/workspaces/{workspaceId}/projects/{projectId}
 PATCH /v1/workspaces/{workspaceId}/projects/{projectId}
+GET   /v1/workspaces/{workspaceId}/projects/{projectId}/profiles/{profileKind}
+PUT   /v1/workspaces/{workspaceId}/projects/{projectId}/profiles/{profileKind}
 ```
 
 Lists default to active Projects and paginate by an opaque cursor. Requests and
@@ -40,5 +42,13 @@ uniqueness, active/archive lifecycle, version checks, creator provenance, and
 runtime grants. The runtime role receives no physical-delete permission.
 
 Project tasks, milestones, decisions, Content profiles, Runs, and Artifacts are
-separate versioned resources that reference `(project_id, workspace_id)` in
-later contract slices.
+separate versioned resources that reference `(project_id, workspace_id)`.
+
+Project profiles are generic root-owned attachment records keyed by
+`(workspace_id, project_id, kind)`. A profile binds one plugin schema version
+and local draft UUID to a ready same-tenant Artifact and its exact digest.
+Creation uses `expectedVersion=0`; updates require the current positive version.
+The kind comes only from the route, profiles never contain provider credentials
+or arbitrary plugin JSON, and archived Projects cannot accept active profile
+mutations. Content uses kind `content`; other plugins share the same contract
+without adding product-specific columns to the Project table.
