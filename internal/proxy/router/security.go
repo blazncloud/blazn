@@ -46,6 +46,8 @@ type ResolvedEndpoint struct {
 	Transport *http.Transport
 }
 
+const maxResponseHeaderBytes = 32 << 10
+
 func (r EndpointResolver) Resolve(ctx context.Context, route proxycontract.Route) (ResolvedEndpoint, error) {
 	dns := r.DNS
 	if dns == nil {
@@ -65,9 +67,10 @@ func (r EndpointResolver) Resolve(ctx context.Context, route proxycontract.Route
 	dialer := &net.Dialer{Timeout: time.Duration(route.HealthTimeoutMS) * time.Millisecond}
 	pinned := append([]netip.Addr(nil), addresses...)
 	transport := &http.Transport{
-		Proxy:               nil,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: time.Duration(route.HealthTimeoutMS) * time.Millisecond,
+		Proxy:                  nil,
+		ForceAttemptHTTP2:      true,
+		TLSHandshakeTimeout:    time.Duration(route.HealthTimeoutMS) * time.Millisecond,
+		MaxResponseHeaderBytes: maxResponseHeaderBytes,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			var last error
 			for _, address := range pinned {

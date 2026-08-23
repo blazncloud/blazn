@@ -607,11 +607,25 @@ func prepareStream(result upstreamResult, request proxycontract.NormalizedReques
 	}
 }
 
+const (
+	maxStreamBytes       = 32 << 20
+	maxStreamEvents      = 100_000
+	maxToolArgumentBytes = 8 << 20
+)
+
 func nextStreamEvents(scanner *bufio.Scanner, normalizer *streamNormalizer, protocol proxycontract.Protocol, requestID string) ([]proxycontract.NormalizedStreamEvent, []reasoningEmission, bool, error) {
 	for scanner.Scan() {
+		normalizer.totalBytes += int64(len(scanner.Bytes()) + 1)
+		if normalizer.totalBytes > maxStreamBytes {
+			return nil, nil, false, errors.New("upstream stream exceeds the byte limit")
+		}
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
+		}
+		normalizer.wireEvents++
+		if normalizer.wireEvents > maxStreamEvents {
+			return nil, nil, false, errors.New("upstream stream exceeds the event limit")
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
@@ -673,7 +687,7 @@ func streamResponse(ctx context.Context, writer http.ResponseWriter, result upst
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Accel-Buffering", "no")
-	encoder := sourceStreamEncoder{writer: writer, protocol: request.Protocol, alias: request.ModelAlias, requestID: request.LogicalRequestID, toolIndexes: map[string]int{}, toolNames: map[string]string{}, toolArguments: map[string]string{}, textIndex: -1}
+	encoder := sourceStreamEncoder{writer: writer, protocol: request.Protocol, alias: request.ModelAlias, requestID: request.LogicalRequestID, toolIndexes: map[string]int{}, toolNames: map[string]string{}, toolArguments: map[string]string{}, textIndex: -1, maxOutputTokens: request.Limits.MaxOutputTokens, maxBytes: maxStreamBytes}
 	encoder.applyIndexHints(result.normalizer)
 	if err := encoder.start(); err != nil {
 		return nil, err
@@ -760,6 +774,8 @@ type streamNormalizer struct {
 	textOutputIndex   int
 	pendingReasoning  []reasoningEmission
 	reasoningDone     map[string]bool
+	totalBytes        int64
+	wireEvents        int
 }
 
 type reasoningOutput struct {
@@ -1054,23 +1070,27 @@ func normalizeStreamFailure(code string) proxycontract.NormalizedError {
 }
 
 type sourceStreamEncoder struct {
-	writer          io.Writer
-	protocol        proxycontract.Protocol
-	alias           string
-	toolIndexes     map[string]int
-	nextToolIndex   int
-	requestID       string
-	toolNames       map[string]string
-	toolArguments   map[string]string
-	text            strings.Builder
-	usage           *proxycontract.Usage
-	finishReason    proxycontract.FinishReason
-	sequence        int
-	started         bool
-	textStarted     bool
-	textIndex       int
-	nextOutputIndex int
-	reasoningItems  []reasoningOutput
+	writer            io.Writer
+	protocol          proxycontract.Protocol
+	alias             string
+	toolIndexes       map[string]int
+	nextToolIndex     int
+	requestID         string
+	toolNames         map[string]string
+	toolArguments     map[string]string
+	text              strings.Builder
+	usage             *proxycontract.Usage
+	finishReason      proxycontract.FinishReason
+	sequence          int
+	started           bool
+	textStarted       bool
+	textIndex         int
+	nextOutputIndex   int
+	reasoningItems    []reasoningOutput
+	maxOutputTokens   int
+	toolArgumentBytes int
+	writtenBytes      int64
+	maxBytes          int64
 }
 
 func (s *sourceStreamEncoder) applyIndexHints(normalizer *streamNormalizer) {
@@ -1116,8 +1136,36 @@ func (s *sourceStreamEncoder) emit(payload any) error {
 	if err != nil {
 		return err
 	}
+	frameBytes := int64(len(encoded) + len("data: \n\n"))
+	if s.maxBytes > 0 && s.writtenBytes+frameBytes > s.maxBytes {
+		return errors.New("source stream exceeds the byte limit")
+	}
 	_, err = fmt.Fprintf(s.writer, "data: %s\n\n", encoded)
+	if err == nil {
+		s.writtenBytes += frameBytes
+	}
 	return err
+}
+
+func (s *sourceStreamEncoder) writeDone() error {
+	const done = "data: [DONE]\n\n"
+	if s.maxBytes > 0 && s.writtenBytes+int64(len(done)) > s.maxBytes {
+		return errors.New("source stream exceeds the byte limit")
+	}
+	n, err := io.WriteString(s.writer, done)
+	if err == nil {
+		s.writtenBytes += int64(n)
+	}
+	return err
+}
+
+func (s *sourceStreamEncoder) appendToolArguments(callID, delta string) error {
+	if len(delta) > maxToolArgumentBytes-s.toolArgumentBytes {
+		return errors.New("tool argument stream exceeds the accumulation limit")
+	}
+	s.toolArgumentBytes += len(delta)
+	s.toolArguments[callID] += delta
+	return nil
 }
 func (s *sourceStreamEncoder) start() error {
 	if s.started {
@@ -1160,12 +1208,17 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 				return errors.New("tool argument delta preceded tool start")
 			}
 			choice["delta"] = map[string]any{"tool_calls": []any{map[string]any{"index": index, "function": map[string]any{"arguments": *event.ArgumentsDelta}}}}
-			s.toolArguments[*event.CallID] += *event.ArgumentsDelta
+			if err := s.appendToolArguments(*event.CallID, *event.ArgumentsDelta); err != nil {
+				return err
+			}
 		}
 		if event.Type == "response_start" {
 			return nil
 		}
 		if event.Type == "usage" {
+			if event.Usage.InputTokens < 0 || event.Usage.OutputTokens < 0 || event.Usage.OutputTokens > s.maxOutputTokens {
+				return safeError("upstream_invalid_response", "upstream stream exceeded the output limit", 502, false)
+			}
 			copy := *event.Usage
 			s.usage = &copy
 			return nil
@@ -1180,6 +1233,9 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 			return nil
 		}
 		if event.Type == "usage" {
+			if event.Usage.InputTokens < 0 || event.Usage.OutputTokens < 0 || event.Usage.OutputTokens > s.maxOutputTokens {
+				return safeError("upstream_invalid_response", "upstream stream exceeded the output limit", 502, false)
+			}
 			copy := *event.Usage
 			s.usage = &copy
 			return nil
@@ -1227,7 +1283,9 @@ func (s *sourceStreamEncoder) consume(event proxycontract.NormalizedStreamEvent)
 			payload.(map[string]any)["item"] = map[string]any{"id": "fc_" + *event.CallID, "type": "function_call", "call_id": *event.CallID, "name": *event.ToolName, "arguments": ""}
 		}
 		if event.Type == "tool_arguments_delta" {
-			s.toolArguments[*event.CallID] += *event.ArgumentsDelta
+			if err := s.appendToolArguments(*event.CallID, *event.ArgumentsDelta); err != nil {
+				return err
+			}
 			payload.(map[string]any)["item_id"] = "fc_" + *event.CallID
 			payload.(map[string]any)["output_index"] = s.toolIndexes[*event.CallID]
 			payload.(map[string]any)["delta"] = *event.ArgumentsDelta
@@ -1317,8 +1375,7 @@ func (s *sourceStreamEncoder) finish() error {
 			return err
 		}
 	}
-	_, err := fmt.Fprint(s.writer, "data: [DONE]\n\n")
-	return err
+	return s.writeDone()
 }
 
 func (s *sourceStreamEncoder) validateOutputIndexes() error {
@@ -1372,8 +1429,7 @@ func (s *sourceStreamEncoder) fail(err error) error {
 			return emitErr
 		}
 	}
-	_, writeErr := fmt.Fprint(s.writer, "data: [DONE]\n\n")
-	return writeErr
+	return s.writeDone()
 }
 
 func (s *sourceStreamEncoder) responseObject(status string) map[string]any {

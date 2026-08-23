@@ -9,9 +9,13 @@ import (
 
 const tokenBytes = 32
 
-// Credential is an activation-local listener credential. It deliberately has
-// no String or marshal method so accidental formatting cannot reveal it.
+// Credential is an activation-local listener credential. Only
+// GenerateCredential can create one; callers cannot assert randomness by
+// supplying token-shaped text.
 type Credential struct{ value string }
+
+func (Credential) String() string   { return "[REDACTED]" }
+func (Credential) GoString() string { return "[REDACTED]" }
 
 func GenerateCredential() (Credential, error) {
 	raw := make([]byte, tokenBytes)
@@ -21,22 +25,22 @@ func GenerateCredential() (Credential, error) {
 	return Credential{value: base64.RawURLEncoding.EncodeToString(raw)}, nil
 }
 
-func ParseCredential(value string) (Credential, error) {
+func validateCredential(value string) error {
 	if value == "" || strings.Contains(value, "=") {
-		return Credential{}, errors.New("listener credential must be unpadded base64url")
+		return errors.New("listener credential must be unpadded base64url")
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(value)
 	if err != nil || len(raw) < tokenBytes || base64.RawURLEncoding.EncodeToString(raw) != value {
-		return Credential{}, errors.New("listener credential must contain at least 256 random bits as unpadded base64url")
+		return errors.New("listener credential must contain at least 256 random bits as unpadded base64url")
 	}
-	return Credential{value: value}, nil
+	return nil
 }
 
 // ChildEnvironment returns a copy with only the documented source credential
 // variables replaced. The credential remains in memory and the child process
 // environment; it is never represented in argv or persistent state.
 func (c Credential) ChildEnvironment(base []string) ([]string, error) {
-	if _, err := ParseCredential(c.value); err != nil {
+	if err := validateCredential(c.value); err != nil {
 		return nil, err
 	}
 	names := map[string]bool{

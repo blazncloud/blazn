@@ -30,7 +30,6 @@ const (
 type Config struct {
 	Address           string
 	Port              uint16
-	Credential        Credential
 	Router            router.Config
 	PreflightTimeout  time.Duration
 	ReadHeaderTimeout time.Duration
@@ -40,12 +39,15 @@ type Config struct {
 }
 
 type Runtime struct {
-	listener   net.Listener
-	server     *http.Server
-	done       chan struct{}
-	errMu      sync.Mutex
-	err        error
-	credential Credential
+	listener    net.Listener
+	server      *http.Server
+	done        chan struct{}
+	errMu       sync.Mutex
+	err         error
+	credential  Credential
+	rootCancel  context.CancelFunc
+	connMu      sync.Mutex
+	connections map[net.Conn]http.ConnState
 }
 
 func Start(config Config) (*Runtime, error) {
@@ -53,13 +55,8 @@ func Start(config Config) (*Runtime, error) {
 	if err != nil || !address.IsLoopback() {
 		return nil, errors.New("listener address must be an explicit loopback IP")
 	}
-	credential := config.Credential
-	if credential.authenticateValue() == "" {
-		credential, err = GenerateCredential()
-		if err != nil {
-			return nil, err
-		}
-	} else if _, err := ParseCredential(credential.authenticateValue()); err != nil {
+	credential, err := GenerateCredential()
+	if err != nil {
 		return nil, err
 	}
 	config.Router.ListenerToken = credential.authenticateValue()
@@ -106,7 +103,8 @@ func Start(config Config) (*Runtime, error) {
 		_ = ln.Close()
 		return nil, errors.New("listener did not bind to loopback")
 	}
-	runtime := &Runtime{listener: ln, done: make(chan struct{}), credential: credential}
+	rootContext, rootCancel := context.WithCancel(context.Background())
+	runtime := &Runtime{listener: ln, done: make(chan struct{}), credential: credential, rootCancel: rootCancel, connections: map[net.Conn]http.ConnState{}}
 	runtime.server = &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
@@ -114,8 +112,11 @@ func Start(config Config) (*Runtime, error) {
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          log.New(io.Discard, "", 0),
+		BaseContext:       func(net.Listener) context.Context { return rootContext },
+		ConnState:         runtime.trackConnection,
 	}
 	go func() {
+		defer rootCancel()
 		err := runtime.server.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			runtime.errMu.Lock()
@@ -146,7 +147,11 @@ func (r *Runtime) ChildEnvironment(base []string) ([]string, error) {
 }
 
 func (r *Runtime) Shutdown(ctx context.Context) error {
+	r.rootCancel()
 	err := r.server.Shutdown(ctx)
+	if err != nil {
+		err = errors.Join(err, r.server.Close(), r.closeTrackedConnections())
+	}
 	select {
 	case <-r.done:
 	case <-ctx.Done():
@@ -156,4 +161,29 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	serveErr := r.err
 	r.errMu.Unlock()
 	return errors.Join(err, serveErr)
+}
+
+func (r *Runtime) trackConnection(connection net.Conn, state http.ConnState) {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+	switch state {
+	case http.StateNew, http.StateActive, http.StateIdle:
+		r.connections[connection] = state
+	case http.StateHijacked, http.StateClosed:
+		delete(r.connections, connection)
+	}
+}
+
+func (r *Runtime) closeTrackedConnections() error {
+	r.connMu.Lock()
+	connections := make([]net.Conn, 0, len(r.connections))
+	for connection := range r.connections {
+		connections = append(connections, connection)
+	}
+	r.connMu.Unlock()
+	var err error
+	for _, connection := range connections {
+		err = errors.Join(err, connection.Close())
+	}
+	return err
 }

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -71,20 +74,19 @@ func TestCredentialGenerationParsingAndChildEnvironment(t *testing.T) {
 	if strings.Contains(joined, "=old") || strings.Count(joined, credential.authenticateValue()) != 3 {
 		t.Fatalf("child environment replacement failed")
 	}
+	if fmt.Sprint(credential) != "[REDACTED]" || fmt.Sprintf("%#v", credential) != "[REDACTED]" {
+		t.Fatal("credential formatting was not redacted")
+	}
 	for _, invalid := range []string{"", "abc", credential.authenticateValue() + "="} {
-		if _, err := ParseCredential(invalid); err == nil {
+		if err := validateCredential(invalid); err == nil {
 			t.Fatalf("accepted invalid credential shape")
 		}
 	}
 }
 
 func TestRuntimeRejectsNonLoopbackAndShutsDownGracefully(t *testing.T) {
-	credential, err := GenerateCredential()
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, address := range []string{"", "localhost", "0.0.0.0", "192.0.2.1", "::"} {
-		if runtime, err := Start(Config{Address: address, Credential: credential, Router: routerConfig(t)}); err == nil {
+		if runtime, err := Start(Config{Address: address, Router: routerConfig(t)}); err == nil {
 			_ = runtime.Shutdown(context.Background())
 			t.Fatalf("accepted unsafe listener address %q", address)
 		}
@@ -122,11 +124,7 @@ func TestRuntimeRejectsNonLoopbackAndShutsDownGracefully(t *testing.T) {
 }
 
 func TestRuntimeSupportsIPv6Loopback(t *testing.T) {
-	credential, err := GenerateCredential()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := Start(Config{Address: "::1", Credential: credential, Router: routerConfig(t)})
+	runtime, err := Start(Config{Address: "::1", Router: routerConfig(t)})
 	if err != nil {
 		t.Skipf("IPv6 loopback unavailable: %v", err)
 	}
@@ -134,5 +132,62 @@ func TestRuntimeSupportsIPv6Loopback(t *testing.T) {
 	defer cancel()
 	if err := runtime.Shutdown(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeAlwaysGeneratesDistinctCredentials(t *testing.T) {
+	first, err := Start(Config{Address: "127.0.0.1", Router: routerConfig(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Shutdown(context.Background())
+	second, err := Start(Config{Address: "127.0.0.1", Router: routerConfig(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Shutdown(context.Background())
+	if first.credential.authenticateValue() == second.credential.authenticateValue() {
+		t.Fatal("separate runtimes reused a listener credential")
+	}
+}
+
+func TestShutdownDeadlineForcesTrackedConnectionClosed(t *testing.T) {
+	runtime, err := Start(Config{Address: "127.0.0.1", Router: routerConfig(t), ReadTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.Dial("tcp", runtime.Address())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	_, err = io.WriteString(connection, "POST /v1/chat/completions HTTP/1.1\r\nHost: "+runtime.Address()+"\r\nAuthorization: Bearer "+runtime.credential.authenticateValue()+"\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{")
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeDeadline := time.Now().Add(time.Second)
+	for {
+		runtime.connMu.Lock()
+		active := false
+		for _, state := range runtime.connections {
+			active = active || state == http.StateActive
+		}
+		runtime.connMu.Unlock()
+		if active {
+			break
+		}
+		if time.Now().After(activeDeadline) {
+			t.Fatal("connection did not become active")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	deadline, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := runtime.Shutdown(deadline); err == nil {
+		t.Fatal("forced shutdown unexpectedly reported graceful completion")
+	}
+	_ = connection.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := connection.Read(make([]byte, 1)); err == nil {
+		t.Fatal("tracked connection remained open after forced shutdown")
 	}
 }

@@ -51,11 +51,19 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if request.Method != http.MethodPost {
-		writer.WriteHeader(http.StatusMethodNotAllowed)
+		if isAnthropic {
+			writeAnthropicError(writer, safeError("method_not_allowed", "method is not allowed", http.StatusMethodNotAllowed, false))
+		} else {
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+		}
 		return
 	}
 	if media := request.Header.Get("Content-Type"); media != "" && !strings.HasPrefix(strings.ToLower(media), "application/json") {
-		writeError(writer, safeError("invalid_request", "Content-Type must be application/json", 415, false))
+		if isAnthropic {
+			writeAnthropicError(writer, safeError("invalid_request", "Content-Type must be application/json", http.StatusUnsupportedMediaType, false))
+		} else {
+			writeError(writer, safeError("invalid_request", "Content-Type must be application/json", http.StatusUnsupportedMediaType, false))
+		}
 		return
 	}
 	limited := http.MaxBytesReader(writer, request.Body, maxRequestBytes)
@@ -213,7 +221,7 @@ func writeAnthropicError(writer http.ResponseWriter, err error) {
 	switch api.Code {
 	case "authentication_failed", "credential_unavailable":
 		typeName = "authentication_error"
-	case "invalid_request", "unsupported_capability", "no_compliant_route":
+	case "invalid_request", "unsupported_capability", "no_compliant_route", "method_not_allowed":
 		typeName = "invalid_request_error"
 	case "model_not_found":
 		typeName = "not_found_error"
