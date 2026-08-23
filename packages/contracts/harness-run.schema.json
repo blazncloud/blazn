@@ -400,6 +400,48 @@
                     "credentialLeases": {
                         "maxItems": 0
                     },
+                    "messages": {
+                        "maxItems": 0
+                    },
+                    "events": {
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "prefixItems": [
+                            {
+                                "properties": {
+                                    "type": {"const": "error"},
+                                    "source": {"const": "control-plane"},
+                                    "payload": {
+                                        "properties": {
+                                            "code": {"const": "capability-mismatch"},
+                                            "missingCapabilities": {"type": "string", "minLength": 1, "maxLength": 4096}
+                                        },
+                                        "required": ["code", "missingCapabilities"]
+                                    }
+                                },
+                                "required": ["type", "source", "payload"]
+                            },
+                            {
+                                "properties": {
+                                    "type": {"const": "result.terminal"},
+                                    "source": {"const": "control-plane"},
+                                    "payload": {
+                                        "properties": {"status": {"const": "failed"}},
+                                        "required": ["status"]
+                                    }
+                                },
+                                "required": ["type", "source", "payload"]
+                            }
+                        ]
+                    },
+                    "session": {
+                        "properties": {
+                            "messageCursor": {"const": 0},
+                            "eventCursor": {"const": 1},
+                            "followUpCount": {"const": 0},
+                            "resumeGeneration": {"const": 0}
+                        }
+                    },
                     "run": {
                         "properties": {
                             "sandboxId": {
@@ -416,6 +458,17 @@
                         "properties": {
                             "status": {
                                 "const": "failed"
+                            },
+                            "summary": {"const": "Harness capability mismatch refused before Sandbox allocation."},
+                            "artifactIds": {"maxItems": 0},
+                            "artifacts": {"maxItems": 0},
+                            "patchArtifactId": {"type": "null"},
+                            "usage": {
+                                "properties": {
+                                    "modelRequests": {"const": 0},
+                                    "inputTokens": {"const": 0},
+                                    "outputTokens": {"const": 0}
+                                }
                             }
                         },
                         "required": [
