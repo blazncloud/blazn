@@ -172,6 +172,10 @@ grep -F 'compose.identity.yaml' "$ROOT_DIR/scripts/common.sh" >/dev/null
 # This intentionally asserts a literal shell variable in the preflight script.
 # shellcheck disable=SC2016
 grep -F 'validate_identity_overlay "$ROOT_DIR"' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_RELEASE' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_ACR_VALUES' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
 for runtime_script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do
   grep -F 'control_plane_compose' "$ROOT_DIR/scripts/$runtime_script" >/dev/null
 done

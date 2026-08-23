@@ -146,6 +146,21 @@ identity_overlay_enabled() {
   esac
 }
 
+validate_identity_policy_fields() {
+  identity_env=$1
+  for identity_name in ZITADEL_REVIEWED_RELEASE ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST ZITADEL_REVIEWED_ACR_VALUES ZITADEL_REVIEWED_MFA_AMR_SETS; do
+    [ "$(grep -c "^${identity_name}=" "$identity_env")" -eq 1 ] || die "$identity_name must occur exactly once"
+  done
+  identity_release=$(sed -n 's/^ZITADEL_REVIEWED_RELEASE=//p' "$identity_env")
+  identity_policy=$(sed -n 's/^ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST=//p' "$identity_env")
+  identity_acr=$(sed -n 's/^ZITADEL_REVIEWED_ACR_VALUES=//p' "$identity_env")
+  identity_amr=$(sed -n 's/^ZITADEL_REVIEWED_MFA_AMR_SETS=//p' "$identity_env")
+  printf '%s\n' "$identity_release" | LC_ALL=C grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$' || die "reviewed ZITADEL release is invalid"
+  printf '%s\n' "$identity_policy" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$' || die "reviewed ZITADEL assurance policy digest is invalid"
+  printf '%s\n' "$identity_acr" | LC_ALL=C grep -Eq '^[A-Za-z0-9:._/-]{1,256}(,[A-Za-z0-9:._/-]{1,256})*$' || die "reviewed ZITADEL ACR values are invalid"
+  printf '%s\n' "$identity_amr" | LC_ALL=C grep -Eq '^([a-z0-9._:-]{1,64}\+){1,}[a-z0-9._:-]{1,64}(;([a-z0-9._:-]{1,64}\+){1,}[a-z0-9._:-]{1,64})*$' || die "reviewed ZITADEL MFA AMR sets are invalid"
+}
+
 control_plane_compose() {
   infra_root=$1
   env_file=$2
@@ -178,17 +193,21 @@ validate_identity_overlay() {
   identity_size=$(wc -c <"$identity_env" | tr -d ' ')
   case $identity_size in ''|*[!0-9]*) die "identity environment size is invalid" ;; esac
   [ "$identity_size" -le 8192 ] || die "identity environment is unexpectedly large"
-  if LC_ALL=C grep -Ev '^[A-Z][A-Z0-9_]*=[a-zA-Z0-9._@:/+-]+[[:space:]]*$|^[[:space:]]*(#.*)?$' "$identity_env" | grep . >/dev/null; then
+  if LC_ALL=C grep -Ev '^[A-Z][A-Z0-9_]*=[a-zA-Z0-9._@:/+,;-]+[[:space:]]*$|^[[:space:]]*(#.*)?$' "$identity_env" | grep . >/dev/null; then
     die "identity environment contains unsupported syntax"
   fi
   identity_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$identity_env")
   identity_issuer=$(sed -n 's/^ZITADEL_ISSUER_URL=//p' "$identity_env")
   identity_client=$(sed -n 's/^ZITADEL_CLIENT_ID=//p' "$identity_env")
   identity_mfa=$(sed -n 's/^ZITADEL_REQUIRE_MFA=//p' "$identity_env")
+  for identity_name in BLAZN_IDENTITY_SECRETS_ROOT ZITADEL_ISSUER_URL ZITADEL_CLIENT_ID ZITADEL_REQUIRE_MFA; do
+    [ "$(grep -c "^${identity_name}=" "$identity_env")" -eq 1 ] || die "$identity_name must occur exactly once"
+  done
   [ "$identity_root" = /etc/blazn/identity/secrets ] || die "identity secrets root differs from the reviewed path"
   [ "$identity_issuer" = https://auth.blazn.benpelo.com ] || die "ZITADEL issuer differs from the reviewed public origin"
   case $identity_client in ''|*[!0-9]*) die "ZITADEL client ID is invalid" ;; esac
   [ "$identity_mfa" = true ] || die "ZITADEL MFA enforcement must remain enabled"
+  validate_identity_policy_fields "$identity_env"
   assert_directory_owned_mode /etc/blazn/identity 0 700
   assert_directory_owned_mode "$identity_root" 0 700
   assert_regular_file_owned_mode "$identity_root/zitadel-client-secret" 0 600
