@@ -7,7 +7,7 @@
     "RequestId":{"type":"string","pattern":"^[0-9a-f]{32}$"},
     "Success":{
       "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","ok","resultSchema","payload"],
-      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"ok":{"const":true},"resultSchema":{"enum":["broker-description/v1","project-envelope/v1","run-envelope/v1","run-list/v1","artifact-envelope/v1","artifact-list/v1","progress-ack/v1","artifact-upload-ready/v1"]},"payload":{"type":"string","maxLength":1048576}}
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"ok":{"const":true},"resultSchema":{"enum":["broker-description/v1","project-envelope/v1","project-profile-envelope/v1","run-envelope/v1","run-list/v1","artifact-envelope/v1","artifact-list/v1","progress-ack/v1","artifact-upload-ready/v1"]},"payload":{"type":"string","maxLength":1048576}}
     },
     "Failure":{
       "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","ok","error"],

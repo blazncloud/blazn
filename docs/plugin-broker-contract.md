@@ -42,7 +42,10 @@ fields. Root binds those values from the authenticated invocation and checks
 the plugin's allowlisted capabilities before every request and replay.
 
 Initial Content capabilities are `project.read`, `run.read`, `run.create`,
-`run.cancel`, `run.synthetic.execute`, `artifact.read`, and `artifact.write`.
+`project.profile.read`, `project.profile.write`, `run.cancel`,
+`run.synthetic.execute`, `artifact.read`, and `artifact.write`.
+Profile kind is derived from the signed plugin name and is never accepted from
+plugin request data, so Content cannot read or replace another plugin's profile.
 Only `proofClass=synthetic` is accepted from a plugin. Local, Sandbox, and
 provider placement and completion remain owned by their respective root
 authorities. A plugin cannot upgrade proof by choosing a method or payload.

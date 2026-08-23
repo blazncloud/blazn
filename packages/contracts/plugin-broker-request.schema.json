@@ -3,7 +3,7 @@
   "$id": "https://blazn.benpelo.com/contracts/plugin-broker-request-v1.schema.json",
   "title": "Blazn scoped plugin broker request v1",
   "oneOf": [
-    {"$ref": "#/$defs/Describe"}, {"$ref": "#/$defs/ProjectGet"},
+    {"$ref": "#/$defs/Describe"}, {"$ref": "#/$defs/ProjectGet"}, {"$ref": "#/$defs/ProjectProfileGet"}, {"$ref": "#/$defs/ProjectProfilePut"},
     {"$ref": "#/$defs/RunCreate"}, {"$ref": "#/$defs/RunList"}, {"$ref": "#/$defs/RunGet"}, {"$ref": "#/$defs/RunCancel"},
     {"$ref": "#/$defs/RunSyntheticProgress"}, {"$ref": "#/$defs/RunSyntheticComplete"},
     {"$ref": "#/$defs/ArtifactList"}, {"$ref": "#/$defs/ArtifactGet"}, {"$ref": "#/$defs/ArtifactUploadBegin"}
@@ -18,6 +18,11 @@
     "Empty": {"type":"object","additionalProperties":false},
     "Describe": {"type":"object","$ref":"#/$defs/NoParamsRequest","properties":{"method":{"const":"broker.describe"}}},
     "ProjectGet": {"type":"object","$ref":"#/$defs/NoParamsRequest","properties":{"method":{"const":"project.get"}}},
+    "ProjectProfileGet": {"type":"object","$ref":"#/$defs/NoParamsRequest","properties":{"method":{"const":"project.profile.get"}}},
+    "ProjectProfilePut": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"project.profile.put"},"params":{"type":"object","additionalProperties":false,"required":["profileSchemaVersion","draftId","artifactId","digest","status","expectedVersion","idempotencyKey"],"properties":{"profileSchemaVersion":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"},"draftId":{"$ref":"#/$defs/UUID"},"artifactId":{"$ref":"#/$defs/UUID"},"digest":{"$ref":"#/$defs/Digest"},"status":{"enum":["active","archived"]},"expectedVersion":{"type":"integer","minimum":0},"idempotencyKey":{"$ref":"#/$defs/IdempotencyKey"}}}}
+    },
     "NoParamsRequest": {
       "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
       "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"type":"string"},"params":{"$ref":"#/$defs/Empty"}}

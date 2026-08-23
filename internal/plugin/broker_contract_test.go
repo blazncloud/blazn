@@ -24,7 +24,7 @@ func TestBrokerRequestContractIsClosedScopedAndSecretFree(t *testing.T) {
 		t.Fatalf("schema id=%v", document["$id"])
 	}
 	methods := collectBrokerMethodConstants(document)
-	want := []string{"artifact.get", "artifact.list", "artifact.upload.begin", "broker.describe", "project.get", "run.cancel", "run.create", "run.get", "run.list", "run.synthetic.complete", "run.synthetic.progress"}
+	want := []string{"artifact.get", "artifact.list", "artifact.upload.begin", "broker.describe", "project.get", "project.profile.get", "project.profile.put", "run.cancel", "run.create", "run.get", "run.list", "run.synthetic.complete", "run.synthetic.progress"}
 	if !reflect.DeepEqual(methods, want) {
 		t.Fatalf("methods=%v want=%v", methods, want)
 	}
@@ -49,7 +49,7 @@ func TestBrokerResponseContractIsClosedAndSchemaNegotiated(t *testing.T) {
 		t.Fatal("response schema is not JSON")
 	}
 	text := strings.ToLower(string(encoded))
-	for _, schema := range []string{"broker-description/v1", "project-envelope/v1", "run-envelope/v1", "run-list/v1", "artifact-envelope/v1", "artifact-list/v1", "progress-ack/v1", "artifact-upload-ready/v1"} {
+	for _, schema := range []string{"broker-description/v1", "project-envelope/v1", "project-profile-envelope/v1", "run-envelope/v1", "run-list/v1", "artifact-envelope/v1", "artifact-list/v1", "progress-ack/v1", "artifact-upload-ready/v1"} {
 		if !strings.Contains(text, schema) {
 			t.Fatalf("response schema lacks %q", schema)
 		}
