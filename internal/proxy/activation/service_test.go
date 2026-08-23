@@ -461,13 +461,23 @@ func TestBoundedShutdownRefusesFalseCleanupSuccess(t *testing.T) {
 	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
 		t.Fatal(err)
 	}
-	factory.listeners[store.journal.Listener.PID].ignoreShutdown = true
+	activationID, pid := store.journal.ActivationID, store.journal.Listener.PID
+	factory.listeners[pid].ignoreShutdown = true
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	started := time.Now()
 	result, err := service.Off(ctx, false)
 	if err == nil || result.Status != "recovery_required" || time.Since(started) > time.Second || store.journal == nil {
 		t.Fatalf("result=%+v err=%v elapsed=%s", result, err, time.Since(started))
+	}
+	if _, present := service.activationEnvironment(activationID); !present {
+		t.Fatal("recovery-required cleanup discarded the activation environment")
+	}
+	service.mu.Lock()
+	_, present := service.listeners[pid]
+	service.mu.Unlock()
+	if !present {
+		t.Fatal("recovery-required cleanup discarded the managed listener")
 	}
 }
 
@@ -594,6 +604,9 @@ func TestRunnerPanicAlwaysRestoresScopedActivation(t *testing.T) {
 
 func TestOffAndResetArePanicSafeAndNeedNoPolicyOrAPI(t *testing.T) {
 	service, store, _, _, policies, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
 	store.panicRecover = true
 	before := policies.calls
 	if result, err := service.Off(context.Background(), false); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || policies.calls != before {
@@ -614,7 +627,7 @@ func TestCorruptOrAmbiguousStateReturnsRecoveryRequiredWithoutMutation(t *testin
 	if result, err := service.Status(context.Background()); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || result.State != "recovery_required" {
 		t.Fatalf("status=%+v err=%v", result, err)
 	}
-	store.reconcileErr, store.recoverErr = nil, state.ErrOwnershipAmbiguous
+	store.reconcileErr = state.ErrOwnershipAmbiguous
 	if result, err := service.Off(context.Background(), false); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || result.State != "recovery_required" {
 		t.Fatalf("off=%+v err=%v", result, err)
 	}
@@ -742,6 +755,105 @@ func TestPostPublicationListenerDeathIsImmediatelyRecovered(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPostPublicationRecoveryCannotCleanNewerActivation(t *testing.T) {
+	service, store, environment, factory, _, _ := testService(t)
+	const newerID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var oldID string
+	var oldPID int
+	environment.afterPublish = func() {
+		oldID, oldPID = store.journal.ActivationID, store.journal.Listener.PID
+		old := factory.listeners[oldPID]
+		old.identity.ProcessStartIdentity = "replacement-process"
+
+		store.journal.ActivationID = newerID
+		store.journal.Generation = 2
+		store.journal.Nonce = strings.Repeat("z", 32)
+		store.journal.Listener = state.ListenerIdentity{PID: 9001, ProcessStartIdentity: "new-start", ExecutableIdentity: "new-executable", Address: "127.0.0.1:9123", ListenerKeyFingerprint: testDigest}
+		factory.controller.proofs[9001] = state.LiveListenerProof{PID: 9001, ProcessStartIdentity: "new-start", ExecutableIdentity: "new-executable", BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: strings.Repeat("z", 32), OwnerUID: 1000, Generation: 2, Mode: "session", SessionIdentity: "uid:1000/session:test"}
+	}
+
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if !errors.Is(err, state.ErrLifecycleConflict) || result.Status != "recovery_required" || result.State != "recovery_required" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if store.journal == nil || store.journal.ActivationID != newerID || store.journal.Generation != 2 || store.journal.Listener.PID != 9001 || store.journal.State != "active" {
+		t.Fatalf("newer activation was changed: %+v", store.journal)
+	}
+	if old := factory.listeners[oldPID]; old == nil || !old.stopped {
+		t.Fatal("the superseded listener handle was not cleaned before fenced recovery")
+	}
+	if _, present := service.activationEnvironment(oldID); !present {
+		t.Fatal("failed exact recovery purged the older activation environment")
+	}
+	service.mu.Lock()
+	_, present := service.listeners[oldPID]
+	service.mu.Unlock()
+	if !present {
+		t.Fatal("failed exact recovery purged the older managed listener")
+	}
+}
+
+func TestSuccessfulRecoveryPurgesAbsentAndReplacedManagedState(t *testing.T) {
+	for _, kind := range []string{"absent", "identity-replaced"} {
+		t.Run(kind, func(t *testing.T) {
+			service, store, _, factory, _, _ := testService(t)
+			if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+				t.Fatal(err)
+			}
+			activationID, pid := store.journal.ActivationID, store.journal.Listener.PID
+			listener := factory.listeners[pid]
+			if kind == "absent" {
+				listener.alive = false
+				delete(factory.controller.proofs, pid)
+			} else {
+				listener.identity.ProcessStartIdentity = "replacement-process"
+			}
+
+			result, err := service.Off(context.Background(), false)
+			if err != nil || result.Status != "inactive" || result.State != "inactive" || store.journal != nil {
+				t.Fatalf("result=%+v err=%v journal=%+v", result, err, store.journal)
+			}
+			if _, present := service.activationEnvironment(activationID); present {
+				t.Fatal("successful recovery retained the activation environment")
+			}
+			service.mu.Lock()
+			_, listenerPresent := service.listeners[pid]
+			_, stoppedPresent := service.stopped[pid]
+			service.mu.Unlock()
+			if listenerPresent || stoppedPresent {
+				t.Fatalf("successful recovery retained listener state: listener=%t stopped=%t", listenerPresent, stoppedPresent)
+			}
+		})
+	}
+}
+
+func TestActivationPurgeIsGenerationFenced(t *testing.T) {
+	service, store, _, factory, _, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	activationID, oldPID := store.journal.ActivationID, store.journal.Listener.PID
+	newProof := state.LiveListenerProof{PID: 9002, Generation: 2}
+	service.mu.Lock()
+	service.environments[activationID] = activationEnvironment{generation: 2, values: []string{"NEW=value"}}
+	service.listeners[newProof.PID] = managedProof{activationID: activationID, proof: newProof}
+	service.mu.Unlock()
+
+	service.purgeActivation(activationID, 1)
+
+	environment, present := service.activationEnvironment(activationID)
+	if !present || len(environment) != 1 || environment[0] != "NEW=value" {
+		t.Fatalf("newer activation environment was purged: present=%t environment=%v", present, environment)
+	}
+	service.mu.Lock()
+	_, oldPresent := service.listeners[oldPID]
+	_, newPresent := service.listeners[newProof.PID]
+	service.mu.Unlock()
+	if oldPresent || !newPresent || factory.listeners[oldPID] == nil {
+		t.Fatalf("generation purge mismatch: old=%t new=%t", oldPresent, newPresent)
 	}
 }
 
