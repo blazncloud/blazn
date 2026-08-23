@@ -41,7 +41,9 @@ The terminal refusal contains only the control-plane capability error and
 terminal receipt: it has no Sandbox, Node, credential lease, proxy or fallback
 decision, Message, adapter/harness/sandbox execution event, model or tool event,
 follow-up or resume evidence, output Artifact, or model usage. The capability
-error binds the canonical sorted missing set recorded by compatibility. No
+error and terminal receipt have exact payloads with no adapter extension data,
+and billing is an explicit zero-cost control-plane receipt. The capability error
+binds the canonical sorted missing set recorded by compatibility. No
 requirement is silently dropped. A fallback is either absent or one
 approved attempt whose exact route, authorization, and approval receipt are
 frozen in the AgentVersion. Runtime evidence orders the authoritative primary

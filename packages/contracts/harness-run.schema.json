@@ -412,25 +412,29 @@
                                     "type": {"const": "error"},
                                     "source": {"const": "control-plane"},
                                     "payload": {
+                                        "additionalProperties": false,
                                         "properties": {
                                             "code": {"const": "capability-mismatch"},
                                             "missingCapabilities": {"type": "string", "minLength": 1, "maxLength": 4096}
                                         },
                                         "required": ["code", "missingCapabilities"]
-                                    }
+                                    },
+                                    "extensions": {"maxProperties": 0}
                                 },
-                                "required": ["type", "source", "payload"]
+                                "required": ["type", "source", "payload", "extensions"]
                             },
                             {
                                 "properties": {
                                     "type": {"const": "result.terminal"},
                                     "source": {"const": "control-plane"},
                                     "payload": {
+                                        "additionalProperties": false,
                                         "properties": {"status": {"const": "failed"}},
                                         "required": ["status"]
-                                    }
+                                    },
+                                    "extensions": {"maxProperties": 0}
                                 },
-                                "required": ["type", "source", "payload"]
+                                "required": ["type", "source", "payload", "extensions"]
                             }
                         ]
                     },
@@ -452,7 +456,7 @@
                             }
                         }
                     },
-                    "provenance": {"properties":{"proxyDecision":{"type":"null"},"fallbackAttempt":{"type":"null"},"node":{"type":"null"}}},
+                    "provenance": {"properties":{"proxyDecision":{"type":"null"},"fallbackAttempt":{"type":"null"},"billing":{"properties":{"mode":{"const":"zero-cost"},"amountMicros":{"const":0},"source":{"const":"control-plane-receipt"}}},"node":{"type":"null"}}},
                     "result": {
                         "type": "object",
                         "properties": {
