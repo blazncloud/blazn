@@ -38,7 +38,9 @@ run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
 revoked lease metadata and never secret material. Nonterminal Runs may record
 an active lease with `revokedAt=null`; terminal Runs require an ordered
-revocation timestamp for every lease.
+revocation timestamp for every lease. Declaration capability/scope pairs and
+lease IDs are unique, with one lease for every declaration and exactly one
+model lease bound to the selected Agent route.
 Authenticated proxy profiles must use `model.proxy`. A broader provider
 credential is refused unless the Profile resolves an approved, same-Workspace
 DIRECT authorization bound to the exact Profile, route version, capability,
@@ -66,6 +68,8 @@ into success.
 Nonterminal Runs have no terminal Result, completion timestamp, or terminal
 event. Terminal Runs require all three to agree with the authoritative Run
 status and receipt. Once cancellation is acknowledged, a Run cannot succeed.
+Acknowledged cancellation may terminate only as fully evidenced `cancelled` or
+as `recovery_required`; it cannot be relabeled failed or timed out.
 
 Messages are normalized resources with exact Run, Session, Conversation,
 generation, ordinal, parent, follow-up target, and content-digest identity.
@@ -79,7 +83,8 @@ with distinct role, kind, media type, and content digest. The complete terminal
 snapshot is bound by a domain-separated receipt digest.
 Agent output declarations are closed to the runnable `patch`, `summary`, and
 `output` roles so publication cannot create an AgentVersion that no adapter can
-complete.
+complete. A successful Run always names the exact resolved patch Artifact in
+`patchArtifactId`.
 
 Run provenance captures exact AgentVersion, HarnessVersion, HarnessProfile,
 SandboxTemplateVersion, source repository/commit, model route/version/protocol,
