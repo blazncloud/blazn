@@ -42,7 +42,9 @@ approved attempt whose exact route, authorization, and approval receipt are
 frozen in the AgentVersion. Runtime evidence orders the authoritative primary
 failure, control-plane authorization, one model request, and proxy decision and
 binds their route, policy, request, event, authorization, and receipt identities;
-a second attempt is not representable.
+the entire normalized stream contains exactly one request to the frozen fallback
+route, that request is the recorded `requestEventId` with `attempt=1`, and a
+second request or differently numbered attempt is refused.
 Credential declarations use typed route, repository, or tool scopes. Every
 run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
@@ -68,7 +70,11 @@ references; monotonic observation times and authoritative event sources;
 progress, patch, Artifact, cancellation, timeout, and terminal result. Adapter
 detail may appear only below a namespaced `hermes.*`, `codex.*`, `claude.*`, or
 `generic.*` extension. It cannot override core identity or authoritative Run
-state.
+state. The source-authority table is exhaustive over the closed event type
+enumeration, so no event type receives implicit source authority. Extension
+payloads are bounded scalar maps and recursive credential scanning rejects
+canonical provider keys, separated secret-key names, and credential-like
+values.
 
 Follow-ups retain the Session and Conversation IDs. Resume increments a
 generation and resumes event/message cursors. Cancellation is complete only
@@ -80,7 +86,10 @@ Nonterminal Runs have no terminal Result, completion timestamp, or terminal
 event. Terminal Runs require all three to agree with the authoritative Run
 status and receipt. Once cancellation is acknowledged, a Run cannot succeed.
 Acknowledged cancellation may terminate only as fully evidenced `cancelled` or
-as `recovery_required`; it cannot be relabeled failed or timed out.
+as `recovery_required`; it cannot be relabeled failed or timed out. Every event
+observation is at or after Run creation and, for terminal Runs, at or before
+Run completion. The single terminal event is observed exactly at the
+authoritative completion timestamp.
 
 Messages are normalized resources with exact Run, Session, Conversation,
 generation, ordinal, parent, follow-up target, and content-digest identity.
