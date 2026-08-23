@@ -54,7 +54,10 @@ one fallback request, and fallback proxy decision and binds their route, policy,
 request, event, authorization, and receipt identities. Fallback remains a
 pre-output transition: primary usage, an assistant or tool response, a tool or
 approval event, an Artifact or patch effect, or a later logical model request
-before fallback authorization makes the fallback ineligible. The entire
+before fallback authorization makes the fallback ineligible. Assistant and
+tool responses are classified from the resolved Message role, not from an
+adapter-controlled event label, so relabeling output as user input cannot retain
+fallback eligibility. The entire
 normalized stream contains exactly one request to the frozen fallback route,
 that request is the recorded `requestEventId` with `attempt=1`, and a second
 request or differently numbered attempt is refused.
@@ -132,7 +135,11 @@ Run completion. The single terminal event is observed exactly at the
 authoritative completion timestamp.
 
 Messages are normalized resources with exact Run, Session, Conversation,
-generation, ordinal, parent, follow-up target, and content-digest identity.
+generation, ordinal, parent, follow-up target, role, content-digest, and creation
+time identity. Every normalized message event resolves one Message exactly once;
+its event type, authoritative source, and observation time equal that Message's
+role and creation time. An assistant or tool Message cannot be relabeled as a
+control-plane user event or replayed through a second message event.
 Parents and follow-up targets must precede the child, empty cursors remain zero,
 and resume generations are contiguous and occur only after the matching
 follow-up cursor boundary. Each generation has exactly one follow-up Message
