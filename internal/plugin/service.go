@@ -55,7 +55,7 @@ func (execProcessRunner) Run(ctx context.Context, path string, args []string, pl
 		return 1, err
 	}
 	_ = childSocket.Close()
-	session := newBrokerSession(rootSocket, pluginName, runtimeContext)
+	session := newBrokerSessionWithHandler(ctx, rootSocket, pluginName, runtimeContext, newDefaultBrokerHandler(runtimeContext))
 	serveDone := make(chan error, 1)
 	waitDone := make(chan error, 1)
 	cancelDone := make(chan struct{})
