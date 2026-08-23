@@ -83,6 +83,7 @@ type Store interface {
 type BackendState struct {
 	Record                                           sandboxcontrol.SandboxRecord
 	Admission                                        *sandboxcontrol.WorkloadIdentity
+	AdmissionObservation                             *sandboxcontrol.AdmissionObservation
 	Exists, Ready, Deleting, CleanupFinalizerPresent bool
 }
 type CleanupResult struct {
