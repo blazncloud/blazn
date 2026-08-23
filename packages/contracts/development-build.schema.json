@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/contracts/development-build.schema.json",
+  "title": "Blazn POC Development Build",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "workspaceId", "projectId", "runId", "version", "status", "requestedBy", "source", "projectManifestDigest", "buildContextDigest", "template", "publicationTarget", "dependencyLocks", "planDigest", "platforms", "builder", "outputs", "evidence", "receiptDigest", "finalization", "publication", "createdAt"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.dev/build/v1alpha1"},
+    "id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}, "runId": {"$ref": "#/$defs/id"},
+    "version": {"type": "integer", "minimum": 1},
+    "status": {"enum": ["queued", "building", "testing", "succeeded", "failed", "cancelled"]},
+    "requestedBy": {"$ref": "#/$defs/id"},
+    "source": {"type": "object", "additionalProperties": false, "required": ["repository", "commit"], "properties": {"repository": {"type": "string", "format": "uri", "pattern": "^https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\\.git)?$"}, "commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}}},
+    "projectManifestDigest": {"$ref": "#/$defs/digest"},
+    "buildContextDigest": {"$ref": "#/$defs/digest"},
+    "template": {"type": "object", "additionalProperties": false, "required": ["versionId", "digest"], "properties": {"versionId": {"$ref": "#/$defs/id"}, "digest": {"$ref": "#/$defs/digest"}}},
+    "publicationTarget": {"type": "object", "additionalProperties": false, "required": ["templateId", "candidateVersionId", "candidateDigest", "expectedDraftVersion"], "properties": {"templateId": {"$ref": "#/$defs/id"}, "candidateVersionId": {"$ref": "#/$defs/id"}, "candidateDigest": {"$ref": "#/$defs/digest"}, "expectedDraftVersion": {"type": "integer", "minimum": 1}}},
+    "dependencyLocks": {"type": "object", "minProperties": 1, "maxProperties": 32, "propertyNames": {"$ref": "#/$defs/repositoryPath"}, "additionalProperties": {"$ref": "#/$defs/digest"}},
+    "planDigest": {"$ref": "#/$defs/digest"},
+    "platforms": {"$ref": "#/$defs/platformSet"},
+    "builder": {"type": "object", "additionalProperties": false, "required": ["id", "profile", "imageDigest", "version"], "properties": {"id": {"$ref": "#/$defs/id"}, "profile": {"$ref": "#/$defs/name"}, "imageDigest": {"$ref": "#/$defs/ociDigest"}, "version": {"type": "string", "minLength": 1, "maxLength": 128}}},
+    "outputs": {
+      "type": ["object", "null"], "additionalProperties": false, "required": ["imageIndexDigest", "materialDigest", "images", "refreshArtifacts"],
+      "properties": {
+        "imageIndexDigest": {"$ref": "#/$defs/ociDigest"}, "materialDigest": {"$ref": "#/$defs/digest"},
+        "images": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "additionalProperties": false, "required": ["platform", "digest"], "properties": {"platform": {"$ref": "#/$defs/platform"}, "digest": {"$ref": "#/$defs/ociDigest"}}}, "allOf": [{"contains": {"type": "object", "properties": {"platform": {"const": "linux/amd64"}}, "required": ["platform"]}}, {"contains": {"type": "object", "properties": {"platform": {"const": "linux/arm64"}}, "required": ["platform"]}}]},
+        "refreshArtifacts": {"type": "object", "additionalProperties": false, "required": ["linux/amd64", "linux/arm64"], "properties": {"linux/amd64": {"$ref": "#/$defs/refreshArtifact"}, "linux/arm64": {"$ref": "#/$defs/refreshArtifact"}}}
+      }
+    },
+    "evidence": {
+      "type": ["object", "null"], "additionalProperties": false,
+      "required": ["artifactIds", "artifactManifest", "provenanceArtifactId", "signatureArtifactId", "projectTests", "secretScan", "securityTests", "lifecycleTests", "reproducibility", "cleanup"],
+      "properties": {
+        "artifactIds": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "artifactManifest": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/artifactExpectation"}},
+        "provenanceArtifactId": {"$ref": "#/$defs/id"}, "signatureArtifactId": {"$ref": "#/$defs/id"}, "sbomArtifactId": {"$ref": "#/$defs/id"},
+        "projectTests": {"type": "object", "additionalProperties": false, "required": ["suite", "definitionDigest", "sourceCommit", "results"], "properties": {"suite": {"const": "poc"}, "definitionDigest": {"$ref": "#/$defs/digest"}, "sourceCommit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}, "results": {"type": "object", "minProperties": 1, "maxProperties": 32, "propertyNames": {"$ref": "#/$defs/name"}, "additionalProperties": {"$ref": "#/$defs/testResult"}}}},
+        "secretScan": {"type": "object", "additionalProperties": false, "required": ["passed", "findings"], "properties": {"passed": {"type": "boolean"}, "findings": {"type": "integer", "minimum": 0}}},
+        "securityTests": {"$ref": "#/$defs/platformResults"}, "lifecycleTests": {"$ref": "#/$defs/platformResults"},
+        "reproducibility": {
+          "type": "object", "additionalProperties": false, "required": ["outcome", "comparison"],
+          "properties": {
+            "outcome": {"enum": ["same-material-digest", "explained-nondeterminism"]},
+            "comparison": {"type": "object", "additionalProperties": false, "required": ["referenceBuildId", "referenceReceiptDigest", "candidateBuildId", "referenceInputDigest", "candidateInputDigest", "referenceMaterialDigest", "candidateMaterialDigest", "artifactId"], "properties": {"referenceBuildId": {"$ref": "#/$defs/id"}, "referenceReceiptDigest": {"$ref": "#/$defs/digest"}, "candidateBuildId": {"$ref": "#/$defs/id"}, "referenceInputDigest": {"$ref": "#/$defs/digest"}, "candidateInputDigest": {"$ref": "#/$defs/digest"}, "referenceMaterialDigest": {"$ref": "#/$defs/digest"}, "candidateMaterialDigest": {"$ref": "#/$defs/digest"}, "artifactId": {"$ref": "#/$defs/id"}}},
+            "explanation": {"type": "string", "minLength": 1, "maxLength": 4000}, "reviewArtifactId": {"$ref": "#/$defs/id"}
+          },
+          "allOf": [{"if": {"properties": {"outcome": {"const": "explained-nondeterminism"}}, "required": ["outcome"]}, "then": {"required": ["explanation", "reviewArtifactId"]}, "else": {"not": {"anyOf": [{"required": ["explanation"]}, {"required": ["reviewArtifactId"]}]}}}]
+        },
+        "cleanup": {"type": "object", "additionalProperties": false, "required": ["passed", "artifactId"], "properties": {"passed": {"type": "boolean"}, "artifactId": {"$ref": "#/$defs/id"}}}
+      }
+    },
+    "receiptDigest": {"oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]},
+    "finalization": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["authority", "run", "referenceBuild", "publicationTarget", "artifacts"], "properties": {
+          "authority": {"type": "object", "additionalProperties": false, "required": ["contractVersion", "kind", "principal", "authentication", "finalizedAt"], "properties": {"contractVersion": {"const": "blazn.dev/finalizer/v1alpha1"}, "kind": {"const": "controller"}, "principal": {"const": "blazn-development-controller"}, "authentication": {"const": "mtls-workload-identity"}, "finalizedAt": {"type": "string", "format": "date-time"}}},
+          "run": {"$ref": "#/$defs/tenantResource"}, "referenceBuild": {"$ref": "#/$defs/referenceBuild"}, "publicationTarget": {"$ref": "#/$defs/resolvedPublicationTarget"}, "artifacts": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/resolvedArtifact"}}
+        }}
+      ]
+    },
+    "publication": {
+      "type": "object", "additionalProperties": false, "required": ["eligible", "refusalReasons", "published"],
+      "properties": {
+        "eligible": {"type": "boolean"},
+        "refusalReasons": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"enum": ["build_not_succeeded", "build_cancelled", "mutable_output", "missing_architecture", "digest_mismatch", "project_test_failed", "secret_finding", "security_test_failed", "lifecycle_test_failed", "cleanup_failed", "reproducibility_unexplained", "stale_build_version", "unauthorized"]}},
+        "published": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["templateId", "templateVersionId", "templateDigest", "imageIndexDigest", "buildReceiptDigest", "publishedAt"], "properties": {"templateId": {"$ref": "#/$defs/id"}, "templateVersionId": {"$ref": "#/$defs/id"}, "templateDigest": {"$ref": "#/$defs/digest"}, "imageIndexDigest": {"$ref": "#/$defs/ociDigest"}, "buildReceiptDigest": {"$ref": "#/$defs/digest"}, "publishedAt": {"type": "string", "format": "date-time"}}}]}
+      },
+      "allOf": [{"if": {"properties": {"eligible": {"const": true}}, "required": ["eligible"]}, "then": {"properties": {"refusalReasons": {"maxItems": 0}}}}, {"if": {"properties": {"eligible": {"const": false}}, "required": ["eligible"]}, "then": {"properties": {"refusalReasons": {"minItems": 1}, "published": {"type": "null"}}}}]
+    },
+    "createdAt": {"type": "string", "format": "date-time"}, "startedAt": {"type": "string", "format": "date-time"}, "completedAt": {"type": "string", "format": "date-time"}, "errorCode": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,62}$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "queued"}}, "required": ["status"]}, "then": {"properties": {"outputs": {"type": "null"}, "evidence": {"type": "null"}, "receiptDigest": {"type": "null"}, "finalization": {"type": "null"}}, "not": {"anyOf": [{"required": ["startedAt"]}, {"required": ["completedAt"]}, {"required": ["errorCode"]}]}}},
+    {"if": {"properties": {"status": {"enum": ["building", "testing"]}}, "required": ["status"]}, "then": {"required": ["startedAt"], "properties": {"evidence": {"type": "null"}, "receiptDigest": {"type": "null"}, "finalization": {"type": "null"}}, "not": {"required": ["completedAt"]}}},
+    {"if": {"properties": {"status": {"const": "succeeded"}}, "required": ["status"]}, "then": {"required": ["startedAt", "completedAt"], "properties": {"outputs": {"type": "object"}, "evidence": {"type": "object"}, "receiptDigest": {"$ref": "#/$defs/digest"}, "finalization": {"type": "object"}, "publication": {"properties": {"eligible": {"const": true}}}}, "not": {"required": ["errorCode"]}}},
+    {"if": {"properties": {"status": {"enum": ["failed", "cancelled"]}}, "required": ["status"]}, "then": {"required": ["completedAt"], "properties": {"receiptDigest": {"$ref": "#/$defs/digest"}, "finalization": {"type": "object"}, "publication": {"properties": {"eligible": {"const": false}}, "required": ["eligible"]}}}},
+    {
+      "if": {"properties": {"publication": {"properties": {"eligible": {"const": true}}, "required": ["eligible"]}}, "required": ["publication"]},
+      "then": {"properties": {
+        "status": {"const": "succeeded"},
+        "evidence": {"type": "object", "properties": {
+          "projectTests": {"properties": {"results": {"additionalProperties": {"properties": {"passed": {"const": true}}, "required": ["passed"]}}}, "required": ["results"]},
+          "secretScan": {"properties": {"passed": {"const": true}, "findings": {"const": 0}}, "required": ["passed", "findings"]},
+          "securityTests": {"items": {"properties": {"passed": {"const": true}}, "required": ["passed"]}},
+          "lifecycleTests": {"items": {"properties": {"passed": {"const": true}}, "required": ["passed"]}},
+          "cleanup": {"properties": {"passed": {"const": true}}, "required": ["passed"]}
+        }, "required": ["projectTests", "secretScan", "securityTests", "lifecycleTests", "cleanup"]}
+      }}
+    }
+  ],
+  "$defs": {
+    "id": {"type": "string", "format": "uuid"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "repositoryPath": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\u0000-\\u001f]).+$"},
+    "ociDigest": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$", "maxLength": 640},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}, "platform": {"enum": ["linux/amd64", "linux/arm64"]},
+    "platformSet": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/platform"}, "allOf": [{"contains": {"const": "linux/amd64"}}, {"contains": {"const": "linux/arm64"}}]},
+    "refreshArtifact": {"type": "object", "additionalProperties": false, "required": ["artifactId", "contentDigest", "cacheKey", "inputsDigest", "imageDigest"], "properties": {"artifactId": {"$ref": "#/$defs/id"}, "contentDigest": {"$ref": "#/$defs/digest"}, "cacheKey": {"$ref": "#/$defs/digest"}, "inputsDigest": {"$ref": "#/$defs/digest"}, "imageDigest": {"$ref": "#/$defs/ociDigest"}}},
+    "testResult": {"type": "object", "additionalProperties": false, "required": ["passed", "artifactId"], "properties": {"passed": {"type": "boolean"}, "artifactId": {"$ref": "#/$defs/id"}}},
+    "platformResults": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "additionalProperties": false, "required": ["platform", "passed", "artifactId"], "properties": {"platform": {"$ref": "#/$defs/platform"}, "passed": {"type": "boolean"}, "artifactId": {"$ref": "#/$defs/id"}}}, "allOf": [{"contains": {"type": "object", "properties": {"platform": {"const": "linux/amd64"}}, "required": ["platform"]}}, {"contains": {"type": "object", "properties": {"platform": {"const": "linux/arm64"}}, "required": ["platform"]}}]},
+    "tenantResource": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "projectId"], "properties": {"id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}}},
+    "referenceBuild": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "projectId", "receiptDigest", "inputDigest", "materialDigest", "source", "projectManifestDigest", "buildContextDigest", "template", "dependencyLocks", "planDigest", "platforms", "builder"], "properties": {"id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}, "receiptDigest": {"$ref": "#/$defs/digest"}, "inputDigest": {"$ref": "#/$defs/digest"}, "materialDigest": {"$ref": "#/$defs/digest"}, "source": {"type": "object"}, "projectManifestDigest": {"$ref": "#/$defs/digest"}, "buildContextDigest": {"$ref": "#/$defs/digest"}, "template": {"type": "object"}, "dependencyLocks": {"type": "object"}, "planDigest": {"$ref": "#/$defs/digest"}, "platforms": {"$ref": "#/$defs/platformSet"}, "builder": {"type": "object", "additionalProperties": false, "required": ["id", "profile", "imageDigest", "version"], "properties": {"id": {"$ref": "#/$defs/id"}, "profile": {"$ref": "#/$defs/name"}, "imageDigest": {"$ref": "#/$defs/ociDigest"}, "version": {"type": "string", "minLength": 1, "maxLength": 128}}}}},
+    "resolvedArtifact": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "projectId", "role", "kind", "mediaType", "contentDigest"], "properties": {"id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}, "role": {"type": "string", "pattern": "^(refresh/(linux/amd64|linux/arm64)|provenance|signature|sbom|project-test/[a-z][a-z0-9-]{0,62}|security/(linux/amd64|linux/arm64)|lifecycle/(linux/amd64|linux/arm64)|reproducibility-comparison|reproducibility-review|cleanup)$"}, "kind": {"enum": ["development.refresh", "development.provenance", "development.signature", "development.sbom", "development.test", "development.reproducibility", "development.cleanup"]}, "mediaType": {"const": "data"}, "contentDigest": {"$ref": "#/$defs/digest"}}},
+    "artifactExpectation": {"type": "object", "additionalProperties": false, "required": ["role", "artifactId", "kind", "mediaType", "contentDigest"], "properties": {"role": {"type": "string", "pattern": "^(refresh/(linux/amd64|linux/arm64)|provenance|signature|sbom|project-test/[a-z][a-z0-9-]{0,62}|security/(linux/amd64|linux/arm64)|lifecycle/(linux/amd64|linux/arm64)|reproducibility-comparison|reproducibility-review|cleanup)$"}, "artifactId": {"$ref": "#/$defs/id"}, "kind": {"enum": ["development.refresh", "development.provenance", "development.signature", "development.sbom", "development.test", "development.reproducibility", "development.cleanup"]}, "mediaType": {"const": "data"}, "contentDigest": {"$ref": "#/$defs/digest"}}},
+    "resolvedPublicationTarget": {"type": "object", "additionalProperties": false, "required": ["templateId", "workspaceId", "candidateVersionId", "candidateDigest", "expectedDraftVersion"], "properties": {"templateId": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "candidateVersionId": {"$ref": "#/$defs/id"}, "candidateDigest": {"$ref": "#/$defs/digest"}, "expectedDraftVersion": {"type": "integer", "minimum": 1}}}
+  },
+  "x-blazn-authority": {"requesterMaySet": ["source.commit", "idempotencyKey"], "controllerFinalizer": {"principal": "blazn-development-controller", "authentication": "mtls-workload-identity", "exclusiveFields": ["status", "buildContextDigest", "builder", "publicationTarget", "outputs", "evidence", "receiptDigest", "finalization", "publication.eligible", "publication.refusalReasons"]}, "publicationAuthority": "workspace-publication-capability"},
+  "x-blazn-tenant-invariants": ["build.workspaceId == run.workspaceId", "build.projectId == run.projectId", "reproducibility.referenceBuildId resolves in the Build tenant", "every artifact workspaceId/projectId equals the Build tenant", "every typed evidence Artifact is resolved before finalization"]
+}

@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "blazn.dev/build/v1alpha1",
+  "id": "30000000-0000-4000-8000-000000000001",
+  "workspaceId": "40000000-0000-4000-8000-000000000001",
+  "projectId": "20000000-0000-4000-8000-000000000001",
+  "runId": "31000000-0000-4000-8000-000000000001",
+  "version": 4,
+  "status": "succeeded",
+  "requestedBy": "10000000-0000-4000-8000-000000000001",
+  "source": {"repository": "https://github.com/blazncloud/blazn.git", "commit": "1111111111111111111111111111111111111111"},
+  "projectManifestDigest": "sha256:ec2f0436288129465f537bd506aca5d18ac9feffd4e8190192bcc22aa14e1f34",
+  "buildContextDigest": "sha256:2323232323232323232323232323232323232323232323232323232323232323",
+  "template": {"versionId": "60000000-0000-4000-8000-000000000001", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "publicationTarget": {"templateId": "50000000-0000-4000-8000-000000000001", "candidateVersionId": "60000000-0000-4000-8000-000000000002", "candidateDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "expectedDraftVersion": 3},
+  "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "planDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "builder": {"id": "50000000-0000-4000-8000-000000000001", "profile": "trusted-buildkit-v1", "imageDigest": "registry.blazn.invalid/system/buildkit@sha256:4444444444444444444444444444444444444444444444444444444444444444", "version": "v0.25.0"},
+  "outputs": {
+    "imageIndexDigest": "registry.blazn.invalid/poc/coding-agent@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "materialDigest": "sha256:abababababababababababababababababababababababababababababababab",
+    "images": [
+      {"platform": "linux/amd64", "digest": "registry.blazn.invalid/poc/coding-agent@sha256:6666666666666666666666666666666666666666666666666666666666666666"},
+      {"platform": "linux/arm64", "digest": "registry.blazn.invalid/poc/coding-agent@sha256:7777777777777777777777777777777777777777777777777777777777777777"}
+    ],
+    "refreshArtifacts": {
+      "linux/amd64": {"artifactId": "80000000-0000-4000-8000-000000000001", "contentDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888", "cacheKey": "sha256:35c72493457b20af3051691d09af7dede51dc91b23f967723c86bb2969db32c2", "inputsDigest": "sha256:0f35112b20c5812290ecdfe7745a2d8b5aeefb6e8580415fd261b14968a5c769", "imageDigest": "registry.blazn.invalid/poc/coding-agent@sha256:6666666666666666666666666666666666666666666666666666666666666666"},
+      "linux/arm64": {"artifactId": "80000000-0000-4000-8000-000000000009", "contentDigest": "sha256:8989898989898989898989898989898989898989898989898989898989898989", "cacheKey": "sha256:a79fd31ce2a96f8a1609d3e12c87ad863a97749d3f309f1e7c1d8c88e96e2638", "inputsDigest": "sha256:11e2e316935d985a7efe23599d5f4c0726dc4f5b61177c6f18808639cd0723d8", "imageDigest": "registry.blazn.invalid/poc/coding-agent@sha256:7777777777777777777777777777777777777777777777777777777777777777"}
+    }
+  },
+  "evidence": {
+    "artifactIds": ["80000000-0000-4000-8000-000000000001", "80000000-0000-4000-8000-000000000002", "80000000-0000-4000-8000-000000000003", "80000000-0000-4000-8000-000000000004", "80000000-0000-4000-8000-000000000005", "80000000-0000-4000-8000-000000000006", "80000000-0000-4000-8000-000000000007", "80000000-0000-4000-8000-000000000008", "80000000-0000-4000-8000-000000000009", "80000000-0000-4000-8000-000000000010", "80000000-0000-4000-8000-000000000011"],
+    "artifactManifest": [
+      {"role": "refresh/linux/amd64", "artifactId": "80000000-0000-4000-8000-000000000001", "kind": "development.refresh", "mediaType": "data", "contentDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"},
+      {"role": "provenance", "artifactId": "80000000-0000-4000-8000-000000000002", "kind": "development.provenance", "mediaType": "data", "contentDigest": "sha256:0202020202020202020202020202020202020202020202020202020202020202"},
+      {"role": "security/linux/amd64", "artifactId": "80000000-0000-4000-8000-000000000003", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0303030303030303030303030303030303030303030303030303030303030303"},
+      {"role": "security/linux/arm64", "artifactId": "80000000-0000-4000-8000-000000000004", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0404040404040404040404040404040404040404040404040404040404040404"},
+      {"role": "lifecycle/linux/amd64", "artifactId": "80000000-0000-4000-8000-000000000005", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0505050505050505050505050505050505050505050505050505050505050505"},
+      {"role": "lifecycle/linux/arm64", "artifactId": "80000000-0000-4000-8000-000000000006", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0606060606060606060606060606060606060606060606060606060606060606"},
+      {"role": "signature", "artifactId": "80000000-0000-4000-8000-000000000007", "kind": "development.signature", "mediaType": "data", "contentDigest": "sha256:0707070707070707070707070707070707070707070707070707070707070707"},
+      {"role": "cleanup", "artifactId": "80000000-0000-4000-8000-000000000008", "kind": "development.cleanup", "mediaType": "data", "contentDigest": "sha256:0808080808080808080808080808080808080808080808080808080808080808"},
+      {"role": "refresh/linux/arm64", "artifactId": "80000000-0000-4000-8000-000000000009", "kind": "development.refresh", "mediaType": "data", "contentDigest": "sha256:8989898989898989898989898989898989898989898989898989898989898989"},
+      {"role": "project-test/poc", "artifactId": "80000000-0000-4000-8000-000000000010", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:1010101010101010101010101010101010101010101010101010101010101010"},
+      {"role": "reproducibility-comparison", "artifactId": "80000000-0000-4000-8000-000000000011", "kind": "development.reproducibility", "mediaType": "data", "contentDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+    ],
+    "provenanceArtifactId": "80000000-0000-4000-8000-000000000002",
+    "signatureArtifactId": "80000000-0000-4000-8000-000000000007",
+    "projectTests": {"suite": "poc", "definitionDigest": "sha256:531053a700f057ba4dc6caba2fa87e1c9b6ca167d7d2d03dce2f1e6210fdcbe4", "sourceCommit": "1111111111111111111111111111111111111111", "results": {"poc": {"passed": true, "artifactId": "80000000-0000-4000-8000-000000000010"}}},
+    "secretScan": {"passed": true, "findings": 0},
+    "securityTests": [
+      {"platform": "linux/amd64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000003"},
+      {"platform": "linux/arm64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000004"}
+    ],
+    "lifecycleTests": [
+      {"platform": "linux/amd64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000005"},
+      {"platform": "linux/arm64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000006"}
+    ],
+    "reproducibility": {"outcome": "same-material-digest", "comparison": {"referenceBuildId": "30000000-0000-4000-8000-000000000002", "referenceReceiptDigest": "sha256:1313131313131313131313131313131313131313131313131313131313131313", "candidateBuildId": "30000000-0000-4000-8000-000000000001", "referenceInputDigest": "sha256:a8f1f5be523a076752b736cdad0807d31d2917b2d7924969ea4740f6ab013396", "candidateInputDigest": "sha256:a8f1f5be523a076752b736cdad0807d31d2917b2d7924969ea4740f6ab013396", "referenceMaterialDigest": "sha256:abababababababababababababababababababababababababababababababab", "candidateMaterialDigest": "sha256:abababababababababababababababababababababababababababababababab", "artifactId": "80000000-0000-4000-8000-000000000011"}},
+    "cleanup": {"passed": true, "artifactId": "80000000-0000-4000-8000-000000000008"}
+  },
+  "receiptDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+  "finalization": {
+    "authority": {"contractVersion": "blazn.dev/finalizer/v1alpha1", "kind": "controller", "principal": "blazn-development-controller", "authentication": "mtls-workload-identity", "finalizedAt": "2026-08-22T00:04:00Z"},
+    "run": {"id": "31000000-0000-4000-8000-000000000001", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001"},
+    "referenceBuild": {"id": "30000000-0000-4000-8000-000000000002", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "receiptDigest": "sha256:1313131313131313131313131313131313131313131313131313131313131313", "inputDigest": "sha256:a8f1f5be523a076752b736cdad0807d31d2917b2d7924969ea4740f6ab013396", "materialDigest": "sha256:abababababababababababababababababababababababababababababababab", "source": {"repository": "https://github.com/blazncloud/blazn.git", "commit": "1111111111111111111111111111111111111111"}, "projectManifestDigest": "sha256:ec2f0436288129465f537bd506aca5d18ac9feffd4e8190192bcc22aa14e1f34", "buildContextDigest": "sha256:2323232323232323232323232323232323232323232323232323232323232323", "template": {"versionId": "60000000-0000-4000-8000-000000000001", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}, "planDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333", "platforms": ["linux/amd64", "linux/arm64"], "builder": {"id": "50000000-0000-4000-8000-000000000001", "profile": "trusted-buildkit-v1", "imageDigest": "registry.blazn.invalid/system/buildkit@sha256:4444444444444444444444444444444444444444444444444444444444444444", "version": "v0.25.0"}},
+    "publicationTarget": {"templateId": "50000000-0000-4000-8000-000000000001", "workspaceId": "40000000-0000-4000-8000-000000000001", "candidateVersionId": "60000000-0000-4000-8000-000000000002", "candidateDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "expectedDraftVersion": 3},
+    "artifacts": [
+      {"id": "80000000-0000-4000-8000-000000000001", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "refresh/linux/amd64", "kind": "development.refresh", "mediaType": "data", "contentDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"},
+      {"id": "80000000-0000-4000-8000-000000000002", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "provenance", "kind": "development.provenance", "mediaType": "data", "contentDigest": "sha256:0202020202020202020202020202020202020202020202020202020202020202"},
+      {"id": "80000000-0000-4000-8000-000000000003", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "security/linux/amd64", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0303030303030303030303030303030303030303030303030303030303030303"},
+      {"id": "80000000-0000-4000-8000-000000000004", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "security/linux/arm64", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0404040404040404040404040404040404040404040404040404040404040404"},
+      {"id": "80000000-0000-4000-8000-000000000005", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "lifecycle/linux/amd64", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0505050505050505050505050505050505050505050505050505050505050505"},
+      {"id": "80000000-0000-4000-8000-000000000006", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "lifecycle/linux/arm64", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:0606060606060606060606060606060606060606060606060606060606060606"},
+      {"id": "80000000-0000-4000-8000-000000000007", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "signature", "kind": "development.signature", "mediaType": "data", "contentDigest": "sha256:0707070707070707070707070707070707070707070707070707070707070707"},
+      {"id": "80000000-0000-4000-8000-000000000008", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "cleanup", "kind": "development.cleanup", "mediaType": "data", "contentDigest": "sha256:0808080808080808080808080808080808080808080808080808080808080808"},
+      {"id": "80000000-0000-4000-8000-000000000009", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "refresh/linux/arm64", "kind": "development.refresh", "mediaType": "data", "contentDigest": "sha256:8989898989898989898989898989898989898989898989898989898989898989"},
+      {"id": "80000000-0000-4000-8000-000000000010", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "project-test/poc", "kind": "development.test", "mediaType": "data", "contentDigest": "sha256:1010101010101010101010101010101010101010101010101010101010101010"},
+      {"id": "80000000-0000-4000-8000-000000000011", "workspaceId": "40000000-0000-4000-8000-000000000001", "projectId": "20000000-0000-4000-8000-000000000001", "role": "reproducibility-comparison", "kind": "development.reproducibility", "mediaType": "data", "contentDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+    ]
+  },
+  "publication": {"eligible": true, "refusalReasons": [], "published": null},
+  "createdAt": "2026-08-22T00:00:00Z",
+  "startedAt": "2026-08-22T00:00:01Z",
+  "completedAt": "2026-08-22T00:04:00Z"
+}
