@@ -20,7 +20,7 @@
         "id": "33000000-0000-4000-8000-000000000001",
         "conversationId": "34000000-0000-4000-8000-000000000001",
         "messageCursor": 2,
-        "eventCursor": 13,
+        "eventCursor": 14,
         "followUpCount": 1,
         "resumeGeneration": 1,
         "cancellation": {
@@ -232,10 +232,25 @@
         },
         {
             "schemaVersion": "blazn.dev/harness-event/v1alpha1",
-            "id": "80000000-0000-4000-8000-000000000004",
+            "id": "80000000-0000-4000-8000-000000000099",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
             "sequence": 6,
+            "cursor": "message-user-followup",
+            "type": "message.user",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:02:00Z",
+            "payload": {
+                "messageId": "35000000-0000-4000-8000-000000000002"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000004",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 7,
             "cursor": "e6",
             "type": "followup.accepted",
             "source": "control-plane",
@@ -250,7 +265,7 @@
             "id": "80000000-0000-4000-8000-000000000005",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 7,
+            "sequence": 8,
             "cursor": "e7",
             "type": "harness.resumed",
             "source": "adapter",
@@ -265,7 +280,7 @@
             "id": "82000000-0000-4000-8000-000000000003",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 8,
+            "sequence": 9,
             "cursor": "model-request-2",
             "type": "model.requested",
             "source": "control-plane",
@@ -282,7 +297,7 @@
             "id": "82000000-0000-4000-8000-000000000004",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 9,
+            "sequence": 10,
             "cursor": "model-usage-2",
             "type": "model.usage",
             "source": "proxy",
@@ -301,7 +316,7 @@
             "id": "82000000-0000-4000-8000-000000000005",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 10,
+            "sequence": 11,
             "cursor": "billing-recorded",
             "type": "billing.recorded",
             "source": "control-plane",
@@ -322,7 +337,7 @@
             "id": "80000000-0000-4000-8000-000000000006",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 11,
+            "sequence": 12,
             "cursor": "e11",
             "type": "patch.created",
             "source": "adapter",
@@ -337,7 +352,7 @@
             "id": "80000000-0000-4000-8000-000000000007",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 12,
+            "sequence": 13,
             "cursor": "e12",
             "type": "artifact.created",
             "source": "adapter",
@@ -350,7 +365,7 @@
             "id": "80000000-0000-4000-8000-000000000008",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 13,
+            "sequence": 14,
             "cursor": "e13",
             "type": "result.terminal",
             "source": "control-plane",
@@ -379,6 +394,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:9fb91c0d9ae18b1f3fe58e38ffd2d3f44d8ab0a6846e264f2379fec37ed79521"
+        "receiptDigest": "sha256:d00ecd5b22c113a715f850cf55830913ba0c2ec3fbbb00e2761fc8f10c5690d0"
     }
 }
