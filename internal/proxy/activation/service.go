@@ -189,7 +189,7 @@ type Service struct {
 	mu           sync.Mutex
 	lifecycleMu  sync.Mutex
 	listeners    map[int]managedProof
-	stopped      map[int]state.LiveListenerProof
+	stopped      map[int]stoppedProof
 	environments map[string]activationEnvironment
 }
 type managedProof struct {
@@ -201,6 +201,10 @@ type managedProof struct {
 type activationEnvironment struct {
 	generation int64
 	values     []string
+}
+type stoppedProof struct {
+	activationID string
+	proof        state.LiveListenerProof
 }
 
 type Result struct {
@@ -240,7 +244,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]state.LiveListenerProof{}, environments: map[string]activationEnvironment{}}, nil
+	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]stoppedProof{}, environments: map[string]activationEnvironment{}}, nil
 }
 
 func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Result, error) {
@@ -426,22 +430,31 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	result := s.result(command, "active", "active", 0)
 	result.ActivationID, result.Generation, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, 1, digest, mode, identity.Address
 	result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
-	observedIdentity, live, postErr := managed.Inspect(ctx)
-	if postErr != nil || !live || observedIdentity != identity {
+	verificationCtx, verificationCancel := boundedContext(ctx)
+	observedIdentity, live, postErr := managed.Inspect(verificationCtx)
+	current, reconcileErr := s.deps.Store.Reconcile(verificationCtx)
+	verificationCancel()
+	expectedProof := state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}
+	storeMatches := reconcileErr == nil && current.State == state.ReconciliationActive && current.ActivationID == activationID && current.Generation == 1 && current.PolicyDigest == digest && current.Mode == mode && current.ListenerProof != nil && *current.ListenerProof == expectedProof
+	if postErr != nil || !live || observedIdentity != identity || !storeMatches {
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if !storeMatches && reconcileErr == nil {
+			reconcileErr = state.ErrLifecycleConflict
+		}
+		verificationErr := errors.Join(postErr, reconcileErr)
 		if live {
 			if shutdownErr := shutdownVerified(recoveryCtx, managed); shutdownErr != nil {
 				result.Status, result.State, result.ExitCode = "recovery_required", "recovery_required", 9
-				return result, errors.Join(ErrRecovery, postErr, shutdownErr)
+				return result, errors.Join(ErrRecovery, verificationErr, shutdownErr)
 			}
 		}
 		recovery, recoveryErr := s.recoverExpected(recoveryCtx, command, activationID, 1)
 		if recoveryErr != nil {
-			return recovery, errors.Join(ErrRecovery, postErr, recoveryErr)
+			return recovery, errors.Join(ErrRecovery, verificationErr, recoveryErr)
 		}
 		recovery.Status, recovery.ExitCode = "failed", 7
-		return recovery, errors.Join(errors.New("listener identity or liveness changed after publication"), postErr)
+		return recovery, errors.Join(errors.New("listener or activation authority changed after publication"), verificationErr)
 	}
 	return result, nil
 }
@@ -535,6 +548,10 @@ func (s *Service) purgeActivation(activationID string, generation int64) {
 	for pid, managed := range s.listeners {
 		if managed.activationID == activationID && managed.proof.Generation == generation {
 			delete(s.listeners, pid)
+		}
+	}
+	for pid, stopped := range s.stopped {
+		if stopped.activationID == activationID && stopped.proof.Generation == generation {
 			delete(s.stopped, pid)
 		}
 	}
@@ -577,7 +594,7 @@ func (s *Service) Stop(ctx context.Context, proof state.LiveListenerProof) error
 			if environment, exists := s.environments[current.activationID]; exists && environment.generation == proof.Generation {
 				delete(s.environments, current.activationID)
 			}
-			s.stopped[proof.PID] = proof
+			s.stopped[proof.PID] = stoppedProof{activationID: current.activationID, proof: proof}
 		}
 		s.mu.Unlock()
 		return nil
