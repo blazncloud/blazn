@@ -182,7 +182,16 @@ func (a *App) proxyUsage(format OutputFormat, message any) int {
 }
 func (a *App) writeProxyResult(format OutputFormat, result activation.Result, err error) int {
 	if err != nil {
-		return a.writeProxyError(format, err, result.ExitCode)
+		exit, code, message := publicProxyError(err, result.ExitCode)
+		result.ExitCode = exit
+		if format == OutputJSON {
+			if writeCode := a.writeJSON(proxyErrorResult{Result: result, Error: commandError{Code: code, Message: message}}); writeCode != ExitSuccess {
+				return writeCode
+			}
+			return exit
+		}
+		a.writeProxyHumanResult(result)
+		return a.writeError(format, exit, code, message)
 	}
 	if format == OutputJSON {
 		if code := a.writeJSON(result); code != ExitSuccess {
@@ -190,13 +199,42 @@ func (a *App) writeProxyResult(format OutputFormat, result activation.Result, er
 		}
 		return result.ExitCode
 	}
-	fmt.Fprintf(a.stdout, "%s: %s (%s)\n", result.Command, result.Status, result.State)
+	a.writeProxyHumanResult(result)
+	return result.ExitCode
+}
+
+type proxyErrorResult struct {
+	activation.Result
+	Error commandError `json:"error"`
+}
+
+func (a *App) writeProxyHumanResult(result activation.Result) {
+	if result.Command != "" || result.Status != "" || result.State != "" {
+		fmt.Fprintf(a.stdout, "%s: %s (%s)\n", result.Command, result.Status, result.State)
+	}
+	if result.Cleanup != nil {
+		fmt.Fprintf(a.stdout, "cleanup: %s", result.Cleanup.Status)
+		if result.Cleanup.ListenerEvidence != "" {
+			fmt.Fprintf(a.stdout, " (%s)", result.Cleanup.ListenerEvidence)
+		}
+		fmt.Fprintln(a.stdout)
+		if len(result.Cleanup.RestoredVariables) > 0 {
+			fmt.Fprintf(a.stdout, "restored variables: %s\n", strings.Join(result.Cleanup.RestoredVariables, ", "))
+		}
+		if len(result.Cleanup.ConflictedVariables) > 0 {
+			fmt.Fprintf(a.stdout, "conflicted variables: %s\n", strings.Join(result.Cleanup.ConflictedVariables, ", "))
+		}
+	}
 	for _, line := range result.ManualRemediation {
 		fmt.Fprintln(a.stdout, line)
 	}
-	return result.ExitCode
 }
 func (a *App) writeProxyError(format OutputFormat, err error, suggested int) int {
+	exit, code, message := publicProxyError(err, suggested)
+	return a.writeError(format, exit, code, message)
+}
+
+func publicProxyError(err error, suggested int) (int, string, string) {
 	exit := suggested
 	if exit == 0 {
 		exit = 1
@@ -233,5 +271,5 @@ func (a *App) writeProxyError(format OutputFormat, err error, suggested int) int
 		message = "proxy CA removal is unsupported"
 		exit = 7
 	}
-	return a.writeError(format, exit, code, message)
+	return exit, code, message
 }
