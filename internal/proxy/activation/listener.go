@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/blazncloud/blazn/internal/proxy/credential"
 	"github.com/blazncloud/blazn/internal/proxy/listener"
 	"github.com/blazncloud/blazn/internal/proxy/router"
 	"github.com/blazncloud/blazn/internal/proxy/state"
@@ -25,9 +26,10 @@ var (
 // resolution and exact process identity remain injected, and the runtime dies
 // with its caller rather than supplying durable child/control proof.
 type EmbeddedListenerFactory struct {
-	Address  string
-	Router   router.Config
-	Identity ListenerProofProvider
+	Address            string
+	Router             router.Config
+	Identity           ListenerProofProvider
+	CredentialResolver credential.SnapshotResolver
 }
 
 func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract.Policy, digest string, metadata ListenerMetadata) (ManagedListener, error) {
@@ -35,6 +37,13 @@ func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract
 		return nil, ErrUnavailable
 	}
 	config := f.Router
+	if f.CredentialResolver != nil {
+		snapshot, err := f.CredentialResolver.Resolve(ctx, policy)
+		if err != nil {
+			return nil, errors.Join(ErrCredentialUnavailable, err)
+		}
+		config.Credentials = snapshot
+	}
 	config.Policy, config.PolicyDigest, config.ActivationID = policy, digest, metadata.ActivationID
 	runtime, err := listener.Start(listener.Config{Address: f.Address, Router: config})
 	if err != nil {

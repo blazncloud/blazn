@@ -86,3 +86,29 @@ an authenticated control channel, and restart-safe process proof. The core's
 injected fake adapters exercise journal crash
 points, stale state, API independence, abrupt listener loss, idempotency, exact
 argv, compare-and-set restoration, and application-config non-mutation.
+
+## Destination credential resolver core
+
+`internal/proxy/credential` defines the platform-neutral boundary for the next
+native slice. A platform backend implements only
+`Lookup(context.Context, canonicalRef) ([]byte, error)`. Separate injected
+backends serve `node-route://` and `workspace-vault://`; the core validates the
+complete canonical reference and its destination-class/scheme pairing before
+dispatch. It resolves every policy route, de-duplicates identical references,
+and performs one concurrent lookup per unique reference.
+
+Successful resolution produces an immutable listener-lifetime snapshot that
+implements `router.CredentialProvider`. Request dispatch reads only that
+snapshot, so it never contacts a platform store and cannot observe a partial or
+rotated activation. Backend buffers are copied after validation and then
+best-effort zeroed. Empty values, values over 4096 bytes, and values containing
+CR, LF, or NUL are rejected. Errors carry a stable typed failure class while
+their text and Go formatting omit backend errors, references, and values.
+
+The resolver is opt-in on `EmbeddedListenerFactory`, the existing core/test
+construction boundary. It completes before router preflight and before the
+loopback socket is bound; consequently a credential failure returns activation
+exit code 3 with no listener identity, journal, or environment publication.
+There is deliberately no production default and no Keychain, Secret Service,
+configuration, CA, proxy, or OS mutation in this slice. Native adapters must be
+added and qualified separately.

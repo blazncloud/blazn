@@ -13,6 +13,7 @@ import (
 	"time"
 	_ "unsafe"
 
+	"github.com/blazncloud/blazn/internal/proxy/credential"
 	"github.com/blazncloud/blazn/internal/proxy/router"
 	"github.com/blazncloud/blazn/internal/proxy/state"
 	"github.com/blazncloud/blazn/internal/proxycontract"
@@ -1075,6 +1076,29 @@ func TestEmbeddedFactoryWiresAuthenticatedLoopbackRuntime(t *testing.T) {
 	}
 }
 
+func TestCredentialResolutionFailurePrecedesListenerAndEnvironmentPublication(t *testing.T) {
+	service, store, environment, _, _, _ := testService(t)
+	identity := &trackingIdentity{}
+	backend := failingCredentialBackend{}
+	resolver := &credential.Resolver{NodeRoute: backend, WorkspaceVault: backend}
+	service.deps.Listeners = EmbeddedListenerFactory{
+		Address:            "127.0.0.1",
+		Identity:           identity,
+		CredentialResolver: resolver,
+	}
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if !errors.Is(err, credential.ErrUnavailable) || result.ExitCode != 3 || result.State != "inactive" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if identity.calls != 0 || environment.publishCalls != 0 || store.journal != nil {
+		t.Fatalf("credential failure published state: identity=%d environment=%d journal=%+v", identity.calls, environment.publishCalls, store.journal)
+	}
+	formatted := fmt.Sprintf("%+v", err)
+	if strings.Contains(formatted, "node-route://") || strings.Contains(formatted, "workspace-vault://") || strings.Contains(formatted, "backend-secret") {
+		t.Fatalf("credential failure was not redacted: %s", formatted)
+	}
+}
+
 func TestEmbeddedFactoryRejectsSubstitutedRuntimeIdentity(t *testing.T) {
 	policy := fixturePolicy(t)
 	base := router.Config{Credentials: integrationCredentials{}, Resolver: router.EndpointResolver{DNS: integrationDNS{}}}
@@ -1087,6 +1111,19 @@ func TestEmbeddedFactoryRejectsSubstitutedRuntimeIdentity(t *testing.T) {
 			t.Fatalf("substituted identity lost listener classification: %v", err)
 		}
 	}
+}
+
+type failingCredentialBackend struct{}
+
+func (failingCredentialBackend) Lookup(context.Context, string) ([]byte, error) {
+	return []byte("backend-secret"), errors.New("backend-secret must not escape")
+}
+
+type trackingIdentity struct{ calls int }
+
+func (t *trackingIdentity) Proof(context.Context, string, string, ListenerMetadata) (state.ListenerIdentity, state.LiveListenerProof, error) {
+	t.calls++
+	return state.ListenerIdentity{}, state.LiveListenerProof{}, errors.New("identity should not be requested")
 }
 
 func TestServiceCapturesIdentityOnceAndDetectsDeadListener(t *testing.T) {

@@ -210,6 +210,16 @@ and does not follow a redirect outside the route allowlist.
   routes, or logs.
 - Prior application API keys are restoration-only and never reused upstream.
 
+The platform-neutral resolver accepts distinct injected backends for the two
+reference schemes and creates one immutable credential snapshot per listener
+lifetime. Every route reference is resolved exactly once before listener
+publication, including duplicate-reference de-duplication. Runtime requests
+read the snapshot only. Invalid/mixed references, unavailable backends, empty
+or oversized values, and CR/LF/NUL-bearing values fail with a redacted typed
+unavailable error; no reference or secret is added to results, events, durable
+state, or error formatting. Platform Keychain and Secret Service adapters are
+outside this core boundary.
+
 ## Platform gate
 
 - macOS ARM64: scoped run; qualified launchctl user-session publication for new
