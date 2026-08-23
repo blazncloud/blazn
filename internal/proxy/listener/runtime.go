@@ -4,6 +4,8 @@ package listener
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -133,6 +135,10 @@ func Start(config Config) (*Runtime, error) {
 
 func (r *Runtime) Address() string       { return r.listener.Addr().String() }
 func (r *Runtime) Done() <-chan struct{} { return r.done }
+func (r *Runtime) ListenerKeyFingerprint() string {
+	sum := sha256.Sum256([]byte(r.credential.authenticateValue()))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 func (r *Runtime) ChildEnvironment(base []string) ([]string, error) {
 	environment, err := r.credential.ChildEnvironment(base)
 	if err != nil {
