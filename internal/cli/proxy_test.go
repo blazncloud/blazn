@@ -130,3 +130,30 @@ func TestProxyCLIUnavailableAndHelpNeedNoPlatformMutation(t *testing.T) {
 		t.Fatalf("status code=%d out=%s", code, stdout)
 	}
 }
+
+func TestProxyCLIRedactsSecretBearingBoundaryErrors(t *testing.T) {
+	const secret = "sk-proj-adversarial-listener-secret"
+	for _, testCase := range []struct {
+		name string
+		args []string
+		err  error
+	}{{name: "policy", args: []string{"proxy", "on", "--policy", "policy.json"}, err: errors.New("policy loader exposed " + secret)}, {name: "runner", args: []string{"proxy", "run", "--policy", "policy.json", "--", "tool"}, err: errors.New("runner environment exposed OPENAI_API_KEY=" + secret)}, {name: "adapter recovery", args: []string{"proxy", "off"}, err: errors.Join(activation.ErrRecovery, errors.New("publication adapter exposed " + secret))}} {
+		for _, format := range []string{"human", "json"} {
+			t.Run(testCase.name+"/"+format, func(t *testing.T) {
+				fake := &fakeProxyCommands{result: activation.Result{ExitCode: 1}, err: testCase.err}
+				app, stdout, stderr := proxyApp(fake)
+				args := append([]string{"--output=" + format}, testCase.args...)
+				if code := app.Run(args); code == 0 {
+					t.Fatal("secret-bearing error unexpectedly succeeded")
+				}
+				combined := stdout.String() + stderr.String()
+				if strings.Contains(combined, secret) || strings.Contains(combined, "OPENAI_API_KEY=") {
+					t.Fatalf("secret-bearing error crossed CLI boundary: %s", combined)
+				}
+				if !strings.Contains(combined, "proxy") {
+					t.Fatalf("stable public proxy error missing: %s", combined)
+				}
+			})
+		}
+	}
+}

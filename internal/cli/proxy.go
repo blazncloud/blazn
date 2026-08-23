@@ -202,22 +202,28 @@ func (a *App) writeProxyError(format OutputFormat, err error, suggested int) int
 		exit = 1
 	}
 	code := "PROXY_FAILED"
+	message := "proxy operation failed"
 	switch {
 	case errors.Is(err, activation.ErrDifferentPolicy):
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_POLICY"
+		message = "proxy is already active with a different policy"
 		exit = 6
 	case errors.Is(err, activation.ErrDifferentScope):
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE"
+		message = "proxy is already active in a different mode or OS session"
 		exit = 6
 	case errors.Is(err, activation.ErrRecovery):
 		code = "RECOVERY_REQUIRED"
+		message = "proxy recovery is required"
 		exit = 9
 	case errors.Is(err, activation.ErrUnavailable):
 		code = "PROXY_PLATFORM_UNAVAILABLE"
+		message = "proxy platform adapter is unavailable"
 		exit = 7
 	case errors.Is(err, activation.ErrCARemovalUnsupported):
 		code = "PROXY_CA_REMOVAL_UNSUPPORTED"
+		message = "proxy CA removal is unsupported"
 		exit = 7
 	}
-	return a.writeError(format, exit, code, err.Error())
+	return a.writeError(format, exit, code, message)
 }

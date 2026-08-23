@@ -116,6 +116,7 @@ func (f *fakeEnvironment) CompareAndSet(_ context.Context, request state.Compare
 
 type fakeListener struct {
 	identity       state.ListenerIdentity
+	proof          state.LiveListenerProof
 	identities     []state.ListenerIdentity
 	identityCalls  int
 	token          string
@@ -132,8 +133,8 @@ func (f *fakeListener) Identity() state.ListenerIdentity {
 	}
 	return f.identity
 }
-func (f *fakeListener) Inspect(context.Context) (state.ListenerIdentity, bool, error) {
-	return f.identity, f.alive, nil
+func (f *fakeListener) Inspect(context.Context) (state.LiveListenerProof, bool, error) {
+	return f.proof, f.alive, nil
 }
 func (f *fakeListener) ChildEnvironment(base []string) ([]string, error) {
 	result := append([]string(nil), base...)
@@ -171,13 +172,15 @@ type fakeFactory struct {
 func (f *fakeFactory) Start(_ context.Context, _ proxycontract.Policy, _ string, metadata ListenerMetadata) (ManagedListener, error) {
 	f.starts++
 	listener := &fakeListener{token: "listener-secret-value", alive: !f.startDead, shutdownErr: f.shutdownErr, identity: state.ListenerIdentity{PID: 4000 + f.starts, ProcessStartIdentity: fmt.Sprintf("start-%d", f.starts), ExecutableIdentity: "exe-identity", Address: "127.0.0.1:8123", ListenerKeyFingerprint: testDigest}}
+	listener.proof = listenerProof(listener.identity, metadata)
 	if f.mutateIdentity {
 		original := listener.identity
 		listener.identities = []state.ListenerIdentity{original}
 		listener.identity.Address = "127.0.0.1:9999"
+		listener.proof.ProcessStartIdentity = "replacement-process"
 	}
 	f.listeners[listener.identity.PID] = listener
-	f.controller.proofs[listener.identity.PID] = state.LiveListenerProof{PID: listener.identity.PID, ProcessStartIdentity: listener.identity.ProcessStartIdentity, ExecutableIdentity: listener.identity.ExecutableIdentity, BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: metadata.Nonce, OwnerUID: int(metadata.OwnerUID), Generation: metadata.Generation, Mode: metadata.Mode, SessionIdentity: metadata.SessionIdentity}
+	f.controller.proofs[listener.identity.PID] = listenerProof(listener.identity, metadata)
 	return listener, nil
 }
 
@@ -211,12 +214,20 @@ type fakeStore struct {
 	panicRecover    bool
 	reconcileErr    error
 	recoverErr      error
+	activateErr     error
 	scopeHeld       bool
 	reconcileCalls  int
+	beforeActivate  func(*state.Journal)
 	beforeReconcile func(int)
 }
 
 func (f *fakeStore) Activate(_ context.Context, journal *state.Journal, _ string, publish func() error) error {
+	if f.beforeActivate != nil {
+		f.beforeActivate(journal)
+	}
+	if f.activateErr != nil {
+		return f.activateErr
+	}
 	copy := *journal
 	f.journal = &copy
 	if f.activateFault == "prepared" {
@@ -361,20 +372,26 @@ func (integrationDNS) LookupNetIP(_ context.Context, _, host string) ([]netip.Ad
 
 type integrationIdentity struct{}
 
-func (integrationIdentity) Identity(_ context.Context, address, fingerprint string, _ ListenerMetadata) (state.ListenerIdentity, error) {
-	return state.ListenerIdentity{PID: 777, ProcessStartIdentity: "start", ExecutableIdentity: "binary", Address: address, ListenerKeyFingerprint: fingerprint}, nil
+func (integrationIdentity) Proof(_ context.Context, address, fingerprint string, metadata ListenerMetadata) (state.ListenerIdentity, state.LiveListenerProof, error) {
+	identity := state.ListenerIdentity{PID: 777, ProcessStartIdentity: "start", ExecutableIdentity: "binary", Address: address, ListenerKeyFingerprint: fingerprint}
+	return identity, listenerProof(identity, metadata), nil
 }
 
-type substitutedIdentity struct{ address, fingerprint string }
+type substitutedIdentity struct{ address, fingerprint, nonce string }
 
-func (s substitutedIdentity) Identity(_ context.Context, address, fingerprint string, _ ListenerMetadata) (state.ListenerIdentity, error) {
+func (s substitutedIdentity) Proof(_ context.Context, address, fingerprint string, metadata ListenerMetadata) (state.ListenerIdentity, state.LiveListenerProof, error) {
 	if s.address != "" {
 		address = s.address
 	}
 	if s.fingerprint != "" {
 		fingerprint = s.fingerprint
 	}
-	return state.ListenerIdentity{PID: 778, ProcessStartIdentity: "start", ExecutableIdentity: "binary", Address: address, ListenerKeyFingerprint: fingerprint}, nil
+	identity := state.ListenerIdentity{PID: 778, ProcessStartIdentity: "start", ExecutableIdentity: "binary", Address: address, ListenerKeyFingerprint: fingerprint}
+	proof := listenerProof(identity, metadata)
+	if s.nonce != "" {
+		proof.ActivationNonce = s.nonce
+	}
+	return identity, proof, nil
 }
 
 func testService(t *testing.T) (*Service, *fakeStore, *fakeEnvironment, *fakeFactory, *fakePolicies, *fakeRunner) {
@@ -447,6 +464,44 @@ func TestIdempotencyRequiresExactModeAndSession(t *testing.T) {
 	environment.resolvedMode = "global"
 	if result, err := service.On(context.Background(), "policy.json", "auto"); !errors.Is(err, ErrDifferentScope) || result.Status != "conflict" {
 		t.Fatalf("cross-mode=%+v err=%v", result, err)
+	}
+}
+
+func TestConcurrentOnReconcilesHealthyWinner(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		policyDigest string
+		winnerMode   string
+		wantStatus   string
+		wantErr      error
+	}{{name: "same policy is idempotent", policyDigest: testDigest, wantStatus: "idempotent"}, {name: "different policy conflicts", policyDigest: "sha256:" + strings.Repeat("b", 64), wantStatus: "conflict", wantErr: ErrDifferentPolicy}, {name: "different scope conflicts", policyDigest: testDigest, winnerMode: "global", wantStatus: "conflict", wantErr: ErrDifferentScope}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			service, store, _, factory, _, _ := testService(t)
+			store.activateErr = state.ErrLifecycleConflict
+			store.beforeActivate = func(attempt *state.Journal) {
+				winner := *attempt
+				winner.ActivationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+				winner.Nonce = strings.Repeat("z", 32)
+				winner.State = "active"
+				winner.Policy.Digest = testCase.policyDigest
+				if testCase.winnerMode != "" {
+					winner.Mode = testCase.winnerMode
+				}
+				winner.Listener = state.ListenerIdentity{PID: 9001, ProcessStartIdentity: "winner-start", ExecutableIdentity: "winner-executable", Address: "127.0.0.1:9123", ListenerKeyFingerprint: testDigest}
+				store.journal = &winner
+				factory.controller.proofs[9001] = state.LiveListenerProof{PID: 9001, ProcessStartIdentity: "winner-start", ExecutableIdentity: "winner-executable", BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: winner.Nonce, OwnerUID: winner.OwnerUID, Generation: winner.Generation, Mode: winner.Mode, SessionIdentity: winner.SessionIdentity}
+			}
+
+			result, err := service.On(context.Background(), "policy.json", "auto")
+			if !errors.Is(err, testCase.wantErr) || result.Status != testCase.wantStatus || result.State != "active" || result.ExitCode == 9 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			for pid, listener := range factory.listeners {
+				if pid != 9001 && !listener.stopped {
+					t.Fatal("losing preflight listener was not stopped")
+				}
+			}
+		})
 	}
 }
 
@@ -674,7 +729,7 @@ func TestAbruptListenerLossDoctorRoutesAndTail(t *testing.T) {
 func TestEmbeddedFactoryWiresAuthenticatedLoopbackRuntime(t *testing.T) {
 	policy := fixturePolicy(t)
 	factory := EmbeddedListenerFactory{Address: "127.0.0.1", Router: router.Config{Credentials: integrationCredentials{}, Resolver: router.EndpointResolver{DNS: integrationDNS{}}}, Identity: integrationIdentity{}}
-	managed, err := factory.Start(context.Background(), policy, testDigest, ListenerMetadata{ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Nonce: strings.Repeat("n", 32), Mode: "scoped_run", SessionIdentity: "session", Generation: 1, OwnerUID: 1000})
+	managed, err := factory.Start(context.Background(), policy, testDigest, ListenerMetadata{ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Nonce: strings.Repeat("n", 32), Mode: "scoped_run", SessionIdentity: "session", BinaryDigest: testDigest, Generation: 1, OwnerUID: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,8 +752,8 @@ func TestEmbeddedFactoryWiresAuthenticatedLoopbackRuntime(t *testing.T) {
 func TestEmbeddedFactoryRejectsSubstitutedRuntimeIdentity(t *testing.T) {
 	policy := fixturePolicy(t)
 	base := router.Config{Credentials: integrationCredentials{}, Resolver: router.EndpointResolver{DNS: integrationDNS{}}}
-	metadata := ListenerMetadata{ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Nonce: strings.Repeat("n", 32), Mode: "scoped_run", SessionIdentity: "session", Generation: 1, OwnerUID: 1000}
-	for _, identity := range []ListenerIdentityProvider{substitutedIdentity{address: "127.0.0.1:1"}, substitutedIdentity{fingerprint: `sha256:` + strings.Repeat("f", 64)}} {
+	metadata := ListenerMetadata{ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Nonce: strings.Repeat("n", 32), Mode: "scoped_run", SessionIdentity: "session", BinaryDigest: testDigest, Generation: 1, OwnerUID: 1000}
+	for _, identity := range []ListenerProofProvider{substitutedIdentity{address: "127.0.0.1:1"}, substitutedIdentity{fingerprint: `sha256:` + strings.Repeat("f", 64)}, substitutedIdentity{nonce: strings.Repeat("z", 32)}} {
 		if managed, err := (EmbeddedListenerFactory{Address: "127.0.0.1", Router: base, Identity: identity}).Start(context.Background(), policy, testDigest, metadata); err == nil {
 			_ = managed.Shutdown(context.Background())
 			t.Fatal("substituted listener identity was accepted")
@@ -746,7 +801,7 @@ func TestPostPublicationListenerDeathIsImmediatelyRecovered(t *testing.T) {
 				if kind == "dead" {
 					listener.alive = false
 				} else {
-					listener.identity.Address = "127.0.0.1:9999"
+				listener.proof.ProcessStartIdentity = "replacement-process"
 				}
 			}
 			result, err := service.On(context.Background(), "policy.json", "auto")
@@ -772,7 +827,7 @@ func TestPostPublicationRecoveryCannotCleanNewerActivation(t *testing.T) {
 	environment.afterPublish = func() {
 		oldID, oldPID = store.journal.ActivationID, store.journal.Listener.PID
 		old := factory.listeners[oldPID]
-		old.identity.ProcessStartIdentity = "replacement-process"
+		old.proof.ProcessStartIdentity = "replacement-process"
 
 		store.journal.ActivationID = newerID
 		store.journal.Generation = 2
