@@ -535,6 +535,32 @@ func TestTransitionPrevalidationDoesNotMutateBoundRecords(t *testing.T) {
 	}
 }
 
+func TestReconcileReservedRetainsExactReservation(t *testing.T) {
+	store := testStore(t)
+	journal := testJournal()
+	writeActiveRecords(t, store, journal)
+	reservation, err := store.Reserve(context.Background(), nonceFor('s'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := store.ReconcileReserved(context.Background(), reservation)
+	if err != nil || current.State != ReconciliationActive || current.ActivationID != journal.ActivationID || current.Generation != journal.Generation {
+		t.Fatalf("reserved reconciliation = %+v, %v", current, err)
+	}
+	if _, err := store.Reserve(context.Background(), nonceFor('t'), time.Minute); !errors.Is(err, ErrLifecycleConflict) {
+		t.Fatalf("competing reservation error = %v", err)
+	}
+	if err := store.CancelReservation(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	if next, err := store.Reserve(context.Background(), nonceFor('t'), time.Minute); err != nil {
+		t.Fatalf("reservation remained after release: %v", err)
+	} else if err := store.CancelReservation(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnverifiedStopRequiresRecovery(t *testing.T) {
 	store := testStore(t)
 	journal := testJournal()
