@@ -1,0 +1,17 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://blazn.benpelo.com/contracts/plugin-broker-response-v1.schema.json",
+  "title":"Blazn scoped plugin broker response v1",
+  "oneOf":[{"$ref":"#/$defs/Success"},{"$ref":"#/$defs/Failure"}],
+  "$defs":{
+    "RequestId":{"type":"string","pattern":"^[0-9a-f]{32}$"},
+    "Success":{
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","ok","resultSchema","payload"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"ok":{"const":true},"resultSchema":{"enum":["broker-description/v1","project-envelope/v1","run-envelope/v1","run-list/v1","artifact-envelope/v1","artifact-list/v1","progress-ack/v1","artifact-upload-ready/v1"]},"payload":{"type":"string","maxLength":1048576}}
+    },
+    "Failure":{
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","ok","error"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"ok":{"const":false},"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,62}$"},"message":{"type":"string","minLength":1,"maxLength":1024},"retryable":{"type":"boolean"}}}}
+    }
+  }
+}

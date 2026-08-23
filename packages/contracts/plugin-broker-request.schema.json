@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.benpelo.com/contracts/plugin-broker-request-v1.schema.json",
+  "title": "Blazn scoped plugin broker request v1",
+  "oneOf": [
+    {"$ref": "#/$defs/Describe"}, {"$ref": "#/$defs/ProjectGet"},
+    {"$ref": "#/$defs/RunCreate"}, {"$ref": "#/$defs/RunList"}, {"$ref": "#/$defs/RunGet"}, {"$ref": "#/$defs/RunCancel"},
+    {"$ref": "#/$defs/RunSyntheticProgress"}, {"$ref": "#/$defs/RunSyntheticComplete"},
+    {"$ref": "#/$defs/ArtifactList"}, {"$ref": "#/$defs/ArtifactGet"}, {"$ref": "#/$defs/ArtifactUploadBegin"}
+  ],
+  "$defs": {
+    "RequestId": {"type":"string","pattern":"^[0-9a-f]{32}$"},
+    "UUID": {"type":"string","format":"uuid"},
+    "Digest": {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "IdempotencyKey": {"type":"string","minLength":8,"maxLength":128},
+    "Cursor": {"type":"string","maxLength":512},
+    "OutputName": {"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "Empty": {"type":"object","additionalProperties":false},
+    "Describe": {"type":"object","$ref":"#/$defs/NoParamsRequest","properties":{"method":{"const":"broker.describe"}}},
+    "ProjectGet": {"type":"object","$ref":"#/$defs/NoParamsRequest","properties":{"method":{"const":"project.get"}}},
+    "NoParamsRequest": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"type":"string"},"params":{"$ref":"#/$defs/Empty"}}
+    },
+    "RunCreate": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"run.create"},"params":{"type":"object","additionalProperties":false,"required":["kind","proofClass","planDigest","inputArtifactIds","outputNames","idempotencyKey"],"properties":{"kind":{"type":"string","pattern":"^[a-z][a-z0-9.-]{0,95}$"},"proofClass":{"const":"synthetic"},"planDigest":{"$ref":"#/$defs/Digest"},"inputArtifactIds":{"type":"array","maxItems":1000,"uniqueItems":true,"items":{"$ref":"#/$defs/UUID"}},"outputNames":{"type":"array","maxItems":1000,"uniqueItems":true,"items":{"$ref":"#/$defs/OutputName"}},"idempotencyKey":{"$ref":"#/$defs/IdempotencyKey"}}}}
+    },
+    "RunList": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"run.list"},"params":{"type":"object","additionalProperties":false,"properties":{"status":{"enum":["queued","running","succeeded","failed","cancelled","all"]},"cursor":{"$ref":"#/$defs/Cursor"}}}}
+    },
+    "RunGet": {"type":"object","$ref":"#/$defs/RunIdentityRequest","properties":{"method":{"const":"run.get"}}},
+    "RunIdentityRequest": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"type":"string"},"params":{"type":"object","additionalProperties":false,"required":["runId"],"properties":{"runId":{"$ref":"#/$defs/UUID"}}}}
+    },
+    "RunCancel": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"run.cancel"},"params":{"type":"object","additionalProperties":false,"required":["runId","expectedVersion","idempotencyKey"],"properties":{"runId":{"$ref":"#/$defs/UUID"},"expectedVersion":{"type":"integer","minimum":1},"idempotencyKey":{"$ref":"#/$defs/IdempotencyKey"}}}}
+    },
+    "RunSyntheticProgress": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"run.synthetic.progress"},"params":{"type":"object","additionalProperties":false,"required":["runId","sequence","phase","percent"],"properties":{"runId":{"$ref":"#/$defs/UUID"},"sequence":{"type":"integer","minimum":0},"phase":{"type":"string","pattern":"^[a-z][a-z0-9._-]{0,95}$"},"percent":{"type":"integer","minimum":0,"maximum":100},"message":{"type":"string","maxLength":512}}}}
+    },
+    "RunSyntheticComplete": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"run.synthetic.complete"},"params":{"type":"object","additionalProperties":false,"required":["runId","expectedVersion","planDigest","artifactIds","summary","idempotencyKey"],"properties":{"runId":{"$ref":"#/$defs/UUID"},"expectedVersion":{"type":"integer","minimum":1},"planDigest":{"$ref":"#/$defs/Digest"},"artifactIds":{"type":"array","maxItems":1000,"uniqueItems":true,"items":{"$ref":"#/$defs/UUID"}},"summary":{"type":"object","additionalProperties":false,"required":["steps","warnings"],"properties":{"steps":{"type":"integer","minimum":0},"warnings":{"type":"array","maxItems":100,"items":{"type":"string","maxLength":512}}}},"idempotencyKey":{"$ref":"#/$defs/IdempotencyKey"}}}}
+    },
+    "ArtifactList": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"artifact.list"},"params":{"type":"object","additionalProperties":false,"properties":{"status":{"enum":["pending","ready","failed","deleted","all"]},"cursor":{"$ref":"#/$defs/Cursor"}}}}
+    },
+    "ArtifactGet": {"type":"object","$ref":"#/$defs/ArtifactIdentityRequest","properties":{"method":{"const":"artifact.get"}}},
+    "ArtifactIdentityRequest": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"type":"string"},"params":{"type":"object","additionalProperties":false,"required":["artifactId"],"properties":{"artifactId":{"$ref":"#/$defs/UUID"}}}}
+    },
+    "ArtifactUploadBegin": {
+      "type":"object","additionalProperties":false,"required":["schemaVersion","requestId","method","params"],
+      "properties":{"schemaVersion":{"const":1},"requestId":{"$ref":"#/$defs/RequestId"},"method":{"const":"artifact.upload.begin"},"params":{"type":"object","additionalProperties":false,"required":["runId","name","kind","mediaType","sizeBytes","digest","idempotencyKey"],"properties":{"runId":{"$ref":"#/$defs/UUID"},"name":{"type":"string","minLength":1,"maxLength":256},"kind":{"type":"string","pattern":"^[a-z][a-z0-9.-]{0,95}$"},"mediaType":{"enum":["image","video","audio","document","data","other"]},"sizeBytes":{"type":"integer","minimum":0,"maximum":1073741824},"digest":{"$ref":"#/$defs/Digest"},"idempotencyKey":{"$ref":"#/$defs/IdempotencyKey"}}}}
+    }
+  }
+}
