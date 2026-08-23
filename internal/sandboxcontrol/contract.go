@@ -13,21 +13,22 @@ import (
 )
 
 const (
-	APIVersion          = "agents.x-k8s.io/v1beta1"
-	Kind                = "Sandbox"
-	Namespace           = "blazn-poc-sandboxes"
-	QueueName           = "blazn-poc"
-	QueueLabel          = "kueue.x-k8s.io/queue-name"
-	ManagedLabel        = "blazn.dev/managed"
-	WorkspaceLabel      = "blazn.dev/workspace"
-	OwnerLabel          = "blazn.dev/owner"
-	SandboxIDLabel      = "blazn.dev/sandbox-id"
-	CleanupFinalizer    = "sandboxes.blazn.dev/artifact-cleanup"
-	ServiceAccountName  = "blazn-sandbox-runner"
-	ReceiptSchema       = "blazn.dev/sandbox-adapter-receipt/v1"
-	AdmissionAPIVersion = "kueue.x-k8s.io/v1beta1"
-	ArtifactSchema      = "blazn.dev/sandbox-artifact/v1"
-	OrchestrationNotice = "orchestration isolation only; approved non-sensitive POC workloads"
+	APIVersion             = "agents.x-k8s.io/v1beta1"
+	Kind                   = "Sandbox"
+	Namespace              = "blazn-poc-sandboxes"
+	QueueName              = "blazn-poc"
+	QueueLabel             = "kueue.x-k8s.io/queue-name"
+	ManagedLabel           = "blazn.dev/managed"
+	WorkspaceLabel         = "blazn.dev/workspace"
+	OwnerLabel             = "blazn.dev/owner"
+	SandboxIDLabel         = "blazn.dev/sandbox-id"
+	CleanupFinalizer       = "sandboxes.blazn.dev/artifact-cleanup"
+	ServiceAccountName     = "blazn-sandbox-runner"
+	ReceiptSchema          = "blazn.dev/sandbox-adapter-receipt/v1"
+	AdmissionAPIVersion    = "kueue.x-k8s.io/v1beta1"
+	CreateIntentAnnotation = "sandboxes.blazn.dev/create-intent-digest"
+	ArtifactSchema         = "blazn.dev/sandbox-artifact/v1"
+	OrchestrationNotice    = "orchestration isolation only; approved non-sensitive POC workloads"
 )
 
 type ErrorCode string
@@ -105,22 +106,24 @@ type ArtifactReceipt struct {
 }
 
 type CreateRequest struct {
-	RequestID        string
-	Name             string
-	WorkspaceID      string
-	OwnerID          string
-	Image            string
-	Command          []string
-	Architecture     string
-	RuntimeClassName string
-	TrustLevel       TrustLevel
-	NonSensitive     bool
-	CPURequest       string
-	MemoryRequest    string
-	CPULimit         string
-	MemoryLimit      string
-	ExpiresAt        time.Time
-	Artifacts        []ArtifactExport
+	RequestID               string
+	Name                    string
+	WorkspaceID             string
+	OwnerID                 string
+	Image                   string
+	Command                 []string
+	Architecture            string
+	RuntimeClassName        string
+	TrustLevel              TrustLevel
+	NonSensitive            bool
+	CPURequest              string
+	MemoryRequest           string
+	EphemeralStorageRequest string
+	CPULimit                string
+	MemoryLimit             string
+	EphemeralStorageLimit   string
+	ExpiresAt               time.Time
+	Artifacts               []ArtifactExport
 }
 
 type SandboxStatus struct {
@@ -149,6 +152,7 @@ type SandboxRecord struct {
 	Finalizers             []string          `json:"finalizers"`
 	Artifacts              []ArtifactExport  `json:"artifacts"`
 	ArtifactContractDigest string            `json:"artifactContractDigest"`
+	CreateIntentDigest     string            `json:"createIntentDigest"`
 	Labels                 map[string]string `json:"labels"`
 }
 
@@ -246,7 +250,7 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	if request.Architecture != "amd64" && request.Architecture != "arm64" {
 		return adapterError(ErrInvalidRequest, 400, "architecture is invalid", nil)
 	}
-	for _, quantity := range []string{request.CPURequest, request.MemoryRequest, request.CPULimit, request.MemoryLimit} {
+	for _, quantity := range []string{request.CPURequest, request.MemoryRequest, request.EphemeralStorageRequest, request.CPULimit, request.MemoryLimit, request.EphemeralStorageLimit} {
 		if !quantityPattern.MatchString(quantity) {
 			return adapterError(ErrInvalidRequest, 400, "resource quantity is invalid", nil)
 		}
@@ -275,6 +279,53 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 		return adapterError(ErrRuntimeUntrusted, 403, "trust level is invalid", nil)
 	}
 	return nil
+}
+
+// createIntentDigest is the adapter's internal idempotency boundary. It binds
+// every CreateRequest field after set-like values have been canonicalized.
+func createIntentDigest(request CreateRequest) (string, error) {
+	canonicalArtifacts, _, err := CanonicalArtifactContract(request.Artifacts)
+	if err != nil {
+		return "", err
+	}
+	request.Artifacts = canonicalArtifacts
+	type canonicalCreateIntent struct {
+		Schema                  string           `json:"schema"`
+		RequestID               string           `json:"requestId"`
+		Name                    string           `json:"name"`
+		WorkspaceID             string           `json:"workspaceId"`
+		OwnerID                 string           `json:"ownerId"`
+		Image                   string           `json:"image"`
+		Command                 []string         `json:"command"`
+		Architecture            string           `json:"architecture"`
+		RuntimeClassName        string           `json:"runtimeClassName"`
+		TrustLevel              TrustLevel       `json:"trustLevel"`
+		NonSensitive            bool             `json:"nonSensitive"`
+		CPURequest              string           `json:"cpuRequest"`
+		MemoryRequest           string           `json:"memoryRequest"`
+		EphemeralStorageRequest string           `json:"ephemeralStorageRequest"`
+		CPULimit                string           `json:"cpuLimit"`
+		MemoryLimit             string           `json:"memoryLimit"`
+		EphemeralStorageLimit   string           `json:"ephemeralStorageLimit"`
+		ExpiresAt               string           `json:"expiresAt"`
+		Artifacts               []ArtifactExport `json:"artifacts"`
+	}
+	encoded, err := json.Marshal(canonicalCreateIntent{
+		Schema: "blazn.dev/sandbox-create-intent/v1", RequestID: request.RequestID,
+		Name: request.Name, WorkspaceID: request.WorkspaceID, OwnerID: request.OwnerID,
+		Image: request.Image, Command: append([]string(nil), request.Command...),
+		Architecture: request.Architecture, RuntimeClassName: request.RuntimeClassName,
+		TrustLevel: request.TrustLevel, NonSensitive: request.NonSensitive,
+		CPURequest: request.CPURequest, MemoryRequest: request.MemoryRequest,
+		EphemeralStorageRequest: request.EphemeralStorageRequest, CPULimit: request.CPULimit,
+		MemoryLimit: request.MemoryLimit, EphemeralStorageLimit: request.EphemeralStorageLimit,
+		ExpiresAt: request.ExpiresAt.UTC().Format(time.RFC3339Nano), Artifacts: canonicalArtifacts,
+	})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 func validateArtifactExports(artifacts []ArtifactExport) error {
