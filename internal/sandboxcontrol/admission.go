@@ -2,6 +2,7 @@ package sandboxcontrol
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -55,6 +56,23 @@ type observedPod struct {
 	Kind       string           `json:"kind"`
 	Metadata   observedMetadata `json:"metadata"`
 	Spec       kubePodSpec      `json:"spec"`
+	RawSpec    json.RawMessage  `json:"-"`
+}
+
+func (pod *observedPod) UnmarshalJSON(data []byte) error {
+	type alias observedPod
+	decoded := struct {
+		*alias
+		Spec json.RawMessage `json:"spec"`
+	}{alias: (*alias)(pod)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.Spec) == 0 || json.Unmarshal(decoded.Spec, &pod.Spec) != nil {
+		return fmt.Errorf("Pod spec is invalid")
+	}
+	pod.RawSpec = append(pod.RawSpec[:0], decoded.Spec...)
+	return nil
 }
 
 type observedPodList struct {
@@ -134,7 +152,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	}
 	pod := podCandidates[0]
 	if !hasExactControllerOwner(pod.Metadata.OwnerReferences, APIVersion, Kind, request.Name, record.UID) ||
-		!sameJSON(pod.Spec, manifest.Spec.PodTemplate.Spec) || !hasAdmissionLabels(pod.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
+		!sameObservedPodMaterialSpec(pod.RawSpec, manifest.Spec.PodTemplate.Spec) || !hasAdmissionLabels(pod.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod substituted the Sandbox owner or material spec", nil)
 	}
 
@@ -248,6 +266,73 @@ func validObservedIdentity(apiVersion, kind string, metadata observedMetadata) b
 	return apiVersion != "" && kind != "" && metadata.Namespace == Namespace && len(metadata.Name) <= 253 && dnsNamePattern.MatchString(metadata.Name) && objectIDPattern.MatchString(metadata.UID) && objectIDPattern.MatchString(metadata.ResourceVersion)
 }
 
+func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool {
+	expectedJSON, err := json.Marshal(expected)
+	if err != nil {
+		return false
+	}
+	observedValue, observedOK := decodeMaterialJSON(raw)
+	expectedValue, expectedOK := decodeMaterialJSON(expectedJSON)
+	observed, observedIsObject := observedValue.(map[string]any)
+	expectedObject, expectedIsObject := expectedValue.(map[string]any)
+	if !observedOK || !expectedOK || !observedIsObject || !expectedIsObject {
+		return false
+	}
+	serviceAccount, _ := expectedObject["serviceAccountName"].(string)
+	for key, value := range map[string]any{
+		"dnsPolicy":                     "ClusterFirst",
+		"schedulerName":                 "default-scheduler",
+		"terminationGracePeriodSeconds": json.Number("30"),
+		"enableServiceLinks":            true,
+		"preemptionPolicy":              "PreemptLowerPriority",
+		"priority":                      json.Number("0"),
+		"serviceAccount":                serviceAccount,
+	} {
+		if !removeExactDefault(observed, key, value) {
+			return false
+		}
+	}
+	if nodeName, exists := observed["nodeName"]; exists {
+		name, ok := nodeName.(string)
+		if !ok || len(name) > 253 || !dnsNamePattern.MatchString(name) {
+			return false
+		}
+		delete(observed, "nodeName")
+	}
+	defaultTolerations := []any{
+		map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": json.Number("300")},
+		map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": json.Number("300")},
+	}
+	if !removeExactDefault(observed, "tolerations", defaultTolerations) {
+		return false
+	}
+	containers, ok := observed["containers"].([]any)
+	if !ok {
+		return false
+	}
+	for _, value := range containers {
+		container, ok := value.(map[string]any)
+		if !ok || !removeExactDefault(container, "imagePullPolicy", "IfNotPresent") ||
+			!removeExactDefault(container, "terminationMessagePath", "/dev/termination-log") ||
+			!removeExactDefault(container, "terminationMessagePolicy", "File") {
+			return false
+		}
+	}
+	return reflect.DeepEqual(observed, expectedObject)
+}
+
+func removeExactDefault(object map[string]any, key string, expected any) bool {
+	value, exists := object[key]
+	if !exists {
+		return true
+	}
+	if !reflect.DeepEqual(value, expected) {
+		return false
+	}
+	delete(object, key)
+	return true
+}
+
 func hasExactControllerOwner(owners []kubeOwnerReference, apiVersion, kind, name, uid string) bool {
 	controllers := 0
 	matched := false
@@ -286,14 +371,27 @@ func objectIdentity(apiVersion, kind, name, namespace, uid, resourceVersion stri
 }
 
 func validateObservation(value AdmissionObservation) error {
-	if value.Sandbox.APIVersion != APIVersion || value.Sandbox.Kind != Kind || value.Pod.APIVersion != podAPIVersion || value.Pod.Kind != podKind ||
-		value.Workload.APIVersion != AdmissionAPIVersion || value.Sandbox.Namespace != Namespace || value.Pod.Namespace != Namespace || value.Workload.Namespace != Namespace ||
-		!objectIDPattern.MatchString(value.Sandbox.UID) || !objectIDPattern.MatchString(value.Pod.UID) || !objectIDPattern.MatchString(value.Workload.UID) ||
-		!objectIDPattern.MatchString(value.Sandbox.ResourceVersion) || !objectIDPattern.MatchString(value.Pod.ResourceVersion) || !objectIDPattern.MatchString(value.Workload.ResourceVersion) ||
-		value.Workload.Owner.UID != value.Sandbox.UID || value.Workload.Digest != workloadIdentityDigest(value.Workload) {
+	if !validFrozenObjectIdentity(value.Sandbox, APIVersion, Kind, true) ||
+		!validFrozenObjectIdentity(value.Pod, podAPIVersion, podKind, false) ||
+		value.Workload.APIVersion != AdmissionAPIVersion || value.Workload.Namespace != Namespace ||
+		value.Sandbox.Name != value.Workload.SandboxID || value.Sandbox.Name != value.Workload.Owner.Name ||
+		value.Workload.Owner.UID != value.Sandbox.UID {
 		return adapterError(ErrInvalidRequest, 400, "absence observation identity is invalid", nil)
 	}
+	receipt := OperationReceipt{Namespace: Namespace, Name: value.Sandbox.Name, UID: value.Sandbox.UID, WorkspaceID: value.Workload.WorkspaceID}
+	if err := validateWorkloadIdentity(value.Workload, receipt, true); err != nil {
+		return adapterError(ErrInvalidRequest, 400, "absence observation identity is invalid", err)
+	}
 	return nil
+}
+
+func validFrozenObjectIdentity(value ObjectIdentity, apiVersion, kind string, sandboxName bool) bool {
+	validName := len(value.Name) <= 253 && dnsNamePattern.MatchString(value.Name)
+	if sandboxName {
+		validName = dnsLabelPattern.MatchString(value.Name)
+	}
+	return value.APIVersion == apiVersion && value.Kind == kind && value.Namespace == Namespace && validName &&
+		objectIDPattern.MatchString(value.UID) && objectIDPattern.MatchString(value.ResourceVersion)
 }
 
 func (a *Adapter) podCollectionPath() string {
