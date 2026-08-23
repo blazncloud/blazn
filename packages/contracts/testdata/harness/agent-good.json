@@ -19,7 +19,7 @@
         "agentId": "10000000-0000-4000-8000-000000000001",
         "workspaceId": "40000000-0000-4000-8000-000000000001",
         "version": 1,
-        "digest": "sha256:911988435bcb4bcdb6aaa5209d52eb5adb812d419637f7a86343a1b75c4e1509",
+        "digest": "sha256:c94feb17075791f0fb955ebbaeca9435f8477a80bf951a67a959a4da1bc23842",
         "purpose": "Make one bounded code change and return a patch and summary.",
         "instructions": "Work only in the approved repository. Do not push, merge, deploy, or access production services.",
         "modelPolicy": {
@@ -58,11 +58,11 @@
             "output.artifact",
             "cancel.graceful"
         ],
-        "allowedHarnessProfileIds": [
-            "21000000-0000-4000-8000-000000000001",
-            "21000000-0000-4000-8000-000000000002",
-            "21000000-0000-4000-8000-000000000003",
-            "21000000-0000-4000-8000-000000000004"
+        "allowedHarnessProfiles": [
+            {"id":"21000000-0000-4000-8000-000000000001","digest":"sha256:fcdc1a3402105248c947780c71d94dd1569b5fb538c1584e109c4c456748c316"},
+            {"id":"21000000-0000-4000-8000-000000000002","digest":"sha256:ad03a4f57b52353abc2090a13c586a646e64975000962d53c27397387ddf3541"},
+            {"id":"21000000-0000-4000-8000-000000000003","digest":"sha256:c8ff26d85710abd3b098ff1d0ed0d8cd382b23cd07cc27e9afc267c5daaf5556"},
+            {"id":"21000000-0000-4000-8000-000000000004","digest":"sha256:7031982818bd7e03ba3528690317d6d35f22ea05a5ced26763636877f8c1a163"}
         ],
         "defaultHarnessProfileId": "21000000-0000-4000-8000-000000000001",
         "evaluationId": "90000000-0000-4000-8000-000000000001",
