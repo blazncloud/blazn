@@ -149,7 +149,7 @@ func TestProxyCLIRedactsSecretBearingBoundaryErrors(t *testing.T) {
 		name string
 		args []string
 		err  error
-	}{{name: "policy", args: []string{"proxy", "on", "--policy", "policy.json"}, err: errors.New("policy loader exposed " + secret)}, {name: "runner", args: []string{"proxy", "run", "--policy", "policy.json", "--", "tool"}, err: errors.New("runner environment exposed OPENAI_API_KEY=" + secret)}, {name: "adapter recovery", args: []string{"proxy", "off"}, err: errors.Join(activation.ErrRecovery, errors.New("publication adapter exposed " + secret))}} {
+	}{{name: "policy", args: []string{"proxy", "on", "--policy", "policy.json"}, err: errors.New("policy loader exposed " + secret)}, {name: "runner", args: []string{"proxy", "run", "--policy", "policy.json", "--", "tool"}, err: errors.New("runner environment exposed OPENAI_API_KEY=" + secret)}, {name: "adapter recovery", args: []string{"proxy", "off"}, err: errors.Join(activation.ErrRecovery, errors.New("publication adapter exposed "+secret))}} {
 		for _, format := range []string{"human", "json"} {
 			t.Run(testCase.name+"/"+format, func(t *testing.T) {
 				fake := &fakeProxyCommands{result: activation.Result{ExitCode: 1}, err: testCase.err}
@@ -164,6 +164,58 @@ func TestProxyCLIRedactsSecretBearingBoundaryErrors(t *testing.T) {
 				}
 				if !strings.Contains(combined, "proxy") {
 					t.Fatalf("stable public proxy error missing: %s", combined)
+				}
+			})
+		}
+	}
+}
+
+func TestProxyCLIRecoveryErrorsPreserveSafeCleanupAndRemediation(t *testing.T) {
+	const secret = "sk-proj-recovery-adapter-secret"
+	for _, testCase := range []struct {
+		name        string
+		cleanup     activation.CleanupReceipt
+		remediation string
+		want        string
+	}{
+		{
+			name:        "receipt only",
+			cleanup:     activation.CleanupReceipt{Status: "recovery_required", ListenerEvidence: "listener_stop_verified"},
+			remediation: "inspect and manually restore or remove OPENAI_API_KEY for the recorded OS session",
+			want:        "listener_stop_verified",
+		},
+		{
+			name:        "compare and set conflict",
+			cleanup:     activation.CleanupReceipt{Status: "recovery_required", ListenerEvidence: "listener_stop_verified", RestoredVariables: []string{"OPENAI_BASE_URL"}, ConflictedVariables: []string{"ANTHROPIC_API_KEY"}},
+			remediation: "inspect and manually restore or remove ANTHROPIC_API_KEY for the recorded OS session",
+			want:        "ANTHROPIC_API_KEY",
+		},
+	} {
+		for _, format := range []string{"human", "json"} {
+			t.Run(testCase.name+"/"+format, func(t *testing.T) {
+				fake := &fakeProxyCommands{
+					result: activation.Result{
+						Command: "proxy off", ContractVersion: activation.ContractVersion, Status: "recovery_required", State: "recovery_required",
+						Cleanup: &testCase.cleanup, ManualRemediation: []string{testCase.remediation}, ExitCode: 9,
+					},
+					err: errors.Join(activation.ErrRecovery, errors.New(secret)),
+				}
+				app, stdout, stderr := proxyApp(fake)
+				if code := app.Run([]string{"--output=" + format, "proxy", "off"}); code != 9 {
+					t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+				}
+				combined := stdout.String() + stderr.String()
+				stableError := "RECOVERY_REQUIRED"
+				if format == "human" {
+					stableError = "proxy recovery is required"
+				}
+				for _, safe := range []string{stableError, "recovery_required", testCase.remediation, testCase.want} {
+					if !strings.Contains(combined, safe) {
+						t.Fatalf("safe recovery field %q missing: %s", safe, combined)
+					}
+				}
+				if strings.Contains(combined, secret) {
+					t.Fatalf("raw recovery error crossed CLI boundary: %s", combined)
 				}
 			})
 		}
