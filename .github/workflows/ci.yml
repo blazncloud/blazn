@@ -40,6 +40,8 @@ jobs:
         run: make check-sandbox-generated
       - name: Verify Sandbox contracts and fixtures
         run: make test-sandbox-contract
+      - name: Verify Agent and Harness contracts and fixtures
+        run: make test-harness-contract
       - name: Run unit tests
         run: make test
       - name: Verify isolated identity contract
