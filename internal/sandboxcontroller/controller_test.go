@@ -23,16 +23,16 @@ type fakeStore struct {
 }
 
 type renewResponse struct {
-	expiresAt time.Time
-	ok        bool
-	err       error
+	window LeaseWindow
+	ok     bool
+	err    error
 }
 
 func (s *fakeStore) Claim(context.Context, string, int) (*WorkItem, error) {
 	s.claims++
 	return nil, nil
 }
-func (s *fakeStore) Renew(ctx context.Context, _ string, _ string, _ string, _ int) (time.Time, bool, error) {
+func (s *fakeStore) Renew(ctx context.Context, _ string, _ string, _ string, _ int) (LeaseWindow, bool, error) {
 	if s.renewStarted != nil {
 		select {
 		case s.renewStarted <- struct{}{}:
@@ -40,16 +40,19 @@ func (s *fakeStore) Renew(ctx context.Context, _ string, _ string, _ string, _ i
 		}
 	}
 	if s.renewResponses == nil {
-		return time.Now().Add(5 * time.Second), true, nil
+		return LeaseWindow{Remaining: 5 * time.Second, Deadline: time.Now().Add(5 * time.Second)}, true, nil
 	}
 	select {
 	case <-ctx.Done():
-		return time.Time{}, false, ctx.Err()
+		return LeaseWindow{}, false, ctx.Err()
 	case response := <-s.renewResponses:
-		if response.expiresAt.IsZero() {
-			response.expiresAt = time.Now().Add(5 * time.Second)
+		if response.window.Remaining == 0 {
+			response.window.Remaining = 5 * time.Second
 		}
-		return response.expiresAt, response.ok, response.err
+		if response.window.Deadline.IsZero() {
+			response.window.Deadline = time.Now().Add(response.window.Remaining)
+		}
+		return response.window, response.ok, response.err
 	}
 }
 func (s *fakeStore) BindBackend(_ context.Context, _, _, _ string, record sandboxcontrol.SandboxRecord, _ sandboxcontrol.WorkloadIdentity) (bool, error) {
@@ -260,12 +263,11 @@ func TestLeaseRenewStoreErrorCancelsBackendAndReturnsError(t *testing.T) {
 func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
 	t.Run("delayed claim", func(t *testing.T) {
 		item, state := createFixture(t)
-		now := time.Unix(100, 0)
-		item.LeaseExpiresAt = now.Add(defaultLeaseSafetyMargin + 5*time.Millisecond)
+		item.LeaseRemaining = defaultLeaseSafetyMargin + 5*time.Millisecond
+		item.LeaseDeadline = time.Now().Add(item.LeaseRemaining)
 		store := &fakeStore{}
 		backend := &fakeBackend{created: state}
 		controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
-		controller.now = func() time.Time { return now }
 		if err := controller.reconcile(context.Background(), item); err != nil {
 			t.Fatal(err)
 		}
@@ -276,7 +278,7 @@ func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
 	t.Run("renew", func(t *testing.T) {
 		item, _ := createFixture(t)
 		store := &fakeStore{renewResponses: make(chan renewResponse, 1)}
-		store.renewResponses <- renewResponse{expiresAt: time.Now().Add(25 * time.Millisecond), ok: true}
+		store.renewResponses <- renewResponse{window: LeaseWindow{Remaining: 25 * time.Millisecond}, ok: true}
 		backend := newBlockingBackend()
 		controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
 		controller.leaseSafetyMargin = 20 * time.Millisecond
@@ -297,17 +299,25 @@ func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
 
 func TestStalledRenewalCancelsBackendBeforeLeaseIsReclaimable(t *testing.T) {
 	item, _ := createFixture(t)
-	item.LeaseExpiresAt = time.Now().Add(80 * time.Millisecond)
+	item.LeaseRemaining = 80 * time.Millisecond
+	item.LeaseDeadline = time.Now().Add(item.LeaseRemaining)
 	store := &fakeStore{renewResponses: make(chan renewResponse), renewStarted: make(chan struct{}, 1)}
 	backend := newBlockingBackend()
 	controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
 	controller.leaseSafetyMargin = 20 * time.Millisecond
 	done := make(chan error, 1)
+	reclaimable := time.NewTimer(item.LeaseRemaining)
+	defer reclaimable.Stop()
 	go func() { done <- controller.reconcile(context.Background(), item) }()
 	awaitSignal(t, backend.started, "backend start")
 	awaitSignal(t, store.renewStarted, "renewal start")
-	if err := awaitError(t, backend.cancelled, "lease watchdog cancellation"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("backend cancellation=%v", err)
+	select {
+	case err := <-backend.cancelled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("backend cancellation=%v", err)
+		}
+	case <-reclaimable.C:
+		t.Fatal("backend remained active until the database lease became reclaimable")
 	}
 	if err := awaitError(t, done, "reconcile completion"); err != nil {
 		t.Fatal(err)
@@ -319,9 +329,10 @@ func TestStalledRenewalCancelsBackendBeforeLeaseIsReclaimable(t *testing.T) {
 
 func TestRenewedDeadlineReplacesClaimDeadline(t *testing.T) {
 	item, _ := createFixture(t)
-	item.LeaseExpiresAt = time.Now().Add(80 * time.Millisecond)
+	item.LeaseRemaining = 80 * time.Millisecond
+	item.LeaseDeadline = time.Now().Add(item.LeaseRemaining)
 	store := &fakeStore{renewResponses: make(chan renewResponse, 1), renewStarted: make(chan struct{}, 2)}
-	store.renewResponses <- renewResponse{expiresAt: time.Now().Add(150 * time.Millisecond), ok: true}
+	store.renewResponses <- renewResponse{window: LeaseWindow{Remaining: 150 * time.Millisecond}, ok: true}
 	backend := newBlockingBackend()
 	controller := timedController(t, store, backend, 20*time.Millisecond, time.Second)
 	controller.leaseSafetyMargin = 20 * time.Millisecond
@@ -466,7 +477,8 @@ func createFixture(t *testing.T) (WorkItem, BackendState) {
 		PlacementProfile: "poc-linux-amd64-v1", QueueName: sandboxcontrol.QueueName,
 		Command: []string{"true"}, Resources: Resources{CPURequest: "100m", MemoryRequest: "128Mi",
 			EphemeralRequest: "1Gi", CPULimit: "1", MemoryLimit: "1Gi", EphemeralLimit: "2Gi"},
-		LeaseExpiresAt: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(time.Hour)}
+		LeaseExpiresAt: time.Now().Add(time.Minute), LeaseRemaining: time.Minute,
+		LeaseDeadline: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(time.Hour)}
 	state := BackendState{Record: record, Admission: &identity, Exists: true, Ready: true}
 	if err := validateWorkItem(item); err != nil {
 		t.Fatalf("invalid work item fixture: %v", err)
