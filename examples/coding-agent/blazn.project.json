@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "blazn.dev/project/v1alpha1",
+  "projectId": "20000000-0000-4000-8000-000000000006",
+  "repository": {
+    "url": "https://github.com/blazncloud/blazn.git"
+  },
+  "template": {
+    "versionId": "60000000-0000-4000-8000-000000000001",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "publicationTarget": {
+    "templateId": "50000000-0000-4000-8000-000000000001"
+  },
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "build": {
+    "context": "examples/coding-agent",
+    "dockerfile": "examples/coding-agent/Dockerfile",
+    "registryRepository": "ghcr.io/blazncloud/coding-agent"
+  },
+  "dependencyLocks": {
+    "examples/coding-agent/package-lock.json": "sha256:6fb5b20eeaea986be5c70f41a45840f51531fdddbf6120d81be94207784a978a"
+  },
+  "tests": {
+    "poc": {
+      "argv": [
+        "node",
+        "--test",
+        "test/coding-agent.test.mjs"
+      ],
+      "timeoutSeconds": 60
+    }
+  },
+  "policy": {
+    "builderProfile": "trusted-buildkit-v1",
+    "networkProfile": "build-egress-v1",
+    "resourceProfile": "poc-build-small-v1",
+    "publicationPolicy": "poc-development-v1"
+  }
+}

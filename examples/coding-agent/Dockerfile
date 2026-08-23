@@ -1,0 +1,18 @@
+FROM docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9 AS verify
+
+WORKDIR /workspace
+COPY package.json package-lock.json ./
+RUN ["npm", "ci", "--ignore-scripts", "--offline", "--no-audit", "--no-fund"]
+COPY src ./src
+COPY test ./test
+COPY fixtures/task.json ./fixtures/task.json
+COPY fixtures/source ./fixtures/source
+RUN ["node", "--test", "test/coding-agent.test.mjs"]
+
+FROM docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9
+WORKDIR /workspace
+ENV NODE_ENV=production
+COPY --from=verify --chown=1000:1000 /workspace /workspace
+USER 1000:1000
+ENTRYPOINT ["node", "src/coding-agent.mjs"]
+CMD ["--task", "fixtures/task.json", "--source", "fixtures/source/calculator.mjs"]

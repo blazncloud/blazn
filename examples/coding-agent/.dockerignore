@@ -1,0 +1,13 @@
+*
+!.dockerignore
+!Dockerfile
+!package.json
+!package-lock.json
+!src/
+!src/**
+!test/
+!test/**
+!fixtures/
+!fixtures/task.json
+!fixtures/source/
+!fixtures/source/**
