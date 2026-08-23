@@ -234,16 +234,16 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	if item.BackendUID == nil {
 		state, err = c.backend.EnsureCreated(ctx, item)
 	} else {
-		state, err = c.backend.Observe(ctx, item)
+		state, err = c.backend.Observe(ctx, item, item.AdmissionObservation)
 	}
 	if err != nil {
 		return err
 	}
-	for !state.Ready || state.Admission == nil {
+	for !state.Ready || state.AdmissionObservation == nil {
 		if !wait(ctx, c.config.PollEvery) {
 			return ctx.Err()
 		}
-		state, err = c.backend.Observe(ctx, item)
+		state, err = c.backend.Observe(ctx, item, item.AdmissionObservation)
 		if err != nil {
 			return err
 		}
@@ -252,7 +252,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match work item", Ambiguous: true, Cause: err}
 	}
 	if item.BackendUID == nil {
-		ok, err := c.store.BindBackend(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, state.Record, *state.Admission)
+		ok, err := c.store.BindBackend(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, *state.AdmissionObservation)
 		if err != nil {
 			return err
 		}
@@ -262,9 +262,10 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	} else if err := validateExisting(item, state); err != nil {
 		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match persisted identity", Ambiguous: true, Cause: err}
 	}
-	digest := state.Admission.Digest
+	workloadDigest := state.AdmissionObservation.Workload.Digest
+	observationDigest := state.AdmissionObservation.Digest
 	uid, rv := state.Record.UID, state.Record.ResourceVersion
-	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedAdmissionDigest: &digest, ArtifactIDs: []string{}, WarningCodes: []string{}})
+	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, ArtifactIDs: []string{}, WarningCodes: []string{}})
 	if err != nil {
 		return err
 	}
@@ -275,10 +276,10 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 }
 
 func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
-	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.Admission == nil {
+	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.AdmissionObservation == nil {
 		return &Failure{Code: "missing_backend_identity", SafeMessage: "cleanup lacks exact backend identity", Ambiguous: true}
 	}
-	state, err := c.backend.BeginDelete(ctx, item)
+	state, err := c.backend.BeginDelete(ctx, item, item.AdmissionObservation)
 	if err != nil {
 		return err
 	}
@@ -287,15 +288,16 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 			return &Failure{Code: "backend_identity_mismatch", SafeMessage: "cleanup backend identity changed", Ambiguous: true, Cause: err}
 		}
 	}
-	result, err := c.backend.Finalize(ctx, item, state)
+	result, err := c.backend.Finalize(ctx, item, state, item.AdmissionObservation)
 	if err != nil {
 		return err
 	}
 	if !result.CleanupComplete || !result.ArtifactExportComplete || !result.GrantsRevoked || !result.BackendDestroyed {
 		return &Failure{Code: "cleanup_incomplete", SafeMessage: "sandbox cleanup is incomplete", Ambiguous: true}
 	}
-	uid, rv, digest := *item.BackendUID, *item.BackendResourceVersion, item.Admission.Digest
-	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedAdmissionDigest: &digest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: append([]string(nil), result.WarningCodes...)})
+	uid, rv := *item.BackendUID, *item.BackendResourceVersion
+	workloadDigest, observationDigest := item.AdmissionObservation.Workload.Digest, item.AdmissionObservation.Digest
+	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: append([]string(nil), result.WarningCodes...)})
 	if err != nil {
 		return err
 	}
@@ -312,9 +314,12 @@ func (c *Controller) finishFailure(ctx context.Context, item WorkItem, failure *
 		if item.BackendUID != nil {
 			completion.ExpectedBackendUID = item.BackendUID
 			completion.ExpectedBackendResourceVersion = item.BackendResourceVersion
-			if item.Admission != nil {
-				digest := item.Admission.Digest
-				completion.ExpectedAdmissionDigest = &digest
+			if item.PersistedWorkloadDigest != nil {
+				completion.ExpectedWorkloadDigest = item.PersistedWorkloadDigest
+			}
+			if item.AdmissionObservation != nil {
+				digest := item.AdmissionObservation.Digest
+				completion.ExpectedObservationDigest = &digest
 			}
 		}
 		_, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, completion)
@@ -369,31 +374,43 @@ func validateWorkItem(item WorkItem) error {
 		return fmt.Errorf("operation desired state mismatch")
 	}
 	backendParts := 0
-	for _, value := range []*string{item.BackendUID, item.BackendResourceVersion} {
+	for _, value := range []*string{item.BackendUID, item.BackendResourceVersion, item.AdmissionID, item.PersistedWorkloadDigest} {
 		if value != nil && *value != "" {
 			backendParts++
 		}
 	}
-	if item.Admission != nil {
-		backendParts++
-	}
-	if backendParts != 0 && backendParts != 3 {
+	if backendParts != 0 && backendParts != 4 {
 		return fmt.Errorf("persisted backend identity is incomplete")
 	}
-	if (item.AdmissionID == nil) != (item.Admission == nil) || item.Admission != nil && *item.AdmissionID != item.Admission.UID {
+	if backendParts == 0 && item.AdmissionObservation != nil {
+		return fmt.Errorf("persisted admission observation has no backend identity")
+	}
+	if backendParts == 4 && item.AdmissionObservation == nil {
+		return fmt.Errorf("legacy admission observation is unavailable")
+	}
+	if item.AdmissionObservation != nil && (*item.AdmissionID != item.AdmissionObservation.Workload.UID ||
+		*item.PersistedWorkloadDigest != item.AdmissionObservation.Workload.Digest ||
+		*item.BackendUID != item.AdmissionObservation.Sandbox.UID ||
+		*item.BackendResourceVersion != item.AdmissionObservation.Sandbox.ResourceVersion ||
+		sandboxcontrol.ValidateAdmissionObservation(*item.AdmissionObservation) != nil) {
 		return fmt.Errorf("persisted admission identity is inconsistent")
 	}
 	return nil
 }
 func validateCreated(item WorkItem, state BackendState) error {
-	if !state.Exists || state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace || state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy || state.Record.UID == "" || state.Record.ResourceVersion == "" || state.Admission == nil {
+	if !state.Exists || state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace || state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy || state.Record.UID == "" || state.Record.ResourceVersion == "" || state.AdmissionObservation == nil {
 		return fmt.Errorf("created identity incomplete")
+	}
+	if err := sandboxcontrol.ValidateAdmissionObservation(*state.AdmissionObservation); err != nil ||
+		state.AdmissionObservation.Sandbox.UID != state.Record.UID ||
+		state.AdmissionObservation.Sandbox.ResourceVersion != state.Record.ResourceVersion {
+		return fmt.Errorf("created admission observation is invalid")
 	}
 	receipt, err := sandboxcontrol.NewReceipt("controller-"+item.OperationID, sandboxcontrol.OperationCreate, state.Record, nil, time.Unix(1, 0))
 	if err != nil {
 		return err
 	}
-	bound, err := sandboxcontrol.AttachAdmissionIdentity(receipt, *state.Admission)
+	bound, err := sandboxcontrol.AttachAdmissionIdentity(receipt, state.AdmissionObservation.Workload)
 	if err != nil {
 		return err
 	}
@@ -403,8 +420,8 @@ func validateExisting(item WorkItem, state BackendState) error {
 	if state.Record.UID != *item.BackendUID || state.Record.ResourceVersion != *item.BackendResourceVersion ||
 		state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace ||
 		state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy ||
-		state.Record.QueueName != sandboxcontrol.QueueName || state.Admission == nil ||
-		state.Admission.Digest != item.Admission.Digest {
+		state.Record.QueueName != sandboxcontrol.QueueName || state.AdmissionObservation == nil ||
+		item.AdmissionObservation == nil || !reflect.DeepEqual(*state.AdmissionObservation, *item.AdmissionObservation) {
 		return fmt.Errorf("existing backend tuple mismatch")
 	}
 	validationState := state
@@ -416,16 +433,17 @@ func validateExisting(item WorkItem, state BackendState) error {
 }
 
 func validateDeleting(item WorkItem, state BackendState) error {
-	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.Admission == nil ||
+	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.AdmissionObservation == nil ||
 		!state.Exists || !state.Deleting || !state.Record.Deleting || !state.CleanupFinalizerPresent ||
 		state.Record.UID != *item.BackendUID || state.Record.ResourceVersion == "" ||
-		state.Record.ResourceVersion == *item.BackendResourceVersion || state.Admission == nil ||
-		!reflect.DeepEqual(*state.Admission, *item.Admission) {
+		state.Record.ResourceVersion == *item.BackendResourceVersion || state.AdmissionObservation == nil ||
+		!reflect.DeepEqual(*state.AdmissionObservation, *item.AdmissionObservation) {
 		return fmt.Errorf("deleting backend tuple mismatch")
 	}
-	validationState := state
-	validationState.Record.State = sandboxcontrol.StateReady
-	if err := validateCreated(item, validationState); err != nil {
+	if err := sandboxcontrol.ValidateAdmissionObservation(*state.AdmissionObservation); err != nil ||
+		state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace ||
+		state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy ||
+		state.Record.QueueName != sandboxcontrol.QueueName {
 		return fmt.Errorf("deleting backend identity is invalid: %w", err)
 	}
 	return nil

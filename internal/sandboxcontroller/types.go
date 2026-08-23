@@ -42,7 +42,8 @@ type WorkItem struct {
 	ExpiresAt                                                                     time.Time
 	Sources                                                                       []Source
 	Artifacts                                                                     []Artifact
-	Admission                                                                     *sandboxcontrol.WorkloadIdentity
+	PersistedWorkloadDigest                                                       *string
+	AdmissionObservation                                                          *sandboxcontrol.AdmissionObservation
 }
 
 type LeaseWindow struct {
@@ -53,11 +54,11 @@ type LeaseWindow struct {
 }
 
 type Completion struct {
-	Status                                                                      string
-	ExpectedBackendUID, ExpectedBackendResourceVersion, ExpectedAdmissionDigest *string
-	CleanupComplete, ArtifactExportComplete, GrantsRevoked, BackendDestroyed    bool
-	ArtifactIDs, WarningCodes                                                   []string
-	Error                                                                       *SafeError
+	Status                                                                                                string
+	ExpectedBackendUID, ExpectedBackendResourceVersion, ExpectedWorkloadDigest, ExpectedObservationDigest *string
+	CleanupComplete, ArtifactExportComplete, GrantsRevoked, BackendDestroyed                              bool
+	ArtifactIDs, WarningCodes                                                                             []string
+	Error                                                                                                 *SafeError
 }
 
 type SafeError struct{ Code, Message, RequestID string }
@@ -72,7 +73,7 @@ const (
 type Store interface {
 	Claim(context.Context, string, int) (*WorkItem, error)
 	Renew(context.Context, string, string, string, int) (LeaseWindow, bool, error)
-	BindBackend(context.Context, string, string, string, sandboxcontrol.SandboxRecord, sandboxcontrol.WorkloadIdentity) (bool, error)
+	BindBackend(context.Context, string, string, string, sandboxcontrol.AdmissionObservation) (bool, error)
 	Retry(context.Context, string, string, string, int, SafeError) (RetryOutcome, error)
 	Complete(context.Context, string, string, string, Completion) (bool, error)
 	EnqueueExpired(context.Context, int) (int, error)
@@ -82,7 +83,6 @@ type Store interface {
 
 type BackendState struct {
 	Record                                           sandboxcontrol.SandboxRecord
-	Admission                                        *sandboxcontrol.WorkloadIdentity
 	AdmissionObservation                             *sandboxcontrol.AdmissionObservation
 	Exists, Ready, Deleting, CleanupFinalizerPresent bool
 }
@@ -94,9 +94,9 @@ type CleanupResult struct {
 type Backend interface {
 	Health(context.Context) error
 	EnsureCreated(context.Context, WorkItem) (BackendState, error)
-	Observe(context.Context, WorkItem) (BackendState, error)
-	BeginDelete(context.Context, WorkItem) (BackendState, error)
-	Finalize(context.Context, WorkItem, BackendState) (CleanupResult, error)
+	Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error)
+	BeginDelete(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error)
+	Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error)
 }
 
 type Failure struct {

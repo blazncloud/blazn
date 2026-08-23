@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,17 +61,18 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 		resultRow{values: []any{3}},
 	}}
 	store := &PgStore{executor: executor}
-	record, identity := storeIdentityFixture()
-	if bound, err := store.BindBackend(context.Background(), "operation", "worker", "lease", record, identity); err != nil || !bound {
+	observation := storeObservationFixture()
+	if bound, err := store.BindBackend(context.Background(), "operation", "worker", "lease", observation); err != nil || !bound {
 		t.Fatalf("bind: bound=%v err=%v", bound, err)
 	}
 	if outcome, err := store.Retry(context.Background(), "operation", "worker", "lease", 10,
 		SafeError{Code: "backend_failure", Message: "safe", RequestID: "request-123"}); err != nil || outcome != RetryScheduled {
 		t.Fatalf("retry: outcome=%q err=%v", outcome, err)
 	}
-	digest := identity.Digest
+	workloadDigest, observationDigest := observation.Workload.Digest, observation.Digest
 	if completed, err := store.Complete(context.Background(), "operation", "worker", "lease",
-		Completion{Status: "succeeded", ExpectedAdmissionDigest: &digest, ArtifactIDs: []string{}, WarningCodes: []string{}}); err != nil || !completed {
+		Completion{Status: "succeeded", ExpectedWorkloadDigest: &workloadDigest,
+			ExpectedObservationDigest: &observationDigest, ArtifactIDs: []string{}, WarningCodes: []string{}}); err != nil || !completed {
 		t.Fatalf("complete: completed=%v err=%v", completed, err)
 	}
 	if count, err := store.EnqueueExpired(context.Background(), 4); err != nil || count != 3 {
@@ -82,8 +84,11 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 			t.Fatalf("query %d was %q, want %q", index, executor.calls[index].query, query)
 		}
 	}
-	if got := executor.calls[0].args[21]; got != identity.Digest[7:] {
-		t.Fatalf("bind digest was not normalized: %v", got)
+	if got := executor.calls[0].args[33]; got != observation.Workload.Digest[7:] {
+		t.Fatalf("bind Workload digest was not normalized: %v", got)
+	}
+	if got := executor.calls[0].args[34]; got != observation.Digest[7:] {
+		t.Fatalf("bind observation digest was not normalized: %v", got)
 	}
 }
 
@@ -143,7 +148,7 @@ func TestPgStoreClaimDecodesImmutableWorkItem(t *testing.T) {
 		t.Fatalf("claim decoded incorrectly: %#v", item)
 	}
 	if executor.calls[0].query != claimSQL {
-		t.Fatalf("claim bypassed claim_v2: %q", executor.calls[0].query)
+		t.Fatalf("claim bypassed claim_v3: %q", executor.calls[0].query)
 	}
 }
 
@@ -165,17 +170,89 @@ func TestPgStoreClaimReturnsNoWork(t *testing.T) {
 	}
 }
 
-func storeIdentityFixture() (sandboxcontrol.SandboxRecord, sandboxcontrol.WorkloadIdentity) {
-	digest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+func TestPgStoreClaimRequiresCanonicalAllOrNoneObservation(t *testing.T) {
+	row := observationRowFixture()
+	observation, digest, err := decodeObservation(row)
+	if err != nil || observation == nil || digest == nil || *digest != observation.Workload.Digest {
+		t.Fatalf("full observation decode: observation=%#v digest=%v err=%v", observation, digest, err)
+	}
+
+	tampered := row
+	tampered.ObservationDigest = pointer(strings.Repeat("0", 64))
+	if _, _, err := decodeObservation(tampered); err == nil {
+		t.Fatal("tampered observation digest was accepted")
+	}
+
+	partial := row
+	partial.PodUID = nil
+	if _, _, err := decodeObservation(partial); err == nil {
+		t.Fatal("partially populated Pod identity was accepted")
+	}
+
+	legacy := row
+	legacy.PodAPIVersion, legacy.PodKind, legacy.PodNamespace = nil, nil, nil
+	legacy.PodName, legacy.PodUID, legacy.PodResourceVersion, legacy.ObservationDigest = nil, nil, nil, nil
+	observation, digest, err = decodeObservation(legacy)
+	if err != nil || observation != nil || digest == nil || *digest != rowDigest(row) {
+		t.Fatalf("legacy Workload-only decode: observation=%#v digest=%v err=%v", observation, digest, err)
+	}
+}
+
+func storeObservationFixture() sandboxcontrol.AdmissionObservation {
 	record := sandboxcontrol.SandboxRecord{UID: "backend-uid", ResourceVersion: "backend-rv"}
 	identity := sandboxcontrol.WorkloadIdentity{APIVersion: sandboxcontrol.AdmissionAPIVersion,
 		Namespace: sandboxcontrol.Namespace, Name: "workload.sandbox-1", UID: "workload-uid",
 		ResourceVersion: "workload-rv", ClusterQueue: "queue", Owner: sandboxcontrol.SandboxOwnerReference{
 			APIVersion: sandboxcontrol.APIVersion, Kind: sandboxcontrol.Kind, Name: "sandbox-1",
 			UID: record.UID, Controller: true}, WorkspaceID: "workspace-1", SandboxID: "sandbox-1",
-		Admitted: true, Condition: sandboxcontrol.AdmissionCondition{Type: "Admitted", Status: "True"}, Digest: digest}
-	return record, identity
+		Admitted: true, Condition: sandboxcontrol.AdmissionCondition{Type: "Admitted", Status: "True"}}
+	receipt, err := sandboxcontrol.NewReceipt("store-observation", sandboxcontrol.OperationCreate,
+		sandboxcontrol.SandboxRecord{Name: "sandbox-1", Namespace: sandboxcontrol.Namespace, UID: record.UID,
+			ResourceVersion: record.ResourceVersion, WorkspaceID: "workspace-1", OwnerID: "owner-1",
+			QueueName: sandboxcontrol.QueueName, State: sandboxcontrol.StateReady,
+			ArtifactContractDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil, time.Unix(1, 0))
+	if err != nil {
+		panic(err)
+	}
+	receipt, err = sandboxcontrol.AttachAdmissionIdentity(receipt, identity)
+	if err != nil {
+		panic(err)
+	}
+	observation := sandboxcontrol.AdmissionObservation{
+		Sandbox: sandboxcontrol.ObjectIdentity{APIVersion: sandboxcontrol.APIVersion, Kind: sandboxcontrol.Kind,
+			Namespace: sandboxcontrol.Namespace, Name: "sandbox-1", UID: record.UID, ResourceVersion: record.ResourceVersion},
+		Pod: sandboxcontrol.ObjectIdentity{APIVersion: "v1", Kind: "Pod", Namespace: sandboxcontrol.Namespace,
+			Name: "pod.sandbox-1", UID: "pod-uid", ResourceVersion: "pod-rv"},
+		Workload: *receipt.Admission,
+	}
+	observation.Digest = sandboxcontrol.AdmissionObservationDigest(observation)
+	return observation
 }
+
+func observationRowFixture() workItemRow {
+	observation := storeObservationFixture()
+	rawWorkload, _ := rawDigest(observation.Workload.Digest)
+	rawObservation, _ := rawDigest(observation.Digest)
+	return workItemRow{OperationID: "operation-1", WorkspaceID: observation.Workload.WorkspaceID,
+		SandboxID: observation.Workload.SandboxID, RequestedBy: "owner-1",
+		AdmissionID: pointer(observation.Workload.UID), BackendUID: pointer(observation.Sandbox.UID),
+		BackendResourceVersion: pointer(observation.Sandbox.ResourceVersion), AdmissionDigest: &rawWorkload,
+		WorkloadAPIVersion: pointer(observation.Workload.APIVersion), WorkloadNamespace: pointer(observation.Workload.Namespace),
+		WorkloadName: pointer(observation.Workload.Name), WorkloadUID: pointer(observation.Workload.UID),
+		WorkloadResourceVersion: pointer(observation.Workload.ResourceVersion),
+		AdmittedClusterQueue:    pointer(observation.Workload.ClusterQueue),
+		OwnerAPIVersion:         pointer(observation.Workload.Owner.APIVersion), OwnerKind: pointer(observation.Workload.Owner.Kind),
+		OwnerName: pointer(observation.Workload.Owner.Name), OwnerUID: pointer(observation.Workload.Owner.UID),
+		OwnerController: pointer(observation.Workload.Owner.Controller), WorkspaceLabel: pointer(observation.Workload.WorkspaceID),
+		SandboxLabel: pointer(observation.Workload.SandboxID), Admitted: pointer(observation.Workload.Admitted),
+		ConditionType: pointer(observation.Workload.Condition.Type), ConditionStatus: pointer(observation.Workload.Condition.Status),
+		PodAPIVersion: pointer(observation.Pod.APIVersion), PodKind: pointer(observation.Pod.Kind),
+		PodNamespace: pointer(observation.Pod.Namespace), PodName: pointer(observation.Pod.Name),
+		PodUID: pointer(observation.Pod.UID), PodResourceVersion: pointer(observation.Pod.ResourceVersion),
+		ObservationDigest: &rawObservation}
+}
+
+func rowDigest(row workItemRow) string { return "sha256:" + *row.AdmissionDigest }
 
 func TestPgStoreRenewPreservesNullAsFence(t *testing.T) {
 	databaseNow := time.Now().UTC().Truncate(time.Microsecond)

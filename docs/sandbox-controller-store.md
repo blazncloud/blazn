@@ -16,11 +16,12 @@ table privileges. Its only authority is the reviewed security-definer surface:
 - receive typed scalar and array fields required to reconcile a Sandbox.
 
 Claims include immutable template, image, placement, resource, repository, and
-source-commit identity. Claim v2 also returns the requesting user and the exact
+source-commit identity. Claim v3 also returns the requesting user and the exact
 artifact name, path, media type, and required flag arrays in canonical name
-order. The original claim function is no longer executable by the controller
-role, preventing an older worker from silently accepting an incomplete work
-item. Claims do not include credentials, template JSON, secret
+order, plus the complete persisted Sandbox, Pod, and Workload observation.
+The original, v2 claim/bind/complete functions are no longer executable by the
+controller role, preventing an older worker from silently accepting incomplete
+evidence. Claims do not include credentials, template JSON, secret
 references, environment variables, raw Kubernetes objects, or caller-controlled
 JSON. Repository identities cannot contain URL userinfo, query parameters, or
 fragments, so they cannot smuggle inline credentials. Error events and terminal results are assembled by PostgreSQL from bounded
@@ -48,6 +49,21 @@ The scalar `admission_id` is the Workload UID; terminal completion also carries
 a foreign-keyed admission digest. A requested LocalQueue name, name-only
 identity, unadmitted Workload, or mutable observation cannot qualify a terminal
 create receipt.
+
+Migration `019_sandbox_admission_observation.sql` adds the frozen Pod API
+version, kind, namespace, name, UID, and resource version and binds the complete
+Sandbox → Pod → Workload observation with the canonical
+`sandbox-admission-observation-v1` SHA-256 digest. The SQL digest reconstructs
+the Sandbox identity from the persisted backend tuple and includes the existing
+canonical Workload digest, matching the Go and TypeScript implementations.
+Pod fields and the observation digest are nullable only as one all-or-none
+group. No legacy row is backfilled: a Workload-only row can be claimed only so
+the fenced controller can mark its operation `recovery_required`, and it cannot
+be upgraded in place, authorize Kubernetes mutation, or complete successfully.
+Fresh bind replay succeeds only when every persisted Sandbox, Pod, Workload,
+lease, operation, and digest field is exact. The controller passes the persisted
+observation into admission, deletion, finalization, and absence checks after a
+restart; in-memory observation or cleanup caches are never authoritative.
 
 Expiry scanning uses the database clock and row locks with `SKIP LOCKED`.
 Enqueue, Sandbox desired-state mutation, the operation, queue row, and monotonic

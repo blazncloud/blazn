@@ -46,9 +46,7 @@ type kubernetesCreateLock struct {
 }
 
 type kubernetesBackendEvidence struct {
-	record      sandboxcontrol.SandboxRecord
-	observation *sandboxcontrol.AdmissionObservation
-	cleanup     *CleanupResult
+	record sandboxcontrol.SandboxRecord
 }
 
 func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, error) {
@@ -107,28 +105,26 @@ func (b *KubernetesBackend) EnsureCreated(ctx context.Context, item WorkItem) (B
 	return stateFromRecord(record), nil
 }
 
-func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem) (BackendState, error) {
+func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	request, err := b.request(item)
 	if err != nil {
 		return BackendState{}, err
 	}
-	trusted, ok := b.retainedRecord(item)
-	if item.BackendUID == nil && !ok {
+	trusted, retained := b.retainedRecord(item)
+	if item.BackendUID == nil && !retained {
 		return BackendState{}, backendFailure("backend_identity_unavailable", "sandbox create identity is unavailable after restart", false, true, nil)
 	}
 	record, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
 	if err != nil {
 		return BackendState{}, classifyAdapter("observe", err)
 	}
-	if err := verifyLiveRecord(item, request, record, retainedRecord(ok, trusted), item.BackendUID != nil, true); err != nil {
+	if err := verifyLiveRecord(item, request, record, retainedRecord(retained, trusted), item.BackendUID != nil, true); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend identity changed before admission", false, true, err)
 	}
-	b.retainRecord(item, record)
 	if record.State != sandboxcontrol.StateReady {
 		return stateFromRecord(record), nil
 	}
-	expected, hasExpected := b.retainedObservation(item)
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, retainedObservation(hasExpected, expected))
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, expected)
 	if err != nil {
 		return BackendState{}, classifyAdapter("observe", err)
 	}
@@ -138,52 +134,40 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem) (Backend
 	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend admission record changed", false, true, nil)
 	}
-	b.retainObservation(item, observation)
-	identity := observation.Workload
-	return BackendState{Record: record, Admission: &identity, AdmissionObservation: &observation,
+	return BackendState{Record: record, AdmissionObservation: &observation,
 		Exists: true, Ready: true}, nil
 }
 
-func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem) (BackendState, error) {
+func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expected *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	request, err := b.request(item)
 	if err != nil {
 		return BackendState{}, err
 	}
-	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.Admission == nil {
+	if item.BackendUID == nil || item.BackendResourceVersion == nil || expected == nil {
 		return BackendState{}, backendFailure("cleanup_identity_missing", "cleanup lacks exact backend evidence", true, true, nil)
 	}
-	retained, hasRetained := b.retainedObservation(item)
+	if err := verifyObservation(item, *expected); err != nil {
+		return BackendState{}, backendFailure("cleanup_identity_mismatch", "persisted cleanup identity is invalid", false, true, err)
+	}
 	record, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
 	if err != nil {
 		var adapterErr *sandboxcontrol.AdapterError
-		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound && hasRetained {
-			if err := verifyObservation(item, retained); err != nil {
-				return BackendState{}, backendFailure("cleanup_identity_mismatch", "retained cleanup identity changed", false, true, err)
+		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound {
+			if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
+				return BackendState{}, classifyCleanupObservation(err)
 			}
-			identity := retained.Workload
-			return BackendState{Admission: &identity, AdmissionObservation: &retained}, nil
+			return BackendState{AdmissionObservation: expected}, nil
 		}
 		return BackendState{}, classifyCleanupObservation(err)
 	}
-	_, hasCleanup := b.retainedCleanup(item)
-	if err := verifyLiveRecord(item, request, record, nil, !record.Deleting, !record.Deleting || !hasCleanup); err != nil {
+	if err := verifyLiveRecord(item, request, record, nil, !record.Deleting, true); err != nil {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
 	if record.Deleting {
-		if !hasRetained {
-			return BackendState{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence evidence is unavailable after restart", true, true, nil)
-		}
-		if err := verifyObservation(item, retained); err != nil {
-			return BackendState{}, backendFailure("cleanup_identity_mismatch", "retained cleanup identity changed", false, true, err)
-		}
-		identity := retained.Workload
-		if hasCleanup {
-			return BackendState{Admission: &identity, AdmissionObservation: &retained}, nil
-		}
-		return BackendState{Record: record, Admission: &identity, AdmissionObservation: &retained,
+		return BackendState{Record: record, AdmissionObservation: expected,
 			Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(record.Finalizers)}, nil
 	}
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, retainedObservation(hasRetained, retained))
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, expected)
 	if err != nil {
 		return BackendState{}, classifyCleanupObservation(err)
 	}
@@ -193,7 +177,6 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem) (Bac
 	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "cleanup admission record changed", false, true, nil)
 	}
-	b.retainObservation(item, observation)
 	artifacts, digest, err := artifactContract(request.Artifacts)
 	if err != nil {
 		return BackendState{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
@@ -215,23 +198,21 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem) (Bac
 		live.ArtifactContractDigest != digest || !reflect.DeepEqual(live.Artifacts, artifacts) {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, nil)
 	}
-	identity := observation.Workload
-	return BackendState{Record: live, Admission: &identity, AdmissionObservation: &observation,
+	return BackendState{Record: live, AdmissionObservation: &observation,
 		Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(live.Finalizers)}, nil
 }
 
-func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state BackendState) (CleanupResult, error) {
-	if item.BackendUID == nil || item.Admission == nil {
+func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state BackendState, expected *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
+	if item.BackendUID == nil || expected == nil {
 		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence evidence is unavailable after restart", true, true, nil)
 	}
-	observation, ok := b.retainedObservation(item)
-	if state.AdmissionObservation != nil {
-		observation, ok = *state.AdmissionObservation, true
+	if state.AdmissionObservation == nil {
+		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup state lacks persisted observation", true, true, nil)
 	}
-	if !ok {
-		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence evidence is unavailable after restart", true, true, nil)
+	if !reflect.DeepEqual(*state.AdmissionObservation, *expected) {
+		return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup state did not retain persisted observation", false, true, nil)
 	}
-	if err := verifyObservation(item, observation); err != nil {
+	if err := verifyObservation(item, *expected); err != nil {
 		return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
 	request, err := b.request(item)
@@ -242,31 +223,26 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 	if err != nil {
 		return CleanupResult{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
 	}
-	result, finalized := b.retainedCleanup(item)
-	if !finalized {
-		if !state.Exists || !state.Deleting || !state.CleanupFinalizerPresent {
-			return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup completion receipt is unavailable after restart", true, true, nil)
-		}
-		receipt, err := b.adapter.Finalize(ctx, "controller-"+item.OperationID, item.WorkspaceID,
-			item.RequestedBy, item.SandboxID, *item.BackendUID, state.Record.ResourceVersion, artifacts, digest)
-		if err != nil {
-			return CleanupResult{}, classifyAdapter("cleanup", err)
-		}
-		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
-			return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
-		}
-		ids := make([]string, 0, len(receipt.Artifacts))
-		for _, artifact := range receipt.Artifacts {
-			ids = append(ids, artifact.ObjectKey)
-		}
-		result = CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
-			ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
-		b.retainCleanup(item, result)
+	if !state.Exists || !state.Deleting || !state.CleanupFinalizerPresent {
+		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup completion receipt is unavailable after restart", true, true, nil)
 	}
+	receipt, err := b.adapter.Finalize(ctx, "controller-"+item.OperationID, item.WorkspaceID,
+		item.RequestedBy, item.SandboxID, *item.BackendUID, state.Record.ResourceVersion, artifacts, digest)
+	if err != nil {
+		return CleanupResult{}, classifyAdapter("cleanup", err)
+	}
+	if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
+		return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
+	}
+	ids := make([]string, 0, len(receipt.Artifacts))
+	for _, artifact := range receipt.Artifacts {
+		ids = append(ids, artifact.ObjectKey)
+	}
+	result := CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
+		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
 	for {
-		err = b.adapter.ObserveAbsence(ctx, observation)
+		err = b.adapter.ObserveAbsence(ctx, *expected)
 		if err == nil {
-			b.forgetEvidence(item)
 			return result, nil
 		}
 		var adapterErr *sandboxcontrol.AdapterError
@@ -309,14 +285,6 @@ func retainedRecord(ok bool, record sandboxcontrol.SandboxRecord) *sandboxcontro
 		return nil
 	}
 	copy := cloneSandboxRecord(record)
-	return &copy
-}
-
-func retainedObservation(ok bool, observation sandboxcontrol.AdmissionObservation) *sandboxcontrol.AdmissionObservation {
-	if !ok {
-		return nil
-	}
-	copy := observation
 	return &copy
 }
 
@@ -364,50 +332,6 @@ func (b *KubernetesBackend) retainedRecord(item WorkItem) (sandboxcontrol.Sandbo
 	return cloneSandboxRecord(entry.record), true
 }
 
-func (b *KubernetesBackend) retainObservation(item WorkItem, observation sandboxcontrol.AdmissionObservation) {
-	b.evidenceMu.Lock()
-	defer b.evidenceMu.Unlock()
-	entry := b.evidence[evidenceKey(item)]
-	copy := observation
-	entry.observation = &copy
-	b.evidence[evidenceKey(item)] = entry
-}
-
-func (b *KubernetesBackend) retainedObservation(item WorkItem) (sandboxcontrol.AdmissionObservation, bool) {
-	b.evidenceMu.Lock()
-	defer b.evidenceMu.Unlock()
-	entry, ok := b.evidence[evidenceKey(item)]
-	if !ok || entry.observation == nil {
-		return sandboxcontrol.AdmissionObservation{}, false
-	}
-	return *entry.observation, true
-}
-
-func (b *KubernetesBackend) retainCleanup(item WorkItem, result CleanupResult) {
-	b.evidenceMu.Lock()
-	defer b.evidenceMu.Unlock()
-	entry := b.evidence[evidenceKey(item)]
-	copy := cloneCleanupResult(result)
-	entry.cleanup = &copy
-	b.evidence[evidenceKey(item)] = entry
-}
-
-func (b *KubernetesBackend) retainedCleanup(item WorkItem) (CleanupResult, bool) {
-	b.evidenceMu.Lock()
-	defer b.evidenceMu.Unlock()
-	entry, ok := b.evidence[evidenceKey(item)]
-	if !ok || entry.cleanup == nil {
-		return CleanupResult{}, false
-	}
-	return cloneCleanupResult(*entry.cleanup), true
-}
-
-func (b *KubernetesBackend) forgetEvidence(item WorkItem) {
-	b.evidenceMu.Lock()
-	defer b.evidenceMu.Unlock()
-	delete(b.evidence, evidenceKey(item))
-}
-
 func cloneSandboxRecord(record sandboxcontrol.SandboxRecord) sandboxcontrol.SandboxRecord {
 	copy := record
 	copy.Finalizers = append([]string(nil), record.Finalizers...)
@@ -416,13 +340,6 @@ func cloneSandboxRecord(record sandboxcontrol.SandboxRecord) sandboxcontrol.Sand
 	for key, value := range record.Labels {
 		copy.Labels[key] = value
 	}
-	return copy
-}
-
-func cloneCleanupResult(result CleanupResult) CleanupResult {
-	copy := result
-	copy.ArtifactIDs = append([]string(nil), result.ArtifactIDs...)
-	copy.WarningCodes = append([]string(nil), result.WarningCodes...)
 	return copy
 }
 
@@ -484,8 +401,8 @@ func verifyObservation(item WorkItem, observation sandboxcontrol.AdmissionObserv
 	if item.BackendResourceVersion != nil && observation.Sandbox.ResourceVersion != *item.BackendResourceVersion {
 		return errors.New("sandbox resource version changed")
 	}
-	if item.Admission != nil && !reflect.DeepEqual(observation.Workload, *item.Admission) {
-		return errors.New("workload admission identity changed")
+	if item.AdmissionObservation != nil && !reflect.DeepEqual(observation, *item.AdmissionObservation) {
+		return errors.New("admission observation changed")
 	}
 	return nil
 }
