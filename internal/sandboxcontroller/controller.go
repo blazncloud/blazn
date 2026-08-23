@@ -35,7 +35,8 @@ func New(store Store, backend Backend, config Config) (*Controller, error) {
 }
 
 func validateConfig(config Config) error {
-	if !workerPattern.MatchString(config.WorkerID) || config.Lease < 5*time.Second || config.Lease > 300*time.Second || config.RenewEvery <= 0 || config.RenewEvery >= config.Lease || config.PollEvery <= 0 || config.OperationTimeout < config.PollEvery || config.IdleDelay <= 0 || config.RetryDelay < time.Second || config.RetryDelay > time.Hour || config.ExpiryEvery <= 0 || config.ExpiryBatch < 1 || config.ExpiryBatch > 100 {
+	effectiveLease := config.Lease.Truncate(time.Second)
+	if !workerPattern.MatchString(config.WorkerID) || config.Lease < 5*time.Second || config.Lease > 300*time.Second || config.RenewEvery <= 0 || config.RenewEvery > effectiveLease-time.Second || config.PollEvery <= 0 || config.OperationTimeout < config.PollEvery || config.IdleDelay <= 0 || config.RetryDelay < time.Second || config.RetryDelay > time.Hour || config.ExpiryEvery <= 0 || config.ExpiryBatch < 1 || config.ExpiryBatch > 100 {
 		return fmt.Errorf("sandbox controller configuration is invalid")
 	}
 	return nil

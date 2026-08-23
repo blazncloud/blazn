@@ -29,6 +29,45 @@ func TestConfigFromEnvReadsDatabaseURLOnlyFromSafeFile(t *testing.T) {
 	}
 }
 
+func TestConfigFromEnvValidatesEffectiveDatabaseLeaseSchedule(t *testing.T) {
+	directory := t.TempDir()
+	secret := filepath.Join(directory, "database-url")
+	if err := os.WriteFile(secret, []byte("postgres://controller@database/blazn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]string{
+		"BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE": secret,
+		"BLAZN_SANDBOX_CONTROLLER_WORKER_ID":         "controller-1",
+	}
+	for _, test := range []struct {
+		name, lease, renew string
+	}{
+		{name: "fractional lease truncates below renewal", lease: "5.9s", renew: "5.5s"},
+		{name: "fractional renewal violates database interval contract", lease: "6s", renew: "5.5s"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			values := map[string]string{}
+			for key, value := range base {
+				values[key] = value
+			}
+			values["BLAZN_SANDBOX_CONTROLLER_LEASE"] = test.lease
+			values["BLAZN_SANDBOX_CONTROLLER_RENEW_EVERY"] = test.renew
+			if _, err := ConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+				t.Fatal("fractional database lease schedule was accepted")
+			}
+		})
+	}
+	values := map[string]string{}
+	for key, value := range base {
+		values[key] = value
+	}
+	values["BLAZN_SANDBOX_CONTROLLER_LEASE"] = "5.9s"
+	values["BLAZN_SANDBOX_CONTROLLER_RENEW_EVERY"] = "4s"
+	if _, err := ConfigFromEnv(func(key string) string { return values[key] }); err != nil {
+		t.Fatalf("safe fractional lease schedule was rejected: %v", err)
+	}
+}
+
 func TestConfigFromEnvNeverIncludesSecretInErrors(t *testing.T) {
 	directory := t.TempDir()
 	secret := filepath.Join(directory, "database-url")
