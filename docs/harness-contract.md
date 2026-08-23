@@ -10,7 +10,9 @@ The normative schemas are `agent.schema.json`, `harness.schema.json`,
 `harness-run.schema.json`, and `harness-conformance.schema.json`. An `Agent` is
 stable; every `AgentVersion` is immutable and binds exact instructions, source
 commit, model policy version, SandboxTemplateVersion, tools, resource profile,
-allowed HarnessProfiles, required capabilities, evaluation, and output shape.
+allowed HarnessProfiles by exact semantic digest, required capabilities,
+evaluation, and output shape. A Profile edit creates a different selection and
+cannot alter an already published AgentVersion by retaining the same ID.
 
 `HarnessDefinition` names one approved adapter kind. `HarnessVersion` freezes
 its digest-pinned package or image, typed executable/argv, parser and worker
@@ -24,6 +26,9 @@ AgentVersion, the full HarnessVersion implementation and provenance, and every
 HarnessProfile have separately domain-separated canonical SHA-256 identities.
 Changing an executable argument, parser, capability, package/image, review,
 credential declaration, model route, tool, or override changes its identity.
+Executable definitions name a reviewed adapter binary directly. Shells,
+interpreters, command chaining, expansion, pipes, and redirection are refused
+in both the executable path and fixed arguments.
 
 ## Pre-Sandbox compatibility
 
@@ -31,8 +36,9 @@ The control plane compares every required AgentVersion capability with the
 selected published HarnessVersion before queueing or creating a Sandbox. A
 missing conversation, resume, event, tool, approval, model, output, recovery,
 or cancellation capability returns the exact missing set with `sandboxId=null`.
-No requirement is silently dropped and no fallback attempt is created unless
-the immutable AgentVersion permits one approved attempt.
+No requirement is silently dropped. A fallback is either absent or one
+approved attempt bound to the exact route/policy and a normalized failure event
+for the primary request; a second attempt is not representable.
 Credential declarations use typed route, repository, or tool scopes. Every
 run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
@@ -86,6 +92,10 @@ Agent output declarations are closed to the runnable `patch`, `summary`, and
 complete. A successful Run always names the exact resolved patch Artifact in
 `patchArtifactId`.
 
+At run time the selected Profile digest, model route, tools, DIRECT
+authorization, credential declarations, and leases are revalidated against the
+immutable AgentVersion rather than trusting publication-time validation.
+
 Run provenance captures exact AgentVersion, HarnessVersion, HarnessProfile,
 SandboxTemplateVersion, source repository/commit, model route/version/protocol,
 authenticated proxy decision, Node binding, worker protocol, terminal receipt,
@@ -93,6 +103,10 @@ usage, result, and Artifact IDs. Proxy outcomes remain `ROUTED`, `DIRECT`, or
 `BYPASS`; the harness cannot infer routing from environment configuration.
 The proxy proof includes request and event IDs, exact route and policy IDs and
 versions, and the separate proxy workload authentication class.
+Cost provenance requires a pricing identity/version and an authoritative proxy
+or control-plane receipt. Free execution is explicit `zero-cost` USD evidence
+with zero micros; priced execution requires a positive amount. Terminal
+duration must equal the authoritative Run lifecycle timestamps.
 
 ## Fixtures and portable evaluation
 

@@ -35,7 +35,7 @@
     "provenance": {
         "agentVersion": {
             "id": "11000000-0000-4000-8000-000000000001",
-            "digest": "sha256:911988435bcb4bcdb6aaa5209d52eb5adb812d419637f7a86343a1b75c4e1509"
+            "digest": "sha256:c94feb17075791f0fb955ebbaeca9435f8477a80bf951a67a959a4da1bc23842"
         },
         "harnessVersion": {
             "id": "20000000-0000-4000-8000-000000000001",
@@ -68,6 +68,16 @@
             "policyVersion": 1,
             "authentication": "proxy-workload-proof",
             "authorizationId": null
+        },
+        "fallbackAttempt": null,
+        "billing": {
+            "mode": "zero-cost",
+            "currency": "USD",
+            "amountMicros": 0,
+            "pricingId": "77000000-0000-4000-8000-000000000001",
+            "pricingVersion": 1,
+            "receiptId": "78000000-0000-4000-8000-000000000001",
+            "source": "proxy-receipt"
         },
         "node": {
             "id": "72000000-0000-4000-8000-000000000001",
@@ -254,6 +264,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:cd69660d7e2e7acd3131af2e2083083b9ce1589d63aa8bf1257fe896349bbddb"
+        "receiptDigest": "sha256:93b35cd5b94225b51823342a80333d412279453fa8f49410a2886bd77eb020b6"
     }
 }

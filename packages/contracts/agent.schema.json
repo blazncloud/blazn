@@ -81,7 +81,7 @@
                 "repository",
                 "resourceProfile",
                 "requiredCapabilities",
-                "allowedHarnessProfileIds",
+                "allowedHarnessProfiles",
                 "defaultHarnessProfileId",
                 "evaluationId",
                 "outputContract",
@@ -223,13 +223,26 @@
                         "$ref": "#/$defs/capability"
                     }
                 },
-                "allowedHarnessProfileIds": {
+                "allowedHarnessProfiles": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 16,
                     "uniqueItems": true,
                     "items": {
-                        "$ref": "#/$defs/id"
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                            "id",
+                            "digest"
+                        ],
+                        "properties": {
+                            "id": {
+                                "$ref": "#/$defs/id"
+                            },
+                            "digest": {
+                                "$ref": "#/$defs/digest"
+                            }
+                        }
                     }
                 },
                 "defaultHarnessProfileId": {
