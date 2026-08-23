@@ -27,6 +27,7 @@ var (
 	ErrDifferentScope       = errors.New("proxy already active in a different mode or OS session")
 	ErrCARemovalUnsupported = errors.New("proxy CA removal is unsupported")
 	ErrRecovery             = state.ErrRecoveryRequired
+	errActivationRace       = errors.New("proxy activation lost its pre-publication lifecycle fence")
 )
 
 type PriorValue struct {
@@ -129,13 +130,18 @@ func (p PersistentStore) ReleaseScope(ctx context.Context, lease *ScopeLease) er
 func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, mechanism string, publish func() error) (err error) {
 	reservation, err := p.Value.Reserve(ctx, journal.Nonce, 30*time.Second)
 	if err != nil {
+		if errors.Is(err, state.ErrLifecycleConflict) {
+			return errors.Join(errActivationRace, err)
+		}
 		return err
 	}
 	defer func() { err = errors.Join(err, p.Value.CancelReservation(context.Background(), reservation)) }()
-	return p.Value.WithReservation(ctx, reservation, func(tx *state.ActivationTransaction) (callbackErr error) {
+	prepared := false
+	err = p.Value.WithReservation(ctx, reservation, func(tx *state.ActivationTransaction) (callbackErr error) {
 		if err := tx.Prepare(journal); err != nil {
 			return err
 		}
+		prepared = true
 		publishing := *journal
 		publishing.State = "publishing"
 		publishing.UpdatedAt = journal.UpdatedAt.Add(time.Nanosecond)
@@ -161,6 +167,10 @@ func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, m
 		active.UpdatedAt = publishing.UpdatedAt.Add(time.Nanosecond)
 		return tx.Transition(state.ExpectedActivation{Generation: journal.Generation, State: "publishing"}, &active, mechanism)
 	})
+	if !prepared && errors.Is(err, state.ErrLifecycleConflict) {
+		err = errors.Join(errActivationRace, err)
+	}
+	return err
 }
 
 type Runner interface {
@@ -262,7 +272,7 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 		return s.result("proxy on", "unsupported", "inactive", 7), err
 	}
 	result, activateErr := s.activate(ctx, "proxy on", policy, digest, mode, mechanism)
-	if !errors.Is(activateErr, state.ErrLifecycleConflict) {
+	if !errors.Is(activateErr, errActivationRace) {
 		return result, activateErr
 	}
 	current, reconcileErr = s.deps.Store.Reconcile(ctx)
