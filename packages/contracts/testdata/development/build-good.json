@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "blazn.dev/build/v1alpha1",
+  "id": "30000000-0000-4000-8000-000000000001",
+  "workspaceId": "40000000-0000-4000-8000-000000000001",
+  "projectId": "20000000-0000-4000-8000-000000000001",
+  "runId": "31000000-0000-4000-8000-000000000001",
+  "version": 4,
+  "status": "succeeded",
+  "requestedBy": "10000000-0000-4000-8000-000000000001",
+  "source": {"repository": "https://github.com/blazncloud/blazn.git", "commit": "1111111111111111111111111111111111111111"},
+  "projectManifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "template": {"versionId": "60000000-0000-4000-8000-000000000001", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "planDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "builder": {"id": "50000000-0000-4000-8000-000000000001", "profile": "trusted-buildkit-v1", "imageDigest": "registry.blazn.invalid/system/buildkit@sha256:4444444444444444444444444444444444444444444444444444444444444444", "version": "v0.25.0"},
+  "outputs": {
+    "imageIndexDigest": "registry.blazn.invalid/poc/coding-agent@sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "images": [
+      {"platform": "linux/amd64", "digest": "registry.blazn.invalid/poc/coding-agent@sha256:6666666666666666666666666666666666666666666666666666666666666666"},
+      {"platform": "linux/arm64", "digest": "registry.blazn.invalid/poc/coding-agent@sha256:7777777777777777777777777777777777777777777777777777777777777777"}
+    ],
+    "refreshArtifact": {"artifactId": "80000000-0000-4000-8000-000000000001", "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888", "cacheKey": "sha256:9999999999999999999999999999999999999999999999999999999999999999", "platforms": ["linux/amd64", "linux/arm64"]}
+  },
+  "evidence": {
+    "artifactIds": ["80000000-0000-4000-8000-000000000001", "80000000-0000-4000-8000-000000000002"],
+    "provenanceArtifactId": "80000000-0000-4000-8000-000000000002",
+    "signatureArtifactId": "80000000-0000-4000-8000-000000000007",
+    "secretScan": {"passed": true, "findings": 0},
+    "securityTests": [
+      {"platform": "linux/amd64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000003"},
+      {"platform": "linux/arm64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000004"}
+    ],
+    "lifecycleTests": [
+      {"platform": "linux/amd64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000005"},
+      {"platform": "linux/arm64", "passed": true, "artifactId": "80000000-0000-4000-8000-000000000006"}
+    ],
+    "reproducibility": {"outcome": "same-material-digest"},
+    "cleanup": {"passed": true, "artifactId": "80000000-0000-4000-8000-000000000008"}
+  },
+  "receiptDigest": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+  "publication": {"eligible": true, "refusalReasons": []},
+  "createdAt": "2026-08-22T00:00:00Z",
+  "startedAt": "2026-08-22T00:00:01Z",
+  "completedAt": "2026-08-22T00:04:00Z"
+}

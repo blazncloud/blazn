@@ -1,0 +1,125 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import type { FormatsPlugin } from "ajv-formats";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const contracts = path.resolve(here, "../../../packages/contracts");
+const fixtures = path.join(contracts, "testdata/development");
+const require = createRequire(import.meta.url);
+const formatsModule = require("ajv-formats") as { default?: FormatsPlugin } | FormatsPlugin;
+const addFormats = ("default" in formatsModule ? formatsModule.default : formatsModule) as FormatsPlugin;
+const readJSON = async (file: string): Promise<Record<string, unknown>> => JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+
+function validator(schema: Record<string, unknown>) {
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+  return ajv.compile(schema);
+}
+
+test("DevelopmentProject accepts the POC declaration and rejects narrow unsafe fixtures", async () => {
+  const validate = validator(await readJSON(path.join(contracts, "development-project.schema.json")));
+  assert.equal(validate(await readJSON(path.join(fixtures, "project-good.json"))), true, JSON.stringify(validate.errors));
+  for (const name of ["project-bad-secret.json", "project-bad-path.json", "project-bad-mutable-output.json"]) {
+    assert.equal(validate(await readJSON(path.join(fixtures, name))), false, `${name} unexpectedly passed`);
+  }
+});
+
+test("DevelopmentProject freezes exact platforms, lock digests, paths, and committed argv", async () => {
+  const validate = validator(await readJSON(path.join(contracts, "development-project.schema.json")));
+  const good = await readJSON(path.join(fixtures, "project-good.json"));
+  const cases: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ["missing ARM64", (value) => { value.platforms = ["linux/amd64"]; }],
+    ["mutable lock", (value) => { (value.dependencyLocks as Record<string, unknown>)["package-lock.json"] = "latest"; }],
+    ["absolute lock path", (value) => { const locks = value.dependencyLocks as Record<string, unknown>; locks["/etc/passwd"] = locks["package-lock.json"]; delete locks["package-lock.json"]; }],
+    ["shell string", (value) => { ((value.tests as Record<string, Record<string, unknown>>).poc!).argv = "npm test"; }],
+    ["inline environment", (value) => { ((value.tests as Record<string, Record<string, unknown>>).poc!).env = { TOKEN: "forbidden" }; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const candidate = structuredClone(good);
+    mutate(candidate);
+    assert.equal(validate(candidate), false, `${label} unexpectedly passed`);
+  }
+});
+
+test("Build accepts controller evidence and rejects mutable source or leaked authority", async () => {
+  const validate = validator(await readJSON(path.join(contracts, "development-build.schema.json")));
+  assert.equal(validate(await readJSON(path.join(fixtures, "build-good.json"))), true, JSON.stringify(validate.errors));
+  for (const name of ["build-bad-mutable-source.json", "build-bad-authority.json"]) {
+    assert.equal(validate(await readJSON(path.join(fixtures, name))), false, `${name} unexpectedly passed`);
+  }
+});
+
+test("publication is fail closed on architecture, digests, scans, tests, and reproducibility", async () => {
+  const validate = validator(await readJSON(path.join(contracts, "development-build.schema.json")));
+  const good = await readJSON(path.join(fixtures, "build-good.json"));
+  const cases: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ["duplicate architecture output", (value) => { const outputs = value.outputs as { images: Array<Record<string, unknown>> }; outputs.images[1]!.platform = "linux/amd64"; }],
+    ["mutable output", (value) => { const outputs = value.outputs as { imageIndexDigest: string }; outputs.imageIndexDigest = "registry.blazn.invalid/poc/coding-agent:latest"; }],
+    ["secret finding", (value) => { const evidence = value.evidence as { secretScan: Record<string, unknown> }; evidence.secretScan = { passed: false, findings: 1 }; }],
+    ["failed security test", (value) => { const evidence = value.evidence as { securityTests: Array<Record<string, unknown>> }; evidence.securityTests[0]!.passed = false; }],
+    ["failed lifecycle test", (value) => { const evidence = value.evidence as { lifecycleTests: Array<Record<string, unknown>> }; evidence.lifecycleTests[1]!.passed = false; }],
+    ["unexplained nondeterminism", (value) => { const evidence = value.evidence as { reproducibility: Record<string, unknown> }; evidence.reproducibility = { outcome: "explained-nondeterminism" }; }],
+    ["failed cleanup", (value) => { const evidence = value.evidence as { cleanup: Record<string, unknown> }; evidence.cleanup.passed = false; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const candidate = structuredClone(good);
+    mutate(candidate);
+    assert.equal(validate(candidate), false, `${label} unexpectedly remained publication eligible`);
+  }
+});
+
+test("queued and failed Builds cannot carry successful or published evidence", async () => {
+  const validate = validator(await readJSON(path.join(contracts, "development-build.schema.json")));
+  const good = await readJSON(path.join(fixtures, "build-good.json"));
+  const queued = structuredClone(good);
+  queued.status = "queued";
+  assert.equal(validate(queued), false, "queued Build carried terminal evidence");
+  const failed = structuredClone(good);
+  failed.status = "failed";
+  failed.errorCode = "build_failed";
+  assert.equal(validate(failed), false, "failed Build remained publication eligible");
+  const unpublished = structuredClone(good);
+  (unpublished.publication as Record<string, unknown>).eligible = false;
+  (unpublished.publication as Record<string, unknown>).refusalReasons = ["unauthorized"];
+  (unpublished.publication as Record<string, unknown>).publishedAt = "2026-08-22T00:05:00Z";
+  assert.equal(validate(unpublished), false, "ineligible Build exposed a publication receipt");
+});
+
+test("CLI contract freezes the six acceptance commands and authority boundary", async () => {
+  const rawContract = await readJSON(path.join(contracts, "development-cli-contract.json"));
+  const contract = rawContract as unknown as {
+    commands: Record<string, { mutation: boolean; authentication: boolean; arguments: { required?: string[] }; outputSchema: { $ref: string } }>;
+    securityBoundary: { clientMayNotAssert: string[]; neverReturned: string[] };
+  };
+  assert.deepEqual(Object.keys(contract.commands), ["dev validate", "dev build", "dev test", "dev status", "dev evidence", "dev publish"]);
+  assert.equal(contract.commands["dev validate"]!.mutation, false);
+  assert.equal(contract.commands["dev validate"]!.authentication, false);
+  assert.deepEqual(contract.commands["dev build"]!.arguments.required, ["--ref", "--request-id"]);
+  assert.deepEqual(contract.commands["dev publish"]!.arguments.required, ["BUILD", "--expected-version", "--request-id"]);
+  for (const field of ["builderIdentity", "outputDigest", "testResult", "secretScanResult", "provenance", "publicationEligibility"]) assert.ok(contract.securityBoundary.clientMayNotAssert.includes(field));
+  for (const field of ["buildkitEndpoint", "buildkitClientCertificate", "registryCredential", "objectKey", "signedUrl", "secretValue"]) assert.ok(contract.securityBoundary.neverReturned.includes(field));
+
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+  ajv.addSchema(await readJSON(path.join(contracts, "development-build.schema.json")));
+  ajv.addSchema(rawContract, "development-cli");
+  const build = await readJSON(path.join(fixtures, "build-good.json"));
+  const outputs: Record<string, unknown> = {
+    "dev validate": { valid: true, manifestDigest: `sha256:${"a".repeat(64)}`, errors: [], warnings: [] },
+    "dev build": build,
+    "dev test": build,
+    "dev status": build,
+    "dev evidence": { buildId: build.id, directory: "/tmp/evidence", manifestDigest: `sha256:${"b".repeat(64)}`, artifactIds: ["80000000-0000-4000-8000-000000000001"] },
+    "dev publish": build,
+  };
+  for (const [command, output] of Object.entries(outputs)) {
+    const validate = ajv.getSchema(`development-cli${contract.commands[command]!.outputSchema.$ref}`);
+    assert.ok(validate, `unresolved output schema for ${command}`);
+    assert.equal(validate(output), true, `${command}: ${JSON.stringify(validate.errors)}`);
+  }
+});

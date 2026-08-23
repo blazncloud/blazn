@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/contracts/development-cli-contract.json",
+  "title": "Blazn Development CLI contract",
+  "version": "v1alpha1",
+  "global": {"formats": ["human", "json"], "stdout": "data-only", "stderr": "progress-and-diagnostics", "jsonPrompts": false},
+  "commands": {
+    "dev validate": {"mutation": false, "authentication": false, "arguments": {"optional": ["-f"], "defaultFile": "blazn.yaml"}, "outputSchema": {"$ref": "#/$defs/validation"}, "exitCodes": {"valid": 0, "invalid": 1, "usage": 2}},
+    "dev build": {"mutation": true, "authentication": true, "arguments": {"required": ["--ref", "--request-id"]}, "sourceRef": "exact-40-or-64-lowercase-hex-commit", "outputSchema": {"$ref": "#/$defs/build"}, "exitCodes": {"accepted": 0, "failure": 1, "usage": 2, "unavailable": 7}},
+    "dev test": {"mutation": true, "authentication": true, "arguments": {"required": ["BUILD", "--suite", "--request-id"], "suite": ["poc"]}, "outputSchema": {"$ref": "#/$defs/build"}, "exitCodes": {"accepted": 0, "failure": 1, "usage": 2, "unavailable": 7}},
+    "dev status": {"mutation": false, "authentication": true, "arguments": {"required": ["BUILD"]}, "outputSchema": {"$ref": "#/$defs/build"}, "exitCodes": {"success": 0, "failure": 1, "usage": 2, "unavailable": 7}},
+    "dev evidence": {"mutation": false, "authentication": true, "arguments": {"required": ["BUILD", "--output-dir"]}, "filesystemPolicy": {"refuseExisting": true, "refuseSymlinkTraversal": true, "writeCredentials": false, "writeObjectKeys": false, "writeSignedUrls": false}, "outputSchema": {"$ref": "#/$defs/evidenceExport"}, "exitCodes": {"success": 0, "failure": 1, "usage": 2, "unavailable": 7, "partial": 9}},
+    "dev publish": {"mutation": true, "authentication": true, "arguments": {"required": ["BUILD", "--expected-version", "--request-id"]}, "authority": "workspace-publication-capability", "binding": ["buildId", "buildVersion", "buildReceiptDigest", "templateVersionId", "templateDigest"], "outputSchema": {"$ref": "#/$defs/build"}, "exitCodes": {"published": 0, "refused": 1, "usage": 2, "unavailable": 7}}
+  },
+  "$defs": {
+    "build": {"$ref": "https://blazn.dev/contracts/development-build.schema.json"},
+    "validation": {"type": "object", "additionalProperties": false, "required": ["valid", "manifestDigest", "errors", "warnings"], "properties": {"valid": {"type": "boolean"}, "manifestDigest": {"oneOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]}, "errors": {"type": "array", "items": {"type": "string", "maxLength": 1024}}, "warnings": {"type": "array", "items": {"type": "string", "maxLength": 1024}}}},
+    "evidenceExport": {"type": "object", "additionalProperties": false, "required": ["buildId", "directory", "manifestDigest", "artifactIds"], "properties": {"buildId": {"type": "string", "format": "uuid"}, "directory": {"type": "string", "minLength": 1}, "manifestDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "artifactIds": {"type": "array", "items": {"type": "string", "format": "uuid"}}}},
+    "errorEnvelope": {"type": "object", "additionalProperties": false, "required": ["error"], "properties": {"error": {"type": "object", "additionalProperties": false, "required": ["code", "message"], "properties": {"code": {"type": "string", "minLength": 1, "maxLength": 128}, "message": {"type": "string", "minLength": 1, "maxLength": 1024}, "requestId": {"type": "string", "minLength": 1, "maxLength": 128}}}}, "exitCode": {"enum": [1, 2, 7, 9]}}
+  },
+  "securityBoundary": {
+    "clientMayRequest": ["validate", "build", "test", "evidence", "publish"],
+    "clientMayNotAssert": ["builderIdentity", "outputDigest", "testResult", "secretScanResult", "provenance", "publicationEligibility"],
+    "neverReturned": ["buildkitEndpoint", "buildkitClientCertificate", "registryCredential", "objectKey", "signedUrl", "secretValue"]
+  }
+}

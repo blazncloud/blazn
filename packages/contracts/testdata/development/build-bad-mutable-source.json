@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "blazn.dev/build/v1alpha1",
+  "id": "30000000-0000-4000-8000-000000000001",
+  "workspaceId": "40000000-0000-4000-8000-000000000001",
+  "projectId": "20000000-0000-4000-8000-000000000001",
+  "runId": "31000000-0000-4000-8000-000000000001",
+  "version": 1,
+  "status": "queued",
+  "requestedBy": "10000000-0000-4000-8000-000000000001",
+  "source": {"repository": "https://github.com/blazncloud/blazn.git", "commit": "main"},
+  "projectManifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "template": {"versionId": "60000000-0000-4000-8000-000000000001", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "planDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "builder": {"id": "50000000-0000-4000-8000-000000000001", "profile": "trusted-buildkit-v1", "imageDigest": "registry.blazn.invalid/system/buildkit@sha256:4444444444444444444444444444444444444444444444444444444444444444", "version": "v0.25.0"},
+  "outputs": null,
+  "evidence": null,
+  "receiptDigest": null,
+  "publication": {"eligible": false, "refusalReasons": ["build_not_succeeded"]},
+  "createdAt": "2026-08-22T00:00:00Z"
+}
