@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
@@ -28,6 +29,13 @@ const (
 )
 
 var contentBrokerCapabilities = []string{"artifact.read", "broker.describe", "project.read", "run.cancel", "run.create", "run.read"}
+
+var (
+	brokerUUIDPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	brokerDigestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	brokerRunKindPattern    = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,95}$`)
+	brokerOutputNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+)
 
 type brokerMethodHandler interface {
 	Handle(context.Context, string, RuntimeContext, brokerRequest) (string, any, *brokerError)
@@ -139,7 +147,7 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		return resultProjectEnvelope, value, nil
 	case "run.create":
 		var params brokerRunCreateParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil || params.ProofClass != client.ProofClassSynthetic || !validBrokerIdempotencyKey(params.IdempotencyKey) {
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerRunCreateParams(params) {
 			return invalidBrokerParams()
 		}
 		key := scopedBrokerIdempotencyKey(c, pluginName, request)
@@ -156,7 +164,7 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		return resultRunEnvelope, value, nil
 	case "run.list":
 		var params brokerListParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil {
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerRunListParams(params) {
 			return invalidBrokerParams()
 		}
 		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunList, error) {
@@ -173,7 +181,7 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		return resultRunList, value, nil
 	case "run.get":
 		var params brokerRunIdentityParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil {
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !brokerUUIDPattern.MatchString(params.RunID) {
 			return invalidBrokerParams()
 		}
 		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) {
@@ -188,7 +196,7 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		return resultRunEnvelope, value, nil
 	case "run.cancel":
 		var params brokerRunCancelParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerIdempotencyKey(params.IdempotencyKey) {
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !brokerUUIDPattern.MatchString(params.RunID) || params.ExpectedVersion < 1 || !validBrokerIdempotencyKey(params.IdempotencyKey) {
 			return invalidBrokerParams()
 		}
 		key := scopedBrokerIdempotencyKey(c, pluginName, request)
@@ -204,7 +212,7 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		return resultRunEnvelope, value, nil
 	case "artifact.list":
 		var params brokerListParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil {
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerArtifactListParams(params) {
 			return invalidBrokerParams()
 		}
 		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ArtifactList, error) {
@@ -221,7 +229,7 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		return resultArtifactList, value, nil
 	case "artifact.get":
 		var params brokerArtifactIdentityParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil {
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !brokerUUIDPattern.MatchString(params.ArtifactID) {
 			return invalidBrokerParams()
 		}
 		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ArtifactEnvelope, error) {
@@ -294,6 +302,31 @@ func containsBrokerCapability(values []string, wanted string) bool {
 	return false
 }
 func validBrokerIdempotencyKey(value string) bool { return len(value) >= 8 && len(value) <= 128 }
+
+func validBrokerRunCreateParams(params brokerRunCreateParams) bool {
+	if params.ProofClass != client.ProofClassSynthetic || !brokerRunKindPattern.MatchString(params.Kind) || !brokerDigestPattern.MatchString(params.PlanDigest) || !validBrokerIdempotencyKey(params.IdempotencyKey) || params.InputArtifactIDs == nil || params.OutputNames == nil || len(params.InputArtifactIDs) > 1000 || len(params.OutputNames) > 1000 {
+		return false
+	}
+	seenIDs := map[string]bool{}
+	for _, id := range params.InputArtifactIDs {
+		if !brokerUUIDPattern.MatchString(id) || seenIDs[id] { return false }
+		seenIDs[id] = true
+	}
+	seenNames := map[string]bool{}
+	for _, name := range params.OutputNames {
+		if !brokerOutputNamePattern.MatchString(name) || seenNames[name] { return false }
+		seenNames[name] = true
+	}
+	return true
+}
+
+func validBrokerRunListParams(params brokerListParams) bool {
+	return len(params.Cursor) <= 512 && (params.Status == "" || params.Status == "queued" || params.Status == "running" || params.Status == "succeeded" || params.Status == "failed" || params.Status == "cancelled" || params.Status == "all")
+}
+
+func validBrokerArtifactListParams(params brokerListParams) bool {
+	return len(params.Cursor) <= 512 && (params.Status == "" || params.Status == "pending" || params.Status == "ready" || params.Status == "failed" || params.Status == "deleted" || params.Status == "all")
+}
 
 func decodeBrokerParams(raw json.RawMessage, output any) error {
 	trimmed := bytes.TrimSpace(raw)

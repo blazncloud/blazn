@@ -184,3 +184,39 @@ func TestAuthenticatedBrokerRejectsPrincipalChange(t *testing.T) {
 		t.Fatalf("api=%#v failure=%#v", api, failure)
 	}
 }
+
+func TestAuthenticatedBrokerRoutesEveryFrozenMetadataMethod(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("d", 64)
+	run := client.Run{ID: brokerTestRunID, WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID, ProofClass: client.ProofClassSynthetic, PlanDigest: digest}
+	artifact := client.Artifact{ID: brokerTestArtifactID, WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID}
+	api := &fakeBrokerAPI{run: client.RunEnvelope{Run: run}, runs: client.RunList{Items: []client.Run{run}}, artifact: client.ArtifactEnvelope{Artifact: artifact}, artifacts: client.ArtifactList{Items: []client.Artifact{artifact}}}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	for _, testCase := range []struct{ method, params, schema string }{
+		{"run.list", `{"status":"all"}`, resultRunList},
+		{"run.get", `{"runId":"` + brokerTestRunID + `"}`, resultRunEnvelope},
+		{"run.cancel", `{"runId":"` + brokerTestRunID + `","expectedVersion":1,"idempotencyKey":"cancel-run-1"}`, resultRunEnvelope},
+		{"artifact.list", `{"status":"ready"}`, resultArtifactList},
+		{"artifact.get", `{"artifactId":"` + brokerTestArtifactID + `"}`, resultArtifactEnvelope},
+	} {
+		schema, _, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest(testCase.method, testCase.params))
+		if failure != nil || schema != testCase.schema { t.Fatalf("method=%s schema=%q failure=%#v", testCase.method, schema, failure) }
+	}
+}
+
+func TestAuthenticatedBrokerRejectsSchemaInvalidParamsBeforeAuthorityUse(t *testing.T) {
+	api := &fakeBrokerAPI{}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	digest := "sha256:" + strings.Repeat("e", 64)
+	for _, testCase := range []struct{ method, params string }{
+		{"run.create", `{"kind":"content.render","proofClass":"synthetic","planDigest":"` + digest + `","outputNames":[],"idempotencyKey":"create-run-1"}`},
+		{"run.list", `{"status":"unknown"}`},
+		{"run.get", `{"runId":"not-a-uuid"}`},
+		{"run.cancel", `{"runId":"` + brokerTestRunID + `","expectedVersion":0,"idempotencyKey":"cancel-run-1"}`},
+		{"artifact.list", `{"status":"queued"}`},
+		{"artifact.get", `{"artifactId":"not-a-uuid"}`},
+	} {
+		_, _, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest(testCase.method, testCase.params))
+		if failure == nil || failure.Code != "invalid_request" { t.Fatalf("method=%s failure=%#v", testCase.method, failure) }
+	}
+	if len(api.tokens) != 0 { t.Fatalf("invalid requests reached API with tokens: %#v", api.tokens) }
+}
