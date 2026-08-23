@@ -18,6 +18,17 @@ test("OIDC transaction tampering and expiry fail closed", () => {
   assert.throws(() => unsealOidcTransaction(key, sealed, transaction.issuedAt + 11 * 60 * 1_000), /expired/);
 });
 
+test("OIDC transactions reject non-canonical base64url aliases", () => {
+  const sealed = sealOidcTransaction(key, transaction);
+  const packed = Buffer.from(sealed, "base64url");
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const alias = [...alphabet]
+    .map((character) => `${sealed.slice(0, -1)}${character}`)
+    .find((candidate) => candidate !== sealed && Buffer.from(candidate, "base64url").equals(packed));
+  assert.ok(alias, "fixture must have a non-canonical base64url alias");
+  assert.throws(() => unsealOidcTransaction(key, alias, transaction.issuedAt + 1_000), /invalid/);
+});
+
 test("state comparison is exact", () => {
   assert.equal(stateMatches("same", "same"), true);
   assert.equal(stateMatches("same", "different"), false);

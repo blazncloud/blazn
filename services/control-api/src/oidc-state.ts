@@ -32,7 +32,7 @@ export function sealOidcTransaction(key: Buffer, transaction: OidcTransaction): 
 export function unsealOidcTransaction(key: Buffer, value: string, now = Date.now()): OidcTransaction {
   if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length > 4096) throw new Error("OIDC transaction cookie is invalid");
   const packed = Buffer.from(value, "base64url");
-  if (packed.length < 29) throw new Error("OIDC transaction cookie is invalid");
+  if (packed.length < 29 || packed.toString("base64url") !== value) throw new Error("OIDC transaction cookie is invalid");
   const decipher = createDecipheriv("aes-256-gcm", key, packed.subarray(0, 12));
   decipher.setAAD(Buffer.from("blazn-oidc-transaction-v1"));
   decipher.setAuthTag(packed.subarray(12, 28));
