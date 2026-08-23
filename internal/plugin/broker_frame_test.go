@@ -31,20 +31,91 @@ func TestBrokerFrameRoundTripAndBounds(t *testing.T) {
 }
 
 func TestBrokerArtifactUploadReadyDataEndAndCleanup(t *testing.T) {
-	root,child,err:=newBrokerSocketPair();if err!=nil{t.Skip(err)};defer root.Close();defer child.Close()
-	content:=[]byte("hello world!");sum:=sha256.Sum256(content);digest:="sha256:"+hex.EncodeToString(sum[:]);size:=int64(len(content))
-	api:=&fakeBrokerAPI{run:client.RunEnvelope{Run:client.Run{ID:brokerTestRunID,WorkspaceID:brokerTestWorkspaceID,ProjectID:brokerTestProjectID,Kind:"content.render",ProofClass:client.ProofClassSynthetic,Status:client.RunStatusRunning,Version:2,PlanDigest:"sha256:"+strings.Repeat("a",64),InputArtifactIDs:[]string{},OutputNames:[]string{"preview.mp4"},RequestedBy:"user-1",CreatedAt:"2026-08-23T00:00:00Z"}},artifact:client.ArtifactEnvelope{Artifact:client.Artifact{ID:brokerTestArtifactID,WorkspaceID:brokerTestWorkspaceID,ProjectID:brokerTestProjectID,SourceRunID:brokerTestRunID,Kind:"content.video",MediaType:client.ArtifactMediaTypeVideo,Name:"preview.mp4",Status:client.ArtifactStatusReady,Version:1,Digest:digest,SizeBytes:&size,CreatedBy:"user-1",CreatedAt:"2026-08-23T00:00:01Z",UpdatedAt:"2026-08-23T00:00:01Z",DownloadAvailable:true}}}
-	handler,runtimeContext:=brokerTestHandler(t,api,&fakeBrokerSessions{});handler.uploadTempDir=t.TempDir();session:=newBrokerSessionWithHandler(context.Background(),root,"content",runtimeContext,handler);done:=make(chan error,1);go func(){done<-session.serve()}()
-	request:=[]byte(`{"schemaVersion":1,"requestId":"dddddddddddddddddddddddddddddddd","method":"artifact.upload.begin","params":{"runId":"`+brokerTestRunID+`","name":"preview.mp4","kind":"content.video","mediaType":"video","sizeBytes":12,"digest":"`+digest+`","idempotencyKey":"upload-file-1"}}`)
-	if err:=writeBrokerFrame(child,brokerFrame{Type:brokerFrameRequest,StreamID:10,Payload:request});err!=nil{t.Fatal(err)};readyFrame,err:=readBrokerFrame(child);if err!=nil{t.Fatal(err)};var ready brokerResponse;if json.Unmarshal(readyFrame.Payload,&ready)!=nil||!ready.OK||ready.ResultSchema!="artifact-upload-ready/v1"{t.Fatalf("ready=%s",readyFrame.Payload)}
-	for _,chunk:=range [][]byte{content[:5],content[5:]}{if err:=writeBrokerFrame(child,brokerFrame{Type:brokerFrameData,StreamID:10,Payload:chunk});err!=nil{t.Fatal(err)}};if err:=writeBrokerFrame(child,brokerFrame{Type:brokerFrameEnd,StreamID:10});err!=nil{t.Fatal(err)};terminal,err:=readBrokerFrame(child);if err!=nil{t.Fatal(err)};var response brokerResponse;if json.Unmarshal(terminal.Payload,&response)!=nil||!response.OK||response.ResultSchema!=resultArtifactEnvelope||!bytes.Equal(api.uploadContent,content){t.Fatalf("terminal=%s content=%q",terminal.Payload,api.uploadContent)}
-	_ = child.Close();if err:=<-done;err!=nil{t.Fatal(err)};entries,err:=os.ReadDir(handler.uploadTempDir);if err!=nil||len(entries)!=0{t.Fatalf("entries=%v err=%v",entries,err)}
+	root, child, err := newBrokerSocketPair()
+	if err != nil {
+		t.Skip(err)
+	}
+	defer root.Close()
+	defer child.Close()
+	content := []byte("hello world!")
+	sum := sha256.Sum256(content)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	size := int64(len(content))
+	api := &fakeBrokerAPI{run: client.RunEnvelope{Run: client.Run{ID: brokerTestRunID, WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID, Kind: "content.render", ProofClass: client.ProofClassSynthetic, Status: client.RunStatusRunning, Version: 2, PlanDigest: "sha256:" + strings.Repeat("a", 64), InputArtifactIDs: []string{}, OutputNames: []string{"preview.mp4"}, RequestedBy: "user-1", CreatedAt: "2026-08-23T00:00:00Z"}}, artifact: client.ArtifactEnvelope{Artifact: client.Artifact{ID: brokerTestArtifactID, WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID, SourceRunID: brokerTestRunID, Kind: "content.video", MediaType: client.ArtifactMediaTypeVideo, Name: "preview.mp4", Status: client.ArtifactStatusReady, Version: 1, Digest: digest, SizeBytes: &size, CreatedBy: "user-1", CreatedAt: "2026-08-23T00:00:01Z", UpdatedAt: "2026-08-23T00:00:01Z", DownloadAvailable: true}}}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	handler.uploadTempDir = t.TempDir()
+	session := newBrokerSessionWithHandler(context.Background(), root, "content", runtimeContext, handler)
+	done := make(chan error, 1)
+	go func() { done <- session.serve() }()
+	request := []byte(`{"schemaVersion":1,"requestId":"dddddddddddddddddddddddddddddddd","method":"artifact.upload.begin","params":{"runId":"` + brokerTestRunID + `","name":"preview.mp4","kind":"content.video","mediaType":"video","sizeBytes":12,"digest":"` + digest + `","idempotencyKey":"upload-file-1"}}`)
+	if err := writeBrokerFrame(child, brokerFrame{Type: brokerFrameRequest, StreamID: 10, Payload: request}); err != nil {
+		t.Fatal(err)
+	}
+	readyFrame, err := readBrokerFrame(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready brokerResponse
+	if json.Unmarshal(readyFrame.Payload, &ready) != nil || !ready.OK || ready.ResultSchema != "artifact-upload-ready/v1" {
+		t.Fatalf("ready=%s", readyFrame.Payload)
+	}
+	for _, chunk := range [][]byte{content[:5], content[5:]} {
+		if err := writeBrokerFrame(child, brokerFrame{Type: brokerFrameData, StreamID: 10, Payload: chunk}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writeBrokerFrame(child, brokerFrame{Type: brokerFrameEnd, StreamID: 10}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := readBrokerFrame(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response brokerResponse
+	if json.Unmarshal(terminal.Payload, &response) != nil || !response.OK || response.ResultSchema != resultArtifactEnvelope || !bytes.Equal(api.uploadContent, content) {
+		t.Fatalf("terminal=%s content=%q", terminal.Payload, api.uploadContent)
+	}
+	_ = child.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(handler.uploadTempDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("entries=%v err=%v", entries, err)
+	}
 }
 
 func TestBrokerArtifactUploadPartialEOFCleansWithoutActivation(t *testing.T) {
-	root,child,err:=newBrokerSocketPair();if err!=nil{t.Skip(err)};defer root.Close()
-	sum:=sha256.Sum256([]byte("xx"));digest:="sha256:"+hex.EncodeToString(sum[:]);api:=&fakeBrokerAPI{run:client.RunEnvelope{Run:client.Run{ID:brokerTestRunID,WorkspaceID:brokerTestWorkspaceID,ProjectID:brokerTestProjectID,Kind:"content.render",ProofClass:client.ProofClassSynthetic,Status:client.RunStatusRunning,Version:2,PlanDigest:"sha256:"+strings.Repeat("a",64),InputArtifactIDs:[]string{},OutputNames:[]string{"preview.mp4"},RequestedBy:"user-1",CreatedAt:"2026-08-23T00:00:00Z"}}};handler,runtimeContext:=brokerTestHandler(t,api,&fakeBrokerSessions{});handler.uploadTempDir=t.TempDir();session:=newBrokerSessionWithHandler(context.Background(),root,"content",runtimeContext,handler);done:=make(chan error,1);go func(){done<-session.serve()}()
-	request:=[]byte(`{"schemaVersion":1,"requestId":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","method":"artifact.upload.begin","params":{"runId":"`+brokerTestRunID+`","name":"preview.mp4","kind":"content.video","mediaType":"video","sizeBytes":2,"digest":"`+digest+`","idempotencyKey":"upload-file-2"}}`);_ = writeBrokerFrame(child,brokerFrame{Type:brokerFrameRequest,StreamID:11,Payload:request});if _,err:=readBrokerFrame(child);err!=nil{t.Fatal(err)};_ = writeBrokerFrame(child,brokerFrame{Type:brokerFrameData,StreamID:11,Payload:[]byte("x")});_ = child.Close();if err:=<-done;err!=nil{t.Fatal(err)};if len(api.uploadContent)!=0{t.Fatalf("partial upload activated: %q",api.uploadContent)};entries,err:=os.ReadDir(handler.uploadTempDir);if err!=nil||len(entries)!=0{t.Fatalf("entries=%v err=%v",entries,err)}
+	root, child, err := newBrokerSocketPair()
+	if err != nil {
+		t.Skip(err)
+	}
+	defer root.Close()
+	sum := sha256.Sum256([]byte("xx"))
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	api := &fakeBrokerAPI{run: client.RunEnvelope{Run: client.Run{ID: brokerTestRunID, WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID, Kind: "content.render", ProofClass: client.ProofClassSynthetic, Status: client.RunStatusRunning, Version: 2, PlanDigest: "sha256:" + strings.Repeat("a", 64), InputArtifactIDs: []string{}, OutputNames: []string{"preview.mp4"}, RequestedBy: "user-1", CreatedAt: "2026-08-23T00:00:00Z"}}}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	handler.uploadTempDir = t.TempDir()
+	session := newBrokerSessionWithHandler(context.Background(), root, "content", runtimeContext, handler)
+	done := make(chan error, 1)
+	go func() { done <- session.serve() }()
+	request := []byte(`{"schemaVersion":1,"requestId":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","method":"artifact.upload.begin","params":{"runId":"` + brokerTestRunID + `","name":"preview.mp4","kind":"content.video","mediaType":"video","sizeBytes":2,"digest":"` + digest + `","idempotencyKey":"upload-file-2"}}`)
+	_ = writeBrokerFrame(child, brokerFrame{Type: brokerFrameRequest, StreamID: 11, Payload: request})
+	if _, err := readBrokerFrame(child); err != nil {
+		t.Fatal(err)
+	}
+	_ = writeBrokerFrame(child, brokerFrame{Type: brokerFrameData, StreamID: 11, Payload: []byte("x")})
+	_ = child.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(api.uploadContent) != 0 {
+		t.Fatalf("partial upload activated: %q", api.uploadContent)
+	}
+	entries, err := os.ReadDir(handler.uploadTempDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("entries=%v err=%v", entries, err)
+	}
 }
 
 func TestBrokerFrameRejectsHeaderDrift(t *testing.T) {
