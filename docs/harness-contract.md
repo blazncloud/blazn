@@ -91,6 +91,13 @@ only explicit non-secret authorization metadata. Every normalized tool event
 must name a tool allowed by both the immutable AgentVersion and selected
 HarnessProfile.
 
+Compatible Runs bind the selected proxy decision to one exact normalized
+`model.proxy-decided` event and its earlier `model.requested` event. Terminal
+model-request counts and input/output token totals equal the normalized request
+and usage events rather than uncorroborated adapter counters. One closed
+`billing.recorded` event binds the authoritative pricing and receipt identity;
+control-plane and proxy receipts have matching authoritative event sources.
+
 Follow-ups retain the Session and Conversation IDs. Resume increments a
 generation and resumes event/message cursors. Cancellation is complete only
 after acknowledgement, process-tree termination, credential revocation,

@@ -20,7 +20,7 @@
         "id": "33000000-0000-4000-8000-000000000001",
         "conversationId": "34000000-0000-4000-8000-000000000001",
         "messageCursor": 2,
-        "eventCursor": 7,
+        "eventCursor": 13,
         "followUpCount": 1,
         "resumeGeneration": 1,
         "cancellation": {
@@ -159,11 +159,69 @@
         },
         {
             "schemaVersion": "blazn.dev/harness-event/v1alpha1",
-            "id": "80000000-0000-4000-8000-000000000003",
+            "id": "82000000-0000-4000-8000-000000000001",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
             "sequence": 2,
-            "cursor": "e2",
+            "cursor": "model-request-1",
+            "type": "model.requested",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:00:03Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000001",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "71000000-0000-4000-8000-000000000001",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 3,
+            "cursor": "proxy-decision",
+            "type": "model.proxy-decided",
+            "source": "proxy",
+            "observedAt": "2026-08-22T00:00:04Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000001",
+                "outcome": "ROUTED",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1,
+                "policyId": "73000000-0000-4000-8000-000000000001",
+                "policyVersion": 1,
+                "authentication": "proxy-workload-proof",
+                "authorizationId": null
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000002",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 4,
+            "cursor": "model-usage-1",
+            "type": "model.usage",
+            "source": "proxy",
+            "observedAt": "2026-08-22T00:00:59Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000001",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1,
+                "inputTokens": 60,
+                "outputTokens": 30
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000003",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 5,
+            "cursor": "e5",
             "type": "message.assistant",
             "source": "harness",
             "observedAt": "2026-08-22T00:01:00Z",
@@ -177,8 +235,8 @@
             "id": "80000000-0000-4000-8000-000000000004",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 3,
-            "cursor": "e3",
+            "sequence": 6,
+            "cursor": "e6",
             "type": "followup.accepted",
             "source": "control-plane",
             "observedAt": "2026-08-22T00:02:00Z",
@@ -192,8 +250,8 @@
             "id": "80000000-0000-4000-8000-000000000005",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 4,
-            "cursor": "e4",
+            "sequence": 7,
+            "cursor": "e7",
             "type": "harness.resumed",
             "source": "adapter",
             "observedAt": "2026-08-22T00:02:01Z",
@@ -204,11 +262,68 @@
         },
         {
             "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000003",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 8,
+            "cursor": "model-request-2",
+            "type": "model.requested",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:02:02Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000003",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000004",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 9,
+            "cursor": "model-usage-2",
+            "type": "model.usage",
+            "source": "proxy",
+            "observedAt": "2026-08-22T00:04:58Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000003",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1,
+                "inputTokens": 40,
+                "outputTokens": 20
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000005",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 10,
+            "cursor": "billing-recorded",
+            "type": "billing.recorded",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:04:58Z",
+            "payload": {
+                "mode": "zero-cost",
+                "currency": "USD",
+                "amountMicros": 0,
+                "pricingId": "77000000-0000-4000-8000-000000000001",
+                "pricingVersion": 1,
+                "receiptId": "78000000-0000-4000-8000-000000000001",
+                "source": "control-plane-receipt"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
             "id": "80000000-0000-4000-8000-000000000006",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 5,
-            "cursor": "e5",
+            "sequence": 11,
+            "cursor": "e11",
             "type": "patch.created",
             "source": "adapter",
             "observedAt": "2026-08-22T00:04:59Z",
@@ -222,8 +337,8 @@
             "id": "80000000-0000-4000-8000-000000000007",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 6,
-            "cursor": "e6",
+            "sequence": 12,
+            "cursor": "e12",
             "type": "artifact.created",
             "source": "adapter",
             "observedAt": "2026-08-22T00:04:59Z",
@@ -235,8 +350,8 @@
             "id": "80000000-0000-4000-8000-000000000008",
             "runId": "30000000-0000-4000-8000-000000000001",
             "sessionId": "33000000-0000-4000-8000-000000000001",
-            "sequence": 7,
-            "cursor": "e7",
+            "sequence": 13,
+            "cursor": "e13",
             "type": "result.terminal",
             "source": "control-plane",
             "observedAt": "2026-08-22T00:05:00Z",
@@ -264,6 +379,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:ee89dc7d75a4f4cb38786c1eb028558e05381578deb06fb0de946a75ac9f6b12"
+        "receiptDigest": "sha256:9fb91c0d9ae18b1f3fe58e38ffd2d3f44d8ab0a6846e264f2379fec37ed79521"
     }
 }
