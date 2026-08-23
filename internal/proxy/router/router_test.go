@@ -469,6 +469,14 @@ func TestListenerAuthenticationAndModels(t *testing.T) {
 	if ambiguous.Code != 401 {
 		t.Fatalf("ambiguous status=%d", ambiguous.Code)
 	}
+	malformedMixedRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	malformedMixedRequest.Header.Set("Authorization", "Basic listener-secret")
+	malformedMixedRequest.Header.Set("x-api-key", "listener-secret")
+	malformedMixed := httptest.NewRecorder()
+	handler.ServeHTTP(malformedMixed, malformedMixedRequest)
+	if malformedMixed.Code != 401 {
+		t.Fatalf("malformed mixed credential status=%d", malformedMixed.Code)
+	}
 	authorizedRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	authorizedRequest.Header.Set("x-api-key", "listener-secret")
 	authorized := httptest.NewRecorder()
@@ -480,6 +488,69 @@ func TestListenerAuthenticationAndModels(t *testing.T) {
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if health.Code != 200 || strings.Contains(health.Body.String(), "policy") {
 		t.Fatalf("health leaked state: %s", health.Body.String())
+	}
+}
+
+func TestAnthropicSourceRoutesNonstreamAndStripsListenerCredential(t *testing.T) {
+	var authorization, apiKey, path, body string
+	handler, _ := testHandler(t, func(_ proxycontract.Route, incoming *http.Request) (*http.Response, error) {
+		authorization = incoming.Header.Get("Authorization")
+		apiKey = incoming.Header.Get("x-api-key")
+		path = incoming.URL.Path
+		raw, _ := io.ReadAll(incoming.Body)
+		body = string(raw)
+		return response(200, "application/json", `{"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}`), nil
+	}, nil)
+	incoming := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	incoming.Header.Set("x-api-key", "listener-secret")
+	incoming.Header.Set("anthropic-version", "2023-06-01")
+	incoming.Header.Set("Content-Type", "application/json")
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, incoming)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), `"type":"message"`) || !strings.Contains(record.Body.String(), `"text":"hello"`) {
+		t.Fatalf("anthropic response %d: %s", record.Code, record.Body.String())
+	}
+	if authorization != "Bearer local-destination" || apiKey != "" || strings.Contains(body, "listener-secret") || path != "/v1/chat/completions" {
+		t.Fatalf("unsafe Anthropic dispatch auth=%q apiKey=%q path=%q body=%q", authorization, apiKey, path, body)
+	}
+}
+
+func TestAnthropicSourceRequiresExactVersionAndFrozenNonstreamProfile(t *testing.T) {
+	handler, _ := testHandler(t, func(proxycontract.Route, *http.Request) (*http.Response, error) {
+		t.Fatal("upstream should not run")
+		return nil, nil
+	}, nil)
+	base := `{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`
+	tests := []struct{ name, version, body string }{
+		{"missing version", "", base},
+		{"wrong version", "2024-01-01", base},
+		{"stream", "2023-06-01", `{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"stream":true}`},
+		{"stop", "2023-06-01", `{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"stop_sequences":["END"]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			incoming := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(test.body))
+			incoming.Header.Set("Authorization", "Bearer listener-secret")
+			incoming.Header.Set("Content-Type", "application/json")
+			if test.version != "" {
+				incoming.Header.Set("anthropic-version", test.version)
+			}
+			record := httptest.NewRecorder()
+			handler.ServeHTTP(record, incoming)
+			if record.Code != 400 || !strings.Contains(record.Body.String(), `"type":"error"`) {
+				t.Fatalf("status=%d body=%s", record.Code, record.Body.String())
+			}
+		})
+	}
+}
+
+func TestNonstreamOutputUsageAboveRequestedLimitIsRejected(t *testing.T) {
+	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		return response(200, "application/json", `{"choices":[{"message":{"content":"too long"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":33}}`), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant-restricted","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":32}`)
+	if record.Code != 502 || !strings.Contains(record.Body.String(), "upstream response exceeded the output limit") || strings.Contains(record.Body.String(), "too long") {
+		t.Fatalf("output limit response %d: %s", record.Code, record.Body.String())
 	}
 }
 

@@ -149,14 +149,19 @@ func redirectPolicy(route proxycontract.Route) func(*http.Request, []*http.Reque
 }
 
 func authenticateAndStrip(header http.Header, listenerToken string) bool {
-	values := make([]string, 0, 2)
-	for _, raw := range header.Values("Authorization") {
-		if parts := strings.SplitN(raw, " ", 2); len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			values = append(values, parts[1])
+	authorization, apiKeys := header.Values("Authorization"), header.Values("x-api-key")
+	var sourceCredential string
+	validShape := false
+	switch {
+	case len(authorization) == 1 && len(apiKeys) == 0:
+		parts := strings.SplitN(authorization[0], " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") && parts[1] != "" {
+			sourceCredential, validShape = parts[1], true
 		}
+	case len(authorization) == 0 && len(apiKeys) == 1 && apiKeys[0] != "":
+		sourceCredential, validShape = apiKeys[0], true
 	}
-	values = append(values, header.Values("x-api-key")...)
-	valid := len(values) == 1 && listenerToken != "" && subtle.ConstantTimeCompare([]byte(values[0]), []byte(listenerToken)) == 1
+	valid := validShape && listenerToken != "" && subtle.ConstantTimeCompare([]byte(sourceCredential), []byte(listenerToken)) == 1
 	stripCredentialHeaders(header)
 	return valid
 }

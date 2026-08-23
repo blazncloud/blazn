@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	proxya "github.com/blazncloud/blazn/internal/proxy/anthropic"
 	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
@@ -31,7 +32,13 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		_ = json.NewEncoder(writer).Encode(map[string]string{"status": status})
 		return
 	}
-	if !authenticateAndStrip(request.Header, h.config.ListenerToken) {
+	isAnthropic := request.URL.Path == "/v1/messages"
+	if isAnthropic {
+		if err := proxya.AuthenticateAndStrip(request.Header, h.config.ListenerToken); err != nil {
+			writeAnthropicError(writer, err)
+			return
+		}
+	} else if !authenticateAndStrip(request.Header, h.config.ListenerToken) {
 		writeError(writer, safeError("authentication_failed", "listener authentication failed", http.StatusUnauthorized, false))
 		return
 	}
@@ -61,35 +68,59 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	case "/v1/responses":
 		routed, err = normalizeResponsesIncoming(limited, h.config.Policy, h.config.Now())
 	case "/v1/messages":
-		writeError(writer, unsupported("Anthropic source handling is provided by the isolated Anthropic lane"))
-		return
+		var normalized proxycontract.NormalizedRequest
+		normalized, err = proxya.Normalize(limited, h.config.Policy, h.config.Now(), newUUID)
+		if err == nil && (normalized.Stream || len(normalized.Limits.Stop) != 0) {
+			err = unsupported("Anthropic Messages accepts only stream=false without stop_sequences")
+		}
+		routed = routedRequest{normalized: normalized}
 	default:
 		http.NotFound(writer, request)
 		return
 	}
 	if err != nil {
-		writeError(writer, err)
+		if isAnthropic {
+			writeAnthropicError(writer, err)
+		} else {
+			writeError(writer, err)
+		}
 		return
 	}
 	normalized := routed.normalized
 	if err = ensureContextLimit(routed, h.config.Policy); err != nil {
-		writeError(writer, err)
+		if isAnthropic {
+			writeAnthropicError(writer, err)
+		} else {
+			writeError(writer, err)
+		}
 		return
 	}
 	routes, err := h.routes.selectRoutesFor(routed)
 	if err != nil {
-		writeError(writer, err)
+		if isAnthropic {
+			writeAnthropicError(writer, err)
+		} else {
+			writeError(writer, err)
+		}
 		return
 	}
 	h.emit(normalized, routes[0], 1, proxycontract.EventRequestStarted, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
 	deadline, parseErr := time.Parse(time.RFC3339, normalized.Limits.DeadlineAt)
 	if parseErr != nil {
-		writeError(writer, safeError("invalid_request", "request deadline is invalid", 400, false))
+		if isAnthropic {
+			writeAnthropicError(writer, safeError("invalid_request", "request deadline is invalid", 400, false))
+		} else {
+			writeError(writer, safeError("invalid_request", "request deadline is invalid", 400, false))
+		}
 		return
 	}
 	remaining := deadline.Sub(h.config.Now())
 	if remaining <= 0 {
-		writeError(writer, safeError("timeout_before_first_byte", "request deadline elapsed", 504, false))
+		if isAnthropic {
+			writeAnthropicError(writer, safeError("timeout_before_first_byte", "request deadline elapsed", 504, false))
+		} else {
+			writeError(writer, safeError("timeout_before_first_byte", "request deadline elapsed", 504, false))
+		}
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), remaining)
@@ -106,7 +137,11 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		} else {
 			h.emit(normalized, failureRoute, failureAttempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
 		}
-		writeError(writer, err)
+		if isAnthropic {
+			writeAnthropicError(writer, err)
+		} else {
+			writeError(writer, err)
+		}
 		return
 	}
 	if normalized.Stream {
@@ -128,19 +163,67 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if err != nil {
 		h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(result.attemptStarted), nil)
 		h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, reasonForError(err), h.config.Now().Sub(started), nil)
-		writeError(writer, err)
+		if isAnthropic {
+			writeAnthropicError(writer, err)
+		} else {
+			writeError(writer, err)
+		}
+		return
+	}
+	if response.Usage.OutputTokens > normalized.Limits.MaxOutputTokens {
+		err = safeError("upstream_invalid_response", "upstream response exceeded the output limit", 502, false)
+		h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonPolicyDenied, h.config.Now().Sub(result.attemptStarted), nil)
+		h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeFailed, proxycontract.EventReasonPolicyDenied, h.config.Now().Sub(started), nil)
+		if isAnthropic {
+			writeAnthropicError(writer, err)
+		} else {
+			writeError(writer, err)
+		}
 		return
 	}
 	if normalized.Protocol == proxycontract.ProtocolOpenAIResponses && response.FinishReason == "length" && responseMeta.status == "" {
 		responseMeta.status = "incomplete"
 		responseMeta.incompleteDetails = json.RawMessage(`{"reason":"max_output_tokens"}`)
 	}
-	if err = writeSourceResponseDetailed(writer, normalized.Protocol, response, responseMeta); err != nil {
+	if isAnthropic {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Cache-Control", "no-store")
+		err = proxya.WriteSourceResponse(writer, response)
+	} else {
+		err = writeSourceResponseDetailed(writer, normalized.Protocol, response, responseMeta)
+	}
+	if err != nil {
 		return
 	}
 	latency := h.config.Now().Sub(started)
 	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, h.config.Now().Sub(result.attemptStarted), &response.Usage)
 	h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, &response.Usage)
+}
+
+func writeAnthropicError(writer http.ResponseWriter, err error) {
+	api := &APIError{Code: "internal_error", Message: "proxy request failed", Status: http.StatusInternalServerError}
+	var routerError *APIError
+	var anthropicError *proxya.Error
+	if errors.As(err, &routerError) {
+		api = routerError
+	} else if errors.As(err, &anthropicError) {
+		api = &APIError{Code: anthropicError.Code, Message: anthropicError.Message, Status: anthropicError.Status}
+	}
+	typeName := "api_error"
+	switch api.Code {
+	case "authentication_failed", "credential_unavailable":
+		typeName = "authentication_error"
+	case "invalid_request", "unsupported_capability", "no_compliant_route":
+		typeName = "invalid_request_error"
+	case "model_not_found":
+		typeName = "not_found_error"
+	case "rate_limited":
+		typeName = "rate_limit_error"
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(api.Status)
+	_ = json.NewEncoder(writer).Encode(map[string]any{"type": "error", "error": map[string]any{"type": typeName, "message": api.Message}})
 }
 
 func (h *Handler) ready(parent context.Context) bool {
