@@ -37,6 +37,7 @@ type fakeEnvironment struct {
 	publishCalls int
 	publishErr   error
 	modeErr      error
+	afterPublish func()
 }
 
 func newFakeEnvironment() *fakeEnvironment {
@@ -68,6 +69,9 @@ func (f *fakeEnvironment) Publish(_ context.Context, _ string, values []Publishe
 	for _, item := range values {
 		f.values[item.Name] = item.Value
 		f.markers[item.Name] = item.Marker
+	}
+	if f.afterPublish != nil {
+		f.afterPublish()
 	}
 	return f.publishErr
 }
@@ -147,11 +151,12 @@ type fakeFactory struct {
 	controller     *fakeController
 	shutdownErr    error
 	mutateIdentity bool
+	startDead      bool
 }
 
 func (f *fakeFactory) Start(_ context.Context, _ proxycontract.Policy, _ string, metadata ListenerMetadata) (ManagedListener, error) {
 	f.starts++
-	listener := &fakeListener{token: "listener-secret-value", alive: true, shutdownErr: f.shutdownErr, identity: state.ListenerIdentity{PID: 4000 + f.starts, ProcessStartIdentity: fmt.Sprintf("start-%d", f.starts), ExecutableIdentity: "exe-identity", Address: "127.0.0.1:8123", ListenerKeyFingerprint: testDigest}}
+	listener := &fakeListener{token: "listener-secret-value", alive: !f.startDead, shutdownErr: f.shutdownErr, identity: state.ListenerIdentity{PID: 4000 + f.starts, ProcessStartIdentity: fmt.Sprintf("start-%d", f.starts), ExecutableIdentity: "exe-identity", Address: "127.0.0.1:8123", ListenerKeyFingerprint: testDigest}}
 	if f.mutateIdentity {
 		original := listener.identity
 		listener.identities = []state.ListenerIdentity{original}
@@ -270,9 +275,13 @@ type fakeRunner struct {
 	argv, environment []string
 	exit              int
 	err               error
+	panicRun          bool
 }
 
 func (f *fakeRunner) Run(_ context.Context, argv, environment []string) (int, error) {
+	if f.panicRun {
+		panic("injected runner panic")
+	}
 	f.argv = append([]string(nil), argv...)
 	f.environment = append([]string(nil), environment...)
 	return f.exit, f.err
@@ -468,6 +477,20 @@ func TestRunCleanupFailureOverridesTerminalSuccess(t *testing.T) {
 	}
 }
 
+func TestRunnerPanicAlwaysRestoresScopedActivation(t *testing.T) {
+	service, store, environment, factory, _, runner := testService(t)
+	runner.panicRun = true
+	result, err := service.Run(context.Background(), "policy.json", []string{"tool"})
+	if err == nil || result.Status != "failed" || result.State != "inactive" || result.ExitCode != 1 || result.Cleanup == nil || result.Cleanup.Status != "recovered" || store.journal != nil || environment.values["OPENAI_API_KEY"] != "prior-openai" {
+		t.Fatalf("result=%+v err=%v journal=%v env=%v", result, err, store.journal, environment.values)
+	}
+	for _, listener := range factory.listeners {
+		if !listener.stopped {
+			t.Fatal("runner panic left listener active")
+		}
+	}
+}
+
 func TestOffAndResetArePanicSafeAndNeedNoPolicyOrAPI(t *testing.T) {
 	service, store, _, _, policies, _ := testService(t)
 	store.panicRecover = true
@@ -594,6 +617,33 @@ func TestMutableListenerIdentityFailsBeforePublication(t *testing.T) {
 	}
 }
 
+func TestPostPublicationListenerDeathIsImmediatelyRecovered(t *testing.T) {
+	for _, kind := range []string{"dead", "mutated"} {
+		t.Run(kind, func(t *testing.T) {
+			service, store, environment, factory, _, _ := testService(t)
+			environment.afterPublish = func() {
+				listener := factory.listeners[4000+factory.starts]
+				if kind == "dead" {
+					listener.alive = false
+				} else {
+					listener.identity.Address = "127.0.0.1:9999"
+				}
+			}
+			result, err := service.On(context.Background(), "policy.json", "auto")
+			if err == nil || result.Status != "failed" || result.State != "inactive" || store.journal != nil || environment.values["OPENAI_API_KEY"] != "prior-openai" {
+				t.Fatalf("result=%+v err=%v journal=%v env=%v", result, err, store.journal, environment.values)
+			}
+			if kind == "mutated" {
+				for _, listener := range factory.listeners {
+					if !listener.stopped {
+						t.Fatal("mutated post-publish listener was not stopped by handle")
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDoctorDistinguishesUnsupportedFromFailureAndProvesShutdown(t *testing.T) {
 	service, _, environment, factory, _, _ := testService(t)
 	environment.modeErr = ErrSessionUnsupported
@@ -605,6 +655,11 @@ func TestDoctorDistinguishesUnsupportedFromFailureAndProvesShutdown(t *testing.T
 		t.Fatalf("corrupt doctor=%+v err=%v", result, err)
 	}
 	environment.modeErr = nil
+	factory.startDead = true
+	if result, err := service.Doctor(context.Background(), "policy.json"); err == nil || result.ExitCode != 7 {
+		t.Fatalf("dead doctor=%+v err=%v", result, err)
+	}
+	factory.startDead = false
 	factoryStart := factory.starts
 	if result, err := service.Doctor(context.Background(), "policy.json"); err != nil || result.Status != "ready" {
 		t.Fatalf("doctor=%+v err=%v", result, err)

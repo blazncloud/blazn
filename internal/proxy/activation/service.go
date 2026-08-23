@@ -138,15 +138,17 @@ type Dependencies struct {
 }
 
 type Service struct {
-	deps      Dependencies
-	mu        sync.Mutex
-	listeners map[int]managedProof
-	stopped   map[int]state.LiveListenerProof
+	deps         Dependencies
+	mu           sync.Mutex
+	listeners    map[int]managedProof
+	stopped      map[int]state.LiveListenerProof
+	environments map[string][]string
 }
 type managedProof struct {
-	listener ManagedListener
-	identity state.ListenerIdentity
-	proof    state.LiveListenerProof
+	listener     ManagedListener
+	identity     state.ListenerIdentity
+	proof        state.LiveListenerProof
+	activationID string
 }
 
 type Result struct {
@@ -185,7 +187,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]state.LiveListenerProof{}}, nil
+	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]state.LiveListenerProof{}, environments: map[string][]string{}}, nil
 }
 
 func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Result, error) {
@@ -219,10 +221,10 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 	if err != nil {
 		return s.result("proxy on", "unsupported", "inactive", 7), err
 	}
-	return s.activate(ctx, "proxy on", policy, digest, mode, mechanism, nil)
+	return s.activate(ctx, "proxy on", policy, digest, mode, mechanism)
 }
 
-func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (Result, error) {
+func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (result Result, err error) {
 	if len(argv) == 0 || argv[0] == "" {
 		return s.result("proxy run", "failed", "inactive", 2), errors.New("proxy run requires an exact command argv")
 	}
@@ -230,37 +232,38 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (Re
 	if err != nil {
 		return s.result("proxy run", "failed", "inactive", 2), err
 	}
-	childExit, ran := 0, false
-	result, err := s.activate(ctx, "proxy run", policy, digest, "scoped_run", "process_environment", func(environment []string) error {
-		var runErr error
-		ran = true
-		childExit, runErr = s.deps.Runner.Run(ctx, append([]string(nil), argv...), environment)
-		return runErr
-	})
-	if ran {
-		result.ExitCode = childExit
-		copy := childExit
-		result.ChildExitCode = &copy
+	result, err = s.activate(ctx, "proxy run", policy, digest, "scoped_run", "process_environment")
+	if err != nil {
+		return result, err
 	}
-	if result.ActivationID != "" {
-		recovery, offErr := s.recover(ctx, "proxy run")
-		result.State = recovery.State
-		result.Cleanup = recovery.Cleanup
-		result.ManualRemediation = recovery.ManualRemediation
-		err = errors.Join(err, offErr)
-		if offErr != nil {
-			result.Status = "recovery_required"
-			result.ExitCode = 9
+	defer func() {
+		recovered := recover()
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cleanup, cleanupErr := s.recover(recoveryCtx, "proxy run")
+		result.State, result.Cleanup, result.ManualRemediation = cleanup.State, cleanup.Cleanup, cleanup.ManualRemediation
+		if recovered != nil {
+			err = errors.New("proxy runner panicked")
+			result.Status, result.ExitCode = "failed", 1
+		}
+		err = errors.Join(err, cleanupErr)
+		if cleanupErr != nil {
+			result.Status, result.ExitCode = "recovery_required", 9
 		} else if err != nil {
 			result.Status = "failed"
 		} else {
 			result.Status = "completed"
 		}
-	}
+	}()
+	childExit, runErr := s.deps.Runner.Run(ctx, append([]string(nil), argv...), s.activationEnvironment(result.ActivationID))
+	result.ExitCode = childExit
+	copy := childExit
+	result.ChildExitCode = &copy
+	err = runErr
 	return result, err
 }
 
-func (s *Service) activate(ctx context.Context, command string, policy proxycontract.Policy, digest, mode, mechanism string, run func([]string) error) (Result, error) {
+func (s *Service) activate(ctx context.Context, command string, policy proxycontract.Policy, digest, mode, mechanism string) (Result, error) {
 	activationID, nonce, err := randomIdentity()
 	if err != nil {
 		return s.result(command, "failed", "inactive", 1), err
@@ -307,16 +310,37 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	}
 	s.mu.Lock()
 	delete(s.stopped, identity.PID)
-	s.listeners[identity.PID] = managedProof{listener: managed, identity: identity, proof: state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}}
+	s.listeners[identity.PID] = managedProof{listener: managed, identity: identity, activationID: activationID, proof: state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}}
+	s.environments[activationID] = append([]string(nil), desiredEnvironment...)
 	s.mu.Unlock()
 	keep = true
 	result := s.result(command, "active", "active", 0)
 	result.ActivationID, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, digest, mode, identity.Address
 	result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
-	if run != nil {
-		err = run(desiredEnvironment)
+	observedIdentity, live, postErr := managed.Inspect(ctx)
+	if postErr != nil || !live || observedIdentity != identity {
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if live {
+			if shutdownErr := managed.Shutdown(recoveryCtx); shutdownErr != nil {
+				result.Status, result.State, result.ExitCode = "recovery_required", "recovery_required", 9
+				return result, errors.Join(ErrRecovery, postErr, shutdownErr)
+			}
+		}
+		recovery, recoveryErr := s.recover(recoveryCtx, command)
+		if recoveryErr != nil {
+			return recovery, errors.Join(ErrRecovery, postErr, recoveryErr)
+		}
+		recovery.Status, recovery.ExitCode = "failed", 7
+		return recovery, errors.Join(errors.New("listener identity or liveness changed after publication"), postErr)
 	}
-	return result, err
+	return result, nil
+}
+
+func (s *Service) activationEnvironment(id string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.environments[id]...)
 }
 
 func (s *Service) Off(ctx context.Context) (Result, error) { return s.recover(ctx, "proxy off") }
@@ -365,7 +389,7 @@ func (s *Service) Inspect(ctx context.Context, pid int) (state.LiveListenerProof
 			return state.LiveListenerProof{}, live, err
 		}
 		if identity != managed.identity {
-			return state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: managed.proof.BinaryDigest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: managed.proof.ActivationNonce, OwnerUID: managed.proof.OwnerUID, Generation: managed.proof.Generation, Mode: managed.proof.Mode, SessionIdentity: managed.proof.SessionIdentity}, true, nil
+			return state.LiveListenerProof{}, true, errors.New("managed listener identity changed")
 		}
 		return managed.proof, true, nil
 	}
@@ -388,6 +412,7 @@ func (s *Service) Stop(ctx context.Context, proof state.LiveListenerProof) error
 		s.mu.Lock()
 		if current, present := s.listeners[proof.PID]; present && current.proof == proof {
 			delete(s.listeners, proof.PID)
+			delete(s.environments, current.activationID)
 			s.stopped[proof.PID] = proof
 		}
 		s.mu.Unlock()
@@ -444,6 +469,11 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 		return s.result("proxy doctor", "failed", "inactive", 3), err
 	}
 	identity := managed.Identity()
+	observedIdentity, liveBefore, inspectBeforeErr := managed.Inspect(ctx)
+	if inspectBeforeErr != nil || !liveBefore || observedIdentity != identity {
+		shutdownErr := managed.Shutdown(context.Background())
+		return s.result("proxy doctor", "failed", "inactive", 7), errors.Join(errors.New("proxy doctor listener identity or liveness is invalid"), inspectBeforeErr, shutdownErr)
+	}
 	if shutdownErr := managed.Shutdown(ctx); shutdownErr != nil {
 		return s.result("proxy doctor", "failed", "inactive", 7), shutdownErr
 	}
