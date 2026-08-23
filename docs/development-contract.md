@@ -46,6 +46,13 @@ Changing any material input creates a new Build. Branches, tags, mutable image
 tags, incomplete architecture sets, client-asserted source resolution, and
 unbound evidence are not accepted.
 
+The semantic verifier also requires the Build repository and builder profile to
+equal the committed project declaration. Every output index, child image, and
+refresh image remains in the declared registry repository. Each architecture's
+refresh input digest is derived from its platform plus the exact template,
+source, locks, build context, and plan; its cache key is domain-separated from
+that input digest.
+
 ## Authority and tenant boundary
 
 A Workspace user may request validation, build, test, evidence export, or
@@ -63,6 +70,11 @@ Project identity, complete typed evidence, committed project/test digests,
 per-platform refresh/image binding, and reproducibility comparison. User-facing
 sessions cannot call the controller finalizer boundary.
 
+Reproducibility resolves a distinct reference Build in the same tenant, binds
+its receipt, recomputes both input identities, requires unchanged inputs, and
+then compares the recorded material digests. A client-provided reference ID or
+digest is not evidence.
+
 Raw BuildKit addresses, BuildKit client certificates, registry credentials,
 object-store keys, signed URLs, and secret values are neither returned nor
 written into evidence. Builds execute repository and dependency code as
@@ -78,7 +90,10 @@ project, security, lifecycle, or cleanup test, or unexplained nondeterminism.
 Ineligible Builds carry at least one machine-readable refusal reason.
 Publication identity is one atomic object or `null`; if present, its Build
 receipt and image index must exactly match the qualified Build outputs. Partial
-or substituted publication identities are invalid.
+or substituted publication identities are invalid. The stable target template
+is committed in the DevelopmentProject; the controller resolves its Workspace,
+draft version, candidate version ID, and candidate digest before finalization,
+and publication must match that authorized target exactly.
 
 ## CLI acceptance surface
 

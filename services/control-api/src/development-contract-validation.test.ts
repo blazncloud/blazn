@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { FormatsPlugin } from "ajv-formats";
-import { developmentDigest, verifyDevelopmentFinalization, verifyDevelopmentProjectCommands } from "./development-contract.js";
+import { developmentBuildInputDigest, developmentDigest, developmentRefreshCacheKey, developmentRefreshInputsDigest, verifyDevelopmentFinalization, verifyDevelopmentProjectCommands } from "./development-contract.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const contracts = path.resolve(here, "../../../packages/contracts");
@@ -50,7 +50,7 @@ test("DevelopmentProject freezes exact platforms, lock digests, paths, and commi
 test("committed test commands reject direct shells and embedded credentials", async () => {
   const good = await readJSON(path.join(fixtures, "project-good.json"));
   assert.deepEqual(verifyDevelopmentProjectCommands(good), []);
-  for (const argv of [["sh", "-c", "npm test"], ["/usr/bin/env", "npm", "test"], ["npm", "test", "--api-key=forbidden"], ["npm", "test", "OPENAI_API_KEY=forbidden"], ["npm", "test", "https://token@example.invalid/pkg"]]) {
+  for (const argv of [["sh", "-c", "npm test"], ["/usr/bin/env", "npm", "test"], ["npm", "test", "--api-key=forbidden"], ["npm", "test", "OPENAI_API_KEY=forbidden"], ["npm", "test", "--header", "Authorization: Basic forbidden"], ["npm", "test", "-HX-Api-Key: forbidden"], ["npm", "test", "https://example.invalid/test?api_key=forbidden"], ["npm", "test", "https://example.invalid/test?%61pi_key=forbidden"], ["npm", "test", "https://token@example.invalid/pkg"]]) {
     const candidate = structuredClone(good);
     ((candidate.tests as Record<string, Record<string, unknown>>).poc!).argv = argv;
     assert.notDeepEqual(verifyDevelopmentProjectCommands(candidate), [], `accepted unsafe argv ${JSON.stringify(argv)}`);
@@ -123,9 +123,20 @@ test("controller finalization verifies committed inputs, tenant resolution, evid
     ["unresolved Artifact", (value) => { (value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts.pop(); }],
     ["uncommitted test result", (value) => { ((value.evidence as { projectTests: { results: Record<string, unknown> } }).projectTests.results).extra = { passed: true, artifactId: "80000000-0000-4000-8000-000000000012" }; }],
     ["wrong source test evidence", (value) => { ((value.evidence as { projectTests: Record<string, unknown> }).projectTests).sourceCommit = "2".repeat(40); }],
+    ["substituted source repository", (value) => { ((value.source as Record<string, unknown>)).repository = "https://github.com/attacker/substitute.git"; }],
+    ["substituted builder profile", (value) => { ((value.builder as Record<string, unknown>)).profile = "untrusted-builder"; }],
+    ["substituted index repository", (value) => { ((value.outputs as Record<string, unknown>)).imageIndexDigest = "evil.invalid/poc/coding-agent@sha256:" + "5".repeat(64); }],
+    ["substituted child repository", (value) => { (((value.outputs as { images: Array<Record<string, unknown>> }).images)[0]!).digest = "evil.invalid/poc/coding-agent@sha256:" + "6".repeat(64); }],
+    ["substituted refresh repository", (value) => { (((value.outputs as { refreshArtifacts: Record<string, Record<string, unknown>> }).refreshArtifacts)["linux/amd64"]!).imageDigest = "evil.invalid/poc/coding-agent@sha256:" + "6".repeat(64); }],
     ["wrong refresh child", (value) => { (((value.outputs as { refreshArtifacts: Record<string, Record<string, unknown>> }).refreshArtifacts)["linux/arm64"]!).imageDigest = ((value.outputs as { images: Array<Record<string, unknown>> }).images[0]!).digest; }],
+    ["forged refresh inputs", (value) => { (((value.outputs as { refreshArtifacts: Record<string, Record<string, unknown>> }).refreshArtifacts)["linux/arm64"]!).inputsDigest = `sha256:${"e".repeat(64)}`; }],
+    ["forged refresh cache key", (value) => { (((value.outputs as { refreshArtifacts: Record<string, Record<string, unknown>> }).refreshArtifacts)["linux/amd64"]!).cacheKey = `sha256:${"e".repeat(64)}`; }],
     ["self reproducibility comparison", (value) => { const comparison = ((value.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison); comparison.referenceBuildId = value.id; }],
     ["mismatched reproducibility material", (value) => { const comparison = ((value.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison); comparison.referenceMaterialDigest = `sha256:${"f".repeat(64)}`; }],
+    ["changed reference inputs", (value) => { ((value.finalization as { referenceBuild: { source: Record<string, unknown> } }).referenceBuild.source).commit = "2".repeat(40); }],
+    ["forged reference receipt", (value) => { ((value.finalization as { referenceBuild: Record<string, unknown> }).referenceBuild).receiptDigest = `sha256:${"f".repeat(64)}`; }],
+    ["substituted publication target", (value) => { ((value.publicationTarget as Record<string, unknown>)).templateId = "50000000-0000-4000-8000-000000000099"; }],
+    ["cross-workspace publication target", (value) => { ((value.finalization as { publicationTarget: Record<string, unknown> }).publicationTarget).workspaceId = "40000000-0000-4000-8000-000000000099"; }],
   ];
   for (const [label, mutate] of cases) {
     const candidate = structuredClone(build);
@@ -133,10 +144,23 @@ test("controller finalization verifies committed inputs, tenant resolution, evid
     assert.notDeepEqual(verifyDevelopmentFinalization(project, candidate), [], `${label} unexpectedly passed finalization verification`);
   }
   const published = structuredClone(build);
-  (published.publication as Record<string, unknown>).published = { templateVersionId: "60000000-0000-4000-8000-000000000002", templateDigest: `sha256:${"d".repeat(64)}`, imageIndexDigest: (published.outputs as Record<string, unknown>).imageIndexDigest, buildReceiptDigest: published.receiptDigest, publishedAt: "2026-08-22T00:05:00Z" };
+  (published.publication as Record<string, unknown>).published = { templateId: "50000000-0000-4000-8000-000000000001", templateVersionId: "60000000-0000-4000-8000-000000000002", templateDigest: `sha256:${"d".repeat(64)}`, imageIndexDigest: (published.outputs as Record<string, unknown>).imageIndexDigest, buildReceiptDigest: published.receiptDigest, publishedAt: "2026-08-22T00:05:00Z" };
   assert.deepEqual(verifyDevelopmentFinalization(project, published), []);
   ((published.publication as { published: Record<string, unknown> }).published).imageIndexDigest = "registry.blazn.invalid/poc/coding-agent@sha256:" + "e".repeat(64);
   assert.notDeepEqual(verifyDevelopmentFinalization(project, published), [], "publication accepted a substituted output index");
+});
+
+test("refresh and reproducibility fixture digests are derived from exact Build inputs", async () => {
+  const build = await readJSON(path.join(fixtures, "build-good.json"));
+  const outputs = build.outputs as { refreshArtifacts: Record<string, { inputsDigest: string; cacheKey: string }> };
+  for (const platform of ["linux/amd64", "linux/arm64"]) {
+    const inputs = developmentRefreshInputsDigest(build, platform);
+    assert.equal(outputs.refreshArtifacts[platform]!.inputsDigest, inputs);
+    assert.equal(outputs.refreshArtifacts[platform]!.cacheKey, developmentRefreshCacheKey(inputs));
+  }
+  const comparison = (build.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison;
+  assert.equal(comparison.candidateInputDigest, developmentBuildInputDigest(build));
+  assert.equal(comparison.referenceInputDigest, developmentBuildInputDigest((build.finalization as { referenceBuild: unknown }).referenceBuild));
 });
 
 test("CLI contract freezes the six acceptance commands and authority boundary", async () => {

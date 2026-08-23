@@ -4,7 +4,7 @@
   "title": "Blazn POC Development Project",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "projectId", "repository", "template", "platforms", "build", "dependencyLocks", "tests", "policy"],
+  "required": ["schemaVersion", "projectId", "repository", "template", "publicationTarget", "platforms", "build", "dependencyLocks", "tests", "policy"],
   "properties": {
     "schemaVersion": {"const": "blazn.dev/project/v1alpha1"},
     "projectId": {"type": "string", "format": "uuid"},
@@ -15,6 +15,10 @@
     "template": {
       "type": "object", "additionalProperties": false, "required": ["versionId", "digest"],
       "properties": {"versionId": {"type": "string", "format": "uuid"}, "digest": {"$ref": "#/$defs/digest"}}
+    },
+    "publicationTarget": {
+      "type": "object", "additionalProperties": false, "required": ["templateId"],
+      "properties": {"templateId": {"type": "string", "format": "uuid"}}
     },
     "platforms": {
       "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,

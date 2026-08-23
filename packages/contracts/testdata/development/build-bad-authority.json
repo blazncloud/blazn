@@ -11,6 +11,7 @@
   "projectManifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "buildContextDigest": "sha256:2323232323232323232323232323232323232323232323232323232323232323",
   "template": {"versionId": "60000000-0000-4000-8000-000000000001", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "publicationTarget": {"templateId": "50000000-0000-4000-8000-000000000001", "candidateVersionId": "60000000-0000-4000-8000-000000000002", "candidateDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "expectedDraftVersion": 3},
   "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
   "planDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
   "platforms": ["linux/amd64", "linux/arm64"],

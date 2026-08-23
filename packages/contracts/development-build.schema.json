@@ -4,7 +4,7 @@
   "title": "Blazn POC Development Build",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "workspaceId", "projectId", "runId", "version", "status", "requestedBy", "source", "projectManifestDigest", "buildContextDigest", "template", "dependencyLocks", "planDigest", "platforms", "builder", "outputs", "evidence", "receiptDigest", "finalization", "publication", "createdAt"],
+  "required": ["schemaVersion", "id", "workspaceId", "projectId", "runId", "version", "status", "requestedBy", "source", "projectManifestDigest", "buildContextDigest", "template", "publicationTarget", "dependencyLocks", "planDigest", "platforms", "builder", "outputs", "evidence", "receiptDigest", "finalization", "publication", "createdAt"],
   "properties": {
     "schemaVersion": {"const": "blazn.dev/build/v1alpha1"},
     "id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}, "runId": {"$ref": "#/$defs/id"},
@@ -15,6 +15,7 @@
     "projectManifestDigest": {"$ref": "#/$defs/digest"},
     "buildContextDigest": {"$ref": "#/$defs/digest"},
     "template": {"type": "object", "additionalProperties": false, "required": ["versionId", "digest"], "properties": {"versionId": {"$ref": "#/$defs/id"}, "digest": {"$ref": "#/$defs/digest"}}},
+    "publicationTarget": {"type": "object", "additionalProperties": false, "required": ["templateId", "candidateVersionId", "candidateDigest", "expectedDraftVersion"], "properties": {"templateId": {"$ref": "#/$defs/id"}, "candidateVersionId": {"$ref": "#/$defs/id"}, "candidateDigest": {"$ref": "#/$defs/digest"}, "expectedDraftVersion": {"type": "integer", "minimum": 1}}},
     "dependencyLocks": {"type": "object", "minProperties": 1, "maxProperties": 32, "propertyNames": {"$ref": "#/$defs/repositoryPath"}, "additionalProperties": {"$ref": "#/$defs/digest"}},
     "planDigest": {"$ref": "#/$defs/digest"},
     "platforms": {"$ref": "#/$defs/platformSet"},
@@ -40,7 +41,7 @@
           "type": "object", "additionalProperties": false, "required": ["outcome", "comparison"],
           "properties": {
             "outcome": {"enum": ["same-material-digest", "explained-nondeterminism"]},
-            "comparison": {"type": "object", "additionalProperties": false, "required": ["referenceBuildId", "candidateBuildId", "referenceMaterialDigest", "candidateMaterialDigest", "artifactId"], "properties": {"referenceBuildId": {"$ref": "#/$defs/id"}, "candidateBuildId": {"$ref": "#/$defs/id"}, "referenceMaterialDigest": {"$ref": "#/$defs/digest"}, "candidateMaterialDigest": {"$ref": "#/$defs/digest"}, "artifactId": {"$ref": "#/$defs/id"}}},
+            "comparison": {"type": "object", "additionalProperties": false, "required": ["referenceBuildId", "referenceReceiptDigest", "candidateBuildId", "referenceInputDigest", "candidateInputDigest", "referenceMaterialDigest", "candidateMaterialDigest", "artifactId"], "properties": {"referenceBuildId": {"$ref": "#/$defs/id"}, "referenceReceiptDigest": {"$ref": "#/$defs/digest"}, "candidateBuildId": {"$ref": "#/$defs/id"}, "referenceInputDigest": {"$ref": "#/$defs/digest"}, "candidateInputDigest": {"$ref": "#/$defs/digest"}, "referenceMaterialDigest": {"$ref": "#/$defs/digest"}, "candidateMaterialDigest": {"$ref": "#/$defs/digest"}, "artifactId": {"$ref": "#/$defs/id"}}},
             "explanation": {"type": "string", "minLength": 1, "maxLength": 4000}, "reviewArtifactId": {"$ref": "#/$defs/id"}
           },
           "allOf": [{"if": {"properties": {"outcome": {"const": "explained-nondeterminism"}}, "required": ["outcome"]}, "then": {"required": ["explanation", "reviewArtifactId"]}, "else": {"not": {"anyOf": [{"required": ["explanation"]}, {"required": ["reviewArtifactId"]}]}}}]
@@ -52,9 +53,9 @@
     "finalization": {
       "oneOf": [
         {"type": "null"},
-        {"type": "object", "additionalProperties": false, "required": ["authority", "run", "referenceBuild", "artifacts"], "properties": {
+        {"type": "object", "additionalProperties": false, "required": ["authority", "run", "referenceBuild", "publicationTarget", "artifacts"], "properties": {
           "authority": {"type": "object", "additionalProperties": false, "required": ["contractVersion", "kind", "principal", "authentication", "finalizedAt"], "properties": {"contractVersion": {"const": "blazn.dev/finalizer/v1alpha1"}, "kind": {"const": "controller"}, "principal": {"const": "blazn-development-controller"}, "authentication": {"const": "mtls-workload-identity"}, "finalizedAt": {"type": "string", "format": "date-time"}}},
-          "run": {"$ref": "#/$defs/tenantResource"}, "referenceBuild": {"$ref": "#/$defs/tenantResource"}, "artifacts": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/tenantResource"}}
+          "run": {"$ref": "#/$defs/tenantResource"}, "referenceBuild": {"$ref": "#/$defs/referenceBuild"}, "publicationTarget": {"$ref": "#/$defs/resolvedPublicationTarget"}, "artifacts": {"type": "array", "maxItems": 100, "items": {"$ref": "#/$defs/tenantResource"}}
         }}
       ]
     },
@@ -63,7 +64,7 @@
       "properties": {
         "eligible": {"type": "boolean"},
         "refusalReasons": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"enum": ["build_not_succeeded", "build_cancelled", "mutable_output", "missing_architecture", "digest_mismatch", "project_test_failed", "secret_finding", "security_test_failed", "lifecycle_test_failed", "cleanup_failed", "reproducibility_unexplained", "stale_build_version", "unauthorized"]}},
-        "published": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["templateVersionId", "templateDigest", "imageIndexDigest", "buildReceiptDigest", "publishedAt"], "properties": {"templateVersionId": {"$ref": "#/$defs/id"}, "templateDigest": {"$ref": "#/$defs/digest"}, "imageIndexDigest": {"$ref": "#/$defs/ociDigest"}, "buildReceiptDigest": {"$ref": "#/$defs/digest"}, "publishedAt": {"type": "string", "format": "date-time"}}}]}
+        "published": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["templateId", "templateVersionId", "templateDigest", "imageIndexDigest", "buildReceiptDigest", "publishedAt"], "properties": {"templateId": {"$ref": "#/$defs/id"}, "templateVersionId": {"$ref": "#/$defs/id"}, "templateDigest": {"$ref": "#/$defs/digest"}, "imageIndexDigest": {"$ref": "#/$defs/ociDigest"}, "buildReceiptDigest": {"$ref": "#/$defs/digest"}, "publishedAt": {"type": "string", "format": "date-time"}}}]}
       },
       "allOf": [{"if": {"properties": {"eligible": {"const": true}}, "required": ["eligible"]}, "then": {"properties": {"refusalReasons": {"maxItems": 0}}}}, {"if": {"properties": {"eligible": {"const": false}}, "required": ["eligible"]}, "then": {"properties": {"refusalReasons": {"minItems": 1}, "published": {"type": "null"}}}}]
     },
@@ -97,8 +98,10 @@
     "refreshArtifact": {"type": "object", "additionalProperties": false, "required": ["artifactId", "contentDigest", "cacheKey", "inputsDigest", "imageDigest"], "properties": {"artifactId": {"$ref": "#/$defs/id"}, "contentDigest": {"$ref": "#/$defs/digest"}, "cacheKey": {"$ref": "#/$defs/digest"}, "inputsDigest": {"$ref": "#/$defs/digest"}, "imageDigest": {"$ref": "#/$defs/ociDigest"}}},
     "testResult": {"type": "object", "additionalProperties": false, "required": ["passed", "artifactId"], "properties": {"passed": {"type": "boolean"}, "artifactId": {"$ref": "#/$defs/id"}}},
     "platformResults": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "additionalProperties": false, "required": ["platform", "passed", "artifactId"], "properties": {"platform": {"$ref": "#/$defs/platform"}, "passed": {"type": "boolean"}, "artifactId": {"$ref": "#/$defs/id"}}}, "allOf": [{"contains": {"type": "object", "properties": {"platform": {"const": "linux/amd64"}}, "required": ["platform"]}}, {"contains": {"type": "object", "properties": {"platform": {"const": "linux/arm64"}}, "required": ["platform"]}}]},
-    "tenantResource": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "projectId"], "properties": {"id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}}}
+    "tenantResource": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "projectId"], "properties": {"id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}}},
+    "referenceBuild": {"type": "object", "additionalProperties": false, "required": ["id", "workspaceId", "projectId", "receiptDigest", "inputDigest", "materialDigest", "source", "projectManifestDigest", "buildContextDigest", "template", "dependencyLocks", "planDigest", "platforms", "builderProfile"], "properties": {"id": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "projectId": {"$ref": "#/$defs/id"}, "receiptDigest": {"$ref": "#/$defs/digest"}, "inputDigest": {"$ref": "#/$defs/digest"}, "materialDigest": {"$ref": "#/$defs/digest"}, "source": {"type": "object"}, "projectManifestDigest": {"$ref": "#/$defs/digest"}, "buildContextDigest": {"$ref": "#/$defs/digest"}, "template": {"type": "object"}, "dependencyLocks": {"type": "object"}, "planDigest": {"$ref": "#/$defs/digest"}, "platforms": {"$ref": "#/$defs/platformSet"}, "builderProfile": {"$ref": "#/$defs/name"}}},
+    "resolvedPublicationTarget": {"type": "object", "additionalProperties": false, "required": ["templateId", "workspaceId", "candidateVersionId", "candidateDigest", "expectedDraftVersion"], "properties": {"templateId": {"$ref": "#/$defs/id"}, "workspaceId": {"$ref": "#/$defs/id"}, "candidateVersionId": {"$ref": "#/$defs/id"}, "candidateDigest": {"$ref": "#/$defs/digest"}, "expectedDraftVersion": {"type": "integer", "minimum": 1}}}
   },
-  "x-blazn-authority": {"requesterMaySet": ["source.commit", "idempotencyKey"], "controllerFinalizer": {"principal": "blazn-development-controller", "authentication": "mtls-workload-identity", "exclusiveFields": ["status", "builder", "outputs", "evidence", "receiptDigest", "finalization", "publication.eligible", "publication.refusalReasons"]}, "publicationAuthority": "workspace-publication-capability"},
+  "x-blazn-authority": {"requesterMaySet": ["source.commit", "idempotencyKey"], "controllerFinalizer": {"principal": "blazn-development-controller", "authentication": "mtls-workload-identity", "exclusiveFields": ["status", "buildContextDigest", "builder", "publicationTarget", "outputs", "evidence", "receiptDigest", "finalization", "publication.eligible", "publication.refusalReasons"]}, "publicationAuthority": "workspace-publication-capability"},
   "x-blazn-tenant-invariants": ["build.workspaceId == run.workspaceId", "build.projectId == run.projectId", "reproducibility.referenceBuildId resolves in the Build tenant", "every artifact workspaceId/projectId equals the Build tenant", "every typed evidence Artifact is resolved before finalization"]
 }
