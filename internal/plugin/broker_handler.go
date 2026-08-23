@@ -20,11 +20,11 @@ import (
 
 const (
 	resultBrokerDescription = "broker-description/v1"
-	resultProjectEnvelope = "project-envelope/v1"
-	resultRunEnvelope = "run-envelope/v1"
-	resultRunList = "run-list/v1"
-	resultArtifactEnvelope = "artifact-envelope/v1"
-	resultArtifactList = "artifact-list/v1"
+	resultProjectEnvelope   = "project-envelope/v1"
+	resultRunEnvelope       = "run-envelope/v1"
+	resultRunList           = "run-list/v1"
+	resultArtifactEnvelope  = "artifact-envelope/v1"
+	resultArtifactList      = "artifact-list/v1"
 )
 
 var contentBrokerCapabilities = []string{"artifact.read", "broker.describe", "project.read", "run.cancel", "run.create", "run.read"}
@@ -61,16 +61,16 @@ type brokerSessionProvider interface {
 }
 
 type brokerAuthority struct {
-	api brokerAPI
+	api      brokerAPI
 	sessions brokerSessionProvider
 }
 
 type authenticatedBrokerHandler struct {
 	runtimeContext RuntimeContext
-	once sync.Once
-	authority *brokerAuthority
-	initializeErr error
-	initialize func(RuntimeContext) (*brokerAuthority, error)
+	once           sync.Once
+	authority      *brokerAuthority
+	initializeErr  error
+	initialize     func(RuntimeContext) (*brokerAuthority, error)
 }
 
 func newDefaultBrokerHandler(runtimeContext RuntimeContext) brokerMethodHandler {
@@ -82,12 +82,16 @@ func newDefaultBrokerAuthority(runtimeContext RuntimeContext) (*brokerAuthority,
 		return nil, errors.New("an authenticated Workspace Project is not selected")
 	}
 	sessions, err := workspacepkg.NewDefaultSessionProvider()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if sessions.Origin() != runtimeContext.APIOrigin {
 		return nil, errors.New("selected API origin changed during plugin dispatch")
 	}
 	api, err := client.New(runtimeContext.APIOrigin, &http.Client{Timeout: 30 * time.Second})
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	return &brokerAuthority{api: api, sessions: sessions}, nil
 }
 
@@ -120,55 +124,115 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 	c := h.runtimeContext
 	switch request.Method {
 	case "project.get":
-		if err := decodeBrokerParams(request.Params, &struct{}{}); err != nil { return invalidBrokerParams() }
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ProjectEnvelope, error) { return h.authority.api.GetProject(ctx, token, c.WorkspaceID, c.ProjectID) })
-		if err != nil { return brokerCallFailure(err) }
-		if value.Project.ID != c.ProjectID || value.Project.WorkspaceID != c.WorkspaceID { return invalidBrokerResult() }
+		if err := decodeBrokerParams(request.Params, &struct{}{}); err != nil {
+			return invalidBrokerParams()
+		}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ProjectEnvelope, error) {
+			return h.authority.api.GetProject(ctx, token, c.WorkspaceID, c.ProjectID)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if value.Project.ID != c.ProjectID || value.Project.WorkspaceID != c.WorkspaceID {
+			return invalidBrokerResult()
+		}
 		return resultProjectEnvelope, value, nil
 	case "run.create":
 		var params brokerRunCreateParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil || params.ProofClass != client.ProofClassSynthetic || !validBrokerIdempotencyKey(params.IdempotencyKey) { return invalidBrokerParams() }
+		if err := decodeBrokerParams(request.Params, &params); err != nil || params.ProofClass != client.ProofClassSynthetic || !validBrokerIdempotencyKey(params.IdempotencyKey) {
+			return invalidBrokerParams()
+		}
 		key := scopedBrokerIdempotencyKey(c, pluginName, request)
 		input := client.CreateRunRequest{Kind: params.Kind, ProofClass: params.ProofClass, PlanDigest: params.PlanDigest, InputArtifactIDs: params.InputArtifactIDs, OutputNames: params.OutputNames}
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) { return h.authority.api.CreateRun(ctx, token, c.WorkspaceID, c.ProjectID, key, input) })
-		if err != nil { return brokerCallFailure(err) }
-		if !validBrokerRun(value.Run, c) || value.Run.ProofClass != client.ProofClassSynthetic || value.Run.PlanDigest != params.PlanDigest { return invalidBrokerResult() }
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) {
+			return h.authority.api.CreateRun(ctx, token, c.WorkspaceID, c.ProjectID, key, input)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if !validBrokerRun(value.Run, c) || value.Run.ProofClass != client.ProofClassSynthetic || value.Run.PlanDigest != params.PlanDigest {
+			return invalidBrokerResult()
+		}
 		return resultRunEnvelope, value, nil
 	case "run.list":
 		var params brokerListParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil { return invalidBrokerParams() }
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunList, error) { return h.authority.api.ListRuns(ctx, token, c.WorkspaceID, c.ProjectID, params.Status, params.Cursor) })
-		if err != nil { return brokerCallFailure(err) }
-		for _, item := range value.Items { if !validBrokerRun(item, c) { return invalidBrokerResult() } }
+		if err := decodeBrokerParams(request.Params, &params); err != nil {
+			return invalidBrokerParams()
+		}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunList, error) {
+			return h.authority.api.ListRuns(ctx, token, c.WorkspaceID, c.ProjectID, params.Status, params.Cursor)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		for _, item := range value.Items {
+			if !validBrokerRun(item, c) {
+				return invalidBrokerResult()
+			}
+		}
 		return resultRunList, value, nil
 	case "run.get":
 		var params brokerRunIdentityParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil { return invalidBrokerParams() }
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) { return h.authority.api.GetRun(ctx, token, c.WorkspaceID, c.ProjectID, params.RunID) })
-		if err != nil { return brokerCallFailure(err) }
-		if value.Run.ID != params.RunID || !validBrokerRun(value.Run, c) { return invalidBrokerResult() }
+		if err := decodeBrokerParams(request.Params, &params); err != nil {
+			return invalidBrokerParams()
+		}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) {
+			return h.authority.api.GetRun(ctx, token, c.WorkspaceID, c.ProjectID, params.RunID)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if value.Run.ID != params.RunID || !validBrokerRun(value.Run, c) {
+			return invalidBrokerResult()
+		}
 		return resultRunEnvelope, value, nil
 	case "run.cancel":
 		var params brokerRunCancelParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerIdempotencyKey(params.IdempotencyKey) { return invalidBrokerParams() }
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerIdempotencyKey(params.IdempotencyKey) {
+			return invalidBrokerParams()
+		}
 		key := scopedBrokerIdempotencyKey(c, pluginName, request)
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) { return h.authority.api.CancelRun(ctx, token, c.WorkspaceID, c.ProjectID, params.RunID, key, client.CancelRunRequest{ExpectedVersion: params.ExpectedVersion}) })
-		if err != nil { return brokerCallFailure(err) }
-		if value.Run.ID != params.RunID || !validBrokerRun(value.Run, c) { return invalidBrokerResult() }
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) {
+			return h.authority.api.CancelRun(ctx, token, c.WorkspaceID, c.ProjectID, params.RunID, key, client.CancelRunRequest{ExpectedVersion: params.ExpectedVersion})
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if value.Run.ID != params.RunID || !validBrokerRun(value.Run, c) {
+			return invalidBrokerResult()
+		}
 		return resultRunEnvelope, value, nil
 	case "artifact.list":
 		var params brokerListParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil { return invalidBrokerParams() }
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ArtifactList, error) { return h.authority.api.ListArtifacts(ctx, token, c.WorkspaceID, c.ProjectID, params.Status, params.Cursor) })
-		if err != nil { return brokerCallFailure(err) }
-		for _, item := range value.Items { if !validBrokerArtifact(item, c) { return invalidBrokerResult() } }
+		if err := decodeBrokerParams(request.Params, &params); err != nil {
+			return invalidBrokerParams()
+		}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ArtifactList, error) {
+			return h.authority.api.ListArtifacts(ctx, token, c.WorkspaceID, c.ProjectID, params.Status, params.Cursor)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		for _, item := range value.Items {
+			if !validBrokerArtifact(item, c) {
+				return invalidBrokerResult()
+			}
+		}
 		return resultArtifactList, value, nil
 	case "artifact.get":
 		var params brokerArtifactIdentityParams
-		if err := decodeBrokerParams(request.Params, &params); err != nil { return invalidBrokerParams() }
-		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ArtifactEnvelope, error) { return h.authority.api.GetArtifact(ctx, token, c.WorkspaceID, c.ProjectID, params.ArtifactID) })
-		if err != nil { return brokerCallFailure(err) }
-		if value.Artifact.ID != params.ArtifactID || !validBrokerArtifact(value.Artifact, c) { return invalidBrokerResult() }
+		if err := decodeBrokerParams(request.Params, &params); err != nil {
+			return invalidBrokerParams()
+		}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ArtifactEnvelope, error) {
+			return h.authority.api.GetArtifact(ctx, token, c.WorkspaceID, c.ProjectID, params.ArtifactID)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if value.Artifact.ID != params.ArtifactID || !validBrokerArtifact(value.Artifact, c) {
+			return invalidBrokerResult()
+		}
 		return resultArtifactEnvelope, value, nil
 	default:
 		return "", nil, brokerMethodFailure("broker_method_unavailable", "broker method is not available in this runtime", false)
@@ -176,17 +240,28 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 }
 
 type brokerRunCreateParams struct {
-	Kind string `json:"kind"`
-	ProofClass client.ProofClass `json:"proofClass"`
-	PlanDigest string `json:"planDigest"`
-	InputArtifactIDs []string `json:"inputArtifactIds"`
-	OutputNames []string `json:"outputNames"`
-	IdempotencyKey string `json:"idempotencyKey"`
+	Kind             string            `json:"kind"`
+	ProofClass       client.ProofClass `json:"proofClass"`
+	PlanDigest       string            `json:"planDigest"`
+	InputArtifactIDs []string          `json:"inputArtifactIds"`
+	OutputNames      []string          `json:"outputNames"`
+	IdempotencyKey   string            `json:"idempotencyKey"`
 }
-type brokerListParams struct { Status string `json:"status,omitempty"`; Cursor string `json:"cursor,omitempty"` }
-type brokerRunIdentityParams struct { RunID string `json:"runId"` }
-type brokerRunCancelParams struct { RunID string `json:"runId"`; ExpectedVersion int `json:"expectedVersion"`; IdempotencyKey string `json:"idempotencyKey"` }
-type brokerArtifactIdentityParams struct { ArtifactID string `json:"artifactId"` }
+type brokerListParams struct {
+	Status string `json:"status,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+type brokerRunIdentityParams struct {
+	RunID string `json:"runId"`
+}
+type brokerRunCancelParams struct {
+	RunID           string `json:"runId"`
+	ExpectedVersion int    `json:"expectedVersion"`
+	IdempotencyKey  string `json:"idempotencyKey"`
+}
+type brokerArtifactIdentityParams struct {
+	ArtifactID string `json:"artifactId"`
+}
 
 func newBrokerDescription(capabilities []string) brokerDescription {
 	values := append([]string(nil), capabilities...)
@@ -196,36 +271,64 @@ func newBrokerDescription(capabilities []string) brokerDescription {
 
 func brokerMethodCapability(method string) (string, bool) {
 	switch method {
-	case "project.get": return "project.read", true
-	case "run.create": return "run.create", true
-	case "run.list", "run.get": return "run.read", true
-	case "run.cancel": return "run.cancel", true
-	case "artifact.list", "artifact.get": return "artifact.read", true
-	default: return "", false
+	case "project.get":
+		return "project.read", true
+	case "run.create":
+		return "run.create", true
+	case "run.list", "run.get":
+		return "run.read", true
+	case "run.cancel":
+		return "run.cancel", true
+	case "artifact.list", "artifact.get":
+		return "artifact.read", true
+	default:
+		return "", false
 	}
 }
-func containsBrokerCapability(values []string, wanted string) bool { for _, value := range values { if value == wanted { return true } }; return false }
+func containsBrokerCapability(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
 func validBrokerIdempotencyKey(value string) bool { return len(value) >= 8 && len(value) <= 128 }
 
 func decodeBrokerParams(raw json.RawMessage, output any) error {
 	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' { return errors.New("broker params must be an object") }
-	decoder := json.NewDecoder(bytes.NewReader(trimmed)); decoder.DisallowUnknownFields()
-	if err := decoder.Decode(output); err != nil { return err }
-	if err := decoder.Decode(&struct{}{}); err != io.EOF { return errors.New("broker params contain trailing data") }
+	if len(trimmed) < 2 || trimmed[0] != '{' || trimmed[len(trimmed)-1] != '}' {
+		return errors.New("broker params must be an object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("broker params contain trailing data")
+	}
 	return nil
 }
 
 func brokerWithSession[T any](ctx context.Context, authority *brokerAuthority, runtimeContext RuntimeContext, action func(string) (T, error)) (T, error) {
 	var zero T
 	session, err := authority.sessions.Session(ctx, false)
-	if err != nil { return zero, err }
-	if session.UserID != runtimeContext.UserID { return zero, errors.New("authenticated principal changed during plugin invocation") }
+	if err != nil {
+		return zero, err
+	}
+	if session.UserID != runtimeContext.UserID {
+		return zero, errors.New("authenticated principal changed during plugin invocation")
+	}
 	value, err := action(session.AccessToken)
 	if client.IsCode(err, "access_expired") {
 		session, err = authority.sessions.Session(ctx, true)
-		if err != nil { return zero, err }
-		if session.UserID != runtimeContext.UserID { return zero, errors.New("authenticated principal changed during plugin invocation") }
+		if err != nil {
+			return zero, err
+		}
+		if session.UserID != runtimeContext.UserID {
+			return zero, errors.New("authenticated principal changed during plugin invocation")
+		}
 		return action(session.AccessToken)
 	}
 	return value, err
@@ -238,26 +341,47 @@ func scopedBrokerIdempotencyKey(runtimeContext RuntimeContext, pluginName string
 	return "broker-v1-" + hex.EncodeToString(digest.Sum(nil))
 }
 
-func validBrokerRun(value client.Run, runtimeContext RuntimeContext) bool { return value.ID != "" && value.WorkspaceID == runtimeContext.WorkspaceID && value.ProjectID == runtimeContext.ProjectID }
-func validBrokerArtifact(value client.Artifact, runtimeContext RuntimeContext) bool { return value.ID != "" && value.WorkspaceID == runtimeContext.WorkspaceID && value.ProjectID == runtimeContext.ProjectID }
+func validBrokerRun(value client.Run, runtimeContext RuntimeContext) bool {
+	return value.ID != "" && value.WorkspaceID == runtimeContext.WorkspaceID && value.ProjectID == runtimeContext.ProjectID
+}
+func validBrokerArtifact(value client.Artifact, runtimeContext RuntimeContext) bool {
+	return value.ID != "" && value.WorkspaceID == runtimeContext.WorkspaceID && value.ProjectID == runtimeContext.ProjectID
+}
 
-func brokerMethodFailure(code, message string, retryable bool) *brokerError { return &brokerError{Code: code, Message: message, Retryable: retryable} }
-func invalidBrokerParams() (string, any, *brokerError) { return "", nil, brokerMethodFailure("invalid_request", "broker method params are invalid", false) }
-func invalidBrokerResult() (string, any, *brokerError) { return "", nil, brokerMethodFailure("broker_response_invalid", "root API returned an invalid scoped result", false) }
+func brokerMethodFailure(code, message string, retryable bool) *brokerError {
+	return &brokerError{Code: code, Message: message, Retryable: retryable}
+}
+func invalidBrokerParams() (string, any, *brokerError) {
+	return "", nil, brokerMethodFailure("invalid_request", "broker method params are invalid", false)
+}
+func invalidBrokerResult() (string, any, *brokerError) {
+	return "", nil, brokerMethodFailure("broker_response_invalid", "root API returned an invalid scoped result", false)
+}
 func brokerCallFailure(err error) (string, any, *brokerError) { return "", nil, mapBrokerError(err) }
 
 func mapBrokerError(err error) *brokerError {
-	if errors.Is(err, context.Canceled) { return brokerMethodFailure("cancelled", "broker request was cancelled", false) }
-	if errors.Is(err, context.DeadlineExceeded) { return brokerMethodFailure("deadline_exceeded", "broker request deadline was exceeded", true) }
+	if errors.Is(err, context.Canceled) {
+		return brokerMethodFailure("cancelled", "broker request was cancelled", false)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return brokerMethodFailure("deadline_exceeded", "broker request deadline was exceeded", true)
+	}
 	var apiErr *client.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.StatusCode {
-		case http.StatusUnauthorized: return brokerMethodFailure("not_authenticated", "Blazn authentication is required", false)
-		case http.StatusForbidden, http.StatusNotFound: return brokerMethodFailure("resource_unavailable", "selected resource is unavailable", false)
-		case http.StatusTooManyRequests: return brokerMethodFailure("rate_limited", "broker request was rate limited", true)
+		case http.StatusUnauthorized:
+			return brokerMethodFailure("not_authenticated", "Blazn authentication is required", false)
+		case http.StatusForbidden, http.StatusNotFound:
+			return brokerMethodFailure("resource_unavailable", "selected resource is unavailable", false)
+		case http.StatusTooManyRequests:
+			return brokerMethodFailure("rate_limited", "broker request was rate limited", true)
 		}
-		if apiErr.StatusCode >= 500 { return brokerMethodFailure("broker_backend_unavailable", "Blazn API is unavailable", true) }
-		if runtimeIdentifier.MatchString(apiErr.Body.Code) && apiErr.Body.Message != "" && len(apiErr.Body.Message) <= 1024 { return brokerMethodFailure(apiErr.Body.Code, apiErr.Body.Message, false) }
+		if apiErr.StatusCode >= 500 {
+			return brokerMethodFailure("broker_backend_unavailable", "Blazn API is unavailable", true)
+		}
+		if runtimeIdentifier.MatchString(apiErr.Body.Code) && apiErr.Body.Message != "" && len(apiErr.Body.Message) <= 1024 {
+			return brokerMethodFailure(apiErr.Body.Code, apiErr.Body.Message, false)
+		}
 	}
 	return brokerMethodFailure("broker_backend_unavailable", "broker request could not be completed", true)
 }

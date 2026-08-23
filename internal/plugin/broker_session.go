@@ -40,22 +40,26 @@ type brokerDescription struct {
 }
 
 type brokerSession struct {
-	connection *os.File
-	pluginName string
+	connection     *os.File
+	pluginName     string
 	runtimeContext RuntimeContext
 	requestContext context.Context
-	handler brokerMethodHandler
-	writeMu    sync.Mutex
-	seenMu     sync.Mutex
-	seen       map[uint32]bool
+	handler        brokerMethodHandler
+	writeMu        sync.Mutex
+	seenMu         sync.Mutex
+	seen           map[uint32]bool
 }
 
 func newBrokerSession(connection *os.File, pluginName string, runtimeContext RuntimeContext) *brokerSession {
 	return newBrokerSessionWithHandler(context.Background(), connection, pluginName, runtimeContext, describeOnlyBrokerHandler{})
 }
 func newBrokerSessionWithHandler(ctx context.Context, connection *os.File, pluginName string, runtimeContext RuntimeContext, handler brokerMethodHandler) *brokerSession {
-	if ctx == nil { ctx = context.Background() }
-	if handler == nil { handler = describeOnlyBrokerHandler{} }
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if handler == nil {
+		handler = describeOnlyBrokerHandler{}
+	}
 	return &brokerSession{connection: connection, pluginName: pluginName, runtimeContext: runtimeContext, requestContext: ctx, handler: handler, seen: map[uint32]bool{}}
 }
 func (s *brokerSession) close() error { return s.connection.Close() }
@@ -90,7 +94,7 @@ func (s *brokerSession) serve() error {
 		if overLimit {
 			return errors.New("plugin exceeded the broker stream limit")
 		}
-	response := s.handle(frame.Payload)
+		response := s.handle(frame.Payload)
 		encoded, err := json.Marshal(response)
 		if err != nil {
 			return err
