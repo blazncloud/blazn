@@ -26,9 +26,10 @@ AgentVersion, the full HarnessVersion implementation and provenance, and every
 HarnessProfile have separately domain-separated canonical SHA-256 identities.
 Changing an executable argument, parser, capability, package/image, review,
 credential declaration, model route, tool, or override changes its identity.
-Executable definitions name a reviewed adapter binary directly. Shells,
-interpreters, command chaining, expansion, pipes, and redirection are refused
-in both the executable path and fixed arguments.
+Executable definitions use a fail-closed identity and exact-path allowlist for
+the reviewed adapter kind. Renamed or versioned shells, interpreters, network
+clients, and aliases are refused along with command chaining, expansion, pipes,
+and redirection in fixed arguments.
 
 ## Pre-Sandbox compatibility
 
@@ -37,8 +38,11 @@ selected published HarnessVersion before queueing or creating a Sandbox. A
 missing conversation, resume, event, tool, approval, model, output, recovery,
 or cancellation capability returns the exact missing set with `sandboxId=null`.
 No requirement is silently dropped. A fallback is either absent or one
-approved attempt bound to the exact route/policy and a normalized failure event
-for the primary request; a second attempt is not representable.
+approved attempt whose exact route, authorization, and approval receipt are
+frozen in the AgentVersion. Runtime evidence orders the authoritative primary
+failure, control-plane authorization, one model request, and proxy decision and
+binds their route, policy, request, event, authorization, and receipt identities;
+a second attempt is not representable.
 Credential declarations use typed route, repository, or tool scopes. Every
 run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
@@ -59,7 +63,8 @@ silently become direct.
 All adapters use the same Run, Operation, Sandbox, Session, Message, Event,
 Result, and Artifact resources. Events have monotonic sequence and resumable
 cursors and cover preparation, start/wait/resume/stop/exit; user, assistant,
-and tool messages; tool and approval decisions; model/usage references;
+and tool messages; causally ordered tool and approval decisions; model/usage
+references; monotonic observation times and authoritative event sources;
 progress, patch, Artifact, cancellation, timeout, and terminal result. Adapter
 detail may appear only below a namespaced `hermes.*`, `codex.*`, `claude.*`, or
 `generic.*` extension. It cannot override core identity or authoritative Run
@@ -103,9 +108,10 @@ usage, result, and Artifact IDs. Proxy outcomes remain `ROUTED`, `DIRECT`, or
 `BYPASS`; the harness cannot infer routing from environment configuration.
 The proxy proof includes request and event IDs, exact route and policy IDs and
 versions, and the separate proxy workload authentication class.
-Cost provenance requires a pricing identity/version and an authoritative proxy
-or control-plane receipt. Free execution is explicit `zero-cost` USD evidence
-with zero micros; priced execution requires a positive amount. Terminal
+Cost provenance requires a pricing identity/version and an authoritative
+receipt. Priced proxy-routed execution uses a proxy receipt. DIRECT execution
+and explicit `zero-cost` USD evidence use a control-plane receipt; zero-cost
+evidence has zero micros and priced execution has a positive amount. Terminal
 duration must equal the authoritative Run lifecycle timestamps.
 
 ## Fixtures and portable evaluation

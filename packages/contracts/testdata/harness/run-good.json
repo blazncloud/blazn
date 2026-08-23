@@ -35,11 +35,11 @@
     "provenance": {
         "agentVersion": {
             "id": "11000000-0000-4000-8000-000000000001",
-            "digest": "sha256:c94feb17075791f0fb955ebbaeca9435f8477a80bf951a67a959a4da1bc23842"
+            "digest": "sha256:fd1d592c0e68a13be41dd0012d74eb689d5852f57c8ecac3a0ff93a4228aff5b"
         },
         "harnessVersion": {
             "id": "20000000-0000-4000-8000-000000000001",
-            "digest": "sha256:b7e6a9ced7229a75f41611143b74bc8315b4f588afbd7306dca566793ce70f3a"
+            "digest": "sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7"
         },
         "harnessProfile": {
             "id": "21000000-0000-4000-8000-000000000001",
@@ -77,7 +77,7 @@
             "pricingId": "77000000-0000-4000-8000-000000000001",
             "pricingVersion": 1,
             "receiptId": "78000000-0000-4000-8000-000000000001",
-            "source": "proxy-receipt"
+            "source": "control-plane-receipt"
         },
         "node": {
             "id": "72000000-0000-4000-8000-000000000001",
@@ -264,6 +264,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:93b35cd5b94225b51823342a80333d412279453fa8f49410a2886bd77eb020b6"
+        "receiptDigest": "sha256:ee89dc7d75a4f4cb38786c1eb028558e05381578deb06fb0de946a75ac9f6b12"
     }
 }

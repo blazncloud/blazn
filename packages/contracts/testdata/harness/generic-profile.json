@@ -17,13 +17,14 @@
     "id": "20000000-0000-4000-8000-000000000004",
     "definitionId": "19000000-0000-4000-8000-000000000004",
     "version": "1.0.0",
-    "digest": "sha256:f4ff72731cf979ced2b29186a6042765b40973158e7a72c9e27e092c5eeac656",
+    "digest": "sha256:c59fb2a5bd6991d4c406157597c496347fcbc4835b30c706b0964e0ecdfdf901",
     "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
     "implementation": {
       "kind": "image",
       "digest": "registry.blazn.invalid/harness/generic-fixture@sha256:4444444444444444444444444444444444444444444444444444444444444444"
     },
     "executable": {
+      "identity": "blazn-generic-adapter",
       "path": "/opt/blazn/generic-fixture",
       "fixedArgv": [
         "run",

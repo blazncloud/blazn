@@ -19,7 +19,7 @@
         "agentId": "10000000-0000-4000-8000-000000000001",
         "workspaceId": "40000000-0000-4000-8000-000000000001",
         "version": 1,
-        "digest": "sha256:c94feb17075791f0fb955ebbaeca9435f8477a80bf951a67a959a4da1bc23842",
+        "digest": "sha256:fd1d592c0e68a13be41dd0012d74eb689d5852f57c8ecac3a0ff93a4228aff5b",
         "purpose": "Make one bounded code change and return a patch and summary.",
         "instructions": "Work only in the approved repository. Do not push, merge, deploy, or access production services.",
         "modelPolicy": {
@@ -31,7 +31,13 @@
                 "openai-responses",
                 "anthropic-messages"
             ],
-            "fallback": "one-approved-attempt"
+      "fallback": "one-approved-attempt",
+      "fallbackRoute": {
+        "routeId": "70000000-0000-4000-8000-000000000002",
+        "routeVersion": 1,
+        "authorizationId": "75000000-0000-4000-8000-000000000001",
+        "approvalReceiptId": "76000000-0000-4000-8000-000000000001"
+      }
         },
         "tools": [
             "repository",
