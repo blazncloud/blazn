@@ -26,13 +26,21 @@ test definitions, and approved builder, network, resource, and publication
 policy profiles. The registry value names a repository only; it cannot contain a
 mutable tag or an output digest.
 
+Test definitions are keyed by stable name. They use direct argv and cannot
+invoke a shell or `env` launcher or carry credential assignments, secret-bearing
+flags, bearer values, or URL userinfo. The controller binds the canonical test
+definition digest and exact source commit to every POC test result.
+
 A Build binds the canonical Workspace and Project, exact 40- or 64-hex source
 commit, project manifest, template, locks, build plan, controller-selected
 builder and immutable builder image. A successful Build records one immutable
 OCI index and the exact AMD64 and ARM64 child references, typed Artifact IDs,
-secret and template-security results, lifecycle evidence for both platforms,
-and an unchanged-input reproducibility result. Explained nondeterminism requires
-a bounded explanation and does not silently masquerade as reproducibility.
+the build-context digest, per-architecture refresh content/cache/input/image
+bindings, committed project-test evidence, secret and template-security results,
+lifecycle evidence for both platforms, and an auditable reference-Build versus
+candidate-Build material comparison. Explained nondeterminism requires a
+bounded explanation and review Artifact and does not silently masquerade as
+reproducibility.
 
 Changing any material input creates a new Build. Branches, tags, mutable image
 tags, incomplete architecture sets, client-asserted source resolution, and
@@ -47,6 +55,14 @@ result, provenance, or publication eligibility. Those observations may be
 finalized only by a separately authenticated internal builder/controller
 authority and remain bound to the same Workspace and Project.
 
+`services/control-api/src/development-contract.ts` is the normative semantic
+verifier for invariants JSON Schema cannot express. Before terminal commit, the
+controller authenticates with its fixed mTLS workload identity, resolves the
+canonical Run and every evidence Artifact, and verifies exact Workspace and
+Project identity, complete typed evidence, committed project/test digests,
+per-platform refresh/image binding, and reproducibility comparison. User-facing
+sessions cannot call the controller finalizer boundary.
+
 Raw BuildKit addresses, BuildKit client certificates, registry credentials,
 object-store keys, signed URLs, and secret values are neither returned nor
 written into evidence. Builds execute repository and dependency code as
@@ -58,8 +74,11 @@ Publication is a separate authorized, idempotent mutation bound to the exact
 Build ID, expected Build version, Build receipt digest, target template version,
 and target template digest. It fails closed for a non-successful or stale Build,
 mutable or mismatched output, missing architecture, secret finding, failed
-security or lifecycle test, or unexplained nondeterminism. An ineligible Build
-cannot carry publication fields.
+project, security, lifecycle, or cleanup test, or unexplained nondeterminism.
+Ineligible Builds carry at least one machine-readable refusal reason.
+Publication identity is one atomic object or `null`; if present, its Build
+receipt and image index must exactly match the qualified Build outputs. Partial
+or substituted publication identities are invalid.
 
 ## CLI acceptance surface
 

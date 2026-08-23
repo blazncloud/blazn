@@ -9,6 +9,7 @@
   "requestedBy": "10000000-0000-4000-8000-000000000001",
   "source": {"repository": "https://github.com/blazncloud/blazn.git", "commit": "1111111111111111111111111111111111111111"},
   "projectManifestDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "buildContextDigest": "sha256:2323232323232323232323232323232323232323232323232323232323232323",
   "template": {"versionId": "60000000-0000-4000-8000-000000000001", "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
   "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
   "planDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
@@ -17,6 +18,7 @@
   "outputs": null,
   "evidence": null,
   "receiptDigest": null,
-  "publication": {"eligible": false, "refusalReasons": ["build_not_succeeded"]},
+  "finalization": null,
+  "publication": {"eligible": false, "refusalReasons": ["build_not_succeeded"], "published": null},
   "createdAt": "2026-08-22T00:00:00Z"
 }

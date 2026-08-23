@@ -20,7 +20,7 @@
   },
   "securityBoundary": {
     "clientMayRequest": ["validate", "build", "test", "evidence", "publish"],
-    "clientMayNotAssert": ["builderIdentity", "outputDigest", "testResult", "secretScanResult", "provenance", "publicationEligibility"],
+    "clientMayNotAssert": ["buildContextDigest", "builderIdentity", "outputDigest", "testResult", "projectTestResult", "securityTestResult", "lifecycleTestResult", "secretScanResult", "provenance", "receiptDigest", "finalization", "publicationEligibility", "publicationIdentity"],
     "neverReturned": ["buildkitEndpoint", "buildkitClientCertificate", "registryCredential", "objectKey", "signedUrl", "secretValue"]
   }
 }

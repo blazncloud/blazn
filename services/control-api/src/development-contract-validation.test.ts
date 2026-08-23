@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { FormatsPlugin } from "ajv-formats";
+import { developmentDigest, verifyDevelopmentFinalization, verifyDevelopmentProjectCommands } from "./development-contract.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const contracts = path.resolve(here, "../../../packages/contracts");
@@ -46,6 +47,16 @@ test("DevelopmentProject freezes exact platforms, lock digests, paths, and commi
   }
 });
 
+test("committed test commands reject direct shells and embedded credentials", async () => {
+  const good = await readJSON(path.join(fixtures, "project-good.json"));
+  assert.deepEqual(verifyDevelopmentProjectCommands(good), []);
+  for (const argv of [["sh", "-c", "npm test"], ["/usr/bin/env", "npm", "test"], ["npm", "test", "--api-key=forbidden"], ["npm", "test", "OPENAI_API_KEY=forbidden"], ["npm", "test", "https://token@example.invalid/pkg"]]) {
+    const candidate = structuredClone(good);
+    ((candidate.tests as Record<string, Record<string, unknown>>).poc!).argv = argv;
+    assert.notDeepEqual(verifyDevelopmentProjectCommands(candidate), [], `accepted unsafe argv ${JSON.stringify(argv)}`);
+  }
+});
+
 test("Build accepts controller evidence and rejects mutable source or leaked authority", async () => {
   const validate = validator(await readJSON(path.join(contracts, "development-build.schema.json")));
   assert.equal(validate(await readJSON(path.join(fixtures, "build-good.json"))), true, JSON.stringify(validate.errors));
@@ -65,6 +76,7 @@ test("publication is fail closed on architecture, digests, scans, tests, and rep
     ["failed lifecycle test", (value) => { const evidence = value.evidence as { lifecycleTests: Array<Record<string, unknown>> }; evidence.lifecycleTests[1]!.passed = false; }],
     ["unexplained nondeterminism", (value) => { const evidence = value.evidence as { reproducibility: Record<string, unknown> }; evidence.reproducibility = { outcome: "explained-nondeterminism" }; }],
     ["failed cleanup", (value) => { const evidence = value.evidence as { cleanup: Record<string, unknown> }; evidence.cleanup.passed = false; }],
+    ["failed committed project test", (value) => { const evidence = value.evidence as { projectTests: { results: Record<string, Record<string, unknown>> } }; evidence.projectTests.results.poc!.passed = false; }],
   ];
   for (const [label, mutate] of cases) {
     const candidate = structuredClone(good);
@@ -86,8 +98,45 @@ test("queued and failed Builds cannot carry successful or published evidence", a
   const unpublished = structuredClone(good);
   (unpublished.publication as Record<string, unknown>).eligible = false;
   (unpublished.publication as Record<string, unknown>).refusalReasons = ["unauthorized"];
-  (unpublished.publication as Record<string, unknown>).publishedAt = "2026-08-22T00:05:00Z";
+  (unpublished.publication as Record<string, unknown>).published = { templateVersionId: "60000000-0000-4000-8000-000000000002" };
   assert.equal(validate(unpublished), false, "ineligible Build exposed a publication receipt");
+  const noReason = structuredClone(good);
+  (noReason.publication as Record<string, unknown>).eligible = false;
+  (noReason.publication as Record<string, unknown>).refusalReasons = [];
+  assert.equal(validate(noReason), false, "ineligible Build omitted refusal reasons");
+  const partialPublication = structuredClone(good);
+  (partialPublication.publication as Record<string, unknown>).published = { templateVersionId: "60000000-0000-4000-8000-000000000002" };
+  assert.equal(validate(partialPublication), false, "publication accepted a partial identity");
+});
+
+test("controller finalization verifies committed inputs, tenant resolution, evidence, reproducibility, and publication bindings", async () => {
+  const project = await readJSON(path.join(fixtures, "project-good.json"));
+  const build = await readJSON(path.join(fixtures, "build-good.json"));
+  assert.equal(build.projectManifestDigest, developmentDigest(project), "good fixture project digest is stale");
+  assert.equal((build.evidence as { projectTests: { definitionDigest: string } }).projectTests.definitionDigest, developmentDigest(project.tests), "good fixture test definition digest is stale");
+  assert.deepEqual(verifyDevelopmentFinalization(project, build), []);
+  const cases: Array<[string, (value: Record<string, unknown>) => void]> = [
+    ["requester finalizer", (value) => { ((value.finalization as { authority: Record<string, unknown> }).authority).principal = "requesting-user"; }],
+    ["cross-tenant Run", (value) => { ((value.finalization as { run: Record<string, unknown> }).run).workspaceId = "40000000-0000-4000-8000-000000000099"; }],
+    ["cross-tenant reference Build", (value) => { ((value.finalization as { referenceBuild: Record<string, unknown> }).referenceBuild).workspaceId = "40000000-0000-4000-8000-000000000099"; }],
+    ["cross-project Artifact", (value) => { ((value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts[0]!).projectId = "20000000-0000-4000-8000-000000000099"; }],
+    ["unresolved Artifact", (value) => { (value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts.pop(); }],
+    ["uncommitted test result", (value) => { ((value.evidence as { projectTests: { results: Record<string, unknown> } }).projectTests.results).extra = { passed: true, artifactId: "80000000-0000-4000-8000-000000000012" }; }],
+    ["wrong source test evidence", (value) => { ((value.evidence as { projectTests: Record<string, unknown> }).projectTests).sourceCommit = "2".repeat(40); }],
+    ["wrong refresh child", (value) => { (((value.outputs as { refreshArtifacts: Record<string, Record<string, unknown>> }).refreshArtifacts)["linux/arm64"]!).imageDigest = ((value.outputs as { images: Array<Record<string, unknown>> }).images[0]!).digest; }],
+    ["self reproducibility comparison", (value) => { const comparison = ((value.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison); comparison.referenceBuildId = value.id; }],
+    ["mismatched reproducibility material", (value) => { const comparison = ((value.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison); comparison.referenceMaterialDigest = `sha256:${"f".repeat(64)}`; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const candidate = structuredClone(build);
+    mutate(candidate);
+    assert.notDeepEqual(verifyDevelopmentFinalization(project, candidate), [], `${label} unexpectedly passed finalization verification`);
+  }
+  const published = structuredClone(build);
+  (published.publication as Record<string, unknown>).published = { templateVersionId: "60000000-0000-4000-8000-000000000002", templateDigest: `sha256:${"d".repeat(64)}`, imageIndexDigest: (published.outputs as Record<string, unknown>).imageIndexDigest, buildReceiptDigest: published.receiptDigest, publishedAt: "2026-08-22T00:05:00Z" };
+  assert.deepEqual(verifyDevelopmentFinalization(project, published), []);
+  ((published.publication as { published: Record<string, unknown> }).published).imageIndexDigest = "registry.blazn.invalid/poc/coding-agent@sha256:" + "e".repeat(64);
+  assert.notDeepEqual(verifyDevelopmentFinalization(project, published), [], "publication accepted a substituted output index");
 });
 
 test("CLI contract freezes the six acceptance commands and authority boundary", async () => {
