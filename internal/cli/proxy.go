@@ -21,8 +21,6 @@ type proxyCommands interface {
 	Reset(context.Context, bool, bool) (activation.Result, error)
 }
 
-var defaultProxyCommandFactory = func() (proxyCommands, error) { return nil, activation.ErrUnavailable }
-
 func (a *App) runProxy(format OutputFormat, args []string) int {
 	if len(args) == 0 || helpRequested(args) {
 		return a.writeHelp(format, "proxy")

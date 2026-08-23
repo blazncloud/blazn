@@ -115,12 +115,14 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
 		project:     func() (projectCommands, error) { return projectpkg.NewDefaultService() },
-		proxy:       defaultProxyCommandFactory,
-		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
-		sandbox:     func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
-		stdin:       os.Stdin,
-		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
-		plugins:     plugins,
+		proxy: func() (proxyCommands, error) {
+			return newDefaultProxyCommands(appProcessIO{stdin: os.Stdin, stdout: stdout, stderr: stderr})
+		},
+		node:     func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
+		sandbox:  func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
+		stdin:    os.Stdin,
+		stdinTTY: func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		plugins:  plugins,
 	}
 	app.pluginContext = app.resolvePluginContext
 	return app

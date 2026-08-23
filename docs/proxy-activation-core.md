@@ -65,13 +65,30 @@ the platform identity controller. Environment restoration changes only values
 whose digest and activation marker still match; direct connectivity and user
 changes win conflicts.
 
+## Scoped production adapter
+
+On Linux and macOS the default CLI factory now wires only `proxy run`. It
+preloads the reviewed owner-only policy and resolves every destination into an
+immutable snapshot through Secret Service on Linux or the default Keychain on
+macOS before it creates account state or binds a socket. The listener is an
+embedded `127.0.0.1` runtime whose authority and lifetime are the invoking
+`blazn` process. Its `process_environment` adapter cannot publish to the parent
+or OS session; it replaces exactly the five proxy variables in the exact child
+environment and removes management credential variables from that child.
+
+The child runner uses exact argv with no shell, connects stdin/stdout/stderr,
+forwards TERM, INT, HUP, and QUIT, preserves exit or signal status, and applies
+a bounded TERM-then-kill cancellation path. It never writes HTTP proxy values,
+CA/trust state, provider/application configuration, or shell configuration.
+
 ## Deferred platform qualification
 
-Real launchctl and user-systemd publication, OS process inspection after a
-restart, platform credential stores, signal-forwarding runners, and the native
-twenty-cycle/crash/reboot/config-snapshot matrix remain in the next PRs. Until
-one of those adapters is selected, the root CLI fails unavailable before any
-platform mutation. `process_environment` is a no-op publication mechanism used
+Real launchctl and user-systemd publication, a durable listener child and
+authenticated control channel, OS process inspection after a restart, and the
+native twenty-cycle/crash/reboot/config-snapshot matrix remain in later PRs.
+`proxy on`, `off`, `status`, `doctor`, `routes`, `tail`, and `reset` remain
+unavailable (with `on` reporting session unsupported) until those proofs
+exist. `process_environment` is a no-op publication mechanism used
 only by `proxy run`; the five selected values are passed to that exact child and
 are not written into the parent or OS session. `on` accepts only the journaled
 `session` mode with the matching native publication mechanism. Linux or macOS

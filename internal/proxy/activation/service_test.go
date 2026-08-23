@@ -791,7 +791,7 @@ func TestOnTypedPreflightFailuresNeverPublishOrPersist(t *testing.T) {
 }
 
 func TestPersistentStoreRunRetainsScopeFenceUntilChildCleanup(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy")
+	root := filepath.Join(realTempDir(t), "account", ".local", "share", "blazn", "proxy")
 	storeValue, err := newStateStoreAt(root, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
@@ -917,7 +917,7 @@ func TestPersistentStoreRunInitialActivationRaceIsAHealthyConflict(t *testing.T)
 		{name: "different policy", winnerDigest: "sha256:" + strings.Repeat("b", 64), wantErr: ErrDifferentPolicy},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy")
+			root := filepath.Join(realTempDir(t), "account", ".local", "share", "blazn", "proxy")
 			loserStore, err := newStateStoreAt(root, os.Getuid())
 			if err != nil {
 				t.Fatal(err)
@@ -965,6 +965,15 @@ func TestPersistentStoreRunInitialActivationRaceIsAHealthyConflict(t *testing.T)
 			}
 		})
 	}
+}
+
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func TestRunCleanupFailureOverridesTerminalSuccess(t *testing.T) {
