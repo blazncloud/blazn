@@ -19,6 +19,7 @@ import (
 
 const ContractVersion = "proxy/v1alpha1"
 const cleanupTimeout = 30 * time.Second
+const lifecycleRetryInterval = 10 * time.Millisecond
 
 var (
 	ErrUnavailable          = errors.New("proxy platform adapter is unavailable")
@@ -59,7 +60,7 @@ type ListenerFactory interface {
 
 type ListenerMetadata struct {
 	ActivationID, Nonce, Mode, SessionIdentity, BinaryDigest string
-	Generation, OwnerUID                       int64
+	Generation, OwnerUID                                     int64
 }
 
 type PolicyLoader interface {
@@ -135,7 +136,12 @@ func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, m
 		}
 		return err
 	}
-	defer func() { err = errors.Join(err, p.Value.CancelReservation(context.Background(), reservation)) }()
+	consumed := false
+	defer func() {
+		err = errors.Join(err, cancelUnconsumedReservation(consumed, func(cleanup context.Context) error {
+			return p.Value.CancelReservation(cleanup, reservation)
+		}))
+	}()
 	prepared := false
 	err = p.Value.WithReservation(ctx, reservation, func(tx *state.ActivationTransaction) (callbackErr error) {
 		if err := tx.Prepare(journal); err != nil {
@@ -167,10 +173,20 @@ func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, m
 		active.UpdatedAt = publishing.UpdatedAt.Add(time.Nanosecond)
 		return tx.Transition(state.ExpectedActivation{Generation: journal.Generation, State: "publishing"}, &active, mechanism)
 	})
+	consumed = err == nil
 	if !prepared && errors.Is(err, state.ErrLifecycleConflict) {
 		err = errors.Join(errActivationRace, err)
 	}
 	return err
+}
+
+func cancelUnconsumedReservation(consumed bool, operation func(context.Context) error) error {
+	if consumed {
+		return nil
+	}
+	cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	defer cancel()
+	return operation(cleanup)
 }
 
 type Runner interface {
@@ -263,7 +279,7 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 	if err != nil {
 		return s.result("proxy on", "failed", "inactive", 2), err
 	}
-	current, reconcileErr := s.deps.Store.Reconcile(ctx)
+	current, reconcileErr := s.reconcileForOn(ctx)
 	if result, resultErr, handled := s.reconcileOn(ctx, current, reconcileErr, digest, requestedMode); handled {
 		return result, resultErr
 	}
@@ -275,11 +291,29 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 	if !errors.Is(activateErr, errActivationRace) {
 		return result, activateErr
 	}
-	current, reconcileErr = s.deps.Store.Reconcile(ctx)
+	current, reconcileErr = s.reconcileForOn(ctx)
 	if reconciled, resultErr, handled := s.reconcileOn(ctx, current, reconcileErr, digest, requestedMode); handled {
 		return reconciled, resultErr
 	}
 	return s.result("proxy on", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, activateErr)
+}
+
+func (s *Service) reconcileForOn(ctx context.Context) (state.Reconciliation, error) {
+	bounded, cancel := boundedContext(ctx)
+	defer cancel()
+	for {
+		current, err := s.deps.Store.Reconcile(bounded)
+		if !errors.Is(err, state.ErrLifecycleConflict) {
+			return current, err
+		}
+		timer := time.NewTimer(lifecycleRetryInterval)
+		select {
+		case <-bounded.Done():
+			timer.Stop()
+			return current, errors.Join(err, bounded.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Service) reconcileOn(ctx context.Context, current state.Reconciliation, reconcileErr error, digest, requestedMode string) (Result, error, bool) {
