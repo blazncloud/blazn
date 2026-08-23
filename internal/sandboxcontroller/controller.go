@@ -24,6 +24,19 @@ type Controller struct {
 	now     func() time.Time
 }
 
+type heartbeatKind uint8
+
+const (
+	heartbeatStopped heartbeatKind = iota
+	heartbeatLeaseLost
+	heartbeatStoreError
+)
+
+type heartbeatResult struct {
+	kind heartbeatKind
+	err  error
+}
+
 func New(store Store, backend Backend, config Config) (*Controller, error) {
 	if store == nil || backend == nil {
 		return nil, fmt.Errorf("sandbox controller dependencies are required")
@@ -87,18 +100,21 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	if err := validateWorkItem(item); err != nil {
 		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid", Ambiguous: true, Cause: err})
 	}
+	if !c.leaseCoversNextRenew(item.LeaseExpiresAt) {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(parent, c.config.OperationTimeout)
 	defer cancel()
-	lost := make(chan struct{})
-	heartbeatDone := make(chan struct{})
-	go c.heartbeat(ctx, cancel, item, lost, heartbeatDone)
+	heartbeatDone := make(chan heartbeatResult, 1)
+	go c.heartbeat(ctx, cancel, item, heartbeatDone)
 	err := c.execute(ctx, item)
 	cancel()
-	<-heartbeatDone
-	select {
-	case <-lost:
+	heartbeat := <-heartbeatDone
+	switch heartbeat.kind {
+	case heartbeatLeaseLost:
 		return nil
-	default:
+	case heartbeatStoreError:
+		return fmt.Errorf("sandbox lease renewal failed: %w", heartbeat.err)
 	}
 	if err == nil || parent.Err() != nil {
 		return nil
@@ -110,23 +126,36 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	return c.finishFailure(parent, item, failure)
 }
 
-func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, item WorkItem, lost chan<- struct{}, done chan<- struct{}) {
-	defer close(done)
+func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, item WorkItem, done chan<- heartbeatResult) {
 	ticker := time.NewTicker(c.config.RenewEvery)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
+			done <- heartbeatResult{kind: heartbeatStopped}
 			return
 		case <-ticker.C:
-			_, ok, err := c.store.Renew(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, int(c.config.Lease/time.Second))
-			if err != nil || !ok {
-				close(lost)
+			expiresAt, ok, err := c.store.Renew(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, int(c.config.Lease/time.Second))
+			if err != nil {
+				if ctx.Err() != nil {
+					done <- heartbeatResult{kind: heartbeatStopped}
+					return
+				}
+				done <- heartbeatResult{kind: heartbeatStoreError, err: err}
+				cancel()
+				return
+			}
+			if !ok || !c.leaseCoversNextRenew(expiresAt) {
+				done <- heartbeatResult{kind: heartbeatLeaseLost}
 				cancel()
 				return
 			}
 		}
 	}
+}
+
+func (c *Controller) leaseCoversNextRenew(expiresAt time.Time) bool {
+	return !expiresAt.IsZero() && expiresAt.After(c.now().Add(c.config.RenewEvery))
 }
 
 func (c *Controller) execute(ctx context.Context, item WorkItem) error {
