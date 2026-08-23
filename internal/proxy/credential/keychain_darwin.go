@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -38,10 +39,12 @@ const (
 	KeychainCancelled      KeychainFailureKind = "cancelled"
 )
 
-// KeychainError is deliberately data-free apart from its coarse failure kind.
-// It is safe to format or serialize in operational output.
+// KeychainError retains only its coarse failure kind and, for caller-driven
+// cancellation, the standard context cause. It is safe to format or serialize
+// in operational output.
 type KeychainError struct {
-	Kind KeychainFailureKind `json:"-"`
+	Kind  KeychainFailureKind `json:"-"`
+	cause error
 }
 
 func (*KeychainError) Error() string    { return "proxy destination credential Keychain lookup failed" }
@@ -49,6 +52,20 @@ func (*KeychainError) String() string   { return "proxy destination credential K
 func (*KeychainError) GoString() string { return "[REDACTED proxy destination Keychain error]" }
 func (*KeychainError) MarshalJSON() ([]byte, error) {
 	return json.Marshal("[REDACTED proxy destination Keychain error]")
+}
+func (e *KeychainError) Unwrap() error { return e.cause }
+
+func (e *KeychainError) credentialFailureKind() FailureKind {
+	switch e.Kind {
+	case KeychainInvalidInput:
+		return FailureInvalidReference
+	case KeychainInvalidValue:
+		return FailureInvalidCredential
+	case KeychainCancelled:
+		return FailureCancelled
+	default:
+		return FailureBackendUnavailable
+	}
 }
 
 type darwinKeychainTransport interface {
@@ -59,6 +76,8 @@ type darwinKeychainTransport interface {
 // default login Keychain. It has no write, delete, or path-selection surface.
 type DarwinKeychainBackend struct {
 	transport darwinKeychainTransport
+	mu        sync.Mutex
+	busy      bool
 }
 
 var _ Backend = (*DarwinKeychainBackend)(nil)
@@ -74,9 +93,13 @@ func newDarwinKeychainBackend(transport darwinKeychainTransport) *DarwinKeychain
 	return &DarwinKeychainBackend{transport: transport}
 }
 
+// Lookup runs at most one synchronous native Keychain call at a time. A caller
+// can stop waiting when its context is cancelled, but the native API itself is
+// not interruptible. The retained worker owns any late result until it has
+// been scrubbed, and another lookup fails closed until that worker exits.
 func (b *DarwinKeychainBackend) Lookup(ctx context.Context, ref string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, keychainError(KeychainCancelled)
+		return nil, keychainErrorWithCause(KeychainCancelled, err)
 	}
 	if b == nil || b.transport == nil {
 		return nil, keychainError(KeychainBackendError)
@@ -84,12 +107,53 @@ func (b *DarwinKeychainBackend) Lookup(ctx context.Context, ref string) ([]byte,
 	if !isCanonicalReference(ref) {
 		return nil, keychainError(KeychainInvalidInput)
 	}
+	if !b.startLookup() {
+		return nil, keychainError(KeychainBackendError)
+	}
 
-	raw, status, err := b.transport.Lookup(ctx, proxyKeychainService, ref)
+	type lookupResult struct {
+		raw    []byte
+		status int32
+		err    error
+	}
+	result := make(chan lookupResult)
+	abandoned := make(chan struct{})
+	operationDone := make(chan struct{})
+	cleanupDone := make(chan struct{})
+	go func() {
+		defer b.finishLookup()
+		raw, status, err := b.transport.Lookup(ctx, proxyKeychainService, ref)
+		close(operationDone)
+		select {
+		case result <- lookupResult{raw: raw, status: status, err: err}:
+		case <-abandoned:
+			zero(raw)
+		}
+		close(cleanupDone)
+	}()
+
+	var raw []byte
+	var status int32
+	var err error
+	select {
+	case completed := <-result:
+		raw, status, err = completed.raw, completed.status, completed.err
+	case <-ctx.Done():
+		close(abandoned)
+		// If the synchronous operation already returned, wait only for its
+		// in-memory handoff cleanup. A still-blocked native call remains owned
+		// by the worker and does not delay process-level cancellation.
+		select {
+		case <-operationDone:
+			<-cleanupDone
+		default:
+		}
+		return nil, keychainErrorWithCause(KeychainCancelled, ctx.Err())
+	}
 	if err != nil {
 		zero(raw)
 		if ctx.Err() != nil {
-			return nil, keychainError(KeychainCancelled)
+			return nil, keychainErrorWithCause(KeychainCancelled, ctx.Err())
 		}
 		if errors.Is(err, errKeychainValueBounds) {
 			return nil, keychainError(KeychainInvalidValue)
@@ -98,7 +162,7 @@ func (b *DarwinKeychainBackend) Lookup(ctx context.Context, ref string) ([]byte,
 	}
 	if ctx.Err() != nil {
 		zero(raw)
-		return nil, keychainError(KeychainCancelled)
+		return nil, keychainErrorWithCause(KeychainCancelled, ctx.Err())
 	}
 	if status != errSecSuccess {
 		zero(raw)
@@ -123,6 +187,26 @@ func (b *DarwinKeychainBackend) Lookup(ctx context.Context, ref string) ([]byte,
 }
 
 func keychainError(kind KeychainFailureKind) error { return &KeychainError{Kind: kind} }
+
+func keychainErrorWithCause(kind KeychainFailureKind, cause error) error {
+	return &KeychainError{Kind: kind, cause: cause}
+}
+
+func (b *DarwinKeychainBackend) startLookup() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.busy {
+		return false
+	}
+	b.busy = true
+	return true
+}
+
+func (b *DarwinKeychainBackend) finishLookup() {
+	b.mu.Lock()
+	b.busy = false
+	b.mu.Unlock()
+}
 
 type nativeDarwinKeychainTransport struct{}
 

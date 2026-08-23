@@ -46,6 +46,16 @@ func (e *UnavailableError) Unwrap() []error {
 	return []error{ErrUnavailable, e.cause}
 }
 
+// credentialFailureKind seals the set of backend errors whose type and cause
+// are safe for the resolver to retain. Arbitrary backend errors are still
+// collapsed to FailureBackendUnavailable without a cause.
+func (e *UnavailableError) credentialFailureKind() FailureKind { return e.Kind }
+
+type safeBackendFailure interface {
+	error
+	credentialFailureKind() FailureKind
+}
+
 // Backend is the platform-neutral boundary implemented by a node-route or
 // workspace-vault secret store. The returned buffer transfers to the caller.
 type Backend interface {
@@ -121,10 +131,7 @@ func (r Resolver) Resolve(ctx context.Context, policy proxycontract.Policy) (*Sn
 			raw, err := item.backend.Lookup(lookupCtx, item.ref)
 			if err != nil {
 				zero(raw)
-				kind, cause := FailureBackendUnavailable, error(nil)
-				if lookupCtx.Err() != nil {
-					kind, cause = FailureCancelled, lookupCtx.Err()
-				}
+				kind, cause := classifyBackendFailure(lookupCtx, err)
 				results <- resolution{err: unavailable(kind, cause)}
 				return
 			}
@@ -168,6 +175,22 @@ func (r Resolver) Resolve(ctx context.Context, policy proxycontract.Policy) (*Sn
 		return nil, firstErr
 	}
 	return &Snapshot{values: values}, nil
+}
+
+func classifyBackendFailure(ctx context.Context, err error) (FailureKind, error) {
+	if contextErr := ctx.Err(); contextErr != nil {
+		return FailureCancelled, contextErr
+	}
+	var safeFailure safeBackendFailure
+	if !errors.As(err, &safeFailure) {
+		return FailureBackendUnavailable, nil
+	}
+	switch kind := safeFailure.credentialFailureKind(); kind {
+	case FailureInvalidReference, FailureBackendUnavailable, FailureInvalidCredential, FailureCancelled:
+		return kind, safeFailure
+	default:
+		return FailureBackendUnavailable, nil
+	}
 }
 
 func (r Resolver) backendFor(class proxycontract.DestinationClass, ref string) (Backend, error) {

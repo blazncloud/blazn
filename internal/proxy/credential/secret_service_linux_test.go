@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 const (
@@ -191,6 +193,35 @@ func TestSecretServiceTimeoutAndCancellationAreTyped(t *testing.T) {
 		var unavailable *UnavailableError
 		if !errors.Is(err, context.Canceled) || !errors.As(err, &unavailable) || unavailable.Kind != FailureCancelled {
 			t.Fatalf("cancellation error=%#v", err)
+		}
+	})
+}
+
+func TestResolverPreservesSecretServiceSafeFailureClasses(t *testing.T) {
+	t.Run("backend timeout", func(t *testing.T) {
+		backend := testSecretServiceBackend(1807, &fakeSecretServiceTransport{wait: true})
+		backend.timeout = 10 * time.Millisecond
+		policy := proxycontract.Policy{Routes: []proxycontract.Route{{DestinationClass: proxycontract.DestinationProvider, CredentialRef: testSecretRef}}}
+		_, err := (Resolver{WorkspaceVault: backend}).Resolve(context.Background(), policy)
+		var unavailable *UnavailableError
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &unavailable) || unavailable.Kind != FailureCancelled {
+			t.Fatalf("resolver timeout error=%#v", err)
+		}
+	})
+
+	t.Run("invalid credential", func(t *testing.T) {
+		raw := []byte("invalid\ncredential")
+		backend := testSecretServiceBackend(1808, &fakeSecretServiceTransport{response: successfulSecretResponse(1808, raw)})
+		policy := proxycontract.Policy{Routes: []proxycontract.Route{{DestinationClass: proxycontract.DestinationProvider, CredentialRef: testSecretRef}}}
+		_, err := (Resolver{WorkspaceVault: backend}).Resolve(context.Background(), policy)
+		var unavailable *UnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Kind != FailureInvalidCredential {
+			t.Fatalf("resolver invalid credential error=%#v", err)
+		}
+		for _, current := range raw {
+			if current != 0 {
+				t.Fatal("resolver path did not zero the rejected Secret Service value")
+			}
 		}
 	})
 }

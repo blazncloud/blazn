@@ -220,6 +220,13 @@ unavailable error; no reference or secret is added to results, events, durable
 state, or error formatting. Platform Keychain and Secret Service adapters are
 outside this core boundary.
 
+The Darwin adapter bounds process-level cancellation around the synchronous
+Keychain API with one retained worker per backend. Cancellation returns to the
+caller promptly, while the worker retains ownership of any late native value
+until it is scrubbed and freed; another lookup fails closed until that worker
+exits. This does not claim to interrupt an in-progress operating-system
+Keychain prompt or native call.
+
 ## Platform gate
 
 - macOS ARM64: scoped run; qualified launchctl user-session publication for new

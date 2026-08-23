@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
+
+	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
 type recordingKeychainTransport struct {
@@ -247,6 +250,9 @@ func TestDarwinKeychainBackendCancellation(t *testing.T) {
 		transport := &recordingKeychainTransport{value: []byte("secret")}
 		_, err := newDarwinKeychainBackend(transport).Lookup(ctx, "node-route://local/key")
 		assertKeychainKind(t, err, KeychainCancelled)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation cause was not retained: %#v", err)
+		}
 		if transport.service != "" {
 			t.Fatal("transport called after cancellation")
 		}
@@ -261,10 +267,112 @@ func TestDarwinKeychainBackendCancellation(t *testing.T) {
 		}}
 		_, err := newDarwinKeychainBackend(transport).Lookup(ctx, "node-route://local/key")
 		assertKeychainKind(t, err, KeychainCancelled)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation cause was not retained: %#v", err)
+		}
 		if !bytes.Equal(raw, make([]byte, len(raw))) {
 			t.Fatal("buffer returned during cancellation was not zeroed")
 		}
 	})
+}
+
+func TestDarwinKeychainCancellationBoundsBlockedNativeLookupAndCleansLateResult(t *testing.T) {
+	const (
+		defaultKeychain = uintptr(0x301)
+		itemRef         = uintptr(0x302)
+	)
+	raw := []byte("late-native-secret")
+	findStarted := make(chan struct{})
+	releaseFind := make(chan struct{})
+	freed := make(chan struct{})
+	native := darwinKeychainNative{
+		copyDefault: func(out *uintptr) int32 {
+			*out = defaultKeychain
+			return errSecSuccess
+		},
+		find: func(_ uintptr, _ uint32, _ uintptr, _ uint32, _ uintptr, length *uint32, data *unsafe.Pointer, item *uintptr) int32 {
+			close(findStarted)
+			<-releaseFind
+			*length = uint32(len(raw))
+			*data = unsafe.Pointer(unsafe.SliceData(raw))
+			*item = itemRef
+			return errSecSuccess
+		},
+		freeContent: func(_ uintptr, _ unsafe.Pointer) int32 {
+			if !bytes.Equal(raw, make([]byte, len(raw))) {
+				t.Error("late native value was not scrubbed before free")
+			}
+			close(freed)
+			return errSecSuccess
+		},
+		release: func(uintptr) {},
+	}
+	transport := &recordingKeychainTransport{lookup: func(ctx context.Context, service, account string) ([]byte, int32, error) {
+		return lookupDarwinKeychain(ctx, service, account, native)
+	}}
+	backend := newDarwinKeychainBackend(transport)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := backend.Lookup(ctx, "workspace-vault://team/key")
+		result <- err
+	}()
+	select {
+	case <-findStarted:
+	case <-time.After(time.Second):
+		t.Fatal("native lookup did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		assertKeychainKind(t, err, KeychainCancelled)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked lookup cancellation cause was not retained: %#v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked native lookup did not return to its caller after cancellation")
+	}
+
+	started := time.Now()
+	_, err := backend.Lookup(context.Background(), "workspace-vault://team/key")
+	assertKeychainKind(t, err, KeychainBackendError)
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("occupied backend did not fail boundedly: %s", elapsed)
+	}
+
+	close(releaseFind)
+	select {
+	case <-freed:
+	case <-time.After(time.Second):
+		t.Fatal("late native result was not scrubbed and freed")
+	}
+}
+
+func TestResolverPreservesDarwinKeychainSafeFailureClasses(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport *recordingKeychainTransport
+		want      FailureKind
+		keychain  KeychainFailureKind
+	}{
+		{name: "user cancellation", transport: &recordingKeychainTransport{status: errSecUserCanceled}, want: FailureCancelled, keychain: KeychainCancelled},
+		{name: "invalid value", transport: &recordingKeychainTransport{value: []byte("invalid\ncredential")}, want: FailureInvalidCredential, keychain: KeychainInvalidValue},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := proxycontract.Policy{Routes: []proxycontract.Route{{DestinationClass: proxycontract.DestinationProvider, CredentialRef: "workspace-vault://team/key"}}}
+			_, err := (Resolver{WorkspaceVault: newDarwinKeychainBackend(test.transport)}).Resolve(context.Background(), policy)
+			var unavailable *UnavailableError
+			var keychain *KeychainError
+			if !errors.As(err, &unavailable) || unavailable.Kind != test.want || !errors.As(err, &keychain) || keychain.Kind != test.keychain {
+				t.Fatalf("resolver error=%#v unavailable=%#v keychain=%#v", err, unavailable, keychain)
+			}
+			formatted := fmt.Sprintf("%v %#v", err, err)
+			if strings.Contains(formatted, "workspace-vault://") || strings.Contains(formatted, "invalid") {
+				t.Fatalf("resolver error exposed sensitive material: %q", formatted)
+			}
+		})
+	}
 }
 
 func TestDarwinKeychainErrorRedactsEveryFormattingSurface(t *testing.T) {
