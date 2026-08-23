@@ -153,7 +153,13 @@ func TestAuthenticatedBrokerRoutesSyntheticProgressAndCompletion(t *testing.T) {
 func TestAuthenticatedBrokerRejectsInvalidSyntheticExecutionBeforeAuthorityUse(t *testing.T) {
 	api := &fakeBrokerAPI{}
 	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
-	for _, testCase := range []struct{ method, params string }{{"run.synthetic.progress", `{"runId":"` + brokerTestRunID + `","sequence":1,"phase":"render","percent":101}`}, {"run.synthetic.complete", `{"runId":"` + brokerTestRunID + `","expectedVersion":1,"planDigest":"sha256:` + strings.Repeat("a", 64) + `","artifactIds":[],"summary":{"steps":0,"warnings":[]},"idempotencyKey":"short"}`}} {
+	for _, testCase := range []struct{ method, params string }{
+		{"run.synthetic.progress", `{"runId":"` + brokerTestRunID + `","sequence":1,"phase":"render","percent":101}`},
+		{"run.synthetic.progress", `{"runId":"` + brokerTestRunID + `","phase":"render","percent":0}`},
+		{"run.synthetic.progress", `{"runId":"` + brokerTestRunID + `","sequence":0,"phase":"render"}`},
+		{"run.synthetic.complete", `{"runId":"` + brokerTestRunID + `","expectedVersion":1,"planDigest":"sha256:` + strings.Repeat("a", 64) + `","artifactIds":[],"summary":{"warnings":[]},"idempotencyKey":"complete-run-1"}`},
+		{"run.synthetic.complete", `{"runId":"` + brokerTestRunID + `","expectedVersion":1,"planDigest":"sha256:` + strings.Repeat("a", 64) + `","artifactIds":[],"summary":{"steps":0,"warnings":[]},"idempotencyKey":"short"}`},
+	} {
 		_, _, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest(testCase.method, testCase.params))
 		if failure == nil || failure.Code != "invalid_request" {
 			t.Fatalf("method=%s failure=%#v", testCase.method, failure)
