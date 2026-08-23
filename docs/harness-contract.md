@@ -31,6 +31,7 @@ The control plane compares every required AgentVersion capability with the
 selected published HarnessVersion before queueing or creating a Sandbox. A
 missing conversation, resume, event, tool, approval, model, output, recovery,
 or cancellation capability returns the exact missing set with `sandboxId=null`.
+That refusal issues no credential lease and skips runtime lease requirements.
 No requirement is silently dropped and no fallback attempt is created unless
 the immutable AgentVersion permits one approved attempt.
 Credential declarations use typed route, repository, or tool scopes. Every
@@ -69,7 +70,8 @@ Nonterminal Runs have no terminal Result, completion timestamp, or terminal
 event. Terminal Runs require all three to agree with the authoritative Run
 status and receipt. Once cancellation is acknowledged, a Run cannot succeed.
 Acknowledged cancellation may terminate only as fully evidenced `cancelled` or
-as `recovery_required`; it cannot be relabeled failed or timed out.
+as `recovery_required`; it cannot be relabeled failed or timed out. An
+acknowledged nonterminal snapshot remains `cancelling`.
 
 Messages are normalized resources with exact Run, Session, Conversation,
 generation, ordinal, parent, follow-up target, and content-digest identity.
@@ -78,6 +80,10 @@ and resume generations are contiguous and occur only after the matching
 follow-up cursor boundary. Each generation has exactly one follow-up Message
 and one unique acceptance event. Cancellation likewise uses one ID shared by
 one request and its later acknowledgement.
+Run identity also binds `agentId` to the immutable AgentVersion. Event IDs are
+nonempty and unique. Tool events may name only the exact Agent/Profile tool set;
+each call follows one requested, control-plane-approved or denied, started, and
+completed or failed sequence with a unique approval identity.
 Terminal patch, summary, and other result Artifacts resolve to the same tenant
 with distinct role, kind, media type, and content digest. The complete terminal
 snapshot is bound by a domain-separated receipt digest.
@@ -111,6 +117,8 @@ The resolved bundle is revalidated semantically, the Profile must be in the
 AgentVersion allowlist, the portable evaluation ID must be the AgentVersion's
 committed evaluation, and the Run receipt plus every evidence Artifact remain
 in the Agent workspace.
+Standalone portable evaluation re-runs the same selected-profile capability,
+route, tool, credential-scope, and DIRECT-authorization checks as a Run.
 Parity requires all four adapter kinds, a common parity group and evaluation
 identity, identical evidence roles, and distinct Run, receipt, Artifact, and
 content identities.

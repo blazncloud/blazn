@@ -404,6 +404,7 @@
                         }
                     },
                     "provenance": {"properties":{"proxyDecision":{"type":"null"},"node":{"type":"null"}}},
+                    "credentialLeases": {"maxItems":0},
                     "result": {
                         "type": "object",
                         "properties": {
