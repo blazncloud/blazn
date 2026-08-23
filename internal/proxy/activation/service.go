@@ -190,13 +190,17 @@ type Service struct {
 	lifecycleMu  sync.Mutex
 	listeners    map[int]managedProof
 	stopped      map[int]state.LiveListenerProof
-	environments map[string][]string
+	environments map[string]activationEnvironment
 }
 type managedProof struct {
 	listener     ManagedListener
 	identity     state.ListenerIdentity
 	proof        state.LiveListenerProof
 	activationID string
+}
+type activationEnvironment struct {
+	generation int64
+	values     []string
 }
 
 type Result struct {
@@ -236,7 +240,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]state.LiveListenerProof{}, environments: map[string][]string{}}, nil
+	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]state.LiveListenerProof{}, environments: map[string]activationEnvironment{}}, nil
 }
 
 func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Result, error) {
@@ -416,7 +420,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	s.mu.Lock()
 	delete(s.stopped, identity.PID)
 	s.listeners[identity.PID] = managedProof{listener: managed, identity: identity, activationID: activationID, proof: state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}}
-	s.environments[activationID] = append([]string(nil), desiredEnvironment...)
+	s.environments[activationID] = activationEnvironment{generation: 1, values: append([]string(nil), desiredEnvironment...)}
 	s.mu.Unlock()
 	keep = true
 	result := s.result(command, "active", "active", 0)
@@ -432,7 +436,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 				return result, errors.Join(ErrRecovery, postErr, shutdownErr)
 			}
 		}
-		recovery, recoveryErr := s.recover(recoveryCtx, command)
+		recovery, recoveryErr := s.recoverExpected(recoveryCtx, command, activationID, 1)
 		if recoveryErr != nil {
 			return recovery, errors.Join(ErrRecovery, postErr, recoveryErr)
 		}
@@ -446,7 +450,7 @@ func (s *Service) activationEnvironment(id string) ([]string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	value, ok := s.environments[id]
-	return append([]string(nil), value...), ok
+	return append([]string(nil), value.values...), ok
 }
 
 func (s *Service) Off(ctx context.Context, removeCA bool) (Result, error) {
@@ -469,16 +473,27 @@ func (s *Service) Reset(ctx context.Context, yes, removeCA bool) (Result, error)
 	return s.recover(ctx, "proxy reset")
 }
 func (s *Service) recoverExpected(ctx context.Context, command, id string, generation int64) (Result, error) {
-	return s.recoverWith(ctx, command, func(callCtx context.Context) (state.RecoveryResult, error) {
+	return s.recoverWith(ctx, command, id, generation, func(callCtx context.Context) (state.RecoveryResult, error) {
 		return s.deps.Store.RecoverExact(callCtx, s.deps.Environment, s, state.ExpectedRecovery{ActivationID: id, Generation: generation})
 	})
 }
 func (s *Service) recover(ctx context.Context, command string) (result Result, err error) {
-	return s.recoverWith(ctx, command, func(callCtx context.Context) (state.RecoveryResult, error) {
-		return s.deps.Store.Recover(callCtx, s.deps.Environment, s)
+	bounded, cancel := boundedContext(ctx)
+	defer cancel()
+	current, reconcileErr := s.deps.Store.Reconcile(bounded)
+	if current.ActivationID != "" && current.Generation > 0 {
+		return s.recoverExpected(bounded, command, current.ActivationID, current.Generation)
+	}
+	if reconcileErr == nil && current.State == state.ReconciliationInactive {
+		return s.recoverWith(bounded, command, "", 0, func(context.Context) (state.RecoveryResult, error) {
+			return state.RecoveryResult{Status: state.RecoveryNotActive}, nil
+		})
+	}
+	return s.recoverWith(bounded, command, "", 0, func(context.Context) (state.RecoveryResult, error) {
+		return state.RecoveryResult{Status: state.RecoveryRequired}, errors.Join(state.ErrRecoveryRequired, reconcileErr)
 	})
 }
-func (s *Service) recoverWith(ctx context.Context, command string, operation func(context.Context) (state.RecoveryResult, error)) (result Result, err error) {
+func (s *Service) recoverWith(ctx context.Context, command, activationID string, generation int64, operation func(context.Context) (state.RecoveryResult, error)) (result Result, err error) {
 	defer func() {
 		if recover() != nil {
 			result = s.result(command, "recovery_required", "recovery_required", 9)
@@ -488,6 +503,9 @@ func (s *Service) recoverWith(ctx context.Context, command string, operation fun
 	bounded, cancel := boundedContext(ctx)
 	defer cancel()
 	recovery, err := operation(bounded)
+	if err == nil && recovery.Status == state.RecoveryComplete && activationID != "" && generation > 0 {
+		s.purgeActivation(activationID, generation)
+	}
 	stateValue, status, exit := "inactive", "inactive", 0
 	if err != nil || recovery.Status == state.RecoveryRequired || errors.Is(err, state.ErrRecoveryRequired) {
 		stateValue, status, exit = "recovery_required", "recovery_required", 9
@@ -508,6 +526,20 @@ func (s *Service) recoverWith(ctx context.Context, command string, operation fun
 	return result, err
 }
 
+func (s *Service) purgeActivation(activationID string, generation int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if environment, present := s.environments[activationID]; present && environment.generation == generation {
+		delete(s.environments, activationID)
+	}
+	for pid, managed := range s.listeners {
+		if managed.activationID == activationID && managed.proof.Generation == generation {
+			delete(s.listeners, pid)
+			delete(s.stopped, pid)
+		}
+	}
+}
+
 func (s *Service) Inspect(ctx context.Context, pid int) (state.LiveListenerProof, bool, error) {
 	s.mu.Lock()
 	managed, ok := s.listeners[pid]
@@ -519,7 +551,7 @@ func (s *Service) Inspect(ctx context.Context, pid int) (state.LiveListenerProof
 			return state.LiveListenerProof{}, live, err
 		}
 		if identity != managed.identity {
-			return state.LiveListenerProof{}, true, errors.New("managed listener identity changed")
+			return state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: managed.proof.BinaryDigest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: managed.proof.ActivationNonce, OwnerUID: managed.proof.OwnerUID, Generation: managed.proof.Generation, Mode: managed.proof.Mode, SessionIdentity: managed.proof.SessionIdentity}, true, nil
 		}
 		return managed.proof, true, nil
 	}
@@ -542,7 +574,9 @@ func (s *Service) Stop(ctx context.Context, proof state.LiveListenerProof) error
 		s.mu.Lock()
 		if current, present := s.listeners[proof.PID]; present && current.proof == proof {
 			delete(s.listeners, proof.PID)
-			delete(s.environments, current.activationID)
+			if environment, exists := s.environments[current.activationID]; exists && environment.generation == proof.Generation {
+				delete(s.environments, current.activationID)
+			}
 			s.stopped[proof.PID] = proof
 		}
 		s.mu.Unlock()
