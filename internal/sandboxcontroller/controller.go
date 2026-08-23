@@ -16,6 +16,7 @@ import (
 var workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 var quantityPattern = regexp.MustCompile(`^[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?$`)
 var commitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+var immutableImagePattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$`)
 
 const defaultLeaseSafetyMargin = time.Second
 
@@ -332,7 +333,7 @@ func validateWorkItem(item WorkItem) error {
 		return fmt.Errorf("missing immutable work item fields")
 	}
 	if item.TemplateVersionID == "" || !sha256Pattern.MatchString(item.TemplateDigest) ||
-		!sha256Pattern.MatchString(item.ImageIndexDigest) || !sha256Pattern.MatchString(item.ImageDigest) ||
+		!immutableImagePattern.MatchString(item.ImageIndexDigest) || !immutableImagePattern.MatchString(item.ImageDigest) ||
 		item.VariantName == "" {
 		return fmt.Errorf("immutable image identity is invalid")
 	}
