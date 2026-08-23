@@ -62,6 +62,7 @@ type App struct {
 	plugins       pluginCommands
 	pluginContext func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
 	project       func() (projectCommands, error)
+	proxy         func() (proxyCommands, error)
 }
 
 type pluginCommands interface {
@@ -114,6 +115,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		openBrowser: auth.OpenBrowser,
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
 		project:     func() (projectCommands, error) { return projectpkg.NewDefaultService() },
+		proxy:       defaultProxyCommandFactory,
 		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
 		sandbox:     func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
 		stdin:       os.Stdin,
@@ -162,7 +164,7 @@ func (a *App) Run(args []string) int {
 
 	command := positional[0]
 	rest := positional[1:]
-	if format == OutputJSONL || format == OutputCSV {
+	if (format == OutputJSONL && command != "proxy") || format == OutputCSV {
 		if a.plugins != nil {
 			if definition, ok := a.plugins.Resolve(command); ok {
 				pluginArgs := positional
@@ -269,6 +271,8 @@ func (a *App) Run(args []string) int {
 			return writeSandboxCLIError(format, a.stderr, a.stdout, ExitUnavailable, "unavailable", "sandbox command runtime is unavailable", "local")
 		}
 		return a.RunSandboxCommand(context.Background(), format, rest, runtime)
+	case "proxy":
+		return a.runProxy(format, rest)
 	case "plugins":
 		return a.runPlugins(format, rest)
 	default:
