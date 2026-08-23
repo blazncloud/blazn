@@ -15,7 +15,7 @@ const id2 = "123e4567-e89b-42d3-a456-426614174001"
 const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 func validPolicy() Policy {
-	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: []Protocol{ProtocolOpenAIChat}, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "local/qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1, RetryableReasons: []RetryableReason{}, AllowedBoundaryTransitions: []BoundaryTransition{}}, ContentCapture: false}
+	return Policy{ID: id1, Version: 1, WorkspaceID: id2, Protocols: []Protocol{ProtocolOpenAIChat}, Aliases: map[string]Alias{"local": {RouteIDs: []string{id1}, DataClass: DataCompany, AllowedDestinationBoundaries: []DataBoundary{BoundaryLocal}}}, Routes: []Route{{ID: id1, DestinationClass: DestinationLocalNode, Endpoint: Endpoint{Scheme: "http", Hostname: "localhost", Port: 8080, BasePath: "/v1", HostnameAllowlist: []string{"localhost"}, ResolvedAddressPolicy: AddressLoopbackOnly}, SourceProtocols: []Protocol{ProtocolOpenAIChat}, DestinationProtocol: ProtocolOpenAIChat, Model: "qwen", Capabilities: []Capability{CapabilityText}, AcceptedDataClasses: []DataClass{DataCompany}, DataBoundary: BoundaryLocal, HealthTimeoutMS: 1000, CredentialRef: "node-route://qwen", CostClass: CostLocal}}, RequestLimits: RequestLimits{MaxContextTokens: 1000, MaxOutputTokens: 100, TimeoutMS: 1000, MaxCostClass: CostLocal}, Fallback: Fallback{MaxAttempts: 1, RetryableReasons: []RetryableReason{}, AllowedBoundaryTransitions: []BoundaryTransition{}}, ContentCapture: false}
 }
 
 func TestCanonicalPOCPolicyDecodesWithExactRouteSemantics(t *testing.T) {
@@ -346,6 +346,7 @@ func TestPolicySemanticBoundaryCostAndFallbackMatrix(t *testing.T) {
 	second.DestinationClass = DestinationCompany
 	second.DataBoundary = BoundaryCompany
 	second.Endpoint.ResolvedAddressPolicy = AddressPublicUnicast
+	second.CredentialRef = "workspace-vault://poc/company"
 	p.Routes = append(p.Routes, second)
 	a := p.Aliases["local"]
 	a.RouteIDs = []string{id1, id2}
@@ -479,6 +480,132 @@ func TestDecoderMatchesSchemaEnumsNullsAndUnions(t *testing.T) {
 	event := `{"eventId":"` + id1 + `","cursor":"1","timestamp":"2026-01-01T00:00:00Z","type":"request_started","activationId":"` + id2 + `","logicalRequestId":"` + id1 + `","attempt":1,"protocol":"openai-chat","modelAlias":"local","policy":{"id":"` + id1 + `","version":1,"digest":"` + digest + `"},"routeId":"` + id2 + `","destinationClass":"local_node","outcome":"success","reasonCode":"invented","latencyMs":0}`
 	if _, err := DecodeEvent(strings.NewReader(event)); err == nil {
 		t.Fatal("unknown reasonCode accepted")
+	}
+}
+
+func TestPOCDestinationProtocolsAndCredentialReferences(t *testing.T) {
+	for name, mutate := range map[string]func(*Policy){
+		"anthropic destination": func(policy *Policy) { policy.Routes[0].DestinationProtocol = ProtocolAnthropicMessages },
+		"local vault ref":       func(policy *Policy) { policy.Routes[0].CredentialRef = "workspace-vault://poc/qwen" },
+		"empty ref path":        func(policy *Policy) { policy.Routes[0].CredentialRef = "node-route://" },
+		"query ref":             func(policy *Policy) { policy.Routes[0].CredentialRef = "node-route://qwen?token=x" },
+		"traversal ref":         func(policy *Policy) { policy.Routes[0].CredentialRef = "node-route://poc/../qwen" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			policy := validPolicy()
+			mutate(&policy)
+			if err := policy.Validate(); err == nil {
+				t.Fatal("invalid POC route accepted")
+			}
+		})
+	}
+}
+
+func TestActivationSchemaConformanceBoundaries(t *testing.T) {
+	journal, receipt := validActivationRecords()
+	encoded, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutCA := strings.Replace(string(encoded), `,"ca":null`, "", 1)
+	if _, err := DecodeActivationJournal(strings.NewReader(withoutCA)); err == nil {
+		t.Fatal("journal without explicit ca:null accepted")
+	}
+	receipt.Listener.Address = "192.0.2.10:8080"
+	if err := receipt.Validate(); err == nil {
+		t.Fatal("non-loopback receipt listener accepted")
+	}
+}
+
+func TestNormalizedRequestRoleAndToolSemantics(t *testing.T) {
+	text := "x"
+	base := NormalizedRequest{LogicalRequestID: id1, Protocol: ProtocolOpenAIChat, ModelAlias: "local", DataClass: DataCompany, Stream: false, Blocks: []RequestBlock{{Role: "user", Type: "text", Text: &text}}, Tools: []Tool{}, Limits: NormalizedLimits{MaxOutputTokens: 1, DeadlineAt: "2026-01-01T00:00:00Z"}, CapabilitiesRequired: []Capability{CapabilityText}}
+	toolText := base
+	toolText.Blocks = []RequestBlock{{Role: "tool", Type: "text", Text: &text}}
+	if err := toolText.Validate(); err == nil {
+		t.Fatal("tool-role text accepted")
+	}
+	requiredWithoutTools := base
+	requiredWithoutTools.ToolChoice = ToolChoiceRequired
+	if err := requiredWithoutTools.Validate(); err == nil {
+		t.Fatal("required tool choice without tools accepted")
+	}
+	duplicateTools := base
+	duplicateTools.Tools = []Tool{{Name: "lookup", InputSchema: map[string]any{}}, {Name: "lookup", InputSchema: map[string]any{}}}
+	if err := duplicateTools.Validate(); err == nil {
+		t.Fatal("duplicate tool names accepted")
+	}
+}
+
+func TestNormalizedStreamUnionIsExclusive(t *testing.T) {
+	text, callID, toolName, arguments := "x", "call", "tool", "{}"
+	usage, finish := &Usage{}, FinishReason("stop")
+	normalizedError := &NormalizedError{Code: "internal_error", RetryClass: "never", SafeMessage: "failed"}
+	invalid := []NormalizedStreamEvent{
+		{LogicalRequestID: id1, Type: "response_start", CallID: &callID},
+		{LogicalRequestID: id1, Type: "text_delta", Text: &text, FinishReason: &finish},
+		{LogicalRequestID: id1, Type: "tool_call_start", CallID: &callID, ToolName: &toolName, Usage: usage},
+		{LogicalRequestID: id1, Type: "tool_arguments_delta", CallID: &callID, ArgumentsDelta: &arguments, FinishReason: &finish},
+		{LogicalRequestID: id1, Type: "usage", Usage: usage, CallID: &callID},
+		{LogicalRequestID: id1, Type: "response_end", FinishReason: &finish, Usage: usage},
+		{LogicalRequestID: id1, Type: "error", Error: normalizedError, ToolName: &toolName},
+	}
+	for index, event := range invalid {
+		if err := event.Validate(); err == nil {
+			t.Fatalf("stream union case %d accepted", index)
+		}
+	}
+	missingUsageFields := `{"logicalRequestId":"` + id1 + `","sequence":0,"type":"usage","usage":{}}`
+	if _, err := DecodeNormalizedStreamEvent(strings.NewReader(missingUsageFields)); err == nil {
+		t.Fatal("usage event without token fields accepted")
+	}
+}
+
+func TestEventSemanticMatrix(t *testing.T) {
+	base := Event{EventID: id1, Cursor: "1", Timestamp: "2026-01-01T00:00:00Z", Type: EventRequestStarted, ActivationID: id2, LogicalRequestID: id1, Attempt: 1, Protocol: ProtocolOpenAIChat, ModelAlias: "local", Policy: PolicyIdentity{ID: id1, Version: 1, Digest: digest}, RouteID: id2, DestinationClass: DestinationLocalNode, Outcome: OutcomeSuccess, ReasonCode: EventReasonNone}
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	invalid := []Event{
+		func() Event { value := base; value.Outcome = OutcomeFailed; return value }(),
+		func() Event {
+			value := base
+			value.Type = EventRouteSelected
+			value.Outcome = OutcomeFallback
+			value.ReasonCode = EventReasonNone
+			return value
+		}(),
+		func() Event {
+			value := base
+			value.Type = EventAttemptFinished
+			value.Outcome = OutcomeFailed
+			value.ReasonCode = EventReasonFallbackSelected
+			return value
+		}(),
+		func() Event {
+			value := base
+			value.Type = EventRequestFinished
+			value.Outcome = OutcomeSuccess
+			value.ReasonCode = EventReasonRateLimited
+			return value
+		}(),
+		func() Event {
+			value := base
+			value.Type = EventRequestCancelled
+			value.Outcome = OutcomeCancelled
+			value.ReasonCode = EventReasonCancelled
+			value.Usage = &Usage{}
+			return value
+		}(),
+	}
+	for index, event := range invalid {
+		if err := event.Validate(); err == nil {
+			t.Fatalf("event semantic case %d accepted", index)
+		}
+	}
+	missingUsageFields := `{"eventId":"` + id1 + `","cursor":"1","timestamp":"2026-01-01T00:00:00Z","type":"request_finished","activationId":"` + id2 + `","logicalRequestId":"` + id1 + `","attempt":1,"protocol":"openai-chat","modelAlias":"local","policy":{"id":"` + id1 + `","version":1,"digest":"` + digest + `"},"routeId":"` + id2 + `","destinationClass":"local_node","outcome":"success","reasonCode":"none","latencyMs":1,"usage":{}}`
+	if _, err := DecodeEvent(strings.NewReader(missingUsageFields)); err == nil {
+		t.Fatal("event usage without token fields accepted")
 	}
 }
 

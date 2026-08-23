@@ -12,17 +12,17 @@
     "callId": {"type": "string", "minLength": 1, "maxLength": 256},
     "toolName": {"type": "string", "minLength": 1, "maxLength": 128},
     "argumentsDelta": {"type": "string"},
-    "usage": {"type": "object", "additionalProperties": false, "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}},
+    "usage": {"type": "object", "additionalProperties": false, "required": ["inputTokens", "outputTokens"], "properties": {"inputTokens": {"type": "integer", "minimum": 0}, "outputTokens": {"type": "integer", "minimum": 0}}},
     "finishReason": {"enum": ["stop", "length", "tool_call", "content_filter", "cancelled"]},
     "error": {"$ref": "normalized-error.schema.json"}
   },
   "oneOf": [
-    {"properties": {"type": {"const": "response_start"}}, "not": {"anyOf": [{"required": ["text"]}, {"required": ["argumentsDelta"]}, {"required": ["error"]}]}},
-    {"properties": {"type": {"const": "text_delta"}}, "required": ["text"], "not": {"anyOf": [{"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["argumentsDelta"]}, {"required": ["error"]}]}},
-    {"properties": {"type": {"const": "tool_call_start"}}, "required": ["callId", "toolName"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["argumentsDelta"]}, {"required": ["error"]}]}},
-    {"properties": {"type": {"const": "tool_arguments_delta"}}, "required": ["callId", "argumentsDelta"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["toolName"]}, {"required": ["error"]}]}},
-    {"properties": {"type": {"const": "usage"}}, "required": ["usage"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["error"]}]}},
-    {"properties": {"type": {"const": "response_end"}}, "required": ["finishReason"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["argumentsDelta"]}, {"required": ["error"]}]}},
-    {"properties": {"type": {"const": "error"}}, "required": ["error"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["argumentsDelta"]}, {"required": ["finishReason"]}]}}
+    {"properties": {"type": {"const": "response_start"}}, "not": {"anyOf": [{"required": ["text"]}, {"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["argumentsDelta"]}, {"required": ["finishReason"]}, {"required": ["error"]}]}},
+    {"properties": {"type": {"const": "text_delta"}}, "required": ["text"], "not": {"anyOf": [{"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["argumentsDelta"]}, {"required": ["usage"]}, {"required": ["finishReason"]}, {"required": ["error"]}]}},
+    {"properties": {"type": {"const": "tool_call_start"}}, "required": ["callId", "toolName"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["argumentsDelta"]}, {"required": ["usage"]}, {"required": ["finishReason"]}, {"required": ["error"]}]}},
+    {"properties": {"type": {"const": "tool_arguments_delta"}}, "required": ["callId", "argumentsDelta"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["toolName"]}, {"required": ["usage"]}, {"required": ["finishReason"]}, {"required": ["error"]}]}},
+    {"properties": {"type": {"const": "usage"}}, "required": ["usage"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["argumentsDelta"]}, {"required": ["finishReason"]}, {"required": ["error"]}]}},
+    {"properties": {"type": {"const": "response_end"}}, "required": ["finishReason"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["argumentsDelta"]}, {"required": ["usage"]}, {"required": ["error"]}]}},
+    {"properties": {"type": {"const": "error"}}, "required": ["error"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["argumentsDelta"]}, {"required": ["usage"]}, {"required": ["finishReason"]}]}}
   ]
 }

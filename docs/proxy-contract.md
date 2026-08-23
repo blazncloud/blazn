@@ -9,9 +9,10 @@
 2. `proxy run -- COMMAND...` injects endpoint variables without a shell or any
    application/shell config edit. Qualified macOS/Linux session activation
    applies only to newly launched applications.
-3. The listener accepts OpenAI Responses, OpenAI Chat Completions, and
-   Anthropic Messages, routes one alias to local Qwen, and permits at most one
-   explicitly authorized cloud fallback before first byte.
+3. The listener accepts OpenAI Responses, OpenAI Chat Completions, and the
+   frozen Anthropic Messages source subset. It routes one alias to local Qwen
+   and permits at most one explicitly authorized cloud fallback before first
+   byte.
 4. `proxy off` restores exact prior state with no daemon, provider, or
    Management API dependency.
 5. Twenty on/off cycles per required platform, crash/reboot recovery,
@@ -22,8 +23,12 @@ The POC uses `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL`,
 `ANTHROPIC_API_KEY`, and `ANTHROPIC_AUTH_TOKEN`. Both Anthropic credential
 variables are replaced with the per-activation listener credential so Claude
 Code cannot bypass the listener through its gateway-token precedence. All
-prior values are snapshotted and compare-and-set restored. API-key/token values are per-activation listener credentials,
-never provider credentials. It does not modify `HTTP_PROXY`, `HTTPS_PROXY`,
+prior values are snapshotted and compare-and-set restored. API-key/token values
+are per-activation listener credentials, never provider credentials. The token
+contains at least 256 random bits encoded as unpadded base64url. It exists only
+in listener memory and the environment of the activated process/session; it is
+never placed in argv, receipts, status output, events, or logs. It does not
+modify `HTTP_PROXY`, `HTTPS_PROXY`,
 shell profiles, provider configs, or system trust/CA state. Unsupported clients
 are reported `BYPASS/UNSUPPORTED`.
 
@@ -132,13 +137,16 @@ activation listener credential. The listener accepts the appropriate
 `Authorization` or `x-api-key` source header, validates it in constant time,
 then removes every source credential header before upstream dispatch.
 
-Independent protocol adapters exchange only the frozen
+Independent protocol adapters exchange the frozen
 [`normalized-request`](../packages/contracts/proxy/normalized-request.schema.json),
 [`normalized-response`](../packages/contracts/proxy/normalized-response.schema.json),
 [`normalized-stream-event`](../packages/contracts/proxy/normalized-stream-event.schema.json),
 and [`normalized-error`](../packages/contracts/proxy/normalized-error.schema.json)
-shapes. A translation must reject a source feature that cannot be represented
-without loss; it may never silently omit it.
+shapes. A bounded adapter-private metadata value may accompany them only to
+restore source-protocol response fields that are intentionally absent from the
+normalized envelope; it is never policy input, persisted state, or event data.
+A translation must reject a source feature that cannot be represented without
+loss; it may never silently omit it.
 
 Supported POC subset:
 
@@ -146,8 +154,14 @@ Supported POC subset:
   streaming, usage, cancellation.
 - OpenAI Responses: text/instructions, function calls/results, structured
   output, streaming order, usage, cancellation.
-- Anthropic Messages: system/text blocks, tool_use/tool_result, tools/choice,
-  sampling/stops, streaming order, stop reason, usage.
+- Anthropic Messages source acceptance: system/text blocks,
+  tool_use/tool_result, tools/choice, sampling, stop reason, and usage with
+  `stream=false` and no `stop_sequences`, translated to the frozen OpenAI Chat
+  or Responses destinations. `anthropic-version` is required exactly once and
+  must equal `2023-06-01`.
+- Native Anthropic destination translation, Anthropic streaming, and Anthropic
+  stop-sequence preservation remain adapter coverage only and are not POC
+  listener acceptance claims.
 
 Reject multimodal input, beta/prompt-caching headers, computer use, extended
 thinking, batches, WebSockets, embeddings, and unsupported tool/JSON semantics
@@ -167,7 +181,9 @@ allowed destination boundaries; every route declares accepted data classes.
 Fallback must be present in the exact allowed-boundary transition list, and
 `local_only` may never leave `local`. Cycles, missing credentials, incompatible
 protocols/capabilities, disallowed hosts, budgets, and boundary contradictions
-fail validation before activation.
+fail validation before activation. `anthropic-messages` is a source protocol in
+`proxy/v1alpha1`; POC destination protocols are only `openai-chat` and
+`openai-responses`.
 
 Route endpoints are decomposed into scheme, exact host, port, and base path.
 Local routes resolve only to loopback or an authenticated node tunnel. External
@@ -180,10 +196,16 @@ and does not follow a redirect outside the route allowlist.
 
 ## Credentials
 
-- Listener credential: random, activation-local, journal-protected, injected
-  into source API-key variables, stripped before upstream.
-- Destination credentials: references to the merged OS credential backend or
-  short workspace-vault leases; injected only into the selected adapter.
+- Listener credential: at least 256 random bits, activation-local, injected
+  into source API-key variables, compared in constant time, and stripped before
+  upstream. Exactly one of `Authorization: Bearer` or `x-api-key` is accepted on
+  an inference request; duplicate or mixed credential sources are rejected.
+- Destination credentials: `node-route://` references for local routes and
+  `workspace-vault://` references for company/provider/Blazn Cloud routes.
+  References are canonical non-empty slash-separated identifiers with no query,
+  fragment, userinfo, whitespace, or traversal components. The POC destinations
+  receive credentials only as `Authorization: Bearer`; resolution completes
+  before listener publication, and secret values are never persisted.
 - Management API/session credentials never enter listener state, child env,
   routes, or logs.
 - Prior application API keys are restoration-only and never reused upstream.
@@ -196,10 +218,13 @@ and does not follow a redirect outside the route allowlist.
   session` fails `PROXY_SESSION_UNSUPPORTED`; `auto` starts a `scoped_only`
   listener unless doctor proves a user-systemd environment inherited by newly
   launched applications.
-- Required exact fixtures: generic OpenAI fixture `proxy-fixture/v1`, Hermes
-  Agent `0.19.0`, Codex CLI `0.147.0` Responses including a nested child, and
-  Claude Code `2.1.212` Anthropic Messages. A version mismatch is unsupported
-  until its endpoint-variable behavior passes the same fixture.
+- Required fixtures: generic OpenAI fixture `proxy-fixture/v1`, Hermes Agent
+  `0.19.0`, and Codex CLI `0.147.0` Responses including a nested child. The
+  checked Claude Code `2.1.212` file is a reproducible non-streaming harness
+  shape, not an exact capture. A redacted exact capture from the pinned client
+  plus live endpoint-variable proof is required qualification evidence and must
+  not be inferred from adapter tests. A version mismatch is unsupported until
+  it passes the same evidence gate.
 - Windows is deferred and must report unsupported without mutation.
 
 The POC policy is always supplied as an explicit local `--policy` file. The
@@ -217,6 +242,8 @@ fallback `gpt-5.4` over OpenAI Responses at
 enabled only for `public` and `company` data. `restricted` and `local_only`
 remain local. Qualification fails rather than substituting another model,
 endpoint, protocol, or credential.
+Anthropic requests admitted by this policy must use the source-only
+cross-protocol profile above: non-streaming and without stop sequences.
 The complete executable fixture, including capabilities, data classes, health
 timeouts, credential references, cost ceiling, request limits, and retry codes,
 is [`poc-policy.json`](../packages/contracts/proxy/fixtures/poc-policy.json).
@@ -224,7 +251,9 @@ is [`poc-policy.json`](../packages/contracts/proxy/fixtures/poc-policy.json).
 ## Required tests
 
 - Policy selection/fallback/data-boundary golden matrices.
-- Mock local/cloud Chat, Responses, and Messages streaming/tools/cancellation.
+- Mock local/cloud Chat and Responses streaming/tools/cancellation, plus the
+  non-streaming Anthropic source acceptance profile. Native Anthropic
+  streaming/stops remain isolated adapter coverage.
 - Translation goldens and unsupported-field rejection.
 - No fallback after first byte; one logical request ID across attempts.
 - Listener-token stripping and destination credential injection/redaction.

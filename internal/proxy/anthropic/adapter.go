@@ -18,6 +18,7 @@ import (
 )
 
 const MaxRequestBytes = 8 << 20
+const AnthropicVersion = "2023-06-01"
 
 // Error is safe to expose to a Messages client. Cause is never serialized.
 type Error struct {
@@ -99,15 +100,25 @@ func AuthenticateAndStrip(header http.Header, listenerToken string) error {
 			return unsupported("Anthropic beta and prompt caching are unsupported")
 		}
 	}
-	values := make([]string, 0, 2)
-	for _, value := range header.Values("Authorization") {
-		parts := strings.SplitN(value, " ", 2)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-			values = append(values, parts[1])
-		}
+	versions := header.Values("anthropic-version")
+	if len(versions) != 1 || versions[0] != AnthropicVersion {
+		return unsupported("anthropic-version must be 2023-06-01")
 	}
-	values = append(values, header.Values("x-api-key")...)
-	if len(values) != 1 || listenerToken == "" || subtle.ConstantTimeCompare([]byte(values[0]), []byte(listenerToken)) != 1 {
+	authorization, apiKeys := header.Values("Authorization"), header.Values("x-api-key")
+	var sourceCredential string
+	switch {
+	case len(authorization) == 1 && len(apiKeys) == 0:
+		parts := strings.SplitN(authorization[0], " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return &Error{Code: "authentication_failed", Message: "listener authentication failed", Status: 401}
+		}
+		sourceCredential = parts[1]
+	case len(authorization) == 0 && len(apiKeys) == 1:
+		sourceCredential = apiKeys[0]
+	default:
+		return &Error{Code: "authentication_failed", Message: "listener authentication failed", Status: 401}
+	}
+	if listenerToken == "" || subtle.ConstantTimeCompare([]byte(sourceCredential), []byte(listenerToken)) != 1 {
 		return &Error{Code: "authentication_failed", Message: "listener authentication failed", Status: 401}
 	}
 	return nil

@@ -19,7 +19,7 @@
   },
   "$defs": {
     "block": {"type": "object", "additionalProperties": false, "required": ["role", "type"], "properties": {"role": {"enum": ["system", "developer", "user", "assistant", "tool"]}, "type": {"enum": ["text", "tool_call", "tool_result"]}, "text": {"type": "string"}, "callId": {"type": "string", "minLength": 1, "maxLength": 256}, "toolName": {"type": "string", "minLength": 1, "maxLength": 128}, "arguments": {}, "result": {}}, "oneOf": [
-      {"properties": {"type": {"const": "text"}}, "required": ["text"], "not": {"anyOf": [{"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["arguments"]}, {"required": ["result"]}]}},
+      {"properties": {"type": {"const": "text"}, "role": {"enum": ["system", "developer", "user", "assistant"]}}, "required": ["text"], "not": {"anyOf": [{"required": ["callId"]}, {"required": ["toolName"]}, {"required": ["arguments"]}, {"required": ["result"]}]}},
       {"properties": {"type": {"const": "tool_call"}, "role": {"const": "assistant"}}, "required": ["callId", "toolName", "arguments"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["result"]}]}},
       {"properties": {"type": {"const": "tool_result"}, "role": {"const": "tool"}}, "required": ["callId", "result"], "not": {"anyOf": [{"required": ["text"]}, {"required": ["toolName"]}, {"required": ["arguments"]}]}}
     ]},

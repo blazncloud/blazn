@@ -45,20 +45,20 @@
             }
           },
           "sourceProtocols": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]}},
-          "destinationProtocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
+          "destinationProtocol": {"enum": ["openai-responses", "openai-chat"]},
           "model": {"type": "string", "minLength": 1, "maxLength": 160},
           "capabilities": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["text", "tools", "structured_output", "streaming"]}},
           "acceptedDataClasses": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["public", "company", "restricted", "local_only"]}},
           "dataBoundary": {"enum": ["local", "company", "external"]},
           "healthTimeoutMs": {"type": "integer", "minimum": 100, "maximum": 30000},
-          "credentialRef": {"type": "string", "minLength": 1, "maxLength": 256},
+          "credentialRef": {"type": "string", "pattern": "^(?:node-route|workspace-vault)://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$", "maxLength": 256},
           "costClass": {"enum": ["local", "included", "metered_low", "metered_high"]}
         },
         "allOf": [
-          {"if": {"properties": {"destinationClass": {"const": "local_node"}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"resolvedAddressPolicy": {"enum": ["loopback_only", "authenticated_node_tunnel"]}}}}}},
+          {"if": {"properties": {"destinationClass": {"const": "local_node"}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"resolvedAddressPolicy": {"enum": ["loopback_only", "authenticated_node_tunnel"]}}}, "credentialRef": {"pattern": "^node-route://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$"}}}},
           {"if": {"properties": {"destinationClass": {"const": "local_node"}}, "required": ["destinationClass"]}, "then": {"properties": {"dataBoundary": {"const": "local"}}}},
-          {"if": {"properties": {"destinationClass": {"const": "company"}}, "required": ["destinationClass"]}, "then": {"properties": {"dataBoundary": {"const": "company"}}}},
-          {"if": {"properties": {"destinationClass": {"enum": ["provider", "blazn_cloud"]}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"scheme": {"const": "https"}, "resolvedAddressPolicy": {"const": "public_unicast_only"}}}, "dataBoundary": {"const": "external"}}}}
+          {"if": {"properties": {"destinationClass": {"const": "company"}}, "required": ["destinationClass"]}, "then": {"properties": {"dataBoundary": {"const": "company"}, "credentialRef": {"pattern": "^workspace-vault://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$"}}}},
+          {"if": {"properties": {"destinationClass": {"enum": ["provider", "blazn_cloud"]}}, "required": ["destinationClass"]}, "then": {"properties": {"endpoint": {"properties": {"scheme": {"const": "https"}, "resolvedAddressPolicy": {"const": "public_unicast_only"}}}, "dataBoundary": {"const": "external"}, "credentialRef": {"pattern": "^workspace-vault://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$"}}}}
         ]
       }
     },

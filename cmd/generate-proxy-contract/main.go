@@ -22,18 +22,18 @@ var contractTemplate []byte
 const pinnedPOCPolicyDigest = "4fe4ef2e0ea038d9c989731ca83f6846fa0e5a64949f9df42d0935903076a275"
 
 var pinnedDigests = map[string]string{
-	"activation-journal.schema.json":      "995bb08935ae5d100ff186623fbd43042b438a09687d2049ebd956735fbfff48",
-	"activation-receipt.schema.json":      "b1e215804f849a48c9c148b163c715f375cc9ae3799859f00ff31056d7bcd0ba",
-	"event.schema.json":                   "e61f1a558c744122c36427d692bbb9b7c7b620e84d75612b2e60e9c17d0310d3",
+	"activation-journal.schema.json":      "b5b75e0ae6ef54f645dfb6a1ec6743ff580cf6d91348566a30ebf3f63a710807",
+	"activation-receipt.schema.json":      "93720291b499bc1af00a64957155666b6d88575733e9deb848adcdc76dcb7c5a",
+	"event.schema.json":                   "d672f8ec2dd0eaab6200cb9a17b57f92fcef6e343f4ce9d7deb8aa4f09a2a704",
 	"normalized-error.schema.json":        "3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c",
-	"normalized-request.schema.json":      "98923667ba46cd8d3207cfcb3cd62d757e41b8f8d71bf78d5eec1b5dda284df1",
+	"normalized-request.schema.json":      "2f1f41709c21e871c8d6e61333b493cf04d08070c59a48e1f908b262204237b4",
 	"normalized-response.schema.json":     "90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87",
-	"normalized-stream-event.schema.json": "1e388ceb3a1a29f91540a9e9edc9854d54a987668713f1a0e1750987a5bb4b25",
-	"policy.schema.json":                  "6c9256aed4037a0a9a3bcec27fd25a8b090636ee87c0a762e1c2cdc85b35256e",
+	"normalized-stream-event.schema.json": "2be0990699fe1ae7de35627c997c2b23f6cb525d19c119b54ad65afec8707fea",
+	"policy.schema.json":                  "3f8925f6fbdf3fab9613a88c5ce7e97e2c7d0cac702e0180f67ea28c92d5f7b9",
 }
 
 var requiredFields = map[string][]string{
-	"activation-journal.schema.json":      {"activationId", "binary", "checksum", "createdAt", "environment", "generation", "listener", "mode", "nonce", "ownerUid", "platform", "policy", "rollbackActions", "schemaVersion", "sessionIdentity", "state", "updatedAt"},
+	"activation-journal.schema.json":      {"activationId", "binary", "ca", "checksum", "createdAt", "environment", "generation", "listener", "mode", "nonce", "ownerUid", "platform", "policy", "rollbackActions", "schemaVersion", "sessionIdentity", "state", "updatedAt"},
 	"activation-receipt.schema.json":      {"activatedAt", "activationId", "binary", "checksum", "environment", "generation", "journalDigest", "listener", "mode", "nonce", "ownerUid", "platform", "policyDigest", "publicationMechanism", "rollbackSummary", "schemaVersion", "sessionIdentity", "state"},
 	"event.schema.json":                   {"activationId", "attempt", "cursor", "destinationClass", "eventId", "latencyMs", "logicalRequestId", "modelAlias", "outcome", "policy", "protocol", "reasonCode", "routeId", "timestamp", "type"},
 	"normalized-error.schema.json":        {"code", "retryClass", "safeMessage"},
@@ -160,6 +160,12 @@ func validatePolicy(document map[string]any) error {
 	if got := sortedStrings(at(document, "properties", "protocols", "items", "enum")); strings.Join(got, ",") != "anthropic-messages,openai-chat,openai-responses" {
 		return fmt.Errorf("policy protocols changed: %v", got)
 	}
+	if got := sortedStrings(at(document, "properties", "routes", "items", "properties", "destinationProtocol", "enum")); strings.Join(got, ",") != "openai-chat,openai-responses" {
+		return fmt.Errorf("POC destination protocols changed: %v", got)
+	}
+	if atString(document, "properties", "routes", "items", "properties", "credentialRef", "pattern") != "^(?:node-route|workspace-vault)://[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?(?:/[A-Za-z0-9](?:[A-Za-z0-9._~-]*[A-Za-z0-9])?)*$" {
+		return errorsNew("policy credential reference contract changed")
+	}
 	if got := sortedStrings(at(document, "properties", "routes", "items", "required")); strings.Join(got, ",") != "acceptedDataClasses,capabilities,costClass,credentialRef,dataBoundary,destinationClass,destinationProtocol,endpoint,healthTimeoutMs,id,model,sourceProtocols" {
 		return fmt.Errorf("policy route fields changed: %v", got)
 	}
@@ -261,14 +267,14 @@ func validateReceipt(document map[string]any) error {
 	if got := sortedStrings(at(document, "properties", "mode", "enum")); strings.Join(got, ",") != "scoped_run,session" {
 		return fmt.Errorf("receipt modes changed: %v", got)
 	}
-	if atNumber(document, "properties", "environment", "minItems") != 5 || atNumber(document, "properties", "environment", "maxItems") != 5 || lenArray(at(document, "properties", "environment", "allOf")) != 5 || atString(document, "properties", "listener", "properties", "listenerKeyFingerprint", "pattern") != "^sha256:[0-9a-f]{64}$" {
+	if atNumber(document, "properties", "environment", "minItems") != 5 || atNumber(document, "properties", "environment", "maxItems") != 5 || lenArray(at(document, "properties", "environment", "allOf")) != 5 || atString(document, "properties", "listener", "properties", "listenerKeyFingerprint", "pattern") != "^sha256:[0-9a-f]{64}$" || atString(document, "properties", "listener", "properties", "address", "pattern") != "^(127\\.0\\.0\\.1|\\[::1\\]):[0-9]{1,5}$" {
 		return errorsNew("receipt environment/listener binding changed")
 	}
 	return nil
 }
 
 func validateEvent(document map[string]any) error {
-	if atNumber(document, "properties", "attempt", "minimum") != 1 || atNumber(document, "properties", "attempt", "maximum") != 2 || at(document, "properties", "usage", "additionalProperties") != false {
+	if atNumber(document, "properties", "attempt", "minimum") != 1 || atNumber(document, "properties", "attempt", "maximum") != 2 || at(document, "properties", "usage", "additionalProperties") != false || strings.Join(sortedStrings(at(document, "properties", "usage", "required")), ",") != "inputTokens,outputTokens" || lenArray(at(document, "oneOf")) != 8 {
 		return errorsNew("event attempt/usage bounds changed")
 	}
 	for _, forbidden := range []string{"authorization", "body", "content", "cookie", "credential", "headers", "messages", "prompt", "response", "tools"} {
@@ -302,6 +308,9 @@ func validateNormalized(documents map[string]map[string]any) error {
 	}
 	if lenArray(at(stream, "oneOf")) != 7 {
 		return errorsNew("normalized stream discriminated union changed")
+	}
+	if strings.Join(sortedStrings(at(stream, "properties", "usage", "required")), ",") != "inputTokens,outputTokens" {
+		return errorsNew("normalized stream usage fields changed")
 	}
 	if at(documents["normalized-response.schema.json"], "additionalProperties") != false || at(documents["normalized-error.schema.json"], "additionalProperties") != false {
 		return errorsNew("normalized schemas must remain closed")
