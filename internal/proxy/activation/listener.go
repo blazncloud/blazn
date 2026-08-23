@@ -10,8 +10,8 @@ import (
 	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
-type ListenerIdentityProvider interface {
-	Identity(context.Context, string, string, ListenerMetadata) (state.ListenerIdentity, error)
+type ListenerProofProvider interface {
+	Proof(context.Context, string, string, ListenerMetadata) (state.ListenerIdentity, state.LiveListenerProof, error)
 }
 
 // EmbeddedListenerFactory is the platform-neutral bridge to the merged
@@ -20,7 +20,7 @@ type ListenerIdentityProvider interface {
 type EmbeddedListenerFactory struct {
 	Address  string
 	Router   router.Config
-	Identity ListenerIdentityProvider
+	Identity ListenerProofProvider
 }
 
 func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract.Policy, digest string, metadata ListenerMetadata) (ManagedListener, error) {
@@ -33,34 +33,35 @@ func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract
 	if err != nil {
 		return nil, err
 	}
-	identity, err := f.Identity.Identity(ctx, runtime.Address(), runtime.ListenerKeyFingerprint(), metadata)
+	identity, proof, err := f.Identity.Proof(ctx, runtime.Address(), runtime.ListenerKeyFingerprint(), metadata)
 	if err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		_ = runtime.Shutdown(cleanup)
 		return nil, err
 	}
-	if identity.PID < 1 || identity.ProcessStartIdentity == "" || identity.ExecutableIdentity == "" || identity.Address != runtime.Address() || identity.ListenerKeyFingerprint != runtime.ListenerKeyFingerprint() {
+	if identity.PID < 1 || identity.ProcessStartIdentity == "" || identity.ExecutableIdentity == "" || identity.Address != runtime.Address() || identity.ListenerKeyFingerprint != runtime.ListenerKeyFingerprint() || proof != listenerProof(identity, metadata) {
 		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
 		_ = runtime.Shutdown(cleanup)
 		return nil, errors.New("listener identity does not match the authenticated runtime")
 	}
-	return &embeddedListener{Runtime: runtime, identity: identity}, nil
+	return &embeddedListener{Runtime: runtime, identity: identity, proof: proof}, nil
 }
 
 type embeddedListener struct {
 	Runtime  *listener.Runtime
 	identity state.ListenerIdentity
+	proof    state.LiveListenerProof
 }
 
 func (e *embeddedListener) Identity() state.ListenerIdentity { return e.identity }
-func (e *embeddedListener) Inspect(context.Context) (state.ListenerIdentity, bool, error) {
+func (e *embeddedListener) Inspect(context.Context) (state.LiveListenerProof, bool, error) {
 	select {
 	case <-e.Runtime.Done():
-		return state.ListenerIdentity{}, false, nil
+		return state.LiveListenerProof{}, false, nil
 	default:
-		return e.identity, true, nil
+		return e.proof, true, nil
 	}
 }
 func (e *embeddedListener) ChildEnvironment(base []string) ([]string, error) {

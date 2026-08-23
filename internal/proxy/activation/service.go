@@ -47,7 +47,7 @@ type Environment interface {
 
 type ManagedListener interface {
 	Identity() state.ListenerIdentity
-	Inspect(context.Context) (state.ListenerIdentity, bool, error)
+	Inspect(context.Context) (state.LiveListenerProof, bool, error)
 	ChildEnvironment([]string) ([]string, error)
 	Shutdown(context.Context) error
 }
@@ -57,7 +57,7 @@ type ListenerFactory interface {
 }
 
 type ListenerMetadata struct {
-	ActivationID, Nonce, Mode, SessionIdentity string
+	ActivationID, Nonce, Mode, SessionIdentity, BinaryDigest string
 	Generation, OwnerUID                       int64
 }
 
@@ -194,7 +194,6 @@ type Service struct {
 }
 type managedProof struct {
 	listener     ManagedListener
-	identity     state.ListenerIdentity
 	proof        state.LiveListenerProof
 	activationID string
 }
@@ -255,43 +254,58 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 		return s.result("proxy on", "failed", "inactive", 2), err
 	}
 	current, reconcileErr := s.deps.Store.Reconcile(ctx)
-	if current.State == state.ReconciliationRecoveryRequired || errors.Is(reconcileErr, state.ErrRecoveryRequired) {
-		return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery
-	}
-	if reconcileErr != nil {
-		return s.result("proxy on", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, reconcileErr)
-	}
-	if current.State == state.ReconciliationActive {
-		if current.ListenerProof == nil {
-			return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery
-		}
-		observed, live, inspectErr := s.Inspect(ctx, current.ListenerProof.PID)
-		if inspectErr != nil || !live || observed != *current.ListenerProof {
-			return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery
-		}
-		if current.PolicyDigest == digest {
-			mode, _, modeErr := s.deps.Environment.ResolveMode(requestedMode)
-			if modeErr != nil {
-				return s.result("proxy on", "unsupported", "active", 7), modeErr
-			}
-			session, sessionErr := s.deps.Environment.SessionIdentity(ctx)
-			if sessionErr != nil {
-				return s.result("proxy on", "unsupported", "active", 7), sessionErr
-			}
-			if current.Mode != mode || current.ListenerProof.Mode != mode || current.ListenerProof.SessionIdentity != session {
-				return s.result("proxy on", "conflict", "active", 6), ErrDifferentScope
-			}
-			result := s.result("proxy on", "idempotent", "active", 0)
-			result.ActivationID, result.Generation, result.PolicyDigest, result.Mode = current.ActivationID, current.Generation, digest, current.Mode
-			return result, nil
-		}
-		return s.result("proxy on", "conflict", "active", 6), ErrDifferentPolicy
+	if result, resultErr, handled := s.reconcileOn(ctx, current, reconcileErr, digest, requestedMode); handled {
+		return result, resultErr
 	}
 	mode, mechanism, err := s.deps.Environment.ResolveMode(requestedMode)
 	if err != nil {
 		return s.result("proxy on", "unsupported", "inactive", 7), err
 	}
-	return s.activate(ctx, "proxy on", policy, digest, mode, mechanism)
+	result, activateErr := s.activate(ctx, "proxy on", policy, digest, mode, mechanism)
+	if !errors.Is(activateErr, state.ErrLifecycleConflict) {
+		return result, activateErr
+	}
+	current, reconcileErr = s.deps.Store.Reconcile(ctx)
+	if reconciled, resultErr, handled := s.reconcileOn(ctx, current, reconcileErr, digest, requestedMode); handled {
+		return reconciled, resultErr
+	}
+	return s.result("proxy on", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, activateErr)
+}
+
+func (s *Service) reconcileOn(ctx context.Context, current state.Reconciliation, reconcileErr error, digest, requestedMode string) (Result, error, bool) {
+	if current.State == state.ReconciliationRecoveryRequired || errors.Is(reconcileErr, state.ErrRecoveryRequired) {
+		return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery, true
+	}
+	if reconcileErr != nil {
+		return s.result("proxy on", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, reconcileErr), true
+	}
+	if current.State == state.ReconciliationActive {
+		if current.ListenerProof == nil {
+			return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery, true
+		}
+		observed, live, inspectErr := s.Inspect(ctx, current.ListenerProof.PID)
+		if inspectErr != nil || !live || observed != *current.ListenerProof {
+			return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery, true
+		}
+		if current.PolicyDigest == digest {
+			mode, _, modeErr := s.deps.Environment.ResolveMode(requestedMode)
+			if modeErr != nil {
+				return s.result("proxy on", "unsupported", "active", 7), modeErr, true
+			}
+			session, sessionErr := s.deps.Environment.SessionIdentity(ctx)
+			if sessionErr != nil {
+				return s.result("proxy on", "unsupported", "active", 7), sessionErr, true
+			}
+			if current.Mode != mode || current.ListenerProof.Mode != mode || current.ListenerProof.SessionIdentity != session {
+				return s.result("proxy on", "conflict", "active", 6), ErrDifferentScope, true
+			}
+			result := s.result("proxy on", "idempotent", "active", 0)
+			result.ActivationID, result.Generation, result.PolicyDigest, result.Mode = current.ActivationID, current.Generation, digest, current.Mode
+			return result, nil, true
+		}
+		return s.result("proxy on", "conflict", "active", 6), ErrDifferentPolicy, true
+	}
+	return Result{}, nil, false
 }
 
 func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (result Result, err error) {
@@ -385,7 +399,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	if err != nil {
 		return s.result(command, "failed", "inactive", 7), err
 	}
-	metadata := ListenerMetadata{ActivationID: activationID, Nonce: nonce, Mode: mode, SessionIdentity: session, Generation: 1, OwnerUID: int64(s.deps.OwnerUID)}
+	metadata := ListenerMetadata{ActivationID: activationID, Nonce: nonce, Mode: mode, SessionIdentity: session, BinaryDigest: s.deps.Binary.Digest, Generation: 1, OwnerUID: int64(s.deps.OwnerUID)}
 	managed, err := s.deps.Listeners.Start(ctx, policy, digest, metadata)
 	if err != nil {
 		return s.result(command, "failed", "inactive", 3), err
@@ -397,8 +411,9 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 		}
 	}()
 	identity := managed.Identity()
-	observedIdentity, live, inspectErr := managed.Inspect(ctx)
-	if inspectErr != nil || !live || observedIdentity != identity {
+	expectedProof := listenerProof(identity, metadata)
+	observedProof, live, inspectErr := managed.Inspect(ctx)
+	if inspectErr != nil || !live || observedProof != expectedProof {
 		return s.result(command, "failed", "inactive", 7), errors.Join(errors.New("listener identity could not be verified before publication"), inspectErr)
 	}
 	desiredEnvironment, err := managed.ChildEnvironment(s.deps.Environment.BaseEnvironment())
@@ -423,7 +438,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	}
 	s.mu.Lock()
 	delete(s.stopped, identity.PID)
-	s.listeners[identity.PID] = managedProof{listener: managed, identity: identity, activationID: activationID, proof: state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}}
+	s.listeners[identity.PID] = managedProof{listener: managed, activationID: activationID, proof: expectedProof}
 	s.environments[activationID] = activationEnvironment{generation: 1, values: append([]string(nil), desiredEnvironment...)}
 	s.mu.Unlock()
 	keep = true
@@ -431,12 +446,11 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	result.ActivationID, result.Generation, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, 1, digest, mode, identity.Address
 	result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
 	verificationCtx, verificationCancel := boundedContext(ctx)
-	observedIdentity, live, postErr := managed.Inspect(verificationCtx)
+	observedProof, live, postErr := managed.Inspect(verificationCtx)
 	current, reconcileErr := s.deps.Store.Reconcile(verificationCtx)
 	verificationCancel()
-	expectedProof := state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}
 	storeMatches := reconcileErr == nil && current.State == state.ReconciliationActive && current.ActivationID == activationID && current.Generation == 1 && current.PolicyDigest == digest && current.Mode == mode && current.ListenerProof != nil && *current.ListenerProof == expectedProof
-	if postErr != nil || !live || observedIdentity != identity || !storeMatches {
+	if postErr != nil || !live || observedProof != expectedProof || !storeMatches {
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if !storeMatches && reconcileErr == nil {
@@ -563,14 +577,11 @@ func (s *Service) Inspect(ctx context.Context, pid int) (state.LiveListenerProof
 	_, stopped := s.stopped[pid]
 	s.mu.Unlock()
 	if ok {
-		identity, live, err := managed.listener.Inspect(ctx)
+		proof, live, err := managed.listener.Inspect(ctx)
 		if err != nil || !live {
 			return state.LiveListenerProof{}, live, err
 		}
-		if identity != managed.identity {
-			return state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: managed.proof.BinaryDigest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: managed.proof.ActivationNonce, OwnerUID: managed.proof.OwnerUID, Generation: managed.proof.Generation, Mode: managed.proof.Mode, SessionIdentity: managed.proof.SessionIdentity}, true, nil
-		}
-		return managed.proof, true, nil
+		return proof, true, nil
 	}
 	if stopped {
 		return state.LiveListenerProof{}, false, nil
@@ -645,13 +656,14 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	if randomErr != nil {
 		return s.result("proxy doctor", "failed", "inactive", 1), randomErr
 	}
-	managed, err := s.deps.Listeners.Start(ctx, policy, digest, ListenerMetadata{ActivationID: id, Nonce: nonce, Mode: mode, SessionIdentity: session, Generation: 1, OwnerUID: int64(s.deps.OwnerUID)})
+	metadata := ListenerMetadata{ActivationID: id, Nonce: nonce, Mode: mode, SessionIdentity: session, BinaryDigest: s.deps.Binary.Digest, Generation: 1, OwnerUID: int64(s.deps.OwnerUID)}
+	managed, err := s.deps.Listeners.Start(ctx, policy, digest, metadata)
 	if err != nil {
 		return s.result("proxy doctor", "failed", "inactive", 3), err
 	}
 	identity := managed.Identity()
-	observedIdentity, liveBefore, inspectBeforeErr := managed.Inspect(ctx)
-	if inspectBeforeErr != nil || !liveBefore || observedIdentity != identity {
+	observedProof, liveBefore, inspectBeforeErr := managed.Inspect(ctx)
+	if inspectBeforeErr != nil || !liveBefore || observedProof != listenerProof(identity, metadata) {
 		shutdownErr := shutdownVerified(context.Background(), managed)
 		return s.result("proxy doctor", "failed", "inactive", 7), errors.Join(errors.New("proxy doctor listener identity or liveness is invalid"), inspectBeforeErr, shutdownErr)
 	}
@@ -720,6 +732,14 @@ func (s *Service) Tail(ctx context.Context, cursor string, follow bool) ([]Event
 }
 func (s *Service) result(command, status, stateValue string, exit int) Result {
 	return Result{Command: command, ContractVersion: ContractVersion, Status: status, State: stateValue, Timestamp: s.deps.Now().UTC().Format(time.RFC3339), ExitCode: exit}
+}
+
+func listenerProof(identity state.ListenerIdentity, metadata ListenerMetadata) state.LiveListenerProof {
+	return state.LiveListenerProof{
+		PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity,
+		BinaryDigest: metadata.BinaryDigest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: metadata.Nonce,
+		OwnerUID: int(metadata.OwnerUID), Generation: metadata.Generation, Mode: metadata.Mode, SessionIdentity: metadata.SessionIdentity,
+	}
 }
 
 func randomIdentity() (string, string, error) {
