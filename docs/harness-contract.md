@@ -63,7 +63,9 @@ Messages are normalized resources with exact Run, Session, Conversation,
 generation, ordinal, parent, follow-up target, and content-digest identity.
 Parents and follow-up targets must precede the child, empty cursors remain zero,
 and resume generations are contiguous and occur only after the matching
-follow-up cursor boundary.
+follow-up cursor boundary. Each generation has exactly one follow-up Message
+and one unique acceptance event. Cancellation likewise uses one ID shared by
+one request and its later acknowledgement.
 Terminal patch, summary, and other result Artifacts resolve to the same tenant
 with distinct role, kind, media type, and content digest. The complete terminal
 snapshot is bound by a domain-separated receipt digest.
@@ -89,6 +91,10 @@ cancellation, terminal Artifacts, and credential cleanup.
 Each result resolves the exact HarnessDefinition, HarnessVersion, and
 HarnessProfile and binds one distinct Run receipt to the same AgentVersion,
 source, SandboxTemplateVersion, task, and role-specific conformance Artifacts.
+The resolved bundle is revalidated semantically, the Profile must be in the
+AgentVersion allowlist, the portable evaluation ID must be the AgentVersion's
+committed evaluation, and the Run receipt plus every evidence Artifact remain
+in the Agent workspace.
 Parity requires all four adapter kinds, a common parity group and evaluation
 identity, identical evidence roles, and distinct Run, receipt, Artifact, and
 content identities.
