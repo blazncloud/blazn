@@ -477,7 +477,7 @@ func TestConcurrentOnReconcilesHealthyWinner(t *testing.T) {
 	}{{name: "same policy is idempotent", policyDigest: testDigest, wantStatus: "idempotent"}, {name: "different policy conflicts", policyDigest: "sha256:" + strings.Repeat("b", 64), wantStatus: "conflict", wantErr: ErrDifferentPolicy}, {name: "different scope conflicts", policyDigest: testDigest, winnerMode: "global", wantStatus: "conflict", wantErr: ErrDifferentScope}} {
 		t.Run(testCase.name, func(t *testing.T) {
 			service, store, _, factory, _, _ := testService(t)
-			store.activateErr = state.ErrLifecycleConflict
+			store.activateErr = errors.Join(errActivationRace, state.ErrLifecycleConflict)
 			store.beforeActivate = func(attempt *state.Journal) {
 				winner := *attempt
 				winner.ActivationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
