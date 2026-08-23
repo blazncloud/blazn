@@ -46,11 +46,28 @@ test("OIDC health validates discovery and signing keys and requests reviewed ACR
 	}) as typeof fetch;
 	try {
 		const client = new OidcClient({ issuerUrl: verification.issuer, clientId: verification.clientId, clientSecret: "secret", callbackUrl: "https://api.blazn.example/v1/auth/oidc/callback", assurancePolicy: verification.assurancePolicy });
-		await client.health();
+		await Promise.all(Array.from({ length: 20 }, () => client.health()));
 		const authorization = await client.authorizationUrl(client.createTransaction("ABCD-EFGH", "signin"));
 		assert.equal(authorization.searchParams.get("acr_values"), verification.assurancePolicy.acrValues.join(" "));
 		assert.equal(calls.length, 2);
 		await client.health();
-		assert.equal(calls.length, 4, "health reused cached metadata instead of probing live OIDC state");
+		assert.equal(calls.length, 2, "health bypassed bounded cache or singleflight");
+	} finally { globalThis.fetch = originalFetch; }
+});
+
+test("OIDC discovery streaming is cancelled at the hard byte cap", async () => {
+	const originalFetch = globalThis.fetch;
+	let cancelled = false;
+	globalThis.fetch = (async () => new Response(new ReadableStream({
+		start(controller) {
+			controller.enqueue(new Uint8Array(700_000));
+			controller.enqueue(new Uint8Array(700_000));
+		},
+		cancel() { cancelled = true; }
+	}), { status: 200 })) as typeof fetch;
+	try {
+		const client = new OidcClient({ issuerUrl: verification.issuer, clientId: verification.clientId, clientSecret: "secret", callbackUrl: "https://api.blazn.example/v1/auth/oidc/callback", assurancePolicy: verification.assurancePolicy });
+		await assert.rejects(client.health(), /too large/);
+		assert.equal(cancelled, true);
 	} finally { globalThis.fetch = originalFetch; }
 });

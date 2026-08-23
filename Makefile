@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-infra test-sandbox-contract test-project-contract test-run-contract test-development-contract test-project-postgres test-run-postgres test-sandbox-postgres test-sandbox-controller-postgres release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-sandbox-contract test-project-contract test-run-contract test-development-contract test-project-postgres test-run-postgres test-sandbox-postgres test-sandbox-controller-postgres release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -63,6 +63,10 @@ test-control-api:
 test-identity:
 	./infra/identity/test-static.sh
 	shellcheck -e SC2016 infra/identity/*.sh
+
+test-identity-root:
+	./infra/identity/test-secret-generation.sh
+	./infra/identity/test-path-and-repair.sh
 
 test-infra:
 	./infra/milestone-2/tests/test-preflight.sh

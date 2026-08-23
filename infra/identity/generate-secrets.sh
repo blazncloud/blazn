@@ -8,27 +8,14 @@ fi
 if [ "$(id -u)" -ne 0 ]; then printf 'secret generation must run as root\n' >&2; exit 77; fi
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=lib.sh
+. "$script_dir/lib.sh"
 openssl_bin=${OPENSSL_BIN:-/usr/bin/openssl}
 [ -x "$openssl_bin" ] || { printf 'openssl is required at %s\n' "$openssl_bin" >&2; exit 69; }
 secrets_root=$1
 admin_email=$2
 case "$secrets_root" in /*) ;; *) printf 'secrets directory must be absolute\n' >&2; exit 64 ;; esac
 printf '%s' "$admin_email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$' || { printf 'initial administrator email is invalid\n' >&2; exit 64; }
-
-assert_no_symlink_path() {
-  path_value=${1#/}; current=/; old_ifs=$IFS; IFS=/
-  for component in $path_value; do
-    [ -n "$component" ] || continue
-    current=${current%/}/$component
-    if [ -L "$current" ]; then printf 'symlink path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; fi
-		if [ -e "$current" ]; then
-			[ -d "$current" ] || { printf 'non-directory path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; }
-			if find "$current" -maxdepth 0 ! -user root -print -quit | grep -q .; then printf 'non-root-owned path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; fi
-			if find "$current" -maxdepth 0 -perm /022 ! -perm -1000 -print -quit | grep -q .; then printf 'writable non-sticky path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; fi
-		fi
-  done
-  IFS=$old_ifs
-}
 
 assert_secret_file() {
   target=$1
@@ -38,7 +25,7 @@ assert_secret_file() {
   [ -s "$target" ] || { printf 'secret is empty: %s\n' "$target" >&2; exit 73; }
 }
 
-assert_no_symlink_path "$secrets_root"
+identity_validate_path "$secrets_root" secrets
 umask 077
 mkdir -p -- "$secrets_root"
 [ ! -L "$secrets_root" ] && [ -d "$secrets_root" ] || { printf 'secrets root is unsafe\n' >&2; exit 73; }

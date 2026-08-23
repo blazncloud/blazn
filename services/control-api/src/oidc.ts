@@ -59,10 +59,25 @@ function httpsUrl(value: string, label: string): URL {
 
 async function jsonFetch<T>(url: URL, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) throw new Error(`identity provider returned HTTP ${response.status}`);
-  const body = await response.text();
-  if (body.length > 1024 * 1024) throw new Error("identity provider response is too large");
-  return JSON.parse(body) as T;
+	if (!response.ok) { await response.body?.cancel(); throw new Error(`identity provider returned HTTP ${response.status}`); }
+	const maximum = 1024 * 1024;
+	const declared = response.headers.get("content-length");
+	if (declared && (!/^[0-9]+$/.test(declared) || Number(declared) > maximum)) { await response.body?.cancel(); throw new Error("identity provider response is too large"); }
+	if (!response.body) throw new Error("identity provider response body is unavailable");
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.byteLength;
+			if (size > maximum) { await reader.cancel(); throw new Error("identity provider response is too large"); }
+			chunks.push(value);
+		}
+	} finally { reader.releaseLock(); }
+	const body = Buffer.concat(chunks.map((value) => Buffer.from(value.buffer, value.byteOffset, value.byteLength)), size).toString("utf8");
+	return JSON.parse(body) as T;
 }
 
 function randomValue(bytes = 32): string { return randomBytes(bytes).toString("base64url"); }
@@ -107,6 +122,8 @@ export function verifyOidcIdToken(encoded: string, input: IdTokenVerification): 
 export class OidcClient {
   private discovery?: Discovery;
   private jwks?: { expiresAt: number; keys: Jwk[] };
+	private healthFreshUntil = 0;
+	private healthFlight?: Promise<void>;
 
   constructor(private readonly config: OidcProviderConfig) {
     httpsUrl(config.issuerUrl, "OIDC issuer");
@@ -136,9 +153,16 @@ export class OidcClient {
   }
 
 	async health(): Promise<void> {
-		const metadata = await this.metadata(true);
-		const keys = await this.keys(metadata, true);
-		if (keys.length === 0) throw new Error("identity provider has no signing keys");
+		if (this.healthFreshUntil > Date.now()) return;
+		if (this.healthFlight) return this.healthFlight;
+		this.healthFlight = (async () => {
+			const metadata = await this.metadata(true);
+			const keys = await this.keys(metadata, true);
+			if (keys.length === 0) throw new Error("identity provider has no signing keys");
+			this.healthFreshUntil = Date.now() + 10_000;
+		})();
+		try { await this.healthFlight; }
+		finally { this.healthFlight = undefined; }
 	}
 
   private async metadata(refresh = false): Promise<Discovery> {

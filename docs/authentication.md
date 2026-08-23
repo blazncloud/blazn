@@ -53,7 +53,10 @@ sudo ./infra/identity/generate-secrets.sh \
   /etc/blazn/identity/secrets admin@your-company.example
 ```
 
-The generator rejects non-root execution, symlinked path components, non-regular
+All identity mutation scripts reject `/`, non-canonical dot segments, paths
+outside their fixed production/disposable prefixes, nested or overlapping
+data/secrets/backup/receipt roots, and any symlink component before mutation.
+The generator also rejects non-root execution, non-regular
 or multiply-linked secrets, and owner/mode drift. Writes use owner-only
 same-directory temporaries, atomic rename, and filesystem sync. The generated
 ZITADEL master key is not rotatable in place. Back it up before
@@ -147,14 +150,18 @@ master key, the private login-client PAT volume, immutable image environment,
 and exact Compose/proxy/config definitions under one checksum manifest:
 
 ```sh
-sudo ./infra/identity/backup.sh /etc/blazn/identity/env /srv/backup/blazn-identity-001
-sudo ./infra/identity/restore.sh /srv/backup/blazn-identity-001 /etc/blazn/identity/env
+sudo ./infra/identity/backup.sh /etc/blazn/identity/env /srv/backups/blazn/identity/001
+sudo ./infra/identity/restore.sh /srv/backups/blazn/identity/001 /etc/blazn/identity/env
 ```
 
 Restore refuses checksum drift, a different image environment, or different
 checked-out deployment definitions. Pre-restore database and secret trees are
-moved aside rather than deleted. The disposable qualifier verifies the restored
-master-key and PAT-volume digests and retains a recoverable pre-restore tree.
+moved aside rather than deleted. Before `down -v`, restore snapshots and
+checksums the currently running login-client PAT volume. Any failed forward
+restore invokes the independently tested PAT repair path; the same verified
+repair command can roll backward to the pre-restore snapshot or forward to the
+backup snapshot. The disposable qualifier verifies the restored master-key and
+PAT-volume digests and retains a recoverable pre-restore tree until cleanup.
 
 ## Qualification gate
 
@@ -180,6 +187,19 @@ legacy login, explicit device confirmation, OIDC-aware health, backup/restore,
 exact image rollback, master-key recovery, and PAT-volume recovery. Absence of
 the reviewed images, mail delivery, provider/bootstrap configuration, or driver
 is a hard blocker rather than a skipped green gate.
+The browser driver must be a root-owned, single-link mode-0500/0700 file at the
+fixed driver path and must match a separately reviewed SHA-256 digest. It emits
+per-gate evidence digests and timestamps, not self-authored pass booleans. The
+harness independently constructs the final receipt and binds the reviewed
+issuer, operator environment digest, configured image manifest digests,
+observed running image digests, backup/database/PAT/master-key digests, driver
+digest, and gate evidence. OIDC-aware health uses a bounded ten-second cache and
+singleflight probe; discovery, JWKS, and token responses are streamed under a
+hard one-megabyte cap so health traffic cannot amplify provider responses.
+The disposable environment must therefore set
+`ZITADEL_QUALIFICATION_DRIVER_SHA256` and a new receipt path under
+`/var/lib/blazn/identity-qualification/`; neither the environment nor receipt
+may be nested under any disposable data, secrets, backup, or recovery root.
 Temporary databases, secrets, PAT volumes, and secret-bearing backup archives
 are removed on every exit; only the validated redacted receipt is installed at
 the new root-owned `BLAZN_IDENTITY_QUALIFICATION_RECEIPT` path.
