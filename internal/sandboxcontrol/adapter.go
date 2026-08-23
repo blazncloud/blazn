@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,27 @@ type kubeSandbox struct {
 	Metadata   kubeMetadata    `json:"metadata"`
 	Spec       kubeSandboxSpec `json:"spec"`
 	Status     kubeStatus      `json:"status,omitempty"`
+	RawSpec    json.RawMessage `json:"-"`
+}
+
+func (object *kubeSandbox) UnmarshalJSON(data []byte) error {
+	type alias kubeSandbox
+	decoded := struct {
+		*alias
+		Spec json.RawMessage `json:"spec"`
+	}{alias: (*alias)(object)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.Spec) == 0 {
+		object.RawSpec = nil
+		return nil
+	}
+	if json.Unmarshal(decoded.Spec, &object.Spec) != nil {
+		return fmt.Errorf("Sandbox spec is invalid")
+	}
+	object.RawSpec = append(object.RawSpec[:0], decoded.Spec...)
+	return nil
 }
 
 type kubeMetadata struct {
@@ -267,6 +289,9 @@ func ambiguousCreateError(err error) bool {
 func (a *Adapter) finishEnsureCreated(ctx context.Context, request CreateRequest, artifactDigest, intentDigest, expectedUID string, manifest, created kubeSandbox, cleanup bool) (SandboxRecord, OperationReceipt, error) {
 	record, err := a.record(created)
 	if err != nil {
+		if cleanup {
+			return SandboxRecord{}, OperationReceipt{}, a.rejectCreatedMetadata(ctx, request.Name, created.Metadata, err)
+		}
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
 	reject := func(err error) error {
@@ -305,7 +330,7 @@ func sameCreateSpec(observed, expected kubeSandbox) bool {
 	if observed.APIVersion != expected.APIVersion || observed.Kind != expected.Kind ||
 		observed.Metadata.Name != expected.Metadata.Name || observed.Metadata.Namespace != expected.Metadata.Namespace ||
 		observed.Metadata.UID == "" || observed.Metadata.ResourceVersion == "" ||
-		!sameJSON(observed.Spec, expected.Spec) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
+		!sameMaterialSpec(observed.RawSpec, expected.Spec) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
 		return false
 	}
 	for key, value := range expected.Metadata.Labels {
@@ -327,21 +352,57 @@ func sameJSON(left, right any) bool {
 	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
+func sameMaterialSpec(observed json.RawMessage, expected any) bool {
+	if len(observed) == 0 {
+		return false
+	}
+	expectedJSON, err := json.Marshal(expected)
+	if err != nil {
+		return false
+	}
+	left, leftOK := decodeMaterialJSON(observed)
+	right, rightOK := decodeMaterialJSON(expectedJSON)
+	if !leftOK || !rightOK {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func decodeMaterialJSON(data []byte) (any, bool) {
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if decoder.Decode(&decoded) != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
 func (a *Adapter) rejectCreated(ctx context.Context, record SandboxRecord, original error) error {
-	if record.Namespace != Namespace || !dnsLabelPattern.MatchString(record.Name) || record.UID == "" || record.ResourceVersion == "" {
+	metadata := kubeMetadata{Name: record.Name, Namespace: record.Namespace, UID: record.UID, ResourceVersion: record.ResourceVersion}
+	return a.rejectCreatedMetadata(ctx, record.Name, metadata, original)
+}
+
+func (a *Adapter) rejectCreatedMetadata(ctx context.Context, expectedName string, metadata kubeMetadata, original error) error {
+	if metadata.Namespace != Namespace || metadata.Name != expectedName || !dnsLabelPattern.MatchString(metadata.Name) ||
+		!objectIDPattern.MatchString(metadata.UID) || !objectIDPattern.MatchString(metadata.ResourceVersion) {
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox identity cannot be cleaned safely", original)
 	}
-	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": record.UID, "resourceVersion": record.ResourceVersion}}
-	if err := a.call(ctx, http.MethodDelete, a.resourcePath(record.Name), nil, options, nil, "application/json"); err != nil {
+	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": metadata.UID, "resourceVersion": metadata.ResourceVersion}}
+	if err := a.call(ctx, http.MethodDelete, a.resourcePath(metadata.Name), nil, options, nil, "application/json"); err != nil {
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox deletion failed", err)
 	}
 	var deleting kubeSandbox
-	if err := a.call(ctx, http.MethodGet, a.resourcePath(record.Name), nil, nil, &deleting, ""); err != nil {
+	if err := a.call(ctx, http.MethodGet, a.resourcePath(metadata.Name), nil, nil, &deleting, ""); err != nil {
 		var adapterErr *AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Code == ErrNotFound {
 			return original
 		}
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox cleanup state is unavailable", err)
+	}
+	if deleting.Metadata.Namespace != Namespace || deleting.Metadata.Name != metadata.Name || deleting.Metadata.UID != metadata.UID ||
+		!objectIDPattern.MatchString(deleting.Metadata.ResourceVersion) || deleting.Metadata.DeletionTimestamp == "" {
+		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox cleanup identity drifted", original)
 	}
 	finalizers := make([]string, 0, len(deleting.Metadata.Finalizers))
 	for _, finalizer := range deleting.Metadata.Finalizers {
@@ -351,7 +412,7 @@ func (a *Adapter) rejectCreated(ctx context.Context, record SandboxRecord, origi
 	}
 	if contains(deleting.Metadata.Finalizers, CleanupFinalizer) {
 		patch := map[string]any{"metadata": map[string]any{"resourceVersion": deleting.Metadata.ResourceVersion, "finalizers": finalizers}}
-		if err := a.call(ctx, http.MethodPatch, a.resourcePath(record.Name), nil, patch, nil, "application/merge-patch+json"); err != nil {
+		if err := a.call(ctx, http.MethodPatch, a.resourcePath(metadata.Name), nil, patch, nil, "application/merge-patch+json"); err != nil {
 			return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox finalizer cleanup failed", err)
 		}
 	}

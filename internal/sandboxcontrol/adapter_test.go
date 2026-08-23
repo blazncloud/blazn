@@ -116,6 +116,10 @@ type fakeAPI struct {
 	forbiddenAfterPreflight     bool
 	mutatePostIntent            bool
 	mutatePostSpec              bool
+	corruptCreated              func(*kubeSandbox)
+	mutateSandboxResponse       func(map[string]any)
+	mutatePodResponse           func(map[string]any)
+	deleteFails                 bool
 	duplicatePod                bool
 	duplicatePodDropsLabel      bool
 	duplicateWorkload           bool
@@ -174,6 +178,9 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		if f.mutatePostSpec {
 			object.Spec.PodTemplate.Spec.Containers[0].Image = "registry.example.test/other@sha256:" + strings.Repeat("b", 64)
 		}
+		if f.corruptCreated != nil {
+			f.corruptCreated(&object)
+		}
 		f.object = object
 		if f.conflictAfterPreflight {
 			writeJSON(response, http.StatusConflict, map[string]any{"reason": "AlreadyExists", "code": 409})
@@ -187,7 +194,7 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			writeJSON(response, http.StatusInternalServerError, map[string]any{"reason": "InternalError", "code": 500})
 			return
 		}
-		writeJSON(response, http.StatusCreated, object)
+		writeMutatedJSON(f.t, response, http.StatusCreated, object, f.mutateSandboxResponse)
 	case request.Method == http.MethodGet && request.URL.Path == podCollection:
 		list := observedPodList{APIVersion: podAPIVersion, Kind: "PodList"}
 		if !f.podsAbsent && f.object.Metadata.UID != "" {
@@ -203,7 +210,7 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 				list.Items = append(list.Items, copy)
 			}
 		}
-		writeJSON(response, http.StatusOK, list)
+		writeMutatedJSON(f.t, response, http.StatusOK, list, f.mutatePodResponse)
 	case request.Method == http.MethodGet && request.URL.Path == workloadCollection:
 		list := observedWorkloadList{APIVersion: AdmissionAPIVersion, Kind: "WorkloadList"}
 		if f.driftAdmissionAPI {
@@ -239,8 +246,12 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			writeJSON(response, http.StatusNotFound, map[string]any{"reason": "NotFound", "code": 404})
 			return
 		}
-		writeJSON(response, http.StatusOK, f.object)
+		writeMutatedJSON(f.t, response, http.StatusOK, f.object, f.mutateSandboxResponse)
 	case request.Method == http.MethodDelete && request.URL.Path == collection+"/sandbox-a":
+		if f.deleteFails {
+			writeJSON(response, http.StatusInternalServerError, map[string]any{"reason": "InternalError", "code": 500})
+			return
+		}
 		var options map[string]any
 		decodeBody(f.t, request.Body, &options)
 		preconditions := options["preconditions"].(map[string]any)
@@ -472,6 +483,58 @@ func TestEnsureCreatedNeverAdoptsAuthoritativePOSTRejection(t *testing.T) {
 	}
 }
 
+func TestEnsureCreatedRejectsEveryUnmodeledMaterialSpecField(t *testing.T) {
+	mutations := materialPodSpecMutations()
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			fake.mutateSandboxResponse = func(document map[string]any) {
+				spec := document["spec"].(map[string]any)["podTemplate"].(map[string]any)["spec"].(map[string]any)
+				mutate(spec)
+			}
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			_, _, err := adapter.EnsureCreated(context.Background(), testCreate(), "")
+			assertCode(t, err, ErrConflict)
+			if fake.object.Metadata.DeletionTimestamp == "" || contains(fake.object.Metadata.Finalizers, CleanupFinalizer) {
+				t.Fatalf("authoritative substituted create was not cleaned: deleting=%q finalizers=%v", fake.object.Metadata.DeletionTimestamp, fake.object.Metadata.Finalizers)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeCreateContractFailureUsesSafeRawIdentityCleanup(t *testing.T) {
+	tests := map[string]func(*kubeSandbox){
+		"missing intent":    func(object *kubeSandbox) { delete(object.Metadata.Annotations, CreateIntentAnnotation) },
+		"invalid intent":    func(object *kubeSandbox) { object.Metadata.Annotations[CreateIntentAnnotation] = "invalid" },
+		"missing artifacts": func(object *kubeSandbox) { delete(object.Metadata.Annotations, "sandboxes.blazn.dev/artifact-exports") },
+		"invalid artifacts": func(object *kubeSandbox) { object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"] = `{}` },
+	}
+	for name, corrupt := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			fake.corruptCreated = corrupt
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			_, _, err := adapter.Create(context.Background(), testCreate())
+			assertCode(t, err, ErrBackend)
+			if fake.object.Metadata.DeletionTimestamp == "" || contains(fake.object.Metadata.Finalizers, CleanupFinalizer) {
+				t.Fatalf("malformed authoritative create was not cleaned: deleting=%q finalizers=%v", fake.object.Metadata.DeletionTimestamp, fake.object.Metadata.Finalizers)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeCreateCleanupFailureReportsResidue(t *testing.T) {
+	fake := newFakeAPI(t)
+	fake.corruptCreated = func(object *kubeSandbox) { delete(object.Metadata.Annotations, CreateIntentAnnotation) }
+	fake.deleteFails = true
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	_, _, err := adapter.Create(context.Background(), testCreate())
+	assertCode(t, err, ErrCleanupIncomplete)
+	if fake.object.Metadata.DeletionTimestamp != "" || !contains(fake.object.Metadata.Finalizers, CleanupFinalizer) {
+		t.Fatalf("failed cleanup did not preserve visible residue: deleting=%q finalizers=%v", fake.object.Metadata.DeletionTimestamp, fake.object.Metadata.Finalizers)
+	}
+}
+
 func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
 	fake := newFakeAPI(t)
 	request := testCreate()
@@ -527,6 +590,58 @@ func TestObserveAdmissionRejectsDuplicatesSubstitutionsAndAPIDrift(t *testing.T)
 	}
 }
 
+func TestObserveAdmissionRejectsEveryUnmodeledMaterialPodField(t *testing.T) {
+	for name, mutate := range materialPodSpecMutations() {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			request := testCreate()
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			record, _, err := adapter.Create(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake.mutatePodResponse = func(document map[string]any) {
+				spec := document["items"].([]any)[0].(map[string]any)["spec"].(map[string]any)
+				mutate(spec)
+			}
+			_, err = adapter.ObserveAdmission(context.Background(), request, record, nil)
+			assertCode(t, err, ErrConflict)
+		})
+	}
+}
+
+func TestObserveAdmissionAcceptsOnlyExactAPIMaterializedPodDefaults(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.mutatePodResponse = func(document map[string]any) {
+		spec := document["items"].([]any)[0].(map[string]any)["spec"].(map[string]any)
+		spec["dnsPolicy"] = "ClusterFirst"
+		spec["schedulerName"] = "default-scheduler"
+		spec["terminationGracePeriodSeconds"] = float64(30)
+		spec["enableServiceLinks"] = true
+		spec["preemptionPolicy"] = "PreemptLowerPriority"
+		spec["priority"] = float64(0)
+		spec["serviceAccount"] = ServiceAccountName
+		spec["nodeName"] = "worker-a.example"
+		spec["tolerations"] = []any{
+			map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
+			map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
+		}
+		container := spec["containers"].([]any)[0].(map[string]any)
+		container["imagePullPolicy"] = "IfNotPresent"
+		container["terminationMessagePath"] = "/dev/termination-log"
+		container["terminationMessagePolicy"] = "File"
+	}
+	if _, err := adapter.ObserveAdmission(context.Background(), request, record, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestObserveAbsenceFindsExactOwnedOrphansWithoutLabels(t *testing.T) {
 	fake := newFakeAPI(t)
 	request := testCreate()
@@ -555,6 +670,48 @@ func TestObserveAbsenceFindsExactOwnedOrphansWithoutLabels(t *testing.T) {
 	fake.mu.Unlock()
 	if err := adapter.ObserveAbsence(context.Background(), observation); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestObserveAbsenceRejectsSubstitutedOrIncompleteFrozenIdentity(t *testing.T) {
+	fake := newFakeAPI(t)
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.podsAbsent, fake.workloadsAbsent = true, true
+	tests := map[string]func(*AdmissionObservation){
+		"substituted Sandbox name": func(value *AdmissionObservation) { value.Sandbox.Name = "sandbox-b" },
+		"invalid Sandbox UID":      func(value *AdmissionObservation) { value.Sandbox.UID = "" },
+		"invalid Sandbox version":  func(value *AdmissionObservation) { value.Sandbox.ResourceVersion = "" },
+		"invalid Pod name":         func(value *AdmissionObservation) { value.Pod.Name = "bad..pod" },
+		"invalid Pod UID":          func(value *AdmissionObservation) { value.Pod.UID = "" },
+		"invalid Pod version":      func(value *AdmissionObservation) { value.Pod.ResourceVersion = "" },
+		"invalid Workload name": func(value *AdmissionObservation) {
+			value.Workload.Name = "bad..workload"
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"invalid Workload UID": func(value *AdmissionObservation) {
+			value.Workload.UID = ""
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+		"invalid Workload version": func(value *AdmissionObservation) {
+			value.Workload.ResourceVersion = ""
+			value.Workload.Digest = workloadIdentityDigest(value.Workload)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			changed := observation
+			mutate(&changed)
+			assertCode(t, adapter.ObserveAbsence(context.Background(), changed), ErrInvalidRequest)
+		})
 	}
 }
 
@@ -919,6 +1076,22 @@ func TestFakeAPIClientBoundsStalledHandlerAndCleanup(t *testing.T) {
 	}
 }
 
+func materialPodSpecMutations() map[string]func(map[string]any) {
+	return map[string]func(map[string]any){
+		"host network": func(spec map[string]any) { spec["hostNetwork"] = true },
+		"host PID":     func(spec map[string]any) { spec["hostPID"] = true },
+		"DNS policy":   func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
+		"container environment": func(spec map[string]any) {
+			container := spec["containers"].([]any)[0].(map[string]any)
+			container["env"] = []any{map[string]any{"name": "INJECTED", "value": "true"}}
+		},
+		"volume source": func(spec map[string]any) {
+			volume := spec["volumes"].([]any)[0].(map[string]any)
+			volume["hostPath"] = map[string]any{"path": "/", "type": "Directory"}
+		},
+	}
+}
+
 func testAdapter(t *testing.T, fake *fakeAPI, exporter ArtifactExporter) *Adapter {
 	t.Helper()
 	client := *fake.server.Client()
@@ -988,4 +1161,22 @@ func writeJSON(response http.ResponseWriter, status int, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(value)
+}
+
+func writeMutatedJSON(t *testing.T, response http.ResponseWriter, status int, value any, mutate func(map[string]any)) {
+	t.Helper()
+	if mutate == nil {
+		writeJSON(response, status, value)
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	mutate(document)
+	writeJSON(response, status, document)
 }
