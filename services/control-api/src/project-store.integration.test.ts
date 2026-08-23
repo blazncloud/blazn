@@ -43,7 +43,7 @@ test("PostgreSQL Project idempotency, optimistic updates, tenant isolation, and 
     assert.equal((await service.listProjects(owner, workspaceId, "active")).items.length, 0);
     assert.equal((await service.listProjects(owner, workspaceId, "archived")).items.length, 1);
     const audits = await admin.query<{ event_type: string }>("SELECT event_type FROM workspace_audit_events WHERE workspace_id=$1 AND event_type LIKE 'project.%' ORDER BY created_at,id", [workspaceId]);
-    assert.deepEqual(audits.rows.map((row) => row.event_type), ["project.created", "project.updated", "project.updated"]);
+    assert.deepEqual(audits.rows.map((row) => row.event_type), ["project.created", "project.profile_put", "project.updated", "project.updated"]);
     await assert.rejects(() => runtime.query("DELETE FROM projects WHERE id=$1", [first.project.id]), (error: unknown) => !!error && typeof error === "object" && "code" in error && error.code === "42501");
   } finally {
     await admin.query("DELETE FROM workspaces WHERE id=ANY($1::uuid[])", [[workspaceId, otherWorkspaceId]]).catch(() => {});
