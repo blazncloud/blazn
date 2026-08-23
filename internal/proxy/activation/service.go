@@ -20,9 +20,10 @@ import (
 const ContractVersion = "proxy/v1alpha1"
 
 var (
-	ErrUnavailable     = errors.New("proxy platform adapter is unavailable")
-	ErrDifferentPolicy = errors.New("proxy already active with a different policy")
-	ErrRecovery        = state.ErrRecoveryRequired
+	ErrUnavailable        = errors.New("proxy platform adapter is unavailable")
+	ErrSessionUnsupported = errors.New("proxy session activation is unsupported")
+	ErrDifferentPolicy    = errors.New("proxy already active with a different policy")
+	ErrRecovery           = state.ErrRecoveryRequired
 )
 
 type PriorValue struct {
@@ -43,6 +44,7 @@ type Environment interface {
 
 type ManagedListener interface {
 	Identity() state.ListenerIdentity
+	Inspect(context.Context) (state.ListenerIdentity, bool, error)
 	ChildEnvironment([]string) ([]string, error)
 	Shutdown(context.Context) error
 }
@@ -139,25 +141,35 @@ type Service struct {
 	deps      Dependencies
 	mu        sync.Mutex
 	listeners map[int]managedProof
+	stopped   map[int]state.LiveListenerProof
 }
 type managedProof struct {
 	listener ManagedListener
+	identity state.ListenerIdentity
 	proof    state.LiveListenerProof
 }
 
 type Result struct {
-	Command            string   `json:"command"`
-	ContractVersion    string   `json:"contractVersion"`
-	Status             string   `json:"status"`
-	State              string   `json:"state"`
-	Timestamp          string   `json:"timestamp"`
-	ActivationID       string   `json:"activationId,omitempty"`
-	PolicyDigest       string   `json:"policyDigest,omitempty"`
-	Mode               string   `json:"mode,omitempty"`
-	ListenerAddress    string   `json:"listenerAddress,omitempty"`
-	PublishedVariables []string `json:"publishedVariables,omitempty"`
-	ManualRemediation  []string `json:"manualRemediation,omitempty"`
-	ExitCode           int      `json:"exitCode"`
+	Command            string          `json:"command"`
+	ContractVersion    string          `json:"contractVersion"`
+	Status             string          `json:"status"`
+	State              string          `json:"state"`
+	Timestamp          string          `json:"timestamp"`
+	ActivationID       string          `json:"activationId,omitempty"`
+	PolicyDigest       string          `json:"policyDigest,omitempty"`
+	Mode               string          `json:"mode,omitempty"`
+	ListenerAddress    string          `json:"listenerAddress,omitempty"`
+	PublishedVariables []string        `json:"publishedVariables,omitempty"`
+	ManualRemediation  []string        `json:"manualRemediation,omitempty"`
+	Cleanup            *CleanupReceipt `json:"cleanup,omitempty"`
+	ChildExitCode      *int            `json:"childExitCode,omitempty"`
+	ExitCode           int             `json:"exitCode"`
+}
+type CleanupReceipt struct {
+	Status              string   `json:"status"`
+	ListenerEvidence    string   `json:"listenerEvidence"`
+	RestoredVariables   []string `json:"restoredVariables"`
+	ConflictedVariables []string `json:"conflictedVariables"`
 }
 type Route struct {
 	ID                  string `json:"id"`
@@ -173,7 +185,7 @@ func New(deps Dependencies) (*Service, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	return &Service{deps: deps, listeners: map[int]managedProof{}}, nil
+	return &Service{deps: deps, listeners: map[int]managedProof{}, stopped: map[int]state.LiveListenerProof{}}, nil
 }
 
 func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Result, error) {
@@ -227,12 +239,23 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (Re
 	})
 	if ran {
 		result.ExitCode = childExit
+		copy := childExit
+		result.ChildExitCode = &copy
 	}
 	if result.ActivationID != "" {
 		recovery, offErr := s.recover(ctx, "proxy run")
 		result.State = recovery.State
+		result.Cleanup = recovery.Cleanup
 		result.ManualRemediation = recovery.ManualRemediation
 		err = errors.Join(err, offErr)
+		if offErr != nil {
+			result.Status = "recovery_required"
+			result.ExitCode = 9
+		} else if err != nil {
+			result.Status = "failed"
+		} else {
+			result.Status = "completed"
+		}
 	}
 	return result, err
 }
@@ -257,6 +280,11 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 			_ = managed.Shutdown(context.Background())
 		}
 	}()
+	identity := managed.Identity()
+	observedIdentity, live, inspectErr := managed.Inspect(ctx)
+	if inspectErr != nil || !live || observedIdentity != identity {
+		return s.result(command, "failed", "inactive", 7), errors.Join(errors.New("listener identity could not be verified before publication"), inspectErr)
+	}
 	desiredEnvironment, err := managed.ChildEnvironment(s.deps.Environment.BaseEnvironment())
 	if err != nil {
 		return s.result(command, "failed", "inactive", 3), err
@@ -270,7 +298,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 		return s.result(command, "failed", "inactive", 7), err
 	}
 	now := s.deps.Now().UTC()
-	journal := &state.Journal{SchemaVersion: state.SchemaVersion, ActivationID: activationID, Nonce: nonce, Generation: 1, State: "prepared", OwnerUID: s.deps.OwnerUID, Platform: s.deps.Environment.Platform(), Mode: mode, SessionIdentity: session, Policy: state.PolicyIdentity{ID: policy.ID, Version: int64(policy.Version), Digest: digest}, Binary: s.deps.Binary, Listener: managed.Identity(), CA: nil, CreatedAt: now, UpdatedAt: now}
+	journal := &state.Journal{SchemaVersion: state.SchemaVersion, ActivationID: activationID, Nonce: nonce, Generation: 1, State: "prepared", OwnerUID: s.deps.OwnerUID, Platform: s.deps.Environment.Platform(), Mode: mode, SessionIdentity: session, Policy: state.PolicyIdentity{ID: policy.ID, Version: int64(policy.Version), Digest: digest}, Binary: s.deps.Binary, Listener: identity, CA: nil, CreatedAt: now, UpdatedAt: now}
 	journal.Environment = journalEnvironment(prior, desired)
 	journal.RollbackActions = rollbackActions(mode)
 	publish := func() error { return s.deps.Environment.Publish(ctx, mechanism, desired) }
@@ -278,11 +306,12 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 		return s.result(command, "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, err)
 	}
 	s.mu.Lock()
-	s.listeners[managed.Identity().PID] = managedProof{listener: managed, proof: state.LiveListenerProof{PID: managed.Identity().PID, ProcessStartIdentity: managed.Identity().ProcessStartIdentity, ExecutableIdentity: managed.Identity().ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: managed.Identity().ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}}
+	delete(s.stopped, identity.PID)
+	s.listeners[identity.PID] = managedProof{listener: managed, identity: identity, proof: state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: s.deps.Binary.Digest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: nonce, OwnerUID: s.deps.OwnerUID, Generation: 1, Mode: mode, SessionIdentity: session}}
 	s.mu.Unlock()
 	keep = true
 	result := s.result(command, "active", "active", 0)
-	result.ActivationID, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, digest, mode, managed.Identity().Address
+	result.ActivationID, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, digest, mode, identity.Address
 	result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
 	if run != nil {
 		err = run(desiredEnvironment)
@@ -313,6 +342,14 @@ func (s *Service) recover(ctx context.Context, command string) (result Result, e
 		}
 	}
 	result = s.result(command, status, stateValue, exit)
+	cleanupStatus := string(recovery.Status)
+	if exit == 9 {
+		cleanupStatus = "recovery_required"
+	}
+	if cleanupStatus == "" {
+		cleanupStatus = status
+	}
+	result.Cleanup = &CleanupReceipt{Status: cleanupStatus, ListenerEvidence: recovery.ListenerEvidence, RestoredVariables: append([]string(nil), recovery.RestoredEnvironment...), ConflictedVariables: append([]string(nil), recovery.ConflictedEnvironment...)}
 	result.ManualRemediation = append([]string(nil), recovery.ManualRemediation...)
 	return result, err
 }
@@ -320,9 +357,20 @@ func (s *Service) recover(ctx context.Context, command string) (result Result, e
 func (s *Service) Inspect(ctx context.Context, pid int) (state.LiveListenerProof, bool, error) {
 	s.mu.Lock()
 	managed, ok := s.listeners[pid]
+	_, stopped := s.stopped[pid]
 	s.mu.Unlock()
 	if ok {
+		identity, live, err := managed.listener.Inspect(ctx)
+		if err != nil || !live {
+			return state.LiveListenerProof{}, live, err
+		}
+		if identity != managed.identity {
+			return state.LiveListenerProof{PID: identity.PID, ProcessStartIdentity: identity.ProcessStartIdentity, ExecutableIdentity: identity.ExecutableIdentity, BinaryDigest: managed.proof.BinaryDigest, ListenerKeyFingerprint: identity.ListenerKeyFingerprint, ActivationNonce: managed.proof.ActivationNonce, OwnerUID: managed.proof.OwnerUID, Generation: managed.proof.Generation, Mode: managed.proof.Mode, SessionIdentity: managed.proof.SessionIdentity}, true, nil
+		}
 		return managed.proof, true, nil
+	}
+	if stopped {
+		return state.LiveListenerProof{}, false, nil
 	}
 	return s.deps.Controller.Inspect(ctx, pid)
 }
@@ -340,6 +388,7 @@ func (s *Service) Stop(ctx context.Context, proof state.LiveListenerProof) error
 		s.mu.Lock()
 		if current, present := s.listeners[proof.PID]; present && current.proof == proof {
 			delete(s.listeners, proof.PID)
+			s.stopped[proof.PID] = proof
 		}
 		s.mu.Unlock()
 		return nil
@@ -357,6 +406,17 @@ func (s *Service) Status(ctx context.Context) (Result, error) {
 			err = errors.Join(ErrRecovery, err)
 		}
 	}
+	if value.State == state.ReconciliationActive {
+		if value.ListenerProof == nil {
+			result.Status, result.State, result.ExitCode = "recovery_required", "recovery_required", 9
+			return result, ErrRecovery
+		}
+		observed, live, inspectErr := s.Inspect(ctx, value.ListenerProof.PID)
+		if inspectErr != nil || !live || observed != *value.ListenerProof {
+			result.Status, result.State, result.ExitCode = "recovery_required", "recovery_required", 9
+			return result, errors.Join(ErrRecovery, inspectErr)
+		}
+	}
 	return result, err
 }
 func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error) {
@@ -366,7 +426,10 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	}
 	mode, _, err := s.deps.Environment.ResolveMode("auto")
 	if err != nil {
-		return s.result("proxy doctor", "warning", "inactive", 0), nil
+		if errors.Is(err, ErrSessionUnsupported) {
+			return s.result("proxy doctor", "warning", "inactive", 0), nil
+		}
+		return s.result("proxy doctor", "failed", "inactive", 7), err
 	}
 	session, err := s.deps.Environment.SessionIdentity(ctx)
 	if err != nil {
@@ -380,9 +443,15 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	if err != nil {
 		return s.result("proxy doctor", "failed", "inactive", 3), err
 	}
-	defer managed.Shutdown(context.Background())
+	identity := managed.Identity()
+	if shutdownErr := managed.Shutdown(ctx); shutdownErr != nil {
+		return s.result("proxy doctor", "failed", "inactive", 7), shutdownErr
+	}
+	if _, live, inspectErr := managed.Inspect(ctx); inspectErr != nil || live {
+		return s.result("proxy doctor", "failed", "inactive", 7), errors.Join(errors.New("proxy doctor listener shutdown is unverified"), inspectErr)
+	}
 	result := s.result("proxy doctor", "ready", "inactive", 0)
-	result.PolicyDigest, result.ListenerAddress = digest, managed.Identity().Address
+	result.PolicyDigest, result.ListenerAddress = digest, identity.Address
 	return result, nil
 }
 func (s *Service) Routes(_ context.Context, policyPath string) ([]Route, error) {

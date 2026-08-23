@@ -185,7 +185,10 @@ func (a *App) writeProxyResult(format OutputFormat, result activation.Result, er
 		return a.writeProxyError(format, err, result.ExitCode)
 	}
 	if format == OutputJSON {
-		return a.writeJSON(result)
+		if code := a.writeJSON(result); code != ExitSuccess {
+			return code
+		}
+		return result.ExitCode
 	}
 	fmt.Fprintf(a.stdout, "%s: %s (%s)\n", result.Command, result.Status, result.State)
 	for _, line := range result.ManualRemediation {
