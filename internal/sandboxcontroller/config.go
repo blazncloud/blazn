@@ -18,6 +18,12 @@ type RuntimeConfig struct {
 	DatabaseURL string
 }
 
+type secretFileOps struct {
+	lstat     func(string) (os.FileInfo, error)
+	open      func(string) (*os.File, error)
+	afterRead func() error
+}
+
 func ConfigFromEnv(getenv func(string) string) (RuntimeConfig, error) {
 	if getenv == nil {
 		return RuntimeConfig{}, errors.New("environment reader is required")
@@ -72,17 +78,29 @@ func ConfigFromEnv(getenv func(string) string) (RuntimeConfig, error) {
 }
 
 func readSecretFile(path string) (string, error) {
+	return readSecretFileWithOps(path, secretFileOps{
+		lstat: os.Lstat,
+		open: func(name string) (*os.File, error) {
+			return os.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+		},
+	})
+}
+
+func readSecretFileWithOps(path string, ops secretFileOps) (string, error) {
 	if path == "" {
 		return "", errors.New("BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE is required")
 	}
-	info, err := os.Lstat(path)
+	if ops.lstat == nil || ops.open == nil {
+		return "", errors.New("sandbox controller database URL file cannot be inspected")
+	}
+	info, err := ops.lstat(path)
 	if err != nil {
 		return "", errors.New("sandbox controller database URL file cannot be inspected")
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !secureSecretInfo(info, os.Getuid()) {
 		return "", errors.New("sandbox controller database URL file is unsafe")
 	}
-	file, err := os.Open(path)
+	file, err := ops.open(path)
 	if err != nil {
 		return "", errors.New("sandbox controller database URL file cannot be read")
 	}
@@ -94,6 +112,18 @@ func readSecretFile(path string) (string, error) {
 	contents, err := io.ReadAll(io.LimitReader(file, maxDatabaseURLBytes+1))
 	if err != nil || len(contents) > maxDatabaseURLBytes {
 		return "", errors.New("sandbox controller database URL file cannot be read")
+	}
+	if ops.afterRead != nil {
+		if err := ops.afterRead(); err != nil {
+			return "", errors.New("sandbox controller database URL file changed during read")
+		}
+	}
+	finalFD, fdErr := file.Stat()
+	finalPath, pathErr := ops.lstat(path)
+	if fdErr != nil || pathErr != nil || finalPath.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(info, finalFD) || !os.SameFile(finalFD, finalPath) ||
+		!secureSecretInfo(finalFD, os.Getuid()) || !secureSecretInfo(finalPath, os.Getuid()) {
+		return "", errors.New("sandbox controller database URL file changed during read")
 	}
 	value := strings.TrimSpace(string(contents))
 	if value == "" || strings.ContainsRune(value, '\x00') {

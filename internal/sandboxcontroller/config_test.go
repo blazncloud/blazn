@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -141,5 +142,51 @@ func TestSecretFileRejectsGroupWorldBitsWrongOwnerAndHardlinks(t *testing.T) {
 	}
 	if _, err := readSecretFile(secret); err == nil {
 		t.Fatal("multiply linked secret file was accepted")
+	}
+}
+
+func TestSecretFileRejectsSameInodeSymlinkSwapBeforeOpen(t *testing.T) {
+	directory := t.TempDir()
+	secret := filepath.Join(directory, "database-url")
+	target := filepath.Join(directory, "database-url-target")
+	if err := os.WriteFile(secret, []byte("postgres://controller@database/blazn"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ops := secretFileOps{lstat: os.Lstat, open: func(name string) (*os.File, error) {
+		if err := os.Rename(secret, target); err != nil {
+			return nil, err
+		}
+		if err := os.Symlink(target, secret); err != nil {
+			return nil, err
+		}
+		return os.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	}}
+	if _, err := readSecretFileWithOps(secret, ops); err == nil {
+		t.Fatal("same-inode symlink substitution was accepted")
+	}
+}
+
+func TestSecretFileRejectsPostOpenModeAndLinkChanges(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(string, string) error
+	}{
+		{name: "mode", mutate: func(secret, _ string) error { return os.Chmod(secret, 0o640) }},
+		{name: "hardlink", mutate: func(secret, other string) error { return os.Link(secret, other) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			secret := filepath.Join(directory, "database-url")
+			other := filepath.Join(directory, "database-url-other")
+			if err := os.WriteFile(secret, []byte("postgres://controller@database/blazn"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ops := secretFileOps{lstat: os.Lstat, open: func(name string) (*os.File, error) {
+				return os.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+			}, afterRead: func() error { return test.mutate(secret, other) }}
+			if _, err := readSecretFileWithOps(secret, ops); err == nil {
+				t.Fatalf("post-open %s change was accepted", test.name)
+			}
+		})
 	}
 }
