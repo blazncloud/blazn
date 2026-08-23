@@ -20,24 +20,24 @@ import (
 )
 
 const (
-	resultBrokerDescription = "broker-description/v1"
-	resultProjectEnvelope   = "project-envelope/v1"
+	resultBrokerDescription      = "broker-description/v1"
+	resultProjectEnvelope        = "project-envelope/v1"
 	resultProjectProfileEnvelope = "project-profile-envelope/v1"
-	resultRunEnvelope       = "run-envelope/v1"
-	resultRunList           = "run-list/v1"
-	resultArtifactEnvelope  = "artifact-envelope/v1"
-	resultArtifactList      = "artifact-list/v1"
-	resultProgressAck       = "progress-ack/v1"
+	resultRunEnvelope            = "run-envelope/v1"
+	resultRunList                = "run-list/v1"
+	resultArtifactEnvelope       = "artifact-envelope/v1"
+	resultArtifactList           = "artifact-list/v1"
+	resultProgressAck            = "progress-ack/v1"
 )
 
 var contentBrokerCapabilities = []string{"artifact.read", "artifact.write", "broker.describe", "project.profile.read", "project.profile.write", "project.read", "run.cancel", "run.create", "run.read", "run.synthetic.execute"}
 
 var (
-	brokerUUIDPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
-	brokerDigestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	brokerRunKindPattern    = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,95}$`)
-	brokerOutputNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	brokerPhasePattern      = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,95}$`)
+	brokerUUIDPattern           = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
+	brokerDigestPattern         = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	brokerRunKindPattern        = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,95}$`)
+	brokerOutputNamePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	brokerPhasePattern          = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,95}$`)
 	projectProfileSchemaPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
 )
 
@@ -59,8 +59,8 @@ func (describeOnlyBrokerHandler) Handle(_ context.Context, _ string, _ RuntimeCo
 
 type brokerAPI interface {
 	GetProject(context.Context, string, string, string) (client.ProjectEnvelope, error)
-	GetProjectProfile(context.Context,string,string,string,string)(client.ProjectProfileEnvelope,error)
-	PutProjectProfile(context.Context,string,string,string,string,string,client.PutProjectProfileRequest)(client.ProjectProfileEnvelope,error)
+	GetProjectProfile(context.Context, string, string, string, string) (client.ProjectProfileEnvelope, error)
+	PutProjectProfile(context.Context, string, string, string, string, string, client.PutProjectProfileRequest) (client.ProjectProfileEnvelope, error)
 	CreateRun(context.Context, string, string, string, string, client.CreateRunRequest) (client.RunEnvelope, error)
 	ListRuns(context.Context, string, string, string, string, string) (client.RunList, error)
 	GetRun(context.Context, string, string, string, string) (client.RunEnvelope, error)
@@ -156,20 +156,36 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		}
 		return resultProjectEnvelope, value, nil
 	case "project.profile.get":
-		if err:=decodeBrokerParams(request.Params,&struct{}{});err!=nil{return invalidBrokerParams()}
-		value,err:=brokerWithSession(ctx,h.authority,c,func(token string)(client.ProjectProfileEnvelope,error){return h.authority.api.GetProjectProfile(ctx,token,c.WorkspaceID,c.ProjectID,pluginName)})
-		if err!=nil{return brokerCallFailure(err)}
-		if !validBrokerProjectProfile(value.Profile,c,pluginName){return invalidBrokerResult()}
-		return resultProjectProfileEnvelope,value,nil
+		if err := decodeBrokerParams(request.Params, &struct{}{}); err != nil {
+			return invalidBrokerParams()
+		}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ProjectProfileEnvelope, error) {
+			return h.authority.api.GetProjectProfile(ctx, token, c.WorkspaceID, c.ProjectID, pluginName)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if !validBrokerProjectProfile(value.Profile, c, pluginName) {
+			return invalidBrokerResult()
+		}
+		return resultProjectProfileEnvelope, value, nil
 	case "project.profile.put":
 		var params brokerProjectProfilePutParams
-		if err:=decodeBrokerParams(request.Params,&params);err!=nil||!validBrokerProjectProfilePutParams(params){return invalidBrokerParams()}
-		key:=scopedBrokerIdempotencyKey(c,pluginName,request)
-		input:=client.PutProjectProfileRequest{SchemaVersion:params.ProfileSchemaVersion,DraftID:params.DraftID,ArtifactID:params.ArtifactID,Digest:params.Digest,Status:client.ProjectProfileStatus(params.Status),ExpectedVersion:*params.ExpectedVersion}
-		value,err:=brokerWithSession(ctx,h.authority,c,func(token string)(client.ProjectProfileEnvelope,error){return h.authority.api.PutProjectProfile(ctx,token,c.WorkspaceID,c.ProjectID,pluginName,key,input)})
-		if err!=nil{return brokerCallFailure(err)}
-		if !validBrokerProjectProfile(value.Profile,c,pluginName)||value.Profile.SchemaVersion!=params.ProfileSchemaVersion||value.Profile.DraftID!=params.DraftID||value.Profile.ArtifactID!=params.ArtifactID||value.Profile.Digest!=params.Digest||string(value.Profile.Status)!=params.Status{return invalidBrokerResult()}
-		return resultProjectProfileEnvelope,value,nil
+		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerProjectProfilePutParams(params) {
+			return invalidBrokerParams()
+		}
+		key := scopedBrokerIdempotencyKey(c, pluginName, request)
+		input := client.PutProjectProfileRequest{SchemaVersion: params.ProfileSchemaVersion, DraftID: params.DraftID, ArtifactID: params.ArtifactID, Digest: params.Digest, Status: client.ProjectProfileStatus(params.Status), ExpectedVersion: *params.ExpectedVersion}
+		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ProjectProfileEnvelope, error) {
+			return h.authority.api.PutProjectProfile(ctx, token, c.WorkspaceID, c.ProjectID, pluginName, key, input)
+		})
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if !validBrokerProjectProfile(value.Profile, c, pluginName) || value.Profile.SchemaVersion != params.ProfileSchemaVersion || value.Profile.DraftID != params.DraftID || value.Profile.ArtifactID != params.ArtifactID || value.Profile.Digest != params.Digest || string(value.Profile.Status) != params.Status {
+			return invalidBrokerResult()
+		}
+		return resultProjectProfileEnvelope, value, nil
 	case "run.create":
 		var params brokerRunCreateParams
 		if err := decodeBrokerParams(request.Params, &params); err != nil || !validBrokerRunCreateParams(params) {
@@ -314,7 +330,15 @@ type brokerRunCreateParams struct {
 	OutputNames      []string          `json:"outputNames"`
 	IdempotencyKey   string            `json:"idempotencyKey"`
 }
-type brokerProjectProfilePutParams struct { ProfileSchemaVersion string `json:"profileSchemaVersion"`;DraftID string `json:"draftId"`;ArtifactID string `json:"artifactId"`;Digest string `json:"digest"`;Status string `json:"status"`;ExpectedVersion *int `json:"expectedVersion"`;IdempotencyKey string `json:"idempotencyKey"` }
+type brokerProjectProfilePutParams struct {
+	ProfileSchemaVersion string `json:"profileSchemaVersion"`
+	DraftID              string `json:"draftId"`
+	ArtifactID           string `json:"artifactId"`
+	Digest               string `json:"digest"`
+	Status               string `json:"status"`
+	ExpectedVersion      *int   `json:"expectedVersion"`
+	IdempotencyKey       string `json:"idempotencyKey"`
+}
 type brokerListParams struct {
 	Status string `json:"status,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
@@ -361,9 +385,9 @@ func brokerMethodCapability(method string) (string, bool) {
 	case "project.get":
 		return "project.read", true
 	case "project.profile.get":
-		return "project.profile.read",true
+		return "project.profile.read", true
 	case "project.profile.put":
-		return "project.profile.write",true
+		return "project.profile.write", true
 	case "run.create":
 		return "run.create", true
 	case "run.list", "run.get":
@@ -410,8 +434,12 @@ func validBrokerRunCreateParams(params brokerRunCreateParams) bool {
 	}
 	return true
 }
-func validBrokerProjectProfilePutParams(value brokerProjectProfilePutParams)bool{return projectProfileSchemaPattern.MatchString(value.ProfileSchemaVersion)&&brokerUUIDPattern.MatchString(value.DraftID)&&brokerUUIDPattern.MatchString(value.ArtifactID)&&brokerDigestPattern.MatchString(value.Digest)&&(value.Status=="active"||value.Status=="archived")&&value.ExpectedVersion!=nil&&*value.ExpectedVersion>=0&&validBrokerIdempotencyKey(value.IdempotencyKey)}
-func validBrokerProjectProfile(value client.ProjectProfile,c RuntimeContext,kind string)bool{return value.WorkspaceID==c.WorkspaceID&&value.ProjectID==c.ProjectID&&value.Kind==kind&&value.Version>0&&projectProfileSchemaPattern.MatchString(value.SchemaVersion)&&brokerUUIDPattern.MatchString(value.DraftID)&&brokerUUIDPattern.MatchString(value.ArtifactID)&&brokerDigestPattern.MatchString(value.Digest)&&(value.Status==client.ProjectProfileStatusActive||value.Status==client.ProjectProfileStatusArchived)&&brokerUUIDPattern.MatchString(value.CreatedBy)&&brokerUUIDPattern.MatchString(value.UpdatedBy)&&value.CreatedAt!=""&&value.UpdatedAt!=""}
+func validBrokerProjectProfilePutParams(value brokerProjectProfilePutParams) bool {
+	return projectProfileSchemaPattern.MatchString(value.ProfileSchemaVersion) && brokerUUIDPattern.MatchString(value.DraftID) && brokerUUIDPattern.MatchString(value.ArtifactID) && brokerDigestPattern.MatchString(value.Digest) && (value.Status == "active" || value.Status == "archived") && value.ExpectedVersion != nil && *value.ExpectedVersion >= 0 && validBrokerIdempotencyKey(value.IdempotencyKey)
+}
+func validBrokerProjectProfile(value client.ProjectProfile, c RuntimeContext, kind string) bool {
+	return value.WorkspaceID == c.WorkspaceID && value.ProjectID == c.ProjectID && value.Kind == kind && value.Version > 0 && projectProfileSchemaPattern.MatchString(value.SchemaVersion) && brokerUUIDPattern.MatchString(value.DraftID) && brokerUUIDPattern.MatchString(value.ArtifactID) && brokerDigestPattern.MatchString(value.Digest) && (value.Status == client.ProjectProfileStatusActive || value.Status == client.ProjectProfileStatusArchived) && brokerUUIDPattern.MatchString(value.CreatedBy) && brokerUUIDPattern.MatchString(value.UpdatedBy) && value.CreatedAt != "" && value.UpdatedAt != ""
+}
 
 func validBrokerRunListParams(params brokerListParams) bool {
 	return len(params.Cursor) <= 512 && (params.Status == "" || params.Status == "queued" || params.Status == "running" || params.Status == "succeeded" || params.Status == "failed" || params.Status == "cancelled" || params.Status == "all")

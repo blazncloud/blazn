@@ -67,8 +67,13 @@ func (a *fakeBrokerAPI) record(token, workspaceID, projectID string) error {
 func (a *fakeBrokerAPI) GetProject(_ context.Context, token, workspaceID, projectID string) (client.ProjectEnvelope, error) {
 	return a.project, a.record(token, workspaceID, projectID)
 }
-func(a *fakeBrokerAPI)GetProjectProfile(_ context.Context,token,workspaceID,projectID,_ string)(client.ProjectProfileEnvelope,error){return a.profile,a.record(token,workspaceID,projectID)}
-func(a *fakeBrokerAPI)PutProjectProfile(_ context.Context,token,workspaceID,projectID,_kind,key string,_ client.PutProjectProfileRequest)(client.ProjectProfileEnvelope,error){a.idempotency=key;return a.profile,a.record(token,workspaceID,projectID)}
+func (a *fakeBrokerAPI) GetProjectProfile(_ context.Context, token, workspaceID, projectID, _ string) (client.ProjectProfileEnvelope, error) {
+	return a.profile, a.record(token, workspaceID, projectID)
+}
+func (a *fakeBrokerAPI) PutProjectProfile(_ context.Context, token, workspaceID, projectID, _kind, key string, _ client.PutProjectProfileRequest) (client.ProjectProfileEnvelope, error) {
+	a.idempotency = key
+	return a.profile, a.record(token, workspaceID, projectID)
+}
 func (a *fakeBrokerAPI) CreateRun(_ context.Context, token, workspaceID, projectID, key string, request client.CreateRunRequest) (client.RunEnvelope, error) {
 	a.idempotency, a.createRequest = key, request
 	return a.run, a.record(token, workspaceID, projectID)
@@ -143,7 +148,22 @@ func TestAuthenticatedBrokerDescriptionAdvertisesOnlyImplementedCapabilities(t *
 	}
 }
 
-func TestAuthenticatedBrokerRoutesSelectedContentProfile(t *testing.T){draftID:="66666666-6666-4666-8666-666666666666";digest:="sha256:"+strings.Repeat("a",64);profile:=client.ProjectProfile{WorkspaceID:brokerTestWorkspaceID,ProjectID:brokerTestProjectID,Kind:"content",SchemaVersion:"blazn.content/project/v1alpha1",Version:1,DraftID:draftID,ArtifactID:brokerTestArtifactID,Digest:digest,Status:client.ProjectProfileStatusActive,CreatedBy:"55555555-5555-4555-8555-555555555555",UpdatedBy:"55555555-5555-4555-8555-555555555555",CreatedAt:"2026-08-23T00:00:00Z",UpdatedAt:"2026-08-23T00:00:00Z"};api:=&fakeBrokerAPI{profile:client.ProjectProfileEnvelope{Profile:profile}};handler,runtimeContext:=brokerTestHandler(t,api,&fakeBrokerSessions{});schema,value,failure:=handler.Handle(context.Background(),"content",runtimeContext,brokerTestRequest("project.profile.get",`{}`));if failure!=nil||schema!=resultProjectProfileEnvelope||value.(client.ProjectProfileEnvelope).Profile.Kind!="content"{t.Fatalf("schema=%q value=%#v failure=%#v",schema,value,failure)};params:=`{"profileSchemaVersion":"blazn.content/project/v1alpha1","draftId":"`+draftID+`","artifactId":"`+brokerTestArtifactID+`","digest":"`+digest+`","status":"active","expectedVersion":0,"idempotencyKey":"profile-put-1"}`;schema,value,failure=handler.Handle(context.Background(),"content",runtimeContext,brokerTestRequest("project.profile.put",params));if failure!=nil||schema!=resultProjectProfileEnvelope||!strings.HasPrefix(api.idempotency,"broker-v1-")||api.idempotency=="profile-put-1"{t.Fatalf("schema=%q value=%#v key=%q failure=%#v",schema,value,api.idempotency,failure)}}
+func TestAuthenticatedBrokerRoutesSelectedContentProfile(t *testing.T) {
+	draftID := "66666666-6666-4666-8666-666666666666"
+	digest := "sha256:" + strings.Repeat("a", 64)
+	profile := client.ProjectProfile{WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID, Kind: "content", SchemaVersion: "blazn.content/project/v1alpha1", Version: 1, DraftID: draftID, ArtifactID: brokerTestArtifactID, Digest: digest, Status: client.ProjectProfileStatusActive, CreatedBy: "55555555-5555-4555-8555-555555555555", UpdatedBy: "55555555-5555-4555-8555-555555555555", CreatedAt: "2026-08-23T00:00:00Z", UpdatedAt: "2026-08-23T00:00:00Z"}
+	api := &fakeBrokerAPI{profile: client.ProjectProfileEnvelope{Profile: profile}}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	schema, value, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest("project.profile.get", `{}`))
+	if failure != nil || schema != resultProjectProfileEnvelope || value.(client.ProjectProfileEnvelope).Profile.Kind != "content" {
+		t.Fatalf("schema=%q value=%#v failure=%#v", schema, value, failure)
+	}
+	params := `{"profileSchemaVersion":"blazn.content/project/v1alpha1","draftId":"` + draftID + `","artifactId":"` + brokerTestArtifactID + `","digest":"` + digest + `","status":"active","expectedVersion":0,"idempotencyKey":"profile-put-1"}`
+	schema, value, failure = handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest("project.profile.put", params))
+	if failure != nil || schema != resultProjectProfileEnvelope || !strings.HasPrefix(api.idempotency, "broker-v1-") || api.idempotency == "profile-put-1" {
+		t.Fatalf("schema=%q value=%#v key=%q failure=%#v", schema, value, api.idempotency, failure)
+	}
+}
 
 func TestAuthenticatedBrokerRoutesSyntheticProgressAndCompletion(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("f", 64)
