@@ -59,7 +59,7 @@ tar -C "$repo_root" -cf - services/control-api | docker run --rm -i --network "$
 
 docker exec -i -e PGPASSWORD="$admin_password" "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d blazn <<'SQL'
 DO $$ BEGIN
-  IF (SELECT count(*) FROM schema_migrations) <> 14 THEN RAISE EXCEPTION 'expected exactly fourteen applied migrations'; END IF;
+  IF (SELECT count(*) FROM schema_migrations) <> 15 THEN RAISE EXCEPTION 'expected exactly fifteen applied migrations'; END IF;
 END $$;
 
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
@@ -179,32 +179,57 @@ DO $$ BEGIN
 END $$;
 DO $$ BEGIN
   BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES ('92000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','succeeded',false,true,true,true,false); RAISE EXCEPTION 'incomplete succeeded stop receipt was accepted';
-  EXCEPTION WHEN check_violation THEN NULL; END;
+  EXCEPTION WHEN check_violation OR insufficient_privilege THEN NULL; END;
   BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES ('92000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,false); RAISE EXCEPTION 'successful create without backend receipt was accepted';
-  EXCEPTION WHEN check_violation THEN NULL; END;
+  EXCEPTION WHEN check_violation OR insufficient_privilege THEN NULL; END;
 END $$;
+RESET ROLE;
+INSERT INTO sandbox_workload_admissions(sandbox_id,workspace_id,operation_id,backend_uid,backend_resource_version,
+  api_version,namespace,workload_name,workload_uid,workload_resource_version,admitted_cluster_queue,
+  owner_api_version,owner_kind,owner_name,owner_uid,owner_controller,workspace_label,sandbox_label,
+  admitted,condition_type,condition_status,admission_digest) VALUES
+ ('70000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000003',
+  'backend-uid-1','resource-version-1','kueue.x-k8s.io/v1beta1','blazn-poc-sandboxes','workload-sandbox-one',
+  'workload-uid-1','workload-resource-1','poc-cluster','agents.x-k8s.io/v1beta1','Sandbox',
+  '70000000-0000-4000-8000-000000000001','backend-uid-1',true,'40000000-0000-4000-8000-000000000001',
+  '70000000-0000-4000-8000-000000000001',true,'Admitted','True',
+  sandbox_workload_admission_digest('kueue.x-k8s.io/v1beta1','blazn-poc-sandboxes','workload-sandbox-one',
+    'workload-uid-1','workload-resource-1','poc-cluster','agents.x-k8s.io/v1beta1','Sandbox',
+    '70000000-0000-4000-8000-000000000001','backend-uid-1',true,'40000000-0000-4000-8000-000000000001',
+    '70000000-0000-4000-8000-000000000001',true,'Admitted','True'));
+RESET ROLE;
 BEGIN;
-UPDATE sandboxes SET backend_uid='backend-uid-1',backend_resource_version='resource-version-1' WHERE id='70000000-0000-4000-8000-000000000001';
-INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version) VALUES
- ('92000000-0000-4000-8000-000000000020','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,true,'backend-uid-1','resource-version-1');
+UPDATE sandboxes SET backend_uid='backend-uid-1',backend_resource_version='resource-version-1',admission_id='workload-uid-1' WHERE id='70000000-0000-4000-8000-000000000001';
+INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version,admission_digest) VALUES
+ ('92000000-0000-4000-8000-000000000020','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,true,'backend-uid-1','resource-version-1','283e9244bce6b54fa3ae9dabe8b52fbc525807bbfdc9ed4449f0fb71c3bb101e');
 UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id='92000000-0000-4000-8000-000000000020',completed_at=now() WHERE id='90000000-0000-4000-8000-000000000003';
 COMMIT;
+SET ROLE blazn_runtime;
 DO $$ BEGIN
   BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version) VALUES ('92000000-0000-4000-8000-000000000021','90000000-0000-4000-8000-000000000003','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','create','succeeded',false,false,false,false,true,'substituted-backend','resource-version-1'); RAISE EXCEPTION 'create receipt accepted substituted backend identity';
-  EXCEPTION WHEN check_violation THEN NULL; END;
+  EXCEPTION WHEN check_violation OR insufficient_privilege THEN NULL; END;
 END $$;
 BEGIN;
 INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
  ('90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','pending',1,'10000000-0000-4000-8000-000000000001','stop-request-1',repeat('3',64));
+RESET ROLE;
 INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES
  ('92000000-0000-4000-8000-000000000010','90000000-0000-4000-8000-000000000001','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','stop','succeeded',true,true,true,true,false);
 UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id='92000000-0000-4000-8000-000000000010',completed_at=now() WHERE id='90000000-0000-4000-8000-000000000001';
 COMMIT;
+SET ROLE blazn_runtime;
 INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,requested_by,idempotency_key,request_digest) VALUES
  ('90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','pending',1,'10000000-0000-4000-8000-000000000001','delete-request-1',repeat('4',64));
 DO $$ BEGIN
   BEGIN UPDATE sandbox_operations SET terminal_receipt_id='92000000-0000-4000-8000-000000000010' WHERE id='90000000-0000-4000-8000-000000000002'; RAISE EXCEPTION 'nonterminal operation accepted a receipt';
-  EXCEPTION WHEN check_violation THEN NULL; END;
+  EXCEPTION WHEN check_violation OR insufficient_privilege THEN NULL; END;
+END $$;
+
+DO $$ BEGIN
+  BEGIN UPDATE sandboxes SET backend_uid='runtime-bypass' WHERE id='70000000-0000-4000-8000-000000000001'; RAISE EXCEPTION 'runtime changed backend identity directly';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
+  BEGIN INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present) VALUES (gen_random_uuid(),'90000000-0000-4000-8000-000000000002','40000000-0000-4000-8000-000000000001','70000000-0000-4000-8000-000000000001','delete','failed',false,false,false,false,false); RAISE EXCEPTION 'runtime inserted a terminal receipt directly';
+  EXCEPTION WHEN insufficient_privilege THEN NULL; END;
 END $$;
 
 DO $$ BEGIN

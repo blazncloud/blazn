@@ -195,6 +195,9 @@ type WorkloadIdentity struct {
 	Owner           SandboxOwnerReference `json:"owner"`
 	WorkspaceID     string                `json:"workspaceId"`
 	SandboxID       string                `json:"sandboxId"`
+	Admitted        bool                  `json:"admitted"`
+	Condition       AdmissionCondition    `json:"condition"`
+	Digest          string                `json:"digest"`
 }
 
 // SandboxOwnerReference is the immutable controller owner reference observed
@@ -204,6 +207,12 @@ type SandboxOwnerReference struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name"`
 	UID        string `json:"uid"`
+	Controller bool   `json:"controller"`
+}
+
+type AdmissionCondition struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
 }
 
 type WatchEvent struct {
@@ -303,7 +312,7 @@ func ValidateReceipt(receipt OperationReceipt) error {
 		return fmt.Errorf("sandbox adapter receipt operation is invalid")
 	}
 	if receipt.Admission != nil {
-		if receipt.Operation != OperationCreate || validateWorkloadIdentity(*receipt.Admission, receipt) != nil {
+		if receipt.Operation != OperationCreate || validateWorkloadIdentity(*receipt.Admission, receipt, true) != nil {
 			return fmt.Errorf("sandbox adapter receipt admission identity is invalid")
 		}
 	}
@@ -340,9 +349,11 @@ func AttachAdmissionIdentity(receipt OperationReceipt, identity WorkloadIdentity
 	if receipt.Operation != OperationCreate || receipt.Admission != nil {
 		return OperationReceipt{}, fmt.Errorf("admission identity can only be attached once to a create receipt")
 	}
-	if err := validateWorkloadIdentity(identity, receipt); err != nil {
+	identity.Digest = ""
+	if err := validateWorkloadIdentity(identity, receipt, false); err != nil {
 		return OperationReceipt{}, err
 	}
+	identity.Digest = workloadIdentityDigest(identity)
 	receipt.Admission = &identity
 	digest, err := receiptDigest(receipt)
 	if err != nil {
@@ -365,16 +376,30 @@ func ValidateTerminalCreateReceipt(receipt OperationReceipt) error {
 	return nil
 }
 
-func validateWorkloadIdentity(identity WorkloadIdentity, receipt OperationReceipt) error {
+func validateWorkloadIdentity(identity WorkloadIdentity, receipt OperationReceipt, requireDigest bool) error {
 	if identity.APIVersion != AdmissionAPIVersion || identity.Namespace != receipt.Namespace || len(identity.Name) > 253 ||
 		!dnsNamePattern.MatchString(identity.Name) || !objectIDPattern.MatchString(identity.UID) ||
 		!objectIDPattern.MatchString(identity.ResourceVersion) || len(identity.ClusterQueue) > 253 ||
 		!dnsNamePattern.MatchString(identity.ClusterQueue) || identity.WorkspaceID != receipt.WorkspaceID ||
 		identity.SandboxID != receipt.Name || identity.Owner.APIVersion != APIVersion || identity.Owner.Kind != Kind ||
-		identity.Owner.Name != receipt.Name || identity.Owner.UID != receipt.UID {
+		identity.Owner.Name != receipt.Name || identity.Owner.UID != receipt.UID || !identity.Owner.Controller ||
+		!identity.Admitted || identity.Condition.Type != "Admitted" || identity.Condition.Status != "True" ||
+		(requireDigest && identity.Digest != workloadIdentityDigest(identity)) {
 		return fmt.Errorf("sandbox admission Workload identity is invalid")
 	}
 	return nil
+}
+
+func workloadIdentityDigest(identity WorkloadIdentity) string {
+	canonical := strings.Join([]string{
+		"sandbox-workload-admission-v1", identity.APIVersion, identity.Namespace, identity.Name,
+		identity.UID, identity.ResourceVersion, identity.ClusterQueue, identity.Owner.APIVersion,
+		identity.Owner.Kind, identity.Owner.Name, identity.Owner.UID, fmt.Sprintf("%t", identity.Owner.Controller),
+		identity.WorkspaceID, identity.SandboxID, fmt.Sprintf("%t", identity.Admitted),
+		identity.Condition.Type, identity.Condition.Status,
+	}, "\n")
+	digest := sha256.Sum256([]byte(canonical))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, artifacts []ArtifactReceipt, now time.Time) (OperationReceipt, error) {

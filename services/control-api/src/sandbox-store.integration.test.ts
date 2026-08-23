@@ -16,7 +16,21 @@ test("restricted runtime implements template publish, bound create, hiding, idem
     try {
       const receiptId="92000000-0000-4000-8000-000000000099";
       await admin.query("UPDATE sandboxes SET state='ready',backend_uid='api-test-backend',backend_resource_version='api-test-resource',admission_id='api-test-admission' WHERE id=$1",[mutation.sandbox.id]);
-      await admin.query("INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,backend_resource_version) VALUES($1,$2,$3,$4,'create','succeeded',false,false,false,false,true,'api-test-backend','api-test-resource')",[receiptId,mutation.operation.id,workspaceId,mutation.sandbox.id]);
+      await admin.query(`INSERT INTO sandbox_workload_admissions(sandbox_id,workspace_id,operation_id,backend_uid,backend_resource_version,
+        api_version,namespace,workload_name,workload_uid,workload_resource_version,admitted_cluster_queue,
+        owner_api_version,owner_kind,owner_name,owner_uid,owner_controller,workspace_label,sandbox_label,
+        admitted,condition_type,condition_status,admission_digest)
+        VALUES($1,$2,$3,'api-test-backend','api-test-resource','kueue.x-k8s.io/v1beta1','blazn-poc-sandboxes',$4,
+        'api-test-admission','workload-resource-1','poc-cluster','agents.x-k8s.io/v1beta1','Sandbox',$1::uuid::text,
+        'api-test-backend',true,$2::uuid::text,$1::uuid::text,true,'Admitted','True',
+        sandbox_workload_admission_digest('kueue.x-k8s.io/v1beta1','blazn-poc-sandboxes',$4,'api-test-admission',
+        'workload-resource-1','poc-cluster','agents.x-k8s.io/v1beta1','Sandbox',$1::uuid::text,'api-test-backend',true,$2::uuid::text,
+        $1::uuid::text,true,'Admitted','True'))`,[mutation.sandbox.id,workspaceId,mutation.operation.id,`workload-${mutation.sandbox.id}`]);
+      await admin.query(`INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,operation_type,status,
+        cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,backend_present,backend_uid,
+        backend_resource_version,admission_digest)
+        SELECT $1,$2,$3,$4,'create','succeeded',false,false,false,false,true,'api-test-backend','api-test-resource',admission_digest
+        FROM sandbox_workload_admissions WHERE sandbox_id=$4`,[receiptId,mutation.operation.id,workspaceId,mutation.sandbox.id]);
       await admin.query("UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id=$1,completed_at=clock_timestamp() WHERE id=$2",[receiptId,mutation.operation.id]);
       await admin.query("COMMIT");
     } catch(error) { await admin.query("ROLLBACK"); throw error; }

@@ -47,7 +47,8 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 		t.Fatal("name-only create receipt passed the terminal admission boundary")
 	}
 	identity := WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: "sandbox-a-workload", UID: "workload-uid-1", ResourceVersion: "202", ClusterQueue: "poc-cluster",
-		Owner: SandboxOwnerReference{APIVersion: APIVersion, Kind: Kind, Name: receipt.Name, UID: receipt.UID}, WorkspaceID: receipt.WorkspaceID, SandboxID: receipt.Name}
+		Owner: SandboxOwnerReference{APIVersion: APIVersion, Kind: Kind, Name: receipt.Name, UID: receipt.UID, Controller: true}, WorkspaceID: receipt.WorkspaceID, SandboxID: receipt.Name,
+		Admitted: true, Condition: AdmissionCondition{Type: "Admitted", Status: "True"}}
 	bound, err := AttachAdmissionIdentity(receipt, identity)
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +58,9 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 	}
 	if bound.Admission == nil || bound.Admission.UID != identity.UID || bound.Digest == receipt.Digest {
 		t.Fatalf("admission identity was not bound into the receipt digest: %#v", bound)
+	}
+	if bound.Admission.Digest != "sha256:83b222826fa967a4fe778886ddf601a64861ad0599ea3ee8ce6eca91faa0a802" {
+		t.Fatalf("admission identity digest=%q", bound.Admission.Digest)
 	}
 
 	tampered := bound
@@ -82,6 +86,9 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 		"owner name substitution":    func(value *WorkloadIdentity) { value.Owner.Name = "sandbox-b" },
 		"owner UID substitution":     func(value *WorkloadIdentity) { value.Owner.UID = "sandbox-uid-b" },
 		"owner kind substitution":    func(value *WorkloadIdentity) { value.Owner.Kind = "Pod" },
+		"non-controller owner":       func(value *WorkloadIdentity) { value.Owner.Controller = false },
+		"unadmitted status":          func(value *WorkloadIdentity) { value.Admitted = false },
+		"unadmitted condition":       func(value *WorkloadIdentity) { value.Condition.Status = "False" },
 	} {
 		substituted := identity
 		mutate(&substituted)

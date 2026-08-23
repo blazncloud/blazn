@@ -35,17 +35,19 @@ before terminal mutation. Successful create requires all three identities;
 successful stop/delete requires cleanup, artifact export, grant revocation, and
 backend destruction before PostgreSQL accepts the receipt.
 
-The adapter receipt contract represents admission as the exact Kueue Workload
+The adapter receipt contract and `sandbox_workload_admissions` represent admission as the exact Kueue Workload
 API version, namespace, name, UID, resource version, and admitted ClusterQueue.
 It also binds the Workload's immutable Sandbox owner reference (API version,
 kind, name, and UID) and the frozen workspace and Sandbox correlation labels to
 the same receipt identity. A Workload owned by or labelled for another Sandbox
 or workspace is rejected even when its own Workload tuple is otherwise valid.
-Only the Workload UID is persisted in the current scalar `admission_id` column;
-the complete tuple is digest-bound in the adapter receipt used to qualify
-completion. The current database terminal record retains the exact backend
-UID/resource version and Workload UID. A name-only or mutable observation
-cannot qualify a terminal create receipt.
+The owner reference must be controller-owned, and the observed Workload must
+carry both an admitted status and an `Admitted=True` condition. The complete
+tuple is canonicalized and SHA-256 bound independently by Go and PostgreSQL.
+The scalar `admission_id` is the Workload UID; terminal completion also carries
+a foreign-keyed admission digest. A requested LocalQueue name, name-only
+identity, unadmitted Workload, or mutable observation cannot qualify a terminal
+create receipt.
 
 Expiry scanning uses the database clock and row locks with `SKIP LOCKED`.
 Enqueue, Sandbox desired-state mutation, the operation, queue row, and monotonic

@@ -144,3 +144,18 @@ test("sandbox controller v2 claim returns immutable owner and ordered artifact b
   assert.match(sql, /GRANT EXECUTE ON FUNCTION sandbox_controller_claim_v2\(text,integer\) TO blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_sandbox_controller/);
 });
+
+test("sandbox controller admission migration persists only digest-bound admitted Workload ownership", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/015_sandbox_workload_admission_identity.sql"), "utf8");
+  assert.match(sql, /CREATE TABLE sandbox_workload_admissions/);
+  assert.match(sql, /owner_controller boolean NOT NULL CHECK \(owner_controller\)/);
+  assert.match(sql, /condition_type text NOT NULL CHECK \(condition_type='Admitted'\)/);
+  assert.match(sql, /condition_status text NOT NULL CHECK \(condition_status='True'\)/);
+  assert.match(sql, /sandbox_workload_admission_digest/);
+  assert.match(sql, /successful create requires digest-bound Workload admission identity/);
+  assert.match(sql, /sandbox_controller_bind_backend_v2/);
+  assert.match(sql, /sandbox_controller_complete_v2/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
+});
