@@ -1,7 +1,7 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import type { Database } from "./db.js";
 import type { IdempotencyReceipt } from "./workspace-store.js";
-import type { Artifact, ArtifactStatus, Run, RunAccess, RunReceipt, RunStatus } from "./run-types.js";
+import type { Artifact, ArtifactStatus, CompleteSyntheticRunInput, Run, RunAccess, RunReceipt, RunStatus, SyntheticArtifactUploadMetadata, SyntheticRunProgressAck, SyntheticRunProgressInput } from "./run-types.js";
 
 export interface RunTransaction {
   lockIdempotency(principalId:string,operation:string,key:string):Promise<void>;
@@ -12,6 +12,9 @@ export interface RunTransaction {
   getRun(workspaceId:string,projectId:string,runId:string,lock?:boolean):Promise<Run|undefined>;
   listRuns(workspaceId:string,projectId:string,status:RunStatus|"all",cursor?:string):Promise<{items:Run[];nextCursor:string|null}>;
   cancelRun(run:Run):Promise<Run|undefined>;
+  recordSyntheticProgress(run:Run,input:SyntheticRunProgressInput,requestDigest:string):Promise<SyntheticRunProgressAck>;
+  createSyntheticArtifact(run:Run,id:string,metadata:SyntheticArtifactUploadMetadata,content:Buffer,createdBy:string):Promise<Artifact>;
+  completeSyntheticRun(run:Run,input:CompleteSyntheticRunInput):Promise<Run|undefined>;
   getArtifact(workspaceId:string,projectId:string,artifactId:string):Promise<Artifact|undefined>;
   listArtifacts(workspaceId:string,projectId:string,status:ArtifactStatus|"all",cursor?:string):Promise<{items:Artifact[];nextCursor:string|null}>;
   insertAudit(id:string,workspaceId:string,actorUserId:string,type:string,payload:unknown):Promise<void>;
@@ -46,6 +49,19 @@ class PgRunTransaction implements RunTransaction {
     const result=await this.client.query("UPDATE runs SET status='cancelled',version=version+1,completed_at=clock_timestamp(),error_code=NULL WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND version=$4 AND status IN ('queued','running') RETURNING *",[run.id,run.workspaceId,run.projectId,run.version]);if(!result.rows[0])return undefined;
     await this.insertEvent(run.id,run.workspaceId,run.projectId,"run.cancelled",{expectedVersion:run.version});return runRow(result.rows[0],run.inputArtifactIds,receipt);
   }
+  async recordSyntheticProgress(run:Run,input:SyntheticRunProgressInput,requestDigest:string):Promise<SyntheticRunProgressAck>{
+    const existing=await this.client.query("SELECT request_digest FROM run_synthetic_progress WHERE run_id=$1 AND sequence=$2",[run.id,input.sequence]);if(existing.rows[0])throw new RunProgressSequenceError();
+    const prior=await this.client.query<{sequence:string}>("SELECT sequence FROM run_synthetic_progress WHERE run_id=$1 ORDER BY sequence DESC LIMIT 1",[run.id]);const expected=prior.rows[0]?Number(prior.rows[0].sequence)+1:0;if(input.sequence!==expected)throw new RunProgressSequenceError();
+    let version=run.version;if(run.status==="queued"){const updated=await this.client.query("UPDATE runs SET status='running',version=version+1,started_at=clock_timestamp() WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND version=$4 AND status='queued' RETURNING version",[run.id,run.workspaceId,run.projectId,run.version]);if(!updated.rows[0])throw new RunProgressSequenceError();version=Number(updated.rows[0].version);}
+    await this.client.query("INSERT INTO run_synthetic_progress(run_id,workspace_id,project_id,sequence,request_digest,phase,percent) VALUES($1,$2,$3,$4,$5,$6,$7)",[run.id,run.workspaceId,run.projectId,input.sequence,requestDigest,input.phase,input.percent]);await this.insertEvent(run.id,run.workspaceId,run.projectId,"run.progress",{sourceSequence:input.sequence,phase:input.phase,percent:input.percent});return{runId:run.id,sequence:input.sequence,runVersion:version,status:"running"};
+  }
+  async createSyntheticArtifact(run:Run,id:string,metadata:SyntheticArtifactUploadMetadata,content:Buffer,createdBy:string):Promise<Artifact>{
+    try{const inserted=await this.client.query("INSERT INTO artifacts(id,workspace_id,project_id,source_run_id,kind,media_type,name,status,digest,size_bytes,object_key,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,'ready',$8,$9,$10,$11) RETURNING *",[id,run.workspaceId,run.projectId,run.id,metadata.kind,metadata.mediaType,metadata.name,metadata.digest,metadata.sizeBytes,`synthetic-db/${id}`,createdBy]);await this.client.query("INSERT INTO synthetic_artifact_blobs(artifact_id,content) VALUES($1,$2)",[id,content]);await this.insertEvent(run.id,run.workspaceId,run.projectId,"artifact.ready",{artifactId:id,name:metadata.name,digest:metadata.digest,sizeBytes:metadata.sizeBytes});return artifactRow(inserted.rows[0]);}catch(error){if(error&&typeof error==="object"&&"code" in error&&error.code==="23505")throw new RunArtifactNameConflictError();throw error;}
+  }
+  async completeSyntheticRun(run:Run,input:CompleteSyntheticRunInput):Promise<Run|undefined>{
+    const artifacts=input.artifactIds.length?await this.client.query<{id:string;name:string}>("SELECT id,name FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND source_run_id=$3 AND status='ready' AND id=ANY($4::uuid[]) ORDER BY name,id",[run.workspaceId,run.projectId,run.id,input.artifactIds]):{rows:[]};if(artifacts.rows.length!==input.artifactIds.length)throw new RunArtifactSetError();const actualNames=artifacts.rows.map(row=>row.name).sort(),expectedNames=[...run.outputNames].sort();if(actualNames.length!==expectedNames.length||actualNames.some((name,index)=>name!==expectedNames[index]))throw new RunArtifactSetError();
+    const receipt:RunReceipt={schemaVersion:"blazn.run/receipt/v1alpha1",proofClass:"synthetic",outcome:"succeeded",planDigest:run.planDigest,artifactIds:[...input.artifactIds],summary:{steps:input.summary.steps,warnings:[...input.summary.warnings]}};await this.client.query("INSERT INTO run_receipts(run_id,workspace_id,project_id,proof_class,outcome,plan_digest,receipt) VALUES($1,$2,$3,'synthetic','succeeded',$4,$5)",[run.id,run.workspaceId,run.projectId,run.planDigest,receipt]);const result=await this.client.query("UPDATE runs SET status='succeeded',version=version+1,completed_at=clock_timestamp(),error_code=NULL WHERE id=$1 AND workspace_id=$2 AND project_id=$3 AND version=$4 AND status='running' RETURNING *",[run.id,run.workspaceId,run.projectId,run.version]);if(!result.rows[0])return undefined;await this.insertEvent(run.id,run.workspaceId,run.projectId,"run.succeeded",{artifactIds:input.artifactIds,steps:input.summary.steps});return runRow(result.rows[0],run.inputArtifactIds,receipt);
+  }
   async getArtifact(workspaceId:string,projectId:string,artifactId:string){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND id=$3",[workspaceId,projectId,artifactId]);return result.rows[0]?artifactRow(result.rows[0]):undefined;}
   async listArtifacts(workspaceId:string,projectId:string,status:ArtifactStatus|"all",cursor=""){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND ($3='all' OR status=$3) AND ($4='' OR id::text>$4) ORDER BY id LIMIT 101",[workspaceId,projectId,status,cursor]);const items=result.rows.slice(0,100).map(artifactRow);return{items,nextCursor:result.rows.length>100?items.at(-1)?.id??null:null};}
   async insertAudit(id:string,workspaceId:string,actorUserId:string,type:string,payload:unknown){await this.client.query("INSERT INTO workspace_audit_events(id,workspace_id,actor_user_id,event_type,payload) VALUES($1,$2,$3,$4,$5)",[id,workspaceId,actorUserId,type,payload]);}
@@ -53,6 +69,9 @@ class PgRunTransaction implements RunTransaction {
 }
 
 export class RunInputArtifactError extends Error {}
+export class RunProgressSequenceError extends Error {}
+export class RunArtifactNameConflictError extends Error {}
+export class RunArtifactSetError extends Error {}
 const runSelect=`SELECT r.*,rr.receipt,coalesce(array_agg(ri.artifact_id ORDER BY ri.ordinal) FILTER (WHERE ri.artifact_id IS NOT NULL),'{}'::uuid[]) AS input_artifact_ids FROM runs r LEFT JOIN run_receipts rr ON rr.run_id=r.id LEFT JOIN run_input_artifacts ri ON ri.run_id=r.id`;
 function runRow(row:QueryResultRow,inputIds?:string[],receipt?:RunReceipt|null):Run{const placement:Record<string,string>={};if(row.node_id)placement.nodeId=row.node_id;if(row.sandbox_id)placement.sandboxId=row.sandbox_id;if(row.model_route_id)placement.modelRouteId=row.model_route_id;const value:Run={id:row.id,workspaceId:row.workspace_id,projectId:row.project_id,kind:row.kind,proofClass:row.proof_class,status:row.status,version:Number(row.version),planDigest:row.plan_digest,inputArtifactIds:inputIds??row.input_artifact_ids??[],outputNames:row.output_names,requestedBy:row.requested_by,placement:Object.keys(placement).length?placement:null,receipt:receipt===undefined?(row.receipt??null):receipt,createdAt:timestamp(row.created_at)};if(row.started_at)value.startedAt=timestamp(row.started_at);if(row.completed_at)value.completedAt=timestamp(row.completed_at);if(row.error_code)value.errorCode=row.error_code;return value;}
 function artifactRow(row:QueryResultRow):Artifact{const value:Artifact={id:row.id,workspaceId:row.workspace_id,projectId:row.project_id,kind:row.kind,mediaType:row.media_type,name:row.name,status:row.status,version:Number(row.version),createdBy:row.created_by,createdAt:timestamp(row.created_at),updatedAt:timestamp(row.updated_at),downloadAvailable:row.status==="ready"};if(row.source_run_id)value.sourceRunId=row.source_run_id;if(row.digest)value.digest=row.digest;if(row.size_bytes!==null&&row.size_bytes!==undefined)value.sizeBytes=Number(row.size_bytes);return value;}
