@@ -171,7 +171,7 @@ func (r Resolver) Resolve(ctx context.Context, policy proxycontract.Policy) (*Sn
 }
 
 func (r Resolver) backendFor(class proxycontract.DestinationClass, ref string) (Backend, error) {
-	if len(ref) == 0 || len(ref) > maxReferenceBytes || !canonicalRefRE.MatchString(ref) {
+	if !isCanonicalReference(ref) {
 		return nil, unavailable(FailureInvalidReference, nil)
 	}
 	scheme, _, _ := strings.Cut(ref, "://")
@@ -200,7 +200,7 @@ func (s *Snapshot) DestinationCredential(ctx context.Context, ref string) (strin
 	if err := ctx.Err(); err != nil {
 		return "", unavailable(FailureCancelled, err)
 	}
-	if s == nil || len(ref) == 0 || len(ref) > maxReferenceBytes || !canonicalRefRE.MatchString(ref) {
+	if s == nil || !isCanonicalReference(ref) {
 		return "", unavailable(FailureInvalidReference, nil)
 	}
 	value, ok := s.values[ref]
@@ -209,6 +209,10 @@ func (s *Snapshot) DestinationCredential(ctx context.Context, ref string) (strin
 	}
 	// Conversion produces a distinct immutable value for the request path.
 	return string(append([]byte(nil), value...)), nil
+}
+
+func isCanonicalReference(ref string) bool {
+	return len(ref) > 0 && len(ref) <= maxReferenceBytes && canonicalRefRE.MatchString(ref)
 }
 
 func validateValue(value []byte) error {
