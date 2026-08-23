@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	_ "unsafe"
 
 	"github.com/blazncloud/blazn/internal/proxy/router"
 	"github.com/blazncloud/blazn/internal/proxy/state"
@@ -18,6 +19,9 @@ import (
 )
 
 const testDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+//go:linkname newStateStoreAt github.com/blazncloud/blazn/internal/proxy/state.newAt
+func newStateStoreAt(string, int, ...state.Option) (*state.Store, error)
 
 type fakePolicies struct {
 	policy proxycontract.Policy
@@ -699,6 +703,53 @@ func TestRunUsesExactArgvAndAlwaysRestores(t *testing.T) {
 	joined := strings.Join(runner.environment, "\n")
 	if !strings.Contains(joined, "OPENAI_API_KEY=listener-secret-value") || environment.values["OPENAI_API_KEY"] != "prior-openai" {
 		t.Fatal("scoped environment was not exact or restored")
+	}
+}
+
+func TestPersistentStoreRunRetainsScopeFenceUntilChildCleanup(t *testing.T) {
+	storeValue, err := newStateStoreAt(filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy"), os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := newFakeEnvironment()
+	controller := &fakeController{proofs: map[int]state.LiveListenerProof{}}
+	factory := &fakeFactory{listeners: map[int]*fakeListener{}, controller: controller}
+	policies := &fakePolicies{policy: fixturePolicy(t), digest: testDigest}
+	runner := &fakeRunner{exit: 23}
+	var overlappingErr error
+	runner.beforeReturn = func() {
+		_, overlappingErr = storeValue.Reserve(context.Background(), strings.Repeat("q", 32), time.Minute)
+	}
+	service, err := New(Dependencies{
+		Store: PersistentStore{Value: storeValue}, Environment: environment, Listeners: factory, Controller: controller,
+		Policies: policies, Runner: runner, Events: fakeEvents{},
+		Binary: state.BinaryIdentity{Path: "/usr/local/bin/blazn", Digest: testDigest}, OwnerUID: os.Getuid(), Now: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Run(context.Background(), "policy.json", []string{"tool", "exact argument"})
+	if err != nil || result.Status != "completed" || result.State != "inactive" || result.ChildExitCode == nil || *result.ChildExitCode != 23 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if strings.Join(runner.argv, "|") != "tool|exact argument" {
+		t.Fatalf("child was not invoked with exact argv: %q", runner.argv)
+	}
+	if !errors.Is(overlappingErr, state.ErrLifecycleConflict) {
+		t.Fatalf("overlapping lifecycle reservation error = %v", overlappingErr)
+	}
+
+	reservation, err := storeValue.Reserve(context.Background(), strings.Repeat("r", 32), time.Minute)
+	if err != nil {
+		t.Fatalf("scope reservation was not released after cleanup: %v", err)
+	}
+	if err := storeValue.CancelReservation(context.Background(), reservation); err != nil {
+		t.Fatal(err)
+	}
+	current, err := storeValue.Reconcile(context.Background())
+	if err != nil || current.State != state.ReconciliationInactive {
+		t.Fatalf("post-run reconciliation = %+v, %v", current, err)
 	}
 }
 

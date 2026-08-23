@@ -97,7 +97,7 @@ func (p PersistentStore) Recover(ctx context.Context, environment state.Environm
 func (p PersistentStore) RecoverExact(ctx context.Context, environment state.EnvironmentRestorer, listener state.ListenerController, expected state.ExpectedRecovery) (state.RecoveryResult, error) {
 	return p.Value.RecoverExpected(ctx, environment, listener, expected)
 }
-func (p PersistentStore) AcquireScope(ctx context.Context, id string, generation int64) (*ScopeLease, error) {
+func (p PersistentStore) AcquireScope(ctx context.Context, id string, generation int64) (lease *ScopeLease, err error) {
 	_, nonce, err := randomIdentity()
 	if err != nil {
 		return nil, err
@@ -106,12 +106,18 @@ func (p PersistentStore) AcquireScope(ctx context.Context, id string, generation
 	if err != nil {
 		return nil, err
 	}
-	lease := &ScopeLease{reservation: reservation, ActivationID: id, Generation: generation}
-	current, reconcileErr := p.Value.Reconcile(ctx)
+	owned := false
+	defer func() {
+		err = errors.Join(err, cancelUnconsumedReservation(owned, func(cleanup context.Context) error {
+			return p.Value.CancelReservation(cleanup, reservation)
+		}))
+	}()
+	lease = &ScopeLease{reservation: reservation, ActivationID: id, Generation: generation}
+	current, reconcileErr := p.Value.ReconcileReserved(ctx, reservation)
 	if reconcileErr != nil || current.State != state.ReconciliationActive || current.ActivationID != id || current.Generation != generation {
-		_ = p.Value.CancelReservation(context.Background(), reservation)
 		return nil, errors.Join(state.ErrLifecycleConflict, reconcileErr)
 	}
+	owned = true
 	return lease, nil
 }
 func (p PersistentStore) RenewScope(ctx context.Context, lease *ScopeLease) error {
