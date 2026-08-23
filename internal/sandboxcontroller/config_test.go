@@ -45,6 +45,7 @@ func TestConfigFromEnvValidatesEffectiveDatabaseLeaseSchedule(t *testing.T) {
 	}{
 		{name: "fractional lease truncates below renewal", lease: "5.9s", renew: "5.5s"},
 		{name: "fractional renewal violates database interval contract", lease: "6s", renew: "5.5s"},
+		{name: "renewal consumes lease safety margin", lease: "5.9s", renew: "4s"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			values := map[string]string{}
@@ -63,7 +64,7 @@ func TestConfigFromEnvValidatesEffectiveDatabaseLeaseSchedule(t *testing.T) {
 		values[key] = value
 	}
 	values["BLAZN_SANDBOX_CONTROLLER_LEASE"] = "5.9s"
-	values["BLAZN_SANDBOX_CONTROLLER_RENEW_EVERY"] = "4s"
+	values["BLAZN_SANDBOX_CONTROLLER_RENEW_EVERY"] = "3s"
 	if _, err := ConfigFromEnv(func(key string) string { return values[key] }); err != nil {
 		t.Fatalf("safe fractional lease schedule was rejected: %v", err)
 	}
