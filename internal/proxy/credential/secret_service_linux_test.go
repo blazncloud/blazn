@@ -3,11 +3,15 @@
 package credential
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -191,6 +195,130 @@ func TestSecretServiceTimeoutAndCancellationAreTyped(t *testing.T) {
 	})
 }
 
+func TestDBusSecretServiceAuthAndHelloStallsHonorContext(t *testing.T) {
+	t.Run("auth", func(t *testing.T) {
+		path, accepted, done := startSecretServiceSocketFixture(t, func(connection *net.UnixConn) error {
+			_, _ = io.Copy(io.Discard, connection)
+			return nil
+		})
+		assertSecretServiceSocketStallCancelled(t, path, accepted, done, nil)
+	})
+
+	t.Run("hello", func(t *testing.T) {
+		helloStarted := make(chan struct{})
+		path, accepted, done := startSecretServiceSocketFixture(t, func(connection *net.UnixConn) error {
+			reader := bufio.NewReader(connection)
+			prefix, err := reader.ReadByte()
+			if err != nil || prefix != 0 {
+				return fmt.Errorf("read auth prefix: byte=%d error=%v", prefix, err)
+			}
+			line, err := reader.ReadString('\n')
+			if err != nil || strings.TrimSpace(line) != "AUTH" {
+				return fmt.Errorf("read auth offer: line=%q error=%v", line, err)
+			}
+			if _, err := io.WriteString(connection, "REJECTED EXTERNAL\r\n"); err != nil {
+				return err
+			}
+			line, err = reader.ReadString('\n')
+			if err != nil || strings.TrimSpace(line) != "AUTH EXTERNAL" {
+				return fmt.Errorf("read external auth: line=%q error=%v", line, err)
+			}
+			if _, err := io.WriteString(connection, "OK 0123456789abcdef0123456789abcdef\r\n"); err != nil {
+				return err
+			}
+			line, err = reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(line) == "NEGOTIATE_UNIX_FD" {
+				if _, err := io.WriteString(connection, "ERROR unsupported\r\n"); err != nil {
+					return err
+				}
+				line, err = reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+			}
+			if strings.TrimSpace(line) != "BEGIN" {
+				return fmt.Errorf("read auth completion: line=%q", line)
+			}
+			close(helloStarted)
+			_, _ = io.Copy(io.Discard, connection)
+			return nil
+		})
+		assertSecretServiceSocketStallCancelled(t, path, accepted, done, helloStarted)
+	})
+}
+
+func startSecretServiceSocketFixture(t *testing.T, serve func(*net.UnixConn) error) (string, <-chan struct{}, <-chan error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "bus")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	accepted := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		connection, acceptErr := listener.AcceptUnix()
+		if acceptErr != nil {
+			done <- acceptErr
+			return
+		}
+		close(accepted)
+		defer connection.Close()
+		done <- serve(connection)
+	}()
+	return path, accepted, done
+}
+
+func assertSecretServiceSocketStallCancelled(t *testing.T, path string, accepted <-chan struct{}, done <-chan error, stage <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := lookupSecretServiceSocket(ctx, secretServiceRequest{BusPath: path, UID: os.Getuid()})
+		result <- err
+	}()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("fixture did not accept the same-UID connection before timeout")
+	}
+	if stage != nil {
+		select {
+		case <-stage:
+		case serveErr := <-done:
+			t.Fatalf("fixture stopped before the requested D-Bus stage: %v", serveErr)
+		case <-time.After(time.Second):
+			t.Fatal("fixture did not reach the requested D-Bus stage before timeout")
+		}
+	}
+	started := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if err != errSecretServiceTransport || !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("stalled lookup error=%v context=%v", err, ctx.Err())
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stalled lookup did not return after cancellation")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stalled lookup exceeded cancellation bound: %s", elapsed)
+	}
+	select {
+	case serveErr := <-done:
+		if serveErr != nil {
+			t.Fatalf("fixture server error: %v", serveErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fixture connection was not closed after cancellation")
+	}
+}
+
 func TestSecretServiceHasNoFallbackOrPublicMutationSurface(t *testing.T) {
 	backendType := reflect.TypeOf(SecretServiceBackend{})
 	for index := 0; index < backendType.NumField(); index++ {
@@ -210,21 +338,28 @@ func TestSecretServiceHasNoFallbackOrPublicMutationSurface(t *testing.T) {
 func TestSecretServiceFormattingAndArtifactsRedactSensitiveMaterial(t *testing.T) {
 	const uid = 1806
 	secret := "formatting-destination-secret"
+	parameters := "formatting-secret-parameters"
 	response := successfulSecretResponse(uid, []byte(secret))
+	wireValue := secretValue{Session: testSecretSession, Parameters: []byte(parameters), Value: []byte(secret), ContentType: "sensitive/content-type"}
 	transport := &fakeSecretServiceTransport{response: response, err: errors.New("transport-secret")}
 	backend := testSecretServiceBackend(uid, transport)
 	_, err := backend.Lookup(context.Background(), testSecretRef)
-	joined := fmt.Sprintf("%v %#v %v %#v %v %#v", backend, backend, err, err, response, response)
+	joined := fmt.Sprintf("%v %#v %v %#v %v %#v %v %#v", backend, backend, err, err, response, response, wireValue, wireValue)
 	encoded, marshalErr := json.Marshal(struct {
 		Backend  *SecretServiceBackend
 		Response secretServiceResponse
+		Value    secretValue
 		Error    string
-	}{Backend: backend, Response: response, Error: fmt.Sprintf("%#v", err)})
+	}{Backend: backend, Response: response, Value: wireValue, Error: fmt.Sprintf("%#v", err)})
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
 	}
 	joined += string(encoded)
-	for _, forbidden := range []string{secret, "transport-secret", testSecretRef, testSecretSession, testSecretPath} {
+	wireEncoded, marshalErr := json.Marshal(wireValue)
+	if marshalErr != nil || string(wireEncoded) != `"[REDACTED secret value]"` {
+		t.Fatalf("secret value JSON=%s error=%v", wireEncoded, marshalErr)
+	}
+	for _, forbidden := range []string{secret, parameters, "sensitive/content-type", "transport-secret", testSecretRef, testSecretSession, testSecretPath} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("formatted artifacts exposed sensitive material %q: %s", forbidden, joined)
 		}
