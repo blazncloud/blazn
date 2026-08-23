@@ -8,7 +8,7 @@ fi
 if [ "$(id -u)" -ne 0 ]; then printf 'secret generation must run as root\n' >&2; exit 77; fi
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-# shellcheck source=lib.sh
+# shellcheck source=infra/identity/lib.sh
 . "$script_dir/lib.sh"
 openssl_bin=${OPENSSL_BIN:-/usr/bin/openssl}
 [ -x "$openssl_bin" ] || { printf 'openssl is required at %s\n' "$openssl_bin" >&2; exit 69; }

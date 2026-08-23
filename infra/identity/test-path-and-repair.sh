@@ -3,7 +3,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { printf 'root is required\n' >&2; exit 77; }
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-# shellcheck source=lib.sh
+# shellcheck source=infra/identity/lib.sh
 . "$script_dir/lib.sh"
 test_root=$(mktemp -d /tmp/blazn-identity-disposable.repair.XXXXXX)
 symlink_root=/tmp/blazn-identity-disposable.symlink-test
@@ -42,7 +42,7 @@ chmod 700 "$test_root/bin/docker"
 printf previous > "$test_root/volume/login-client.pat"; tar -C "$test_root/volume" -cpf "$test_root/archive/previous.tar" .
 printf forward > "$test_root/volume/login-client.pat"; tar -C "$test_root/volume" -cpf "$test_root/archive/forward.tar" .
 chmod 600 "$test_root/archive"/*.tar
-export PATH=$test_root/bin:$PATH FAKE_VOLUME=$test_root/volume FAKE_ARCHIVE_DIR=$test_root/archive
+export PATH="$test_root/bin:$PATH" FAKE_VOLUME="$test_root/volume" FAKE_ARCHIVE_DIR="$test_root/archive"
 previous_digest=sha256:$(sha256sum "$test_root/archive/previous.tar" | awk '{print $1}')
 forward_digest=sha256:$(sha256sum "$test_root/archive/forward.tar" | awk '{print $1}')
 "$script_dir/repair-pat-volume.sh" "$env_file" "$test_root/archive/previous.tar" "$previous_digest" >/dev/null

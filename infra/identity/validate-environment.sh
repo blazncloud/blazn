@@ -7,7 +7,7 @@ if [ "$#" -ne 1 ]; then
 fi
 env_file=$1
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-# shellcheck source=lib.sh
+# shellcheck source=infra/identity/lib.sh
 . "$script_dir/lib.sh"
 identity_require_root_file "$env_file"
 case "$(stat -c '%u:%a:%h' -- "$env_file")" in 0:400:1|0:600:1) ;; *) identity_fail "identity environment file must be mode 0400 or 0600" ;; esac

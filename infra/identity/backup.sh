@@ -6,7 +6,7 @@ if [ "$(id -u)" -ne 0 ] || [ "$#" -ne 2 ]; then
   exit 64
 fi
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-# shellcheck source=lib.sh
+# shellcheck source=infra/identity/lib.sh
 . "$script_dir/lib.sh"
 env_file=$1; backup_dir=$2
 "$script_dir/validate-environment.sh" "$env_file"

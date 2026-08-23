@@ -36,8 +36,8 @@ identity_validate_path() {
   IFS=$identity_old_ifs
   case "$identity_kind:$identity_path" in
 	data:/var/lib/blazn/identity|secrets:/etc/blazn/identity/secrets|backup:/srv/backups/blazn/identity/*|receipt:/var/lib/blazn/identity-qualification/*|driver:/usr/libexec/blazn/identity-qualification-driver|recovery:/var/lib/blazn/identity.pre-restore.*) ;;
-	patarchive:/srv/backups/blazn/identity/*\/zitadel-bootstrap.tar|patarchive:/var/lib/blazn/identity.pre-restore.*\/pre-restore-pat.tar) ;;
-	data:/tmp/blazn-identity-disposable.*\/data|secrets:/tmp/blazn-identity-disposable.*\/secrets|backup:/tmp/blazn-identity-disposable.*\/backup|receipt:/tmp/blazn-identity-qualification.*.json|driver:/tmp/blazn-identity-qualification-driver.*|recovery:/tmp/blazn-identity-disposable.*\/recovery|patarchive:/tmp/blazn-identity-disposable.*\/*\/*.tar) ;;
+	patarchive:/srv/backups/blazn/identity/*/zitadel-bootstrap.tar|patarchive:/var/lib/blazn/identity.pre-restore.*/pre-restore-pat.tar) ;;
+	data:/tmp/blazn-identity-disposable.*/data|secrets:/tmp/blazn-identity-disposable.*/secrets|backup:/tmp/blazn-identity-disposable.*/backup|receipt:/tmp/blazn-identity-qualification.*.json|driver:/tmp/blazn-identity-qualification-driver.*|recovery:/tmp/blazn-identity-disposable.*/recovery|patarchive:/tmp/blazn-identity-disposable.*/*/*.tar) ;;
     *) identity_fail "$identity_kind path is outside its fixed approved prefix: $identity_path" ;;
   esac
 }

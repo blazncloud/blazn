@@ -191,9 +191,14 @@ The browser driver must be a root-owned, single-link mode-0500/0700 file at the
 fixed driver path and must match a separately reviewed SHA-256 digest. It emits
 per-gate evidence digests and timestamps, not self-authored pass booleans. The
 harness independently constructs the final receipt and binds the reviewed
-issuer, operator environment digest, configured image manifest digests,
-observed running image digests, backup/database/PAT/master-key digests, driver
-digest, and gate evidence. OIDC-aware health uses a bounded ten-second cache and
+issuer and operator environment digest. Each Compose service is recorded by
+service name with its configured repository@manifest digest, exact before/after
+container IDs, observed `Config.Image`, and image ID; rollback requires the
+configured and image identities to match while the recreated container identity
+changes. The backup utility has a separate configured repository@manifest and
+observed image-ID binding, preventing a substituted restore helper. The receipt
+also binds backup/database/PAT/master-key digests, driver digest, and gate
+evidence. OIDC-aware health uses a bounded ten-second cache and
 singleflight probe; discovery, JWKS, and token responses are streamed under a
 hard one-megabyte cap so health traffic cannot amplify provider responses.
 The disposable environment must therefore set

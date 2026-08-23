@@ -23,17 +23,36 @@ const digest = (name) => {
   if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error(`${name} is invalid`);
   return value;
 };
-const configuredImages = lines("QUALIFICATION_CONFIGURED_IMAGES");
-const runningImageDigests = lines("QUALIFICATION_RUNNING_IMAGE_DIGESTS");
-if (configuredImages.length !== 4 || new Set(configuredImages).size !== 4 || configuredImages.some((value) => !/@sha256:[0-9a-f]{64}$/.test(value))) throw new Error("configured image evidence is invalid");
-if (runningImageDigests.length !== 4 || new Set(runningImageDigests).size !== 4 || runningImageDigests.some((value) => !/^sha256:[0-9a-f]{64}$/.test(value))) throw new Error("running image evidence is invalid");
+const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login"];
+const imageRefPattern = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
+const parseObservations = (name) => {
+  const result = {};
+  for (const line of lines(name)) {
+    const [service, configuredImage, containerId, observedConfigImage, imageId, extra] = line.split("|");
+    if (extra !== undefined || !serviceNames.includes(service) || result[service]) throw new Error(`${name} service mapping is invalid`);
+    if (!imageRefPattern.test(configuredImage) || observedConfigImage !== configuredImage || !/^[0-9a-f]{64}$/.test(containerId) || !/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error(`${name} service identity is invalid`);
+    result[service] = { containerId, observedConfigImage, imageId };
+  }
+  exact(result, serviceNames, name);
+  return result;
+};
+const before = parseObservations("QUALIFICATION_SERVICES_BEFORE");
+const after = parseObservations("QUALIFICATION_SERVICES_AFTER");
+const services = {};
+for (const service of serviceNames) {
+  const configuredImage = (process.env[`QUALIFICATION_CONFIGURED_${service.replaceAll("-", "_").toUpperCase()}`] ?? "");
+  if (!imageRefPattern.test(configuredImage) || before[service].observedConfigImage !== configuredImage || after[service].observedConfigImage !== configuredImage || before[service].imageId !== after[service].imageId || before[service].containerId === after[service].containerId) throw new Error(`rollback service mapping differs for ${service}`);
+  services[service] = { configuredImage, before: before[service], after: after[service] };
+}
+const backupUtility = { configuredImage: process.env.QUALIFICATION_BACKUP_IMAGE ?? "", beforeImageId: process.env.QUALIFICATION_BACKUP_IMAGE_ID_BEFORE ?? "", afterImageId: process.env.QUALIFICATION_BACKUP_IMAGE_ID_AFTER ?? "" };
+if (!imageRefPattern.test(backupUtility.configuredImage) || !/^sha256:[0-9a-f]{64}$/.test(backupUtility.beforeImageId) || backupUtility.beforeImageId !== backupUtility.afterImageId) throw new Error("backup utility image identity or rollback comparison is invalid");
 const receipt = {
   schemaVersion: "blazn.identity.qualification/v2",
   issuer: process.env.QUALIFICATION_ISSUER,
   driverDigest: digest("QUALIFICATION_DRIVER_DIGEST"),
   environmentDigest: digest("QUALIFICATION_ENVIRONMENT_DIGEST"),
-  configuredImages,
-  runningImageDigests,
+  services,
+  backupUtility,
   gates: driver.gates,
   backup: {
     manifestDigest: digest("QUALIFICATION_BACKUP_MANIFEST_DIGEST"),

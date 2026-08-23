@@ -123,7 +123,7 @@ export class OidcClient {
   private discovery?: Discovery;
   private jwks?: { expiresAt: number; keys: Jwk[] };
 	private healthFreshUntil = 0;
-	private healthFlight?: Promise<void>;
+	private healthFlight: Promise<void> | undefined;
 
   constructor(private readonly config: OidcProviderConfig) {
     httpsUrl(config.issuerUrl, "OIDC issuer");

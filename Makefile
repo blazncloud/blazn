@@ -62,7 +62,7 @@ test-control-api:
 
 test-identity:
 	./infra/identity/test-static.sh
-	shellcheck -e SC2016 infra/identity/*.sh
+	shellcheck -x -e SC2016 infra/identity/*.sh
 
 test-identity-root:
 	./infra/identity/test-secret-generation.sh
