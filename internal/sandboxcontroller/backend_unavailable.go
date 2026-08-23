@@ -2,6 +2,8 @@ package sandboxcontroller
 
 import (
 	"context"
+
+	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 )
 
 type unavailableBackend struct{}
@@ -16,15 +18,15 @@ func (unavailableBackend) EnsureCreated(context.Context, WorkItem) (BackendState
 	return BackendState{}, backendUnavailable()
 }
 
-func (unavailableBackend) Observe(context.Context, WorkItem) (BackendState, error) {
+func (unavailableBackend) Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	return BackendState{}, backendUnavailable()
 }
 
-func (unavailableBackend) BeginDelete(context.Context, WorkItem) (BackendState, error) {
+func (unavailableBackend) BeginDelete(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	return BackendState{}, backendUnavailable()
 }
 
-func (unavailableBackend) Finalize(context.Context, WorkItem, BackendState) (CleanupResult, error) {
+func (unavailableBackend) Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
 	return CleanupResult{}, backendUnavailable()
 }
 

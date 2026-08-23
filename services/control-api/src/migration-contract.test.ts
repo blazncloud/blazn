@@ -171,3 +171,23 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
+
+test("sandbox controller observation migration requires complete restart-safe Pod evidence", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/019_sandbox_admission_observation.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN pod_api_version text/);
+  assert.match(sql, /ADD COLUMN observation_digest char\(64\)/);
+  assert.match(sql, /sandbox_admission_observation_all_or_none/);
+  assert.match(sql, /sandbox-admission-observation-v1/);
+  assert.match(sql, /'sha256:'\|\|p_workload_digest/);
+  assert.match(sql, /sandbox_controller_claim_v3/);
+  assert.match(sql, /sandbox_controller_bind_backend_v3/);
+  assert.match(sql, /sandbox_controller_complete_v3/);
+  assert.match(sql, /A Workload-only legacy row cannot authorize success/);
+  assert.match(sql, /p_status<>'recovery_required'/);
+  assert.match(sql, /ON CONFLICT \(sandbox_id\) DO NOTHING/);
+  assert.doesNotMatch(sql, /UPDATE public\.sandbox_workload_admissions[\s\S]*pod_/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION[\s\S]*sandbox_controller_claim_v2/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
+});

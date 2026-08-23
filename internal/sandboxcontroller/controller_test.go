@@ -13,7 +13,7 @@ import (
 type fakeStore struct {
 	bound           bool
 	claims          int
-	bindRecord      sandboxcontrol.SandboxRecord
+	bindObservation sandboxcontrol.AdmissionObservation
 	completion      *Completion
 	retry           *SafeError
 	renewResponses  chan renewResponse
@@ -55,8 +55,8 @@ func (s *fakeStore) Renew(ctx context.Context, _ string, _ string, _ string, _ i
 		return response.window, response.ok, response.err
 	}
 }
-func (s *fakeStore) BindBackend(_ context.Context, _, _, _ string, record sandboxcontrol.SandboxRecord, _ sandboxcontrol.WorkloadIdentity) (bool, error) {
-	s.bound, s.bindRecord = true, record
+func (s *fakeStore) BindBackend(_ context.Context, _, _, _ string, observation sandboxcontrol.AdmissionObservation) (bool, error) {
+	s.bound, s.bindObservation = true, observation
 	return true, nil
 }
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
@@ -79,6 +79,7 @@ type fakeBackend struct {
 	deleting  BackendState
 	finalized CleanupResult
 	err       error
+	calls     int
 }
 
 type blockingBackend struct {
@@ -97,13 +98,13 @@ func (b *blockingBackend) EnsureCreated(ctx context.Context, _ WorkItem) (Backen
 	b.cancelled <- ctx.Err()
 	return BackendState{}, ctx.Err()
 }
-func (b *blockingBackend) Observe(ctx context.Context, item WorkItem) (BackendState, error) {
+func (b *blockingBackend) Observe(ctx context.Context, item WorkItem, _ *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	return b.EnsureCreated(ctx, item)
 }
-func (b *blockingBackend) BeginDelete(ctx context.Context, item WorkItem) (BackendState, error) {
+func (b *blockingBackend) BeginDelete(ctx context.Context, item WorkItem, _ *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	return b.EnsureCreated(ctx, item)
 }
-func (b *blockingBackend) Finalize(ctx context.Context, item WorkItem, _ BackendState) (CleanupResult, error) {
+func (b *blockingBackend) Finalize(ctx context.Context, item WorkItem, _ BackendState, _ *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
 	_, err := b.EnsureCreated(ctx, item)
 	return CleanupResult{}, err
 }
@@ -111,15 +112,19 @@ func (b *blockingBackend) Finalize(ctx context.Context, item WorkItem, _ Backend
 func (b *fakeBackend) Health(context.Context) error { return b.err }
 
 func (b *fakeBackend) EnsureCreated(context.Context, WorkItem) (BackendState, error) {
+	b.calls++
 	return b.created, b.err
 }
-func (b *fakeBackend) Observe(context.Context, WorkItem) (BackendState, error) {
+func (b *fakeBackend) Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
+	b.calls++
 	return b.observed, b.err
 }
-func (b *fakeBackend) BeginDelete(context.Context, WorkItem) (BackendState, error) {
+func (b *fakeBackend) BeginDelete(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
+	b.calls++
 	return b.deleting, b.err
 }
-func (b *fakeBackend) Finalize(context.Context, WorkItem, BackendState) (CleanupResult, error) {
+func (b *fakeBackend) Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
+	b.calls++
 	return b.finalized, b.err
 }
 
@@ -130,20 +135,19 @@ func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
 	if err := controller.reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if !store.bound || store.bindRecord.UID != state.Record.UID {
+	if !store.bound || store.bindObservation.Sandbox.UID != state.Record.UID {
 		t.Fatal("controller did not bind exact backend identity")
 	}
 	if store.completion == nil || store.completion.Status != "succeeded" ||
-		store.completion.ExpectedAdmissionDigest == nil || *store.completion.ExpectedAdmissionDigest != state.Admission.Digest {
+		store.completion.ExpectedWorkloadDigest == nil || *store.completion.ExpectedWorkloadDigest != state.AdmissionObservation.Workload.Digest ||
+		store.completion.ExpectedObservationDigest == nil || *store.completion.ExpectedObservationDigest != state.AdmissionObservation.Digest {
 		t.Fatalf("unexpected completion: %#v", store.completion)
 	}
 }
 
 func TestCreateRefusesChangedPreboundBackend(t *testing.T) {
 	item, state := createFixture(t)
-	item.BackendUID, item.BackendResourceVersion, item.Admission =
-		pointer(state.Record.UID), pointer(state.Record.ResourceVersion), state.Admission
-	item.AdmissionID = pointer(state.Admission.UID)
+	bindWorkItem(&item, state)
 	state.Record.ResourceVersion = "changed"
 	store := &fakeStore{}
 	controller := testController(t, store, &fakeBackend{observed: state})
@@ -155,12 +159,28 @@ func TestCreateRefusesChangedPreboundBackend(t *testing.T) {
 	}
 }
 
+func TestLegacyWorkloadOnlyClaimRecoversBeforeBackendMutation(t *testing.T) {
+	item, state := createFixture(t)
+	item.OperationType, item.DesiredState = "delete", "deleted"
+	item.BackendUID = pointer(state.Record.UID)
+	item.BackendResourceVersion = pointer(state.Record.ResourceVersion)
+	item.AdmissionID = pointer(state.AdmissionObservation.Workload.UID)
+	item.PersistedWorkloadDigest = pointer(state.AdmissionObservation.Workload.Digest)
+	item.AdmissionObservation = nil
+	store, backend := &fakeStore{}, &fakeBackend{}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if backend.calls != 0 || store.completion == nil || store.completion.Status != "recovery_required" ||
+		store.completion.ExpectedWorkloadDigest == nil || store.completion.ExpectedObservationDigest != nil {
+		t.Fatalf("legacy observation path mutated backend or escaped recovery: calls=%d completion=%#v", backend.calls, store.completion)
+	}
+}
+
 func TestCleanupRequiresBackendGrantRevocationProof(t *testing.T) {
 	item, state := createFixture(t)
 	item.OperationType, item.DesiredState = "delete", "deleted"
-	item.BackendUID, item.BackendResourceVersion, item.Admission =
-		pointer(state.Record.UID), pointer(state.Record.ResourceVersion), state.Admission
-	item.AdmissionID = pointer(state.Admission.UID)
+	bindWorkItem(&item, state)
 	state.Record.ResourceVersion = "resource-version-delete"
 	state.Record.Deleting = true
 	state.Deleting = true
@@ -484,7 +504,15 @@ func createFixture(t *testing.T) (WorkItem, BackendState) {
 			EphemeralRequest: "1Gi", CPULimit: "1", MemoryLimit: "1Gi", EphemeralLimit: "2Gi"},
 		LeaseExpiresAt: time.Now().Add(time.Minute), LeaseRemaining: time.Minute,
 		LeaseDeadline: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(time.Hour)}
-	state := BackendState{Record: record, Admission: &identity, Exists: true, Ready: true}
+	observation := sandboxcontrol.AdmissionObservation{
+		Sandbox: sandboxcontrol.ObjectIdentity{APIVersion: sandboxcontrol.APIVersion, Kind: sandboxcontrol.Kind,
+			Namespace: sandboxcontrol.Namespace, Name: record.Name, UID: record.UID, ResourceVersion: record.ResourceVersion},
+		Pod: sandboxcontrol.ObjectIdentity{APIVersion: "v1", Kind: "Pod", Namespace: sandboxcontrol.Namespace,
+			Name: "pod.sandbox-1", UID: "pod-uid", ResourceVersion: "pod-version-1"},
+		Workload: identity,
+	}
+	observation.Digest = sandboxcontrol.AdmissionObservationDigest(observation)
+	state := BackendState{Record: record, AdmissionObservation: &observation, Exists: true, Ready: true}
 	if err := validateWorkItem(item); err != nil {
 		t.Fatalf("invalid work item fixture: %v", err)
 	}
@@ -492,6 +520,14 @@ func createFixture(t *testing.T) (WorkItem, BackendState) {
 		t.Fatalf("invalid test fixture: %v", err)
 	}
 	return item, state
+}
+
+func bindWorkItem(item *WorkItem, state BackendState) {
+	item.BackendUID = pointer(state.Record.UID)
+	item.BackendResourceVersion = pointer(state.Record.ResourceVersion)
+	item.AdmissionID = pointer(state.AdmissionObservation.Workload.UID)
+	item.PersistedWorkloadDigest = pointer(state.AdmissionObservation.Workload.Digest)
+	item.AdmissionObservation = state.AdmissionObservation
 }
 
 func pointer[T any](value T) *T { return &value }
