@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -51,6 +52,7 @@ type fakeBrokerAPI struct {
 	artifacts     client.ArtifactList
 	err           error
 	failFirst     bool
+	uploadContent []byte
 }
 
 func (a *fakeBrokerAPI) record(token, workspaceID, projectID string) error {
@@ -92,6 +94,11 @@ func (a *fakeBrokerAPI) ListArtifacts(_ context.Context, token, workspaceID, pro
 func (a *fakeBrokerAPI) GetArtifact(_ context.Context, token, workspaceID, projectID, _ string) (client.ArtifactEnvelope, error) {
 	return a.artifact, a.record(token, workspaceID, projectID)
 }
+func (a *fakeBrokerAPI) UploadSyntheticRunArtifact(_ context.Context, token, workspaceID, projectID, _ string, key string, _ client.ArtifactUploadMetadata, content io.Reader) (client.ArtifactEnvelope, error) {
+	a.idempotency = key
+	a.uploadContent, _ = io.ReadAll(content)
+	return a.artifact, a.record(token, workspaceID, projectID)
+}
 
 func brokerTestContext(t *testing.T) RuntimeContext {
 	t.Helper()
@@ -122,7 +129,7 @@ func TestAuthenticatedBrokerDescriptionAdvertisesOnlyImplementedCapabilities(t *
 	handler, runtimeContext := brokerTestHandler(t, &fakeBrokerAPI{}, &fakeBrokerSessions{})
 	schema, value, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest("broker.describe", `{}`))
 	description, ok := value.(brokerDescription)
-	if failure != nil || schema != resultBrokerDescription || !ok || strings.Join(description.AvailableCapabilities, ",") != "artifact.read,broker.describe,project.read,run.cancel,run.create,run.read,run.synthetic.execute" {
+	if failure != nil || schema != resultBrokerDescription || !ok || strings.Join(description.AvailableCapabilities, ",") != "artifact.read,artifact.write,broker.describe,project.read,run.cancel,run.create,run.read,run.synthetic.execute" {
 		t.Fatalf("schema=%q value=%#v failure=%#v", schema, value, failure)
 	}
 	runtimeContext.ProjectID = ""

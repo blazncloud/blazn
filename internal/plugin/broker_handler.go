@@ -29,7 +29,7 @@ const (
 	resultProgressAck       = "progress-ack/v1"
 )
 
-var contentBrokerCapabilities = []string{"artifact.read", "broker.describe", "project.read", "run.cancel", "run.create", "run.read", "run.synthetic.execute"}
+var contentBrokerCapabilities = []string{"artifact.read", "artifact.write", "broker.describe", "project.read", "run.cancel", "run.create", "run.read", "run.synthetic.execute"}
 
 var (
 	brokerUUIDPattern       = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
@@ -65,6 +65,7 @@ type brokerAPI interface {
 	CompleteSyntheticRun(context.Context, string, string, string, string, string, client.CompleteSyntheticRunRequest) (client.RunEnvelope, error)
 	ListArtifacts(context.Context, string, string, string, string, string) (client.ArtifactList, error)
 	GetArtifact(context.Context, string, string, string, string) (client.ArtifactEnvelope, error)
+	UploadSyntheticRunArtifact(context.Context, string, string, string, string, string, client.ArtifactUploadMetadata, io.Reader) (client.ArtifactEnvelope, error)
 }
 
 type brokerSessionProvider interface {
@@ -83,6 +84,7 @@ type authenticatedBrokerHandler struct {
 	authority      *brokerAuthority
 	initializeErr  error
 	initialize     func(RuntimeContext) (*brokerAuthority, error)
+	uploadTempDir  string
 }
 
 func newDefaultBrokerHandler(runtimeContext RuntimeContext) brokerMethodHandler {
@@ -348,6 +350,8 @@ func brokerMethodCapability(method string) (string, bool) {
 		return "run.synthetic.execute", true
 	case "artifact.list", "artifact.get":
 		return "artifact.read", true
+	case "artifact.upload.begin":
+		return "artifact.write", true
 	default:
 		return "", false
 	}
