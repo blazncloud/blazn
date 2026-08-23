@@ -34,8 +34,15 @@ type KubernetesBackend struct {
 	health                  func(context.Context) error
 	artifactExportSupported bool
 	absencePollInterval     time.Duration
+	createLocksMu           sync.Mutex
+	createLocks             map[string]*kubernetesCreateLock
 	evidenceMu              sync.Mutex
 	evidence                map[string]kubernetesBackendEvidence
+}
+
+type kubernetesCreateLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 type kubernetesBackendEvidence struct {
@@ -57,6 +64,7 @@ func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, e
 	return &KubernetesBackend{adapter: config.Adapter, health: config.Health,
 		artifactExportSupported: config.ArtifactExportSupported,
 		absencePollInterval:     config.AbsencePollInterval,
+		createLocks:             make(map[string]*kubernetesCreateLock),
 		evidence:                make(map[string]kubernetesBackendEvidence)}, nil
 }
 
@@ -75,17 +83,24 @@ func (b *KubernetesBackend) EnsureCreated(ctx context.Context, item WorkItem) (B
 	if err != nil {
 		return BackendState{}, err
 	}
+	unlock := b.lockCreate(item)
+	defer unlock()
 	if err := ctx.Err(); err != nil {
 		return BackendState{}, err
 	}
-	record, receipt, err := b.adapter.EnsureCreated(ctx, request, "")
+	trusted, retained := b.retainedRecord(item)
+	expectedUID := ""
+	if retained {
+		expectedUID = trusted.UID
+	}
+	record, receipt, err := b.adapter.EnsureCreated(ctx, request, expectedUID)
 	if err != nil {
 		return BackendState{}, classifyAdapter("create", err)
 	}
 	if err := verifyReceipt(receipt, sandboxcontrol.OperationCreate, request, record); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "sandbox create receipt identity changed", false, true, err)
 	}
-	if err := verifyLiveRecord(item, request, record, nil, false, true); err != nil {
+	if err := verifyLiveRecord(item, request, record, retainedRecord(retained, trusted), false, true); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "sandbox create identity changed", false, true, err)
 	}
 	b.retainRecord(item, record)
@@ -309,6 +324,28 @@ func evidenceKey(item WorkItem) string {
 	return item.WorkspaceID + "\x00" + item.RequestedBy + "\x00" + item.SandboxID
 }
 
+func (b *KubernetesBackend) lockCreate(item WorkItem) func() {
+	key := evidenceKey(item)
+	b.createLocksMu.Lock()
+	lock := b.createLocks[key]
+	if lock == nil {
+		lock = &kubernetesCreateLock{}
+		b.createLocks[key] = lock
+	}
+	lock.refs++
+	b.createLocksMu.Unlock()
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		b.createLocksMu.Lock()
+		defer b.createLocksMu.Unlock()
+		lock.refs--
+		if lock.refs == 0 && b.createLocks[key] == lock {
+			delete(b.createLocks, key)
+		}
+	}
+}
+
 func (b *KubernetesBackend) retainRecord(item WorkItem, record sandboxcontrol.SandboxRecord) {
 	b.evidenceMu.Lock()
 	defer b.evidenceMu.Unlock()
@@ -424,6 +461,9 @@ func stateFromRecord(record sandboxcontrol.SandboxRecord) BackendState {
 }
 
 func verifyObservation(item WorkItem, observation sandboxcontrol.AdmissionObservation) error {
+	if err := sandboxcontrol.ValidateAdmissionObservation(observation); err != nil {
+		return err
+	}
 	if observation.Sandbox.APIVersion != sandboxcontrol.APIVersion || observation.Sandbox.Kind != sandboxcontrol.Kind ||
 		observation.Sandbox.Namespace != sandboxcontrol.Namespace || observation.Sandbox.Name != item.SandboxID ||
 		observation.Sandbox.UID == "" || observation.Sandbox.ResourceVersion == "" ||

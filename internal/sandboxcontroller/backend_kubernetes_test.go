@@ -19,6 +19,8 @@ type fakeSandboxAdapter struct {
 	record        sandboxcontrol.SandboxRecord
 	getRecords    []sandboxcontrol.SandboxRecord
 	observation   sandboxcontrol.AdmissionObservation
+	ensureUIDs    []string
+	ensured       bool
 	ensureErr     error
 	observeErr    error
 	deleteErr     error
@@ -32,8 +34,18 @@ type fakeSandboxAdapter struct {
 func (f *fakeSandboxAdapter) EnsureCreated(ctx context.Context, request sandboxcontrol.CreateRequest, expectedUID string) (sandboxcontrol.SandboxRecord, sandboxcontrol.OperationReceipt, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "ensure")
+	f.ensureUIDs = append(f.ensureUIDs, expectedUID)
 	f.request = request
 	record, block, err := cloneSandboxRecord(f.record), f.block, f.ensureErr
+	if err == nil && expectedUID != "" && expectedUID != record.UID {
+		err = adapterConflict("create expected UID changed")
+	}
+	if err == nil && f.ensured && expectedUID == "" {
+		err = adapterConflict("create requires retained UID")
+	}
+	if err == nil {
+		f.ensured = true
+	}
 	f.mu.Unlock()
 	if block {
 		<-ctx.Done()
@@ -41,9 +53,6 @@ func (f *fakeSandboxAdapter) EnsureCreated(ctx context.Context, request sandboxc
 	}
 	if err != nil {
 		return sandboxcontrol.SandboxRecord{}, sandboxcontrol.OperationReceipt{}, err
-	}
-	if expectedUID != "" && expectedUID != record.UID {
-		return sandboxcontrol.SandboxRecord{}, sandboxcontrol.OperationReceipt{}, adapterConflict("create expected UID changed")
 	}
 	return record, operationReceipt(request.RequestID, sandboxcontrol.OperationCreate, record, nil), nil
 }
@@ -85,6 +94,9 @@ func (f *fakeSandboxAdapter) ObserveAdmission(ctx context.Context, request sandb
 	}
 	if current.State != sandboxcontrol.StateReady {
 		return sandboxcontrol.AdmissionObservation{}, adapterConflict("admission is not ready")
+	}
+	if err := sandboxcontrol.ValidateAdmissionObservation(observation); err != nil {
+		return sandboxcontrol.AdmissionObservation{}, err
 	}
 	if expected != nil && !reflect.DeepEqual(*expected, observation) {
 		return sandboxcontrol.AdmissionObservation{}, adapterConflict("admission observation changed")
@@ -135,10 +147,13 @@ func (f *fakeSandboxAdapter) Finalize(_ context.Context, requestID, workspaceID,
 	return receipt, nil
 }
 
-func (f *fakeSandboxAdapter) ObserveAbsence(context.Context, sandboxcontrol.AdmissionObservation) error {
+func (f *fakeSandboxAdapter) ObserveAbsence(_ context.Context, observation sandboxcontrol.AdmissionObservation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "absence")
+	if err := sandboxcontrol.ValidateAdmissionObservation(observation); err != nil {
+		return err
+	}
 	if len(f.absenceErrs) == 0 {
 		return nil
 	}
@@ -159,6 +174,12 @@ func (f *fakeSandboxAdapter) snapshotCalls() []string {
 	return append([]string(nil), f.calls...)
 }
 
+func (f *fakeSandboxAdapter) snapshotEnsureUIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.ensureUIDs...)
+}
+
 func adapterConflict(detail string) error {
 	return &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrConflict, Status: 409, SafeDetail: detail}
 }
@@ -170,6 +191,7 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	ready := cloneSandboxRecord(record)
 	ready.ResourceVersion = "resource-version-ready"
 	observation.Sandbox.ResourceVersion = ready.ResourceVersion
+	observation.Digest = sandboxcontrol.AdmissionObservationDigest(observation)
 	fake := &fakeSandboxAdapter{record: pending, getRecords: []sandboxcontrol.SandboxRecord{pending, ready}, observation: observation}
 	backend := newTestKubernetesBackend(t, fake, true)
 	state, err := backend.EnsureCreated(context.Background(), item)
@@ -254,6 +276,9 @@ func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testin
 	if !result.CleanupComplete || !result.ArtifactExportComplete || !result.GrantsRevoked || !result.BackendDestroyed {
 		t.Fatalf("incomplete cleanup result: %#v", result)
 	}
+	if _, ok := backend.retainedRecord(item); ok {
+		t.Fatal("completed cleanup did not evict retained lifecycle evidence")
+	}
 }
 
 func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T) {
@@ -332,6 +357,114 @@ func TestKubernetesBackendEvidenceCacheIsConcurrent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestKubernetesBackendReusesRetainedUIDAcrossCreateRetry(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	backend := newTestKubernetesBackend(t, fake, true)
+	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.block = true
+	fake.mu.Unlock()
+	interrupted, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := backend.Observe(interrupted, item); !errors.Is(err, context.Canceled) {
+		t.Fatalf("admission interruption=%v", err)
+	}
+	fake.mu.Lock()
+	fake.block = false
+	fake.mu.Unlock()
+	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatalf("same-process retry did not adopt the retained UID: %v", err)
+	}
+	if got := fake.snapshotEnsureUIDs(); !reflect.DeepEqual(got, []string{"", record.UID}) {
+		t.Fatalf("create UID preconditions=%v", got)
+	}
+
+	freshFake := &fakeSandboxAdapter{record: record, observation: observation, ensured: true}
+	fresh := newTestKubernetesBackend(t, freshFake, true)
+	_, err := fresh.EnsureCreated(context.Background(), item)
+	failure, ok := BackendFailure(err)
+	if !ok || !failure.Ambiguous || failure.Retryable {
+		t.Fatalf("fresh backend adopted an unbound Sandbox: failure=%#v err=%v", failure, err)
+	}
+
+	changedFake := &fakeSandboxAdapter{record: record, observation: observation}
+	changed := newTestKubernetesBackend(t, changedFake, true)
+	if _, err := changed.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	changedFake.mu.Lock()
+	changedFake.record.CreateIntentDigest = "sha256:" + strings.Repeat("9", 64)
+	changedFake.mu.Unlock()
+	_, err = changed.EnsureCreated(context.Background(), item)
+	failure, ok = BackendFailure(err)
+	if !ok || !failure.Ambiguous {
+		t.Fatalf("retry adopted changed create material: failure=%#v err=%v", failure, err)
+	}
+}
+
+func TestKubernetesBackendSerializesConcurrentCreateRecovery(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	backend := newTestKubernetesBackend(t, fake, true)
+	const creators = 24
+	errorsFound := make(chan error, creators)
+	var group sync.WaitGroup
+	for index := 0; index < creators; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, err := backend.EnsureCreated(context.Background(), item)
+			errorsFound <- err
+		}()
+	}
+	group.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	uids := fake.snapshotEnsureUIDs()
+	if len(uids) != creators || uids[0] != "" {
+		t.Fatalf("create UID preconditions=%v", uids)
+	}
+	for _, uid := range uids[1:] {
+		if uid != record.UID {
+			t.Fatalf("concurrent retry lacked exact retained UID: %v", uids)
+		}
+	}
+	backend.createLocksMu.Lock()
+	remainingLocks := len(backend.createLocks)
+	backend.createLocksMu.Unlock()
+	if remainingLocks != 0 {
+		t.Fatalf("completed create locks were not evicted: %d", remainingLocks)
+	}
+}
+
+func TestKubernetesBackendRejectsNonCanonicalAdmissionObservation(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	observation.Digest = "sha256:" + strings.Repeat("0", 64)
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	backend := newTestKubernetesBackend(t, fake, true)
+	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	_, err := backend.Observe(context.Background(), item)
+	failure, ok := BackendFailure(err)
+	if !ok || failure.Ambiguous || failure.Retryable || failure.Code != "backend_request_rejected" {
+		t.Fatalf("non-canonical admission evidence was not fenced: failure=%#v err=%v", failure, err)
+	}
+	if err := verifyObservation(item, observation); err == nil {
+		t.Fatal("backend observation verifier accepted a non-canonical digest")
+	}
+	if err := fake.ObserveAbsence(context.Background(), observation); err == nil {
+		t.Fatal("fake absence observation accepted evidence rejected by the real adapter")
 	}
 }
 
@@ -434,12 +567,17 @@ func backendFixture(t *testing.T) (WorkItem, sandboxcontrol.SandboxRecord, sandb
 	}
 	record := state.Record
 	record.Artifacts, record.ArtifactContractDigest = canonical, digest
+	record.CreateIntentDigest = "sha256:" + strings.Repeat("8", 64)
 	record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
 	record.TrustLevel = sandboxcontrol.TrustApprovedPOC
 	observation := sandboxcontrol.AdmissionObservation{
 		Sandbox:  sandboxcontrol.ObjectIdentity{APIVersion: sandboxcontrol.APIVersion, Kind: sandboxcontrol.Kind, Namespace: sandboxcontrol.Namespace, Name: item.SandboxID, UID: record.UID, ResourceVersion: record.ResourceVersion},
 		Pod:      sandboxcontrol.ObjectIdentity{APIVersion: "v1", Kind: "Pod", Namespace: sandboxcontrol.Namespace, Name: "pod-1", UID: "pod-uid", ResourceVersion: "pod-rv"},
-		Workload: *state.Admission, Digest: "sha256:" + strings.Repeat("f", 64),
+		Workload: *state.Admission,
+	}
+	observation.Digest = sandboxcontrol.AdmissionObservationDigest(observation)
+	if err := sandboxcontrol.ValidateAdmissionObservation(observation); err != nil {
+		t.Fatal(err)
 	}
 	return item, record, observation
 }
