@@ -293,6 +293,7 @@
                 "overrides",
                 "policy",
                 "status",
+                "directProviderAuthorization",
                 "digest",
                 "resourceVersion"
             ],
@@ -446,8 +447,25 @@
                 "digest": {
                     "$ref": "#/$defs/digest"
                 },
-                "directProviderAuthorizationId": {
-                    "$ref": "#/$defs/id"
+                "directProviderAuthorization": {
+                    "oneOf": [
+                        {"type":"null"},
+                        {
+                            "type":"object",
+                            "additionalProperties":false,
+                            "required":["id","workspaceId","profileId","routeId","routeVersion","capability","provider","status"],
+                            "properties":{
+                                "id":{"$ref":"#/$defs/id"},
+                                "workspaceId":{"$ref":"#/$defs/id"},
+                                "profileId":{"$ref":"#/$defs/id"},
+                                "routeId":{"$ref":"#/$defs/id"},
+                                "routeVersion":{"type":"integer","minimum":1},
+                                "capability":{"enum":["model.openai","model.anthropic"]},
+                                "provider":{"enum":["openai","anthropic"]},
+                                "status":{"const":"approved"}
+                            }
+                        }
+                    ]
                 },
                 "resourceVersion": {
                     "type": "integer",

@@ -118,8 +118,17 @@
             "maxFollowUps": 10
         },
         "status": "approved",
-        "directProviderAuthorizationId": "76000000-0000-4000-8000-000000000003",
-        "digest": "sha256:a9aceb1c26df5395f84aab5b7f841d808579e0d45bed073d10352f8205666748",
+        "directProviderAuthorization": {
+            "id": "76000000-0000-4000-8000-000000000003",
+            "workspaceId": "40000000-0000-4000-8000-000000000001",
+            "profileId": "21000000-0000-4000-8000-000000000003",
+            "routeId": "70000000-0000-4000-8000-000000000001",
+            "routeVersion": 1,
+            "capability": "model.anthropic",
+            "provider": "anthropic",
+            "status": "approved"
+        },
+        "digest": "sha256:c8ff26d85710abd3b098ff1d0ed0d8cd382b23cd07cc27e9afc267c5daaf5556",
         "resourceVersion": 1
     }
 }

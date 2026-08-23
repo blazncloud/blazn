@@ -4,7 +4,7 @@
     "id": "19000000-0000-4000-8000-000000000004",
     "kind": "generic-cli",
     "publisher": "blazncloud-fixture",
-    "status": "approved",
+        "status": "approved",
     "supportedPlatforms": [
       "linux/amd64",
       "linux/arm64"
@@ -116,7 +116,8 @@
       "maxFollowUps": 10
     },
     "status": "approved",
-    "digest": "sha256:b36fed494b1f5fd6e68376d1389ffe4ff524d391231a96ce6ba3631a59111e71",
+    "directProviderAuthorization": null,
+    "digest": "sha256:7031982818bd7e03ba3528690317d6d35f22ea05a5ced26763636877f8c1a163",
     "resourceVersion": 1
   }
 }
