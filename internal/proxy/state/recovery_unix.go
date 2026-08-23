@@ -71,19 +71,33 @@ type ExpectedRecovery struct {
 }
 
 func (s *Store) Recover(ctx context.Context, environment EnvironmentRestorer, listener ListenerController) (result RecoveryResult, err error) {
-	return s.recover(ctx, environment, listener, nil)
+	return s.recover(ctx, environment, listener, nil, s.withInternalReservation)
 }
 
 func (s *Store) RecoverExpected(ctx context.Context, environment EnvironmentRestorer, listener ListenerController, expected ExpectedRecovery) (result RecoveryResult, err error) {
 	if !uuidPattern.MatchString(expected.ActivationID) || expected.Generation < 1 {
 		return result, ErrInvalidState
 	}
-	return s.recover(ctx, environment, listener, &expected)
+	return s.recover(ctx, environment, listener, &expected, s.withInternalReservation)
 }
 
-func (s *Store) recover(ctx context.Context, environment EnvironmentRestorer, listener ListenerController, expected *ExpectedRecovery) (result RecoveryResult, err error) {
+// RecoverExpectedReserved performs exact-generation recovery while retaining
+// the caller's exact lifecycle reservation. The reservation is removed under
+// the same lifecycle lock after the recovery attempt, so another process can
+// never enter between scoped-child completion and cleanup.
+func (s *Store) RecoverExpectedReserved(ctx context.Context, reservation Reservation, environment EnvironmentRestorer, listener ListenerController, expected ExpectedRecovery) (result RecoveryResult, err error) {
+	if !uuidPattern.MatchString(expected.ActivationID) || expected.Generation < 1 {
+		return result, ErrInvalidState
+	}
+	withReservation := func(callCtx context.Context, operation func(*lockedStore) error) error {
+		return s.withFinalReservation(callCtx, reservation, operation)
+	}
+	return s.recover(ctx, environment, listener, &expected, withReservation)
+}
+
+func (s *Store) recover(ctx context.Context, environment EnvironmentRestorer, listener ListenerController, expected *ExpectedRecovery, reserve func(context.Context, func(*lockedStore) error) error) (result RecoveryResult, err error) {
 	var semanticErr error
-	err = s.withInternalReservation(ctx, func(locked *lockedStore) error {
+	err = reserve(ctx, func(locked *lockedStore) error {
 		journal, journalErr := locked.readJournal()
 		receipt, receiptErr := locked.readReceipt()
 

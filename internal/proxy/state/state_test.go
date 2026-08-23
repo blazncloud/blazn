@@ -561,6 +561,67 @@ func TestReconcileReservedRetainsExactReservation(t *testing.T) {
 	}
 }
 
+func TestRecoverExpectedReservedHasNoTwoStoreCleanupHandoff(t *testing.T) {
+	store := testStore(t)
+	journal := testJournal()
+	writeActiveRecords(t, store, journal)
+	competitor, err := newStore(store.paths, store.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := store.Reserve(context.Background(), nonceFor('s'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var overlappingErr error
+	environment := &fakeEnvironment{beforeCompareAndSet: func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		_, overlappingErr = competitor.Reserve(ctx, nonceFor('t'), time.Minute)
+	}}
+	result, err := store.RecoverExpectedReserved(context.Background(), reservation, environment, newFakeListener(proofFromJournal(journal)), ExpectedRecovery{ActivationID: journal.ActivationID, Generation: journal.Generation})
+	if err != nil || result.Status != RecoveryComplete {
+		t.Fatalf("reserved recovery = %+v, %v", result, err)
+	}
+	if !errors.Is(overlappingErr, context.DeadlineExceeded) {
+		t.Fatalf("competing store entered scoped cleanup: %v", overlappingErr)
+	}
+	next, err := competitor.Reserve(context.Background(), nonceFor('t'), time.Minute)
+	if err != nil {
+		t.Fatalf("scoped reservation was not released after cleanup: %v", err)
+	}
+	if err := competitor.CancelReservation(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverExpectedReservedReleasesFenceAfterRecoveryRequired(t *testing.T) {
+	store := testStore(t)
+	journal := testJournal()
+	writeActiveRecords(t, store, journal)
+	competitor, err := newStore(store.paths, store.uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := store.Reserve(context.Background(), nonceFor('s'), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := &fakeEnvironment{conflict: map[string]bool{EnvironmentNames[0]: true}}
+	result, err := store.RecoverExpectedReserved(context.Background(), reservation, environment, newFakeListener(proofFromJournal(journal)), ExpectedRecovery{ActivationID: journal.ActivationID, Generation: journal.Generation})
+	if !errors.Is(err, ErrRecoveryRequired) || result.Status != RecoveryRequired {
+		t.Fatalf("reserved recovery failure = %+v, %v", result, err)
+	}
+	next, err := competitor.Reserve(context.Background(), nonceFor('t'), time.Minute)
+	if err != nil {
+		t.Fatalf("failed cleanup retained scoped reservation: %v", err)
+	}
+	if err := competitor.CancelReservation(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnverifiedStopRequiresRecovery(t *testing.T) {
 	store := testStore(t)
 	journal := testJournal()
@@ -704,11 +765,17 @@ func makeBytes(value byte, count int) []byte {
 }
 
 type fakeEnvironment struct {
-	requests []CompareAndSetRequest
-	conflict map[string]bool
+	requests            []CompareAndSetRequest
+	conflict            map[string]bool
+	beforeCompareAndSet func()
 }
 
 func (f *fakeEnvironment) CompareAndSet(_ context.Context, request CompareAndSetRequest) (CompareAndSetResult, error) {
+	if f.beforeCompareAndSet != nil {
+		operation := f.beforeCompareAndSet
+		f.beforeCompareAndSet = nil
+		operation()
+	}
 	f.requests = append(f.requests, request)
 	if f.conflict[request.Name] {
 		return CASConflict, nil

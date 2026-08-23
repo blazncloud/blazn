@@ -116,6 +116,18 @@ func TestProxyCLIRejectsAmbiguousFlagsAndMapsStableErrors(t *testing.T) {
 	if code := app.Run([]string{"proxy", "on", "--policy", "p", "--output=json"}); code != 6 || !strings.Contains(stdout.String(), "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE") {
 		t.Fatalf("scope code=%d out=%s", code, stdout)
 	}
+	stdout.Reset()
+	fake.err = errors.Join(activation.ErrLifecycleConflict, errors.New("reservation contained sk-proj-secret"))
+	fake.result = activation.Result{ExitCode: 6}
+	if code := app.Run([]string{"proxy", "status", "--output=json"}); code != 6 || !strings.Contains(stdout.String(), "PROXY_LIFECYCLE_CONFLICT") || strings.Contains(stdout.String(), "sk-proj-secret") {
+		t.Fatalf("lifecycle conflict code=%d out=%s", code, stdout)
+	}
+	stdout.Reset()
+	fake.err = errors.Join(activation.ErrLifecycleDeadline, errors.New("deadline adapter secret"))
+	fake.result = activation.Result{ExitCode: 8}
+	if code := app.Run([]string{"proxy", "off", "--output=json"}); code != 8 || !strings.Contains(stdout.String(), "PROXY_LIFECYCLE_DEADLINE") || strings.Contains(stdout.String(), "adapter secret") {
+		t.Fatalf("lifecycle deadline code=%d out=%s", code, stdout)
+	}
 }
 
 func TestProxyCLIUnavailableAndHelpNeedNoPlatformMutation(t *testing.T) {
