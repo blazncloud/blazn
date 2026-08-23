@@ -49,11 +49,15 @@ revoked, handled, or completed work for this execution-free refusal. No
 requirement is silently dropped. A fallback is either absent or one
 approved attempt whose exact route, authorization, and approval receipt are
 frozen in the AgentVersion. Runtime evidence orders the authoritative primary
-failure, control-plane authorization, one model request, and proxy decision and
-binds their route, policy, request, event, authorization, and receipt identities;
-the entire normalized stream contains exactly one request to the frozen fallback
-route, that request is the recorded `requestEventId` with `attempt=1`, and a
-second request or differently numbered attempt is refused.
+request, primary proxy decision, primary failure, control-plane authorization,
+one fallback request, and fallback proxy decision and binds their route, policy,
+request, event, authorization, and receipt identities. Fallback remains a
+pre-output transition: primary usage, an assistant or tool response, a tool or
+approval event, an Artifact or patch effect, or a later logical model request
+before fallback authorization makes the fallback ineligible. The entire
+normalized stream contains exactly one request to the frozen fallback route,
+that request is the recorded `requestEventId` with `attempt=1`, and a second
+request or differently numbered attempt is refused.
 Credential declarations use typed route, repository, or tool scopes. Every
 run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
