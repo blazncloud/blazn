@@ -96,6 +96,79 @@ func TestControllerEndToEndFreshProofAndAuthenticatedStop(t *testing.T) {
 	}
 }
 
+func TestChildRejectsUnauthenticatedReplayedWrongTokenAndTamperedControl(t *testing.T) {
+	platform := newFakePlatform()
+	controller := &Controller{Platform: platform, HandshakeTimeout: time.Second, ControlTimeout: time.Second}
+	managed, err := controller.Start(context.Background(), testStartRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-platform.runtime.handlerReady:
+	case <-time.After(time.Second):
+		t.Fatal("control handler was not ready")
+	}
+	wire := proofToWire(managed.Proof())
+	challenge, err := freshChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated := ControlRequest{Version: ProtocolVersion, Kind: "control_request", Action: "stop", Challenge: challenge}
+	if _, err := platform.runtime.handler(context.Background(), unauthenticated); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unauthenticated stop returned %v", err)
+	}
+	assertRuntimeLive(t, platform.runtime)
+
+	wrongToken := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	wrongMAC, err := authenticateControlRequest(wrongToken, "stop", challenge, wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := unauthenticated
+	wrong.Authenticator = wrongMAC
+	if _, err := platform.runtime.handler(context.Background(), wrong); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("wrong-token stop returned %v", err)
+	}
+	assertRuntimeLive(t, platform.runtime)
+
+	inspectMAC, err := authenticateControlRequest(managed.ListenerToken(), "inspect", challenge, wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := unauthenticated
+	tampered.Authenticator = inspectMAC
+	if _, err := platform.runtime.handler(context.Background(), tampered); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("tampered-action stop returned %v", err)
+	}
+	assertRuntimeLive(t, platform.runtime)
+
+	replayChallenge, err := freshChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayMAC, err := authenticateControlRequest(managed.ListenerToken(), "inspect", replayChallenge, wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := ControlRequest{Version: ProtocolVersion, Kind: "control_request", Action: "inspect", Challenge: replayChallenge, Authenticator: replayMAC}
+	if _, err := platform.runtime.handler(context.Background(), replay); err != nil {
+		t.Fatalf("first authenticated request returned %v", err)
+	}
+	if _, err := platform.runtime.handler(context.Background(), replay); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("replayed request returned %v", err)
+	}
+	assertRuntimeLive(t, platform.runtime)
+}
+
+func assertRuntimeLive(t *testing.T, runtime *fakeRuntime) {
+	t.Helper()
+	select {
+	case <-runtime.stopped:
+		t.Fatal("unauthorized request stopped the runtime")
+	default:
+	}
+}
+
 func TestControllerRejectsSubstitutedProcessEvidenceAndExpectedProof(t *testing.T) {
 	mutations := map[string]func(*Evidence){
 		"uid":   func(e *Evidence) { e.OwnerUID++ },
@@ -138,6 +211,115 @@ func TestControllerRejectsSubstitutedProcessEvidenceAndExpectedProof(t *testing.
 	}
 }
 
+func TestControllerRejectsIncompleteProcessIdentity(t *testing.T) {
+	mutations := map[string]func(*fakePlatform){
+		"zero child pid":               func(p *fakePlatform) { p.child.pid = 0; p.runtime.pid = 0; p.evidence.PID = 0 },
+		"empty runtime start":          func(p *fakePlatform) { p.runtime.start = ""; p.evidence.ProcessStartIdentity = "" },
+		"empty evidence start":         func(p *fakePlatform) { p.evidence.ProcessStartIdentity = "" },
+		"empty executable path":        func(p *fakePlatform) { p.evidence.ExecutablePath = "" },
+		"relative executable path":     func(p *fakePlatform) { p.evidence.ExecutablePath = "usr/local/bin/blazn" },
+		"empty runtime dev inode":      func(p *fakePlatform) { p.runtime.executable = ""; p.evidence.ExecutableIdentity = "" },
+		"malformed evidence dev inode": func(p *fakePlatform) { p.evidence.ExecutableIdentity = "inode-only" },
+		"empty evidence sha":           func(p *fakePlatform) { p.evidence.BinaryDigest = "" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			platform := newFakePlatform()
+			mutate(platform)
+			controller := &Controller{Platform: platform, HandshakeTimeout: time.Second, StopGrace: 20 * time.Millisecond}
+			if _, err := controller.Start(context.Background(), testStartRequest()); err == nil {
+				t.Fatal("incomplete process identity was accepted")
+			}
+		})
+	}
+}
+
+func TestFramePayloadsAndDecodedCredentialsAreZeroed(t *testing.T) {
+	bootstrap := Bootstrap{Version: ProtocolVersion, Kind: "bootstrap", Challenge: testNonce, Metadata: testMetadata(), Policy: []byte(`{}`), Credentials: []Credential{{Reference: "workspace-vault://x", Value: []byte("destination-secret")}}}
+
+	t.Run("writer success", func(t *testing.T) {
+		var observed []byte
+		if err := writeFrameObserved(io.Discard, MaxBootstrapBytes, bootstrap, func(value []byte) { observed = value }); err != nil {
+			t.Fatal(err)
+		}
+		assertZeroed(t, observed)
+	})
+	t.Run("writer error", func(t *testing.T) {
+		var observed []byte
+		err := writeFrameObserved(errorWriter{}, MaxBootstrapBytes, bootstrap, func(value []byte) { observed = value })
+		if err == nil {
+			t.Fatal("failing writer succeeded")
+		}
+		assertZeroed(t, observed)
+	})
+	t.Run("writer oversize", func(t *testing.T) {
+		var observed []byte
+		err := writeFrameObserved(io.Discard, 2, bootstrap, func(value []byte) { observed = value })
+		if !errors.Is(err, ErrProtocol) {
+			t.Fatalf("oversize write returned %v", err)
+		}
+		assertZeroed(t, observed)
+	})
+	t.Run("reader success", func(t *testing.T) {
+		frame := encodedFrame(t, bootstrap)
+		var observed []byte
+		var decoded Bootstrap
+		if err := readFrameObserved(bytes.NewReader(frame), MaxBootstrapBytes, &decoded, func(value []byte) { observed = value }); err != nil {
+			t.Fatal(err)
+		}
+		assertZeroed(t, observed)
+		zeroBootstrap(&decoded)
+		assertZeroed(t, decoded.Credentials[0].Value)
+	})
+	t.Run("reader partial", func(t *testing.T) {
+		frame := encodedFrame(t, bootstrap)
+		var observed []byte
+		var decoded Bootstrap
+		err := readFrameObserved(bytes.NewReader(frame[:len(frame)-3]), MaxBootstrapBytes, &decoded, func(value []byte) { observed = value })
+		if !errors.Is(err, ErrProtocol) {
+			t.Fatalf("partial read returned %v", err)
+		}
+		assertZeroed(t, observed)
+	})
+	t.Run("decoded credential factory error", func(t *testing.T) {
+		frame := encodedFrame(t, bootstrap)
+		var retained []byte
+		err := RunChild(context.Background(), io.NopCloser(bytes.NewReader(frame)), nopWriteCloser{io.Discard}, RuntimeFactoryFunc(func(_ context.Context, value Bootstrap) (Runtime, error) {
+			retained = value.Credentials[0].Value
+			return nil, errors.New("fixture factory failure")
+		}))
+		if !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("factory error returned %v", err)
+		}
+		assertZeroed(t, retained)
+	})
+}
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("fixture write failure") }
+
+func encodedFrame(t *testing.T, value any) []byte {
+	t.Helper()
+	var frame bytes.Buffer
+	if err := writeFrame(&frame, MaxBootstrapBytes, value); err != nil {
+		t.Fatal(err)
+	}
+	return frame.Bytes()
+}
+
+func assertZeroed(t *testing.T, value []byte) {
+	t.Helper()
+	if len(value) == 0 {
+		t.Fatal("zeroing observer captured no buffer")
+	}
+	for _, item := range value {
+		if item != 0 {
+			t.Fatalf("buffer retained non-zero byte %x", item)
+		}
+	}
+}
+
 func TestControllerRejectsReplaySubstitutedKeySocketAndProof(t *testing.T) {
 	for _, mode := range []string{"replay", "key", "proof", "socket"} {
 		t.Run(mode, func(t *testing.T) {
@@ -153,6 +335,40 @@ func TestControllerRejectsReplaySubstitutedKeySocketAndProof(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStartAndControlWritesRemainBounded(t *testing.T) {
+	t.Run("child handshakes before consuming bootstrap", func(t *testing.T) {
+		platform := newFakePlatform()
+		platform.earlyHandshake = true
+		controller := &Controller{Platform: platform, HandshakeTimeout: 20 * time.Millisecond, StopGrace: 20 * time.Millisecond}
+		started := time.Now()
+		if _, err := controller.Start(context.Background(), testStartRequest()); err == nil {
+			t.Fatal("incomplete bootstrap write succeeded")
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("bootstrap write exceeded bound: %s", elapsed)
+		}
+		_ = platform.spawn.Bootstrap.(io.Closer).Close()
+		_ = platform.spawn.Handshake.(io.Closer).Close()
+	})
+
+	t.Run("control peer never reads", func(t *testing.T) {
+		platform := newFakePlatform()
+		controller := &Controller{Platform: platform, HandshakeTimeout: time.Second, ControlTimeout: 20 * time.Millisecond}
+		managed, err := controller.Start(context.Background(), testStartRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		platform.stallControlWrite = true
+		started := time.Now()
+		if _, live, err := controller.Inspect(context.Background(), managed.Identity().PID); err == nil || live {
+			t.Fatalf("stalled control write returned live=%t err=%v", live, err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("control write exceeded bound: %s", elapsed)
+		}
+	})
 }
 
 func TestStartCleansUpDeadParentChildAndBoundedTermKill(t *testing.T) {
@@ -202,7 +418,7 @@ func TestHiddenInvocationIsExactAndDefaultFactoryUnavailable(t *testing.T) {
 	reader, writer := io.Pipe()
 	result := make(chan error, 1)
 	go func() { result <- DefaultChildMain(context.Background(), reader, nopWriteCloser{io.Discard}) }()
-	bootstrap := Bootstrap{Version: ProtocolVersion, Kind: "bootstrap", Metadata: testMetadata(), Policy: []byte(`{}`), Credentials: []Credential{{Reference: "workspace-vault://x", Value: []byte("secret")}}}
+	bootstrap := Bootstrap{Version: ProtocolVersion, Kind: "bootstrap", Challenge: testNonce, Metadata: testMetadata(), Policy: []byte(`{}`), Credentials: []Credential{{Reference: "workspace-vault://x", Value: []byte("secret")}}}
 	if err := writeFrame(writer, MaxBootstrapBytes, bootstrap); err != nil {
 		t.Fatal(err)
 	}
@@ -226,6 +442,8 @@ type fakePlatform struct {
 	lastChallenge      string
 	lastResponse       ControlResponse
 	stallHandshake     bool
+	earlyHandshake     bool
+	stallControlWrite  bool
 	childDead          bool
 	environmentTouched bool
 	filesTouched       bool
@@ -247,11 +465,46 @@ func (p *fakePlatform) Spawn(ctx context.Context, request SpawnRequest) (Child, 
 	if p.stallHandshake {
 		return p.child, nil
 	}
+	if p.earlyHandshake {
+		go p.writeEarlyHandshake(request)
+		return p.child, nil
+	}
 	go func() {
 		err := RunChild(ctx, request.Bootstrap.(io.ReadCloser), request.Handshake.(io.WriteCloser), RuntimeFactoryFunc(func(context.Context, Bootstrap) (Runtime, error) { return p.runtime, nil }))
 		p.child.finish(err)
 	}()
 	return p.child, nil
+}
+
+func (p *fakePlatform) writeEarlyHandshake(request SpawnRequest) {
+	var size [4]byte
+	if _, err := io.ReadFull(request.Bootstrap, size[:]); err != nil {
+		return
+	}
+	prefix := make([]byte, 160)
+	count, err := io.ReadFull(request.Bootstrap, prefix)
+	if err != nil {
+		return
+	}
+	prefix = prefix[:count]
+	marker := []byte(`"challenge":"`)
+	start := bytes.Index(prefix, marker)
+	if start < 0 || start+len(marker)+len(testNonce) > len(prefix) {
+		return
+	}
+	challenge := string(prefix[start+len(marker) : start+len(marker)+len(testNonce)])
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return
+	}
+	proof := state.LiveListenerProof{PID: p.runtime.pid, ProcessStartIdentity: p.runtime.start, ExecutableIdentity: p.runtime.executable, BinaryDigest: testDigest, ListenerKeyFingerprint: fingerprint(public), ActivationNonce: testNonce, OwnerUID: 1000, Generation: 2, Mode: "session", SessionIdentity: "uid:1000/session:test"}
+	wire := proofToWire(proof)
+	signature, err := signResponse(private, "handshake", "start", challenge, wire, true)
+	zeroBytes(private)
+	if err != nil {
+		return
+	}
+	_ = writeFrame(request.Handshake, MaxHandshakeBytes, Handshake{Version: ProtocolVersion, Kind: "handshake", Address: p.runtime.address, ControlAddress: p.runtime.control, ListenerToken: p.runtime.token, PublicKey: base64.RawURLEncoding.EncodeToString(public), Proof: wire, Challenge: challenge, Signature: signature})
 }
 
 func (p *fakePlatform) Evidence(context.Context, int) (Evidence, bool, error) {
@@ -271,6 +524,9 @@ func (p *fakePlatform) DialControl(ctx context.Context, _ int, address string) (
 		client, server := net.Pipe()
 		go func() { defer server.Close(); <-ctx.Done() }()
 		return client, nil
+	}
+	if p.stallControlWrite {
+		return newBlockingConnection(), nil
 	}
 	select {
 	case <-p.runtime.handlerReady:
@@ -301,6 +557,30 @@ func (p *fakePlatform) DialControl(ctx context.Context, _ int, address string) (
 		_ = writeFrame(server, MaxControlBytes, response)
 	}()
 	return client, nil
+}
+
+type blockingConnection struct {
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newBlockingConnection() *blockingConnection {
+	return &blockingConnection{closed: make(chan struct{})}
+}
+
+func (c *blockingConnection) Read([]byte) (int, error) {
+	<-c.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (c *blockingConnection) Write([]byte) (int, error) {
+	<-c.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (c *blockingConnection) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
 }
 
 type fakeRuntime struct {

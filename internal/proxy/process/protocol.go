@@ -4,8 +4,10 @@
 package process
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -32,6 +34,7 @@ const (
 	MaxHandshakeBytes   = 32 << 10
 	MaxControlBytes     = 32 << 10
 	MaxCredentialBytes  = 4096
+	MaxReplayChallenges = 256
 	DefaultHandshakeTTL = 10 * time.Second
 	DefaultControlTTL   = 5 * time.Second
 )
@@ -42,7 +45,10 @@ var (
 	ErrUnauthorized = errors.New("proxy listener control unauthorized")
 )
 
-var activationIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var (
+	activationIDPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	executableIdentityPattern = regexp.MustCompile(`^dev:[0-9]+/inode:[1-9][0-9]*$`)
+)
 
 type Metadata struct {
 	ActivationID    string `json:"activationId"`
@@ -65,6 +71,7 @@ type Credential struct {
 type Bootstrap struct {
 	Version     string          `json:"version"`
 	Kind        string          `json:"kind"`
+	Challenge   string          `json:"challenge"`
 	Metadata    Metadata        `json:"metadata"`
 	Policy      json.RawMessage `json:"policy"`
 	Credentials []Credential    `json:"credentials"`
@@ -102,10 +109,11 @@ func (Handshake) String() string   { return "[REDACTED proxy process handshake]"
 func (Handshake) GoString() string { return "[REDACTED proxy process handshake]" }
 
 type ControlRequest struct {
-	Version   string `json:"version"`
-	Kind      string `json:"kind"`
-	Action    string `json:"action"`
-	Challenge string `json:"challenge"`
+	Version       string `json:"version"`
+	Kind          string `json:"kind"`
+	Action        string `json:"action"`
+	Challenge     string `json:"challenge"`
+	Authenticator string `json:"authenticator"`
 }
 
 type ControlResponse struct {
@@ -157,6 +165,14 @@ type signedPayload struct {
 	Accepted  bool      `json:"accepted"`
 }
 
+type controlAuthenticationPayload struct {
+	Version   string    `json:"version"`
+	Kind      string    `json:"kind"`
+	Action    string    `json:"action"`
+	Challenge string    `json:"challenge"`
+	Proof     WireProof `json:"proof"`
+}
+
 func signResponse(private ed25519.PrivateKey, kind, action, challenge string, proof WireProof, accepted bool) (string, error) {
 	payload, err := json.Marshal(signedPayload{Version: ProtocolVersion, Kind: kind, Action: action, Challenge: challenge, Proof: proof, Accepted: accepted})
 	if err != nil {
@@ -181,8 +197,66 @@ func verifyResponse(publicText, signature, kind, action, challenge string, proof
 	return nil
 }
 
+func authenticateControlRequest(token, action, challenge string, proof WireProof) (string, error) {
+	key, err := base64.RawURLEncoding.Strict().DecodeString(token)
+	if err != nil || len(key) < 32 || len(key) > 128 {
+		zeroBytes(key)
+		return "", ErrUnauthorized
+	}
+	defer zeroBytes(key)
+	payload, err := json.Marshal(controlAuthenticationPayload{Version: ProtocolVersion, Kind: "control_request", Action: action, Challenge: challenge, Proof: proof})
+	if err != nil {
+		return "", ErrProtocol
+	}
+	defer zeroBytes(payload)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(payload)
+	sum := mac.Sum(nil)
+	defer zeroBytes(sum)
+	return base64.RawURLEncoding.EncodeToString(sum), nil
+}
+
+func verifyControlRequest(token string, request ControlRequest, proof WireProof) error {
+	if request.Version != ProtocolVersion || request.Kind != "control_request" || (request.Action != "inspect" && request.Action != "stop") || !validChallenge(request.Challenge) {
+		return ErrUnauthorized
+	}
+	expected, err := authenticateControlRequest(token, request.Action, request.Challenge, proof)
+	if err != nil {
+		return ErrUnauthorized
+	}
+	expectedRaw, expectedErr := base64.RawURLEncoding.Strict().DecodeString(expected)
+	actualRaw, actualErr := base64.RawURLEncoding.Strict().DecodeString(request.Authenticator)
+	defer zeroBytes(expectedRaw)
+	defer zeroBytes(actualRaw)
+	if expectedErr != nil || actualErr != nil || len(actualRaw) != sha256.Size || !hmac.Equal(expectedRaw, actualRaw) {
+		return ErrUnauthorized
+	}
+	return nil
+}
+
 func writeFrame(writer io.Writer, maximum int, value any) error {
+	return writeFrameObserved(writer, maximum, value, nil)
+}
+
+func writeFrameContext(ctx context.Context, writer io.WriteCloser, maximum int, value any) error {
+	done := make(chan error, 1)
+	go func() { done <- writeFrame(writer, maximum, value) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		_ = writer.Close()
+		<-done
+		return errors.Join(ErrProtocol, ctx.Err())
+	}
+}
+
+func writeFrameObserved(writer io.Writer, maximum int, value any, observe func([]byte)) error {
 	payload, err := json.Marshal(value)
+	if observe != nil {
+		observe(payload)
+	}
+	defer zeroBytes(payload)
 	if err != nil || len(payload) == 0 || len(payload) > maximum {
 		return ErrProtocol
 	}
@@ -198,6 +272,10 @@ func writeFrame(writer io.Writer, maximum int, value any) error {
 }
 
 func readFrame(reader io.Reader, maximum int, target any) error {
+	return readFrameObserved(reader, maximum, target, nil)
+}
+
+func readFrameObserved(reader io.Reader, maximum int, target any, observe func([]byte)) error {
 	var size [4]byte
 	if _, err := io.ReadFull(reader, size[:]); err != nil {
 		return errors.Join(ErrProtocol, err)
@@ -207,10 +285,14 @@ func readFrame(reader io.Reader, maximum int, target any) error {
 		return ErrProtocol
 	}
 	payload := make([]byte, length)
+	if observe != nil {
+		observe(payload)
+	}
+	defer zeroBytes(payload)
 	if _, err := io.ReadFull(reader, payload); err != nil {
 		return errors.Join(ErrProtocol, err)
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(payload)))
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return ErrProtocol
@@ -252,7 +334,7 @@ func validDigest(value string) bool {
 }
 
 func validateBootstrap(value Bootstrap) error {
-	if value.Version != ProtocolVersion || value.Kind != "bootstrap" || validateMetadata(value.Metadata) != nil || len(value.Policy) < 2 || !json.Valid(value.Policy) || len(value.Credentials) == 0 || len(value.Credentials) > 256 {
+	if value.Version != ProtocolVersion || value.Kind != "bootstrap" || !validChallenge(value.Challenge) || validateMetadata(value.Metadata) != nil || len(value.Policy) < 2 || !json.Valid(value.Policy) || len(value.Credentials) == 0 || len(value.Credentials) > 256 {
 		return ErrProtocol
 	}
 	seen := map[string]bool{}
@@ -280,7 +362,25 @@ func validListenerAddress(value string) bool {
 
 func validListenerToken(value string) bool {
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	defer zeroBytes(raw)
 	return err == nil && len(raw) >= 32 && len(raw) <= 128 && base64.RawURLEncoding.EncodeToString(raw) == value
+}
+
+func validOpaqueIdentity(value string) bool {
+	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\x00\r\n")
+}
+
+func validLiveProof(value state.LiveListenerProof) bool {
+	return value.PID > 0 &&
+		value.OwnerUID >= 0 &&
+		validOpaqueIdentity(value.ProcessStartIdentity) &&
+		executableIdentityPattern.MatchString(value.ExecutableIdentity) &&
+		validDigest(value.BinaryDigest) &&
+		validDigest(value.ListenerKeyFingerprint) &&
+		validChallenge(value.ActivationNonce) &&
+		value.Generation > 0 &&
+		(value.Mode == "session" || value.Mode == "scoped_run") &&
+		validOpaqueIdentity(value.SessionIdentity)
 }
 
 func zeroBootstrap(value *Bootstrap) {
@@ -291,6 +391,12 @@ func zeroBootstrap(value *Bootstrap) {
 		for byteIndex := range value.Credentials[index].Value {
 			value.Credentials[index].Value[byteIndex] = 0
 		}
+	}
+}
+
+func zeroBytes(value []byte) {
+	for index := range value {
+		value[index] = 0
 	}
 }
 

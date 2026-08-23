@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"sync"
 
 	"github.com/blazncloud/blazn/internal/proxy/state"
 )
@@ -45,42 +46,50 @@ func RunChild(ctx context.Context, bootstrapReader io.ReadCloser, handshakeWrite
 	defer bootstrapReader.Close()
 	defer handshakeWriter.Close()
 	var bootstrap Bootstrap
+	defer zeroBootstrap(&bootstrap)
 	if err := readFrameContext(ctx, bootstrapReader, MaxBootstrapBytes, &bootstrap); err != nil {
 		return safeError(err)
 	}
 	if err := validateBootstrap(bootstrap); err != nil {
-		zeroBootstrap(&bootstrap)
 		return err
 	}
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		zeroBootstrap(&bootstrap)
 		return ErrUnavailable
 	}
+	defer zeroBytes(private)
 	runtime, err := factory.Start(ctx, bootstrap)
 	zeroBootstrap(&bootstrap)
 	if err != nil {
 		return safeError(err)
 	}
+	if runtime == nil {
+		return ErrUnavailable
+	}
 	defer runtime.Shutdown(context.Background())
 	pid, startIdentity, executableIdentity := runtime.Identity()
 	proof := state.LiveListenerProof{PID: pid, ProcessStartIdentity: startIdentity, ExecutableIdentity: executableIdentity, BinaryDigest: bootstrap.Metadata.BinaryDigest, ListenerKeyFingerprint: fingerprint(public), ActivationNonce: bootstrap.Metadata.Nonce, OwnerUID: bootstrap.Metadata.OwnerUID, Generation: bootstrap.Metadata.Generation, Mode: bootstrap.Metadata.Mode, SessionIdentity: bootstrap.Metadata.SessionIdentity}
-	wire := proofToWire(proof)
-	challenge, err := freshChallenge()
-	if err != nil {
-		return ErrUnavailable
+	if !validLiveProof(proof) {
+		return ErrUnauthorized
 	}
+	wire := proofToWire(proof)
+	challenge := bootstrap.Challenge
 	signature, err := signResponse(private, "handshake", "start", challenge, wire, true)
 	if err != nil {
 		return err
 	}
-	handshake := Handshake{Version: ProtocolVersion, Kind: "handshake", Address: runtime.Address(), ControlAddress: runtime.ControlAddress(), ListenerToken: runtime.ListenerToken(), PublicKey: base64.RawURLEncoding.EncodeToString(public), Proof: wire, Challenge: challenge, Signature: signature}
+	listenerToken := runtime.ListenerToken()
+	if !validListenerToken(listenerToken) {
+		return ErrUnavailable
+	}
+	handshake := Handshake{Version: ProtocolVersion, Kind: "handshake", Address: runtime.Address(), ControlAddress: runtime.ControlAddress(), ListenerToken: listenerToken, PublicKey: base64.RawURLEncoding.EncodeToString(public), Proof: wire, Challenge: challenge, Signature: signature}
 	if err := writeFrame(handshakeWriter, MaxHandshakeBytes, handshake); err != nil {
 		return safeError(err)
 	}
 	_ = handshakeWriter.Close()
+	replays := challengeReplayCache{seen: make(map[string]struct{}, MaxReplayChallenges)}
 	handler := func(callCtx context.Context, request ControlRequest) (ControlResponse, error) {
-		if request.Version != ProtocolVersion || request.Kind != "control_request" || (request.Action != "inspect" && request.Action != "stop") || !validChallenge(request.Challenge) {
+		if err := verifyControlRequest(listenerToken, request, wire); err != nil || !replays.Accept(request.Challenge) {
 			return ControlResponse{}, ErrUnauthorized
 		}
 		signature, err := signResponse(private, "control_response", request.Action, request.Challenge, wire, true)
@@ -97,6 +106,28 @@ func RunChild(ctx context.Context, bootstrapReader io.ReadCloser, handshakeWrite
 		return safeError(err)
 	}
 	return nil
+}
+
+type challengeReplayCache struct {
+	mu    sync.Mutex
+	seen  map[string]struct{}
+	order []string
+}
+
+func (c *challengeReplayCache) Accept(challenge string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.seen[challenge]; exists {
+		return false
+	}
+	if len(c.order) == MaxReplayChallenges {
+		delete(c.seen, c.order[0])
+		copy(c.order, c.order[1:])
+		c.order = c.order[:len(c.order)-1]
+	}
+	c.seen[challenge] = struct{}{}
+	c.order = append(c.order, challenge)
+	return true
 }
 
 type unavailableFactory struct{}

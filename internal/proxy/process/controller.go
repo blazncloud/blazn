@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -77,6 +78,7 @@ type knownListener struct {
 	controlAddress string
 	executablePath string
 	publicKey      string
+	listenerToken  string
 	proof          state.LiveListenerProof
 	child          Child
 }
@@ -85,7 +87,11 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 	if c == nil || c.Platform == nil || validateMetadata(request.Metadata) != nil {
 		return nil, ErrUnavailable
 	}
-	bootstrap := Bootstrap{Version: ProtocolVersion, Kind: "bootstrap", Metadata: request.Metadata, Policy: append([]byte(nil), request.Policy...), Credentials: cloneCredentials(request.Credentials)}
+	handshakeChallenge, challengeErr := freshChallenge()
+	if challengeErr != nil {
+		return nil, ErrUnavailable
+	}
+	bootstrap := Bootstrap{Version: ProtocolVersion, Kind: "bootstrap", Challenge: handshakeChallenge, Metadata: request.Metadata, Policy: append([]byte(nil), request.Policy...), Credentials: cloneCredentials(request.Credentials)}
 	if validateBootstrap(bootstrap) != nil {
 		zeroBootstrap(&bootstrap)
 		return nil, ErrProtocol
@@ -93,12 +99,15 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 	bootstrapReader, bootstrapWriter := io.Pipe()
 	handshakeReader, handshakeWriter := io.Pipe()
 	child, err := c.Platform.Spawn(ctx, SpawnRequest{Executable: request.Metadata.BinaryPath, Argv: []string{request.Metadata.BinaryPath, "__proxy-listener-core", ProtocolVersion}, Bootstrap: bootstrapReader, Handshake: handshakeWriter})
-	if err != nil {
+	if err != nil || child == nil {
 		_ = bootstrapReader.Close()
 		_ = bootstrapWriter.Close()
 		_ = handshakeReader.Close()
 		_ = handshakeWriter.Close()
 		zeroBootstrap(&bootstrap)
+		if err == nil {
+			return nil, ErrUnavailable
+		}
 		return nil, safeError(err)
 	}
 	writeDone := make(chan error, 1)
@@ -127,12 +136,20 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 	if err := readFrameContext(handshakeCtx, handshakeReader, MaxHandshakeBytes, &handshake); err != nil {
 		return nil, safeError(err)
 	}
-	writeErr := <-writeDone
-	writeComplete = true
+	var writeErr error
+	select {
+	case writeErr = <-writeDone:
+		writeComplete = true
+	case <-handshakeCtx.Done():
+		_ = bootstrapWriter.CloseWithError(handshakeCtx.Err())
+		writeErr = <-writeDone
+		writeComplete = true
+		return nil, safeError(errors.Join(writeErr, handshakeCtx.Err()))
+	}
 	if writeErr != nil {
 		return nil, safeError(writeErr)
 	}
-	proof, evidence, err := c.verifyHandshake(handshakeCtx, child.PID(), request.Metadata, handshake)
+	proof, evidence, err := c.verifyHandshake(handshakeCtx, child.PID(), request.Metadata, handshakeChallenge, handshake)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +158,7 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 	if c.known == nil {
 		c.known = map[int]knownListener{}
 	}
-	c.known[proof.PID] = knownListener{controlAddress: handshake.ControlAddress, executablePath: request.Metadata.BinaryPath, publicKey: handshake.PublicKey, proof: proof, child: child}
+	c.known[proof.PID] = knownListener{controlAddress: handshake.ControlAddress, executablePath: request.Metadata.BinaryPath, publicKey: handshake.PublicKey, listenerToken: handshake.ListenerToken, proof: proof, child: child}
 	c.mu.Unlock()
 	_ = evidence
 	cleanup = false
@@ -202,8 +219,8 @@ func (c *Controller) Stop(ctx context.Context, expected state.LiveListenerProof)
 	return nil
 }
 
-func (c *Controller) verifyHandshake(ctx context.Context, pid int, metadata Metadata, value Handshake) (state.LiveListenerProof, Evidence, error) {
-	if value.Version != ProtocolVersion || value.Kind != "handshake" || !validListenerAddress(value.Address) || value.ControlAddress == "" || len(value.ControlAddress) > 256 || validListenerToken(value.ListenerToken) == false || !validChallenge(value.Challenge) {
+func (c *Controller) verifyHandshake(ctx context.Context, pid int, metadata Metadata, expectedChallenge string, value Handshake) (state.LiveListenerProof, Evidence, error) {
+	if value.Version != ProtocolVersion || value.Kind != "handshake" || !validListenerAddress(value.Address) || value.ControlAddress == "" || len(value.ControlAddress) > 256 || validListenerToken(value.ListenerToken) == false || value.Challenge != expectedChallenge || !validChallenge(value.Challenge) {
 		return state.LiveListenerProof{}, Evidence{}, ErrProtocol
 	}
 	proof := proofFromWire(value.Proof)
@@ -214,7 +231,7 @@ func (c *Controller) verifyHandshake(ctx context.Context, pid int, metadata Meta
 	if err != nil || !live {
 		return state.LiveListenerProof{}, Evidence{}, safeError(err)
 	}
-	if proof.PID != pid || proof.OwnerUID != metadata.OwnerUID || proof.BinaryDigest != metadata.BinaryDigest || proof.ActivationNonce != metadata.Nonce || proof.Generation != metadata.Generation || proof.Mode != metadata.Mode || proof.SessionIdentity != metadata.SessionIdentity || evidence.ExecutablePath != metadata.BinaryPath || !evidenceMatchesProof(evidence, proof) {
+	if !validLiveProof(proof) || !validEvidence(evidence) || proof.PID != pid || proof.OwnerUID != metadata.OwnerUID || proof.BinaryDigest != metadata.BinaryDigest || proof.ActivationNonce != metadata.Nonce || proof.Generation != metadata.Generation || proof.Mode != metadata.Mode || proof.SessionIdentity != metadata.SessionIdentity || evidence.ExecutablePath != metadata.BinaryPath || !evidenceMatchesProof(evidence, proof) {
 		return state.LiveListenerProof{}, Evidence{}, ErrUnauthorized
 	}
 	return proof, evidence, nil
@@ -232,7 +249,11 @@ func (c *Controller) control(ctx context.Context, pid int, action string, known 
 		return state.LiveListenerProof{}, safeError(err)
 	}
 	defer connection.Close()
-	if err := writeFrame(connection, MaxControlBytes, ControlRequest{Version: ProtocolVersion, Kind: "control_request", Action: action, Challenge: challenge}); err != nil {
+	authenticator, err := authenticateControlRequest(known.listenerToken, action, challenge, proofToWire(known.proof))
+	if err != nil {
+		return state.LiveListenerProof{}, err
+	}
+	if err := writeFrameContext(controlCtx, connection, MaxControlBytes, ControlRequest{Version: ProtocolVersion, Kind: "control_request", Action: action, Challenge: challenge, Authenticator: authenticator}); err != nil {
 		return state.LiveListenerProof{}, safeError(err)
 	}
 	var response ControlResponse
@@ -249,7 +270,17 @@ func (c *Controller) control(ctx context.Context, pid int, action string, known 
 }
 
 func evidenceMatchesProof(evidence Evidence, proof state.LiveListenerProof) bool {
-	return evidence.PID == proof.PID && evidence.OwnerUID == proof.OwnerUID && evidence.ProcessStartIdentity == proof.ProcessStartIdentity && evidence.ExecutableIdentity == proof.ExecutableIdentity && evidence.BinaryDigest == proof.BinaryDigest && evidence.ExecutablePath != ""
+	return validEvidence(evidence) && validLiveProof(proof) && evidence.PID == proof.PID && evidence.OwnerUID == proof.OwnerUID && evidence.ProcessStartIdentity == proof.ProcessStartIdentity && evidence.ExecutableIdentity == proof.ExecutableIdentity && evidence.BinaryDigest == proof.BinaryDigest
+}
+
+func validEvidence(evidence Evidence) bool {
+	return evidence.PID > 0 &&
+		evidence.OwnerUID >= 0 &&
+		validOpaqueIdentity(evidence.ProcessStartIdentity) &&
+		filepath.IsAbs(evidence.ExecutablePath) &&
+		filepath.Clean(evidence.ExecutablePath) == evidence.ExecutablePath &&
+		executableIdentityPattern.MatchString(evidence.ExecutableIdentity) &&
+		validDigest(evidence.BinaryDigest)
 }
 
 func (c *Controller) cleanupChild(ctx context.Context, child Child) error {
