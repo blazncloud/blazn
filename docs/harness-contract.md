@@ -142,8 +142,11 @@ its event type, authoritative source, and observation time equal that Message's
 role and creation time. An assistant or tool Message cannot be relabeled as a
 control-plane user event, replayed through a second message event, or hidden by
 omitting its event. Fallback eligibility also inspects resolved assistant and
-tool Message creation times, so an omitted event cannot erase pre-output proof.
-Parents and follow-up targets must precede the child, empty cursors remain zero,
+tool Message creation times, including output recorded at the same timestamp as
+the primary request, so an omitted event cannot erase pre-output proof.
+Message ordinals are unique and contiguous, normalized message events follow
+that canonical order, and parents and follow-up targets precede the child in
+ordinal, creation time, and normalized event order. Empty cursors remain zero,
 and resume generations are contiguous and occur only after the matching
 follow-up cursor boundary. Each generation has exactly one follow-up Message
 and one unique acceptance event. Cancellation likewise uses one ID shared by
