@@ -88,38 +88,66 @@ func TestSyntheticRunClientRoutesProgressCompletionAndBinaryUpload(t *testing.T)
 	requestNumber := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestNumber++
-		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("Idempotency-Key") == "" { t.Fatalf("headers=%v", r.Header) }
+		if r.Header.Get("Authorization") != "Bearer access-token" || r.Header.Get("Idempotency-Key") == "" {
+			t.Fatalf("headers=%v", r.Header)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch requestNumber {
 		case 1:
-			if r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID+"/synthetic/progress" { t.Fatalf("progress path=%s", r.URL.Path) }
+			if r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID+"/synthetic/progress" {
+				t.Fatalf("progress path=%s", r.URL.Path)
+			}
 			var input SyntheticRunProgressRequest
-			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Sequence != 0 || input.Percent != 25 { t.Fatalf("progress=%#v err=%v", input, err) }
-			_, _ = w.Write([]byte(`{"runId":"`+runTestRunID+`","sequence":0,"runVersion":2,"status":"running"}`))
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Sequence != 0 || input.Percent != 25 {
+				t.Fatalf("progress=%#v err=%v", input, err)
+			}
+			_, _ = w.Write([]byte(`{"runId":"` + runTestRunID + `","sequence":0,"runVersion":2,"status":"running"}`))
 		case 2:
-			if r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID+"/synthetic/complete" { t.Fatalf("complete path=%s", r.URL.Path) }
+			if r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID+"/synthetic/complete" {
+				t.Fatalf("complete path=%s", r.URL.Path)
+			}
 			var input CompleteSyntheticRunRequest
-			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.ExpectedVersion != 2 || len(input.ArtifactIDs) != 1 { t.Fatalf("complete=%#v err=%v", input, err) }
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.ExpectedVersion != 2 || len(input.ArtifactIDs) != 1 {
+				t.Fatalf("complete=%#v err=%v", input, err)
+			}
 			_, _ = w.Write([]byte(succeededRunEnvelopeJSON()))
 		case 3:
-			if r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID+"/artifacts" || r.Header.Get("Content-Type") != "application/octet-stream" || r.ContentLength != 12 { t.Fatalf("upload=%s length=%d headers=%v", r.URL.Path, r.ContentLength, r.Header) }
-			encoded, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Blazn-Artifact-Metadata")); if err != nil { t.Fatal(err) }
+			if r.URL.Path != "/v1/workspaces/"+runTestWorkspaceID+"/projects/"+runTestProjectID+"/runs/"+runTestRunID+"/artifacts" || r.Header.Get("Content-Type") != "application/octet-stream" || r.ContentLength != 12 {
+				t.Fatalf("upload=%s length=%d headers=%v", r.URL.Path, r.ContentLength, r.Header)
+			}
+			encoded, err := base64.RawURLEncoding.DecodeString(r.Header.Get("X-Blazn-Artifact-Metadata"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			var metadata ArtifactUploadMetadata
-			if json.Unmarshal(encoded, &metadata) != nil || metadata.Name != "preview.mp4" || metadata.SizeBytes != 12 { t.Fatalf("metadata=%#v", metadata) }
-			body, _ := io.ReadAll(r.Body); if string(body) != "hello world!" { t.Fatalf("body=%q", body) }
-			w.WriteHeader(http.StatusCreated); _, _ = w.Write([]byte(artifactEnvelopeJSON()))
-		default: t.Fatalf("unexpected request %d", requestNumber)
+			if json.Unmarshal(encoded, &metadata) != nil || metadata.Name != "preview.mp4" || metadata.SizeBytes != 12 {
+				t.Fatalf("metadata=%#v", metadata)
+			}
+			body, _ := io.ReadAll(r.Body)
+			if string(body) != "hello world!" {
+				t.Fatalf("body=%q", body)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(artifactEnvelopeJSON()))
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
 		}
 	}))
 	defer server.Close()
 	api, _ := New(server.URL, server.Client())
 	ctx := context.Background()
 	ack, err := api.RecordSyntheticRunProgress(ctx, "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "progress-0", SyntheticRunProgressRequest{Sequence: 0, Phase: "render.plan", Percent: 25})
-	if err != nil || ack.Status != RunStatusRunning || ack.RunVersion != 2 { t.Fatalf("ack=%#v err=%v", ack, err) }
-	completed, err := api.CompleteSyntheticRun(ctx, "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "complete-1", CompleteSyntheticRunRequest{ExpectedVersion: 2, PlanDigest: "sha256:"+repeat("a",64), ArtifactIDs: []string{runTestArtifactID}, Summary: RunReceiptSummary{Steps: 1, Warnings: []string{}}})
-	if err != nil || completed.Run.Status != RunStatusSucceeded { t.Fatalf("completed=%#v err=%v", completed, err) }
-	artifact, err := api.UploadSyntheticRunArtifact(ctx, "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "upload-1", ArtifactUploadMetadata{Name: "preview.mp4", Kind: "content.video", MediaType: ArtifactMediaTypeVideo, SizeBytes: 12, Digest: "sha256:"+repeat("b",64)}, bytes.NewBufferString("hello world!"))
-	if err != nil || artifact.Artifact.ID != runTestArtifactID { t.Fatalf("artifact=%#v err=%v", artifact, err) }
+	if err != nil || ack.Status != RunStatusRunning || ack.RunVersion != 2 {
+		t.Fatalf("ack=%#v err=%v", ack, err)
+	}
+	completed, err := api.CompleteSyntheticRun(ctx, "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "complete-1", CompleteSyntheticRunRequest{ExpectedVersion: 2, PlanDigest: "sha256:" + repeat("a", 64), ArtifactIDs: []string{runTestArtifactID}, Summary: RunReceiptSummary{Steps: 1, Warnings: []string{}}})
+	if err != nil || completed.Run.Status != RunStatusSucceeded {
+		t.Fatalf("completed=%#v err=%v", completed, err)
+	}
+	artifact, err := api.UploadSyntheticRunArtifact(ctx, "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "upload-1", ArtifactUploadMetadata{Name: "preview.mp4", Kind: "content.video", MediaType: ArtifactMediaTypeVideo, SizeBytes: 12, Digest: "sha256:" + repeat("b", 64)}, bytes.NewBufferString("hello world!"))
+	if err != nil || artifact.Artifact.ID != runTestArtifactID {
+		t.Fatalf("artifact=%#v err=%v", artifact, err)
+	}
 }
 
 func TestRunClientRejectsInvalidInputsBeforeNetwork(t *testing.T) {
@@ -142,9 +170,15 @@ func TestRunClientRejectsInvalidInputsBeforeNetwork(t *testing.T) {
 	if _, err := api.GetArtifact(ctx, "token", runTestWorkspaceID, runTestProjectID, "bad"); err == nil {
 		t.Fatal("invalid Artifact ID passed")
 	}
-	if _, err := api.RecordSyntheticRunProgress(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "progress-1", SyntheticRunProgressRequest{Sequence: -1, Phase: "render", Percent: 1}); err == nil { t.Fatal("negative progress sequence passed") }
-	if _, err := api.CompleteSyntheticRun(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "complete-1", CompleteSyntheticRunRequest{}); err == nil { t.Fatal("empty completion passed") }
-	if _, err := api.UploadSyntheticRunArtifact(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "upload-1", ArtifactUploadMetadata{}, bytes.NewReader(nil)); err == nil { t.Fatal("empty upload metadata passed") }
+	if _, err := api.RecordSyntheticRunProgress(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "progress-1", SyntheticRunProgressRequest{Sequence: -1, Phase: "render", Percent: 1}); err == nil {
+		t.Fatal("negative progress sequence passed")
+	}
+	if _, err := api.CompleteSyntheticRun(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "complete-1", CompleteSyntheticRunRequest{}); err == nil {
+		t.Fatal("empty completion passed")
+	}
+	if _, err := api.UploadSyntheticRunArtifact(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "upload-1", ArtifactUploadMetadata{}, bytes.NewReader(nil)); err == nil {
+		t.Fatal("empty upload metadata passed")
+	}
 	if requests != 0 {
 		t.Fatalf("requests=%d", requests)
 	}
@@ -175,10 +209,10 @@ func runEnvelopeJSON(status string, version int) string {
 	return `{"run":{"id":"` + runTestRunID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","kind":"content.render","proofClass":"synthetic","status":"` + status + `","version":` + string(rune('0'+version)) + `,"planDigest":"sha256:` + repeat("a", 64) + `","inputArtifactIds":[],"outputNames":["preview.mp4"],"requestedBy":"00000000-0000-4000-8000-000000000005","placement":null,"receipt":` + receipt + `,"createdAt":"2026-08-22T00:00:00Z"` + completed + `}}`
 }
 func succeededRunEnvelopeJSON() string {
-	return `{"run":{"id":"`+runTestRunID+`","workspaceId":"`+runTestWorkspaceID+`","projectId":"`+runTestProjectID+`","kind":"content.render","proofClass":"synthetic","status":"succeeded","version":3,"planDigest":"sha256:`+repeat("a",64)+`","inputArtifactIds":[],"outputNames":["preview.mp4"],"requestedBy":"00000000-0000-4000-8000-000000000005","placement":null,"receipt":{"schemaVersion":"blazn.run/receipt/v1alpha1","proofClass":"synthetic","outcome":"succeeded","planDigest":"sha256:`+repeat("a",64)+`","artifactIds":["`+runTestArtifactID+`"],"summary":{"steps":1,"warnings":[]}},"createdAt":"2026-08-22T00:00:00Z","startedAt":"2026-08-22T00:00:01Z","completedAt":"2026-08-22T00:00:02Z"}}`
+	return `{"run":{"id":"` + runTestRunID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","kind":"content.render","proofClass":"synthetic","status":"succeeded","version":3,"planDigest":"sha256:` + repeat("a", 64) + `","inputArtifactIds":[],"outputNames":["preview.mp4"],"requestedBy":"00000000-0000-4000-8000-000000000005","placement":null,"receipt":{"schemaVersion":"blazn.run/receipt/v1alpha1","proofClass":"synthetic","outcome":"succeeded","planDigest":"sha256:` + repeat("a", 64) + `","artifactIds":["` + runTestArtifactID + `"],"summary":{"steps":1,"warnings":[]}},"createdAt":"2026-08-22T00:00:00Z","startedAt":"2026-08-22T00:00:01Z","completedAt":"2026-08-22T00:00:02Z"}}`
 }
 func artifactEnvelopeJSON() string {
-	return `{"artifact":{"id":"`+runTestArtifactID+`","workspaceId":"`+runTestWorkspaceID+`","projectId":"`+runTestProjectID+`","sourceRunId":"`+runTestRunID+`","kind":"content.video","mediaType":"video","name":"preview.mp4","status":"ready","version":1,"digest":"sha256:`+repeat("b",64)+`","sizeBytes":12,"createdBy":"00000000-0000-4000-8000-000000000005","createdAt":"2026-08-22T00:00:00Z","updatedAt":"2026-08-22T00:00:00Z","downloadAvailable":true}}`
+	return `{"artifact":{"id":"` + runTestArtifactID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","sourceRunId":"` + runTestRunID + `","kind":"content.video","mediaType":"video","name":"preview.mp4","status":"ready","version":1,"digest":"sha256:` + repeat("b", 64) + `","sizeBytes":12,"createdBy":"00000000-0000-4000-8000-000000000005","createdAt":"2026-08-22T00:00:00Z","updatedAt":"2026-08-22T00:00:00Z","downloadAvailable":true}}`
 }
 func repeat(value string, count int) string {
 	result := ""

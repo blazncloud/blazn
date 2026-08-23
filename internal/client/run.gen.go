@@ -1,11 +1,14 @@
 // Code generated from packages/contracts/runs.openapi.json; DO NOT EDIT.
-// Contract SHA256: 12f696f1c0121d3c34a3be489d9cf8baef34c50d6e66bb8e7da2ce4f01a404ff
+// Contract SHA256: d645f49884e02f886a5875116e78afaed6e8847cda7df6d759fe7a9086a7b9b8
 
 package client
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -111,6 +114,31 @@ type CreateRunRequest struct {
 type CancelRunRequest struct {
 	ExpectedVersion int `json:"expectedVersion"`
 }
+type SyntheticRunProgressRequest struct {
+	Sequence int    `json:"sequence"`
+	Phase    string `json:"phase"`
+	Percent  int    `json:"percent"`
+	Message  string `json:"message,omitempty"`
+}
+type ProgressAck struct {
+	RunID      string    `json:"runId"`
+	Sequence   int       `json:"sequence"`
+	RunVersion int       `json:"runVersion"`
+	Status     RunStatus `json:"status"`
+}
+type CompleteSyntheticRunRequest struct {
+	ExpectedVersion int               `json:"expectedVersion"`
+	PlanDigest      string            `json:"planDigest"`
+	ArtifactIDs     []string          `json:"artifactIds"`
+	Summary         RunReceiptSummary `json:"summary"`
+}
+type ArtifactUploadMetadata struct {
+	Name      string            `json:"name"`
+	Kind      string            `json:"kind"`
+	MediaType ArtifactMediaType `json:"mediaType"`
+	SizeBytes int64             `json:"sizeBytes"`
+	Digest    string            `json:"digest"`
+}
 type Artifact struct {
 	ID                string            `json:"id"`
 	WorkspaceID       string            `json:"workspaceId"`
@@ -141,6 +169,7 @@ var runUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F
 var runKind = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,95}$`)
 var runDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var runOutputName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+var runPhase = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,95}$`)
 
 func (c *Client) CreateRun(ctx context.Context, accessToken, workspaceID, projectID, idempotencyKey string, request CreateRunRequest) (RunEnvelope, error) {
 	var output RunEnvelope
@@ -196,6 +225,66 @@ func (c *Client) CancelRun(ctx context.Context, accessToken, workspaceID, projec
 	}
 	err = c.workspaceDo(ctx, http.MethodPost, path+"/cancel", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
 	return output, err
+}
+func (c *Client) RecordSyntheticRunProgress(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request SyntheticRunProgressRequest) (ProgressAck, error) {
+	var output ProgressAck
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if request.Sequence < 0 || !runPhase.MatchString(request.Phase) || request.Percent < 0 || request.Percent > 100 || len(request.Message) > 512 {
+		return output, fmt.Errorf("synthetic Run progress request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/synthetic/progress", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) CompleteSyntheticRun(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request CompleteSyntheticRunRequest) (RunEnvelope, error) {
+	var output RunEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if !validCompleteSyntheticRun(request) {
+		return output, fmt.Errorf("synthetic Run completion request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/synthetic/complete", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) UploadSyntheticRunArtifact(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, metadata ArtifactUploadMetadata, content io.Reader) (ArtifactEnvelope, error) {
+	var output ArtifactEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if accessToken == "" || len(idempotencyKey) < 8 || len(idempotencyKey) > 128 || content == nil || !validArtifactUploadMetadata(metadata) {
+		return output, fmt.Errorf("synthetic Artifact upload request is invalid")
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return output, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.workspaceEndpoint(path+"/artifacts", nil), io.LimitReader(content, metadata.SizeBytes+1))
+	if err != nil {
+		return output, fmt.Errorf("create synthetic Artifact upload: %w", err)
+	}
+	request.ContentLength = metadata.SizeBytes
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Content-Type", "application/octet-stream")
+	request.Header.Set("Idempotency-Key", idempotencyKey)
+	request.Header.Set("X-Blazn-Artifact-Metadata", base64.RawURLEncoding.EncodeToString(encoded))
+	response, err := c.http.Do(request)
+	if err != nil {
+		return output, fmt.Errorf("upload synthetic Artifact: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		return output, decodeWorkspaceAPIError(response)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&output); err != nil {
+		return output, fmt.Errorf("decode synthetic Artifact response: %w", err)
+	}
+	return output, nil
 }
 func (c *Client) ListArtifacts(ctx context.Context, accessToken, workspaceID, projectID, status, cursor string) (ArtifactList, error) {
 	var output ArtifactList
@@ -258,6 +347,27 @@ func validateCreateRun(request CreateRunRequest) error {
 	}
 	return nil
 }
+func validCompleteSyntheticRun(request CompleteSyntheticRunRequest) bool {
+	if request.ExpectedVersion < 1 || !runDigest.MatchString(request.PlanDigest) || request.ArtifactIDs == nil || len(request.ArtifactIDs) > 1000 || request.Summary.Steps < 0 || request.Summary.Warnings == nil || len(request.Summary.Warnings) > 100 {
+		return false
+	}
+	ids := map[string]bool{}
+	for _, id := range request.ArtifactIDs {
+		if !runUUID.MatchString(id) || ids[id] {
+			return false
+		}
+		ids[id] = true
+	}
+	for _, warning := range request.Summary.Warnings {
+		if len(warning) > 512 {
+			return false
+		}
+	}
+	return true
+}
+func validArtifactUploadMetadata(value ArtifactUploadMetadata) bool {
+	return len(value.Name) >= 1 && len(value.Name) <= 256 && runKind.MatchString(value.Kind) && validArtifactMediaType(value.MediaType) && value.SizeBytes >= 0 && value.SizeBytes <= 1073741824 && runDigest.MatchString(value.Digest)
+}
 func validProofClass(value ProofClass) bool {
 	return value == ProofClassSynthetic || value == ProofClassLocal || value == ProofClassSandbox || value == ProofClassProvider
 }
@@ -266,6 +376,9 @@ func validRunStatus(value string, all bool) bool {
 }
 func validArtifactStatus(value string, all bool) bool {
 	return value == string(ArtifactStatusPending) || value == string(ArtifactStatusReady) || value == string(ArtifactStatusFailed) || value == string(ArtifactStatusDeleted) || (all && value == "all")
+}
+func validArtifactMediaType(value ArtifactMediaType) bool {
+	return value == ArtifactMediaTypeImage || value == ArtifactMediaTypeVideo || value == ArtifactMediaTypeAudio || value == ArtifactMediaTypeDocument || value == ArtifactMediaTypeData || value == ArtifactMediaTypeOther
 }
 func runProjectPath(workspaceID, projectID string) (string, error) {
 	if !runUUID.MatchString(workspaceID) {

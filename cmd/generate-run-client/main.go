@@ -22,15 +22,15 @@ var runTemplate []byte
 const supportedRunContractSHA256 = "d645f49884e02f886a5875116e78afaed6e8847cda7df6d759fe7a9086a7b9b8"
 
 var operations = map[string]string{
-	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                  "createRun",
-	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                   "listRuns",
-	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}":           "getRun",
-	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/cancel":   "cancelRun",
+	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                            "createRun",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                             "listRuns",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}":                     "getRun",
+	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/cancel":             "cancelRun",
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/synthetic/progress": "recordSyntheticRunProgress",
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/synthetic/complete": "completeSyntheticRun",
-	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/artifacts": "uploadSyntheticRunArtifact",
-	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts":              "listArtifacts",
-	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts/{artifactId}": "getArtifact",
+	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/artifacts":          "uploadSyntheticRunArtifact",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts":                        "listArtifacts",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts/{artifactId}":           "getArtifact",
 }
 
 var schemaFields = map[string][]string{
@@ -42,8 +42,8 @@ var schemaFields = map[string][]string{
 	"SyntheticRunProgressRequest": {"message", "percent", "phase", "sequence"}, "ProgressAck": {"runId", "runVersion", "sequence", "status"},
 	"CompleteSyntheticRunRequest": {"artifactIds", "expectedVersion", "planDigest", "summary"}, "RunReceiptSummary": {"steps", "warnings"},
 	"ArtifactUploadMetadata": {"digest", "kind", "mediaType", "name", "sizeBytes"},
-	"Artifact":         {"createdAt", "createdBy", "digest", "downloadAvailable", "id", "kind", "mediaType", "name", "projectId", "sizeBytes", "sourceRunId", "status", "updatedAt", "version", "workspaceId"},
-	"ArtifactEnvelope": {"artifact"}, "ArtifactList": {"items", "nextCursor"}, "RunError": {"code", "message", "requestId"},
+	"Artifact":               {"createdAt", "createdBy", "digest", "downloadAvailable", "id", "kind", "mediaType", "name", "projectId", "sizeBytes", "sourceRunId", "status", "updatedAt", "version", "workspaceId"},
+	"ArtifactEnvelope":       {"artifact"}, "ArtifactList": {"items", "nextCursor"}, "RunError": {"code", "message", "requestId"},
 }
 
 var schemaRequired = map[string][]string{
@@ -55,8 +55,8 @@ var schemaRequired = map[string][]string{
 	"SyntheticRunProgressRequest": {"percent", "phase", "sequence"}, "ProgressAck": {"runId", "runVersion", "sequence", "status"},
 	"CompleteSyntheticRunRequest": {"artifactIds", "expectedVersion", "planDigest", "summary"}, "RunReceiptSummary": {"steps", "warnings"},
 	"ArtifactUploadMetadata": {"digest", "kind", "mediaType", "name", "sizeBytes"},
-	"Artifact":         {"createdAt", "createdBy", "downloadAvailable", "id", "kind", "mediaType", "name", "projectId", "status", "updatedAt", "version", "workspaceId"},
-	"ArtifactEnvelope": {"artifact"}, "ArtifactList": {"items", "nextCursor"}, "RunError": {"code", "message", "requestId"},
+	"Artifact":               {"createdAt", "createdBy", "downloadAvailable", "id", "kind", "mediaType", "name", "projectId", "status", "updatedAt", "version", "workspaceId"},
+	"ArtifactEnvelope":       {"artifact"}, "ArtifactList": {"items", "nextCursor"}, "RunError": {"code", "message", "requestId"},
 }
 
 func main() {
@@ -163,8 +163,8 @@ func validate(document map[string]any, template string) error {
 		}
 	}
 	for name, want := range map[string][]string{
-		"ProofClass": {"local", "provider", "sandbox", "synthetic"},
-		"RunStatus":  {"cancelled", "failed", "queued", "running", "succeeded"},
+		"ProofClass":        {"local", "provider", "sandbox", "synthetic"},
+		"RunStatus":         {"cancelled", "failed", "queued", "running", "succeeded"},
 		"ArtifactMediaType": {"audio", "data", "document", "image", "other", "video"},
 	} {
 		got := stringSliceAt(schemas, name, "enum")
