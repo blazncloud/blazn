@@ -20,14 +20,28 @@ jq -e '
     "sandbox_cleanup_incomplete":409,"sandbox_resource_version_stale":409
   }' "$SCHEMA" >/dev/null
 
+go_string_constant_pattern() {
+  printf '^[[:space:]]*%s[[:space:]]*=[[:space:]]*"%s"[[:space:]]*$' "$1" "$2"
+}
+
+assert_go_string_constant() {
+  pattern=$(go_string_constant_pattern "$1" "$2")
+  grep -E "$pattern" "$ROOT/internal/sandboxcontrol/contract.go" >/dev/null
+}
+
+# Keep the source contract check independent of gofmt's alignment column.
+alignment_pattern=$(go_string_constant_pattern APIVersion 'agents\.x-k8s\.io/v1beta1')
+printf '%s\n' 'APIVersion = "agents.x-k8s.io/v1beta1"' | grep -E "$alignment_pattern" >/dev/null
+printf '%s\n' '  APIVersion             = "agents.x-k8s.io/v1beta1"  ' | grep -E "$alignment_pattern" >/dev/null
+
 for marker in \
-  'APIVersion          = "agents.x-k8s.io/v1beta1"' \
-  'Namespace           = "blazn-poc-sandboxes"' \
-  'QueueName           = "blazn-poc"' \
-  'QueueLabel          = "kueue.x-k8s.io/queue-name"' \
-  'CleanupFinalizer    = "sandboxes.blazn.dev/artifact-cleanup"' \
-  'ServiceAccountName  = "blazn-sandbox-runner"'; do
-  grep -F "$marker" "$ROOT/internal/sandboxcontrol/contract.go" >/dev/null
+  'APIVersion|agents\.x-k8s\.io/v1beta1' \
+  'Namespace|blazn-poc-sandboxes' \
+  'QueueName|blazn-poc' \
+  'QueueLabel|kueue\.x-k8s\.io/queue-name' \
+  'CleanupFinalizer|sandboxes\.blazn\.dev/artifact-cleanup' \
+  'ServiceAccountName|blazn-sandbox-runner'; do
+  assert_go_string_constant "${marker%%|*}" "${marker#*|}"
 done
 grep -F 'node.k8s.io/v1/runtimeclasses/' "$ROOT/internal/sandboxcontrol/adapter.go" >/dev/null
 grep -F 'application/merge-patch+json' "$ROOT/internal/sandboxcontrol/adapter.go" >/dev/null
