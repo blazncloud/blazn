@@ -99,29 +99,34 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 }
 
 type fakeAPI struct {
-	t                       *testing.T
-	server                  *httptest.Server
-	mu                      sync.Mutex
-	object                  kubeSandbox
-	lastMethod              string
-	lastQuery               url.Values
-	stripQueue              bool
-	runtimeMissing          bool
-	patchRetainsFinalizer   bool
-	patchChangesUID         bool
-	patchChangesArtifacts   bool
-	postCount               int
-	ambiguousPost           bool
-	mutatePostIntent        bool
-	mutatePostSpec          bool
-	duplicatePod            bool
-	duplicateWorkload       bool
-	substitutePodOwner      bool
-	substituteWorkloadOwner bool
-	driftAdmissionAPI       bool
-	sandboxAbsent           bool
-	podsAbsent              bool
-	workloadsAbsent         bool
+	t                           *testing.T
+	server                      *httptest.Server
+	mu                          sync.Mutex
+	object                      kubeSandbox
+	lastMethod                  string
+	lastQuery                   url.Values
+	stripQueue                  bool
+	runtimeMissing              bool
+	patchRetainsFinalizer       bool
+	patchChangesUID             bool
+	patchChangesArtifacts       bool
+	postCount                   int
+	ambiguousPost               bool
+	conflictAfterPreflight      bool
+	forbiddenAfterPreflight     bool
+	mutatePostIntent            bool
+	mutatePostSpec              bool
+	duplicatePod                bool
+	duplicatePodDropsLabel      bool
+	duplicateWorkload           bool
+	duplicateWorkloadDropsLabel bool
+	substitutePodOwner          bool
+	substituteWorkloadOwner     bool
+	driftAdmissionAPI           bool
+	wrongWorkloadQueue          bool
+	sandboxAbsent               bool
+	podsAbsent                  bool
+	workloadsAbsent             bool
 }
 
 func newFakeAPI(t *testing.T) *fakeAPI {
@@ -168,6 +173,14 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			object.Spec.PodTemplate.Spec.Containers[0].Image = "registry.example.test/other@sha256:" + strings.Repeat("b", 64)
 		}
 		f.object = object
+		if f.conflictAfterPreflight {
+			writeJSON(response, http.StatusConflict, map[string]any{"reason": "AlreadyExists", "code": 409})
+			return
+		}
+		if f.forbiddenAfterPreflight {
+			writeJSON(response, http.StatusForbidden, map[string]any{"reason": "Forbidden", "code": 403})
+			return
+		}
 		if f.ambiguousPost {
 			writeJSON(response, http.StatusInternalServerError, map[string]any{"reason": "InternalError", "code": 500})
 			return
@@ -181,6 +194,10 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			if f.duplicatePod {
 				copy := pod
 				copy.Metadata.Name, copy.Metadata.UID = "sandbox-a-pod-2", "pod-uid-2"
+				if f.duplicatePodDropsLabel {
+					copy.Metadata.Labels = cloneMap(copy.Metadata.Labels)
+					delete(copy.Metadata.Labels, ManagedLabel)
+				}
 				list.Items = append(list.Items, copy)
 			}
 		}
@@ -196,6 +213,10 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			if f.duplicateWorkload {
 				copy := workload
 				copy.Metadata.Name, copy.Metadata.UID = "sandbox-a-workload-2", "workload-uid-2"
+				if f.duplicateWorkloadDropsLabel {
+					copy.Metadata.Labels = cloneMap(copy.Metadata.Labels)
+					delete(copy.Metadata.Labels, ManagedLabel)
+				}
 				list.Items = append(list.Items, copy)
 			}
 		}
@@ -289,6 +310,10 @@ func (f *fakeAPI) observedWorkload() observedWorkload {
 		ClusterQueue string `json:"clusterQueue"`
 	}{ClusterQueue: "poc-cluster"}
 	value.Status.Conditions = []kubeCondition{{Type: "Admitted", Status: "True"}}
+	value.Spec.QueueName = QueueName
+	if f.wrongWorkloadQueue {
+		value.Spec.QueueName = "other-queue"
+	}
 	return value
 }
 
@@ -423,6 +448,28 @@ func TestEnsureCreatedRejectsAmbiguousPOSTSubstitution(t *testing.T) {
 	}
 }
 
+func TestEnsureCreatedNeverAdoptsAuthoritativePOSTRejection(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		configure func(*fakeAPI)
+		code      ErrorCode
+	}{
+		{"concurrent exact-intent conflict", func(f *fakeAPI) { f.conflictAfterPreflight = true }, ErrConflict},
+		{"forbidden", func(f *fakeAPI) { f.forbiddenAfterPreflight = true }, ErrBackend},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			testCase.configure(fake)
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			_, _, err := adapter.EnsureCreated(context.Background(), testCreate(), "")
+			assertCode(t, err, testCase.code)
+			if fake.postCount != 1 {
+				t.Fatalf("authoritative rejection issued %d POSTs", fake.postCount)
+			}
+		})
+	}
+}
+
 func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
 	fake := newFakeAPI(t)
 	request := testCreate()
@@ -454,10 +501,13 @@ func TestObserveAdmissionRejectsDuplicatesSubstitutionsAndAPIDrift(t *testing.T)
 		configure func(*fakeAPI)
 	}{
 		{"duplicate Pod", func(f *fakeAPI) { f.duplicatePod = true }},
+		{"duplicate Pod with dropped label", func(f *fakeAPI) { f.duplicatePod, f.duplicatePodDropsLabel = true, true }},
 		{"duplicate Workload", func(f *fakeAPI) { f.duplicateWorkload = true }},
+		{"duplicate Workload with dropped label", func(f *fakeAPI) { f.duplicateWorkload, f.duplicateWorkloadDropsLabel = true, true }},
 		{"Sandbox owner substitution", func(f *fakeAPI) { f.substitutePodOwner = true }},
 		{"Pod owner substitution", func(f *fakeAPI) { f.substituteWorkloadOwner = true }},
 		{"Workload API drift", func(f *fakeAPI) { f.driftAdmissionAPI = true }},
+		{"Workload queue substitution", func(f *fakeAPI) { f.wrongWorkloadQueue = true }},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
