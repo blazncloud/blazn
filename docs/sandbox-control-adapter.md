@@ -42,6 +42,12 @@ has a concrete UID and resourceVersion and its full material spec and intent
 digest match. A retry with a known UID refuses to create a replacement if that
 UID is absent.
 
+Sandbox UID and resourceVersion evidence must match the receipt's frozen
+object-identity grammar, not merely be non-empty. If an authoritative create
+response carries malformed identity, the adapter refuses both the receipt and
+an unsafe compensating delete; exact valid UID/resourceVersion evidence is
+required before cleanup can begin.
+
 Admission observation requires exactly one admitted Kueue Workload and one Pod.
 It verifies API versions, non-empty UIDs and resourceVersions, the Workload's
 single controller owner as that exact Pod, the Pod's single controller owner as
