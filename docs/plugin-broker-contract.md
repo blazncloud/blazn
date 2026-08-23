@@ -16,11 +16,13 @@ child; it is not a filesystem socket and has no externally connectable name.
 Every frame has a 16-byte big-endian header: magic `BZPB`, protocol version
 `1`, frame type, flags, unsigned 32-bit stream ID, and unsigned 32-bit payload
 length. Control payloads are UTF-8 JSON bounded to 1 MiB. Data payloads are
-bounded to 1 MiB per frame. Unknown versions, types, flags, duplicate stream
+bounded to 1 MiB per frame, with at most 4,096 streams per invocation. Unknown versions, types, flags, duplicate stream
 IDs, oversized frames, malformed JSON, or output after cancellation close the
 connection and fail the plugin invocation.
 
 Frame types are request `1`, response `2`, data `3`, end `4`, and cancel `5`.
+Stream ID `0xffffffff` is reserved for root-owned invocation cancellation and
+must never be allocated by a plugin request.
 Each request receives exactly one response on the same stream. Artifact upload
 uses an `artifact.upload.begin` request, ordered data frames, and an end frame.
 Root hashes and counts bytes while streaming, atomically activates only an

@@ -39,8 +39,53 @@ func (execProcessRunner) Run(ctx context.Context, path string, args []string, pl
 	if err != nil {
 		return 1, err
 	}
-	command.Env = environment
-	err = command.Run()
+	if pluginName != "content" {
+		command.Env = environment
+		return waitPluginCommand(command.Run())
+	}
+	rootSocket, childSocket, err := newBrokerSocketPair()
+	if err != nil {
+		return 1, fmt.Errorf("create plugin broker: %w", err)
+	}
+	defer rootSocket.Close()
+	command.Env = appendBrokerEnvironment(environment)
+	command.ExtraFiles = []*os.File{childSocket}
+	if err := command.Start(); err != nil {
+		_ = childSocket.Close()
+		return 1, err
+	}
+	_ = childSocket.Close()
+	session := newBrokerSession(rootSocket, pluginName, runtimeContext)
+	serveDone := make(chan error, 1)
+	waitDone := make(chan error, 1)
+	cancelDone := make(chan struct{})
+	go func() { serveDone <- session.serve() }()
+	go func() { waitDone <- command.Wait() }()
+	go func() {
+		select {
+		case <-ctx.Done():
+			session.cancel()
+		case <-cancelDone:
+		}
+	}()
+	select {
+	case waitErr := <-waitDone:
+		close(cancelDone)
+		_ = session.close()
+		<-serveDone
+		return waitPluginCommand(waitErr)
+	case serveErr := <-serveDone:
+		close(cancelDone)
+		if serveErr == nil {
+			return waitPluginCommand(<-waitDone)
+		}
+		_ = command.Process.Kill()
+		<-waitDone
+		return 1, brokerProcessError(serveErr)
+	}
+}
+
+func waitPluginCommand(err error) (int, error) {
 	if err == nil {
 		return 0, nil
 	}
