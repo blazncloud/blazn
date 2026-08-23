@@ -19,7 +19,10 @@ printf '%s' "$admin_email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-
 
 assert_secret_file() {
   target=$1
-  [ -f "$target" ] && [ ! -L "$target" ] || { printf 'secret is not a regular file: %s\n' "$target" >&2; exit 73; }
+  if [ ! -f "$target" ] || [ -L "$target" ]; then
+    printf 'secret is not a regular file: %s\n' "$target" >&2
+    exit 73
+  fi
   metadata=$(stat -c '%u:%a:%h' -- "$target")
   [ "$metadata" = '0:600:1' ] || { printf 'secret owner, mode, or link count is unsafe: %s (%s)\n' "$target" "$metadata" >&2; exit 73; }
   [ -s "$target" ] || { printf 'secret is empty: %s\n' "$target" >&2; exit 73; }
@@ -28,7 +31,10 @@ assert_secret_file() {
 identity_validate_path "$secrets_root" secrets
 umask 077
 mkdir -p -- "$secrets_root"
-[ ! -L "$secrets_root" ] && [ -d "$secrets_root" ] || { printf 'secrets root is unsafe\n' >&2; exit 73; }
+if [ -L "$secrets_root" ] || [ ! -d "$secrets_root" ]; then
+  printf 'secrets root is unsafe\n' >&2
+  exit 73
+fi
 chown 0:0 -- "$secrets_root"; chmod 700 -- "$secrets_root"
 [ "$(stat -c '%u:%a' -- "$secrets_root")" = '0:700' ] || { printf 'secrets root ownership is unsafe\n' >&2; exit 73; }
 

@@ -23,7 +23,10 @@ done
 
 data_root=$(sed -n 's/^BLAZN_IDENTITY_DATA_ROOT=//p' "$env_file")
 secrets_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$env_file")
-[ "$(grep -c '^BLAZN_IDENTITY_DATA_ROOT=' "$env_file")" -eq 1 ] && [ "$(grep -c '^BLAZN_IDENTITY_SECRETS_ROOT=' "$env_file")" -eq 1 ] || { printf 'identity roots must occur exactly once\n' >&2; exit 65; }
+if [ "$(grep -c '^BLAZN_IDENTITY_DATA_ROOT=' "$env_file")" -ne 1 ] || [ "$(grep -c '^BLAZN_IDENTITY_SECRETS_ROOT=' "$env_file")" -ne 1 ]; then
+  printf 'identity roots must occur exactly once\n' >&2
+  exit 65
+fi
 case "$data_root:$secrets_root" in /*:/*) ;; *) printf 'identity data and secret roots must be absolute\n' >&2; exit 65 ;; esac
 identity_validate_path "$data_root" data
 identity_validate_path "$secrets_root" secrets

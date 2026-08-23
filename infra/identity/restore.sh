@@ -10,7 +10,10 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$script_dir/lib.sh"
 backup_dir=$1; env_file=$2
 identity_validate_path "$backup_dir" backup
-[ -d "$backup_dir" ] && [ ! -L "$backup_dir" ] || { printf 'backup directory is unsafe\n' >&2; exit 73; }
+if [ ! -d "$backup_dir" ] || [ -L "$backup_dir" ]; then
+  printf 'backup directory is unsafe\n' >&2
+  exit 73
+fi
 (cd "$backup_dir" && sha256sum -c SHA256SUMS)
 [ "$(cat "$backup_dir/format")" = 'blazn.identity.backup/v1' ] || { printf 'unsupported backup format\n' >&2; exit 65; }
 "$script_dir/validate-environment.sh" "$env_file"
@@ -37,7 +40,10 @@ case "$BLAZN_IDENTITY_DATA_ROOT" in /tmp/*) rollback_root=${BLAZN_IDENTITY_DATA_
 identity_validate_path "$rollback_root" recovery
 identity_reject_overlap "$rollback_root" "$BLAZN_IDENTITY_DATA_ROOT"
 identity_reject_overlap "$rollback_root" "$BLAZN_IDENTITY_SECRETS_ROOT"
-[ ! -e "$rollback_root" ] && [ ! -L "$rollback_root" ] || { printf 'rollback path already exists\n' >&2; exit 73; }
+if [ -e "$rollback_root" ] || [ -L "$rollback_root" ]; then
+  printf 'rollback path already exists\n' >&2
+  exit 73
+fi
 mkdir -m 700 -- "$rollback_root"
 docker volume inspect blazn-identity_zitadel-bootstrap >/dev/null
 docker run --rm --mount type=volume,src=blazn-identity_zitadel-bootstrap,dst=/source,readonly \

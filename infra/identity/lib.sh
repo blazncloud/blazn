@@ -4,7 +4,9 @@ identity_fail() { printf '%s\n' "$1" >&2; exit "${2:-73}"; }
 
 identity_require_root_file() {
   identity_file=$1
-  [ -f "$identity_file" ] && [ ! -L "$identity_file" ] || identity_fail "required file is not a regular non-symlink: $identity_file"
+  if [ ! -f "$identity_file" ] || [ -L "$identity_file" ]; then
+    identity_fail "required file is not a regular non-symlink: $identity_file"
+  fi
   identity_metadata=$(stat -c '%u:%a:%h' -- "$identity_file")
   case "$identity_metadata" in 0:400:1|0:500:1|0:600:1|0:700:1) ;; *) identity_fail "file owner, mode, or link count is unsafe: $identity_file ($identity_metadata)" ;; esac
 }

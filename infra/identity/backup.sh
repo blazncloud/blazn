@@ -11,7 +11,10 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 env_file=$1; backup_dir=$2
 "$script_dir/validate-environment.sh" "$env_file"
 identity_validate_path "$backup_dir" backup
-[ ! -e "$backup_dir" ] && [ ! -L "$backup_dir" ] || { printf 'backup target must not exist\n' >&2; exit 73; }
+if [ -e "$backup_dir" ] || [ -L "$backup_dir" ]; then
+  printf 'backup target must not exist\n' >&2
+  exit 73
+fi
 umask 077; install -d -o root -g root -m 700 "$(dirname -- "$backup_dir")"; mkdir -m 700 -- "$backup_dir"
 # The root-owned operator file is the explicit input.
 set -a
