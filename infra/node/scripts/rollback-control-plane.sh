@@ -101,6 +101,36 @@ DROP ROLE blazn_node_broker;
 COMMIT;
 SQL
   elif [ "$role_count" != 0 ]; then die "could not determine broker role state"; fi
+  controller_role_preexisting=$(jq -r 'if ((.databaseRoles? | type)=="object" and (.databaseRoles | has("sandboxControllerPreexisting"))) then .databaseRoles.sandboxControllerPreexisting else "unrecorded" end' "$UPGRADE_RECEIPT")
+  case "$controller_role_preexisting" in
+    true)
+      controller_role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_sandbox_controller'")
+      [ "$controller_role_count" = 1 ] || die "pre-existing Sandbox controller role disappeared during rollback"
+      ;;
+    false)
+      controller_role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_sandbox_controller'")
+      if [ "$controller_role_count" = 1 ]; then
+        cat <<'SQL' | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+BEGIN;
+REASSIGN OWNED BY blazn_sandbox_controller TO blazn_migration;
+DROP OWNED BY blazn_sandbox_controller;
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM blazn_sandbox_controller;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM blazn_sandbox_controller;
+REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM blazn_sandbox_controller;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM blazn_sandbox_controller;
+REVOKE ALL PRIVILEGES ON DATABASE blazn FROM blazn_sandbox_controller;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON TABLES FROM blazn_sandbox_controller;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON SEQUENCES FROM blazn_sandbox_controller;
+ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_sandbox_controller;
+DO $revoke$ DECLARE database_row record; BEGIN FOR database_row IN SELECT datname FROM pg_database LOOP EXECUTE format('REVOKE ALL PRIVILEGES ON DATABASE %I FROM blazn_sandbox_controller',database_row.datname); END LOOP; END $revoke$;
+DROP ROLE blazn_sandbox_controller;
+COMMIT;
+SQL
+      elif [ "$controller_role_count" != 0 ]; then die "could not determine Sandbox controller role state"; fi
+      ;;
+    unrecorded) : ;; # The upgrade never reached the recorded role mutation boundary.
+    *) die "Sandbox controller role preexistence receipt is invalid" ;;
+  esac
   write_phase role-removed "$retained"; phase=role-removed; test_fault role-removed
 fi
 

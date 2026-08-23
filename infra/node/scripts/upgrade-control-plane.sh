@@ -112,6 +112,9 @@ for pair in mainReceipt environment; do backup=$(jq -er --arg pair "$pair" '.inp
 [ "$(plan_object)" = "$(jq -cS .nodePlan "$UPGRADE_RECEIPT")" ] || die "installed Node plan material differs from upgrade receipt"
 phase=$(jq -er .phase "$UPGRADE_RECEIPT")
 case "$phase" in inputs-backed-up|role-ready|environment-bound|build-ready|complete) ;; rollback-*) die "upgrade is in rollback recovery" ;; rolled-back) die "upgrade was rolled back" ;; *) die "upgrade phase is invalid" ;; esac
+if [ "$phase" != inputs-backed-up ]; then
+  jq -e '.databaseRoles.sandboxControllerPreexisting|type=="boolean"' "$UPGRADE_RECEIPT" >/dev/null || die "Sandbox controller role preexistence receipt is absent"
+fi
 
 if [ -f "$BUILD_RECEIPT" ]; then CONTROL_API_IMAGE=$(jq -er .image "$BUILD_RECEIPT"); else CONTROL_API_IMAGE=blazn-control-api:upgrade-placeholder; fi
 export CONTROL_API_IMAGE
@@ -121,10 +124,20 @@ if [ "$phase" = inputs-backed-up ]; then
   postgres_container=$(compose ps -q postgres)
   [ -n "$postgres_container" ] || die "the exact Blazn PostgreSQL container is not running"
   [ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.State.Status}}' "$postgres_container")" = blazn-m2/postgres/running ] || die "the running PostgreSQL container is not the expected Compose service"
+  controller_role_preexisting=$(jq -r 'if ((.databaseRoles? | type)=="object" and (.databaseRoles | has("sandboxControllerPreexisting"))) then .databaseRoles.sandboxControllerPreexisting else "unrecorded" end' "$UPGRADE_RECEIPT")
+  if [ "$controller_role_preexisting" = unrecorded ]; then
+    controller_role_count=$(compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" -Atqc "select count(*) from pg_roles where rolname='blazn_sandbox_controller'")
+    case "$controller_role_count" in 0) controller_role_preexisting=false ;; 1) controller_role_preexisting=true ;; *) die "could not determine Sandbox controller role state" ;; esac
+    tmp=$UPGRADE_RECEIPT.tmp.$$
+    jq --argjson preexisting "$controller_role_preexisting" '.databaseRoles.sandboxControllerPreexisting=$preexisting' "$UPGRADE_RECEIPT" >"$tmp"
+    chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$UPGRADE_RECEIPT"; sync_path "$(dirname -- "$UPGRADE_RECEIPT")"
+  fi
+  case "$controller_role_preexisting" in true|false) ;; *) die "Sandbox controller role preexistence receipt is invalid" ;; esac
   url=$(sed -n '1p' "$NODE_SECRETS/database-url"); password=${url#*://*:}; password=${password%%@*}
   {
     printf 'BEGIN;\n'
     printf "DO \$block\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='blazn_node_broker') THEN EXECUTE 'CREATE ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'; END IF; END \$block\$;\n"
+    printf "DO \$block\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='blazn_sandbox_controller') THEN EXECUTE 'CREATE ROLE blazn_sandbox_controller NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS'; END IF; END \$block\$;\n"
     printf "DO \$preserve\$ DECLARE database_row record; role_row record; BEGIN FOR database_row IN SELECT oid,datname FROM pg_database WHERE datallowconn LOOP FOR role_row IN SELECT oid,rolname FROM pg_roles WHERE rolcanlogin AND rolname <> 'blazn_node_broker' AND has_database_privilege(oid,database_row.oid,'CONNECT') LOOP EXECUTE format('GRANT CONNECT ON DATABASE %%I TO %%I',database_row.datname,role_row.rolname); IF has_database_privilege(role_row.oid,database_row.oid,'TEMP') THEN EXECUTE format('GRANT TEMPORARY ON DATABASE %%I TO %%I',database_row.datname,role_row.rolname); END IF; END LOOP; EXECUTE format('REVOKE CONNECT, TEMPORARY ON DATABASE %%I FROM PUBLIC',database_row.datname); END LOOP; END \$preserve\$;\n"
     printf 'REVOKE ALL PRIVILEGES ON DATABASE "%s" FROM blazn_node_broker;\n' "${POSTGRES_DB:-blazn}"
     printf 'REVOKE ALL PRIVILEGES ON SCHEMA public FROM blazn_node_broker;\n'
@@ -138,8 +151,9 @@ if [ "$phase" = inputs-backed-up ]; then
     printf 'REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;\n'
     printf 'GRANT EXECUTE ON FUNCTION workspace_json_contains_secret_key(jsonb) TO blazn_runtime;\n'
     printf "ALTER ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s';\n" "$password"
-    printf 'GRANT CONNECT ON DATABASE "%s" TO blazn_node_broker; GRANT USAGE ON SCHEMA public TO blazn_node_broker; COMMIT;\n' "${POSTGRES_DB:-blazn}"
+    printf 'GRANT CONNECT ON DATABASE "%s" TO blazn_node_broker, blazn_sandbox_controller; GRANT USAGE ON SCHEMA public TO blazn_node_broker, blazn_sandbox_controller; COMMIT;\n' "${POSTGRES_DB:-blazn}"
   } | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null
+  test_fault role-transaction-committed
   compose run --rm -T node-migration-preflight >/dev/null
   write_phase role-ready; phase=role-ready; test_fault role-ready
 fi

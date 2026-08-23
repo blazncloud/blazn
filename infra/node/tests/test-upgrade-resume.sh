@@ -24,9 +24,17 @@ case "$*" in
   "compose "*" ps -q postgres") [ "${FAKE_POSTGRES_UNAVAILABLE:-0}" != 1 ] || exit 89; printf 'synthetic-postgres\n' ;;
   "inspect --format "*) printf 'blazn-m2/postgres/running\n' ;;
   *"select count(*) from pg_roles where rolname='blazn_node_broker'"*) if [ -f "$FAKE_ROLE_STATE" ]; then printf '1\n'; else printf '0\n'; fi ;;
+  *"select count(*) from pg_roles where rolname='blazn_sandbox_controller'"*) if [ -f "$FAKE_CONTROLLER_ROLE_STATE" ]; then printf '1\n'; else printf '0\n'; fi ;;
   *"select count(*) from schema_migrations where version in"*) printf '0\n' ;;
   *"select count(*) from pg_auth_members"*) printf '0\n' ;;
-  "compose "*" exec -T postgres psql "*) body=$(cat); [ "${FAKE_SQL_FAIL:-0}" != 1 ] || exit 88; case "$body" in *"DROP ROLE blazn_node_broker"*) rm -f "$FAKE_ROLE_STATE" ;; *blazn_node_broker*) : >"$FAKE_ROLE_STATE" ;; esac ;;
+  "compose "*" exec -T postgres psql "*)
+    body=$(cat); [ "${FAKE_SQL_FAIL:-0}" != 1 ] || exit 88
+    if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_node_broker'; then rm -f "$FAKE_ROLE_STATE"
+    elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_node_broker'; then : >"$FAKE_ROLE_STATE"; fi
+    if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_sandbox_controller'; then rm -f "$FAKE_CONTROLLER_ROLE_STATE"
+    elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_sandbox_controller'; then : >"$FAKE_CONTROLLER_ROLE_STATE"; fi
+    exit 0
+    ;;
   "compose "*" run --rm -T node-migration-preflight") [ -f "$FAKE_ROLE_STATE" ] ;;
   *) printf 'unexpected synthetic docker call: %s\n' "$*" >&2; exit 97 ;;
 esac
@@ -52,7 +60,7 @@ run_rollback() {
   observed=${3:-match}
   if [ "$observed" = match ]; then source_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; config_digest=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; else source_digest=sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc; config_digest=sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd; fi
   sudo env \
-    PATH="$root/bin:$PATH" FAKE_ROLE_STATE="$root/role-ready" BLAZN_FENCING_TOKEN=12 BLAZN_CORRELATION_ID=rollback \
+    PATH="$root/bin:$PATH" FAKE_ROLE_STATE="$root/role-ready" FAKE_CONTROLLER_ROLE_STATE="$root/controller-role-ready" BLAZN_FENCING_TOKEN=12 BLAZN_CORRELATION_ID=rollback \
     BLAZN_NODE_INFRA_TEST_MODE=1 BLAZN_NODE_ROLLBACK_TEST_FAIL_AFTER="$fail_after" \
     BLAZN_NODE_INFRA_TEST_OBSERVED_SOURCE_DIGEST="$source_digest" BLAZN_NODE_INFRA_TEST_OBSERVED_CONFIG_DIGEST="$config_digest" \
     BLAZN_NODE_INFRA_TEST_NODE_ROOT="$root/etc/node-broker" \
@@ -79,6 +87,7 @@ run_upgrade() {
   sudo env \
     PATH="$root/bin:$PATH" \
     FAKE_ROLE_STATE="$root/role-ready" \
+    FAKE_CONTROLLER_ROLE_STATE="$root/controller-role-ready" \
     FAKE_SQL_FAIL="$sql_fail" \
     FAKE_POSTGRES_UNAVAILABLE="$postgres_unavailable" \
     BLAZN_FENCING_TOKEN=11 \
@@ -104,9 +113,19 @@ run_upgrade() {
 sql_root=$(fixture sql-transaction)
 if run_upgrade "$sql_root" '' 1 >"$sql_root/sql-first.out" 2>"$sql_root/sql-first.err"; then printf 'failing SQL role transaction unexpectedly passed\n' >&2; exit 1; fi
 [ ! -e "$sql_root/role-ready" ] || { printf 'failing SQL role transaction left role state\n' >&2; exit 1; }
+[ ! -e "$sql_root/controller-role-ready" ] || { printf 'failing SQL role transaction left controller role state\n' >&2; exit 1; }
 sudo jq -e '.phase=="inputs-backed-up"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
 run_upgrade "$sql_root" >"$sql_root/sql-retry.out"
 sudo jq -e '.phase=="complete"' "$sql_root/ownership/node-broker-upgrade.json" >/dev/null
+
+role_commit_root=$(fixture role-transaction-committed)
+if run_upgrade "$role_commit_root" role-transaction-committed >"$role_commit_root/first.out" 2>"$role_commit_root/first.err"; then printf 'role transaction fault unexpectedly passed\n' >&2; exit 1; fi
+sudo jq -e '.phase=="inputs-backed-up" and .databaseRoles.sandboxControllerPreexisting==false' "$role_commit_root/ownership/node-broker-upgrade.json" >/dev/null
+[ -e "$role_commit_root/controller-role-ready" ] || { printf 'role transaction fault did not leave the created controller role\n' >&2; exit 1; }
+run_upgrade "$role_commit_root" >"$role_commit_root/retry.out"
+sudo jq -e '.phase=="complete" and .databaseRoles.sandboxControllerPreexisting==false' "$role_commit_root/ownership/node-broker-upgrade.json" >/dev/null
+run_rollback "$role_commit_root" >"$role_commit_root/rollback.out"
+[ ! -e "$role_commit_root/controller-role-ready" ] || { printf 'resumed rollback retained the upgrade-created controller role\n' >&2; exit 1; }
 
 partial_sql_root=$(fixture partial-inputs-backed-up)
 if run_upgrade "$partial_sql_root" '' 1 >"$partial_sql_root/upgrade.out" 2>"$partial_sql_root/upgrade.err"; then printf 'partial SQL failure unexpectedly passed\n' >&2; exit 1; fi
@@ -117,9 +136,11 @@ sudo jq -e '.phase=="rolled-back"' "$partial_sql_root/ownership/node-broker-upgr
 for partial_phase in role-ready environment-bound; do
   partial_root=$(fixture "partial-$partial_phase")
   if run_upgrade "$partial_root" "$partial_phase" >"$partial_root/upgrade.out" 2>"$partial_root/upgrade.err"; then printf 'partial phase fault unexpectedly passed: %s\n' "$partial_phase" >&2; exit 1; fi
+  sudo jq -e '.databaseRoles.sandboxControllerPreexisting==false' "$partial_root/ownership/node-broker-upgrade.json" >/dev/null || { printf 'upgrade did not record the newly created controller role at %s\n' "$partial_phase" >&2; exit 1; }
   run_rollback "$partial_root" >"$partial_root/rollback.out"
   sudo jq -e '.phase=="rolled-back"' "$partial_root/ownership/node-broker-upgrade.json" >/dev/null
   [ ! -e "$partial_root/role-ready" ]
+  [ ! -e "$partial_root/controller-role-ready" ]
   sudo test ! -e "$partial_root/etc/node-broker"
 done
 
@@ -166,9 +187,18 @@ for fault in rollback-started role-removed secrets-retained environment-restored
   sudo jq -e '(.nodePlan|not)' "$root/ownership/control-plane.json" >/dev/null
   sudo jq -e '.phase=="rolled-back"' "$root/ownership/node-broker-upgrade.json" >/dev/null
   if ! sudo test ! -e "$root/etc/node-broker" || ! sudo test ! -e "$root/etc/node-plan" || ! sudo test -d "$root/ownership/node-broker-rollback-rollback/node-plan"; then printf 'rollback retention state is invalid after %s\n' "$fault" >&2; exit 1; fi
-  [ ! -e "$root/role-ready" ] || { printf 'rollback retry left database role\n' >&2; exit 1; }
+  [ ! -e "$root/role-ready" ] || { printf 'rollback retry left broker database role\n' >&2; exit 1; }
+  [ ! -e "$root/controller-role-ready" ] || { printf 'rollback retry left controller database role\n' >&2; exit 1; }
   sudo test ! -s "$root/control-plane.env" || { printf 'rollback did not restore original environment\n' >&2; exit 1; }
 done
+
+preexisting_controller_root=$(fixture preexisting-controller-role)
+: >"$preexisting_controller_root/controller-role-ready"
+run_upgrade "$preexisting_controller_root" >"$preexisting_controller_root/upgrade.out"
+sudo jq -e '.databaseRoles.sandboxControllerPreexisting==true' "$preexisting_controller_root/ownership/node-broker-upgrade.json" >/dev/null
+run_rollback "$preexisting_controller_root" >"$preexisting_controller_root/rollback.out"
+[ -e "$preexisting_controller_root/controller-role-ready" ] || { printf 'rollback removed pre-existing controller role\n' >&2; exit 1; }
+[ ! -e "$preexisting_controller_root/role-ready" ] || { printf 'rollback retained created broker role\n' >&2; exit 1; }
 
 source_root=$(fixture source-mismatch)
 run_upgrade "$source_root" >"$source_root/upgrade.out"

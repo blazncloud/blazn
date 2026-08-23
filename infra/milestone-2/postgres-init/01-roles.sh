@@ -44,6 +44,8 @@ CREATE ROLE blazn_bootstrap
 CREATE ROLE blazn_node_broker
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
   PASSWORD :'node_broker_password';
+CREATE ROLE blazn_sandbox_controller
+  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
 DO $preserve$
 DECLARE database_row record;
@@ -70,12 +72,14 @@ REVOKE ALL ON DATABASE :"database_name" FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_runtime;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_bootstrap;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_node_broker;
+GRANT CONNECT ON DATABASE :"database_name" TO blazn_sandbox_controller;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
 GRANT USAGE ON SCHEMA public TO blazn_runtime;
 GRANT USAGE ON SCHEMA public TO blazn_bootstrap;
 GRANT USAGE ON SCHEMA public TO blazn_node_broker;
+GRANT USAGE ON SCHEMA public TO blazn_sandbox_controller;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 COMMIT;

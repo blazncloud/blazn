@@ -108,3 +108,23 @@ test("sandbox duration migration derives expiry from one database clock and reti
   assert.match(sql, /REVOKE ALL ON FUNCTION sandbox_create_bound_sandbox\([\s\S]*timestamptz[\s\S]*FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker/);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION sandbox_create_bound_sandbox_for_duration\([\s\S]*integer[\s\S]*TO blazn_runtime/);
 });
+
+test("sandbox controller migration exposes only fenced database authority", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/013_sandbox_controller_queue.sql"), "utf8");
+  assert.match(sql, /sandbox_operations_one_nonterminal_per_sandbox_idx[\s\S]*status IN \('pending', 'running'\)/);
+  assert.match(sql, /legacy_operation_incompatible/);
+  assert.match(sql, /sandbox_controller_operation_is_current/);
+  assert.match(sql, /FOR UPDATE OF j,o,s SKIP LOCKED LIMIT 1/);
+  assert.match(sql, /stale_sandbox_operation/);
+  assert.match(sql, /lease_token=p_lease_token AND j\.lease_expires_at>effective_now/);
+  assert.match(sql, /sandbox\.operation\.lease_recovered/);
+  assert.match(sql, /sandbox_controller_enqueue_expired[\s\S]*FOR UPDATE OF s SKIP LOCKED/);
+  assert.match(sql, /successful create requires exact live backend and admission identity/);
+  assert.match(sql, /sandbox completion artifact identity mismatch/);
+  assert.match(sql, /sandbox_repository_url_has_no_inline_capability/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_reconcile_jobs[\s\S]*blazn_sandbox_controller/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION sandbox_controller_claim[\s\S]*TO blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /p_(?:payload|result|error|conditions) jsonb/);
+});
