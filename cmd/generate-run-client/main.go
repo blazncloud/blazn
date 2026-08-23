@@ -19,13 +19,16 @@ import (
 //go:embed run.gen.go.tmpl
 var runTemplate []byte
 
-const supportedRunContractSHA256 = "12f696f1c0121d3c34a3be489d9cf8baef34c50d6e66bb8e7da2ce4f01a404ff"
+const supportedRunContractSHA256 = "d645f49884e02f886a5875116e78afaed6e8847cda7df6d759fe7a9086a7b9b8"
 
 var operations = map[string]string{
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                  "createRun",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                   "listRuns",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}":           "getRun",
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/cancel":   "cancelRun",
+	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/synthetic/progress": "recordSyntheticRunProgress",
+	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/synthetic/complete": "completeSyntheticRun",
+	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/artifacts": "uploadSyntheticRunArtifact",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts":              "listArtifacts",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/artifacts/{artifactId}": "getArtifact",
 }
@@ -36,6 +39,9 @@ var schemaFields = map[string][]string{
 	"RunReceipt":   {"artifactIds", "outcome", "planDigest", "proofClass", "schemaVersion", "summary"},
 	"RunEnvelope":  {"run"}, "RunList": {"items", "nextCursor"},
 	"CreateRunRequest": {"inputArtifactIds", "kind", "outputNames", "planDigest", "proofClass"}, "CancelRunRequest": {"expectedVersion"},
+	"SyntheticRunProgressRequest": {"message", "percent", "phase", "sequence"}, "ProgressAck": {"runId", "runVersion", "sequence", "status"},
+	"CompleteSyntheticRunRequest": {"artifactIds", "expectedVersion", "planDigest", "summary"}, "RunReceiptSummary": {"steps", "warnings"},
+	"ArtifactUploadMetadata": {"digest", "kind", "mediaType", "name", "sizeBytes"},
 	"Artifact":         {"createdAt", "createdBy", "digest", "downloadAvailable", "id", "kind", "mediaType", "name", "projectId", "sizeBytes", "sourceRunId", "status", "updatedAt", "version", "workspaceId"},
 	"ArtifactEnvelope": {"artifact"}, "ArtifactList": {"items", "nextCursor"}, "RunError": {"code", "message", "requestId"},
 }
@@ -46,6 +52,9 @@ var schemaRequired = map[string][]string{
 	"RunReceipt":   {"artifactIds", "outcome", "planDigest", "proofClass", "schemaVersion", "summary"},
 	"RunEnvelope":  {"run"}, "RunList": {"items", "nextCursor"},
 	"CreateRunRequest": {"inputArtifactIds", "kind", "outputNames", "planDigest", "proofClass"}, "CancelRunRequest": {"expectedVersion"},
+	"SyntheticRunProgressRequest": {"percent", "phase", "sequence"}, "ProgressAck": {"runId", "runVersion", "sequence", "status"},
+	"CompleteSyntheticRunRequest": {"artifactIds", "expectedVersion", "planDigest", "summary"}, "RunReceiptSummary": {"steps", "warnings"},
+	"ArtifactUploadMetadata": {"digest", "kind", "mediaType", "name", "sizeBytes"},
 	"Artifact":         {"createdAt", "createdBy", "downloadAvailable", "id", "kind", "mediaType", "name", "projectId", "status", "updatedAt", "version", "workspaceId"},
 	"ArtifactEnvelope": {"artifact"}, "ArtifactList": {"items", "nextCursor"}, "RunError": {"code", "message", "requestId"},
 }
@@ -96,7 +105,7 @@ func validate(document map[string]any, template string) error {
 		return fmt.Errorf("Run server origin changed")
 	}
 	paths, ok := valueAt(document, "paths").(map[string]any)
-	if !ok || len(paths) != 5 {
+	if !ok || len(paths) != 8 {
 		return fmt.Errorf("Run paths changed")
 	}
 	seen := map[string]string{}
@@ -156,6 +165,7 @@ func validate(document map[string]any, template string) error {
 	for name, want := range map[string][]string{
 		"ProofClass": {"local", "provider", "sandbox", "synthetic"},
 		"RunStatus":  {"cancelled", "failed", "queued", "running", "succeeded"},
+		"ArtifactMediaType": {"audio", "data", "document", "image", "other", "video"},
 	} {
 		got := stringSliceAt(schemas, name, "enum")
 		sort.Strings(got)
@@ -174,7 +184,7 @@ func validate(document map[string]any, template string) error {
 			return fmt.Errorf("Artifact %s enum changed", field)
 		}
 	}
-	for _, marker := range []string{"func (c *Client) CreateRun", "func (c *Client) ListRuns", "func (c *Client) GetRun", "func (c *Client) CancelRun", "func (c *Client) ListArtifacts", "func (c *Client) GetArtifact", "type RunError = ErrorBody"} {
+	for _, marker := range []string{"func (c *Client) CreateRun", "func (c *Client) ListRuns", "func (c *Client) GetRun", "func (c *Client) CancelRun", "func (c *Client) RecordSyntheticRunProgress", "func (c *Client) CompleteSyntheticRun", "func (c *Client) UploadSyntheticRunArtifact", "func (c *Client) ListArtifacts", "func (c *Client) GetArtifact", "type RunError = ErrorBody"} {
 		if !strings.Contains(template, marker) {
 			return fmt.Errorf("Run template lacks %s", marker)
 		}

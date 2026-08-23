@@ -23,10 +23,15 @@ connection and fail the plugin invocation.
 Frame types are request `1`, response `2`, data `3`, end `4`, and cancel `5`.
 Stream ID `0xffffffff` is reserved for root-owned invocation cancellation and
 must never be allocated by a plugin request.
-Each request receives exactly one response on the same stream. Artifact upload
-uses an `artifact.upload.begin` request, ordered data frames, and an end frame.
-Root hashes and counts bytes while streaming, atomically activates only an
-exact digest/size match, then returns the typed Artifact envelope. Partial or cancelled uploads are removed and never create a ready Artifact.
+Metadata requests receive exactly one response on the same stream. Artifact
+upload is the sole two-response exchange: `artifact.upload.begin` receives an
+`artifact-upload-ready/v1` response before any bytes, then ordered data frames
+and one empty end frame receive exactly one terminal `artifact-envelope/v1` or
+failure response. Data sent before readiness, after the end frame, or on any
+other method stream terminates the invocation. Root hashes and counts bytes
+while streaming, atomically activates only an exact digest/size match, then
+returns the typed Artifact envelope. Partial or cancelled uploads are removed
+and never create a ready Artifact.
 
 ## Authority
 

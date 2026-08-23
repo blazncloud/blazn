@@ -37,7 +37,14 @@ terminal timestamp/error invariants are enforced in PostgreSQL. Runtime roles
 can create and advance resources but cannot physically delete historical Runs,
 events, receipts, or Artifacts.
 
-The normative public surface is `packages/contracts/runs.openapi.json`. This
-slice freezes create/list/get/cancel Run operations and list/get Artifact
-metadata. Internal scheduler admission, execution updates, scoped download
-grants, and plugin brokerage follow as separately reviewed contracts.
+The normative public surface is `packages/contracts/runs.openapi.json`.
+Synthetic execution adds three narrowly scoped operations: monotonic progress,
+terminal completion, and digest-bound binary Artifact upload. They accept only
+the requesting principal's synthetic Run in the selected tenant, cannot set
+placement or upgrade proof, and bind completion to the Run's immutable plan
+digest and ready same-Run Artifacts. Upload metadata is canonical JSON carried
+as unpadded Base64URL in one closed header while bytes remain
+`application/octet-stream`; partial, oversized, or
+digest/size-mismatched content never becomes ready. Live scheduler admission,
+non-synthetic execution, scoped download grants, and provider placement remain
+separate authorities.
