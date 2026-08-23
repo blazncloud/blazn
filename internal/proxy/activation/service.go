@@ -18,12 +18,15 @@ import (
 )
 
 const ContractVersion = "proxy/v1alpha1"
+const cleanupTimeout = 30 * time.Second
 
 var (
-	ErrUnavailable        = errors.New("proxy platform adapter is unavailable")
-	ErrSessionUnsupported = errors.New("proxy session activation is unsupported")
-	ErrDifferentPolicy    = errors.New("proxy already active with a different policy")
-	ErrRecovery           = state.ErrRecoveryRequired
+	ErrUnavailable          = errors.New("proxy platform adapter is unavailable")
+	ErrSessionUnsupported   = errors.New("proxy session activation is unsupported")
+	ErrDifferentPolicy      = errors.New("proxy already active with a different policy")
+	ErrDifferentScope       = errors.New("proxy already active in a different mode or OS session")
+	ErrCARemovalUnsupported = errors.New("proxy CA removal is unsupported")
+	ErrRecovery             = state.ErrRecoveryRequired
 )
 
 type PriorValue struct {
@@ -69,6 +72,16 @@ type Store interface {
 	Activate(context.Context, *state.Journal, string, func() error) error
 	Reconcile(context.Context) (state.Reconciliation, error)
 	Recover(context.Context, state.EnvironmentRestorer, state.ListenerController) (state.RecoveryResult, error)
+	RecoverExact(context.Context, state.EnvironmentRestorer, state.ListenerController, state.ExpectedRecovery) (state.RecoveryResult, error)
+	AcquireScope(context.Context, string, int64) (*ScopeLease, error)
+	RenewScope(context.Context, *ScopeLease) error
+	ReleaseScope(context.Context, *ScopeLease) error
+}
+type ScopeLease struct {
+	mu           sync.Mutex
+	reservation  state.Reservation
+	ActivationID string
+	Generation   int64
 }
 
 type PersistentStore struct{ Value *state.Store }
@@ -78,6 +91,40 @@ func (p PersistentStore) Reconcile(ctx context.Context) (state.Reconciliation, e
 }
 func (p PersistentStore) Recover(ctx context.Context, environment state.EnvironmentRestorer, listener state.ListenerController) (state.RecoveryResult, error) {
 	return p.Value.Recover(ctx, environment, listener)
+}
+func (p PersistentStore) RecoverExact(ctx context.Context, environment state.EnvironmentRestorer, listener state.ListenerController, expected state.ExpectedRecovery) (state.RecoveryResult, error) {
+	return p.Value.RecoverExpected(ctx, environment, listener, expected)
+}
+func (p PersistentStore) AcquireScope(ctx context.Context, id string, generation int64) (*ScopeLease, error) {
+	_, nonce, err := randomIdentity()
+	if err != nil {
+		return nil, err
+	}
+	reservation, err := p.Value.Reserve(ctx, nonce, 2*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	lease := &ScopeLease{reservation: reservation, ActivationID: id, Generation: generation}
+	current, reconcileErr := p.Value.Reconcile(ctx)
+	if reconcileErr != nil || current.State != state.ReconciliationActive || current.ActivationID != id || current.Generation != generation {
+		_ = p.Value.CancelReservation(context.Background(), reservation)
+		return nil, errors.Join(state.ErrLifecycleConflict, reconcileErr)
+	}
+	return lease, nil
+}
+func (p PersistentStore) RenewScope(ctx context.Context, lease *ScopeLease) error {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	next, err := p.Value.RenewReservation(ctx, lease.reservation, 2*time.Minute)
+	if err == nil {
+		lease.reservation = next
+	}
+	return err
+}
+func (p PersistentStore) ReleaseScope(ctx context.Context, lease *ScopeLease) error {
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	return p.Value.CancelReservation(ctx, lease.reservation)
 }
 func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, mechanism string, publish func() error) (err error) {
 	reservation, err := p.Value.Reserve(ctx, journal.Nonce, 30*time.Second)
@@ -140,6 +187,7 @@ type Dependencies struct {
 type Service struct {
 	deps         Dependencies
 	mu           sync.Mutex
+	lifecycleMu  sync.Mutex
 	listeners    map[int]managedProof
 	stopped      map[int]state.LiveListenerProof
 	environments map[string][]string
@@ -158,6 +206,7 @@ type Result struct {
 	State              string          `json:"state"`
 	Timestamp          string          `json:"timestamp"`
 	ActivationID       string          `json:"activationId,omitempty"`
+	Generation         int64           `json:"generation,omitempty"`
 	PolicyDigest       string          `json:"policyDigest,omitempty"`
 	Mode               string          `json:"mode,omitempty"`
 	ListenerAddress    string          `json:"listenerAddress,omitempty"`
@@ -191,6 +240,8 @@ func New(deps Dependencies) (*Service, error) {
 }
 
 func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Result, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	policy, digest, err := s.deps.Policies.Load(policyPath)
 	if err != nil {
 		return s.result("proxy on", "failed", "inactive", 2), err
@@ -211,8 +262,19 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 			return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery
 		}
 		if current.PolicyDigest == digest {
+			mode, _, modeErr := s.deps.Environment.ResolveMode(requestedMode)
+			if modeErr != nil {
+				return s.result("proxy on", "unsupported", "active", 7), modeErr
+			}
+			session, sessionErr := s.deps.Environment.SessionIdentity(ctx)
+			if sessionErr != nil {
+				return s.result("proxy on", "unsupported", "active", 7), sessionErr
+			}
+			if current.Mode != mode || current.ListenerProof.Mode != mode || current.ListenerProof.SessionIdentity != session {
+				return s.result("proxy on", "conflict", "active", 6), ErrDifferentScope
+			}
 			result := s.result("proxy on", "idempotent", "active", 0)
-			result.ActivationID, result.PolicyDigest, result.Mode = current.ActivationID, digest, current.Mode
+			result.ActivationID, result.Generation, result.PolicyDigest, result.Mode = current.ActivationID, current.Generation, digest, current.Mode
 			return result, nil
 		}
 		return s.result("proxy on", "conflict", "active", 6), ErrDifferentPolicy
@@ -225,6 +287,8 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 }
 
 func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (result Result, err error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if len(argv) == 0 || argv[0] == "" {
 		return s.result("proxy run", "failed", "inactive", 2), errors.New("proxy run requires an exact command argv")
 	}
@@ -236,17 +300,53 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 	if err != nil {
 		return result, err
 	}
+	lease, leaseErr := s.deps.Store.AcquireScope(ctx, result.ActivationID, result.Generation)
+	if leaseErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		defer cancel()
+		cleanup, cleanupErr := s.recoverExpected(cleanupCtx, "proxy run", result.ActivationID, result.Generation)
+		result.State, result.Cleanup, result.ManualRemediation = cleanup.State, cleanup.Cleanup, cleanup.ManualRemediation
+		result.Status, result.ExitCode = "recovery_required", 9
+		return result, errors.Join(ErrRecovery, leaseErr, cleanupErr)
+	}
+	runCtx, runCancel := context.WithCancel(ctx)
+	leaseDone, leaseFailure := make(chan struct{}), make(chan error, 1)
+	go func() {
+		defer close(leaseDone)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if renewErr := s.deps.Store.RenewScope(runCtx, lease); renewErr != nil {
+					leaseFailure <- renewErr
+					runCancel()
+					return
+				}
+			}
+		}
+	}()
 	defer func() {
+		runCancel()
+		<-leaseDone
 		recovered := recover()
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		cleanup, cleanupErr := s.recover(recoveryCtx, "proxy run")
+		releaseErr := s.deps.Store.ReleaseScope(recoveryCtx, lease)
+		cleanup, cleanupErr := s.recoverExpected(recoveryCtx, "proxy run", result.ActivationID, result.Generation)
 		result.State, result.Cleanup, result.ManualRemediation = cleanup.State, cleanup.Cleanup, cleanup.ManualRemediation
 		if recovered != nil {
 			err = errors.New("proxy runner panicked")
 			result.Status, result.ExitCode = "failed", 1
 		}
-		err = errors.Join(err, cleanupErr)
+		select {
+		case renewErr := <-leaseFailure:
+			err = errors.Join(err, renewErr)
+		default:
+		}
+		err = errors.Join(err, releaseErr, cleanupErr)
 		if cleanupErr != nil {
 			result.Status, result.ExitCode = "recovery_required", 9
 		} else if err != nil {
@@ -255,7 +355,12 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 			result.Status = "completed"
 		}
 	}()
-	childExit, runErr := s.deps.Runner.Run(ctx, append([]string(nil), argv...), s.activationEnvironment(result.ActivationID))
+	environment, present := s.activationEnvironment(result.ActivationID)
+	if !present {
+		result.Status, result.State, result.ExitCode = "recovery_required", "recovery_required", 9
+		return result, ErrRecovery
+	}
+	childExit, runErr := s.deps.Runner.Run(runCtx, append([]string(nil), argv...), environment)
 	result.ExitCode = childExit
 	copy := childExit
 	result.ChildExitCode = &copy
@@ -280,7 +385,7 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	keep := false
 	defer func() {
 		if !keep {
-			_ = managed.Shutdown(context.Background())
+			_ = shutdownVerified(context.Background(), managed)
 		}
 	}()
 	identity := managed.Identity()
@@ -315,14 +420,14 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	s.mu.Unlock()
 	keep = true
 	result := s.result(command, "active", "active", 0)
-	result.ActivationID, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, digest, mode, identity.Address
+	result.ActivationID, result.Generation, result.PolicyDigest, result.Mode, result.ListenerAddress = activationID, 1, digest, mode, identity.Address
 	result.PublishedVariables = append([]string(nil), state.EnvironmentNames[:]...)
 	observedIdentity, live, postErr := managed.Inspect(ctx)
 	if postErr != nil || !live || observedIdentity != identity {
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if live {
-			if shutdownErr := managed.Shutdown(recoveryCtx); shutdownErr != nil {
+			if shutdownErr := shutdownVerified(recoveryCtx, managed); shutdownErr != nil {
 				result.Status, result.State, result.ExitCode = "recovery_required", "recovery_required", 9
 				return result, errors.Join(ErrRecovery, postErr, shutdownErr)
 			}
@@ -337,27 +442,52 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	return result, nil
 }
 
-func (s *Service) activationEnvironment(id string) []string {
+func (s *Service) activationEnvironment(id string) ([]string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.environments[id]...)
+	value, ok := s.environments[id]
+	return append([]string(nil), value...), ok
 }
 
-func (s *Service) Off(ctx context.Context) (Result, error) { return s.recover(ctx, "proxy off") }
-func (s *Service) Reset(ctx context.Context, yes, _ bool) (Result, error) {
+func (s *Service) Off(ctx context.Context, removeCA bool) (Result, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if removeCA {
+		return s.result("proxy off", "unsupported", "unknown", 7), ErrCARemovalUnsupported
+	}
+	return s.recover(ctx, "proxy off")
+}
+func (s *Service) Reset(ctx context.Context, yes, removeCA bool) (Result, error) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	if !yes {
 		return s.result("proxy reset", "confirmation_required", "unknown", 2), errors.New("proxy reset requires --yes")
 	}
+	if removeCA {
+		return s.result("proxy reset", "unsupported", "unknown", 7), ErrCARemovalUnsupported
+	}
 	return s.recover(ctx, "proxy reset")
 }
+func (s *Service) recoverExpected(ctx context.Context, command, id string, generation int64) (Result, error) {
+	return s.recoverWith(ctx, command, func(callCtx context.Context) (state.RecoveryResult, error) {
+		return s.deps.Store.RecoverExact(callCtx, s.deps.Environment, s, state.ExpectedRecovery{ActivationID: id, Generation: generation})
+	})
+}
 func (s *Service) recover(ctx context.Context, command string) (result Result, err error) {
+	return s.recoverWith(ctx, command, func(callCtx context.Context) (state.RecoveryResult, error) {
+		return s.deps.Store.Recover(callCtx, s.deps.Environment, s)
+	})
+}
+func (s *Service) recoverWith(ctx context.Context, command string, operation func(context.Context) (state.RecoveryResult, error)) (result Result, err error) {
 	defer func() {
 		if recover() != nil {
 			result = s.result(command, "recovery_required", "recovery_required", 9)
 			err = ErrRecovery
 		}
 	}()
-	recovery, err := s.deps.Store.Recover(ctx, s.deps.Environment, s)
+	bounded, cancel := boundedContext(ctx)
+	defer cancel()
+	recovery, err := operation(bounded)
 	stateValue, status, exit := "inactive", "inactive", 0
 	if err != nil || recovery.Status == state.RecoveryRequired || errors.Is(err, state.ErrRecoveryRequired) {
 		stateValue, status, exit = "recovery_required", "recovery_required", 9
@@ -406,7 +536,7 @@ func (s *Service) Stop(ctx context.Context, proof state.LiveListenerProof) error
 		if managed.proof != proof {
 			return errors.New("managed listener identity mismatch")
 		}
-		if err := managed.listener.Shutdown(ctx); err != nil {
+		if err := shutdownVerified(ctx, managed.listener); err != nil {
 			return err
 		}
 		s.mu.Lock()
@@ -471,10 +601,10 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	identity := managed.Identity()
 	observedIdentity, liveBefore, inspectBeforeErr := managed.Inspect(ctx)
 	if inspectBeforeErr != nil || !liveBefore || observedIdentity != identity {
-		shutdownErr := managed.Shutdown(context.Background())
+		shutdownErr := shutdownVerified(context.Background(), managed)
 		return s.result("proxy doctor", "failed", "inactive", 7), errors.Join(errors.New("proxy doctor listener identity or liveness is invalid"), inspectBeforeErr, shutdownErr)
 	}
-	if shutdownErr := managed.Shutdown(ctx); shutdownErr != nil {
+	if shutdownErr := shutdownVerified(ctx, managed); shutdownErr != nil {
 		return s.result("proxy doctor", "failed", "inactive", 7), shutdownErr
 	}
 	if _, live, inspectErr := managed.Inspect(ctx); inspectErr != nil || live {
@@ -483,6 +613,29 @@ func (s *Service) Doctor(ctx context.Context, policyPath string) (Result, error)
 	result := s.result("proxy doctor", "ready", "inactive", 0)
 	result.PolicyDigest, result.ListenerAddress = digest, identity.Address
 	return result, nil
+}
+func boundedContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if deadline, ok := parent.Deadline(); ok && time.Until(deadline) <= cleanupTimeout {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, cleanupTimeout)
+}
+func shutdownVerified(ctx context.Context, managed ManagedListener) error {
+	bounded, cancel := boundedContext(ctx)
+	defer cancel()
+	shutdownErr := managed.Shutdown(bounded)
+	inspectCtx, inspectCancel := context.WithTimeout(context.Background(), time.Second)
+	defer inspectCancel()
+	_, live, inspectErr := managed.Inspect(inspectCtx)
+	if inspectErr == nil && !live {
+		return nil
+	}
+	return errors.Join(shutdownErr, inspectErr, func() error {
+		if live {
+			return errors.New("listener remains live after bounded shutdown")
+		}
+		return nil
+	}())
 }
 func (s *Service) Routes(_ context.Context, policyPath string) ([]Route, error) {
 	policy, _, err := s.deps.Policies.Load(policyPath)

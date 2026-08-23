@@ -37,6 +37,8 @@ type fakeEnvironment struct {
 	publishCalls int
 	publishErr   error
 	modeErr      error
+	resolvedMode string
+	session      string
 	afterPublish func()
 }
 
@@ -44,7 +46,10 @@ func newFakeEnvironment() *fakeEnvironment {
 	return &fakeEnvironment{values: map[string]string{"OPENAI_API_KEY": "prior-openai", "HTTP_PROXY": "direct"}, markers: map[string]string{}, configs: map[string]string{"codex": "before", "claude": "before", "hermes": "before"}}
 }
 func (*fakeEnvironment) Platform() string { return "linux" }
-func (*fakeEnvironment) SessionIdentity(context.Context) (string, error) {
+func (f *fakeEnvironment) SessionIdentity(context.Context) (string, error) {
+	if f.session != "" {
+		return f.session, nil
+	}
 	return "uid:1000/session:test", nil
 }
 func (f *fakeEnvironment) ResolveMode(value string) (string, string, error) {
@@ -54,7 +59,11 @@ func (f *fakeEnvironment) ResolveMode(value string) (string, string, error) {
 	if value != "auto" && value != "session" {
 		return "", "", ErrUnavailable
 	}
-	return "session", "systemd_user_environment", nil
+	mode := f.resolvedMode
+	if mode == "" {
+		mode = "session"
+	}
+	return mode, "systemd_user_environment", nil
 }
 func (f *fakeEnvironment) Snapshot(_ context.Context, names []string) (map[string]PriorValue, error) {
 	result := map[string]PriorValue{}
@@ -106,13 +115,14 @@ func (f *fakeEnvironment) CompareAndSet(_ context.Context, request state.Compare
 }
 
 type fakeListener struct {
-	identity      state.ListenerIdentity
-	identities    []state.ListenerIdentity
-	identityCalls int
-	token         string
-	stopped       bool
-	alive         bool
-	shutdownErr   error
+	identity       state.ListenerIdentity
+	identities     []state.ListenerIdentity
+	identityCalls  int
+	token          string
+	stopped        bool
+	alive          bool
+	shutdownErr    error
+	ignoreShutdown bool
 }
 
 func (f *fakeListener) Identity() state.ListenerIdentity {
@@ -136,7 +146,11 @@ func (f *fakeListener) ChildEnvironment(base []string) ([]string, error) {
 	}
 	return result, nil
 }
-func (f *fakeListener) Shutdown(context.Context) error {
+func (f *fakeListener) Shutdown(ctx context.Context) error {
+	if f.ignoreShutdown {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if f.shutdownErr != nil {
 		return f.shutdownErr
 	}
@@ -197,6 +211,7 @@ type fakeStore struct {
 	panicRecover  bool
 	reconcileErr  error
 	recoverErr    error
+	scopeHeld     bool
 }
 
 func (f *fakeStore) Activate(_ context.Context, journal *state.Journal, _ string, publish func() error) error {
@@ -270,12 +285,39 @@ func (f *fakeStore) Recover(ctx context.Context, environment state.EnvironmentRe
 	f.journal = nil
 	return result, nil
 }
+func (f *fakeStore) RecoverExact(ctx context.Context, environment state.EnvironmentRestorer, controller state.ListenerController, expected state.ExpectedRecovery) (state.RecoveryResult, error) {
+	if f.journal == nil || f.journal.ActivationID != expected.ActivationID || f.journal.Generation != expected.Generation {
+		return state.RecoveryResult{Status: state.RecoveryRequired}, state.ErrLifecycleConflict
+	}
+	return f.Recover(ctx, environment, controller)
+}
+func (f *fakeStore) AcquireScope(_ context.Context, id string, generation int64) (*ScopeLease, error) {
+	if f.scopeHeld || f.journal == nil || f.journal.ActivationID != id || f.journal.Generation != generation {
+		return nil, state.ErrLifecycleConflict
+	}
+	f.scopeHeld = true
+	return &ScopeLease{ActivationID: id, Generation: generation}, nil
+}
+func (f *fakeStore) RenewScope(context.Context, *ScopeLease) error {
+	if !f.scopeHeld {
+		return state.ErrLifecycleConflict
+	}
+	return nil
+}
+func (f *fakeStore) ReleaseScope(context.Context, *ScopeLease) error {
+	if !f.scopeHeld {
+		return state.ErrLifecycleConflict
+	}
+	f.scopeHeld = false
+	return nil
+}
 
 type fakeRunner struct {
 	argv, environment []string
 	exit              int
 	err               error
 	panicRun          bool
+	beforeReturn      func()
 }
 
 func (f *fakeRunner) Run(_ context.Context, argv, environment []string) (int, error) {
@@ -284,6 +326,9 @@ func (f *fakeRunner) Run(_ context.Context, argv, environment []string) (int, er
 	}
 	f.argv = append([]string(nil), argv...)
 	f.environment = append([]string(nil), environment...)
+	if f.beforeReturn != nil {
+		f.beforeReturn()
+	}
 	return f.exit, f.err
 }
 
@@ -374,12 +419,68 @@ func TestOnIsJournaledIdempotentAndOffRestoresDirectConnectivity(t *testing.T) {
 		t.Fatalf("idempotency=%+v err=%v starts=%d", again, err, factory.starts)
 	}
 	beforeCalls := policies.calls
-	off, err := service.Off(context.Background())
+	off, err := service.Off(context.Background(), false)
 	if err != nil || off.State != "inactive" || policies.calls != beforeCalls {
 		t.Fatalf("off=%+v err=%v policyCalls=%d", off, err, policies.calls)
 	}
 	if environment.values["OPENAI_API_KEY"] != "prior-openai" || environment.values["HTTP_PROXY"] != "direct" || store.journal != nil {
 		t.Fatal("off did not restore exact direct state")
+	}
+}
+
+func TestIdempotencyRequiresExactModeAndSession(t *testing.T) {
+	service, _, environment, _, _, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	environment.session = "uid:1000/session:other"
+	if result, err := service.On(context.Background(), "policy.json", "auto"); !errors.Is(err, ErrDifferentScope) || result.Status != "conflict" {
+		t.Fatalf("cross-session=%+v err=%v", result, err)
+	}
+	environment.session = "uid:1000/session:test"
+	environment.resolvedMode = "global"
+	if result, err := service.On(context.Background(), "policy.json", "auto"); !errors.Is(err, ErrDifferentScope) || result.Status != "conflict" {
+		t.Fatalf("cross-mode=%+v err=%v", result, err)
+	}
+}
+
+func TestScopedRunCleanupCannotRecoverNewerActivation(t *testing.T) {
+	service, store, _, _, _, runner := testService(t)
+	runner.beforeReturn = func() {
+		store.journal.ActivationID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+		store.journal.Generation++
+	}
+	result, err := service.Run(context.Background(), "policy.json", []string{"tool"})
+	if !errors.Is(err, state.ErrLifecycleConflict) || result.Status != "recovery_required" || store.journal == nil || store.journal.ActivationID != "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" {
+		t.Fatalf("result=%+v err=%v journal=%+v", result, err, store.journal)
+	}
+}
+
+func TestBoundedShutdownRefusesFalseCleanupSuccess(t *testing.T) {
+	service, store, _, factory, _, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	factory.listeners[store.journal.Listener.PID].ignoreShutdown = true
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result, err := service.Off(ctx, false)
+	if err == nil || result.Status != "recovery_required" || time.Since(started) > time.Second || store.journal == nil {
+		t.Fatalf("result=%+v err=%v elapsed=%s", result, err, time.Since(started))
+	}
+}
+
+func TestCARemovalIsExplicitlyUnsupported(t *testing.T) {
+	service, store, _, _, _, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := service.Off(context.Background(), true); !errors.Is(err, ErrCARemovalUnsupported) || result.ExitCode != 7 || store.journal == nil {
+		t.Fatalf("off=%+v err=%v", result, err)
+	}
+	if result, err := service.Reset(context.Background(), true, true); !errors.Is(err, ErrCARemovalUnsupported) || result.ExitCode != 7 || store.journal == nil {
+		t.Fatalf("reset=%+v err=%v", result, err)
 	}
 }
 
@@ -397,7 +498,7 @@ func TestDifferentPolicyStaleStateAndCrashRecoveryFailClosed(t *testing.T) {
 		t.Fatalf("stale result=%+v err=%v", result, err)
 	}
 	store.stale = false
-	if _, err := service.Off(context.Background()); err != nil {
+	if _, err := service.Off(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	service, store, environment, _, _, _ = testService(t)
@@ -405,7 +506,7 @@ func TestDifferentPolicyStaleStateAndCrashRecoveryFailClosed(t *testing.T) {
 	if result, err := service.On(context.Background(), "policy.json", "auto"); err == nil || result.State != "recovery_required" {
 		t.Fatalf("crash result=%+v err=%v", result, err)
 	}
-	if _, err := service.Off(context.Background()); err != nil {
+	if _, err := service.Off(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	if environment.values["OPENAI_API_KEY"] != "prior-openai" {
@@ -442,7 +543,7 @@ func TestActivationCrashBoundariesNeverLoseRecoveryAuthority(t *testing.T) {
 				}
 			}
 			environment.publishErr = nil
-			if _, offErr := service.Off(context.Background()); offErr != nil {
+			if _, offErr := service.Off(context.Background(), false); offErr != nil {
 				t.Fatal(offErr)
 			}
 			if environment.values["OPENAI_API_KEY"] != "prior-openai" {
@@ -495,7 +596,7 @@ func TestOffAndResetArePanicSafeAndNeedNoPolicyOrAPI(t *testing.T) {
 	service, store, _, _, policies, _ := testService(t)
 	store.panicRecover = true
 	before := policies.calls
-	if result, err := service.Off(context.Background()); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || policies.calls != before {
+	if result, err := service.Off(context.Background(), false); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || policies.calls != before {
 		t.Fatalf("panic off=%+v err=%v", result, err)
 	}
 	if result, err := service.Reset(context.Background(), false, false); err == nil || result.ExitCode != 2 {
@@ -514,7 +615,7 @@ func TestCorruptOrAmbiguousStateReturnsRecoveryRequiredWithoutMutation(t *testin
 		t.Fatalf("status=%+v err=%v", result, err)
 	}
 	store.reconcileErr, store.recoverErr = nil, state.ErrOwnershipAmbiguous
-	if result, err := service.Off(context.Background()); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || result.State != "recovery_required" {
+	if result, err := service.Off(context.Background(), false); !errors.Is(err, ErrRecovery) || result.ExitCode != 9 || result.State != "recovery_required" {
 		t.Fatalf("off=%+v err=%v", result, err)
 	}
 	if policies.calls != beforeCalls || fmt.Sprint(environment.values) != fmt.Sprint(beforeValues) || fmt.Sprint(environment.configs) != fmt.Sprint(beforeConfigs) {
@@ -531,7 +632,7 @@ func TestAbruptListenerLossDoctorRoutesAndTail(t *testing.T) {
 	delete(service.listeners, store.journal.Listener.PID)
 	service.mu.Unlock()
 	delete(factory.controller.proofs, store.journal.Listener.PID)
-	if _, err := service.Off(context.Background()); err != nil {
+	if _, err := service.Off(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
 	if environment.values["OPENAI_API_KEY"] != "prior-openai" {
