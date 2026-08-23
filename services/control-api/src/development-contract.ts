@@ -168,8 +168,17 @@ export function verifyDevelopmentFinalization(projectValue: unknown, buildValue:
   const declared = new Set((Array.isArray(evidence.artifactIds) ? evidence.artifactIds : []).filter((id): id is string => typeof id === "string"));
   const typed = collectTypedArtifactIDs(outputs, evidence);
   for (const id of typed) if (!declared.has(id)) errors.push(`typed evidence Artifact ${id} is absent from artifactIds`);
+  const manifest = new Map<string,ObjectValue>(), manifestIDs = new Set<string>(), manifestDigests = new Set<string>();
+  for (const raw of Array.isArray(evidence.artifactManifest) ? evidence.artifactManifest : []) {
+    const item=object(raw)??{},role=text(item.role),id=text(item.artifactId),contentDigest=text(item.contentDigest);
+    if(!role||manifest.has(role))errors.push("evidence Artifact manifest roles must be unique");
+    if(!id||manifestIDs.has(id))errors.push("one evidence Artifact cannot satisfy multiple roles");
+    if(!contentDigest||manifestDigests.has(contentDigest))errors.push("evidence Artifact content digests must be role-distinct");
+    manifest.set(role,item);manifestIDs.add(id);manifestDigests.add(contentDigest);
+  }
   const resolved = new Set<string>(), resolvedRoles = new Set<string>();
   const expectedRoles = expectedArtifactRoles(outputs, evidence);
+  for(const [role,id] of expectedRoles){const item=manifest.get(role);if(!item||item.artifactId!==id||item.kind!==expectedArtifactKind(role)||item.mediaType!=="data"||!/^sha256:[0-9a-f]{64}$/.test(text(item.contentDigest)))errors.push(`evidence Artifact manifest does not bind role ${role}`);if(role.startsWith("refresh/")){const platform=role.slice("refresh/".length);if(item?.contentDigest!==object(object(outputs.refreshArtifacts)?.[platform])?.contentDigest)errors.push(`refresh Artifact ${platform} content digest differs from the Build output`);}}
   for (const raw of Array.isArray(finalization.artifacts) ? finalization.artifacts : []) {
     const artifact = object(raw) ?? {};
     const id = text(artifact.id), role = text(artifact.role);
@@ -178,10 +187,12 @@ export function verifyDevelopmentFinalization(projectValue: unknown, buildValue:
     resolved.add(id);
     resolvedRoles.add(role);
     if (artifact.workspaceId !== build.workspaceId || artifact.projectId !== build.projectId) errors.push(`resolved Artifact ${id} is outside the Build tenant`);
-    if (expectedRoles.get(role) !== id || artifact.kind !== expectedArtifactKind(role) || artifact.mediaType !== "data" || !/^sha256:[0-9a-f]{64}$/.test(text(artifact.contentDigest))) errors.push(`resolved Artifact ${id} does not satisfy role ${role}`);
+    const expected=manifest.get(role);
+    if (expectedRoles.get(role) !== id || !expected || expected.artifactId!==id || expected.kind!==artifact.kind || expected.mediaType!==artifact.mediaType || expected.contentDigest!==artifact.contentDigest) errors.push(`resolved Artifact ${id} does not satisfy role ${role}`);
   }
   if (!sameJSON([...declared].sort(), [...resolved].sort())) errors.push("resolved Artifacts do not exactly match Build artifactIds");
   if (!sameJSON([...expectedRoles.keys()].sort(), [...resolvedRoles].sort())) errors.push("resolved Artifact roles do not exactly match typed Build evidence");
+  if (!sameJSON([...expectedRoles.keys()].sort(), [...manifest.keys()].sort()) || !sameJSON([...declared].sort(), [...manifestIDs].sort())) errors.push("evidence Artifact manifest does not exactly cover typed roles and Artifact IDs");
 
   const imageByPlatform = new Map<string, string>();
   for (const raw of Array.isArray(outputs.images) ? outputs.images : []) {
