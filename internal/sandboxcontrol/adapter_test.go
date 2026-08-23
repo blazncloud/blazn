@@ -523,6 +523,27 @@ func TestAuthoritativeCreateContractFailureUsesSafeRawIdentityCleanup(t *testing
 	}
 }
 
+func TestAuthoritativeCreateRejectsMalformedRawIdentityWithoutUnsafeCleanup(t *testing.T) {
+	tests := map[string]func(map[string]any){
+		"UID":             func(metadata map[string]any) { metadata["uid"] = "bad uid" },
+		"resourceVersion": func(metadata map[string]any) { metadata["resourceVersion"] = "bad/rv" },
+	}
+	for name, corrupt := range tests {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			fake.mutateSandboxResponse = func(document map[string]any) {
+				corrupt(document["metadata"].(map[string]any))
+			}
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			_, _, err := adapter.Create(context.Background(), testCreate())
+			assertCode(t, err, ErrCleanupIncomplete)
+			if fake.object.Metadata.DeletionTimestamp != "" || !contains(fake.object.Metadata.Finalizers, CleanupFinalizer) || fake.lastMethod != http.MethodPost {
+				t.Fatalf("malformed identity triggered unsafe cleanup: deleting=%q finalizers=%v method=%s", fake.object.Metadata.DeletionTimestamp, fake.object.Metadata.Finalizers, fake.lastMethod)
+			}
+		})
+	}
+}
+
 func TestAuthoritativeCreateCleanupFailureReportsResidue(t *testing.T) {
 	fake := newFakeAPI(t)
 	fake.corruptCreated = func(object *kubeSandbox) { delete(object.Metadata.Annotations, CreateIntentAnnotation) }
@@ -1023,9 +1044,22 @@ func TestReceiptTamperAndArtifactContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	validReceipt := receipt
 	receipt.OwnerID = "other-owner"
 	if err := ValidateReceipt(receipt); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("tampered receipt error=%v", err)
+	}
+	for name, mutate := range map[string]func(*OperationReceipt){
+		"UID":             func(value *OperationReceipt) { value.UID = "bad uid" },
+		"resourceVersion": func(value *OperationReceipt) { value.ResourceVersion = "bad/rv" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			malformed := validReceipt
+			mutate(&malformed)
+			if err := ValidateReceipt(malformed); err == nil || !strings.Contains(err.Error(), "identity is invalid") {
+				t.Fatalf("malformed receipt identity error=%v", err)
+			}
+		})
 	}
 	request := testCreate()
 	request.Artifacts = []ArtifactExport{{Name: "result", Path: "/tmp/result", MediaType: "text/plain", Required: true}}

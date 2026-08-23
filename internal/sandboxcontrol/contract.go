@@ -356,7 +356,7 @@ func validateRuntime(request CreateRequest, runtimes map[string]RuntimeCapabilit
 }
 
 func ValidateReceipt(receipt OperationReceipt) error {
-	if receipt.SchemaVersion != ReceiptSchema || !requestPattern.MatchString(receipt.RequestID) || receipt.ReceiptID != receipt.RequestID+":"+string(receipt.Operation) || !dnsLabelPattern.MatchString(receipt.Name) || receipt.Namespace != Namespace || receipt.UID == "" || receipt.ResourceVersion == "" || !dnsLabelPattern.MatchString(receipt.WorkspaceID) || !dnsLabelPattern.MatchString(receipt.OwnerID) || receipt.QueueName != QueueName || !digestPattern.MatchString(receipt.ArtifactContractDigest) || !digestPattern.MatchString(receipt.Digest) {
+	if receipt.SchemaVersion != ReceiptSchema || !requestPattern.MatchString(receipt.RequestID) || receipt.ReceiptID != receipt.RequestID+":"+string(receipt.Operation) || !dnsLabelPattern.MatchString(receipt.Name) || receipt.Namespace != Namespace || !objectIDPattern.MatchString(receipt.UID) || !objectIDPattern.MatchString(receipt.ResourceVersion) || !dnsLabelPattern.MatchString(receipt.WorkspaceID) || !dnsLabelPattern.MatchString(receipt.OwnerID) || receipt.QueueName != QueueName || !digestPattern.MatchString(receipt.ArtifactContractDigest) || !digestPattern.MatchString(receipt.Digest) {
 		return fmt.Errorf("sandbox adapter receipt identity is invalid")
 	}
 	if receipt.Operation != OperationCreate && receipt.Operation != OperationDelete && receipt.Operation != OperationFinalize {
