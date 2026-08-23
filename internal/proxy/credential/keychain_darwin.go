@@ -20,6 +20,7 @@ const (
 	errSecAuthFailed            int32 = -25293
 	errSecItemNotFound          int32 = -25300
 	errSecInteractionNotAllowed int32 = -25308
+	errSecInteractionRequired   int32 = -25315
 )
 
 var errKeychainValueBounds = errors.New("Keychain value is outside the allowed bounds")
@@ -104,7 +105,9 @@ func (b *DarwinKeychainBackend) Lookup(ctx context.Context, ref string) ([]byte,
 		switch status {
 		case errSecItemNotFound:
 			return nil, keychainError(KeychainNotFound)
-		case errSecUserCanceled, errSecAuthFailed, errSecInteractionNotAllowed:
+		case errSecUserCanceled:
+			return nil, keychainError(KeychainCancelled)
+		case errSecAuthFailed, errSecInteractionNotAllowed, errSecInteractionRequired:
 			return nil, keychainError(KeychainLockedOrDenied)
 		default:
 			return nil, keychainError(KeychainBackendError)
@@ -123,6 +126,13 @@ func keychainError(kind KeychainFailureKind) error { return &KeychainError{Kind:
 
 type nativeDarwinKeychainTransport struct{}
 
+type darwinKeychainNative struct {
+	copyDefault func(*uintptr) int32
+	find        func(uintptr, uint32, uintptr, uint32, uintptr, *uint32, *unsafe.Pointer, *uintptr) int32
+	freeContent func(uintptr, unsafe.Pointer) int32
+	release     func(uintptr)
+}
+
 func (nativeDarwinKeychainTransport) Lookup(ctx context.Context, service, account string) ([]byte, int32, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, errSecSuccess, err
@@ -138,24 +148,41 @@ func (nativeDarwinKeychainTransport) Lookup(ctx context.Context, service, accoun
 	}
 	defer purego.Dlclose(coreFoundation)
 
-	var find func(uintptr, uint32, uintptr, uint32, uintptr, *uint32, *unsafe.Pointer, *uintptr) int32
-	var freeContent func(uintptr, unsafe.Pointer) int32
-	var release func(uintptr)
-	purego.RegisterLibFunc(&find, security, "SecKeychainFindGenericPassword")
-	purego.RegisterLibFunc(&freeContent, security, "SecKeychainItemFreeContent")
-	purego.RegisterLibFunc(&release, coreFoundation, "CFRelease")
+	native := darwinKeychainNative{}
+	purego.RegisterLibFunc(&native.copyDefault, security, "SecKeychainCopyDefault")
+	purego.RegisterLibFunc(&native.find, security, "SecKeychainFindGenericPassword")
+	purego.RegisterLibFunc(&native.freeContent, security, "SecKeychainItemFreeContent")
+	purego.RegisterLibFunc(&native.release, coreFoundation, "CFRelease")
+	return lookupDarwinKeychain(ctx, service, account, native)
+}
+
+func lookupDarwinKeychain(ctx context.Context, service, account string, native darwinKeychainNative) ([]byte, int32, error) {
+	var keychain uintptr
+	status := native.copyDefault(&keychain)
+	if keychain != 0 {
+		defer native.release(keychain)
+	}
+	if status != errSecSuccess {
+		return nil, status, nil
+	}
+	if keychain == 0 {
+		return nil, errSecSuccess, errors.New("resolve default Keychain")
+	}
 
 	var length uint32
 	var data unsafe.Pointer
 	var item uintptr
-	status := find(0, uint32(len(service)), darwinStringPointer(service), uint32(len(account)), darwinStringPointer(account), &length, &data, &item)
+	status = native.find(keychain, uint32(len(service)), darwinStringPointer(service), uint32(len(account)), darwinStringPointer(account), &length, &data, &item)
 	runtime.KeepAlive(service)
 	runtime.KeepAlive(account)
 	if item != 0 {
-		defer release(item)
+		defer native.release(item)
 	}
 	if data != nil {
-		defer freeContent(0, data)
+		defer func() {
+			scrubNativeKeychainValue(data, length)
+			native.freeContent(0, data)
+		}()
 	}
 	if status != errSecSuccess {
 		return nil, status, nil
@@ -171,6 +198,14 @@ func (nativeDarwinKeychainTransport) Lookup(ctx context.Context, service, accoun
 	}
 	value := append([]byte(nil), unsafe.Slice((*byte)(data), int(length))...)
 	return value, status, nil
+}
+
+func scrubNativeKeychainValue(data unsafe.Pointer, length uint32) {
+	if data == nil || length == 0 {
+		return
+	}
+	zero(unsafe.Slice((*byte)(data), int(length)))
+	runtime.KeepAlive(data)
 }
 
 func darwinStringPointer(value string) uintptr {
