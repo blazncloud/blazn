@@ -241,7 +241,7 @@ func newTestKubernetesBackend(t *testing.T, adapter SandboxControlAdapter, artif
 
 func backendFixture(t *testing.T) (WorkItem, sandboxcontrol.SandboxRecord, sandboxcontrol.AdmissionObservation) {
 	t.Helper()
-	item, state := validItemAndState(t)
+	item, state := createFixture(t)
 	item.BackendUID, item.BackendResourceVersion, item.AdmissionID, item.Admission = nil, nil, nil, nil
 	item.Artifacts = []Artifact{{Name: "result", Path: "/workspace/artifacts/result.json", MediaType: "application/json", Required: true}}
 	artifacts := []sandboxcontrol.ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.json", MediaType: "application/json", Required: true}}
