@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -51,6 +52,7 @@ type fakeBrokerAPI struct {
 	artifacts     client.ArtifactList
 	err           error
 	failFirst     bool
+	uploadContent []byte
 }
 
 func (a *fakeBrokerAPI) record(token, workspaceID, projectID string) error {
@@ -92,6 +94,7 @@ func (a *fakeBrokerAPI) ListArtifacts(_ context.Context, token, workspaceID, pro
 func (a *fakeBrokerAPI) GetArtifact(_ context.Context, token, workspaceID, projectID, _ string) (client.ArtifactEnvelope, error) {
 	return a.artifact, a.record(token, workspaceID, projectID)
 }
+func (a *fakeBrokerAPI) UploadSyntheticRunArtifact(_ context.Context, token, workspaceID, projectID, _ string, key string, _ client.ArtifactUploadMetadata, content io.Reader) (client.ArtifactEnvelope, error) { a.idempotency=key;a.uploadContent,_=io.ReadAll(content);return a.artifact,a.record(token,workspaceID,projectID) }
 
 func brokerTestContext(t *testing.T) RuntimeContext {
 	t.Helper()
