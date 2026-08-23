@@ -191,33 +191,44 @@ func TestProxyCLIRecoveryErrorsPreserveSafeCleanupAndRemediation(t *testing.T) {
 			want:        "ANTHROPIC_API_KEY",
 		},
 	} {
-		for _, format := range []string{"human", "json"} {
-			t.Run(testCase.name+"/"+format, func(t *testing.T) {
-				fake := &fakeProxyCommands{
-					result: activation.Result{
-						Command: "proxy off", ContractVersion: activation.ContractVersion, Status: "recovery_required", State: "recovery_required",
-						Cleanup: &testCase.cleanup, ManualRemediation: []string{testCase.remediation}, ExitCode: 9,
-					},
-					err: errors.Join(activation.ErrRecovery, errors.New(secret)),
-				}
-				app, stdout, stderr := proxyApp(fake)
-				if code := app.Run([]string{"--output=" + format, "proxy", "off"}); code != 9 {
-					t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
-				}
-				combined := stdout.String() + stderr.String()
-				stableError := "RECOVERY_REQUIRED"
-				if format == "human" {
-					stableError = "proxy recovery is required"
-				}
-				for _, safe := range []string{stableError, "recovery_required", testCase.remediation, testCase.want} {
-					if !strings.Contains(combined, safe) {
-						t.Fatalf("safe recovery field %q missing: %s", safe, combined)
+		for _, joined := range []struct {
+			name string
+			err  error
+		}{
+			{name: "lifecycle conflict", err: activation.ErrLifecycleConflict},
+			{name: "lifecycle deadline", err: activation.ErrLifecycleDeadline},
+		} {
+			for _, format := range []string{"human", "json"} {
+				t.Run(testCase.name+"/"+joined.name+"/"+format, func(t *testing.T) {
+					fake := &fakeProxyCommands{
+						result: activation.Result{
+							Command: "proxy off", ContractVersion: activation.ContractVersion, Status: "recovery_required", State: "recovery_required",
+							Cleanup: &testCase.cleanup, ManualRemediation: []string{testCase.remediation}, ExitCode: 9,
+						},
+						err: errors.Join(activation.ErrRecovery, joined.err, errors.New(secret)),
 					}
-				}
-				if strings.Contains(combined, secret) {
-					t.Fatalf("raw recovery error crossed CLI boundary: %s", combined)
-				}
-			})
+					app, stdout, stderr := proxyApp(fake)
+					if code := app.Run([]string{"--output=" + format, "proxy", "off"}); code != 9 {
+						t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+					}
+					combined := stdout.String() + stderr.String()
+					stableError := "RECOVERY_REQUIRED"
+					if format == "human" {
+						stableError = "proxy recovery is required"
+					}
+					for _, safe := range []string{stableError, "recovery_required", testCase.remediation, testCase.want} {
+						if !strings.Contains(combined, safe) {
+							t.Fatalf("safe recovery field %q missing: %s", safe, combined)
+						}
+					}
+					if strings.Contains(combined, secret) {
+						t.Fatalf("raw recovery error crossed CLI boundary: %s", combined)
+					}
+					if strings.Contains(combined, "PROXY_LIFECYCLE_") {
+						t.Fatalf("joined lifecycle cause overrode recovery classification: %s", combined)
+					}
+				})
+			}
 		}
 	}
 }

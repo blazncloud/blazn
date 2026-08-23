@@ -250,6 +250,10 @@ func publicProxyError(err error, suggested int) (int, string, string) {
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE"
 		message = "proxy is already active in a different mode or OS session"
 		exit = 6
+	case errors.Is(err, activation.ErrRecovery):
+		code = "RECOVERY_REQUIRED"
+		message = "proxy recovery is required"
+		exit = 9
 	case errors.Is(err, activation.ErrLifecycleDeadline):
 		code = "PROXY_LIFECYCLE_DEADLINE"
 		message = "proxy lifecycle operation exceeded its deadline"
@@ -258,10 +262,6 @@ func publicProxyError(err error, suggested int) (int, string, string) {
 		code = "PROXY_LIFECYCLE_CONFLICT"
 		message = "another proxy lifecycle operation is in progress"
 		exit = 6
-	case errors.Is(err, activation.ErrRecovery):
-		code = "RECOVERY_REQUIRED"
-		message = "proxy recovery is required"
-		exit = 9
 	case errors.Is(err, activation.ErrUnavailable):
 		code = "PROXY_PLATFORM_UNAVAILABLE"
 		message = "proxy platform adapter is unavailable"
