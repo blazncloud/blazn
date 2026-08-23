@@ -129,6 +129,8 @@ type fakeAPI struct {
 	workloadsAbsent             bool
 }
 
+const fakeHTTPClientTimeout = time.Second
+
 func newFakeAPI(t *testing.T) *fakeAPI {
 	fake := &fakeAPI{t: t}
 	fake.server = httptest.NewServer(http.HandlerFunc(fake.serveHTTP))
@@ -878,10 +880,54 @@ func TestReceiptTamperAndArtifactContract(t *testing.T) {
 	assertCode(t, validateArtifactCompletion(sandbox, []ArtifactReceipt{badArtifact}), ErrArtifactExport)
 }
 
+func TestFakeAPIClientBoundsStalledHandlerAndCleanup(t *testing.T) {
+	handlerExited := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		defer close(handlerExited)
+		<-request.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	fake := &fakeAPI{t: t, server: server}
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	if adapter.client.Timeout != fakeHTTPClientTimeout {
+		t.Fatalf("fake HTTP client timeout=%s, want %s", adapter.client.Timeout, fakeHTTPClientTimeout)
+	}
+
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*fakeHTTPClientTimeout)
+	defer cancel()
+	_, _, err := adapter.Create(ctx, testCreate())
+	assertCode(t, err, ErrRuntimeUntrusted)
+	if elapsed := time.Since(started); elapsed > 2*fakeHTTPClientTimeout {
+		t.Fatalf("stalled fake request returned after %s, client bound=%s", elapsed, fakeHTTPClientTimeout)
+	}
+	select {
+	case <-handlerExited:
+	case <-time.After(fakeHTTPClientTimeout):
+		t.Fatal("stalled fake handler did not exit after client timeout")
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		server.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(fakeHTTPClientTimeout):
+		t.Fatal("fake server cleanup hung after the bounded request")
+	}
+}
+
 func testAdapter(t *testing.T, fake *fakeAPI, exporter ArtifactExporter) *Adapter {
 	t.Helper()
+	client := *fake.server.Client()
+	client.Timeout = fakeHTTPClientTimeout
+	if client.Timeout <= 0 {
+		t.Fatal("fake Kubernetes HTTP client must have a positive timeout")
+	}
 	adapter, err := New(Config{
-		BaseURL: fake.server.URL, BearerToken: "proof", HTTPClient: fake.server.Client(), RuntimeClasses: trustedRuntimes(), Exporter: exporter,
+		BaseURL: fake.server.URL, BearerToken: "proof", HTTPClient: &client, RuntimeClasses: trustedRuntimes(), Exporter: exporter,
 		Now: func() time.Time { return time.Date(2026, 8, 22, 12, 0, 2, 0, time.UTC) }, WatchIdleTimeout: time.Second,
 	})
 	if err != nil {
