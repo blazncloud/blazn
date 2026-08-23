@@ -37,7 +37,12 @@ The control plane compares every required AgentVersion capability with the
 selected published HarnessVersion before queueing or creating a Sandbox. A
 missing conversation, resume, event, tool, approval, model, output, recovery,
 or cancellation capability returns the exact missing set with `sandboxId=null`.
-No requirement is silently dropped. A fallback is either absent or one
+The terminal refusal contains only the control-plane capability error and
+terminal receipt: it has no Sandbox, Node, credential lease, proxy or fallback
+decision, Message, adapter/harness/sandbox execution event, model or tool event,
+follow-up or resume evidence, output Artifact, or model usage. The capability
+error binds the canonical sorted missing set recorded by compatibility. No
+requirement is silently dropped. A fallback is either absent or one
 approved attempt whose exact route, authorization, and approval receipt are
 frozen in the AgentVersion. Runtime evidence orders the authoritative primary
 failure, control-plane authorization, one model request, and proxy decision and
