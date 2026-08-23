@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	claimSQL    = "SELECT row_to_json(claimed)::text FROM public.sandbox_controller_claim_v2($1,$2) claimed"
-	renewSQL    = "SELECT public.sandbox_controller_renew($1,$2,$3,$4)"
+	claimSQL    = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v2($1,$2) claimed"
+	renewSQL    = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
 	bindSQL     = "SELECT public.sandbox_controller_bind_backend_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)"
 	retrySQL    = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
 	completeSQL = "SELECT public.sandbox_controller_complete_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid[],$13::text[],$14,$15,$16)"
@@ -67,22 +67,46 @@ func (s *PgStore) Health(ctx context.Context) error {
 
 func (s *PgStore) Claim(ctx context.Context, workerID string, leaseSeconds int) (*WorkItem, error) {
 	var payload string
-	err := s.executor.QueryRow(ctx, claimSQL, workerID, leaseSeconds).Scan(&payload)
+	var databaseNow time.Time
+	started := time.Now()
+	err := s.executor.QueryRow(ctx, claimSQL, workerID, leaseSeconds).Scan(&payload, &databaseNow)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return decodeWorkItem([]byte(payload))
+	item, err := decodeWorkItem([]byte(payload))
+	if err != nil {
+		return nil, err
+	}
+	window := databaseLeaseWindow(item.LeaseExpiresAt, databaseNow, started)
+	item.LeaseRemaining, item.LeaseDeadline = window.Remaining, window.Deadline
+	return item, nil
 }
 
-func (s *PgStore) Renew(ctx context.Context, operationID, workerID, leaseToken string, leaseSeconds int) (time.Time, bool, error) {
+func (s *PgStore) Renew(ctx context.Context, operationID, workerID, leaseToken string, leaseSeconds int) (LeaseWindow, bool, error) {
 	var renewed sql.NullTime
-	if err := s.executor.QueryRow(ctx, renewSQL, operationID, workerID, leaseToken, leaseSeconds).Scan(&renewed); err != nil {
-		return time.Time{}, false, err
+	var databaseNow time.Time
+	started := time.Now()
+	if err := s.executor.QueryRow(ctx, renewSQL, operationID, workerID, leaseToken, leaseSeconds).Scan(&renewed, &databaseNow); err != nil {
+		return LeaseWindow{}, false, err
 	}
-	return renewed.Time, renewed.Valid, nil
+	if !renewed.Valid {
+		return LeaseWindow{}, false, nil
+	}
+	return databaseLeaseWindow(renewed.Time, databaseNow, started), true, nil
+}
+
+func databaseLeaseWindow(expiresAt, databaseNow, localStarted time.Time) LeaseWindow {
+	localObserved := time.Now()
+	remaining := databaseLeaseRemaining(expiresAt, databaseNow, localObserved.Sub(localStarted))
+	return LeaseWindow{DatabaseNow: databaseNow, ExpiresAt: expiresAt, Remaining: remaining,
+		Deadline: localObserved.Add(remaining)}
+}
+
+func databaseLeaseRemaining(expiresAt, databaseNow time.Time, queryElapsed time.Duration) time.Duration {
+	return expiresAt.Sub(databaseNow) - queryElapsed
 }
 
 func (s *PgStore) BindBackend(ctx context.Context, operationID, workerID, leaseToken string, record sandboxcontrol.SandboxRecord, admission sandboxcontrol.WorkloadIdentity) (bool, error) {
