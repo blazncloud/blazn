@@ -213,6 +213,7 @@ type fakeStore struct {
 	activateFault   string
 	panicRecover    bool
 	reconcileErr    error
+	reconcileErrors map[int]error
 	recoverErr      error
 	activateErr     error
 	scopeHeld       bool
@@ -248,6 +249,9 @@ func (f *fakeStore) Reconcile(context.Context) (state.Reconciliation, error) {
 	f.reconcileCalls++
 	if f.beforeReconcile != nil {
 		f.beforeReconcile(f.reconcileCalls)
+	}
+	if err := f.reconcileErrors[f.reconcileCalls]; err != nil {
+		return state.Reconciliation{}, err
 	}
 	if f.reconcileErr != nil {
 		return state.Reconciliation{}, f.reconcileErr
@@ -502,6 +506,64 @@ func TestConcurrentOnReconcilesHealthyWinner(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTwoStorePreflightOverlapWaitsForWinnerAndReturnsExactResult(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		winnerDigest string
+		wantStatus   string
+		wantErr      error
+	}{
+		{name: "same policy", winnerDigest: testDigest, wantStatus: "idempotent"},
+		{name: "different policy", winnerDigest: "sha256:" + strings.Repeat("b", 64), wantStatus: "conflict", wantErr: ErrDifferentPolicy},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			loser, store, _, factory, _, _ := testService(t)
+			store.reconcileErrors = map[int]error{
+				1: state.ErrLifecycleConflict,
+				2: state.ErrLifecycleConflict,
+			}
+			store.beforeReconcile = func(call int) {
+				if call != 3 {
+					return
+				}
+				winner := state.Journal{
+					ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Nonce: strings.Repeat("z", 32), Generation: 1,
+					State: "active", OwnerUID: 1000, Mode: "session", SessionIdentity: "uid:1000/session:test",
+					Policy: state.PolicyIdentity{Digest: testCase.winnerDigest}, Binary: state.BinaryIdentity{Digest: testDigest},
+					Listener: state.ListenerIdentity{PID: 9001, ProcessStartIdentity: "winner-start", ExecutableIdentity: "winner-executable", Address: "127.0.0.1:9123", ListenerKeyFingerprint: testDigest},
+				}
+				store.journal = &winner
+				factory.controller.proofs[9001] = state.LiveListenerProof{PID: 9001, ProcessStartIdentity: "winner-start", ExecutableIdentity: "winner-executable", BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: winner.Nonce, OwnerUID: 1000, Generation: 1, Mode: "session", SessionIdentity: winner.SessionIdentity}
+			}
+
+			result, err := loser.On(context.Background(), "policy.json", "auto")
+			if !errors.Is(err, testCase.wantErr) || result.Status != testCase.wantStatus || result.State != "active" || result.ExitCode == 9 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if store.reconcileCalls != 3 || factory.starts != 0 {
+				t.Fatalf("reconciles=%d listener starts=%d", store.reconcileCalls, factory.starts)
+			}
+		})
+	}
+}
+
+func TestTwoStoreSuccessorLeaseCannotTurnCommittedActivationIntoFailure(t *testing.T) {
+	const committedLease = "committed-activation"
+	owner := "successor-operation"
+	cancelCalls := 0
+	err := cancelUnconsumedReservation(true, func(context.Context) error {
+		cancelCalls++
+		if owner != committedLease {
+			return state.ErrLifecycleConflict
+		}
+		owner = ""
+		return nil
+	})
+	if err != nil || cancelCalls != 0 || owner != "successor-operation" {
+		t.Fatalf("err=%v cancel calls=%d successor owner=%q", err, cancelCalls, owner)
 	}
 }
 
@@ -801,7 +863,7 @@ func TestPostPublicationListenerDeathIsImmediatelyRecovered(t *testing.T) {
 				if kind == "dead" {
 					listener.alive = false
 				} else {
-				listener.proof.ProcessStartIdentity = "replacement-process"
+					listener.proof.ProcessStartIdentity = "replacement-process"
 				}
 			}
 			result, err := service.On(context.Background(), "policy.json", "auto")
