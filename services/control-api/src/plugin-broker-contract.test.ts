@@ -12,11 +12,13 @@ const formatsModule=require("ajv-formats") as {default?:FormatsPlugin}|FormatsPl
 const addFormats=("default" in formatsModule?formatsModule.default:formatsModule) as FormatsPlugin;
 const contract=path.resolve(here,"../../../packages/contracts/plugin-broker-request.schema.json");
 const responseContract=path.resolve(here,"../../../packages/contracts/plugin-broker-response.schema.json");
-const requestId="a".repeat(32),runId="00000000-0000-4000-8000-000000000001",artifactId="00000000-0000-4000-8000-000000000002",digest=`sha256:${"b".repeat(64)}`;
+const requestId="a".repeat(32),runId="00000000-0000-4000-8000-000000000001",artifactId="00000000-0000-4000-8000-000000000002",draftId="00000000-0000-4000-8000-000000000003",digest=`sha256:${"b".repeat(64)}`;
 
 test("plugin broker accepts only closed scoped request variants",async()=>{const schema=JSON.parse(await readFile(contract,"utf8")) as object;const ajv=new Ajv2020({strict:true,allErrors:true});addFormats(ajv);const validate=ajv.compile(schema);const requests=[
   {schemaVersion:1,requestId,method:"broker.describe",params:{}},
   {schemaVersion:1,requestId,method:"project.get",params:{}},
+  {schemaVersion:1,requestId,method:"project.profile.get",params:{}},
+  {schemaVersion:1,requestId,method:"project.profile.put",params:{profileSchemaVersion:"blazn.content/project/v1alpha1",draftId,artifactId,digest,status:"active",expectedVersion:0,idempotencyKey:"profile-put-1"}},
   {schemaVersion:1,requestId,method:"run.create",params:{kind:"content.render",proofClass:"synthetic",planDigest:digest,inputArtifactIds:[artifactId],outputNames:["preview.mp4"],idempotencyKey:"run-create-1"}},
   {schemaVersion:1,requestId,method:"run.list",params:{status:"all",cursor:""}},
   {schemaVersion:1,requestId,method:"run.get",params:{runId}},
