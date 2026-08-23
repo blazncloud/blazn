@@ -25,6 +25,7 @@ const (
 	CleanupFinalizer    = "sandboxes.blazn.dev/artifact-cleanup"
 	ServiceAccountName  = "blazn-sandbox-runner"
 	ReceiptSchema       = "blazn.dev/sandbox-adapter-receipt/v1"
+	AdmissionAPIVersion = "kueue.x-k8s.io/v1beta1"
 	ArtifactSchema      = "blazn.dev/sandbox-artifact/v1"
 	OrchestrationNotice = "orchestration isolation only; approved non-sensitive POC workloads"
 )
@@ -173,10 +174,45 @@ type OperationReceipt struct {
 	QueueName              string            `json:"queueName"`
 	RuntimeClass           string            `json:"runtimeClass,omitempty"`
 	State                  SandboxState      `json:"state"`
+	Admission              *WorkloadIdentity `json:"admission,omitempty"`
 	Artifacts              []ArtifactReceipt `json:"artifacts"`
 	ArtifactContractDigest string            `json:"artifactContractDigest"`
 	ObservedAt             string            `json:"observedAt"`
 	Digest                 string            `json:"digest"`
+}
+
+// WorkloadIdentity is the exact admitted Kueue Workload observation. The UID,
+// not a caller-selected name, is the opaque admission ID persisted by the
+// control plane; the remaining fields make that identity independently
+// auditable and fence observations of a replaced Workload.
+type WorkloadIdentity struct {
+	APIVersion      string                `json:"apiVersion"`
+	Namespace       string                `json:"namespace"`
+	Name            string                `json:"name"`
+	UID             string                `json:"uid"`
+	ResourceVersion string                `json:"resourceVersion"`
+	ClusterQueue    string                `json:"clusterQueue"`
+	Owner           SandboxOwnerReference `json:"owner"`
+	WorkspaceID     string                `json:"workspaceId"`
+	SandboxID       string                `json:"sandboxId"`
+	Admitted        bool                  `json:"admitted"`
+	Condition       AdmissionCondition    `json:"condition"`
+	Digest          string                `json:"digest"`
+}
+
+// SandboxOwnerReference is the immutable controller owner reference observed
+// on the admitted Workload. Name or label correlation alone is insufficient.
+type SandboxOwnerReference struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+	Controller bool   `json:"controller"`
+}
+
+type AdmissionCondition struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
 }
 
 type WatchEvent struct {
@@ -191,6 +227,8 @@ var (
 	quantityPattern = regexp.MustCompile(`^[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?$`)
 	mediaPattern    = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$`)
 	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	objectIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	dnsNamePattern  = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?))*$`)
 )
 
 func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability) error {
@@ -273,6 +311,11 @@ func ValidateReceipt(receipt OperationReceipt) error {
 	if receipt.Operation != OperationCreate && receipt.Operation != OperationDelete && receipt.Operation != OperationFinalize {
 		return fmt.Errorf("sandbox adapter receipt operation is invalid")
 	}
+	if receipt.Admission != nil {
+		if receipt.Operation != OperationCreate || validateWorkloadIdentity(*receipt.Admission, receipt, true) != nil {
+			return fmt.Errorf("sandbox adapter receipt admission identity is invalid")
+		}
+	}
 	if receipt.Operation == OperationDelete && receipt.State != StateStopping || receipt.Operation == OperationFinalize && receipt.State != StateDeleted || receipt.Operation == OperationCreate && (receipt.State == StateStopping || receipt.State == StateDeleted) {
 		return fmt.Errorf("sandbox adapter receipt state is incoherent")
 	}
@@ -295,6 +338,68 @@ func ValidateReceipt(receipt OperationReceipt) error {
 		return fmt.Errorf("sandbox adapter receipt digest mismatch")
 	}
 	return nil
+}
+
+// AttachAdmissionIdentity returns a newly digested create receipt bound to the
+// exact admitted Workload observation. It refuses mutable name-only identity.
+func AttachAdmissionIdentity(receipt OperationReceipt, identity WorkloadIdentity) (OperationReceipt, error) {
+	if err := ValidateReceipt(receipt); err != nil {
+		return OperationReceipt{}, err
+	}
+	if receipt.Operation != OperationCreate || receipt.Admission != nil {
+		return OperationReceipt{}, fmt.Errorf("admission identity can only be attached once to a create receipt")
+	}
+	identity.Digest = ""
+	if err := validateWorkloadIdentity(identity, receipt, false); err != nil {
+		return OperationReceipt{}, err
+	}
+	identity.Digest = workloadIdentityDigest(identity)
+	receipt.Admission = &identity
+	digest, err := receiptDigest(receipt)
+	if err != nil {
+		return OperationReceipt{}, err
+	}
+	receipt.Digest = digest
+	return receipt, nil
+}
+
+// ValidateTerminalCreateReceipt is the stricter persistence boundary used by
+// the controller after admission. Adapter create receipts remain valid before
+// Kueue has produced an admitted Workload observation.
+func ValidateTerminalCreateReceipt(receipt OperationReceipt) error {
+	if err := ValidateReceipt(receipt); err != nil {
+		return err
+	}
+	if receipt.Operation != OperationCreate || receipt.Admission == nil {
+		return fmt.Errorf("terminal sandbox create receipt requires an exact admission identity")
+	}
+	return nil
+}
+
+func validateWorkloadIdentity(identity WorkloadIdentity, receipt OperationReceipt, requireDigest bool) error {
+	if identity.APIVersion != AdmissionAPIVersion || identity.Namespace != receipt.Namespace || len(identity.Name) > 253 ||
+		!dnsNamePattern.MatchString(identity.Name) || !objectIDPattern.MatchString(identity.UID) ||
+		!objectIDPattern.MatchString(identity.ResourceVersion) || len(identity.ClusterQueue) > 253 ||
+		!dnsNamePattern.MatchString(identity.ClusterQueue) || identity.WorkspaceID != receipt.WorkspaceID ||
+		identity.SandboxID != receipt.Name || identity.Owner.APIVersion != APIVersion || identity.Owner.Kind != Kind ||
+		identity.Owner.Name != receipt.Name || identity.Owner.UID != receipt.UID || !identity.Owner.Controller ||
+		!identity.Admitted || identity.Condition.Type != "Admitted" || identity.Condition.Status != "True" ||
+		(requireDigest && identity.Digest != workloadIdentityDigest(identity)) {
+		return fmt.Errorf("sandbox admission Workload identity is invalid")
+	}
+	return nil
+}
+
+func workloadIdentityDigest(identity WorkloadIdentity) string {
+	canonical := strings.Join([]string{
+		"sandbox-workload-admission-v1", identity.APIVersion, identity.Namespace, identity.Name,
+		identity.UID, identity.ResourceVersion, identity.ClusterQueue, identity.Owner.APIVersion,
+		identity.Owner.Kind, identity.Owner.Name, identity.Owner.UID, fmt.Sprintf("%t", identity.Owner.Controller),
+		identity.WorkspaceID, identity.SandboxID, fmt.Sprintf("%t", identity.Admitted),
+		identity.Condition.Type, identity.Condition.Status,
+	}, "\n")
+	digest := sha256.Sum256([]byte(canonical))
+	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
 func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, artifacts []ArtifactReceipt, now time.Time) (OperationReceipt, error) {

@@ -34,6 +34,70 @@ func (e *fakeExporter) Export(_ context.Context, sandbox SandboxRecord, specs []
 	return append([]ArtifactReceipt(nil), e.receipts...), nil
 }
 
+func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
+	receipt, err := NewReceipt("request-admission-1", OperationCreate, SandboxRecord{
+		Name: "sandbox-a", Namespace: Namespace, UID: "sandbox-uid", ResourceVersion: "101",
+		WorkspaceID: "workspace-a", OwnerID: "owner-a", QueueName: QueueName,
+		TrustLevel: TrustApprovedPOC, State: StateReady, ArtifactContractDigest: "sha256:" + strings.Repeat("a", 64),
+	}, nil, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTerminalCreateReceipt(receipt); err == nil {
+		t.Fatal("name-only create receipt passed the terminal admission boundary")
+	}
+	identity := WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: "sandbox-a-workload", UID: "workload-uid-1", ResourceVersion: "202", ClusterQueue: "poc-cluster",
+		Owner: SandboxOwnerReference{APIVersion: APIVersion, Kind: Kind, Name: receipt.Name, UID: receipt.UID, Controller: true}, WorkspaceID: receipt.WorkspaceID, SandboxID: receipt.Name,
+		Admitted: true, Condition: AdmissionCondition{Type: "Admitted", Status: "True"}}
+	bound, err := AttachAdmissionIdentity(receipt, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTerminalCreateReceipt(bound); err != nil {
+		t.Fatal(err)
+	}
+	if bound.Admission == nil || bound.Admission.UID != identity.UID || bound.Digest == receipt.Digest {
+		t.Fatalf("admission identity was not bound into the receipt digest: %#v", bound)
+	}
+	if bound.Admission.Digest != "sha256:83b222826fa967a4fe778886ddf601a64861ad0599ea3ee8ce6eca91faa0a802" {
+		t.Fatalf("admission identity digest=%q", bound.Admission.Digest)
+	}
+
+	tampered := bound
+	tamperedIdentity := identity
+	tamperedIdentity.UID = "replacement-uid"
+	tampered.Admission = &tamperedIdentity
+	if err := ValidateTerminalCreateReceipt(tampered); err == nil {
+		t.Fatal("tampered Workload UID passed receipt validation")
+	}
+	if _, err := AttachAdmissionIdentity(receipt, WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: identity.Name, UID: "", ResourceVersion: identity.ResourceVersion, ClusterQueue: identity.ClusterQueue}); err == nil {
+		t.Fatal("name-only Workload identity was accepted")
+	}
+	for _, invalidName := range []string{"bad..name", "bad.-segment", strings.Repeat("a", 64)} {
+		invalid := identity
+		invalid.Name = invalidName
+		if _, err := AttachAdmissionIdentity(receipt, invalid); err == nil {
+			t.Fatalf("invalid Workload name %q was accepted", invalidName)
+		}
+	}
+	for name, mutate := range map[string]func(*WorkloadIdentity){
+		"workspace substitution":     func(value *WorkloadIdentity) { value.WorkspaceID = "workspace-b" },
+		"sandbox label substitution": func(value *WorkloadIdentity) { value.SandboxID = "sandbox-b" },
+		"owner name substitution":    func(value *WorkloadIdentity) { value.Owner.Name = "sandbox-b" },
+		"owner UID substitution":     func(value *WorkloadIdentity) { value.Owner.UID = "sandbox-uid-b" },
+		"owner kind substitution":    func(value *WorkloadIdentity) { value.Owner.Kind = "Pod" },
+		"non-controller owner":       func(value *WorkloadIdentity) { value.Owner.Controller = false },
+		"unadmitted status":          func(value *WorkloadIdentity) { value.Admitted = false },
+		"unadmitted condition":       func(value *WorkloadIdentity) { value.Condition.Status = "False" },
+	} {
+		substituted := identity
+		mutate(&substituted)
+		if _, err := AttachAdmissionIdentity(receipt, substituted); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
 type fakeAPI struct {
 	t                     *testing.T
 	server                *httptest.Server

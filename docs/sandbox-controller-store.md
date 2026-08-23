@@ -16,7 +16,11 @@ table privileges. Its only authority is the reviewed security-definer surface:
 - receive typed scalar and array fields required to reconcile a Sandbox.
 
 Claims include immutable template, image, placement, resource, repository, and
-source-commit identity. They do not include credentials, template JSON, secret
+source-commit identity. Claim v2 also returns the requesting user and the exact
+artifact name, path, media type, and required flag arrays in canonical name
+order. The original claim function is no longer executable by the controller
+role, preventing an older worker from silently accepting an incomplete work
+item. Claims do not include credentials, template JSON, secret
 references, environment variables, raw Kubernetes objects, or caller-controlled
 JSON. Repository identities cannot contain URL userinfo, query parameters, or
 fragments, so they cannot smuggle inline credentials. Error events and terminal results are assembled by PostgreSQL from bounded
@@ -30,6 +34,20 @@ Backend UID, resource version, and admission ID are compared as one exact tuple
 before terminal mutation. Successful create requires all three identities;
 successful stop/delete requires cleanup, artifact export, grant revocation, and
 backend destruction before PostgreSQL accepts the receipt.
+
+The adapter receipt contract and `sandbox_workload_admissions` represent admission as the exact Kueue Workload
+API version, namespace, name, UID, resource version, and admitted ClusterQueue.
+It also binds the Workload's immutable Sandbox owner reference (API version,
+kind, name, and UID) and the frozen workspace and Sandbox correlation labels to
+the same receipt identity. A Workload owned by or labelled for another Sandbox
+or workspace is rejected even when its own Workload tuple is otherwise valid.
+The owner reference must be controller-owned, and the observed Workload must
+carry both an admitted status and an `Admitted=True` condition. The complete
+tuple is canonicalized and SHA-256 bound independently by Go and PostgreSQL.
+The scalar `admission_id` is the Workload UID; terminal completion also carries
+a foreign-keyed admission digest. A requested LocalQueue name, name-only
+identity, unadmitted Workload, or mutable observation cannot qualify a terminal
+create receipt.
 
 Expiry scanning uses the database clock and row locks with `SKIP LOCKED`.
 Enqueue, Sandbox desired-state mutation, the operation, queue row, and monotonic

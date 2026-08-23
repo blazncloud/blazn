@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import type { Pool } from "pg";
 import { createDatabase } from "./db.js";
-import { PgSandboxControllerStore } from "./sandbox-controller-store.js";
+import { PgSandboxControllerStore, type SandboxControllerAdmissionIdentity } from "./sandbox-controller-store.js";
 
 const adminUrl = process.env.BLAZN_SANDBOX_CONTROLLER_TEST_ADMIN_DATABASE_URL;
 const controllerUrl = process.env.BLAZN_SANDBOX_CONTROLLER_TEST_DATABASE_URL;
@@ -16,12 +16,30 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     await admin.query("INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES($1,$2,'Controller Test','salt','hash')", [userId, `${userId}@example.test`]);
     await admin.query("INSERT INTO workspaces(id,slug,name,created_by) VALUES($1,$2,'Controller Test',$3)", [workspaceId, `controller-${userId.slice(0, 8)}`, userId]);
     await admin.query("INSERT INTO workspace_memberships(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId]);
+    await assert.rejects(controllerOne.query("SELECT * FROM sandbox_controller_claim($1,$2)", ["retired-controller", 30]), hasCode("42501"));
+    for (const role of ["blazn_runtime", "blazn_bootstrap", "blazn_node_broker"]) {
+      const privilege = await admin.query<{ allowed: boolean }>(`SELECT bool_or(has_function_privilege($1,p.oid,'EXECUTE')) AS allowed
+        FROM pg_proc p WHERE p.proname IN ('sandbox_controller_claim_v2','sandbox_controller_bind_backend_v2','sandbox_controller_complete_v2')`, [role]);
+      assert.equal(privilege.rows[0]?.allowed, false, `${role} can execute a controller v2 function`);
+    }
+    const publicPrivilege = await admin.query<{ count: string }>(`SELECT count(*)::text AS count FROM pg_proc p,
+      LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
+      WHERE p.proname IN ('sandbox_controller_claim_v2','sandbox_controller_bind_backend_v2','sandbox_controller_complete_v2')
+        AND acl.grantee=0 AND acl.privilege_type='EXECUTE'`);
+    assert.equal(publicPrivilege.rows[0]?.count, "0", "PUBLIC can execute a controller v2 function");
+    for (const signature of [
+      "sandbox_controller_bind_backend(uuid,text,uuid,text,text,text)",
+      "sandbox_controller_complete(uuid,text,uuid,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)",
+    ]) {
+      const legacy = await admin.query<{ allowed: boolean }>("SELECT has_function_privilege('blazn_sandbox_controller',$1,'EXECUTE') AS allowed", [signature]);
+      assert.equal(legacy.rows[0]?.allowed, false, `controller retained scalar authority ${signature}`);
+    }
 
     const staleStateSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "ready" });
     const staleStateOperationId = await insertOperation(admin, workspaceId, staleStateSandboxId, userId, "stop");
     const staleVersionSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped" });
     const staleVersionOperationId = await insertOperation(admin, workspaceId, staleVersionSandboxId, userId, "stop");
-    const createSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const createSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested", withArtifact: true });
     const createOperationId = await insertOperation(admin, workspaceId, createSandboxId, userId, "create");
     const claims = await Promise.all([first.claim("controller-a", 30), second.claim("controller-b", 30)]);
     const claimed = claims.find((value) => value !== undefined)!;
@@ -38,28 +56,49 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.equal(claimed.attempt, 1);
     assert.equal((await admin.query("SELECT state FROM sandboxes WHERE id=$1", [createSandboxId])).rows[0]?.state, "queued");
     assert.equal(claimed.templateDigest, `sha256:${"a".repeat(64)}`);
+    assert.equal(claimed.requestedBy, userId);
     assert.deepEqual(claimed.command, ["/bin/true"]);
     assert.deepEqual(claimed.sources.map((source) => [source.name, source.commit]), [["source", "1".repeat(40)]]);
+    assert.deepEqual(claimed.artifacts, [
+      { name: "logs", path: "/workspace/artifacts/run.log", mediaType: "text/plain", required: false },
+      { name: "patch", path: "/workspace/artifacts/change.patch", mediaType: "text/plain", required: true },
+    ]);
     assert.equal(await first.renew(createOperationId, "controller-a", randomUUID(), 30), undefined);
 
     const owner = claims[0] ? first : second;
     const worker = claims[0] ? "controller-a" : "controller-b";
+    const createAdmission = admissionIdentity(workspaceId, createSandboxId, "backend-create", "workload-create");
+    for (const substitute of [
+      { ...createAdmission, owner: { ...createAdmission.owner, controller: false as true } },
+      { ...createAdmission, admitted: false as true },
+      { ...createAdmission, clusterQueue: claimed.queueName },
+      { ...createAdmission, workspaceId: randomUUID() },
+    ]) assert.equal(await owner.bindBackend(createOperationId, worker, claimed.leaseToken, {
+      uid: "backend-create", resourceVersion: "resource-create", admission: substitute,
+    }), false);
     assert.equal(await owner.bindBackend(createOperationId, worker, claimed.leaseToken, {
-      uid: "backend-create", resourceVersion: "resource-create", admissionId: "admission-create",
+      uid: "backend-create", resourceVersion: "resource-create", admission: createAdmission,
     }), true);
+    const storedAdmission = await admin.query("SELECT * FROM sandbox_workload_admissions WHERE sandbox_id=$1", [createSandboxId]);
+    assert.equal(storedAdmission.rows[0]?.admission_digest.trim(), createAdmission.digest.slice(7));
+    assert.equal(storedAdmission.rows[0]?.owner_controller, true);
+    assert.equal(storedAdmission.rows[0]?.admitted, true);
+    assert.equal(storedAdmission.rows[0]?.condition_status, "True");
     const boundVersion = Number((await admin.query("SELECT version FROM sandboxes WHERE id=$1", [createSandboxId])).rows[0]?.version);
     assert.equal(await owner.bindBackend(createOperationId, worker, claimed.leaseToken, {
-      uid: "backend-create", resourceVersion: "resource-create", admissionId: "admission-create",
+      uid: "backend-create", resourceVersion: "resource-create", admission: createAdmission,
     }), true);
     assert.equal(Number((await admin.query("SELECT version FROM sandboxes WHERE id=$1", [createSandboxId])).rows[0]?.version), boundVersion, "backend bind replay changed Sandbox version");
-    assert.equal(await owner.complete(createOperationId, worker, claimed.leaseToken, successCreate("wrong-backend")), false);
-    assert.equal(await owner.complete(createOperationId, worker, claimed.leaseToken, successCreate("backend-create")), true);
+    assert.equal(await owner.complete(createOperationId, worker, claimed.leaseToken, successCreate("wrong-backend", createAdmission.digest)), false);
+    assert.equal(await owner.complete(createOperationId, worker, claimed.leaseToken, successCreate("backend-create", `sha256:${"0".repeat(64)}`)), false);
+    assert.equal(await owner.complete(createOperationId, worker, claimed.leaseToken, successCreate("backend-create", createAdmission.digest)), true);
     assert.equal(await owner.renew(createOperationId, worker, claimed.leaseToken, 30), undefined, "terminal lease renewed");
-    const completed = await admin.query("SELECT o.status,s.state,s.backend_uid,s.admission_id,r.result,j.completed_at AS job_completed_at FROM sandbox_operations o JOIN sandboxes s ON s.id=o.sandbox_id JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id JOIN sandbox_reconcile_jobs j ON j.operation_id=o.id WHERE o.id=$1", [createOperationId]);
+    const completed = await admin.query("SELECT o.status,s.state,s.backend_uid,s.admission_id,r.result,r.admission_digest,j.completed_at AS job_completed_at FROM sandbox_operations o JOIN sandboxes s ON s.id=o.sandbox_id JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id JOIN sandbox_reconcile_jobs j ON j.operation_id=o.id WHERE o.id=$1", [createOperationId]);
     assert.equal(completed.rows[0]?.status, "succeeded");
     assert.equal(completed.rows[0]?.state, "ready");
     assert.equal(completed.rows[0]?.backend_uid, "backend-create");
-    assert.equal(completed.rows[0]?.admission_id, "admission-create");
+    assert.equal(completed.rows[0]?.admission_id, "workload-create");
+    assert.equal(completed.rows[0]?.admission_digest.trim(), createAdmission.digest.slice(7));
     assert.deepEqual(completed.rows[0]?.result, { artifactIds: [], warnings: [] });
     assert.ok(completed.rows[0]?.job_completed_at);
 
@@ -77,7 +116,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     await admin.query("UPDATE sandboxes SET desired_state='deleted' WHERE id=$1", [bindDriftSandboxId]);
     const bindSnapshot = await sandboxSnapshot(admin, bindDriftSandboxId);
     assert.equal(await first.bindBackend(bindDriftOperationId, "controller-bind-drift", bindDrift!.leaseToken,
-      { uid: "must-not-bind", resourceVersion: "must-not-bind", admissionId: "must-not-bind" }), false);
+      { uid: "must-not-bind", resourceVersion: "must-not-bind", admission: admissionIdentity(workspaceId, bindDriftSandboxId, "must-not-bind", "must-not-bind") }), false);
     await assertStaleQuarantine(admin, bindDriftOperationId, bindDriftSandboxId, bindSnapshot);
 
     const retryDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
@@ -102,12 +141,15 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     const completeDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
     const completeDriftOperationId = await insertOperation(admin, workspaceId, completeDriftSandboxId, userId, "create");
     const completeDrift = await first.claim("controller-complete-drift", 30); assert.equal(completeDrift?.operationId, completeDriftOperationId);
+    const completeDriftAdmission = admissionIdentity(workspaceId, completeDriftSandboxId, "backend-complete-drift", "workload-complete-drift");
     assert.equal(await first.bindBackend(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
-      { uid: "backend-complete-drift", resourceVersion: "resource-complete-drift", admissionId: "admission-complete-drift" }), true);
+      { uid: "backend-complete-drift", resourceVersion: "resource-complete-drift", admission: completeDriftAdmission }), true);
     await admin.query("UPDATE sandboxes SET version=version+1 WHERE id=$1", [completeDriftSandboxId]);
     const completeSnapshot = await sandboxSnapshot(admin, completeDriftSandboxId);
     assert.equal(await first.complete(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
-      { ...successCreate("backend-complete-drift"), expectedBackendResourceVersion: "resource-complete-drift", expectedAdmissionId: "stale-caller-admission" }), false);
+      { ...successCreate("backend-complete-drift", `sha256:${"0".repeat(64)}`), expectedBackendResourceVersion: "resource-complete-drift" }), false);
+    assert.equal(await first.complete(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
+      { ...successCreate("backend-complete-drift", completeDriftAdmission.digest), expectedBackendResourceVersion: "resource-complete-drift" }), false);
     await assertStaleQuarantine(admin, completeDriftOperationId, completeDriftSandboxId, completeSnapshot);
 
     const staleSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
@@ -116,7 +158,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     await admin.query("UPDATE sandbox_reconcile_jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE operation_id=$1", [staleOperationId]);
     const recovered = await second.claim("controller-recovery", 30); assert.equal(recovered?.operationId, staleOperationId); assert.equal(recovered?.attempt, 2);
     assert.equal(await first.renew(staleOperationId, "controller-stale", stale!.leaseToken, 30), undefined);
-    assert.equal(await first.bindBackend(staleOperationId, "controller-stale", stale!.leaseToken, { uid: "stale", resourceVersion: "stale", admissionId: "stale" }), false);
+    assert.equal(await first.bindBackend(staleOperationId, "controller-stale", stale!.leaseToken,
+      { uid: "stale", resourceVersion: "stale", admission: admissionIdentity(workspaceId, staleSandboxId, "stale", "workload-stale") }), false);
     assert.equal(await second.retry(staleOperationId, "controller-recovery", recovered!.leaseToken, 1,
       { code: "backend_temporarily_unavailable", message: "backend is temporarily unavailable", requestId: randomUUID() }), "retry_scheduled");
 
@@ -139,15 +182,16 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     const exhaustedState = await admin.query("SELECT o.status,s.state,r.error FROM sandbox_operations o JOIN sandboxes s ON s.id=o.sandbox_id JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id WHERE o.id=$1", [exhaustedOperationId]);
     assert.equal(exhaustedState.rows[0]?.status, "recovery_required"); assert.equal(exhaustedState.rows[0]?.state, "failed");
     assert.equal(exhaustedState.rows[0]?.error.code, "lease_attempts_exhausted");
-    assert.equal(await first.complete(exhaustedOperationId, "controller-exhausted", exhausted!.leaseToken, successCreate("never-bound")), false);
+    assert.equal(await first.complete(exhaustedOperationId, "controller-exhausted", exhausted!.leaseToken, successCreate("never-bound", null)), false);
 
     const stopSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", version: 2, backend: ["backend-stop", "resource-stop", "admission-stop"] });
     const stopOperationId = await insertOperation(admin, workspaceId, stopSandboxId, userId, "stop", 1);
     const stop = await first.claim("controller-stop", 30); assert.equal(stop?.operationId, stopOperationId);
+    assert.ok(stop?.admission);
     const stopCompletion = { status: "succeeded" as const, expectedBackendUid: "backend-stop", expectedBackendResourceVersion: "resource-stop",
-      expectedAdmissionId: "admission-stop", cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true,
+      expectedAdmissionDigest: stop!.admission!.digest, cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true,
       backendDestroyed: true, artifactIds: [], warningCodes: [], error: null };
-    assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken, { ...stopCompletion, expectedAdmissionId: "substituted" }), false);
+    assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken, { ...stopCompletion, expectedAdmissionDigest: `sha256:${"0".repeat(64)}` }), false);
     assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken, stopCompletion), true);
     const stopped = await admin.query("SELECT state,backend_uid,admission_id,stopped_at FROM sandboxes WHERE id=$1", [stopSandboxId]);
     assert.equal(stopped.rows[0]?.state, "stopped"); assert.equal(stopped.rows[0]?.backend_uid, null); assert.equal(stopped.rows[0]?.admission_id, null); assert.ok(stopped.rows[0]?.stopped_at);
@@ -159,13 +203,14 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     const expiredSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "ready", expired: true, backend: ["backend-expired", "resource-expired", "admission-expired"] });
     const expiryRaces = await Promise.all([first.enqueueExpired(10), second.enqueueExpired(10)]);
     assert.equal(expiryRaces.flat().filter((value) => value.sandboxId === expiredSandboxId).length, 1);
-    const expiry = await admin.query("SELECT o.type,o.status,o.idempotency_key,s.state,s.desired_state FROM sandbox_operations o JOIN sandboxes s ON s.id=o.sandbox_id WHERE o.sandbox_id=$1", [expiredSandboxId]);
+    const expiry = await admin.query("SELECT o.type,o.status,o.idempotency_key,s.state,s.desired_state FROM sandbox_operations o JOIN sandboxes s ON s.id=o.sandbox_id WHERE o.sandbox_id=$1 AND o.status='pending'", [expiredSandboxId]);
     assert.equal(expiry.rows[0]?.type, "stop"); assert.equal(expiry.rows[0]?.status, "pending");
     assert.match(expiry.rows[0]?.idempotency_key, /^expiry-/); assert.equal(expiry.rows[0]?.state, "stopping"); assert.equal(expiry.rows[0]?.desired_state, "stopped");
 
     const eventSequences = await admin.query<{ sequence: string }>("SELECT sequence::text FROM sandbox_events WHERE sandbox_id=$1 ORDER BY sequence", [staleSandboxId]);
     assert.deepEqual(eventSequences.rows.map((row) => Number(row.sequence)), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
     await assert.rejects(controllerOne.query("SELECT * FROM sandbox_reconcile_jobs"), hasCode("42501"));
+    await assert.rejects(controllerOne.query("SELECT * FROM sandbox_workload_admissions"), hasCode("42501"));
     await assert.rejects(controllerOne.query("UPDATE sandboxes SET state='deleted' WHERE id=$1", [expiredSandboxId]), hasCode("42501"));
     await assert.rejects(controllerOne.query("INSERT INTO sandbox_events(id,workspace_id,sandbox_id,sequence,type) VALUES($1,$2,$3,999,'unsafe')", [randomUUID(), workspaceId, expiredSandboxId]), hasCode("42501"));
   } finally {
@@ -177,13 +222,17 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
 
 async function seedSandbox(admin: Pool, workspaceId: string, userId: string, options: {
   state: "requested" | "ready" | "stopping"; desiredState?: "ready" | "stopped"; expired?: boolean;
-  version?: number; backend?: [uid: string, resourceVersion: string, admissionId: string];
+  version?: number; backend?: [uid: string, resourceVersion: string, admissionId: string]; withArtifact?: boolean;
 }): Promise<string> {
   const sandboxId = randomUUID(), templateId = randomUUID(), versionId = randomUUID(), suffix = sandboxId.slice(0, 8);
   const spec = { version: "1", variants: [{ name: "linux-amd64", architecture: "amd64",
     imageIndex: `registry.invalid/poc@sha256:${"b".repeat(64)}`, imageDigest: `registry.invalid/poc@sha256:${"c".repeat(64)}`,
     placementProfile: "poc-linux-amd64-v1", command: ["/bin/true"], resources: { requests: { cpu: "100m", memory: "128Mi", ephemeralStorage: "1Gi" }, limits: { cpu: "500m", memory: "512Mi", ephemeralStorage: "2Gi" } } }],
-    repositories: [{ name: "source", url: "https://github.com/blazncloud/blazn.git", destination: "/workspace/src/blazn", writable: true }], artifacts: [] };
+    repositories: [{ name: "source", url: "https://github.com/blazncloud/blazn.git", destination: "/workspace/src/blazn", writable: true }],
+    artifacts: options.withArtifact ? [
+      { name: "patch", path: "/workspace/artifacts/change.patch", mediaType: "text/plain", required: true },
+      { name: "logs", path: "/workspace/artifacts/run.log", mediaType: "text/plain", required: false },
+    ] : [] };
   const createdAt = options.expired ? new Date(Date.now() - 120_000) : new Date();
   const expiresAt = options.expired ? new Date(Date.now() - 60_000) : new Date(Date.now() + 600_000);
   await admin.query("BEGIN");
@@ -192,6 +241,9 @@ async function seedSandbox(admin: Pool, workspaceId: string, userId: string, opt
     await admin.query("INSERT INTO sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by) VALUES($1,$2,$3,'1',$4,$5,$6,$7)", [versionId, workspaceId, templateId, Buffer.from(JSON.stringify(spec)), spec, "a".repeat(64), userId]);
     await admin.query("INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile,command,resources) VALUES($1,$2,$3,'linux-amd64','amd64',$4,$5,'poc-linux-amd64-v1',$6::jsonb,$7::jsonb)", [versionId, workspaceId, templateId, `registry.invalid/poc@sha256:${"b".repeat(64)}`, `registry.invalid/poc@sha256:${"c".repeat(64)}`, JSON.stringify(["/bin/true"]), JSON.stringify(spec.variants[0]!.resources)]);
     await admin.query("INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES($1,$2,$3,'source','https://github.com/blazncloud/blazn.git','/workspace/src/blazn',true)", [versionId, workspaceId, templateId]);
+    if (options.withArtifact) await admin.query(`INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES
+      ($1,$2,$3,'patch','/workspace/artifacts/change.patch','text/plain',true),
+      ($1,$2,$3,'logs','/workspace/artifacts/run.log','text/plain',false)`, [versionId, workspaceId, templateId]);
     await admin.query("INSERT INTO sandbox_template_version_status(version_id,workspace_id,template_id,status,changed_by) VALUES($1,$2,$3,'published',$4)", [versionId, workspaceId, templateId, userId]);
     await admin.query("UPDATE sandbox_templates SET current_published_version_id=$1 WHERE id=$2", [versionId, templateId]);
     await admin.query(`INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,
@@ -203,6 +255,33 @@ async function seedSandbox(admin: Pool, workspaceId: string, userId: string, opt
       options.desiredState ?? "ready", options.backend?.[0] ?? null, options.backend?.[1] ?? null, options.backend?.[2] ?? null,
       "d".repeat(64), expiresAt, createdAt, options.version ?? 1]);
     await admin.query("INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES($1,$2,$3,'source',$4)", [sandboxId, workspaceId, versionId, "1".repeat(40)]);
+    if (options.withArtifact) await admin.query(`INSERT INTO sandbox_artifact_contract_entries(sandbox_id,workspace_id,template_version_id,name,path,media_type,required) VALUES
+      ($1,$2,$3,'patch','/workspace/artifacts/change.patch','text/plain',true),
+      ($1,$2,$3,'logs','/workspace/artifacts/run.log','text/plain',false)`, [sandboxId, workspaceId, versionId]);
+    if (options.backend) {
+      const historicalOperationId = randomUUID(), historicalReceiptId = randomUUID();
+      const admission = admissionIdentity(workspaceId, sandboxId, options.backend[0], options.backend[2]);
+      await admin.query(`INSERT INTO sandbox_operations(id,workspace_id,sandbox_id,type,status,expected_sandbox_version,
+        requested_by,idempotency_key,request_digest,terminal_receipt_id,completed_at)
+        VALUES($1,$2,$3,'create','succeeded',$4,$5,$6,$7,$8,clock_timestamp())`,
+      [historicalOperationId, workspaceId, sandboxId, options.version ?? 1, userId,
+        `seed-create-${sandboxId}`, "f".repeat(64), historicalReceiptId]);
+      await admin.query(`INSERT INTO sandbox_workload_admissions(sandbox_id,workspace_id,backend_uid,backend_resource_version,
+        operation_id,api_version,namespace,workload_name,workload_uid,workload_resource_version,admitted_cluster_queue,
+        owner_api_version,owner_kind,owner_name,owner_uid,owner_controller,workspace_label,sandbox_label,
+        admitted,condition_type,condition_status,admission_digest)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+      [sandboxId, workspaceId, options.backend[0], options.backend[1], historicalOperationId, admission.apiVersion, admission.namespace,
+        admission.name, admission.uid, admission.resourceVersion, admission.clusterQueue, admission.owner.apiVersion,
+        admission.owner.kind, admission.owner.name, admission.owner.uid, admission.owner.controller,
+        admission.workspaceId, admission.sandboxId, admission.admitted, admission.condition.type,
+        admission.condition.status, admission.digest.slice(7)]);
+      await admin.query(`INSERT INTO sandbox_operation_terminal_receipts(id,operation_id,workspace_id,sandbox_id,
+        operation_type,status,cleanup_complete,artifact_export_complete,grants_revoked,backend_destroyed,
+        backend_present,backend_uid,backend_resource_version,admission_digest)
+        VALUES($1,$2,$3,$4,'create','succeeded',false,false,false,false,true,$5,$6,$7)`,
+      [historicalReceiptId, historicalOperationId, workspaceId, sandboxId, options.backend[0], options.backend[1], admission.digest.slice(7)]);
+    }
     await admin.query("COMMIT"); return sandboxId;
   } catch (error) { await admin.query("ROLLBACK"); throw error; }
 }
@@ -213,10 +292,24 @@ async function insertOperation(admin: Pool, workspaceId: string, sandboxId: stri
   return id;
 }
 
-function successCreate(uid: string) {
+function successCreate(uid: string, admissionDigest: string | null) {
   return { status: "succeeded" as const, expectedBackendUid: uid, expectedBackendResourceVersion: "resource-create",
-    expectedAdmissionId: "admission-create", cleanupComplete: false, artifactExportComplete: false, grantsRevoked: false,
+    expectedAdmissionDigest: admissionDigest, cleanupComplete: false, artifactExportComplete: false, grantsRevoked: false,
     backendDestroyed: false, artifactIds: [], warningCodes: [], error: null };
+}
+
+function admissionIdentity(workspaceId: string, sandboxId: string, backendUid: string, workloadUid: string): SandboxControllerAdmissionIdentity {
+  const identity = {
+    apiVersion: "kueue.x-k8s.io/v1beta1" as const, namespace: "blazn-poc-sandboxes" as const,
+    name: `workload-${sandboxId}`, uid: workloadUid, resourceVersion: "workload-resource-1", clusterQueue: "poc-cluster",
+    owner: { apiVersion: "agents.x-k8s.io/v1beta1" as const, kind: "Sandbox" as const, name: sandboxId, uid: backendUid, controller: true as const },
+    workspaceId, sandboxId, admitted: true as const, condition: { type: "Admitted" as const, status: "True" as const },
+  };
+  const canonical = ["sandbox-workload-admission-v1", identity.apiVersion, identity.namespace, identity.name,
+    identity.uid, identity.resourceVersion, identity.clusterQueue, identity.owner.apiVersion, identity.owner.kind,
+    identity.owner.name, identity.owner.uid, String(identity.owner.controller), identity.workspaceId, identity.sandboxId,
+    String(identity.admitted), identity.condition.type, identity.condition.status].join("\n");
+  return { ...identity, digest: `sha256:${createHash("sha256").update(canonical).digest("hex")}` };
 }
 
 function hasCode(code: string): (error: unknown) => boolean {
