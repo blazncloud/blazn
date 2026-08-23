@@ -28,7 +28,7 @@ var socialDefinition = Definition{
 	Repository:         "blazncloud/blazn-social",
 	Executable:         "blazn-social",
 	CanonicalCommand:   "social",
-	Aliases:            []string{"person", "company", "contact", "connections", "post", "evidence", "entity", "data", "providers"},
+	Aliases:            []string{"person", "company", "contact", "connections", "saved-search", "graph", "post", "evidence", "entity", "data", "providers"},
 	SigningIdentity:    "blazn-social-release",
 	SignatureNamespace: "blazn-social-release",
 	AllowedSigner:      `blazn-social-release namespaces="blazn-social-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAzo2yaJyPad2eD4Y886dhE831MQxLQt+5+wCiE+leNA blazn-social-release-v2`,

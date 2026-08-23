@@ -61,7 +61,7 @@ func TestSocialCatalogPinsV2AndRejectsRetiredV1Signature(t *testing.T) {
 
 func TestDefaultCatalogResolvesCanonicalAndAliases(t *testing.T) {
 	catalog := DefaultCatalog()
-	for _, command := range []string{"social", "person", "company", "contact", "connections", "post", "evidence", "entity", "data", "providers"} {
+	for _, command := range []string{"social", "person", "company", "contact", "connections", "saved-search", "graph", "post", "evidence", "entity", "data", "providers"} {
 		definition, ok := catalog.Resolve(command)
 		if !ok || definition.Name != "social" {
 			t.Fatalf("Resolve(%q) = %#v, %v", command, definition, ok)

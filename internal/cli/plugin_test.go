@@ -12,13 +12,15 @@ import (
 )
 
 type fakePlugins struct {
-	installed bool
-	installs  int
-	runs      int
-	args      []string
-	format    string
-	name      string
-	context   pluginpkg.RuntimeContext
+	installed   bool
+	installs    int
+	runs        int
+	args        []string
+	format      string
+	name        string
+	installName string
+	runName     string
+	context     pluginpkg.RuntimeContext
 }
 
 func (f *fakePlugins) definition() pluginpkg.Definition {
@@ -37,7 +39,7 @@ func (f *fakePlugins) Installed(string) (pluginpkg.Installed, error) {
 func (f *fakePlugins) Install(_ context.Context, name string) (pluginpkg.Receipt, error) {
 	f.installs++
 	f.installed = true
-	f.name = name
+	f.name, f.installName = name, name
 	return pluginpkg.Receipt{Version: "v1.0.0"}, nil
 }
 func (f *fakePlugins) List() []pluginpkg.Status {
@@ -49,7 +51,7 @@ func (f *fakePlugins) Rollback(string) (pluginpkg.Receipt, error) {
 func (f *fakePlugins) Remove(string) error { f.installed = false; return nil }
 func (f *fakePlugins) Run(_ context.Context, definition pluginpkg.Definition, args []string, format string, runtimeContext pluginpkg.RuntimeContext, streams pluginpkg.Stdio) (int, error) {
 	f.runs++
-	f.args, f.format, f.name = append([]string(nil), args...), format, definition.Name
+	f.args, f.format, f.name, f.runName = append([]string(nil), args...), format, definition.Name, definition.Name
 	f.context = runtimeContext
 	_, _ = streams.Stdout.Write([]byte("plugin output\n"))
 	return 3, nil
@@ -130,6 +132,24 @@ func TestMissingPluginApproveInstallsAndReplaysAlias(t *testing.T) {
 	}
 	if fake.installs != 1 || fake.runs != 1 || !reflect.DeepEqual(fake.args, []string{"person", "search", "Jane"}) || stdout.String() != "plugin output\n" {
 		t.Fatalf("unexpected state: %#v stdout=%q", fake, stdout)
+	}
+}
+
+func TestSocialM2AliasesInstallAndForwardExactly(t *testing.T) {
+	for _, args := range [][]string{
+		{"saved-search", "list"},
+		{"graph", "diff", "leadership-watch", "--from", "run-one", "--to", "run-two"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			fake := &fakePlugins{}
+			app, stdout, _ := pluginApp("yes\n", true, fake)
+			if code := app.Run(args); code != 3 {
+				t.Fatalf("code=%d", code)
+			}
+			if fake.installs != 1 || fake.runs != 1 || fake.installName != "social" || fake.runName != "social" || !reflect.DeepEqual(fake.args, args) || stdout.String() != "plugin output\n" {
+				t.Fatalf("args=%v state=%#v stdout=%q", args, fake, stdout)
+			}
+		})
 	}
 }
 
