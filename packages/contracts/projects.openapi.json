@@ -29,6 +29,19 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateProjectRequest"}}}},
         "responses": {"200": {"description": "Project updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectEnvelope"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
       }
+    },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/profiles/{profileKind}": {
+      "get": {
+        "operationId": "getProjectProfile",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ProfileKind"}],
+        "responses": {"200": {"description": "Project profile", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectProfileEnvelope"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
+      },
+      "put": {
+        "operationId": "putProjectProfile",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/ProfileKind"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PutProjectProfileRequest"}}}},
+        "responses": {"200": {"description": "Project profile created, updated, or replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProjectProfileEnvelope"}}}}, "default": {"$ref": "#/components/responses/ProjectError"}}
+      }
     }
   },
   "components": {
@@ -36,6 +49,7 @@
     "parameters": {
       "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
       "ProjectId": {"name": "projectId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "ProfileKind": {"name": "profileKind", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}},
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 8, "maxLength": 128}},
       "Status": {"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["active", "archived", "all"], "default": "active"}},
       "Cursor": {"name": "cursor", "in": "query", "required": false, "schema": {"type": "string", "maxLength": 512}}
@@ -83,14 +97,31 @@
           "expectedVersion": {"type": "integer", "minimum": 1}
         }
       },
+      "ProjectProfileStatus": {"type": "string", "enum": ["active", "archived"]},
+      "ProjectProfile": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "projectId", "kind", "schemaVersion", "version", "draftId", "artifactId", "digest", "status", "createdBy", "updatedBy", "createdAt", "updatedAt"],
+        "properties": {
+          "workspaceId": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"},
+          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}, "schemaVersion": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"},
+          "version": {"type": "integer", "minimum": 1}, "draftId": {"type": "string", "format": "uuid"}, "artifactId": {"type": "string", "format": "uuid"},
+          "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "status": {"$ref": "#/components/schemas/ProjectProfileStatus"},
+          "createdBy": {"type": "string", "format": "uuid"}, "updatedBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}, "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ProjectProfileEnvelope": {"type": "object", "additionalProperties": false, "required": ["profile"], "properties": {"profile": {"$ref": "#/components/schemas/ProjectProfile"}}},
+      "PutProjectProfileRequest": {
+        "type": "object", "additionalProperties": false, "required": ["schemaVersion", "draftId", "artifactId", "digest", "status", "expectedVersion"],
+        "properties": {"schemaVersion": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$"}, "draftId": {"type": "string", "format": "uuid"}, "artifactId": {"type": "string", "format": "uuid"}, "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "status": {"$ref": "#/components/schemas/ProjectProfileStatus"}, "expectedVersion": {"type": "integer", "minimum": 0}}
+      },
       "ProjectError": {
         "type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"],
         "properties": {
-          "code": {"type": "string", "enum": ["project_not_found", "project_slug_conflict", "workspace_not_found", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invalid_request", "method_not_allowed", "rate_limited", "access_expired", "session_revoked", "unauthorized", "internal_error"]},
+          "code": {"type": "string", "enum": ["project_not_found", "project_slug_conflict", "project_profile_not_found", "project_profile_kind_conflict", "artifact_not_found", "workspace_not_found", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invalid_request", "method_not_allowed", "rate_limited", "access_expired", "session_revoked", "unauthorized", "internal_error"]},
           "message": {"type": "string", "minLength": 1, "maxLength": 1024},
           "requestId": {"type": "string", "minLength": 1, "maxLength": 128}
         },
-        "x-blazn-error-status": {"project_not_found": 404, "project_slug_conflict": 409, "workspace_not_found": 404, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invalid_request": 400, "method_not_allowed": 405, "rate_limited": 429, "access_expired": 401, "session_revoked": 401, "unauthorized": 401, "internal_error": 500}
+        "x-blazn-error-status": {"project_not_found": 404, "project_slug_conflict": 409, "project_profile_not_found": 404, "project_profile_kind_conflict": 409, "artifact_not_found": 404, "workspace_not_found": 404, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invalid_request": 400, "method_not_allowed": 405, "rate_limited": 429, "access_expired": 401, "session_revoked": 401, "unauthorized": 401, "internal_error": 500}
       }
     }
   }

@@ -20,9 +20,24 @@ test("Project OpenAPI is valid and exposes only workspace-scoped routes", async 
   assert.deepEqual(Object.keys(document.paths).sort(), [
     "/v1/workspaces/{workspaceId}/projects",
     "/v1/workspaces/{workspaceId}/projects/{projectId}",
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/profiles/{profileKind}",
   ]);
   const operations = Object.values(document.paths).flatMap((route) => Object.values(route).map((operation) => operation.operationId)).sort();
-  assert.deepEqual(operations, ["createProject", "getProject", "listProjects", "updateProject"]);
+  assert.deepEqual(operations, ["createProject", "getProject", "getProjectProfile", "listProjects", "putProjectProfile", "updateProject"]);
+});
+
+test("Project profile schemas bind one ready Artifact without arbitrary plugin data", async () => {
+  const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> } };
+  const ajv = new Ajv2020({ strict: true, allErrors: true }); addFormats(ajv);
+  const put = ajv.compile(document.components.schemas.PutProjectProfileRequest!);
+  const value={schemaVersion:"blazn.content/project/v1alpha1",draftId:"00000000-0000-4000-8000-000000000004",artifactId:"00000000-0000-4000-8000-000000000005",digest:`sha256:${"a".repeat(64)}`,status:"active",expectedVersion:0};
+  assert.equal(put(value),true,JSON.stringify(put.errors));
+  assert.equal(put({...value,apiKey:"must-not-pass"}),false);
+  assert.equal(put({...value,expectedVersion:-1}),false);
+  const profile=ajv.compile(document.components.schemas.ProjectProfile!);
+  const output={workspaceId:"00000000-0000-4000-8000-000000000001",projectId:"00000000-0000-4000-8000-000000000002",kind:"content",schemaVersion:value.schemaVersion,version:1,draftId:value.draftId,artifactId:value.artifactId,digest:value.digest,status:"active",createdBy:"00000000-0000-4000-8000-000000000003",updatedBy:"00000000-0000-4000-8000-000000000003",createdAt:"2026-08-23T00:00:00Z",updatedAt:"2026-08-23T00:00:00Z"};
+  assert.equal(profile(output),true,JSON.stringify(profile.errors));
+  assert.equal(profile({...output,providerSettings:{}}),false);
 });
 
 test("Project schemas reject secrets, unknown fields, and update no-ops", async () => {

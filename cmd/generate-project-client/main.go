@@ -19,13 +19,15 @@ import (
 //go:embed project.gen.go.tmpl
 var projectTemplate []byte
 
-const supportedProjectContractSHA256 = "f5d00176485165a83b62dbf25e42d1bccc82a61df4028b35a91396e2e9160598"
+const supportedProjectContractSHA256 = "32000a7b33ee03d8d81085ffe6b76c3e43c556285a771f06dbeac3c0b1e07a45"
 
 var operations = map[string]string{
 	"POST /v1/workspaces/{workspaceId}/projects":              "createProject",
 	"GET /v1/workspaces/{workspaceId}/projects":               "listProjects",
 	"GET /v1/workspaces/{workspaceId}/projects/{projectId}":   "getProject",
 	"PATCH /v1/workspaces/{workspaceId}/projects/{projectId}": "updateProject",
+	"GET /v1/workspaces/{workspaceId}/projects/{projectId}/profiles/{profileKind}": "getProjectProfile",
+	"PUT /v1/workspaces/{workspaceId}/projects/{projectId}/profiles/{profileKind}": "putProjectProfile",
 }
 
 var schemaFields = map[string][]string{
@@ -34,6 +36,8 @@ var schemaFields = map[string][]string{
 	"ProjectList":          {"items", "nextCursor"},
 	"CreateProjectRequest": {"description", "kind", "name", "slug"},
 	"UpdateProjectRequest": {"description", "expectedVersion", "name", "status"},
+	"ProjectProfile": {"artifactId", "createdAt", "createdBy", "digest", "draftId", "kind", "projectId", "schemaVersion", "status", "updatedAt", "updatedBy", "version", "workspaceId"},
+	"ProjectProfileEnvelope": {"profile"}, "PutProjectProfileRequest": {"artifactId", "digest", "draftId", "expectedVersion", "schemaVersion", "status"},
 	"ProjectError":         {"code", "message", "requestId"},
 }
 
@@ -43,6 +47,8 @@ var schemaRequired = map[string][]string{
 	"ProjectList":          {"items", "nextCursor"},
 	"CreateProjectRequest": {"name"},
 	"UpdateProjectRequest": {"expectedVersion"},
+	"ProjectProfile": {"artifactId", "createdAt", "createdBy", "digest", "draftId", "kind", "projectId", "schemaVersion", "status", "updatedAt", "updatedBy", "version", "workspaceId"},
+	"ProjectProfileEnvelope": {"profile"}, "PutProjectProfileRequest": {"artifactId", "digest", "draftId", "expectedVersion", "schemaVersion", "status"},
 	"ProjectError":         {"code", "message", "requestId"},
 }
 
@@ -92,7 +98,7 @@ func validate(document map[string]any, template string) error {
 		return fmt.Errorf("Project server origin changed")
 	}
 	paths, ok := valueAt(document, "paths").(map[string]any)
-	if !ok || len(paths) != 2 {
+	if !ok || len(paths) != 3 {
 		return fmt.Errorf("Project paths changed")
 	}
 	seen := map[string]string{}
@@ -149,7 +155,8 @@ func validate(document map[string]any, template string) error {
 			return fmt.Errorf("Project schema %s required=%v want %v", name, requiredNames, schemaRequired[name])
 		}
 	}
-	for _, marker := range []string{"func (c *Client) CreateProject", "func (c *Client) ListProjects", "func (c *Client) GetProject", "func (c *Client) UpdateProject", "type ProjectError = ErrorBody"} {
+	for _,name:=range []string{"ProjectStatus","ProjectProfileStatus"}{got:=stringSliceAt(schemas,name,"enum");sort.Strings(got);if strings.Join(got,",")!="active,archived"{return fmt.Errorf("Project schema %s enum changed",name)}}
+	for _, marker := range []string{"func (c *Client) CreateProject", "func (c *Client) ListProjects", "func (c *Client) GetProject", "func (c *Client) UpdateProject", "func (c *Client) GetProjectProfile", "func (c *Client) PutProjectProfile", "type ProjectError = ErrorBody"} {
 		if !strings.Contains(template, marker) {
 			return fmt.Errorf("Project template lacks %s", marker)
 		}
@@ -181,6 +188,7 @@ func stringAt(value any, path ...string) string {
 	result, _ := valueAt(value, path...).(string)
 	return result
 }
+func stringSliceAt(value any,path ...string)[]string{values,_:=valueAt(value,path...).([]any);result:=make([]string,0,len(values));for _,value:=range values{if text,ok:=value.(string);ok{result=append(result,text)}};return result}
 
 func keys(values map[string]any) []string {
 	result := make([]string, 0, len(values))

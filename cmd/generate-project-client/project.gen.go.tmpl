@@ -56,11 +56,19 @@ type UpdateProjectRequest struct {
 	Status          *ProjectStatus `json:"status,omitempty"`
 }
 
+type ProjectProfileStatus string
+const ( ProjectProfileStatusActive ProjectProfileStatus="active"; ProjectProfileStatusArchived ProjectProfileStatus="archived" )
+type ProjectProfile struct { WorkspaceID string `json:"workspaceId"`; ProjectID string `json:"projectId"`; Kind string `json:"kind"`; SchemaVersion string `json:"schemaVersion"`; Version int `json:"version"`; DraftID string `json:"draftId"`; ArtifactID string `json:"artifactId"`; Digest string `json:"digest"`; Status ProjectProfileStatus `json:"status"`; CreatedBy string `json:"createdBy"`; UpdatedBy string `json:"updatedBy"`; CreatedAt string `json:"createdAt"`; UpdatedAt string `json:"updatedAt"` }
+type ProjectProfileEnvelope struct { Profile ProjectProfile `json:"profile"` }
+type PutProjectProfileRequest struct { SchemaVersion string `json:"schemaVersion"`; DraftID string `json:"draftId"`; ArtifactID string `json:"artifactId"`; Digest string `json:"digest"`; Status ProjectProfileStatus `json:"status"`; ExpectedVersion int `json:"expectedVersion"` }
+
 type ProjectError = ErrorBody
 
 var projectUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
 var projectSlug = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 var projectKind = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+var projectProfileSchema = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+var projectProfileDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func (c *Client) CreateProject(ctx context.Context, accessToken, workspaceID, idempotencyKey string, request CreateProjectRequest) (ProjectEnvelope, error) {
 	var output ProjectEnvelope
@@ -129,6 +137,8 @@ func (c *Client) UpdateProject(ctx context.Context, accessToken, workspaceID, pr
 	err = c.workspaceDo(ctx, http.MethodPatch, path, accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
 	return output, err
 }
+func (c *Client) GetProjectProfile(ctx context.Context,accessToken,workspaceID,projectID,kind string)(ProjectProfileEnvelope,error){var output ProjectProfileEnvelope;path,err:=projectProfilePath(workspaceID,projectID,kind);if err!=nil{return output,err};err=c.workspaceDo(ctx,http.MethodGet,path,accessToken,"",nil,nil,&output,http.StatusOK);return output,err}
+func (c *Client) PutProjectProfile(ctx context.Context,accessToken,workspaceID,projectID,kind,idempotencyKey string,request PutProjectProfileRequest)(ProjectProfileEnvelope,error){var output ProjectProfileEnvelope;path,err:=projectProfilePath(workspaceID,projectID,kind);if err!=nil{return output,err};if !projectProfileSchema.MatchString(request.SchemaVersion)||!projectUUID.MatchString(request.DraftID)||!projectUUID.MatchString(request.ArtifactID)||!projectProfileDigest.MatchString(request.Digest)||(request.Status!=ProjectProfileStatusActive&&request.Status!=ProjectProfileStatusArchived)||request.ExpectedVersion<0{return output,fmt.Errorf("Project profile request is invalid")};err=c.workspaceDo(ctx,http.MethodPut,path,accessToken,idempotencyKey,nil,request,&output,http.StatusOK);return output,err}
 
 func projectCollectionPath(workspaceID string) (string, error) {
 	if !projectUUID.MatchString(workspaceID) {
@@ -147,3 +157,4 @@ func projectResourcePath(workspaceID, projectID string) (string, error) {
 	}
 	return collection + "/" + url.PathEscape(projectID), nil
 }
+func projectProfilePath(workspaceID,projectID,kind string)(string,error){resource,err:=projectResourcePath(workspaceID,projectID);if err!=nil{return "",err};if !projectKind.MatchString(kind){return "",fmt.Errorf("Project profile kind is invalid")};return resource+"/profiles/"+url.PathEscape(kind),nil}
