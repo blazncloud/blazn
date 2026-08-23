@@ -373,9 +373,20 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 	if err != nil {
 		return s.result("proxy run", "failed", "inactive", 2), err
 	}
+	current, reconcileErr := s.reconcileForOn(ctx)
+	if reconciled, resultErr, handled := s.reconcileRun(ctx, current, reconcileErr, digest); handled {
+		return reconciled, resultErr
+	}
 	result, err = s.activate(ctx, "proxy run", policy, digest, "scoped_run", "process_environment")
 	if err != nil {
-		return result, err
+		if !errors.Is(err, errActivationRace) {
+			return result, err
+		}
+		current, reconcileErr = s.reconcileForOn(ctx)
+		if reconciled, resultErr, handled := s.reconcileRun(ctx, current, reconcileErr, digest); handled {
+			return reconciled, resultErr
+		}
+		return s.result("proxy run", "conflict", "unknown", 6), ErrLifecycleConflict
 	}
 	lease, leaseErr := s.deps.Store.AcquireScope(ctx, result.ActivationID, result.Generation)
 	if leaseErr != nil {
@@ -448,6 +459,39 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 	result.ChildExitCode = &copy
 	err = runErr
 	return result, err
+}
+
+func (s *Service) reconcileRun(ctx context.Context, current state.Reconciliation, reconcileErr error, digest string) (Result, error, bool) {
+	if result, err, handled := s.lifecycleFailure("proxy run", reconcileErr); handled {
+		return result, err, true
+	}
+	if current.State == state.ReconciliationRecoveryRequired || errors.Is(reconcileErr, state.ErrRecoveryRequired) {
+		return s.result("proxy run", "recovery_required", "recovery_required", 9), ErrRecovery, true
+	}
+	if reconcileErr != nil {
+		return s.result("proxy run", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, reconcileErr), true
+	}
+	if current.State != state.ReconciliationActive {
+		return Result{}, nil, false
+	}
+	if current.ListenerProof == nil {
+		return s.result("proxy run", "recovery_required", "recovery_required", 9), ErrRecovery, true
+	}
+	observed, live, inspectErr := s.Inspect(ctx, current.ListenerProof.PID)
+	if inspectErr != nil || !live || observed != *current.ListenerProof {
+		return s.result("proxy run", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, inspectErr), true
+	}
+	if current.PolicyDigest != digest {
+		return s.result("proxy run", "conflict", "active", 6), ErrDifferentPolicy, true
+	}
+	session, sessionErr := s.deps.Environment.SessionIdentity(ctx)
+	if sessionErr != nil {
+		return s.result("proxy run", "unsupported", "active", 7), sessionErr, true
+	}
+	if current.Mode != "scoped_run" || current.ListenerProof.Mode != "scoped_run" || current.ListenerProof.SessionIdentity != session {
+		return s.result("proxy run", "conflict", "active", 6), ErrDifferentScope, true
+	}
+	return s.result("proxy run", "conflict", "active", 6), ErrLifecycleConflict, true
 }
 
 func (s *Service) activate(ctx context.Context, command string, policy proxycontract.Policy, digest, mode, mechanism string) (Result, error) {
