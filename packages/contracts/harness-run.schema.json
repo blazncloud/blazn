@@ -635,7 +635,20 @@
                     },
                     "additionalProperties": {
                         "type": "object",
-                        "maxProperties": 32
+                        "maxProperties": 32,
+                        "propertyNames": {
+                            "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,63}$"
+                        },
+                        "additionalProperties": {
+                            "type": [
+                                "string",
+                                "number",
+                                "integer",
+                                "boolean",
+                                "null"
+                            ],
+                            "maxLength": 4096
+                        }
                     }
                 }
             }
