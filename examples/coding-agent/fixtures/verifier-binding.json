@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "blazn.dev/example-verifier-binding/v1alpha1",
+  "sourceDigest": "sha256:8bea4313462ca41ff7bcf89c7b7ebfc94f9dbab6aa0b339fbb7b4b4d3639faff",
+  "schemaDigest": "sha256:f239d1313ce572e0800e64c862f96968c5bd59c56df3a1a83137d41558b62d5a",
+  "compiledDigest": "sha256:4c4b0cfe33cc03567b52da6ad4d4ab9bb3b9739af516ec220bf4d997e99b6677"
+}

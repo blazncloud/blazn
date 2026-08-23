@@ -11,6 +11,9 @@ if [ ! -f "$validator" ] || [ ! -d "${repo_root}/services/control-api/node_modul
   exit 2
 fi
 
+node "${script_dir}/verifier-binding.mjs"
+(cd "${repo_root}/services/control-api" && npm run build)
+node "${script_dir}/verifier-binding.mjs"
 (cd "$example_dir" && npm ci --ignore-scripts --offline --no-audit --no-fund)
-(cd "$example_dir" && node --test test/coding-agent.test.mjs)
+(cd "$example_dir" && node --test test/coding-agent.test.mjs test/context-identity.test.mjs test/verifier-binding.test.mjs)
 node "${script_dir}/validate-example.mjs"

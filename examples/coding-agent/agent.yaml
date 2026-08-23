@@ -1,0 +1,18 @@
+{
+  "apiVersion": "blazn.dev/v1alpha1",
+  "kind": "Agent",
+  "metadata": {"id": "70000000-0000-4000-8000-000000000006", "name": "coding-agent"},
+  "spec": {
+    "version": "draft-1",
+    "projectId": "20000000-0000-4000-8000-000000000006",
+    "instructions": "Apply one deterministic source edit and return the resulting patch as an Artifact.",
+    "objective": "Complete the immutable coding task without network access or credentials.",
+    "repository": {"url": "https://github.com/blazncloud/blazn.git"},
+    "sandboxTemplate": {"versionId": "60000000-0000-4000-8000-000000000006", "digest": "sha256:d40e4251c30f09bf3bb88e6554a010a1abc1cfe911a872c6804f2c3cc8bf820b"},
+    "allowedHarnessProfiles": ["hermes", "codex-cli", "claude-code"],
+    "defaultHarnessProfile": "codex-cli",
+    "modelPolicy": "poc-local-model-v1",
+    "resourceProfile": "poc-build-small-v1",
+    "tools": []
+  }
+}

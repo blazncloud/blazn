@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildContextIdentity } from "./context-identity.mjs";
+import { verifyRepositoryBinding } from "./verifier-binding.mjs";
 
 const example = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repository = path.resolve(example, "../..");
@@ -12,7 +14,8 @@ const require = createRequire(path.join(service, "package.json"));
 const { default: Ajv2020 } = require("ajv/dist/2020.js");
 const formatsModule = require("ajv-formats");
 const addFormats = formatsModule.default ?? formatsModule;
-const { verifyDevelopmentProjectCommands } = await import(pathToFileURL(path.join(service, "dist/development-contract.js")).href);
+await verifyRepositoryBinding();
+const { developmentDigest, verifyDevelopmentProjectCommands } = await import(pathToFileURL(path.join(service, "dist/development-contract.js")).href);
 
 const json = async (name) => JSON.parse(await readFile(path.join(example, name), "utf8"));
 const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
@@ -21,23 +24,6 @@ const canonical = (value) => {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
 };
-const contextFiles = [
-  ".dockerignore",
-  "Dockerfile",
-  "fixtures/source/calculator.mjs",
-  "fixtures/task.json",
-  "package-lock.json",
-  "package.json",
-  "src/coding-agent.mjs",
-  "test/coding-agent.test.mjs"
-];
-
-async function buildContextDigest() {
-  const files = {};
-  for (const name of [...contextFiles].sort()) files[name] = sha256(await readFile(path.join(example, name)));
-  return sha256(`blazn-example-build-context-v1\n${canonical(files)}`);
-}
-
 function setPath(value, dottedPath, replacement) {
   const parts = dottedPath.split(".");
   let cursor = value;
@@ -58,25 +44,40 @@ function exampleSemanticErrors(project) {
   return errors;
 }
 
-const manifest = await json("blazn.project.json");
+const manifest = await json("blazn.yaml");
 const schema = JSON.parse(await readFile(path.join(repository, "packages/contracts/development-project.schema.json"), "utf8"));
+const templateSchema = JSON.parse(await readFile(path.join(repository, "packages/contracts/sandbox-template.schema.json"), "utf8"));
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);
 const validate = ajv.compile(schema);
+const validateTemplate = ajv.compile(templateSchema);
 assert.equal(validate(manifest), true, JSON.stringify(validate.errors));
 assert.deepEqual(exampleSemanticErrors(manifest), []);
 
+const template = await json("sandbox-template.yaml");
+assert.equal(validateTemplate(template),true,JSON.stringify(validateTemplate.errors));
+const templateDigest=developmentDigest(template.spec);
+assert.deepEqual(manifest.template,{versionId:"60000000-0000-4000-8000-000000000006",digest:templateDigest});
+assert.deepEqual(manifest.publicationTarget,{templateId:"50000000-0000-4000-8000-000000000006"});
+const agent=await json("agent.yaml"),agentKeys=["allowedHarnessProfiles","defaultHarnessProfile","instructions","modelPolicy","objective","projectId","repository","resourceProfile","sandboxTemplate","tools","version"];
+assert.deepEqual(Object.keys(agent).sort(),["apiVersion","kind","metadata","spec"]);
+assert.equal(agent.apiVersion,"blazn.dev/v1alpha1");assert.equal(agent.kind,"Agent");assert.deepEqual(Object.keys(agent.metadata).sort(),["id","name"]);assert.match(agent.metadata.id,/^[0-9a-f-]{36}$/);assert.equal(agent.metadata.name,"coding-agent");assert.deepEqual(Object.keys(agent.spec).sort(),agentKeys.sort());
+assert.equal(agent.spec.projectId,manifest.projectId);assert.deepEqual(agent.spec.repository,manifest.repository);assert.deepEqual(agent.spec.sandboxTemplate,manifest.template);assert.deepEqual(agent.spec.allowedHarnessProfiles,["hermes","codex-cli","claude-code"]);assert.ok(agent.spec.allowedHarnessProfiles.includes(agent.spec.defaultHarnessProfile));assert.deepEqual(agent.spec.tools,[]);
+const identities=await json("fixtures/identities.json"),agentDigest=developmentDigest(agent.spec);
+assert.deepEqual({projectId:identities.projectId,templateId:identities.templateId,templateVersionId:identities.templateVersionId,templateDigest:identities.templateDigest,agentId:identities.agentId,agentVersionId:identities.agentVersionId,agentDigest:identities.agentDigest},{projectId:manifest.projectId,templateId:manifest.publicationTarget.templateId,templateVersionId:manifest.template.versionId,templateDigest,agentId:agent.metadata.id,agentVersionId:"71000000-0000-4000-8000-000000000006",agentDigest});
+
 const lockDigest = sha256(await readFile(path.join(example, "package-lock.json")));
 assert.equal(manifest.dependencyLocks["examples/coding-agent/package-lock.json"], lockDigest);
-const identities = await json("fixtures/identities.json");
 assert.equal(identities.dependencyLockDigest, lockDigest);
-assert.equal(identities.buildContextDigest, await buildContextDigest());
-assert.equal(await buildContextDigest(), await buildContextDigest());
+assert.equal(identities.buildContextDigest, await buildContextIdentity(example));
+assert.equal(await buildContextIdentity(example), await buildContextIdentity(example));
 
 const baseImage = await json("fixtures/base-image.json");
 assert.equal(`${baseImage.repository}@${baseImage.indexDigest}`, identities.baseImageDigest);
 assert.deepEqual(baseImage.manifests.map((item) => item.platform), ["linux/amd64", "linux/arm64"]);
 for (const item of baseImage.manifests) assert.match(item.digest, /^sha256:[0-9a-f]{64}$/);
+assert.deepEqual(template.spec.variants.map((variant)=>variant.architecture),["amd64","arm64"]);
+for(const variant of template.spec.variants){const platform=`linux/${variant.architecture}`,child=baseImage.manifests.find(item=>item.platform===platform);assert.equal(variant.imageIndex,identities.baseImageDigest);assert.equal(variant.imageDigest,`${baseImage.repository}@${child.digest}`);}
 
 const dockerfile = await readFile(path.join(example, "Dockerfile"), "utf8");
 const from = dockerfile.split("\n").filter((line) => line.startsWith("FROM "));
@@ -95,6 +96,8 @@ const scan = (value) => {
   return [];
 };
 assert.deepEqual(scan(manifest), []);
+assert.deepEqual(scan(template), []);
+assert.deepEqual(scan(agent), []);
 assert.deepEqual(scan(await json("fixtures/task.json")), []);
 
 for (const fixture of await json("fixtures/invalid-projects.json")) {
@@ -107,4 +110,4 @@ for (const fixture of await json("fixtures/invalid-projects.json")) {
   }
 }
 
-process.stdout.write(`development-project: valid\nlock: ${lockDigest}\nbuild-context: ${identities.buildContextDigest}\nnegative-fixtures: passed\n`);
+process.stdout.write(`development-project: valid\ntemplate: ${templateDigest}\nagent: ${agentDigest}\nlock: ${lockDigest}\nbuild-context: ${identities.buildContextDigest}\nnegative-fixtures: passed\n`);

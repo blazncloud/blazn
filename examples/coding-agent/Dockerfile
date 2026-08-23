@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 RUN ["npm", "ci", "--ignore-scripts", "--offline", "--no-audit", "--no-fund"]
 COPY src ./src
 COPY test ./test
+COPY scripts/context-identity.mjs ./scripts/context-identity.mjs
 COPY fixtures/task.json ./fixtures/task.json
 COPY fixtures/source ./fixtures/source
 RUN ["node", "--test", "test/coding-agent.test.mjs"]
