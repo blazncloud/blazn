@@ -388,6 +388,21 @@ func validateObservation(value AdmissionObservation) error {
 	return nil
 }
 
+// ValidateAdmissionObservation verifies the complete frozen Sandbox, Pod, and
+// Workload identity chain, including both canonical digests. Callers that
+// retain an observation for later absence proof must validate it before it
+// crosses their persistence or cache boundary.
+func ValidateAdmissionObservation(value AdmissionObservation) error {
+	return validateObservation(value)
+}
+
+// AdmissionObservationDigest returns the canonical digest for an admission
+// observation. The Workload identity must already carry its own canonical
+// digest; ValidateAdmissionObservation performs the complete validation.
+func AdmissionObservationDigest(value AdmissionObservation) string {
+	return admissionObservationDigest(value)
+}
+
 func validFrozenObjectIdentity(value ObjectIdentity, apiVersion, kind string, sandboxName bool) bool {
 	validName := len(value.Name) <= 253 && dnsNamePattern.MatchString(value.Name)
 	if sandboxName {
