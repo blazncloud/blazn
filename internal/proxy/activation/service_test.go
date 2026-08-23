@@ -102,12 +102,25 @@ func (f *fakeEnvironment) CompareAndSet(_ context.Context, request state.Compare
 }
 
 type fakeListener struct {
-	identity state.ListenerIdentity
-	token    string
-	stopped  bool
+	identity      state.ListenerIdentity
+	identities    []state.ListenerIdentity
+	identityCalls int
+	token         string
+	stopped       bool
+	alive         bool
+	shutdownErr   error
 }
 
-func (f *fakeListener) Identity() state.ListenerIdentity { return f.identity }
+func (f *fakeListener) Identity() state.ListenerIdentity {
+	f.identityCalls++
+	if len(f.identities) >= f.identityCalls {
+		return f.identities[f.identityCalls-1]
+	}
+	return f.identity
+}
+func (f *fakeListener) Inspect(context.Context) (state.ListenerIdentity, bool, error) {
+	return f.identity, f.alive, nil
+}
 func (f *fakeListener) ChildEnvironment(base []string) ([]string, error) {
 	result := append([]string(nil), base...)
 	for _, name := range state.EnvironmentNames {
@@ -119,17 +132,31 @@ func (f *fakeListener) ChildEnvironment(base []string) ([]string, error) {
 	}
 	return result, nil
 }
-func (f *fakeListener) Shutdown(context.Context) error { f.stopped = true; return nil }
+func (f *fakeListener) Shutdown(context.Context) error {
+	if f.shutdownErr != nil {
+		return f.shutdownErr
+	}
+	f.stopped = true
+	f.alive = false
+	return nil
+}
 
 type fakeFactory struct {
-	starts     int
-	listeners  map[int]*fakeListener
-	controller *fakeController
+	starts         int
+	listeners      map[int]*fakeListener
+	controller     *fakeController
+	shutdownErr    error
+	mutateIdentity bool
 }
 
 func (f *fakeFactory) Start(_ context.Context, _ proxycontract.Policy, _ string, metadata ListenerMetadata) (ManagedListener, error) {
 	f.starts++
-	listener := &fakeListener{token: "listener-secret-value", identity: state.ListenerIdentity{PID: 4000 + f.starts, ProcessStartIdentity: fmt.Sprintf("start-%d", f.starts), ExecutableIdentity: "exe-identity", Address: "127.0.0.1:8123", ListenerKeyFingerprint: testDigest}}
+	listener := &fakeListener{token: "listener-secret-value", alive: true, shutdownErr: f.shutdownErr, identity: state.ListenerIdentity{PID: 4000 + f.starts, ProcessStartIdentity: fmt.Sprintf("start-%d", f.starts), ExecutableIdentity: "exe-identity", Address: "127.0.0.1:8123", ListenerKeyFingerprint: testDigest}}
+	if f.mutateIdentity {
+		original := listener.identity
+		listener.identities = []state.ListenerIdentity{original}
+		listener.identity.Address = "127.0.0.1:9999"
+	}
 	f.listeners[listener.identity.PID] = listener
 	f.controller.proofs[listener.identity.PID] = state.LiveListenerProof{PID: listener.identity.PID, ProcessStartIdentity: listener.identity.ProcessStartIdentity, ExecutableIdentity: listener.identity.ExecutableIdentity, BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: metadata.Nonce, OwnerUID: int(metadata.OwnerUID), Generation: metadata.Generation, Mode: metadata.Mode, SessionIdentity: metadata.SessionIdentity}
 	return listener, nil
@@ -278,6 +305,18 @@ func (integrationIdentity) Identity(_ context.Context, address, fingerprint stri
 	return state.ListenerIdentity{PID: 777, ProcessStartIdentity: "start", ExecutableIdentity: "binary", Address: address, ListenerKeyFingerprint: fingerprint}, nil
 }
 
+type substitutedIdentity struct{ address, fingerprint string }
+
+func (s substitutedIdentity) Identity(_ context.Context, address, fingerprint string, _ ListenerMetadata) (state.ListenerIdentity, error) {
+	if s.address != "" {
+		address = s.address
+	}
+	if s.fingerprint != "" {
+		fingerprint = s.fingerprint
+	}
+	return state.ListenerIdentity{PID: 778, ProcessStartIdentity: "start", ExecutableIdentity: "binary", Address: address, ListenerKeyFingerprint: fingerprint}, nil
+}
+
 func testService(t *testing.T) (*Service, *fakeStore, *fakeEnvironment, *fakeFactory, *fakePolicies, *fakeRunner) {
 	t.Helper()
 	policy := fixturePolicy(t)
@@ -408,7 +447,7 @@ func TestRunUsesExactArgvAndAlwaysRestores(t *testing.T) {
 	service, store, environment, _, _, runner := testService(t)
 	runner.exit = 23
 	result, err := service.Run(context.Background(), "policy.json", []string{"tool", "a b", "$HOME", ";rm"})
-	if err != nil || result.ExitCode != 23 {
+	if err != nil || result.ExitCode != 23 || result.Status != "completed" || result.State != "inactive" || result.Cleanup == nil || result.Cleanup.Status != "recovered" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	if strings.Join(runner.argv, "|") != "tool|a b|$HOME|;rm" || store.journal != nil {
@@ -417,6 +456,15 @@ func TestRunUsesExactArgvAndAlwaysRestores(t *testing.T) {
 	joined := strings.Join(runner.environment, "\n")
 	if !strings.Contains(joined, "OPENAI_API_KEY=listener-secret-value") || environment.values["OPENAI_API_KEY"] != "prior-openai" {
 		t.Fatal("scoped environment was not exact or restored")
+	}
+}
+
+func TestRunCleanupFailureOverridesTerminalSuccess(t *testing.T) {
+	service, store, _, _, _, _ := testService(t)
+	store.recoverErr = state.ErrOwnershipAmbiguous
+	result, err := service.Run(context.Background(), "policy.json", []string{"tool"})
+	if !errors.Is(err, ErrRecovery) || result.Status != "recovery_required" || result.State != "recovery_required" || result.ExitCode != 9 || result.Cleanup == nil || result.Cleanup.Status != "recovery_required" {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
 
@@ -500,6 +548,73 @@ func TestEmbeddedFactoryWiresAuthenticatedLoopbackRuntime(t *testing.T) {
 	}
 	if err := managed.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEmbeddedFactoryRejectsSubstitutedRuntimeIdentity(t *testing.T) {
+	policy := fixturePolicy(t)
+	base := router.Config{Credentials: integrationCredentials{}, Resolver: router.EndpointResolver{DNS: integrationDNS{}}}
+	metadata := ListenerMetadata{ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", Nonce: strings.Repeat("n", 32), Mode: "scoped_run", SessionIdentity: "session", Generation: 1, OwnerUID: 1000}
+	for _, identity := range []ListenerIdentityProvider{substitutedIdentity{address: "127.0.0.1:1"}, substitutedIdentity{fingerprint: `sha256:` + strings.Repeat("f", 64)}} {
+		if managed, err := (EmbeddedListenerFactory{Address: "127.0.0.1", Router: base, Identity: identity}).Start(context.Background(), policy, testDigest, metadata); err == nil {
+			_ = managed.Shutdown(context.Background())
+			t.Fatal("substituted listener identity was accepted")
+		}
+	}
+}
+
+func TestServiceCapturesIdentityOnceAndDetectsDeadListener(t *testing.T) {
+	service, store, _, factory, _, _ := testService(t)
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := factory.listeners[store.journal.Listener.PID]
+	mutated := listener.identity
+	mutated.Address = "127.0.0.1:9999"
+	listener.identities = []state.ListenerIdentity{listener.identity, mutated}
+	if listener.identityCalls != 1 || result.ListenerAddress != listener.identity.Address {
+		t.Fatalf("identity calls=%d result=%+v", listener.identityCalls, result)
+	}
+	listener.alive = false
+	if result, err := service.On(context.Background(), "policy.json", "auto"); !errors.Is(err, ErrRecovery) || result.State != "recovery_required" {
+		t.Fatalf("dead idempotency=%+v err=%v", result, err)
+	}
+	if result, err := service.Status(context.Background()); !errors.Is(err, ErrRecovery) || result.State != "recovery_required" {
+		t.Fatalf("dead status=%+v err=%v", result, err)
+	}
+}
+
+func TestMutableListenerIdentityFailsBeforePublication(t *testing.T) {
+	service, _, environment, factory, _, _ := testService(t)
+	factory.mutateIdentity = true
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if err == nil || result.State != "inactive" || environment.publishCalls != 0 {
+		t.Fatalf("result=%+v err=%v publishes=%d", result, err, environment.publishCalls)
+	}
+}
+
+func TestDoctorDistinguishesUnsupportedFromFailureAndProvesShutdown(t *testing.T) {
+	service, _, environment, factory, _, _ := testService(t)
+	environment.modeErr = ErrSessionUnsupported
+	if result, err := service.Doctor(context.Background(), "policy.json"); err != nil || result.Status != "warning" {
+		t.Fatalf("unsupported doctor=%+v err=%v", result, err)
+	}
+	environment.modeErr = errors.New("platform state corrupt")
+	if result, err := service.Doctor(context.Background(), "policy.json"); err == nil || result.ExitCode != 7 {
+		t.Fatalf("corrupt doctor=%+v err=%v", result, err)
+	}
+	environment.modeErr = nil
+	factoryStart := factory.starts
+	if result, err := service.Doctor(context.Background(), "policy.json"); err != nil || result.Status != "ready" {
+		t.Fatalf("doctor=%+v err=%v", result, err)
+	}
+	if listener := factory.listeners[4000+factoryStart+1]; listener == nil || !listener.stopped {
+		t.Fatal("doctor did not prove listener shutdown")
+	}
+	factory.shutdownErr = errors.New("shutdown failed")
+	if result, err := service.Doctor(context.Background(), "policy.json"); err == nil || result.ExitCode != 7 {
+		t.Fatalf("shutdown doctor=%+v err=%v", result, err)
 	}
 }
 

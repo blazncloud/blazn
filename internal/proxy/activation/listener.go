@@ -2,6 +2,7 @@ package activation
 
 import (
 	"context"
+	"errors"
 
 	"github.com/blazncloud/blazn/internal/proxy/listener"
 	"github.com/blazncloud/blazn/internal/proxy/router"
@@ -37,6 +38,10 @@ func (f EmbeddedListenerFactory) Start(ctx context.Context, policy proxycontract
 		_ = runtime.Shutdown(context.Background())
 		return nil, err
 	}
+	if identity.PID < 1 || identity.ProcessStartIdentity == "" || identity.ExecutableIdentity == "" || identity.Address != runtime.Address() || identity.ListenerKeyFingerprint != runtime.ListenerKeyFingerprint() {
+		_ = runtime.Shutdown(context.Background())
+		return nil, errors.New("listener identity does not match the authenticated runtime")
+	}
 	return &embeddedListener{Runtime: runtime, identity: identity}, nil
 }
 
@@ -46,6 +51,14 @@ type embeddedListener struct {
 }
 
 func (e *embeddedListener) Identity() state.ListenerIdentity { return e.identity }
+func (e *embeddedListener) Inspect(context.Context) (state.ListenerIdentity, bool, error) {
+	select {
+	case <-e.Runtime.Done():
+		return state.ListenerIdentity{}, false, nil
+	default:
+		return e.identity, true, nil
+	}
+}
 func (e *embeddedListener) ChildEnvironment(base []string) ([]string, error) {
 	return e.Runtime.ChildEnvironment(base)
 }

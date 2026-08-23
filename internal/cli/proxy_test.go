@@ -70,9 +70,16 @@ func TestProxyCLIParsesFrozenCommandsAndExactArgv(t *testing.T) {
 		t.Fatalf("run code=%d argv=%q", code, fake.argv)
 	}
 	stdout.Reset()
+	child := 23
+	fake.result = activation.Result{Command: "proxy run", ContractVersion: activation.ContractVersion, Status: "completed", State: "inactive", ChildExitCode: &child, ExitCode: 23}
+	if code := app.Run([]string{"--output=json", "proxy", "run", "--policy=p", "--", "tool", "--output=json"}); code != 23 || !strings.Contains(stdout.String(), `"childExitCode":23`) || strings.Join(fake.argv, "|") != "tool|--output=json" {
+		t.Fatalf("json child exit code=%d argv=%q out=%s", code, fake.argv, stdout)
+	}
+	stdout.Reset()
 	if code := app.Run([]string{"--output=jsonl", "proxy", "tail", "--cursor", "1", "--follow"}); code != 0 || fake.method != "tail" || fake.cursor != "1" || !fake.follow || !strings.Contains(stdout.String(), `"type":"request_started"`) {
 		t.Fatalf("tail code=%d out=%s", code, stdout)
 	}
+	fake.result = activation.Result{Command: "proxy reset", ContractVersion: activation.ContractVersion, Status: "inactive", State: "inactive"}
 	if code := app.Run([]string{"proxy", "reset", "--yes", "--remove-ca"}); code != 0 || !fake.yes || !fake.removeCA {
 		t.Fatalf("reset code=%d", code)
 	}
