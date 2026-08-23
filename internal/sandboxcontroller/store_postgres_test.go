@@ -33,9 +33,13 @@ func (*fakeExecutor) Close() error { return nil }
 type resultRow struct {
 	values []any
 	err    error
+	delay  time.Duration
 }
 
 func (r resultRow) Scan(destinations ...any) error {
+	if r.delay > 0 {
+		time.Sleep(r.delay)
+	}
 	if r.err != nil {
 		return r.err
 	}
@@ -125,7 +129,9 @@ func TestPgStoreClaimDecodesImmutableWorkItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := &fakeExecutor{rows: []sqlRow{resultRow{values: []any{string(payload)}}}}
+	databaseNow := time.Date(2026, 8, 22, 11, 59, 30, 0, time.UTC)
+	executor := &fakeExecutor{rows: []sqlRow{resultRow{delay: 20 * time.Millisecond,
+		values: []any{string(payload), databaseNow}}}}
 	store := &PgStore{executor: executor}
 	item, err := store.Claim(context.Background(), "worker-1", 30)
 	if err != nil {
@@ -133,7 +139,7 @@ func TestPgStoreClaimDecodesImmutableWorkItem(t *testing.T) {
 	}
 	if item == nil || item.TemplateDigest != "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
 		len(item.Sources) != 1 || item.Sources[0].Commit != "0123456789abcdef0123456789abcdef01234567" ||
-		len(item.Artifacts) != 1 || !item.Artifacts[0].Required {
+		len(item.Artifacts) != 1 || !item.Artifacts[0].Required || item.LeaseRemaining <= 29*time.Second || item.LeaseRemaining >= 29*time.Second+980*time.Millisecond {
 		t.Fatalf("claim decoded incorrectly: %#v", item)
 	}
 	if executor.calls[0].query != claimSQL {
@@ -143,7 +149,7 @@ func TestPgStoreClaimDecodesImmutableWorkItem(t *testing.T) {
 
 func TestPgStoreClaimRejectsInconsistentParallelArrays(t *testing.T) {
 	payload := `{"template_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","source_names":["one"],"source_urls":[]}`
-	executor := &fakeExecutor{rows: []sqlRow{resultRow{values: []any{payload}}}}
+	executor := &fakeExecutor{rows: []sqlRow{resultRow{values: []any{payload, time.Now()}}}}
 	store := &PgStore{executor: executor}
 	if _, err := store.Claim(context.Background(), "worker-1", 30); err == nil {
 		t.Fatal("inconsistent source arrays were accepted")
@@ -172,17 +178,38 @@ func storeIdentityFixture() (sandboxcontrol.SandboxRecord, sandboxcontrol.Worklo
 }
 
 func TestPgStoreRenewPreservesNullAsFence(t *testing.T) {
-	executor := &fakeExecutor{rows: []sqlRow{resultRow{values: []any{sql.NullTime{}}}}}
+	databaseNow := time.Now().UTC().Truncate(time.Microsecond)
+	executor := &fakeExecutor{rows: []sqlRow{resultRow{values: []any{sql.NullTime{}, databaseNow}}}}
 	store := &PgStore{executor: executor}
-	when, ok, err := store.Renew(context.Background(), "operation", "worker", "lease", 30)
-	if err != nil || ok || !when.IsZero() {
-		t.Fatalf("renew fence: when=%v ok=%v err=%v", when, ok, err)
+	window, ok, err := store.Renew(context.Background(), "operation", "worker", "lease", 30)
+	if err != nil || ok || window != (LeaseWindow{}) {
+		t.Fatalf("renew fence: window=%+v ok=%v err=%v", window, ok, err)
 	}
 
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	executor.rows = []sqlRow{resultRow{values: []any{sql.NullTime{Time: now, Valid: true}}}}
-	when, ok, err = store.Renew(context.Background(), "operation", "worker", "lease", 30)
-	if err != nil || !ok || !when.Equal(now) {
-		t.Fatalf("renew success: when=%v ok=%v err=%v", when, ok, err)
+	expiresAt := databaseNow.Add(30 * time.Second)
+	executor.rows = []sqlRow{resultRow{values: []any{sql.NullTime{Time: expiresAt, Valid: true}, databaseNow}}}
+	window, ok, err = store.Renew(context.Background(), "operation", "worker", "lease", 30)
+	if err != nil || !ok || !window.ExpiresAt.Equal(expiresAt) || !window.DatabaseNow.Equal(databaseNow) || window.Remaining <= 29*time.Second || window.Remaining > 30*time.Second {
+		t.Fatalf("renew success: window=%+v ok=%v err=%v", window, ok, err)
+	}
+}
+
+func TestDatabaseLeaseRemainingIgnoresControllerWallClockSkew(t *testing.T) {
+	for _, skew := range []time.Duration{-24 * time.Hour, 24 * time.Hour} {
+		databaseNow := time.Unix(1_700_000_000, 0).Add(skew)
+		if got := databaseLeaseRemaining(databaseNow.Add(30*time.Second), databaseNow, 2*time.Second); got != 28*time.Second {
+			t.Fatalf("skew=%s remaining=%s", skew, got)
+		}
+	}
+}
+
+func TestPgStoreRenewSubtractsResponseDelay(t *testing.T) {
+	databaseNow := time.Unix(1_700_000_000, 0)
+	expiresAt := databaseNow.Add(500 * time.Millisecond)
+	executor := &fakeExecutor{rows: []sqlRow{resultRow{delay: 50 * time.Millisecond,
+		values: []any{sql.NullTime{Time: expiresAt, Valid: true}, databaseNow}}}}
+	window, ok, err := (&PgStore{executor: executor}).Renew(context.Background(), "operation", "worker", "lease", 30)
+	if err != nil || !ok || window.Remaining >= 470*time.Millisecond || window.Remaining <= 250*time.Millisecond {
+		t.Fatalf("delayed renew: window=%+v ok=%v err=%v", window, ok, err)
 	}
 }

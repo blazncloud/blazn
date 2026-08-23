@@ -23,7 +23,6 @@ type Controller struct {
 	store             Store
 	backend           Backend
 	config            Config
-	now               func() time.Time
 	leaseSafetyMargin time.Duration
 }
 
@@ -41,9 +40,9 @@ type heartbeatResult struct {
 }
 
 type renewResult struct {
-	expiresAt time.Time
-	ok        bool
-	err       error
+	window LeaseWindow
+	ok     bool
+	err    error
 }
 
 func New(store Store, backend Backend, config Config) (*Controller, error) {
@@ -53,7 +52,7 @@ func New(store Store, backend Backend, config Config) (*Controller, error) {
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	return &Controller{store: store, backend: backend, config: config, now: time.Now,
+	return &Controller{store: store, backend: backend, config: config,
 		leaseSafetyMargin: defaultLeaseSafetyMargin}, nil
 }
 
@@ -110,7 +109,7 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	if err := validateWorkItem(item); err != nil {
 		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid", Ambiguous: true, Cause: err})
 	}
-	if !c.leaseCoversNextRenew(item.LeaseExpiresAt) {
+	if !c.leaseCoversNextRenew(item.LeaseDeadline) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(parent, c.config.OperationTimeout)
@@ -139,7 +138,7 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, item WorkItem, done chan<- heartbeatResult) {
 	ticker := time.NewTicker(c.config.RenewEvery)
 	defer ticker.Stop()
-	watchdog := time.NewTimer(c.untilLeaseSafetyDeadline(item.LeaseExpiresAt))
+	watchdog := time.NewTimer(c.leaseSafetyDelay(item.LeaseDeadline))
 	defer watchdog.Stop()
 	for {
 		select {
@@ -152,11 +151,11 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 			return
 		case <-ticker.C:
 			result := make(chan renewResult, 1)
-			renewCtx, renewCancel := context.WithDeadline(ctx, item.LeaseExpiresAt.Add(-c.leaseSafetyMargin))
+			renewCtx, renewCancel := context.WithTimeout(ctx, c.leaseSafetyDelay(item.LeaseDeadline))
 			go func() {
-				expiresAt, ok, err := c.store.Renew(renewCtx, item.OperationID, c.config.WorkerID,
+				window, ok, err := c.store.Renew(renewCtx, item.OperationID, c.config.WorkerID,
 					item.LeaseToken, int(c.config.Lease/time.Second))
-				result <- renewResult{expiresAt: expiresAt, ok: ok, err: err}
+				result <- renewResult{window: window, ok: ok, err: err}
 			}()
 			select {
 			case <-ctx.Done():
@@ -169,13 +168,14 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 				cancel()
 				return
 			case renewed := <-result:
+				renewContextErr := renewCtx.Err()
 				renewCancel()
 				if renewed.err != nil {
 					if ctx.Err() != nil {
 						done <- heartbeatResult{kind: heartbeatStopped}
 						return
 					}
-					if c.untilLeaseSafetyDeadline(item.LeaseExpiresAt) <= 0 {
+					if renewContextErr != nil {
 						done <- heartbeatResult{kind: heartbeatLeaseLost}
 					} else {
 						done <- heartbeatResult{kind: heartbeatStoreError, err: renewed.err}
@@ -183,24 +183,26 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 					cancel()
 					return
 				}
-				if !renewed.ok || !c.leaseCoversNextRenew(renewed.expiresAt) {
+				if !renewed.ok || !c.leaseCoversNextRenew(renewed.window.Deadline) {
 					done <- heartbeatResult{kind: heartbeatLeaseLost}
 					cancel()
 					return
 				}
-				item.LeaseExpiresAt = renewed.expiresAt
-				resetTimer(watchdog, c.untilLeaseSafetyDeadline(item.LeaseExpiresAt))
+				item.LeaseExpiresAt = renewed.window.ExpiresAt
+				item.LeaseRemaining = renewed.window.Remaining
+				item.LeaseDeadline = renewed.window.Deadline
+				resetTimer(watchdog, c.leaseSafetyDelay(item.LeaseDeadline))
 			}
 		}
 	}
 }
 
-func (c *Controller) leaseCoversNextRenew(expiresAt time.Time) bool {
-	return !expiresAt.IsZero() && expiresAt.After(c.now().Add(c.config.RenewEvery+c.leaseSafetyMargin))
+func (c *Controller) leaseCoversNextRenew(deadline time.Time) bool {
+	return !deadline.IsZero() && c.leaseSafetyDelay(deadline) > c.config.RenewEvery
 }
 
-func (c *Controller) untilLeaseSafetyDeadline(expiresAt time.Time) time.Duration {
-	return expiresAt.Add(-c.leaseSafetyMargin).Sub(c.now())
+func (c *Controller) leaseSafetyDelay(deadline time.Time) time.Duration {
+	return time.Until(deadline) - c.leaseSafetyMargin
 }
 
 func resetTimer(timer *time.Timer, delay time.Duration) {

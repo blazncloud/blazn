@@ -29,6 +29,8 @@ type WorkItem struct {
 	ExpectedSandboxVersion                                                        int64
 	LeaseToken                                                                    string
 	LeaseExpiresAt                                                                time.Time
+	LeaseRemaining                                                                time.Duration
+	LeaseDeadline                                                                 time.Time
 	Attempt                                                                       int
 	AllocationMode, DesiredState, Architecture                                    string
 	TemplateVersionID, TemplateDigest, VariantName, ImageIndexDigest, ImageDigest string
@@ -41,6 +43,13 @@ type WorkItem struct {
 	Sources                                                                       []Source
 	Artifacts                                                                     []Artifact
 	Admission                                                                     *sandboxcontrol.WorkloadIdentity
+}
+
+type LeaseWindow struct {
+	DatabaseNow time.Time
+	ExpiresAt   time.Time
+	Remaining   time.Duration
+	Deadline    time.Time
 }
 
 type Completion struct {
@@ -62,7 +71,7 @@ const (
 
 type Store interface {
 	Claim(context.Context, string, int) (*WorkItem, error)
-	Renew(context.Context, string, string, string, int) (time.Time, bool, error)
+	Renew(context.Context, string, string, string, int) (LeaseWindow, bool, error)
 	BindBackend(context.Context, string, string, string, sandboxcontrol.SandboxRecord, sandboxcontrol.WorkloadIdentity) (bool, error)
 	Retry(context.Context, string, string, string, int, SafeError) (RetryOutcome, error)
 	Complete(context.Context, string, string, string, Completion) (bool, error)
