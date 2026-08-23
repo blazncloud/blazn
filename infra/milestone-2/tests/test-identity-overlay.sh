@@ -37,7 +37,7 @@ grep -Fx "compose -f $top/infra/compose.yaml -f $top/infra/compose.identity.yaml
 
 BLAZN_IDENTITY_ENABLED=invalid
 export BLAZN_IDENTITY_ENABLED
-if control_plane_compose "$top/infra" "$top/control-plane.env" ps api >"$top/out" 2>"$top/err"; then
+if (control_plane_compose "$top/infra" "$top/control-plane.env" ps api) >"$top/out" 2>"$top/err"; then
   printf 'invalid identity enablement unexpectedly passed\n' >&2
   exit 1
 fi
