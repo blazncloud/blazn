@@ -23,6 +23,7 @@ test("PostgreSQL Project idempotency, optimistic updates, tenant isolation, and 
       service.createProject(owner, workspaceId, "project-create-pg-1", { name: "Launch Video", kind: "content" }),
     ]);
     assert.equal(first.project.id, replay.project.id);
+    const profileArtifactId=randomUUID(),profileDraftId=randomUUID(),profileDigest=`sha256:${"a".repeat(64)}`;await admin.query("INSERT INTO artifacts(id,workspace_id,project_id,kind,media_type,name,status,digest,size_bytes,object_key,created_by) VALUES($1,$2,$3,'content.manifest','data','content-project.json','ready',$4,12,$5,$6)",[profileArtifactId,workspaceId,first.project.id,profileDigest,`profiles/${profileArtifactId}`,owner.userId]);const profileInput={schemaVersion:"blazn.content/project/v1alpha1",draftId:profileDraftId,artifactId:profileArtifactId,digest:profileDigest,status:"active" as const,expectedVersion:0};const profile=await service.putProjectProfile(owner,workspaceId,first.project.id,"content","profile-put-pg-1",profileInput);assert.equal(profile.profile.version,1);assert.equal((await service.getProjectProfile(viewer,workspaceId,first.project.id,"content")).profile.artifactId,profileArtifactId);const profileReplay=await service.putProjectProfile(owner,workspaceId,first.project.id,"content","profile-put-pg-1",profileInput);assert.equal(profileReplay.profile.version,1);await assert.rejects(()=>service.putProjectProfile(viewer,workspaceId,first.project.id,"content","profile-viewer-pg",{...profileInput,expectedVersion:1}),isCode("permission_denied"));await assert.rejects(()=>service.putProjectProfile(owner,workspaceId,first.project.id,"content","profile-digest-pg",{...profileInput,expectedVersion:1,digest:`sha256:${"b".repeat(64)}`}),isCode("artifact_not_found"));await assert.rejects(()=>admin.query("UPDATE artifacts SET status='deleted',object_key=NULL WHERE id=$1",[profileArtifactId]),pgCode("23514"));
     await assert.rejects(() => service.createProject(owner, workspaceId, "project-create-pg-1", { name: "Changed" }), isCode("idempotency_conflict"));
     assert.equal((await service.listProjects(viewer, workspaceId)).items.length, 1);
     assert.equal((await service.getProject(viewer, workspaceId, first.project.id)).project.id, first.project.id);
@@ -42,7 +43,7 @@ test("PostgreSQL Project idempotency, optimistic updates, tenant isolation, and 
     assert.equal((await service.listProjects(owner, workspaceId, "active")).items.length, 0);
     assert.equal((await service.listProjects(owner, workspaceId, "archived")).items.length, 1);
     const audits = await admin.query<{ event_type: string }>("SELECT event_type FROM workspace_audit_events WHERE workspace_id=$1 AND event_type LIKE 'project.%' ORDER BY created_at,id", [workspaceId]);
-    assert.deepEqual(audits.rows.map((row) => row.event_type), ["project.created", "project.updated", "project.updated"]);
+    assert.deepEqual(audits.rows.map((row) => row.event_type), ["project.created", "project.profile_put", "project.updated", "project.updated"]);
     await assert.rejects(() => runtime.query("DELETE FROM projects WHERE id=$1", [first.project.id]), (error: unknown) => !!error && typeof error === "object" && "code" in error && error.code === "42501");
   } finally {
     await admin.query("DELETE FROM workspaces WHERE id=ANY($1::uuid[])", [[workspaceId, otherWorkspaceId]]).catch(() => {});
@@ -59,3 +60,4 @@ function principal(): ProjectPrincipal {
 function isCode(code: string): (error: unknown) => boolean {
   return (error) => error instanceof ProjectHttpError && error.code === code;
 }
+function pgCode(code:string){return(error:unknown)=>!!error&&typeof error==="object"&&"code" in error&&error.code===code;}

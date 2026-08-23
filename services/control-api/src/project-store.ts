@@ -1,7 +1,7 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import type { Database } from "./db.js";
 import type { IdempotencyReceipt } from "./workspace-store.js";
-import type { Project, ProjectAccess, ProjectStatus } from "./project-types.js";
+import type { Project, ProjectAccess, ProjectProfile, ProjectProfileStatus, ProjectStatus } from "./project-types.js";
 
 export interface ProjectTransaction {
   lockIdempotency(principalId: string, operation: string, key: string): Promise<void>;
@@ -12,6 +12,9 @@ export interface ProjectTransaction {
   getProject(workspaceId: string, projectId: string, lock?: boolean): Promise<Project | undefined>;
   listProjects(workspaceId: string, status: ProjectStatus | "all", cursor?: string): Promise<{ items: Project[]; nextCursor: string | null }>;
   updateProject(workspaceId: string, projectId: string, expectedVersion: number, changes: { name?: string; description?: string; status?: ProjectStatus }): Promise<Project | undefined>;
+  getProjectProfile(workspaceId:string,projectId:string,kind:string,lock?:boolean):Promise<ProjectProfile|undefined>;
+  getProfileArtifact(workspaceId:string,projectId:string,artifactId:string):Promise<{digest:string;status:string}|undefined>;
+  putProjectProfile(input:{workspaceId:string;projectId:string;kind:string;schemaVersion:string;draftId:string;artifactId:string;digest:string;status:ProjectProfileStatus;expectedVersion:number;userId:string}):Promise<ProjectProfile|undefined>;
   insertAudit(id: string, workspaceId: string, actorUserId: string, type: string, payload: unknown): Promise<void>;
 }
 
@@ -84,6 +87,9 @@ class PgProjectTransaction implements ProjectTransaction {
       WHERE workspace_id=$1 AND id=$2 AND version=$6 RETURNING *`, [workspaceId, projectId, changes.name ?? null, changes.description ?? null, changes.status ?? null, expectedVersion]);
     return result.rows[0] ? projectRow(result.rows[0]) : undefined;
   }
+  async getProjectProfile(workspaceId:string,projectId:string,kind:string,lock=false){const result=await this.client.query(`SELECT * FROM project_profiles WHERE workspace_id=$1 AND project_id=$2 AND kind=$3${lock?" FOR UPDATE":""}`,[workspaceId,projectId,kind]);return result.rows[0]?profileRow(result.rows[0]):undefined;}
+  async getProfileArtifact(workspaceId:string,projectId:string,artifactId:string){const result=await this.client.query("SELECT digest,status FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND id=$3",[workspaceId,projectId,artifactId]);return result.rows[0]?{digest:result.rows[0].digest,status:result.rows[0].status}:undefined;}
+  async putProjectProfile(input:{workspaceId:string;projectId:string;kind:string;schemaVersion:string;draftId:string;artifactId:string;digest:string;status:ProjectProfileStatus;expectedVersion:number;userId:string}){if(input.expectedVersion===0){const result=await this.client.query("INSERT INTO project_profiles(workspace_id,project_id,kind,schema_version,draft_id,artifact_id,digest,status,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) ON CONFLICT DO NOTHING RETURNING *",[input.workspaceId,input.projectId,input.kind,input.schemaVersion,input.draftId,input.artifactId,input.digest,input.status,input.userId]);return result.rows[0]?profileRow(result.rows[0]):undefined;}const result=await this.client.query("UPDATE project_profiles SET schema_version=$4,draft_id=$5,artifact_id=$6,digest=$7,status=$8,version=version+1,updated_by=$9,updated_at=clock_timestamp() WHERE workspace_id=$1 AND project_id=$2 AND kind=$3 AND version=$10 RETURNING *",[input.workspaceId,input.projectId,input.kind,input.schemaVersion,input.draftId,input.artifactId,input.digest,input.status,input.userId,input.expectedVersion]);return result.rows[0]?profileRow(result.rows[0]):undefined;}
 
   async insertAudit(id: string, workspaceId: string, actorUserId: string, type: string, payload: unknown): Promise<void> {
     await this.client.query("INSERT INTO workspace_audit_events(id,workspace_id,actor_user_id,event_type,payload) VALUES($1,$2,$3,$4,$5)", [id, workspaceId, actorUserId, type, payload]);
@@ -105,6 +111,7 @@ function projectRow(row: QueryResultRow): Project {
     updatedAt: timestamp(row.updated_at),
   };
 }
+function profileRow(row:QueryResultRow):ProjectProfile{return{workspaceId:row.workspace_id,projectId:row.project_id,kind:row.kind,schemaVersion:row.schema_version,version:Number(row.version),draftId:row.draft_id,artifactId:row.artifact_id,digest:row.digest,status:row.status,createdBy:row.created_by,updatedBy:row.updated_by,createdAt:timestamp(row.created_at),updatedAt:timestamp(row.updated_at)}}
 
 function timestamp(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();

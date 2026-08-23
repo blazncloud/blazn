@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { jsonBody, sendJson } from "./http.js";
 import type { CreateProjectInput, ProjectService, UpdateProjectInput } from "./project-service.js";
-import { ProjectHttpError, type ProjectPrincipal, type ProjectStatus } from "./project-types.js";
+import { ProjectHttpError, type ProjectPrincipal, type ProjectProfileStatus, type ProjectStatus, type PutProjectProfileInput } from "./project-types.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -9,7 +9,7 @@ export class ProjectHttpRouter {
   constructor(private readonly service: ProjectService) {}
 
   matches(pathname: string): boolean {
-    return /^\/v1\/workspaces\/[^/]+\/projects(?:\/[^/]+)?$/.test(pathname);
+    return /^\/v1\/workspaces\/[^/]+\/projects(?:\/[^/]+(?:\/profiles\/[^/]+)?)?$/.test(pathname);
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL, principal: ProjectPrincipal): Promise<void> {
@@ -31,6 +31,7 @@ export class ProjectHttpRouter {
       throw methodNotAllowed();
     }
 
+    const profile=url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)\/profiles\/([^/]+)$/);if(profile){const workspaceId=uuid(profile[1]??"","workspaceId"),projectId=uuid(profile[2]??"","projectId"),kind=nonEmpty(profile[3],"profileKind",63);if(request.method==="GET")return sendJson(response,200,await this.service.getProjectProfile(principal,workspaceId,projectId,kind));if(request.method!=="PUT")throw methodNotAllowed();const body=await jsonBody(request);exactOptional(body,["schemaVersion","draftId","artifactId","digest","status","expectedVersion"],[]);const input:PutProjectProfileInput={schemaVersion:nonEmpty(body.schemaVersion,"schemaVersion",128),draftId:uuid(String(body.draftId??""),"draftId"),artifactId:uuid(String(body.artifactId??""),"artifactId"),digest:nonEmpty(body.digest,"digest",71),status:profileStatus(body.status),expectedVersion:nonnegativeInteger(body.expectedVersion,"expectedVersion")};return sendJson(response,200,await this.service.putProjectProfile(principal,workspaceId,projectId,kind,idempotency(request),input));}
     const resource = url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)$/);
     if (!resource) throw new ProjectHttpError("project_not_found", "project route was not found");
     const workspaceId = uuid(resource[1] ?? "", "workspaceId");
@@ -93,11 +94,13 @@ function integer(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 1) throw new ProjectHttpError("invalid_request", `${field} must be a positive integer`);
   return value as number;
 }
+function nonnegativeInteger(value:unknown,field:string):number{if(!Number.isSafeInteger(value)||(value as number)<0)throw new ProjectHttpError("invalid_request",`${field} must be a nonnegative integer`);return value as number;}
 
 function projectStatus(value: unknown): ProjectStatus {
   if (value !== "active" && value !== "archived") throw new ProjectHttpError("invalid_request", "status is invalid");
   return value;
 }
+function profileStatus(value:unknown):ProjectProfileStatus{if(value!=="active"&&value!=="archived")throw new ProjectHttpError("invalid_request","profile status is invalid");return value;}
 
 function methodNotAllowed(): ProjectHttpError {
   return new ProjectHttpError("method_not_allowed", "method is not allowed for this Project route");
