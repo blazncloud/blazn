@@ -212,6 +212,14 @@ func (a *App) writeProxyError(format OutputFormat, err error, suggested int) int
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE"
 		message = "proxy is already active in a different mode or OS session"
 		exit = 6
+	case errors.Is(err, activation.ErrLifecycleDeadline):
+		code = "PROXY_LIFECYCLE_DEADLINE"
+		message = "proxy lifecycle operation exceeded its deadline"
+		exit = 8
+	case errors.Is(err, activation.ErrLifecycleConflict):
+		code = "PROXY_LIFECYCLE_CONFLICT"
+		message = "another proxy lifecycle operation is in progress"
+		exit = 6
 	case errors.Is(err, activation.ErrRecovery):
 		code = "RECOVERY_REQUIRED"
 		message = "proxy recovery is required"
