@@ -35,16 +35,17 @@ func (f *fakePolicies) Load(string) (proxycontract.Policy, string, error) {
 }
 
 type fakeEnvironment struct {
-	values       map[string]string
-	markers      map[string]string
-	configs      map[string]string
-	publishCalls int
-	publishErr   error
-	modeErr      error
-	resolvedMode string
-	session      string
-	afterPublish func()
-	beforeCAS    func()
+	values         map[string]string
+	markers        map[string]string
+	configs        map[string]string
+	publishCalls   int
+	publishErr     error
+	modeErr        error
+	resolvedMode   string
+	session        string
+	afterPublish   func()
+	beforeSnapshot func()
+	beforeCAS      func()
 }
 
 func newFakeEnvironment() *fakeEnvironment {
@@ -71,6 +72,11 @@ func (f *fakeEnvironment) ResolveMode(value string) (string, string, error) {
 	return mode, "systemd_user_environment", nil
 }
 func (f *fakeEnvironment) Snapshot(_ context.Context, names []string) (map[string]PriorValue, error) {
+	if f.beforeSnapshot != nil {
+		operation := f.beforeSnapshot
+		f.beforeSnapshot = nil
+		operation()
+	}
 	result := map[string]PriorValue{}
 	for _, name := range names {
 		value, ok := f.values[name]
@@ -809,6 +815,75 @@ func TestHealthyLifecycleContentionUsesConflictAndDeadlineResults(t *testing.T) 
 			t.Fatalf("result=%+v err=%v", result, err)
 		}
 	})
+
+	t.Run("run initial activation race disappears", func(t *testing.T) {
+		service, store, _, _, _, _ := testService(t)
+		store.activateErr = errors.Join(errActivationRace, state.ErrLifecycleConflict)
+		result, err := service.Run(context.Background(), "policy.json", []string{"tool"})
+		if !errors.Is(err, ErrLifecycleConflict) || errors.Is(err, ErrRecovery) || result.Status != "conflict" || result.State != "unknown" || result.ExitCode != 6 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+}
+
+func TestPersistentStoreRunInitialActivationRaceIsAHealthyConflict(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		winnerDigest string
+		wantErr      error
+	}{
+		{name: "same policy different scope", winnerDigest: testDigest, wantErr: ErrDifferentScope},
+		{name: "different policy", winnerDigest: "sha256:" + strings.Repeat("b", 64), wantErr: ErrDifferentPolicy},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy")
+			loserStore, err := newStateStoreAt(root, os.Getuid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			winnerStore, err := newStateStoreAt(root, os.Getuid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := &fakeController{proofs: map[int]state.LiveListenerProof{}}
+			factory := &fakeFactory{listeners: map[int]*fakeListener{}, controller: controller}
+			winnerEnvironment := newFakeEnvironment()
+			winner, err := New(Dependencies{
+				Store: PersistentStore{Value: winnerStore}, Environment: winnerEnvironment, Listeners: factory, Controller: controller,
+				Policies: &fakePolicies{policy: fixturePolicy(t), digest: testCase.winnerDigest}, Runner: &fakeRunner{}, Events: fakeEvents{},
+				Binary: state.BinaryIdentity{Path: "/usr/local/bin/blazn", Digest: testDigest}, OwnerUID: os.Getuid(), Now: time.Now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			loserEnvironment := newFakeEnvironment()
+			loserEnvironment.beforeSnapshot = func() {
+				if result, winnerErr := winner.On(context.Background(), "winner.json", "auto"); winnerErr != nil {
+					t.Fatalf("winner activation = %+v, %v", result, winnerErr)
+				}
+			}
+			loser, err := New(Dependencies{
+				Store: PersistentStore{Value: loserStore}, Environment: loserEnvironment, Listeners: factory, Controller: controller,
+				Policies: &fakePolicies{policy: fixturePolicy(t), digest: testDigest}, Runner: &fakeRunner{}, Events: fakeEvents{},
+				Binary: state.BinaryIdentity{Path: "/usr/local/bin/blazn", Digest: testDigest}, OwnerUID: os.Getuid(), Now: time.Now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, runErr := loser.Run(context.Background(), "loser.json", []string{"tool"})
+			if !errors.Is(runErr, testCase.wantErr) || errors.Is(runErr, ErrRecovery) || result.Status != "conflict" || result.State != "active" || result.ExitCode != 6 {
+				t.Fatalf("run result=%+v err=%v", result, runErr)
+			}
+			if factory.starts != 2 || !factory.listeners[4001].stopped || factory.listeners[4002].stopped {
+				t.Fatalf("listener lifecycle starts=%d loser=%+v winner=%+v", factory.starts, factory.listeners[4001], factory.listeners[4002])
+			}
+			current, reconcileErr := winnerStore.Reconcile(context.Background())
+			if reconcileErr != nil || current.State != state.ReconciliationActive || current.PolicyDigest != testCase.winnerDigest {
+				t.Fatalf("winner authority = %+v, %v", current, reconcileErr)
+			}
+		})
+	}
 }
 
 func TestRunCleanupFailureOverridesTerminalSuccess(t *testing.T) {
