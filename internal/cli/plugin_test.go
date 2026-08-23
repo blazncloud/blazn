@@ -12,15 +12,15 @@ import (
 )
 
 type fakePlugins struct {
-	installed bool
-	installs  int
-	runs      int
-	args      []string
-	format    string
-	name      string
+	installed   bool
+	installs    int
+	runs        int
+	args        []string
+	format      string
+	name        string
 	installName string
-	runName string
-	context   pluginpkg.RuntimeContext
+	runName     string
+	context     pluginpkg.RuntimeContext
 }
 
 func (f *fakePlugins) definition() pluginpkg.Definition {
