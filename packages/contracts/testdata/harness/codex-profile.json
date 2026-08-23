@@ -118,7 +118,8 @@
       "maxFollowUps": 10
     },
     "status": "approved",
-    "digest": "sha256:1cee28b5d77d7351f999bebfda2f18fe8f6145edfec1605117baa95d9f6457ad",
+    "directProviderAuthorization": null,
+    "digest": "sha256:ad03a4f57b52353abc2090a13c586a646e64975000962d53c27397387ddf3541",
     "resourceVersion": 1
   }
 }

@@ -36,11 +36,15 @@ the immutable AgentVersion permits one approved attempt.
 Credential declarations use typed route, repository, or tool scopes. Every
 run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
-revoked lease metadata and never secret material.
+revoked lease metadata and never secret material. Nonterminal Runs may record
+an active lease with `revokedAt=null`; terminal Runs require an ordered
+revocation timestamp for every lease.
 Authenticated proxy profiles must use `model.proxy`. A broader provider
-credential is refused unless the Profile carries an explicit DIRECT
-authorization and the Run records a matching `DIRECT` decision authenticated
-with provider-capability proof; proxy-routed Runs cannot silently become direct.
+credential is refused unless the Profile resolves an approved, same-Workspace
+DIRECT authorization bound to the exact Profile, route version, capability,
+and provider. The Run records that authorization ID in a matching `DIRECT`
+decision authenticated with provider-capability proof; proxy-routed Runs cannot
+silently become direct.
 
 ## Normalized execution
 
@@ -59,6 +63,10 @@ after acknowledgement, process-tree termination, credential revocation,
 Artifact handling, and cleanup. A harness exit cannot turn a cancelled Run
 into success.
 
+Nonterminal Runs have no terminal Result, completion timestamp, or terminal
+event. Terminal Runs require all three to agree with the authoritative Run
+status and receipt. Once cancellation is acknowledged, a Run cannot succeed.
+
 Messages are normalized resources with exact Run, Session, Conversation,
 generation, ordinal, parent, follow-up target, and content-digest identity.
 Parents and follow-up targets must precede the child, empty cursors remain zero,
@@ -69,6 +77,9 @@ one request and its later acknowledgement.
 Terminal patch, summary, and other result Artifacts resolve to the same tenant
 with distinct role, kind, media type, and content digest. The complete terminal
 snapshot is bound by a domain-separated receipt digest.
+Agent output declarations are closed to the runnable `patch`, `summary`, and
+`output` roles so publication cannot create an AgentVersion that no adapter can
+complete.
 
 Run provenance captures exact AgentVersion, HarnessVersion, HarnessProfile,
 SandboxTemplateVersion, source repository/commit, model route/version/protocol,

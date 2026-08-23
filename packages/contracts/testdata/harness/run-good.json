@@ -43,7 +43,7 @@
         },
         "harnessProfile": {
             "id": "21000000-0000-4000-8000-000000000001",
-            "digest": "sha256:4f8deb4fdcfb5299779591cf50365d04d36d164b448dd9d0fae359f0f45598c2"
+            "digest": "sha256:fcdc1a3402105248c947780c71d94dd1569b5fb538c1584e109c4c456748c316"
         },
         "sandboxTemplateVersion": {
             "id": "60000000-0000-4000-8000-000000000001",
@@ -254,6 +254,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:c4951c421b6b8330636dcc8f022a89c151e7433b7291489b8b4fcdbaf8725c2b"
+        "receiptDigest": "sha256:cd69660d7e2e7acd3131af2e2083083b9ce1589d63aa8bf1257fe896349bbddb"
     }
 }

@@ -4,7 +4,7 @@
     "id": "19000000-0000-4000-8000-000000000001",
     "kind": "hermes",
     "publisher": "blazncloud",
-    "status": "approved",
+        "status": "approved",
     "supportedPlatforms": [
       "linux/amd64",
       "linux/arm64"
@@ -119,7 +119,8 @@
       "maxFollowUps": 10
     },
     "status": "approved",
-    "digest": "sha256:4f8deb4fdcfb5299779591cf50365d04d36d164b448dd9d0fae359f0f45598c2",
+    "directProviderAuthorization": null,
+    "digest": "sha256:fcdc1a3402105248c947780c71d94dd1569b5fb538c1584e109c4c456748c316",
     "resourceVersion": 1
   }
 }
