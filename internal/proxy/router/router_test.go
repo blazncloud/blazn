@@ -1,6 +1,7 @@
 package router
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -469,6 +470,14 @@ func TestListenerAuthenticationAndModels(t *testing.T) {
 	if ambiguous.Code != 401 {
 		t.Fatalf("ambiguous status=%d", ambiguous.Code)
 	}
+	malformedMixedRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	malformedMixedRequest.Header.Set("Authorization", "Basic listener-secret")
+	malformedMixedRequest.Header.Set("x-api-key", "listener-secret")
+	malformedMixed := httptest.NewRecorder()
+	handler.ServeHTTP(malformedMixed, malformedMixedRequest)
+	if malformedMixed.Code != 401 {
+		t.Fatalf("malformed mixed credential status=%d", malformedMixed.Code)
+	}
 	authorizedRequest := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	authorizedRequest.Header.Set("x-api-key", "listener-secret")
 	authorized := httptest.NewRecorder()
@@ -480,6 +489,135 @@ func TestListenerAuthenticationAndModels(t *testing.T) {
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if health.Code != 200 || strings.Contains(health.Body.String(), "policy") {
 		t.Fatalf("health leaked state: %s", health.Body.String())
+	}
+}
+
+func TestAnthropicSourceRoutesNonstreamAndStripsListenerCredential(t *testing.T) {
+	var authorization, apiKey, path, body string
+	handler, _ := testHandler(t, func(_ proxycontract.Route, incoming *http.Request) (*http.Response, error) {
+		authorization = incoming.Header.Get("Authorization")
+		apiKey = incoming.Header.Get("x-api-key")
+		path = incoming.URL.Path
+		raw, _ := io.ReadAll(incoming.Body)
+		body = string(raw)
+		return response(200, "application/json", `{"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}`), nil
+	}, nil)
+	incoming := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"stream":false}`))
+	incoming.Header.Set("x-api-key", "listener-secret")
+	incoming.Header.Set("anthropic-version", "2023-06-01")
+	incoming.Header.Set("Content-Type", "application/json")
+	record := httptest.NewRecorder()
+	handler.ServeHTTP(record, incoming)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), `"type":"message"`) || !strings.Contains(record.Body.String(), `"text":"hello"`) {
+		t.Fatalf("anthropic response %d: %s", record.Code, record.Body.String())
+	}
+	if authorization != "Bearer local-destination" || apiKey != "" || strings.Contains(body, "listener-secret") || path != "/v1/chat/completions" {
+		t.Fatalf("unsafe Anthropic dispatch auth=%q apiKey=%q path=%q body=%q", authorization, apiKey, path, body)
+	}
+}
+
+func TestAnthropicSourceRequiresExactVersionAndFrozenNonstreamProfile(t *testing.T) {
+	handler, _ := testHandler(t, func(proxycontract.Route, *http.Request) (*http.Response, error) {
+		t.Fatal("upstream should not run")
+		return nil, nil
+	}, nil)
+	base := `{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`
+	tests := []struct{ name, version, body string }{
+		{"missing version", "", base},
+		{"wrong version", "2024-01-01", base},
+		{"stream", "2023-06-01", `{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"stream":true}`},
+		{"stop", "2023-06-01", `{"model":"company-assistant-restricted","max_tokens":32,"messages":[{"role":"user","content":"hi"}],"stop_sequences":["END"]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			incoming := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(test.body))
+			incoming.Header.Set("Authorization", "Bearer listener-secret")
+			incoming.Header.Set("Content-Type", "application/json")
+			if test.version != "" {
+				incoming.Header.Set("anthropic-version", test.version)
+			}
+			record := httptest.NewRecorder()
+			handler.ServeHTTP(record, incoming)
+			if record.Code != 400 || !strings.Contains(record.Body.String(), `"type":"error"`) {
+				t.Fatalf("status=%d body=%s", record.Code, record.Body.String())
+			}
+		})
+	}
+}
+
+func TestAnthropicMethodAndContentTypeErrorsUseAnthropicEnvelope(t *testing.T) {
+	handler, _ := testHandler(t, func(proxycontract.Route, *http.Request) (*http.Response, error) {
+		t.Fatal("upstream should not run")
+		return nil, nil
+	}, nil)
+	tests := []struct {
+		name, method, contentType string
+		wantStatus                int
+	}{
+		{"method", http.MethodGet, "application/json", http.StatusMethodNotAllowed},
+		{"content type", http.MethodPost, "text/plain", http.StatusUnsupportedMediaType},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			incoming := httptest.NewRequest(test.method, "/v1/messages", strings.NewReader(`{}`))
+			incoming.Header.Set("Authorization", "Bearer listener-secret")
+			incoming.Header.Set("anthropic-version", "2023-06-01")
+			incoming.Header.Set("Content-Type", test.contentType)
+			record := httptest.NewRecorder()
+			handler.ServeHTTP(record, incoming)
+			if record.Code != test.wantStatus || record.Header().Get("Content-Type") != "application/json" || !strings.Contains(record.Body.String(), `"type":"error"`) || !strings.Contains(record.Body.String(), `"type":"invalid_request_error"`) || strings.Contains(record.Body.String(), "blazn_proxy_error") {
+				t.Fatalf("status=%d headers=%v body=%s", record.Code, record.Header(), record.Body.String())
+			}
+		})
+	}
+}
+
+func TestNonstreamOutputUsageAboveRequestedLimitIsRejected(t *testing.T) {
+	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		return response(200, "application/json", `{"choices":[{"message":{"content":"too long"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":33}}`), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant-restricted","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":32}`)
+	if record.Code != 502 || !strings.Contains(record.Body.String(), "upstream response exceeded the output limit") || strings.Contains(record.Body.String(), "too long") {
+		t.Fatalf("output limit response %d: %s", record.Code, record.Body.String())
+	}
+}
+
+func TestStreamingOutputUsageAboveRequestedLimitFailsClosed(t *testing.T) {
+	handler, _ := testHandler(t, func(_ proxycontract.Route, _ *http.Request) (*http.Response, error) {
+		body := "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"too much\"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":33}}\n\n" +
+			"data: [DONE]\n\n"
+		return response(200, "text/event-stream", body), nil
+	}, nil)
+	record := request(handler, "/v1/chat/completions", `{"model":"company-assistant-restricted","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":32,"stream":true}`)
+	if record.Code != 200 || !strings.Contains(record.Body.String(), "upstream stream exceeded the output limit") || strings.Contains(record.Body.String(), `"finish_reason":"stop"`) {
+		t.Fatalf("stream output limit response %d: %s", record.Code, record.Body.String())
+	}
+}
+
+func TestStreamBudgetsRejectBytesEventsAndToolAccumulation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		normalizer *streamNormalizer
+	}{
+		{"bytes", &streamNormalizer{totalBytes: maxStreamBytes}},
+		{"events", &streamNormalizer{wireEvents: maxStreamEvents}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scanner := bufio.NewScanner(strings.NewReader("data: {}\n"))
+			if _, _, _, err := nextStreamEvents(scanner, test.normalizer, proxycontract.ProtocolOpenAIChat, newUUID()); err == nil {
+				t.Fatal("over-budget stream was accepted")
+			}
+		})
+	}
+	encoder := sourceStreamEncoder{toolArguments: map[string]string{}, toolArgumentBytes: maxToolArgumentBytes - 1}
+	if err := encoder.appendToolArguments("call", "xx"); err == nil {
+		t.Fatal("over-budget tool arguments were accumulated")
+	}
+	encoder = sourceStreamEncoder{writer: io.Discard, maxBytes: 1}
+	if err := encoder.emit(map[string]string{"type": "x"}); err == nil {
+		t.Fatal("over-budget source stream frame was emitted")
 	}
 }
 
@@ -615,6 +753,9 @@ func TestEndpointResolverRejectsSSRFAndPinsAllowedAddresses(t *testing.T) {
 	resolved, err := resolver.Resolve(context.Background(), external)
 	if err != nil || len(resolved.Addresses) != 1 {
 		t.Fatalf("resolve: %#v %v", resolved, err)
+	}
+	if resolved.Transport == nil || resolved.Transport.MaxResponseHeaderBytes != maxResponseHeaderBytes {
+		t.Fatalf("response header limit=%v", resolved.Transport)
 	}
 	local := policy.Routes[0]
 	resolver = EndpointResolver{DNS: staticDNS{"127.0.0.1": {netip.MustParseAddr("192.168.1.2")}}}
