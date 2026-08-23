@@ -20,7 +20,7 @@
         "id": "33000000-0000-4000-8000-000000000001",
         "conversationId": "34000000-0000-4000-8000-000000000001",
         "messageCursor": 2,
-        "eventCursor": 6,
+        "eventCursor": 7,
         "followUpCount": 1,
         "resumeGeneration": 1,
         "cancellation": {
@@ -66,7 +66,8 @@
             "routeVersion": 1,
             "policyId": "73000000-0000-4000-8000-000000000001",
             "policyVersion": 1,
-            "authentication": "proxy-workload-proof"
+            "authentication": "proxy-workload-proof",
+            "authorizationId": null
         },
         "node": {
             "id": "72000000-0000-4000-8000-000000000001",
@@ -213,6 +214,19 @@
             "sessionId": "33000000-0000-4000-8000-000000000001",
             "sequence": 6,
             "cursor": "e6",
+            "type": "artifact.created",
+            "source": "adapter",
+            "observedAt": "2026-08-22T00:04:59Z",
+            "payload": {"artifactId":"36000000-0000-4000-8000-000000000002"},
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000008",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 7,
+            "cursor": "e7",
             "type": "result.terminal",
             "source": "control-plane",
             "observedAt": "2026-08-22T00:05:00Z",
@@ -240,6 +254,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:5755680bbb77aa25cdfc9e3346d47a7eef7a7c905acefbdab3727ed165548561"
+        "receiptDigest": "sha256:c4951c421b6b8330636dcc8f022a89c151e7433b7291489b8b4fcdbaf8725c2b"
     }
 }

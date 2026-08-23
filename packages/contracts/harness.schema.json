@@ -446,6 +446,9 @@
                 "digest": {
                     "$ref": "#/$defs/digest"
                 },
+                "directProviderAuthorizationId": {
+                    "$ref": "#/$defs/id"
+                },
                 "resourceVersion": {
                     "type": "integer",
                     "minimum": 1
