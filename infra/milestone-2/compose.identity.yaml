@@ -1,0 +1,17 @@
+services:
+  api:
+    environment:
+      ZITADEL_ISSUER_URL: ${ZITADEL_ISSUER_URL:?set the qualified self-hosted ZITADEL issuer}
+      ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID:?set the qualified Blazn ZITADEL web client ID}
+      ZITADEL_CLIENT_SECRET_FILE: /run/secrets/zitadel_client_secret
+      ZITADEL_REQUIRE_MFA: ${ZITADEL_REQUIRE_MFA:-true}
+      OIDC_COOKIE_KEY_FILE: /run/secrets/oidc_cookie_key
+    secrets:
+      - zitadel_client_secret
+      - oidc_cookie_key
+
+secrets:
+  zitadel_client_secret:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-client-secret
+  oidc_cookie_key:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/oidc-cookie-key

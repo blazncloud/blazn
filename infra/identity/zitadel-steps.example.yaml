@@ -1,0 +1,12 @@
+FirstInstance:
+  Org:
+    Name: Blazn
+    Human:
+      Username: blazn-admin
+      FirstName: Blazn
+      LastName: Administrator
+      Email:
+        Address: REPLACE_INITIAL_ADMIN_EMAIL
+        Verified: true
+      Password: REPLACE_INITIAL_ADMIN_PASSWORD
+      PasswordChangeRequired: true

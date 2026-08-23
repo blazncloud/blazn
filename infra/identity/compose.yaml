@@ -1,0 +1,154 @@
+name: blazn-identity
+
+services:
+  proxy:
+    image: ${ZITADEL_TRAEFIK_IMAGE:?set ZITADEL_TRAEFIK_IMAGE to a reviewed immutable digest}
+    restart: unless-stopped
+    command: ["--configFile=/etc/traefik/traefik.yaml"]
+    volumes:
+      - type: bind
+        source: ./traefik.yaml
+        target: /etc/traefik/traefik.yaml
+        read_only: true
+      - type: bind
+        source: ./traefik-routes.yaml
+        target: /etc/traefik/routes.yaml
+        read_only: true
+    ports:
+      - "${BLAZN_IDENTITY_BIND_ADDRESS:-127.0.0.1}:${ZITADEL_PROXY_PORT:-58081}:8080"
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+      zitadel-login:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - identity
+
+  postgres:
+    image: ${ZITADEL_POSTGRES_IMAGE:?set ZITADEL_POSTGRES_IMAGE to a reviewed immutable digest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+    secrets:
+      - postgres_admin_password
+    volumes:
+      - type: bind
+        source: ${BLAZN_IDENTITY_DATA_ROOT:?set BLAZN_IDENTITY_DATA_ROOT}/postgres
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d postgres -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - identity
+
+  zitadel-api:
+    image: ${ZITADEL_IMAGE:?set ZITADEL_IMAGE to a reviewed immutable digest}
+    restart: unless-stopped
+    user: "0"
+    command:
+      - start-from-init
+      - --config=/etc/zitadel/config.yaml
+      - --config=/run/secrets/zitadel_secrets
+      - --steps=/run/secrets/zitadel_steps
+      - --masterkeyFile=/run/secrets/zitadel_masterkey
+      - --tlsMode=external
+    environment:
+      ZITADEL_PORT: "8080"
+      ZITADEL_EXTERNALDOMAIN: ${ZITADEL_DOMAIN:?set ZITADEL_DOMAIN}
+      ZITADEL_EXTERNALPORT: "443"
+      ZITADEL_EXTERNALSECURE: "true"
+      ZITADEL_TLS_ENABLED: "false"
+      ZITADEL_SYSTEMDEFAULTS_MULTIFACTORS_OTP_ISSUER: Blazn
+      ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH: /zitadel/bootstrap/login-client.pat
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME: login-client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME: Blazn Login Client
+      ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE: ${ZITADEL_LOGIN_CLIENT_PAT_EXPIRATION:?set a reviewed RFC3339 expiration}
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"
+      ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI: https://${ZITADEL_DOMAIN}/ui/v2/login/
+      ZITADEL_OIDC_DEFAULTLOGINURLV2: https://${ZITADEL_DOMAIN}/ui/v2/login/login?authRequest=
+      ZITADEL_OIDC_DEFAULTLOGOUTURLV2: https://${ZITADEL_DOMAIN}/ui/v2/login/logout?post_logout_redirect=
+    secrets:
+      - zitadel_masterkey
+      - zitadel_secrets
+      - zitadel_steps
+    volumes:
+      - type: bind
+        source: ./zitadel-config.yaml
+        target: /etc/zitadel/config.yaml
+        read_only: true
+      - zitadel-bootstrap:/zitadel/bootstrap
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/zitadel", "ready"]
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - identity
+
+  zitadel-login:
+    image: ${ZITADEL_LOGIN_IMAGE:?set ZITADEL_LOGIN_IMAGE to a reviewed immutable digest}
+    restart: unless-stopped
+    user: "0"
+    environment:
+      ZITADEL_API_URL: http://zitadel-api:8080
+      NEXT_PUBLIC_BASE_PATH: /ui/v2/login
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      CUSTOM_REQUEST_HEADERS: Host:${ZITADEL_DOMAIN},X-Forwarded-Proto:https
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:ro
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/sh", "-c", "node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy"]
+      interval: 10s
+      timeout: 30s
+      retries: 12
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - identity
+
+secrets:
+  postgres_admin_password:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/postgres-admin-password
+  zitadel_masterkey:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-masterkey
+  zitadel_secrets:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-secrets.yaml
+  zitadel_steps:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-steps.yaml
+
+volumes:
+  zitadel-bootstrap:
+
+networks:
+  identity:
+    driver: bridge
