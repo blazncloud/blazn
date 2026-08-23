@@ -25,6 +25,9 @@ import { PgProjectStore } from "./project-store.js";
 import { RunHttpRouter } from "./run-http.js";
 import { RunService } from "./run-service.js";
 import { PgRunStore } from "./run-store.js";
+import { DevelopmentHttpRouter } from "./development-http.js";
+import { DevelopmentService } from "./development-service.js";
+import { PgDevelopmentStore } from "./development-store.js";
 import { SandboxHttpRouter } from "./sandbox-http.js";
 import { SandboxService } from "./sandbox-service.js";
 import { PgSandboxStore } from "./sandbox-store.js";
@@ -43,6 +46,7 @@ const oidcKey = config.zitadel ? oidcCookieKey(config.zitadel.cookieKey) : undef
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
 const runRouter = new RunHttpRouter(new RunService(new PgRunStore(database)));
+const developmentRouter = new DevelopmentHttpRouter(new DevelopmentService(new PgDevelopmentStore(database)));
 const sandboxRouter = new SandboxHttpRouter(new SandboxService(new PgSandboxStore(database)));
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
@@ -461,6 +465,10 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     });
   }
   if (await routeSandboxRequest(sandboxRouter, request, response, url, () => authenticate(request))) return;
+  if (developmentRouter.matches(url.pathname)) {
+    const session = await authenticate(request);
+    return developmentRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+  }
   if (runRouter.matches(url.pathname)) {
     const session = await authenticate(request);
     return runRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });

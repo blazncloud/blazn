@@ -172,19 +172,19 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
 
-test("migration sequence contains exactly twenty-one collision-free revisions", async () => {
+test("migration sequence contains exactly twenty-two collision-free revisions", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
-  assert.equal(migrations.length, 21);
+  assert.equal(migrations.length, 22);
   assert.deepEqual(
     migrations.map((name) => name.slice(0, 3)),
-    Array.from({ length: 21 }, (_, index) => String(index + 1).padStart(3, "0")),
+    Array.from({ length: 22 }, (_, index) => String(index + 1).padStart(3, "0")),
   );
   assert.deepEqual(migrations.slice(-3), [
-    "019_sandbox_admission_observation.sql",
     "020_sandbox_source_materialization.sql",
     "021_sandbox_artifact_export.sql",
+    "022_development_runtime.sql",
   ]);
 });
 
@@ -245,4 +245,22 @@ test("sandbox controller observation migration requires complete restart-safe Po
   assert.match(sql, /REVOKE ALL ON FUNCTION[\s\S]*sandbox_controller_claim_v2/);
   assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
+});
+
+test("Development runtime migration freezes tenant, version, no-delete, and controller finalization authority", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/022_development_runtime.sql"), "utf8");
+  assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\) REFERENCES projects\(id, workspace_id\)/);
+  assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, project_id\) REFERENCES runs\(id, workspace_id, project_id\)/);
+  assert.match(sql, /FOREIGN KEY \(template_version_id, workspace_id, publication_template_id, template_version, template_digest\)/);
+  assert.match(sql, /manifest#>>'\{template,digest\}' = 'sha256:'\|\|trim\(template_digest\)/);
+  assert.match(sql, /CREATE FUNCTION development_controller_finalize/);
+  assert.match(sql, /reference\.workspace_id=target\.workspace_id[\s\S]*reference\.project_id=target\.project_id/);
+  assert.match(sql, /a\.workspace_id=target\.workspace_id AND a\.project_id=target\.project_id/);
+  assert.match(sql, /principal}'<>'blazn-development-controller'/);
+  assert.match(sql, /p_document#>'\{publication,published\}' <> 'null'::jsonb/);
+  assert.match(sql, /REVOKE DELETE ON TABLE development_projects, development_builds FROM blazn_runtime/);
+  assert.match(sql, /REVOKE UPDATE ON TABLE development_builds FROM blazn_runtime/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION development_controller_finalize[\s\S]*blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT EXECUTE ON FUNCTION development_controller_finalize/);
 });

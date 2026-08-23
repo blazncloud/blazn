@@ -95,6 +95,25 @@ is committed in the DevelopmentProject; the controller resolves its Workspace,
 draft version, candidate version ID, and candidate digest before finalization,
 and publication must match that authorized target exactly.
 
+## Control-plane runtime slice
+
+The first runtime slice exposes only these authenticated management routes:
+
+- `PUT|GET /v1/workspaces/{workspaceId}/projects/{projectId}/development-project`
+- `POST|GET /v1/workspaces/{workspaceId}/projects/{projectId}/development-builds`
+- `GET /v1/workspaces/{workspaceId}/projects/{projectId}/development-builds/{buildId}`
+
+Project writes require an expected version and idempotency key. Build requests
+accept only an exact source commit and idempotency key; the service resolves the
+committed DevelopmentProject, creates a same-tenant canonical Run, and records
+the Build as ineligible with `build_not_succeeded`. There is no delete route.
+The runtime database role cannot update or finalize Builds. Migration 017
+retains an ungranted controller finalizer which requires the fixed controller
+authority, exact expected version, same-tenant Run, reference Build, and ready
+typed Artifacts, and refuses any non-null publication identity. Installing the
+separately authenticated controller and granting that function are deliberately
+outside this slice.
+
 ## CLI acceptance surface
 
 ```text
