@@ -3,6 +3,7 @@ package sandboxcontroller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,8 +22,9 @@ type fakeStore struct {
 }
 
 type renewResponse struct {
-	ok  bool
-	err error
+	expiresAt time.Time
+	ok        bool
+	err       error
 }
 
 func (s *fakeStore) Claim(context.Context, string, int) (*WorkItem, error) {
@@ -31,13 +33,16 @@ func (s *fakeStore) Claim(context.Context, string, int) (*WorkItem, error) {
 }
 func (s *fakeStore) Renew(ctx context.Context, _ string, _ string, _ string, _ int) (time.Time, bool, error) {
 	if s.renewResponses == nil {
-		return time.Now(), true, nil
+		return time.Now().Add(5 * time.Second), true, nil
 	}
 	select {
 	case <-ctx.Done():
 		return time.Time{}, false, ctx.Err()
 	case response := <-s.renewResponses:
-		return time.Now(), response.ok, response.err
+		if response.expiresAt.IsZero() {
+			response.expiresAt = time.Now().Add(5 * time.Second)
+		}
+		return response.expiresAt, response.ok, response.err
 	}
 }
 func (s *fakeStore) BindBackend(_ context.Context, _, _, _ string, record sandboxcontrol.SandboxRecord, _ sandboxcontrol.WorkloadIdentity) (bool, error) {
@@ -206,33 +211,82 @@ func TestInvalidPartialBackendIdentityNeverCallsBackend(t *testing.T) {
 }
 
 func TestLeaseLossCancelsBackendAndSuppressesTerminalWrites(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		response renewResponse
-	}{
-		{name: "stale-fence", response: renewResponse{ok: false}},
-		{name: "renew-error", response: renewResponse{err: errors.New("renew unavailable")}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			item, _ := createFixture(t)
-			store := &fakeStore{renewResponses: make(chan renewResponse, 1)}
-			store.renewResponses <- test.response
-			backend := newBlockingBackend()
-			controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
-			done := make(chan error, 1)
-			go func() { done <- controller.reconcile(context.Background(), item) }()
-			awaitSignal(t, backend.started, "backend start")
-			if err := awaitError(t, backend.cancelled, "backend cancellation"); !errors.Is(err, context.Canceled) {
-				t.Fatalf("backend cancellation=%v", err)
-			}
-			if err := awaitError(t, done, "reconcile completion"); err != nil {
-				t.Fatal(err)
-			}
-			if store.retryCalls != 0 || store.completionCalls != 0 {
-				t.Fatalf("lease loss wrote terminal state: retries=%d completions=%d", store.retryCalls, store.completionCalls)
-			}
-		})
+	item, _ := createFixture(t)
+	store := &fakeStore{renewResponses: make(chan renewResponse, 1)}
+	store.renewResponses <- renewResponse{ok: false}
+	backend := newBlockingBackend()
+	controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
+	done := make(chan error, 1)
+	go func() { done <- controller.reconcile(context.Background(), item) }()
+	awaitSignal(t, backend.started, "backend start")
+	if err := awaitError(t, backend.cancelled, "backend cancellation"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("backend cancellation=%v", err)
 	}
+	if err := awaitError(t, done, "reconcile completion"); err != nil {
+		t.Fatal(err)
+	}
+	if store.retryCalls != 0 || store.completionCalls != 0 {
+		t.Fatalf("lease loss wrote terminal state: retries=%d completions=%d", store.retryCalls, store.completionCalls)
+	}
+}
+
+func TestLeaseRenewStoreErrorCancelsBackendAndReturnsError(t *testing.T) {
+	item, _ := createFixture(t)
+	store := &fakeStore{renewResponses: make(chan renewResponse, 1)}
+	store.renewResponses <- renewResponse{err: errors.New("renew unavailable")}
+	backend := newBlockingBackend()
+	controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
+	done := make(chan error, 1)
+	go func() { done <- controller.reconcile(context.Background(), item) }()
+	awaitSignal(t, backend.started, "backend start")
+	if err := awaitError(t, backend.cancelled, "backend cancellation"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("backend cancellation=%v", err)
+	}
+	if err := awaitError(t, done, "reconcile completion"); err == nil || !strings.Contains(err.Error(), "lease renewal failed") {
+		t.Fatalf("renew error=%v", err)
+	}
+	if store.retryCalls != 0 || store.completionCalls != 0 {
+		t.Fatalf("renew error wrote terminal state: retries=%d completions=%d", store.retryCalls, store.completionCalls)
+	}
+}
+
+func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
+	t.Run("claim", func(t *testing.T) {
+		item, state := createFixture(t)
+		now := time.Unix(100, 0)
+		item.LeaseExpiresAt = now.Add(5 * time.Millisecond)
+		store := &fakeStore{}
+		backend := &fakeBackend{created: state}
+		controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
+		controller.now = func() time.Time { return now }
+		if err := controller.reconcile(context.Background(), item); err != nil {
+			t.Fatal(err)
+		}
+		if store.bound || store.completionCalls != 0 || store.retryCalls != 0 {
+			t.Fatal("unsafe claimed lease performed a fenced write")
+		}
+	})
+	t.Run("renew", func(t *testing.T) {
+		item, _ := createFixture(t)
+		now := time.Unix(100, 0)
+		store := &fakeStore{renewResponses: make(chan renewResponse, 1)}
+		store.renewResponses <- renewResponse{expiresAt: now.Add(5 * time.Millisecond), ok: true}
+		backend := newBlockingBackend()
+		controller := timedController(t, store, backend, 5*time.Millisecond, time.Second)
+		controller.now = func() time.Time { return now }
+		done := make(chan error, 1)
+		go func() { done <- controller.reconcile(context.Background(), item) }()
+		awaitSignal(t, backend.started, "backend start")
+		if err := awaitError(t, backend.cancelled, "backend cancellation"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("backend cancellation=%v", err)
+		}
+		if err := awaitError(t, done, "reconcile completion"); err != nil {
+			t.Fatal(err)
+		}
+		if store.completionCalls != 0 || store.retryCalls != 0 {
+			t.Fatal("unsafe renewed lease performed a fenced write")
+		}
+	})
 }
 
 func TestParentShutdownCancelsBackendWithoutTerminalWrite(t *testing.T) {
@@ -259,6 +313,22 @@ func TestOperationTimeoutCancelsBackendAndSchedulesRetry(t *testing.T) {
 	item, _ := createFixture(t)
 	store, backend := &fakeStore{}, newBlockingBackend()
 	controller := timedController(t, store, backend, 100*time.Millisecond, 20*time.Millisecond)
+	if err := controller.reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if err := awaitError(t, backend.cancelled, "backend timeout"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("backend timeout=%v", err)
+	}
+	if store.retryCalls != 1 || store.completionCalls != 0 {
+		t.Fatalf("timeout terminal writes: retries=%d completions=%d", store.retryCalls, store.completionCalls)
+	}
+}
+
+func TestOperationTimeoutWhileRenewIsInFlightStillSchedulesRetry(t *testing.T) {
+	item, _ := createFixture(t)
+	store := &fakeStore{renewResponses: make(chan renewResponse)}
+	backend := newBlockingBackend()
+	controller := timedController(t, store, backend, 5*time.Millisecond, 20*time.Millisecond)
 	if err := controller.reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +414,7 @@ func createFixture(t *testing.T) (WorkItem, BackendState) {
 		PlacementProfile: "poc-linux-amd64-v1", QueueName: sandboxcontrol.QueueName,
 		Command: []string{"true"}, Resources: Resources{CPURequest: "100m", MemoryRequest: "128Mi",
 			EphemeralRequest: "1Gi", CPULimit: "1", MemoryLimit: "1Gi", EphemeralLimit: "2Gi"},
-		ExpiresAt: time.Now().Add(time.Hour)}
+			LeaseExpiresAt: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(time.Hour)}
 	state := BackendState{Record: record, Admission: &identity, Exists: true, Ready: true}
 	if err := validateWorkItem(item); err != nil {
 		t.Fatalf("invalid work item fixture: %v", err)
