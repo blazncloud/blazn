@@ -138,6 +138,66 @@ validate_workspace_invitation_secret() {
     die "workspace invitation HMAC key must contain exactly 64 lowercase hexadecimal characters"
 }
 
+identity_overlay_enabled() {
+  case ${BLAZN_IDENTITY_ENABLED:-false} in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) die "BLAZN_IDENTITY_ENABLED must be true or false" ;;
+  esac
+}
+
+control_plane_compose() {
+  infra_root=$1
+  env_file=$2
+  shift 2
+  if identity_overlay_enabled; then
+    identity_env=${BLAZN_IDENTITY_ENV_FILE:-/etc/blazn/identity/control-api.env}
+    require_absolute_path BLAZN_IDENTITY_ENV_FILE "$identity_env"
+    assert_not_symlink_chain "$identity_env"
+    assert_regular_file_owned_mode "$identity_env" 0 600
+    [ -f "$infra_root/compose.identity.yaml" ] && [ ! -L "$infra_root/compose.identity.yaml" ] || \
+      die "identity Compose overlay is unavailable"
+    docker compose -f "$infra_root/compose.yaml" -f "$infra_root/compose.identity.yaml" \
+      --env-file "$env_file" --env-file "$identity_env" "$@"
+  else
+    docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" "$@"
+  fi
+}
+
+validate_identity_overlay() {
+  infra_root=$1
+  identity_overlay_enabled || return 0
+  identity_env=${BLAZN_IDENTITY_ENV_FILE:-/etc/blazn/identity/control-api.env}
+  require_absolute_path BLAZN_IDENTITY_ENV_FILE "$identity_env"
+  assert_not_symlink_chain "$identity_env"
+  assert_regular_file_owned_mode "$identity_env" 0 600
+  [ -f "$infra_root/compose.identity.yaml" ] && [ ! -L "$infra_root/compose.identity.yaml" ] || \
+    die "identity Compose overlay is unavailable"
+  identity_size=$(wc -c <"$identity_env" | tr -d ' ')
+  case $identity_size in ''|*[!0-9]*) die "identity environment size is invalid" ;; esac
+  [ "$identity_size" -le 8192 ] || die "identity environment is unexpectedly large"
+  if LC_ALL=C grep -Ev '^[A-Z][A-Z0-9_]*=[a-zA-Z0-9._@:/+-]+[[:space:]]*$|^[[:space:]]*(#.*)?$' "$identity_env" | grep . >/dev/null; then
+    die "identity environment contains unsupported syntax"
+  fi
+  identity_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$identity_env")
+  identity_issuer=$(sed -n 's/^ZITADEL_ISSUER_URL=//p' "$identity_env")
+  identity_client=$(sed -n 's/^ZITADEL_CLIENT_ID=//p' "$identity_env")
+  identity_mfa=$(sed -n 's/^ZITADEL_REQUIRE_MFA=//p' "$identity_env")
+  [ "$identity_root" = /etc/blazn/identity/secrets ] || die "identity secrets root differs from the reviewed path"
+  [ "$identity_issuer" = https://auth.blazn.benpelo.com ] || die "ZITADEL issuer differs from the reviewed public origin"
+  case $identity_client in ''|*[!0-9]*) die "ZITADEL client ID is invalid" ;; esac
+  [ "$identity_mfa" = true ] || die "ZITADEL MFA enforcement must remain enabled"
+  assert_directory_owned_mode /etc/blazn/identity 0 700
+  assert_directory_owned_mode "$identity_root" 0 700
+  assert_regular_file_owned_mode "$identity_root/zitadel-client-secret" 0 600
+  assert_regular_file_owned_mode "$identity_root/oidc-cookie-key" 0 600
+  client_secret_size=$(wc -c <"$identity_root/zitadel-client-secret" | tr -d ' ')
+  case $client_secret_size in ''|*[!0-9]*) die "ZITADEL client secret size is invalid" ;; esac
+  [ "$client_secret_size" -ge 16 ] && [ "$client_secret_size" -le 1024 ] || die "ZITADEL client secret size is invalid"
+  [ "$(wc -c <"$identity_root/oidc-cookie-key" | tr -d ' ')" = 43 ] || die "OIDC cookie key must contain 32 base64url bytes"
+  LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$identity_root/oidc-cookie-key" || die "OIDC cookie key is invalid"
+}
+
 control_api_source_digest() {
   infra_root=$1
   repo_root=$(CDPATH='' cd -- "$infra_root/../.." && pwd)
@@ -200,7 +260,7 @@ verify_control_api_containers() {
   env_file=$2
   expected_id=$(docker image inspect "$CONTROL_API_IMAGE" --format '{{.Id}}') || die "receipt-bound control API image is unavailable"
   for service in api api-migrate api-bootstrap; do
-    container=$(docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" ps -a -q "$service")
+    container=$(control_plane_compose "$infra_root" "$env_file" ps -a -q "$service")
     [ -n "$container" ] || die "control API service has no container: $service"
     identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
     [ "$identity" = "blazn-m2/$service/$expected_id" ] || die "control API service container does not match its receipt: $service"
@@ -217,7 +277,7 @@ verify_node_prerequisite_containers() {
   env_file=$2
   expected_id=$(docker image inspect "$POSTGRES_IMAGE" --format '{{.Id}}') || die "pinned PostgreSQL image is unavailable"
   for service in node-migration-preflight node-broker-verify; do
-    container=$(docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" ps -a -q "$service")
+    container=$(control_plane_compose "$infra_root" "$env_file" ps -a -q "$service")
     [ -n "$container" ] || die "Node prerequisite service has no container: $service"
     identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
     [ "$identity" = "blazn-m2/$service/$expected_id" ] || die "Node prerequisite container does not match its pinned image: $service"
@@ -229,7 +289,7 @@ verify_node_plan_container() {
   infra_root=$1
   env_file=$2
   expected_id=$(docker image inspect "$CONTROL_API_IMAGE" --format '{{.Id}}') || die "receipt-bound control API image is unavailable"
-  container=$(docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" ps -a -q node-plan-verify)
+  container=$(control_plane_compose "$infra_root" "$env_file" ps -a -q node-plan-verify)
   [ -n "$container" ] || die "Node plan validation service has no container"
   identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
   [ "$identity" = "blazn-m2/node-plan-verify/$expected_id" ] || die "Node plan validation container does not match its receipt"
@@ -243,6 +303,7 @@ control_plane_config_digest() {
     {
       printf '%s\0' \
         compose.yaml \
+        compose.identity.yaml \
         postgres-init/01-roles.sh \
         ngrok.example.yml \
         systemd/blazn-control-plane.service \

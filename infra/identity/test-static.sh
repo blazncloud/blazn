@@ -38,6 +38,8 @@ grep -F 'PasswordChangeRequired: true' "$SCRIPT_DIR/zitadel-steps.example.yaml" 
 grep -F 'ZITADEL_ISSUER_URL' "$SCRIPT_DIR/../../services/control-api/src/config.ts" >/dev/null
 grep -F 'ZITADEL_CLIENT_SECRET_FILE: /run/secrets/zitadel_client_secret' "$control_overlay" >/dev/null
 grep -F 'OIDC_COOKIE_KEY_FILE: /run/secrets/oidc_cookie_key' "$control_overlay" >/dev/null
+grep -F 'control_plane_compose()' "$SCRIPT_DIR/../milestone-2/scripts/common.sh" >/dev/null
+grep -F 'validate_identity_overlay "$ROOT_DIR"' "$SCRIPT_DIR/../milestone-2/scripts/preflight.sh" >/dev/null
 if grep -F 'ZITADEL_CLIENT_SECRET_FILE' "$SCRIPT_DIR/../milestone-2/compose.yaml" >/dev/null; then
   printf 'unqualified identity integration is enabled in the base control-plane compose file\n' >&2
   exit 1
