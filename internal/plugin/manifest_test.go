@@ -6,7 +6,7 @@ import (
 )
 
 func validManifest(version string) Manifest {
-	return Manifest{SchemaVersion: 1, Name: "social", Version: version, ProtocolVersion: 1, MinimumCoreVersion: "v1.0.0", Executable: "blazn-social", Commands: []string{"social", "person", "company", "contact", "connections", "saved-search", "graph", "content", "post", "evidence", "entity", "data", "providers"}}
+	return Manifest{SchemaVersion: 1, Name: "social", Version: version, ProtocolVersion: 1, MinimumCoreVersion: "v1.0.0", Executable: "blazn-social", Commands: []string{"social", "person", "company", "contact", "connections", "saved-search", "graph", "post", "evidence", "entity", "data", "providers"}}
 }
 
 func TestManifestStrictDecodeAndCompatibility(t *testing.T) {

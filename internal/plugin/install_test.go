@@ -30,7 +30,7 @@ func TestCandidateHandshakeMustMatchSignedManifest(t *testing.T) {
 	t.Setenv("BLAZN_PLUGIN_VERSION", "v1.0.0")
 	directory := t.TempDir()
 	expected := validManifest("v1.0.0")
-	encoded := `{"schemaVersion":1,"name":"social","version":"v1.0.0","protocolVersion":1,"minimumCoreVersion":"v1.0.0","executable":"blazn-social","commands":["social","person","company","contact","connections","saved-search","graph","content","post","evidence","entity","data","providers"]}`
+	encoded := `{"schemaVersion":1,"name":"social","version":"v1.0.0","protocolVersion":1,"minimumCoreVersion":"v1.0.0","executable":"blazn-social","commands":["social","person","company","contact","connections","saved-search","graph","post","evidence","entity","data","providers"]}`
 	binary := filepath.Join(directory, "blazn-social")
 	fixture := "#!/bin/sh\n[ -z \"${GH_TOKEN:-}\" ]\n[ -z \"${BLAZN_PLUGIN_VERSION:-}\" ]\nprintf '%s\\n' '" + encoded + "'\n"
 	if err := os.WriteFile(binary, []byte(fixture), 0o700); err != nil {

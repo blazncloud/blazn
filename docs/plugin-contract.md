@@ -7,8 +7,8 @@ owns installation, verification, activation, rollback, and dispatch.
 The catalog defines independently signed Social and Content plugins:
 
 - `blazncloud/blazn-social` owns `blazn social ...` and the `person`,
-  `company`, `contact`, `connections`, `post`, `evidence`, `entity`, `data`,
-  and `providers` aliases.
+  `company`, `contact`, `connections`, `saved-search`, `graph`, `post`,
+  `evidence`, `entity`, `data`, and `providers` aliases.
 - `blazncloud/blazn-content` owns `blazn content ...` and the `media`, `image`,
   `video`, `audio`, `render`, and `remix` aliases.
 

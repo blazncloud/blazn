@@ -133,6 +133,24 @@ func TestMissingPluginApproveInstallsAndReplaysAlias(t *testing.T) {
 	}
 }
 
+func TestSocialM2AliasesInstallAndForwardExactly(t *testing.T) {
+	for _, args := range [][]string{
+		{"saved-search", "list"},
+		{"graph", "diff", "leadership-watch", "--from", "run-one", "--to", "run-two"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			fake := &fakePlugins{}
+			app, stdout, _ := pluginApp("yes\n", true, fake)
+			if code := app.Run(args); code != 3 {
+				t.Fatalf("code=%d", code)
+			}
+			if fake.installs != 1 || fake.runs != 1 || fake.name != "social" || !reflect.DeepEqual(fake.args, args) || stdout.String() != "plugin output\n" {
+				t.Fatalf("args=%v state=%#v stdout=%q", args, fake, stdout)
+			}
+		})
+	}
+}
+
 func TestMissingPluginJSONAndNonTTYFailClosed(t *testing.T) {
 	for _, tc := range []struct {
 		args []string
