@@ -180,6 +180,25 @@ func (s *Store) CancelReservation(ctx context.Context, reservation Reservation) 
 	})
 }
 
+func (s *Store) RenewReservation(ctx context.Context, reservation Reservation, ttl time.Duration) (Reservation, error) {
+	if ttl <= 0 || ttl > 5*time.Minute {
+		return Reservation{}, ErrInvalidState
+	}
+	next := reservation
+	err := s.withLifecycleLock(ctx, func(locked *lockedStore) error {
+		current, err := locked.readReservation()
+		if err != nil {
+			return err
+		}
+		if current.Nonce != reservation.Nonce || current.OwnerUID != s.uid || current.Checksum != reservation.Checksum || !current.ExpiresAt.Equal(reservation.ExpiresAt) || !current.ExpiresAt.After(s.now()) {
+			return ErrLifecycleConflict
+		}
+		next.ExpiresAt = s.now().UTC().Add(ttl)
+		return locked.writeReservation(&next)
+	})
+	return next, err
+}
+
 func (locked *lockedStore) writeJournal(journal *Journal) error {
 	if journal.OwnerUID != locked.store.uid {
 		return ErrOwnershipAmbiguous

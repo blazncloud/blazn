@@ -22,6 +22,9 @@ blazn proxy reset --yes [--remove-ca]
 `run` passes exact argv without a shell. JSON Lines are accepted only by
 `tail`. Route output excludes credential references. Tail accepts only bounded
 fixed operational event fields; arbitrary content cannot enter its output.
+`--remove-ca` is reserved but returns `PROXY_CA_REMOVAL_UNSUPPORTED` in this
+core lane; it never reports success until a later platform adapter implements
+receipted trust removal.
 
 ## Activation transaction
 

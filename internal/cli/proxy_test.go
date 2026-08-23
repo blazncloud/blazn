@@ -23,8 +23,8 @@ func (f *fakeProxyCommands) On(_ context.Context, policy, mode string) (activati
 	f.method, f.policy, f.mode = "on", policy, mode
 	return f.result, f.err
 }
-func (f *fakeProxyCommands) Off(context.Context) (activation.Result, error) {
-	f.method = "off"
+func (f *fakeProxyCommands) Off(_ context.Context, removeCA bool) (activation.Result, error) {
+	f.method, f.removeCA = "off", removeCA
 	return f.result, f.err
 }
 func (f *fakeProxyCommands) Status(context.Context) (activation.Result, error) {
@@ -83,6 +83,11 @@ func TestProxyCLIParsesFrozenCommandsAndExactArgv(t *testing.T) {
 	if code := app.Run([]string{"proxy", "reset", "--yes", "--remove-ca"}); code != 0 || !fake.yes || !fake.removeCA {
 		t.Fatalf("reset code=%d", code)
 	}
+	stdout.Reset()
+	fake.removeCA = false
+	if code := app.Run([]string{"proxy", "off", "--remove-ca"}); code != 0 || !fake.removeCA {
+		t.Fatalf("off remove-ca code=%d forwarded=%v", code, fake.removeCA)
+	}
 }
 
 func TestProxyCLIRejectsAmbiguousFlagsAndMapsStableErrors(t *testing.T) {
@@ -98,6 +103,18 @@ func TestProxyCLIRejectsAmbiguousFlagsAndMapsStableErrors(t *testing.T) {
 	stderr.Reset()
 	if code := app.Run([]string{"proxy", "on", "--policy", "p", "--output=json"}); code != 6 || !strings.Contains(stdout.String(), "PROXY_ALREADY_ACTIVE_DIFFERENT_POLICY") {
 		t.Fatalf("conflict code=%d out=%s err=%s", code, stdout, stderr)
+	}
+	stdout.Reset()
+	fake.err = activation.ErrCARemovalUnsupported
+	fake.result = activation.Result{ExitCode: 7}
+	if code := app.Run([]string{"proxy", "off", "--remove-ca", "--output=json"}); code != 7 || !strings.Contains(stdout.String(), "PROXY_CA_REMOVAL_UNSUPPORTED") {
+		t.Fatalf("ca code=%d out=%s", code, stdout)
+	}
+	stdout.Reset()
+	fake.err = activation.ErrDifferentScope
+	fake.result = activation.Result{ExitCode: 6}
+	if code := app.Run([]string{"proxy", "on", "--policy", "p", "--output=json"}); code != 6 || !strings.Contains(stdout.String(), "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE") {
+		t.Fatalf("scope code=%d out=%s", code, stdout)
 	}
 }
 
