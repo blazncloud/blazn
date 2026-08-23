@@ -212,6 +212,8 @@ type fakeStore struct {
 	reconcileErr  error
 	recoverErr    error
 	scopeHeld     bool
+	reconcileCalls int
+	beforeReconcile func(int)
 }
 
 func (f *fakeStore) Activate(_ context.Context, journal *state.Journal, _ string, publish func() error) error {
@@ -232,6 +234,10 @@ func (f *fakeStore) Activate(_ context.Context, journal *state.Journal, _ string
 	return nil
 }
 func (f *fakeStore) Reconcile(context.Context) (state.Reconciliation, error) {
+	f.reconcileCalls++
+	if f.beforeReconcile != nil {
+		f.beforeReconcile(f.reconcileCalls)
+	}
 	if f.reconcileErr != nil {
 		return state.Reconciliation{}, f.reconcileErr
 	}
@@ -793,6 +799,64 @@ func TestPostPublicationRecoveryCannotCleanNewerActivation(t *testing.T) {
 	service.mu.Unlock()
 	if !present {
 		t.Fatal("failed exact recovery purged the older managed listener")
+	}
+}
+
+func TestFinalActivationReconciliationRejectsNewerStateWithLiveOldListener(t *testing.T) {
+	service, store, _, factory, _, _ := testService(t)
+	const newerID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	var oldID string
+	var oldPID int
+	store.beforeReconcile = func(call int) {
+		if call != 2 {
+			return
+		}
+		oldID, oldPID = store.journal.ActivationID, store.journal.Listener.PID
+		store.journal.ActivationID = newerID
+		store.journal.Generation = 2
+		store.journal.Nonce = strings.Repeat("z", 32)
+		store.journal.Listener = state.ListenerIdentity{PID: 9001, ProcessStartIdentity: "new-start", ExecutableIdentity: "new-executable", Address: "127.0.0.1:9123", ListenerKeyFingerprint: testDigest}
+		factory.controller.proofs[9001] = state.LiveListenerProof{PID: 9001, ProcessStartIdentity: "new-start", ExecutableIdentity: "new-executable", BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: strings.Repeat("z", 32), OwnerUID: 1000, Generation: 2, Mode: "session", SessionIdentity: "uid:1000/session:test"}
+	}
+
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if !errors.Is(err, state.ErrLifecycleConflict) || result.Status != "recovery_required" || result.State != "recovery_required" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if store.reconcileCalls != 2 || store.journal == nil || store.journal.ActivationID != newerID || store.journal.Generation != 2 || store.journal.Listener.PID != 9001 {
+		t.Fatalf("final reconciliation did not preserve newer state: calls=%d journal=%+v", store.reconcileCalls, store.journal)
+	}
+	if old := factory.listeners[oldPID]; old == nil || !old.stopped {
+		t.Fatal("superseded live listener was not stopped")
+	}
+	if _, present := service.activationEnvironment(oldID); !present {
+		t.Fatal("failed exact recovery purged older activation environment")
+	}
+}
+
+func TestNormalOffPurgesStoppedProofAndExposesPIDReuse(t *testing.T) {
+	service, store, _, factory, _, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	activationID, pid := store.journal.ActivationID, store.journal.Listener.PID
+	if result, err := service.Off(context.Background(), false); err != nil || result.State != "inactive" {
+		t.Fatalf("off=%+v err=%v", result, err)
+	}
+	service.mu.Lock()
+	_, stoppedPresent := service.stopped[pid]
+	service.mu.Unlock()
+	if stoppedPresent {
+		t.Fatal("normal recovery retained the exact stopped proof")
+	}
+	if _, present := service.activationEnvironment(activationID); present {
+		t.Fatal("normal recovery retained activation environment")
+	}
+	replacement := state.LiveListenerProof{PID: pid, ProcessStartIdentity: "reused-process", ExecutableIdentity: "reused-executable", BinaryDigest: testDigest, ListenerKeyFingerprint: testDigest, ActivationNonce: strings.Repeat("r", 32), OwnerUID: 1000, Generation: 7, Mode: "session", SessionIdentity: "uid:1000/session:replacement"}
+	factory.controller.proofs[pid] = replacement
+	observed, live, err := service.Inspect(context.Background(), pid)
+	if err != nil || !live || observed != replacement {
+		t.Fatalf("PID reuse was hidden: observed=%+v live=%t err=%v", observed, live, err)
 	}
 }
 
