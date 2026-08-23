@@ -329,7 +329,7 @@ func (a *Adapter) finishEnsureCreated(ctx context.Context, request CreateRequest
 func sameCreateSpec(observed, expected kubeSandbox) bool {
 	if observed.APIVersion != expected.APIVersion || observed.Kind != expected.Kind ||
 		observed.Metadata.Name != expected.Metadata.Name || observed.Metadata.Namespace != expected.Metadata.Namespace ||
-		observed.Metadata.UID == "" || observed.Metadata.ResourceVersion == "" ||
+		!objectIDPattern.MatchString(observed.Metadata.UID) || !objectIDPattern.MatchString(observed.Metadata.ResourceVersion) ||
 		!sameMaterialSpec(observed.RawSpec, expected.Spec) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
 		return false
 	}
@@ -668,7 +668,8 @@ func render(request CreateRequest, artifactContractDigest, createIntentDigest st
 }
 
 func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
-	if object.APIVersion != APIVersion || object.Kind != Kind || object.Metadata.Namespace != Namespace || !dnsLabelPattern.MatchString(object.Metadata.Name) || object.Metadata.UID == "" || object.Metadata.ResourceVersion == "" {
+	if object.APIVersion != APIVersion || object.Kind != Kind || object.Metadata.Namespace != Namespace || !dnsLabelPattern.MatchString(object.Metadata.Name) ||
+		!objectIDPattern.MatchString(object.Metadata.UID) || !objectIDPattern.MatchString(object.Metadata.ResourceVersion) {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend Sandbox identity is invalid", nil)
 	}
 	artifactValue, artifactDigest := object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"], object.Metadata.Annotations["sandboxes.blazn.dev/artifact-contract-digest"]
