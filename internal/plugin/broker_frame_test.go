@@ -118,6 +118,15 @@ func TestBrokerArtifactUploadPartialEOFCleansWithoutActivation(t *testing.T) {
 	}
 }
 
+func TestBrokerRejectsDataBeforeUploadReadiness(t *testing.T) {
+	root, child, err := newBrokerSocketPair()
+	if err != nil { t.Skip(err) }
+	defer root.Close();defer child.Close()
+	session:=newBrokerSession(root,"content",validRuntimeContext(t));done:=make(chan error,1);go func(){done<-session.serve()}()
+	if err:=writeBrokerFrame(child,brokerFrame{Type:brokerFrameData,StreamID:12,Payload:[]byte("x")});err!=nil{t.Fatal(err)}
+	if err:=<-done;err==nil||!strings.Contains(err.Error(),"non-upload"){t.Fatalf("err=%v",err)}
+}
+
 func TestBrokerFrameRejectsHeaderDrift(t *testing.T) {
 	valid := func() []byte {
 		var buffer bytes.Buffer
