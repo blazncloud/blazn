@@ -303,7 +303,7 @@ func (s *Service) On(ctx context.Context, policyPath, requestedMode string) (Res
 	if reconciled, resultErr, handled := s.reconcileOn(ctx, current, reconcileErr, digest, requestedMode); handled {
 		return reconciled, resultErr
 	}
-	return s.result("proxy on", "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, activateErr)
+	return s.result("proxy on", "conflict", "unknown", 6), ErrLifecycleConflict
 }
 
 func (s *Service) reconcileForOn(ctx context.Context) (state.Reconciliation, error) {
