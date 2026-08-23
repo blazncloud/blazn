@@ -92,11 +92,15 @@ must name a tool allowed by both the immutable AgentVersion and selected
 HarnessProfile.
 
 Compatible Runs bind the selected proxy decision to one exact normalized
-`model.proxy-decided` event and its earlier `model.requested` event. Terminal
-model-request counts and input/output token totals equal the normalized request
-and usage events rather than uncorroborated adapter counters. One closed
-`billing.recorded` event binds the authoritative pricing and receipt identity;
-control-plane and proxy receipts have matching authoritative event sources.
+`model.proxy-decided` event and its earlier `model.requested` event, including
+the exact frozen route identity and version. Every other request uses that same
+primary route unless it is the single frozen fallback request, and each closed
+`model.usage` payload repeats the route identity and version of its exact earlier
+request. Terminal model-request counts and input/output token totals equal the
+normalized request and usage events rather than uncorroborated adapter counters.
+One closed `billing.recorded` event binds the authoritative pricing and receipt
+identity; control-plane and proxy receipts have matching authoritative event
+sources.
 
 Follow-ups retain the Session and Conversation IDs. Resume increments a
 generation and resumes event/message cursors. Cancellation is complete only

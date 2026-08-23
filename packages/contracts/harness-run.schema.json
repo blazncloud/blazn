@@ -763,6 +763,57 @@
             },
             "allOf": [
                 {
+                    "if": {"properties":{"type":{"const":"model.requested"}},"required":["type"]},
+                    "then": {
+                        "properties": {
+                            "payload": {
+                                "oneOf": [
+                                    {
+                                        "additionalProperties": false,
+                                        "required": ["requestId","routeId","routeVersion"],
+                                        "properties": {
+                                            "requestId": {"$ref":"#/$defs/id"},
+                                            "routeId": {"$ref":"#/$defs/id"},
+                                            "routeVersion": {"type":"integer","minimum":1}
+                                        }
+                                    },
+                                    {
+                                        "additionalProperties": false,
+                                        "required": ["requestId","routeId","routeVersion","attempt","authorizationId"],
+                                        "properties": {
+                                            "requestId": {"$ref":"#/$defs/id"},
+                                            "routeId": {"$ref":"#/$defs/id"},
+                                            "routeVersion": {"type":"integer","minimum":1},
+                                            "attempt": {"const":1},
+                                            "authorizationId": {"$ref":"#/$defs/id"}
+                                        }
+                                    }
+                                ]
+                            },
+                            "extensions": {"maxProperties":0}
+                        }
+                    }
+                },
+                {
+                    "if": {"properties":{"type":{"const":"model.usage"}},"required":["type"]},
+                    "then": {
+                        "properties": {
+                            "payload": {
+                                "additionalProperties": false,
+                                "required": ["requestId","routeId","routeVersion","inputTokens","outputTokens"],
+                                "properties": {
+                                    "requestId": {"$ref":"#/$defs/id"},
+                                    "routeId": {"$ref":"#/$defs/id"},
+                                    "routeVersion": {"type":"integer","minimum":1},
+                                    "inputTokens": {"type":"integer","minimum":0},
+                                    "outputTokens": {"type":"integer","minimum":0}
+                                }
+                            },
+                            "extensions": {"maxProperties":0}
+                        }
+                    }
+                },
+                {
                     "if": {"properties":{"type":{"const":"model.proxy-decided"}},"required":["type"]},
                     "then": {
                         "properties": {
