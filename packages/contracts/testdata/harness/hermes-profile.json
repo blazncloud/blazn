@@ -17,13 +17,14 @@
     "id": "20000000-0000-4000-8000-000000000001",
     "definitionId": "19000000-0000-4000-8000-000000000001",
     "version": "1.0.0",
-    "digest": "sha256:b7e6a9ced7229a75f41611143b74bc8315b4f588afbd7306dca566793ce70f3a",
+    "digest": "sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7",
     "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
     "implementation": {
       "kind": "image",
       "digest": "registry.blazn.invalid/harness/hermes@sha256:1111111111111111111111111111111111111111111111111111111111111111"
     },
     "executable": {
+      "identity": "blazn-hermes-adapter",
       "path": "/opt/blazn/hermes",
       "fixedArgv": [
         "run",

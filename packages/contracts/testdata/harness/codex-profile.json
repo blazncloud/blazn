@@ -17,13 +17,14 @@
     "id": "20000000-0000-4000-8000-000000000002",
     "definitionId": "19000000-0000-4000-8000-000000000002",
     "version": "0.1.0",
-    "digest": "sha256:145af54661d112a17a9421eace72d1f0376f827e4cf8d7004a18367cda06abf8",
+    "digest": "sha256:004f2fb0bfc257550420e6b4555fa2f345f608f468f052fc2b992ef7fe30fb99",
     "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
     "implementation": {
       "kind": "package",
       "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     },
     "executable": {
+      "identity": "blazn-codex-adapter",
       "path": "/opt/blazn/codex",
       "fixedArgv": [
         "exec",

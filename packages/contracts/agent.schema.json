@@ -127,7 +127,8 @@
                         "policyId",
                         "policyVersion",
                         "requiredProtocols",
-                        "fallback"
+                        "fallback",
+                        "fallbackRoute"
                     ],
                     "properties": {
                         "routeId": {
@@ -157,8 +158,28 @@
                                 "disabled",
                                 "one-approved-attempt"
                             ]
+                        },
+                        "fallbackRoute": {
+                            "oneOf": [
+                                {"type":"null"},
+                                {
+                                    "type":"object",
+                                    "additionalProperties":false,
+                                    "required":["routeId","routeVersion","authorizationId","approvalReceiptId"],
+                                    "properties":{
+                                        "routeId":{"$ref":"#/$defs/id"},
+                                        "routeVersion":{"type":"integer","minimum":1},
+                                        "authorizationId":{"$ref":"#/$defs/id"},
+                                        "approvalReceiptId":{"$ref":"#/$defs/id"}
+                                    }
+                                }
+                            ]
                         }
-                    }
+                    },
+                    "allOf":[
+                        {"if":{"properties":{"fallback":{"const":"disabled"}},"required":["fallback"]},"then":{"properties":{"fallbackRoute":{"type":"null"}}}},
+                        {"if":{"properties":{"fallback":{"const":"one-approved-attempt"}},"required":["fallback"]},"then":{"properties":{"fallbackRoute":{"type":"object"}}}}
+                    ]
                 },
                 "tools": {
                     "type": "array",

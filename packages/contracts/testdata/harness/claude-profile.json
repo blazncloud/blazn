@@ -17,13 +17,14 @@
         "id": "20000000-0000-4000-8000-000000000003",
         "definitionId": "19000000-0000-4000-8000-000000000003",
         "version": "0.1.0",
-        "digest": "sha256:ecb94e2f73f9fd7129251f91a9125dc9fa95a7226cb94d05b88006e1b62ba77c",
+        "digest": "sha256:b3e124400c4b748ff4ca54a238df0767f38bd523e019ed05494751c86cda2eb6",
         "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
         "implementation": {
             "kind": "package",
             "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
         },
         "executable": {
+            "identity": "blazn-claude-adapter",
             "path": "/opt/blazn/claude",
             "fixedArgv": [
                 "--output-format",
