@@ -186,12 +186,24 @@ type OperationReceipt struct {
 // control plane; the remaining fields make that identity independently
 // auditable and fence observations of a replaced Workload.
 type WorkloadIdentity struct {
-	APIVersion     string `json:"apiVersion"`
-	Namespace      string `json:"namespace"`
-	Name           string `json:"name"`
-	UID            string `json:"uid"`
-	ResourceVersion string `json:"resourceVersion"`
-	ClusterQueue   string `json:"clusterQueue"`
+	APIVersion      string                `json:"apiVersion"`
+	Namespace       string                `json:"namespace"`
+	Name            string                `json:"name"`
+	UID             string                `json:"uid"`
+	ResourceVersion string                `json:"resourceVersion"`
+	ClusterQueue    string                `json:"clusterQueue"`
+	Owner           SandboxOwnerReference `json:"owner"`
+	WorkspaceID     string                `json:"workspaceId"`
+	SandboxID       string                `json:"sandboxId"`
+}
+
+// SandboxOwnerReference is the immutable controller owner reference observed
+// on the admitted Workload. Name or label correlation alone is insufficient.
+type SandboxOwnerReference struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
 }
 
 type WatchEvent struct {
@@ -291,7 +303,7 @@ func ValidateReceipt(receipt OperationReceipt) error {
 		return fmt.Errorf("sandbox adapter receipt operation is invalid")
 	}
 	if receipt.Admission != nil {
-		if receipt.Operation != OperationCreate || validateWorkloadIdentity(*receipt.Admission, receipt.Namespace) != nil {
+		if receipt.Operation != OperationCreate || validateWorkloadIdentity(*receipt.Admission, receipt) != nil {
 			return fmt.Errorf("sandbox adapter receipt admission identity is invalid")
 		}
 	}
@@ -328,7 +340,7 @@ func AttachAdmissionIdentity(receipt OperationReceipt, identity WorkloadIdentity
 	if receipt.Operation != OperationCreate || receipt.Admission != nil {
 		return OperationReceipt{}, fmt.Errorf("admission identity can only be attached once to a create receipt")
 	}
-	if err := validateWorkloadIdentity(identity, receipt.Namespace); err != nil {
+	if err := validateWorkloadIdentity(identity, receipt); err != nil {
 		return OperationReceipt{}, err
 	}
 	receipt.Admission = &identity
@@ -353,11 +365,13 @@ func ValidateTerminalCreateReceipt(receipt OperationReceipt) error {
 	return nil
 }
 
-func validateWorkloadIdentity(identity WorkloadIdentity, namespace string) error {
-	if identity.APIVersion != AdmissionAPIVersion || identity.Namespace != namespace || len(identity.Name) > 253 ||
+func validateWorkloadIdentity(identity WorkloadIdentity, receipt OperationReceipt) error {
+	if identity.APIVersion != AdmissionAPIVersion || identity.Namespace != receipt.Namespace || len(identity.Name) > 253 ||
 		!dnsNamePattern.MatchString(identity.Name) || !objectIDPattern.MatchString(identity.UID) ||
 		!objectIDPattern.MatchString(identity.ResourceVersion) || len(identity.ClusterQueue) > 253 ||
-		!dnsNamePattern.MatchString(identity.ClusterQueue) {
+		!dnsNamePattern.MatchString(identity.ClusterQueue) || identity.WorkspaceID != receipt.WorkspaceID ||
+		identity.SandboxID != receipt.Name || identity.Owner.APIVersion != APIVersion || identity.Owner.Kind != Kind ||
+		identity.Owner.Name != receipt.Name || identity.Owner.UID != receipt.UID {
 		return fmt.Errorf("sandbox admission Workload identity is invalid")
 	}
 	return nil

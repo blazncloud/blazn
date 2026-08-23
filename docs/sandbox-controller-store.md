@@ -37,6 +37,10 @@ backend destruction before PostgreSQL accepts the receipt.
 
 The adapter receipt contract represents admission as the exact Kueue Workload
 API version, namespace, name, UID, resource version, and admitted ClusterQueue.
+It also binds the Workload's immutable Sandbox owner reference (API version,
+kind, name, and UID) and the frozen workspace and Sandbox correlation labels to
+the same receipt identity. A Workload owned by or labelled for another Sandbox
+or workspace is rejected even when its own Workload tuple is otherwise valid.
 Only the Workload UID is persisted in the current scalar `admission_id` column;
 the complete tuple is digest-bound in the adapter receipt used to qualify
 completion. The current database terminal record retains the exact backend

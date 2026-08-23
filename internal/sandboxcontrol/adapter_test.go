@@ -46,7 +46,8 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 	if err := ValidateTerminalCreateReceipt(receipt); err == nil {
 		t.Fatal("name-only create receipt passed the terminal admission boundary")
 	}
-	identity := WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: "sandbox-a-workload", UID: "workload-uid-1", ResourceVersion: "202", ClusterQueue: "poc-cluster"}
+	identity := WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: "sandbox-a-workload", UID: "workload-uid-1", ResourceVersion: "202", ClusterQueue: "poc-cluster",
+		Owner: SandboxOwnerReference{APIVersion: APIVersion, Kind: Kind, Name: receipt.Name, UID: receipt.UID}, WorkspaceID: receipt.WorkspaceID, SandboxID: receipt.Name}
 	bound, err := AttachAdmissionIdentity(receipt, identity)
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +60,9 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 	}
 
 	tampered := bound
-	tampered.Admission = &WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: identity.Name, UID: "replacement-uid", ResourceVersion: identity.ResourceVersion, ClusterQueue: identity.ClusterQueue}
+	tamperedIdentity := identity
+	tamperedIdentity.UID = "replacement-uid"
+	tampered.Admission = &tamperedIdentity
 	if err := ValidateTerminalCreateReceipt(tampered); err == nil {
 		t.Fatal("tampered Workload UID passed receipt validation")
 	}
@@ -71,6 +74,19 @@ func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
 		invalid.Name = invalidName
 		if _, err := AttachAdmissionIdentity(receipt, invalid); err == nil {
 			t.Fatalf("invalid Workload name %q was accepted", invalidName)
+		}
+	}
+	for name, mutate := range map[string]func(*WorkloadIdentity){
+		"workspace substitution":     func(value *WorkloadIdentity) { value.WorkspaceID = "workspace-b" },
+		"sandbox label substitution": func(value *WorkloadIdentity) { value.SandboxID = "sandbox-b" },
+		"owner name substitution":    func(value *WorkloadIdentity) { value.Owner.Name = "sandbox-b" },
+		"owner UID substitution":     func(value *WorkloadIdentity) { value.Owner.UID = "sandbox-uid-b" },
+		"owner kind substitution":    func(value *WorkloadIdentity) { value.Owner.Kind = "Pod" },
+	} {
+		substituted := identity
+		mutate(&substituted)
+		if _, err := AttachAdmissionIdentity(receipt, substituted); err == nil {
+			t.Fatalf("%s was accepted", name)
 		}
 	}
 }
