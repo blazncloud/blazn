@@ -32,6 +32,7 @@ type AdmissionObservation struct {
 	Sandbox  ObjectIdentity   `json:"sandbox"`
 	Pod      ObjectIdentity   `json:"pod"`
 	Workload WorkloadIdentity `json:"workload"`
+	Digest   string           `json:"digest"`
 }
 
 type kubeOwnerReference struct {
@@ -197,6 +198,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 		Pod:      objectIdentity(pod.APIVersion, pod.Kind, pod.Metadata.Name, pod.Metadata.Namespace, pod.Metadata.UID, pod.Metadata.ResourceVersion),
 		Workload: identity,
 	}
+	observation.Digest = admissionObservationDigest(observation)
 	if expected != nil && !reflect.DeepEqual(observation, *expected) {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission UID, resourceVersion, or API identity drifted", nil)
 	}
@@ -375,7 +377,8 @@ func validateObservation(value AdmissionObservation) error {
 		!validFrozenObjectIdentity(value.Pod, podAPIVersion, podKind, false) ||
 		value.Workload.APIVersion != AdmissionAPIVersion || value.Workload.Namespace != Namespace ||
 		value.Sandbox.Name != value.Workload.SandboxID || value.Sandbox.Name != value.Workload.Owner.Name ||
-		value.Workload.Owner.UID != value.Sandbox.UID {
+		value.Workload.Owner.UID != value.Sandbox.UID || !digestPattern.MatchString(value.Digest) ||
+		value.Digest != admissionObservationDigest(value) {
 		return adapterError(ErrInvalidRequest, 400, "absence observation identity is invalid", nil)
 	}
 	receipt := OperationReceipt{Namespace: Namespace, Name: value.Sandbox.Name, UID: value.Sandbox.UID, WorkspaceID: value.Workload.WorkspaceID}

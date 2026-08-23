@@ -453,6 +453,26 @@ func workloadIdentityDigest(identity WorkloadIdentity) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+func admissionObservationDigest(observation AdmissionObservation) string {
+	canonical := strings.Join([]string{
+		"sandbox-admission-observation-v1",
+		observation.Sandbox.APIVersion, observation.Sandbox.Kind, observation.Sandbox.Namespace,
+		observation.Sandbox.Name, observation.Sandbox.UID, observation.Sandbox.ResourceVersion,
+		observation.Pod.APIVersion, observation.Pod.Kind, observation.Pod.Namespace,
+		observation.Pod.Name, observation.Pod.UID, observation.Pod.ResourceVersion,
+		observation.Workload.APIVersion, observation.Workload.Namespace, observation.Workload.Name,
+		observation.Workload.UID, observation.Workload.ResourceVersion, observation.Workload.ClusterQueue,
+		observation.Workload.Owner.APIVersion, observation.Workload.Owner.Kind,
+		observation.Workload.Owner.Name, observation.Workload.Owner.UID,
+		fmt.Sprintf("%t", observation.Workload.Owner.Controller), observation.Workload.WorkspaceID,
+		observation.Workload.SandboxID, fmt.Sprintf("%t", observation.Workload.Admitted),
+		observation.Workload.Condition.Type, observation.Workload.Condition.Status,
+		observation.Workload.Digest,
+	}, "\n")
+	digest := sha256.Sum256([]byte(canonical))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, artifacts []ArtifactReceipt, now time.Time) (OperationReceipt, error) {
 	receipt := OperationReceipt{
 		SchemaVersion: ReceiptSchema, ReceiptID: requestID + ":" + string(operation), RequestID: requestID,
