@@ -59,7 +59,7 @@ tar -C "$repo_root" -cf - services/control-api | docker run --rm -i --network "$
 
 docker exec -i -e PGPASSWORD="$admin_password" "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d blazn <<'SQL'
 DO $$ BEGIN
-  IF (SELECT count(*) FROM schema_migrations) <> 15 THEN RAISE EXCEPTION 'expected exactly fifteen applied migrations'; END IF;
+  IF (SELECT count(*) FROM schema_migrations) <> 16 THEN RAISE EXCEPTION 'expected exactly sixteen applied migrations'; END IF;
 END $$;
 
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES

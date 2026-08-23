@@ -133,7 +133,7 @@ test("sandbox controller migration exposes only fenced database authority", asyn
 
 test("sandbox controller v2 claim returns immutable owner and ordered artifact bindings", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(path.resolve(here, "../migrations/014_sandbox_controller_claim_contract.sql"), "utf8");
+  const sql = await readFile(path.resolve(here, "../migrations/015_sandbox_controller_claim_contract.sql"), "utf8");
   assert.match(sql, /sandbox_controller_claim_v2/);
   assert.match(sql, /s\.requested_by/);
   assert.match(sql, /array_agg\(entry\.name ORDER BY entry\.name\)/);
@@ -147,7 +147,7 @@ test("sandbox controller v2 claim returns immutable owner and ordered artifact b
 
 test("sandbox controller admission migration persists only digest-bound admitted Workload ownership", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(path.resolve(here, "../migrations/015_sandbox_workload_admission_identity.sql"), "utf8");
+  const sql = await readFile(path.resolve(here, "../migrations/016_sandbox_workload_admission_identity.sql"), "utf8");
   assert.match(sql, /CREATE TABLE sandbox_workload_admissions/);
   assert.match(sql, /owner_controller boolean NOT NULL CHECK \(owner_controller\)/);
   assert.match(sql, /condition_type text NOT NULL CHECK \(condition_type='Admitted'\)/);
