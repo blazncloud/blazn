@@ -40,6 +40,8 @@ The journal contains exact prior values but only digests and markers for new
 values. Receipts, status, CLI results, routes, and events contain neither prior
 values nor listener/provider credentials. The listener token stays only in the
 listener and activated child/session environment; state stores its fingerprint.
+Proxy command errors cross the CLI boundary through stable public messages;
+adapter, runner, and policy-loader error text is never rendered directly.
 
 ## Recovery
 
@@ -49,6 +51,9 @@ the policy or contact the Management API or a provider. Panics become
 `RECOVERY_REQUIRED`; corrupt or ambiguous records leave user state untouched.
 The exact listener proof binds PID, process start, executable, binary digest,
 listener-key fingerprint, nonce, owner, generation, mode, and session.
+The listener identity boundary supplies that complete authenticated proof, and
+the activation service rejects any field mismatch rather than composing proof
+metadata from its own caller state.
 
 In-process scoped listeners are stopped through their runtime handle rather
 than signaling the CLI PID. Unknown or post-crash processes are delegated to
