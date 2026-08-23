@@ -1,122 +1,122 @@
 {
-    "definition": {
-        "schemaVersion": "blazn.dev/harness-definition/v1alpha1",
-        "id": "19000000-0000-4000-8000-000000000004",
-        "kind": "generic-cli",
-        "publisher": "blazncloud-fixture",
-        "status": "approved",
-        "supportedPlatforms": [
-            "linux/amd64",
-            "linux/arm64"
-        ],
-        "securityPolicy": "poc-harness-restricted-v1",
-        "resourceVersion": 1
+  "definition": {
+    "schemaVersion": "blazn.dev/harness-definition/v1alpha1",
+    "id": "19000000-0000-4000-8000-000000000004",
+    "kind": "generic-cli",
+    "publisher": "blazncloud-fixture",
+    "status": "approved",
+    "supportedPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "securityPolicy": "poc-harness-restricted-v1",
+    "resourceVersion": 1
+  },
+  "version": {
+    "schemaVersion": "blazn.dev/harness-version/v1alpha1",
+    "id": "20000000-0000-4000-8000-000000000004",
+    "definitionId": "19000000-0000-4000-8000-000000000004",
+    "version": "1.0.0",
+    "digest": "sha256:f4ff72731cf979ced2b29186a6042765b40973158e7a72c9e27e092c5eeac656",
+    "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
+    "implementation": {
+      "kind": "image",
+      "digest": "registry.blazn.invalid/harness/generic-fixture@sha256:4444444444444444444444444444444444444444444444444444444444444444"
     },
-    "version": {
-        "schemaVersion": "blazn.dev/harness-version/v1alpha1",
-        "id": "20000000-0000-4000-8000-000000000004",
-        "definitionId": "19000000-0000-4000-8000-000000000004",
-        "version": "1.0.0",
-        "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-        "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
-        "implementation": {
-            "kind": "image",
-            "digest": "registry.blazn.invalid/harness/generic-fixture@sha256:4444444444444444444444444444444444444444444444444444444444444444"
-        },
-        "executable": {
-            "path": "/opt/blazn/generic-fixture",
-            "fixedArgv": [
-                "run",
-                "--input",
-                "/run/blazn/input.json"
-            ],
-            "environmentAllowlist": [
-                "BLAZN_PROXY_URL"
-            ],
-            "termination": {
-                "gracefulSignal": "SIGTERM",
-                "graceSeconds": 10,
-                "killProcessTree": true
-            }
-        },
-        "inputMode": "file-json",
-        "parserVersion": "generic-fixture/v1",
-        "capabilities": [
-            "task.one-shot",
-            "message.follow-up",
-            "conversation.resume",
-            "event.structured",
-            "event.streaming",
-            "output.patch",
-            "output.artifact",
-            "checkpoint.recovery",
-            "model.select",
-            "provider.configure",
-            "approval.prompt",
-            "cancel.graceful"
-        ],
-        "supportedPlatforms": [
-            "linux/amd64",
-            "linux/arm64"
-        ],
-        "credentialCapabilities": [
-            "model.proxy",
-            "repository.read"
-        ],
-        "compatibility": {
-            "workerProtocol": "blazn.dev/harness-worker/v1alpha1",
-            "sandboxControl": "agents.x-k8s.io/v1beta1",
-            "proxyProtocols": [
-                "openai-responses"
-            ]
-        },
-        "provenance": {
-            "repository": "https://github.com/blazncloud/blazn.git",
-            "commit": "4444444444444444444444444444444444444444",
-            "artifactDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-            "reviewId": "29000000-0000-4000-8000-000000000004"
-        }
+    "executable": {
+      "path": "/opt/blazn/generic-fixture",
+      "fixedArgv": [
+        "run",
+        "--input",
+        "/run/blazn/input.json"
+      ],
+      "environmentAllowlist": [
+        "BLAZN_PROXY_URL"
+      ],
+      "termination": {
+        "gracefulSignal": "SIGTERM",
+        "graceSeconds": 10,
+        "killProcessTree": true
+      }
     },
-    "profile": {
-        "schemaVersion": "blazn.dev/harness-profile/v1alpha1",
-        "id": "21000000-0000-4000-8000-000000000004",
-        "workspaceId": "40000000-0000-4000-8000-000000000001",
-        "name": "generic-portable",
-        "harnessVersionId": "20000000-0000-4000-8000-000000000004",
-        "model": {
-            "routeId": "70000000-0000-4000-8000-000000000001",
-            "routeVersion": 1,
-            "protocol": "openai-responses"
-        },
-        "credentials": [
-            {
-                "capability": "model.proxy",
-                "scope": "route:company-fast",
-                "leaseSeconds": 900
-            },
-            {
-                "capability": "repository.read",
-                "scope": "repo:blazncloud/blazn",
-                "leaseSeconds": 900
-            }
-        ],
-        "tools": [
-            "repository",
-            "patch"
-        ],
-        "overrides": {
-            "input-file": "/run/blazn/input.json",
-            "output-file": "/workspace/artifacts/result.json"
-        },
-        "policy": {
-            "approval": "deny-unlisted",
-            "network": "profile-bound",
-            "filesystem": "sandbox-only",
-            "maxRunSeconds": 1800,
-            "maxFollowUps": 10
-        },
-        "status": "approved",
-        "digest": "sha256:2144444444444444444444444444444444444444444444444444444444444444",
-        "resourceVersion": 1
+    "inputMode": "file-json",
+    "parserVersion": "generic-fixture/v1",
+    "capabilities": [
+      "task.one-shot",
+      "message.follow-up",
+      "conversation.resume",
+      "event.structured",
+      "event.streaming",
+      "output.patch",
+      "output.artifact",
+      "checkpoint.recovery",
+      "model.select",
+      "provider.configure",
+      "approval.prompt",
+      "cancel.graceful"
+    ],
+    "supportedPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "credentialCapabilities": [
+      "model.proxy",
+      "repository.read"
+    ],
+    "compatibility": {
+      "workerProtocol": "blazn.dev/harness-worker/v1alpha1",
+      "sandboxControl": "agents.x-k8s.io/v1beta1",
+      "proxyProtocols": [
+        "openai-responses"
+      ]
+    },
+    "provenance": {
+      "repository": "https://github.com/blazncloud/blazn.git",
+      "commit": "4444444444444444444444444444444444444444",
+      "artifactDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "reviewId": "29000000-0000-4000-8000-000000000004"
     }
+  },
+  "profile": {
+    "schemaVersion": "blazn.dev/harness-profile/v1alpha1",
+    "id": "21000000-0000-4000-8000-000000000004",
+    "workspaceId": "40000000-0000-4000-8000-000000000001",
+    "name": "generic-portable",
+    "harnessVersionId": "20000000-0000-4000-8000-000000000004",
+    "model": {
+      "routeId": "70000000-0000-4000-8000-000000000001",
+      "routeVersion": 1,
+      "protocol": "openai-responses"
+    },
+    "credentials": [
+      {
+        "capability": "model.proxy",
+        "scope": "route:70000000-0000-4000-8000-000000000001:1",
+        "leaseSeconds": 900
+      },
+      {
+        "capability": "repository.read",
+        "scope": "repo:blazncloud/blazn",
+        "leaseSeconds": 900
+      }
+    ],
+    "tools": [
+      "repository",
+      "patch"
+    ],
+    "overrides": {
+      "input-file": "/run/blazn/input.json",
+      "output-file": "/workspace/artifacts/result.json"
+    },
+    "policy": {
+      "approval": "deny-unlisted",
+      "network": "profile-bound",
+      "filesystem": "sandbox-only",
+      "maxRunSeconds": 1800,
+      "maxFollowUps": 10
+    },
+    "status": "approved",
+    "digest": "sha256:b36fed494b1f5fd6e68376d1389ffe4ff524d391231a96ce6ba3631a59111e71",
+    "resourceVersion": 1
+  }
 }

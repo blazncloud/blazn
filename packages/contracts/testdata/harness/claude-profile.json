@@ -17,7 +17,7 @@
         "id": "20000000-0000-4000-8000-000000000003",
         "definitionId": "19000000-0000-4000-8000-000000000003",
         "version": "0.1.0",
-        "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "digest": "sha256:ecb94e2f73f9fd7129251f91a9125dc9fa95a7226cb94d05b88006e1b62ba77c",
         "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
         "implementation": {
             "kind": "package",
@@ -93,7 +93,7 @@
         "credentials": [
             {
                 "capability": "model.anthropic",
-                "scope": "route:company-claude",
+                "scope": "route:70000000-0000-4000-8000-000000000001:1",
                 "leaseSeconds": 900
             },
             {
@@ -118,7 +118,7 @@
             "maxFollowUps": 10
         },
         "status": "approved",
-        "digest": "sha256:2133333333333333333333333333333333333333333333333333333333333333",
+        "digest": "sha256:d1d6ea59bb58a32112851abefaf8826f16357795d3d6e43efd6c02df3e919e7a",
         "resourceVersion": 1
     }
 }

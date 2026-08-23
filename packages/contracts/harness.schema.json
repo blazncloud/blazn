@@ -361,7 +361,7 @@
                             },
                             "scope": {
                                 "type": "string",
-                                "pattern": "^(?:route|repo|mcp):[a-z0-9][a-z0-9./_-]{0,119}$"
+                                "pattern": "^(?:route|repo|tool):[a-z0-9][a-z0-9.:/_-]{0,119}$"
                             },
                             "leaseSeconds": {
                                 "type": "integer",
