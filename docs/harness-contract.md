@@ -44,6 +44,8 @@ follow-up or resume evidence, output Artifact, or model usage. The capability
 error and terminal receipt have exact payloads with no adapter extension data,
 and billing is an explicit zero-cost control-plane receipt. The capability error
 binds the canonical sorted missing set recorded by compatibility. No
+Cancellation or cleanup flag can claim requested, acknowledged, terminated,
+revoked, handled, or completed work for this execution-free refusal. No
 requirement is silently dropped. A fallback is either absent or one
 approved attempt whose exact route, authorization, and approval receipt are
 frozen in the AgentVersion. Runtime evidence orders the authoritative primary
@@ -97,7 +99,10 @@ into success.
 
 Nonterminal Runs have no terminal Result, completion timestamp, or terminal
 event. Terminal Runs require all three to agree with the authoritative Run
-status and receipt. Once cancellation is acknowledged, a Run cannot succeed.
+status and receipt, and a compatible terminal Run retains its allocated
+Sandbox identity. A successful Run has no cancellation or process-termination
+claim and requires completed cleanup, credential revocation, and Artifact
+handling. Once cancellation is acknowledged, a Run cannot succeed.
 Acknowledged cancellation may terminate only as fully evidenced `cancelled` or
 as `recovery_required`; it cannot be relabeled failed or timed out. Every event
 observation is at or after Run creation and, for terminal Runs, at or before

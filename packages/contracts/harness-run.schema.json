@@ -443,7 +443,17 @@
                             "messageCursor": {"const": 0},
                             "eventCursor": {"const": 1},
                             "followUpCount": {"const": 0},
-                            "resumeGeneration": {"const": 0}
+                            "resumeGeneration": {"const": 0},
+                            "cancellation": {
+                                "properties": {
+                                    "requested": {"const": false},
+                                    "acknowledged": {"const": false},
+                                    "processTreeTerminated": {"const": false},
+                                    "cleanupComplete": {"const": false},
+                                    "credentialsRevoked": {"const": false},
+                                    "artifactsHandled": {"const": false}
+                                }
+                            }
                         }
                     },
                     "run": {
@@ -503,6 +513,43 @@
             }
         },
         {"if":{"properties":{"compatibility":{"properties":{"compatible":{"const":true}},"required":["compatible"]}},"required":["compatibility"]},"then":{"properties":{"provenance":{"properties":{"proxyDecision":{"type":"object"},"node":{"type":"object"}}}}}},
+        {
+            "if": {
+                "properties": {
+                    "compatibility": {"properties":{"compatible":{"const":true}},"required":["compatible"]},
+                    "run": {"properties":{"status":{"enum":["succeeded","failed","cancelled","timed_out","recovery_required"]}},"required":["status"]}
+                },
+                "required": ["compatibility","run"]
+            },
+            "then": {"properties":{"run":{"properties":{"sandboxId":{"$ref":"#/$defs/id"}}}}}
+        },
+        {
+            "if": {
+                "properties": {
+                    "compatibility": {"properties":{"compatible":{"const":true}},"required":["compatible"]},
+                    "run": {"properties":{"status":{"const":"succeeded"}},"required":["status"]}
+                },
+                "required": ["compatibility","run"]
+            },
+            "then": {
+                "properties": {
+                    "session": {
+                        "properties": {
+                            "cancellation": {
+                                "properties": {
+                                    "requested": {"const": false},
+                                    "acknowledged": {"const": false},
+                                    "processTreeTerminated": {"const": false},
+                                    "cleanupComplete": {"const": true},
+                                    "credentialsRevoked": {"const": true},
+                                    "artifactsHandled": {"const": true}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         {
             "if": {
                 "properties": {
