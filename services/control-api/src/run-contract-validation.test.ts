@@ -101,8 +101,13 @@ test("synthetic execution migration keeps progress and bytes tenant-bound and ap
   assert.match(sql, /content bytea NOT NULL CHECK \(octet_length\(content\) <= 16777216\)/);
   assert.match(sql, /CREATE UNIQUE INDEX artifacts_source_run_live_name_idx/);
   assert.match(sql, /GRANT SELECT, INSERT ON TABLE run_synthetic_progress TO blazn_runtime/);
-  assert.match(sql, /GRANT INSERT ON TABLE synthetic_artifact_blobs TO blazn_runtime/);
+  assert.match(sql, /GRANT SELECT, INSERT ON TABLE synthetic_artifact_blobs TO blazn_runtime/);
   assert.match(sql, /REVOKE UPDATE, DELETE ON TABLE run_synthetic_progress, synthetic_artifact_blobs FROM blazn_runtime/);
+  assert.match(sql, /CREATE CONSTRAINT TRIGGER synthetic_artifact_consistency_from_artifact/);
+  assert.match(sql, /CREATE CONSTRAINT TRIGGER synthetic_artifact_consistency_from_blob/);
+  assert.match(sql, /artifact_row\.digest <> 'sha256:' \|\| encode\(digest\(blob_content, 'sha256'\), 'hex'\)/);
+  assert.match(sql, /run_proof_class <> 'synthetic' OR artifact_row\.created_by <> run_requested_by/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION validate_synthetic_artifact_consistency\(\) FROM PUBLIC/);
   assert.doesNotMatch(sql, /GRANT[^;]*UPDATE[^;]*TO blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT[^;]*DELETE[^;]*TO blazn_runtime/);
 });
