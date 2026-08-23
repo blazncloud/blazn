@@ -294,6 +294,10 @@ func parseGlobalOptions(args []string) (OutputFormat, []string, error) {
 	positional := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i:]...)
+			break
+		}
 		switch {
 		case arg == "--output":
 			if i+1 >= len(args) {
