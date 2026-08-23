@@ -389,6 +389,9 @@ type Reconciliation struct {
 	ActivationID    string
 	Generation      int64
 	LifecycleState  string
+	PolicyDigest    string
+	Mode            string
+	ListenerProof   *LiveListenerProof
 	ReceiptRepaired bool
 }
 
@@ -426,7 +429,8 @@ func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error
 			return nil
 		}
 		if receiptErr == nil {
-			result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required"}
+			proof := proofFromReceipt(receipt)
+			result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required", PolicyDigest: receipt.PolicyDigest, Mode: receipt.Mode, ListenerProof: &proof}
 			semanticErr = ErrRecoveryRequired
 			return nil
 		}
@@ -444,9 +448,10 @@ func reconciliationFromJournal(journal *Journal, repaired bool) Reconciliation {
 	if journal.State != "active" {
 		state = ReconciliationRecoveryRequired
 	}
+	proof := proofFromJournal(journal)
 	return Reconciliation{
 		State: state, ActivationID: journal.ActivationID, Generation: journal.Generation,
-		LifecycleState: journal.State, ReceiptRepaired: repaired,
+		LifecycleState: journal.State, PolicyDigest: journal.Policy.Digest, Mode: journal.Mode, ListenerProof: &proof, ReceiptRepaired: repaired,
 	}
 }
 
