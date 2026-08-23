@@ -1,124 +1,124 @@
 {
-    "definition": {
-        "schemaVersion": "blazn.dev/harness-definition/v1alpha1",
-        "id": "19000000-0000-4000-8000-000000000002",
-        "kind": "codex-cli",
-        "publisher": "openai",
-        "status": "approved",
-        "supportedPlatforms": [
-            "linux/amd64",
-            "linux/arm64"
-        ],
-        "securityPolicy": "poc-harness-restricted-v1",
-        "resourceVersion": 1
+  "definition": {
+    "schemaVersion": "blazn.dev/harness-definition/v1alpha1",
+    "id": "19000000-0000-4000-8000-000000000002",
+    "kind": "codex-cli",
+    "publisher": "openai",
+    "status": "approved",
+    "supportedPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "securityPolicy": "poc-harness-restricted-v1",
+    "resourceVersion": 1
+  },
+  "version": {
+    "schemaVersion": "blazn.dev/harness-version/v1alpha1",
+    "id": "20000000-0000-4000-8000-000000000002",
+    "definitionId": "19000000-0000-4000-8000-000000000002",
+    "version": "0.1.0",
+    "digest": "sha256:145af54661d112a17a9421eace72d1f0376f827e4cf8d7004a18367cda06abf8",
+    "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
+    "implementation": {
+      "kind": "package",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     },
-    "version": {
-        "schemaVersion": "blazn.dev/harness-version/v1alpha1",
-        "id": "20000000-0000-4000-8000-000000000002",
-        "definitionId": "19000000-0000-4000-8000-000000000002",
-        "version": "0.1.0",
-        "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-        "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
-        "implementation": {
-            "kind": "package",
-            "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-        },
-        "executable": {
-            "path": "/opt/blazn/codex",
-            "fixedArgv": [
-                "exec",
-                "--json"
-            ],
-            "environmentAllowlist": [
-                "OPENAI_BASE_URL"
-            ],
-            "termination": {
-                "gracefulSignal": "SIGINT",
-                "graceSeconds": 20,
-                "killProcessTree": true
-            }
-        },
-        "inputMode": "native-session",
-        "parserVersion": "codex-json/v1",
-        "capabilities": [
-            "task.one-shot",
-            "message.follow-up",
-            "conversation.resume",
-            "event.structured",
-            "event.streaming",
-            "tool.native",
-            "tool.mcp",
-            "output.patch",
-            "output.artifact",
-            "checkpoint.recovery",
-            "model.select",
-            "provider.configure",
-            "approval.prompt",
-            "cancel.graceful"
-        ],
-        "supportedPlatforms": [
-            "linux/amd64",
-            "linux/arm64"
-        ],
-        "credentialCapabilities": [
-            "model.proxy",
-            "repository.read",
-            "tool.mcp"
-        ],
-        "compatibility": {
-            "workerProtocol": "blazn.dev/harness-worker/v1alpha1",
-            "sandboxControl": "agents.x-k8s.io/v1beta1",
-            "proxyProtocols": [
-                "openai-responses"
-            ]
-        },
-        "provenance": {
-            "repository": "https://github.com/openai/codex.git",
-            "commit": "2222222222222222222222222222222222222222",
-            "artifactDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-            "reviewId": "29000000-0000-4000-8000-000000000002"
-        }
+    "executable": {
+      "path": "/opt/blazn/codex",
+      "fixedArgv": [
+        "exec",
+        "--json"
+      ],
+      "environmentAllowlist": [
+        "OPENAI_BASE_URL"
+      ],
+      "termination": {
+        "gracefulSignal": "SIGINT",
+        "graceSeconds": 20,
+        "killProcessTree": true
+      }
     },
-    "profile": {
-        "schemaVersion": "blazn.dev/harness-profile/v1alpha1",
-        "id": "21000000-0000-4000-8000-000000000002",
-        "workspaceId": "40000000-0000-4000-8000-000000000001",
-        "name": "codex-portable",
-        "harnessVersionId": "20000000-0000-4000-8000-000000000002",
-        "model": {
-            "routeId": "70000000-0000-4000-8000-000000000001",
-            "routeVersion": 1,
-            "protocol": "openai-responses"
-        },
-        "credentials": [
-            {
-                "capability": "model.proxy",
-                "scope": "route:company-fast",
-                "leaseSeconds": 900
-            },
-            {
-                "capability": "repository.read",
-                "scope": "repo:blazncloud/blazn",
-                "leaseSeconds": 900
-            }
-        ],
-        "tools": [
-            "repository",
-            "patch"
-        ],
-        "overrides": {
-            "reasoning-effort": "medium",
-            "json-events": true
-        },
-        "policy": {
-            "approval": "deny-unlisted",
-            "network": "profile-bound",
-            "filesystem": "sandbox-only",
-            "maxRunSeconds": 1800,
-            "maxFollowUps": 10
-        },
-        "status": "approved",
-        "digest": "sha256:2122222222222222222222222222222222222222222222222222222222222222",
-        "resourceVersion": 1
+    "inputMode": "native-session",
+    "parserVersion": "codex-json/v1",
+    "capabilities": [
+      "task.one-shot",
+      "message.follow-up",
+      "conversation.resume",
+      "event.structured",
+      "event.streaming",
+      "tool.native",
+      "tool.mcp",
+      "output.patch",
+      "output.artifact",
+      "checkpoint.recovery",
+      "model.select",
+      "provider.configure",
+      "approval.prompt",
+      "cancel.graceful"
+    ],
+    "supportedPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "credentialCapabilities": [
+      "model.proxy",
+      "repository.read",
+      "tool.mcp"
+    ],
+    "compatibility": {
+      "workerProtocol": "blazn.dev/harness-worker/v1alpha1",
+      "sandboxControl": "agents.x-k8s.io/v1beta1",
+      "proxyProtocols": [
+        "openai-responses"
+      ]
+    },
+    "provenance": {
+      "repository": "https://github.com/openai/codex.git",
+      "commit": "2222222222222222222222222222222222222222",
+      "artifactDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "reviewId": "29000000-0000-4000-8000-000000000002"
     }
+  },
+  "profile": {
+    "schemaVersion": "blazn.dev/harness-profile/v1alpha1",
+    "id": "21000000-0000-4000-8000-000000000002",
+    "workspaceId": "40000000-0000-4000-8000-000000000001",
+    "name": "codex-portable",
+    "harnessVersionId": "20000000-0000-4000-8000-000000000002",
+    "model": {
+      "routeId": "70000000-0000-4000-8000-000000000001",
+      "routeVersion": 1,
+      "protocol": "openai-responses"
+    },
+    "credentials": [
+      {
+        "capability": "model.proxy",
+        "scope": "route:70000000-0000-4000-8000-000000000001:1",
+        "leaseSeconds": 900
+      },
+      {
+        "capability": "repository.read",
+        "scope": "repo:blazncloud/blazn",
+        "leaseSeconds": 900
+      }
+    ],
+    "tools": [
+      "repository",
+      "patch"
+    ],
+    "overrides": {
+      "reasoning-effort": "medium",
+      "json-events": true
+    },
+    "policy": {
+      "approval": "deny-unlisted",
+      "network": "profile-bound",
+      "filesystem": "sandbox-only",
+      "maxRunSeconds": 1800,
+      "maxFollowUps": 10
+    },
+    "status": "approved",
+    "digest": "sha256:1cee28b5d77d7351f999bebfda2f18fe8f6145edfec1605117baa95d9f6457ad",
+    "resourceVersion": 1
+  }
 }

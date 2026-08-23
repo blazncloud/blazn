@@ -1,6 +1,211 @@
 {
-  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://blazn.dev/contracts/harness-conformance.schema.json","title":"Harness adapter conformance and portable evaluation","type":"object","additionalProperties":false,"required":["schemaVersion","adapterKind","harnessVersionId","profileId","platform","cases","portableEvaluation","result"],
-  "properties":{"schemaVersion":{"const":"blazn.dev/harness-conformance/v1alpha1"},"adapterKind":{"enum":["hermes","codex-cli","claude-code","generic-cli"]},"harnessVersionId":{"type":"string","format":"uuid"},"profileId":{"type":"string","format":"uuid"},"platform":{"enum":["linux/amd64","linux/arm64"]},"cases":{"type":"array","minItems":8,"maxItems":32,"uniqueItems":true,"items":{"enum":["discover-capabilities","reject-capability-mismatch-before-sandbox","prepare-no-raw-credentials","one-shot","follow-up","resume","tool-and-approval-events","graceful-cancel-process-tree","terminal-result-artifacts","cleanup-no-secrets"]}},"portableEvaluation":{"type":"object","additionalProperties":false,"required":["id","version","agentVersionId","sourceCommit","taskDigest","assertions","maxDurationSeconds","maxModelRequests"],"properties":{"id":{"type":"string","format":"uuid"},"version":{"type":"integer","minimum":1},"agentVersionId":{"type":"string","format":"uuid"},"sourceCommit":{"type":"string","pattern":"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},"taskDigest":{"$ref":"#/$defs/digest"},"assertions":{"type":"array","minItems":3,"maxItems":16,"uniqueItems":true,"items":{"enum":["no-push","patch-produced","summary-produced","exact-source","no-secret-output","cleanup-complete","normalized-events","same-core-resources"]}},"maxDurationSeconds":{"type":"integer","minimum":60,"maximum":3600},"maxModelRequests":{"type":"integer","minimum":1,"maximum":100}}},"result":{"type":"object","additionalProperties":false,"required":["passed","caseResults","artifactIds","runId","receiptDigest"],"properties":{"passed":{"type":"boolean"},"caseResults":{"type":"array","minItems":8,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["case","passed","evidenceArtifactId"],"properties":{"case":{"type":"string","minLength":1,"maxLength":96},"passed":{"type":"boolean"},"evidenceArtifactId":{"type":"string","format":"uuid"}}}},"artifactIds":{"type":"array","minItems":1,"maxItems":64,"uniqueItems":true,"items":{"type":"string","format":"uuid"}},"runId":{"type":"string","format":"uuid"},"receiptDigest":{"$ref":"#/$defs/digest"}}}},
-  "$defs":{"digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}},
-  "x-blazn-parity":"All adapters consume the same AgentVersion and emit the same Run, Session, Message, Event, Result and Artifact contracts"
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://blazn.dev/contracts/harness-conformance.schema.json",
+    "title": "Harness adapter conformance and portable evaluation",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "schemaVersion",
+        "adapterKind",
+        "harnessVersionId",
+        "profileId",
+        "platform",
+        "resolvedHarness",
+        "cases",
+        "portableEvaluation",
+        "result"
+    ],
+    "properties": {
+        "schemaVersion": {
+            "const": "blazn.dev/harness-conformance/v1alpha1"
+        },
+        "adapterKind": {
+            "enum": [
+                "hermes",
+                "codex-cli",
+                "claude-code",
+                "generic-cli"
+            ]
+        },
+        "harnessVersionId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "profileId": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "platform": {
+            "enum": [
+                "linux/amd64",
+                "linux/arm64"
+            ]
+        },
+        "resolvedHarness":{"type":"object","additionalProperties":false,"required":["definition","version","profile"],"properties":{"definition":{"type":"object","additionalProperties":false,"required":["id","kind","resourceVersion"],"properties":{"id":{"type":"string","format":"uuid"},"kind":{"enum":["hermes","codex-cli","claude-code","generic-cli"]},"resourceVersion":{"type":"integer","minimum":1}}},"version":{"type":"object","additionalProperties":false,"required":["id","digest"],"properties":{"id":{"type":"string","format":"uuid"},"digest":{"$ref":"#/$defs/digest"}}},"profile":{"type":"object","additionalProperties":false,"required":["id","workspaceId","digest"],"properties":{"id":{"type":"string","format":"uuid"},"workspaceId":{"type":"string","format":"uuid"},"digest":{"$ref":"#/$defs/digest"}}}}},
+        "cases": {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+                "enum": [
+                    "discover-capabilities",
+                    "reject-capability-mismatch-before-sandbox",
+                    "prepare-no-raw-credentials",
+                    "one-shot",
+                    "follow-up",
+                    "resume",
+                    "tool-and-approval-events",
+                    "graceful-cancel-process-tree",
+                    "terminal-result-artifacts",
+                    "cleanup-no-secrets"
+                ]
+            }
+        },
+        "portableEvaluation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "version",
+                "agentVersionId",
+                "agentVersionDigest",
+                "sourceRepository",
+                "sourceCommit",
+                "templateVersionId",
+                "templateDigest",
+                "taskDigest",
+                "assertions",
+                "maxDurationSeconds",
+                "maxModelRequests"
+            ],
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "version": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "agentVersionId": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "agentVersionDigest":{"$ref":"#/$defs/digest"},
+                "sourceRepository":{"type":"string","format":"uri","pattern":"^https://[^@?#]+$"},
+                "sourceCommit": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "templateVersionId":{"type":"string","format":"uuid"},
+                "templateDigest":{"$ref":"#/$defs/digest"},
+                "taskDigest": {
+                    "$ref": "#/$defs/digest"
+                },
+                "assertions": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 16,
+                    "uniqueItems": true,
+                    "items": {
+                        "enum": [
+                            "no-push",
+                            "patch-produced",
+                            "summary-produced",
+                            "exact-source",
+                            "no-secret-output",
+                            "cleanup-complete",
+                            "normalized-events",
+                            "same-core-resources"
+                        ]
+                    }
+                },
+                "maxDurationSeconds": {
+                    "type": "integer",
+                    "minimum": 60,
+                    "maximum": 3600
+                },
+                "maxModelRequests": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                }
+            }
+        },
+        "result": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "passed",
+                "caseResults",
+                "artifactIds",
+                "evidenceArtifacts",
+                "runId",
+                "receiptDigest",
+                "runReceipt",
+                "parityGroupId"
+            ],
+            "properties": {
+                "passed": {
+                    "type": "boolean"
+                },
+                "caseResults": {
+                    "type": "array",
+                    "minItems": 8,
+                    "maxItems": 32,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                            "case",
+                            "passed",
+                            "evidenceArtifactId"
+                        ],
+                        "properties": {
+                            "case": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 96
+                            },
+                            "passed": {
+                                "type": "boolean"
+                            },
+                            "evidenceArtifactId": {
+                                "type": "string",
+                                "format": "uuid"
+                            }
+                        }
+                    }
+                },
+                "artifactIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string",
+                        "format": "uuid"
+                    }
+                },
+                "evidenceArtifacts":{"type":"array","minItems":8,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["id","role","kind","mediaType","contentDigest"],"properties":{"id":{"type":"string","format":"uuid"},"role":{"type":"string","minLength":1,"maxLength":96},"kind":{"const":"harness.conformance"},"mediaType":{"const":"application/vnd.blazn.harness-conformance+json"},"contentDigest":{"$ref":"#/$defs/digest"}}}},
+                "runId": {
+                    "type": "string",
+                    "format": "uuid"
+                },
+                "receiptDigest": {
+                    "$ref": "#/$defs/digest"
+                },
+                "parityGroupId":{"type":"string","format":"uuid"},
+                "runReceipt":{"type":"object","additionalProperties":false,"required":["runId","receiptDigest","agentVersionId","agentVersionDigest","harnessVersionId","harnessVersionDigest","profileId","profileDigest","sourceRepository","sourceCommit","templateVersionId","templateDigest","taskDigest","resultDigest"],"properties":{"runId":{"type":"string","format":"uuid"},"receiptDigest":{"$ref":"#/$defs/digest"},"agentVersionId":{"type":"string","format":"uuid"},"agentVersionDigest":{"$ref":"#/$defs/digest"},"harnessVersionId":{"type":"string","format":"uuid"},"harnessVersionDigest":{"$ref":"#/$defs/digest"},"profileId":{"type":"string","format":"uuid"},"profileDigest":{"$ref":"#/$defs/digest"},"sourceRepository":{"type":"string","format":"uri"},"sourceCommit":{"type":"string","pattern":"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},"templateVersionId":{"type":"string","format":"uuid"},"templateDigest":{"$ref":"#/$defs/digest"},"taskDigest":{"$ref":"#/$defs/digest"},"resultDigest":{"$ref":"#/$defs/digest"}}}
+            }
+        }
+    },
+    "$defs": {
+        "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+    },
+    "x-blazn-parity": "All adapters consume the same AgentVersion and emit the same Run, Session, Message, Event, Result and Artifact contracts"
 }

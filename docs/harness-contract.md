@@ -20,6 +20,10 @@ and selects one exact HarnessVersion, model route version, capability-scoped
 credential leases, tools, bounded scalar overrides, and restrictive policy.
 It never stores a bearer token, provider key, kubeconfig, node credential,
 private key, arbitrary environment map, or interpolated shell command.
+AgentVersion, the full HarnessVersion implementation and provenance, and every
+HarnessProfile have separately domain-separated canonical SHA-256 identities.
+Changing an executable argument, parser, capability, package/image, review,
+credential declaration, model route, tool, or override changes its identity.
 
 ## Pre-Sandbox compatibility
 
@@ -29,6 +33,10 @@ missing conversation, resume, event, tool, approval, model, output, recovery,
 or cancellation capability returns the exact missing set with `sandboxId=null`.
 No requirement is silently dropped and no fallback attempt is created unless
 the immutable AgentVersion permits one approved attempt.
+Credential declarations use typed route, repository, or tool scopes. Every
+run-scoped lease must exactly match one declaration, the Agent's model route,
+repository, or tool set, and its declared lifetime; terminal Runs retain only
+revoked lease metadata and never secret material.
 
 ## Normalized execution
 
@@ -47,11 +55,19 @@ after acknowledgement, process-tree termination, credential revocation,
 Artifact handling, and cleanup. A harness exit cannot turn a cancelled Run
 into success.
 
+Messages are normalized resources with exact Run, Session, Conversation,
+generation, ordinal, parent, follow-up target, and content-digest identity.
+Terminal patch, summary, and other result Artifacts resolve to the same tenant
+with distinct role, kind, media type, and content digest. The complete terminal
+snapshot is bound by a domain-separated receipt digest.
+
 Run provenance captures exact AgentVersion, HarnessVersion, HarnessProfile,
 SandboxTemplateVersion, source repository/commit, model route/version/protocol,
 authenticated proxy decision, Node binding, worker protocol, terminal receipt,
 usage, result, and Artifact IDs. Proxy outcomes remain `ROUTED`, `DIRECT`, or
 `BYPASS`; the harness cannot infer routing from environment configuration.
+The proxy proof includes request and event IDs, exact route and policy IDs and
+versions, and the separate proxy workload authentication class.
 
 ## Fixtures and portable evaluation
 
@@ -63,6 +79,12 @@ summary, exact source, normalized events, no secret output, cleanup, and the
 same core resources. Conformance also exercises capability refusal before a
 Sandbox, follow-up, resume, tool/approval normalization, graceful process-tree
 cancellation, terminal Artifacts, and credential cleanup.
+Each result resolves the exact HarnessDefinition, HarnessVersion, and
+HarnessProfile and binds one distinct Run receipt to the same AgentVersion,
+source, SandboxTemplateVersion, task, and role-specific conformance Artifacts.
+Parity requires all four adapter kinds, a common parity group and evaluation
+identity, identical evidence roles, and distinct Run, receipt, Artifact, and
+content identities.
 
 Run the pinned contract proof with `make test-harness-contract`.
 
