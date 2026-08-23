@@ -31,14 +31,14 @@ import { PgSandboxStore } from "./sandbox-store.js";
 import { routeSandboxRequest } from "./sandbox-server-routing.js";
 import { isControlHttpError, normalizeControlHttpError } from "./server-errors.js";
 import { OidcClient, type OidcIdentity } from "./oidc.js";
-import { oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, stateMatches } from "./oidc-state.js";
+import { activationOriginMatches, activationPublicKeyDigest, oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, sealActivationConfirmation, stateMatches, unsealActivationConfirmation } from "./oidc-state.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
 const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
-const oidcClient = config.zitadel ? new OidcClient({ issuerUrl: config.zitadel.issuerUrl, clientId: config.zitadel.clientId, clientSecret: config.zitadel.clientSecret, callbackUrl: `${config.publicUrl}/v1/auth/oidc/callback`, requireMfa: config.zitadel.requireMfa }) : undefined;
+const oidcClient = config.zitadel ? new OidcClient({ issuerUrl: config.zitadel.issuerUrl, clientId: config.zitadel.clientId, clientSecret: config.zitadel.clientSecret, callbackUrl: `${config.publicUrl}/v1/auth/oidc/callback`, assurancePolicy: config.zitadel.assurancePolicy }) : undefined;
 const oidcKey = config.zitadel ? oidcCookieKey(config.zitadel.cookieKey) : undefined;
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
@@ -115,7 +115,11 @@ async function health(response: ServerResponse): Promise<void> {
     try { await brokerProxy.health(AbortSignal.timeout(2_000)); }
     catch { throw new NodeHttpError("node_broker_unavailable", "Node broker is unavailable"); }
   }
-  sendJson(response, 200, { status: "ok", database: "ok", objectStorage: "ok" });
+	if (oidcClient) {
+		try { await oidcClient.health(); }
+		catch { throw new HttpError("identity_provider_unavailable", "configured identity provider is unavailable"); }
+	}
+  sendJson(response, 200, { status: "ok", database: "ok", objectStorage: "ok", identityProvider: oidcClient ? "ok" : "disabled" });
 }
 
 async function startDeviceAuthorization(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -149,19 +153,35 @@ async function startDeviceAuthorization(request: IncomingMessage, response: Serv
 
 async function activationPage(response: ServerResponse, code: string, mode: AuthMode): Promise<void> {
   const escaped = code.replace(/[^A-Z0-9-]/g, "");
-  const authorization = await database.query<{ device_name: string; platform: string }>("SELECT device_name, platform FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [escaped]);
+  const authorization = await database.query<{ id: string; device_name: string; platform: string; public_key: string }>("SELECT id, device_name, platform, public_key FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [escaped]);
   const device = authorization.rows[0];
   if (!device) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
-  sendHtml(response, 200, renderActivationPage({ code: escaped, deviceName: device.device_name, platform: device.platform, mode, oidcEnabled: Boolean(oidcClient) }));
+	const publicKeyDigest = activationPublicKeyDigest(device.public_key);
+	const activationConfirmation = oidcClient && oidcKey ? sealActivationConfirmation(oidcKey, { authorizationId: device.id, userCode: escaped, mode, publicKeyDigest, issuedAt: Date.now() }) : undefined;
+  sendHtml(response, 200, renderActivationPage({ code: escaped, deviceName: device.device_name, platform: device.platform, mode, oidcEnabled: Boolean(oidcClient), publicKeyDigest, ...(activationConfirmation ? { activationConfirmation } : {}) }));
 }
 
-async function startOidc(request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
+async function startOidc(request: IncomingMessage, response: ServerResponse): Promise<void> {
   if (!oidcClient || !oidcKey || !config.zitadel) throw new HttpError("not_found", "ZITADEL identity is not configured");
   await enforceLimit(database, "oidc-start", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 20, 60);
-  const code = (url.searchParams.get("user_code") ?? "").replace(/[^A-Z0-9-]/g, "");
-  const mode = url.searchParams.get("mode") === "signup" ? "signup" : "signin";
-  const authorization = await database.query("SELECT 1 FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [code]);
-  if (!authorization.rowCount) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
+	const origin = request.headers.origin;
+	if (!activationOriginMatches(origin, config.publicUrl)) throw new HttpError("activation_confirmation_required", "OIDC activation requires an explicit same-origin confirmation");
+	const body = await formBody(request);
+	requireExactKeys(body, ["user_code", "mode", "activation_confirmation"]);
+	const code = requiredString(body, "user_code", 16).toUpperCase();
+	const modeValue = requiredString(body, "mode", 8);
+	if (modeValue !== "signin" && modeValue !== "signup") throw new HttpError("invalid_request", "activation mode is invalid");
+	const mode = modeValue;
+	const sealed = requiredSecret(body, "activation_confirmation", 4096);
+	let confirmation;
+	try { confirmation = unsealActivationConfirmation(oidcKey, sealed); }
+	catch { throw new HttpError("activation_confirmation_required", "activation confirmation is invalid or expired"); }
+	if (confirmation.userCode !== code || confirmation.mode !== mode) throw new HttpError("activation_confirmation_required", "activation confirmation does not match this device request");
+	const authorization = await database.query<{ id: string; public_key: string }>("SELECT id, public_key FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [code]);
+	const pending = authorization.rows[0];
+	if (!pending) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
+	const publicKeyDigest = activationPublicKeyDigest(pending.public_key);
+	if (confirmation.authorizationId !== pending.id || confirmation.publicKeyDigest !== publicKeyDigest) throw new HttpError("activation_confirmation_required", "activation confirmation does not match this device key");
   const transaction = oidcClient.createTransaction(code, mode);
   const destination = await oidcClient.authorizationUrl(transaction);
   response.writeHead(303, { location: destination.href, "set-cookie": oidcTransactionCookie(oidcKey, transaction), "cache-control": "no-store", "referrer-policy": "no-referrer" });
@@ -188,7 +208,7 @@ async function approveOidcIdentity(transaction: { userCode: string; mode: AuthMo
       await client.query("INSERT INTO users(id,email,display_name,email_verified_at) VALUES($1,$2,$3,now())", [userId, identity.email, identity.displayName]);
       await client.query("INSERT INTO user_identities(issuer,subject,user_id,email) VALUES($1,$2,$3,$4)", [identity.issuer, identity.subject, userId, identity.email]);
     }
-    await client.query("UPDATE device_authorizations SET approved_user_id=$1 WHERE id=$2", [userId, pending.id]);
+		await client.query("UPDATE device_authorizations SET approved_user_id=$1,approved_identity_provider='zitadel',approved_identity_release=$2,approved_identity_policy_digest=$3,approved_identity_acr=$4,approved_identity_amr=$5 WHERE id=$6", [userId, identity.reviewedRelease, identity.assurancePolicyDigest, identity.acr, identity.amr, pending.id]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -369,7 +389,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   const url = new URL(request.url ?? "/", config.publicUrl);
   if (request.method === "GET" && url.pathname === "/healthz") return health(response);
   if (request.method === "GET" && url.pathname === "/activate") return activationPage(response, url.searchParams.get("user_code") ?? "", url.searchParams.get("mode") === "signup" ? "signup" : "signin");
-  if (request.method === "GET" && url.pathname === "/v1/auth/oidc/start") return startOidc(request, response, url);
+	if (request.method === "POST" && url.pathname === "/v1/auth/oidc/start") return startOidc(request, response);
   if (request.method === "GET" && url.pathname === "/v1/auth/oidc/callback") return oidcCallback(request, response, url);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/authorizations") return startDeviceAuthorization(request, response);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/approve") return approveDevice(request, response);

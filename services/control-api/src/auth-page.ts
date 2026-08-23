@@ -8,6 +8,8 @@ export interface ActivationPageInput {
   platform: string;
   mode: AuthMode;
   oidcEnabled: boolean;
+  activationConfirmation?: string;
+  publicKeyDigest: string;
 }
 
 export function escapeHtml(value: string): string {
@@ -18,15 +20,11 @@ function flame(): string {
   return `<svg aria-hidden="true" viewBox="0 0 1024 1024"><rect x="64" y="64" width="896" height="896" rx="200" fill="#101010"/><rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="rgba(255,255,255,.13)" stroke-width="8"/><svg x="294" y="212" width="436" height="600" viewBox="120 90 160 220"><g transform="translate(0 400) scale(.1 -.1)" fill="#f97316"><path d="M1892 3003c-23-20-529-827-572-913-168-334-58-750 255-963 408-278 983-83 1140 386 70 212 46 440-67 632-52 87-173 208-258 257-98 57-106 52-234-156-112-181-112-200-2-297 139-122 123-328-31-412-175-94-373 22-373 218 0 37 8 75 19 100 10 22 107 182 216 355 229 366 228 364 219 393-14 46-198 383-218 399-27 23-68 23-94 1z"/></g></svg></svg>`;
 }
 
-function oidcLink(code: string, mode: AuthMode): string {
-  const query = new URLSearchParams({ user_code: code, mode });
-  return `/v1/auth/oidc/start?${query.toString()}`;
-}
-
 function identityButton(input: ActivationPageInput): string {
   if (!input.oidcEnabled) return `<div class="notice"><strong>Account creation is not enabled yet.</strong><span>The self-hosted Blazn identity service must be configured by an administrator.</span></div>`;
+	if (!input.activationConfirmation) throw new Error("OIDC activation confirmation is required");
   const label = input.mode === "signup" ? "Create a secure account" : "Continue securely";
-  return `<a class="social" href="${escapeHtml(oidcLink(input.code, input.mode))}"><span class="provider-mark">B</span>${label}</a><div class="methods" aria-label="Available sign-in methods"><span>Email</span><span>Passkey</span><span>Google</span><span>GitHub</span><span>Apple</span></div>`;
+  return `<form method="post" action="/v1/auth/oidc/start"><input type="hidden" name="user_code" value="${escapeHtml(input.code)}"><input type="hidden" name="mode" value="${input.mode}"><input type="hidden" name="activation_confirmation" value="${escapeHtml(input.activationConfirmation)}"><button class="social" type="submit"><span class="provider-mark">B</span>${label}</button></form><div class="methods" aria-label="Available sign-in methods"><span>Email</span><span>Passkey</span><span>Google</span><span>GitHub</span><span>Apple</span></div>`;
 }
 
 const styles = `
@@ -43,7 +41,7 @@ export function renderActivationPage(input: ActivationPageInput): string {
   const legacy = signin ? `<form method="post" action="/v1/auth/device/approve"><input type="hidden" name="user_code" value="${escapeHtml(input.code)}"><label class="field">Email<input name="email" type="email" autocomplete="username" required></label><label class="field">Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Authorize this device</button></form><div class="divider">or</div>` : "";
   const heading = signin ? "Welcome back" : "Create your Blazn account";
   const lede = signin ? "Sign in to approve this CLI without sharing credentials with the device." : "Create a verified identity in Blazn's self-hosted authentication service. Multi-factor authentication is required.";
-  return document("Authorize Blazn", `<div class="shell"><section class="story"><div class="brand">${flame()}<span>Blazn</span></div><div class="hero"><div class="eyebrow">Your AI workforce, one command away</div><h1>Build with agents.<br>Keep control.</h1><p>Securely connect this machine to the workspace where your models, tools, environments, and team operate together.</p></div><div class="proof"><span>Device-bound sessions</span><span>Verified identities</span><span>MFA enforced</span></div></section><main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><div class="device"><strong>${escapeHtml(input.deviceName)}</strong><span>${escapeHtml(input.platform)}</span><div class="code">${escapeHtml(input.code)}</div></div><nav class="tabs" aria-label="Account access"><a class="tab ${signin ? "active" : ""}" href="${tabBase}&mode=signin">Sign in</a><a class="tab ${signin ? "" : "active"}" href="${tabBase}&mode=signup">Sign up</a></nav><h2>${heading}</h2><p class="lede">${lede}</p>${legacy}${identityButton(input)}<p class="terms">By continuing, you agree to the Blazn Terms and acknowledge the Privacy Policy.</p></div></main></div>`);
+  return document("Authorize Blazn", `<div class="shell"><section class="story"><div class="brand">${flame()}<span>Blazn</span></div><div class="hero"><div class="eyebrow">Your AI workforce, one command away</div><h1>Build with agents.<br>Keep control.</h1><p>Securely connect this machine to the workspace where your models, tools, environments, and team operate together.</p></div><div class="proof"><span>Device-bound sessions</span><span>Verified identities</span><span>MFA enforced</span></div></section><main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><div class="device"><strong>${escapeHtml(input.deviceName)}</strong><span>${escapeHtml(input.platform)} · key ${escapeHtml(input.publicKeyDigest.slice(7, 19))}</span><div class="code">${escapeHtml(input.code)}</div></div><nav class="tabs" aria-label="Account access"><a class="tab ${signin ? "active" : ""}" href="${tabBase}&mode=signin">Sign in</a><a class="tab ${signin ? "" : "active"}" href="${tabBase}&mode=signup">Sign up</a></nav><h2>${heading}</h2><p class="lede">${lede}</p>${legacy}${identityButton(input)}<p class="terms">By continuing, you explicitly approve the device and public-key fingerprint shown above.</p></div></main></div>`);
 }
 
 export function renderAuthResult(title: string, message: string, ok: boolean): string {

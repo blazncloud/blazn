@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "blazn.identity.qualification/v1",
+  "issuer": "https://identity.example.test",
+  "imageDigests": [
+    "postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "traefik@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "ghcr.io/zitadel/zitadel@sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  ],
+  "gates": {"composeBootstrap": true, "tlsIssuer": true, "oidcDiscovery": true, "authorizationCodePkce": true, "verifiedEmail": true, "reviewedAcrMfa": true, "legacyLogin": true, "oidcAwareHealth": true, "deviceConfirmation": true},
+  "backup": {"databaseRestore": true, "masterKeyRestore": true, "patVolumeRestore": true, "exactImageRollback": true},
+  "observedAt": "2026-08-22T00:00:00Z"
+}

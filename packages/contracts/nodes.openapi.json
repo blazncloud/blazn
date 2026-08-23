@@ -57,11 +57,11 @@
         "type": "object", "additionalProperties": false,
         "required": ["code", "message", "requestId"],
         "x-blazn-error-status": {
-          "access_expired": 401, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
+		  "access_expired": 401, "activation_confirmation_required": 403, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
           "capability_digest_invalid": 400, "device_not_found": 404, "device_proof_invalid": 403, "device_revoked": 401,
           "enrollment_consumed": 410, "enrollment_expired": 410, "enrollment_invalid": 400, "enrollment_not_found": 404,
           "expired_token": 400, "forwarded_identity_invalid": 400, "heartbeat_replay": 409, "heartbeat_skew": 400,
-          "identity_rejected": 403, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
+		  "identity_provider_unavailable": 503, "identity_rejected": 403, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
           "invalid_public_key": 400, "invalid_request": 400, "join_credential_consumed": 410, "join_credential_invalid": 400,
           "membership_required": 403, "method_not_allowed": 405, "node_broker_unavailable": 503, "node_not_found": 404, "not_found": 404,
           "object_storage_unavailable": 503, "permission_denied": 403, "proxy_auth_invalid": 403, "rate_limited": 429,
@@ -70,11 +70,11 @@
         },
         "properties": {
           "code": {"type": "string", "enum": [
-            "access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending",
+			"access_expired", "activation_confirmation_required", "authorization_capacity", "authorization_not_found", "authorization_pending",
             "capability_digest_invalid", "device_not_found", "device_proof_invalid", "device_revoked",
             "enrollment_consumed", "enrollment_expired", "enrollment_invalid", "enrollment_not_found",
             "expired_token", "forwarded_identity_invalid", "heartbeat_replay", "heartbeat_skew",
-            "identity_rejected", "idempotency_conflict", "internal_error", "invalid_json", "invalid_public_key", "invalid_request",
+			"identity_provider_unavailable", "identity_rejected", "idempotency_conflict", "internal_error", "invalid_json", "invalid_public_key", "invalid_request",
             "join_credential_consumed", "join_credential_invalid", "membership_required", "method_not_allowed", "node_broker_unavailable", "node_not_found", "not_found",
             "object_storage_unavailable", "permission_denied", "proxy_auth_invalid", "rate_limited", "request_too_large",
             "session_revoked", "slow_down", "state_conflict", "unauthorized", "version_conflict"

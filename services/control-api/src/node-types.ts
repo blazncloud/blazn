@@ -40,11 +40,11 @@ export interface NodeOperationView {
 export interface NodeEvent { id: string; type: string; payload: unknown; createdAt: string }
 
 export const NODE_ERROR_STATUS = {
-  access_expired: 401, authorization_capacity: 503, authorization_not_found: 404, authorization_pending: 428,
+	access_expired: 401, activation_confirmation_required: 403, authorization_capacity: 503, authorization_not_found: 404, authorization_pending: 428,
   capability_digest_invalid: 400, device_not_found: 404, device_proof_invalid: 403, device_revoked: 401,
   enrollment_consumed: 410, enrollment_expired: 410, enrollment_invalid: 400, enrollment_not_found: 404,
   expired_token: 400, forwarded_identity_invalid: 400, heartbeat_replay: 409, heartbeat_skew: 400,
-  identity_rejected: 403, idempotency_conflict: 409, internal_error: 500, invalid_json: 400,
+	identity_provider_unavailable: 503, identity_rejected: 403, idempotency_conflict: 409, internal_error: 500, invalid_json: 400,
   invalid_public_key: 400, invalid_request: 400, join_credential_consumed: 410, join_credential_invalid: 400,
   membership_required: 403, method_not_allowed: 405, node_not_found: 404, not_found: 404,
   node_broker_unavailable: 503,

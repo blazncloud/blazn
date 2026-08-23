@@ -62,6 +62,7 @@ test-control-api:
 
 test-identity:
 	./infra/identity/test-static.sh
+	shellcheck -e SC2016 infra/identity/*.sh
 
 test-infra:
 	./infra/milestone-2/tests/test-preflight.sh

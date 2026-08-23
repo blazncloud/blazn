@@ -5,68 +5,91 @@ if [ "$#" -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
   printf 'usage: %s ABSOLUTE_SECRETS_DIRECTORY INITIAL_ADMIN_EMAIL\n' "$0" >&2
   exit 64
 fi
+if [ "$(id -u)" -ne 0 ]; then printf 'secret generation must run as root\n' >&2; exit 77; fi
 
-SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-OPENSSL_BIN=${OPENSSL_BIN:-/usr/bin/openssl}
-if [ ! -x "$OPENSSL_BIN" ]; then
-  printf 'openssl is required at %s (override with OPENSSL_BIN)\n' "$OPENSSL_BIN" >&2
-  exit 69
-fi
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+openssl_bin=${OPENSSL_BIN:-/usr/bin/openssl}
+[ -x "$openssl_bin" ] || { printf 'openssl is required at %s\n' "$openssl_bin" >&2; exit 69; }
 secrets_root=$1
 admin_email=$2
-case "$secrets_root" in
-  /*) ;;
-  *) printf 'secrets directory must be absolute\n' >&2; exit 64 ;;
-esac
-case "$admin_email" in
-  *@*.*) ;;
-  *) printf 'initial administrator email is invalid\n' >&2; exit 64 ;;
-esac
+case "$secrets_root" in /*) ;; *) printf 'secrets directory must be absolute\n' >&2; exit 64 ;; esac
+printf '%s' "$admin_email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$' || { printf 'initial administrator email is invalid\n' >&2; exit 64; }
 
+assert_no_symlink_path() {
+  path_value=${1#/}; current=/; old_ifs=$IFS; IFS=/
+  for component in $path_value; do
+    [ -n "$component" ] || continue
+    current=${current%/}/$component
+    if [ -L "$current" ]; then printf 'symlink path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; fi
+		if [ -e "$current" ]; then
+			[ -d "$current" ] || { printf 'non-directory path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; }
+			if find "$current" -maxdepth 0 ! -user root -print -quit | grep -q .; then printf 'non-root-owned path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; fi
+			if find "$current" -maxdepth 0 -perm /022 ! -perm -1000 -print -quit | grep -q .; then printf 'writable non-sticky path component is forbidden: %s\n' "$current" >&2; IFS=$old_ifs; exit 73; fi
+		fi
+  done
+  IFS=$old_ifs
+}
+
+assert_secret_file() {
+  target=$1
+  [ -f "$target" ] && [ ! -L "$target" ] || { printf 'secret is not a regular file: %s\n' "$target" >&2; exit 73; }
+  metadata=$(stat -c '%u:%a:%h' -- "$target")
+  [ "$metadata" = '0:600:1' ] || { printf 'secret owner, mode, or link count is unsafe: %s (%s)\n' "$target" "$metadata" >&2; exit 73; }
+  [ -s "$target" ] || { printf 'secret is empty: %s\n' "$target" >&2; exit 73; }
+}
+
+assert_no_symlink_path "$secrets_root"
 umask 077
-mkdir -p "$secrets_root"
-chmod 700 "$secrets_root"
+mkdir -p -- "$secrets_root"
+[ ! -L "$secrets_root" ] && [ -d "$secrets_root" ] || { printf 'secrets root is unsafe\n' >&2; exit 73; }
+chown 0:0 -- "$secrets_root"; chmod 700 -- "$secrets_root"
+[ "$(stat -c '%u:%a' -- "$secrets_root")" = '0:700' ] || { printf 'secrets root ownership is unsafe\n' >&2; exit 73; }
+
+install_generated() {
+  target=$1; generator=$2
+  if [ -e "$target" ] || [ -L "$target" ]; then assert_secret_file "$target"; return; fi
+  temporary=$(mktemp "$secrets_root/.secret.tmp.XXXXXX")
+  trap 'test -z "${temporary:-}" || test ! -e "$temporary" || rm -- "$temporary"' EXIT HUP INT TERM
+  case "$generator" in
+    base64) "$openssl_bin" rand -base64 32 | tr -d '\n' > "$temporary" ;;
+    base64url) "$openssl_bin" rand 32 | "$openssl_bin" base64 -A | tr '+/' '-_' | tr -d '=' > "$temporary" ;;
+    masterkey) "$openssl_bin" rand -hex 16 > "$temporary" ;;
+    admin) printf 'Bz1!' > "$temporary"; "$openssl_bin" rand -hex 16 >> "$temporary" ;;
+    *) printf 'unknown secret generator\n' >&2; exit 70 ;;
+  esac
+  chown 0:0 -- "$temporary"; chmod 600 -- "$temporary"; assert_secret_file "$temporary"
+  mv -- "$temporary" "$target"; temporary=; assert_secret_file "$target"
+  sync -f "$target" 2>/dev/null || sync
+  trap - EXIT HUP INT TERM
+}
+
+render_secret() {
+  target=$1; template=$2; shift 2
+  if [ -e "$target" ] || [ -L "$target" ]; then assert_secret_file "$target"; fi
+  temporary=$(mktemp "$secrets_root/.render.tmp.XXXXXX")
+  trap 'test -z "${temporary:-}" || test ! -e "$temporary" || rm -- "$temporary"' EXIT HUP INT TERM
+  sed "$@" "$template" > "$temporary"
+  chown 0:0 -- "$temporary"; chmod 600 -- "$temporary"; assert_secret_file "$temporary"
+  mv -- "$temporary" "$target"; temporary=; assert_secret_file "$target"
+  sync -f "$target" 2>/dev/null || sync
+  trap - EXIT HUP INT TERM
+}
+
 postgres_password_file=$secrets_root/postgres-admin-password
 zitadel_password_file=$secrets_root/zitadel-database-password
 masterkey_file=$secrets_root/zitadel-masterkey
 admin_password_file=$secrets_root/initial-admin-password
-
-generate_if_missing() {
-  target=$1
-  bytes=$2
-  if [ ! -s "$target" ]; then
-    temporary=${target}.tmp.$$
-    "$OPENSSL_BIN" rand -base64 "$bytes" | tr -d '\n' > "$temporary"
-    mv "$temporary" "$target"
-  fi
-}
-
-generate_if_missing "$postgres_password_file" 32
-generate_if_missing "$zitadel_password_file" 32
-if [ ! -s "$masterkey_file" ]; then
-  temporary=${masterkey_file}.tmp.$$
-  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 > "$temporary"
-  mv "$temporary" "$masterkey_file"
-fi
-if [ ! -s "$admin_password_file" ]; then
-  temporary=${admin_password_file}.tmp.$$
-  printf 'Bz1!' > "$temporary"
-  "$OPENSSL_BIN" rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24 >> "$temporary"
-  mv "$temporary" "$admin_password_file"
-fi
+install_generated "$postgres_password_file" base64
+install_generated "$zitadel_password_file" base64
+install_generated "$masterkey_file" masterkey
+install_generated "$admin_password_file" admin
+install_generated "$secrets_root/zitadel-client-secret" base64url
+install_generated "$secrets_root/oidc-cookie-key" base64url
 
 postgres_password=$(sed -n '1p' "$postgres_password_file")
 zitadel_password=$(sed -n '1p' "$zitadel_password_file")
 admin_password=$(sed -n '1p' "$admin_password_file")
-
-sed \
-  -e "s|REPLACE_POSTGRES_ADMIN_PASSWORD|$postgres_password|g" \
-  -e "s|REPLACE_ZITADEL_DATABASE_PASSWORD|$zitadel_password|g" \
-  "$SCRIPT_DIR/zitadel-secrets.example.yaml" > "$secrets_root/zitadel-secrets.yaml"
-sed \
-  -e "s|REPLACE_INITIAL_ADMIN_PASSWORD|$admin_password|g" \
-  -e "s|REPLACE_INITIAL_ADMIN_EMAIL|$admin_email|g" \
-  "$SCRIPT_DIR/zitadel-steps.example.yaml" > "$secrets_root/zitadel-steps.yaml"
-
-chmod 600 "$postgres_password_file" "$zitadel_password_file" "$masterkey_file" "$admin_password_file" "$secrets_root/zitadel-secrets.yaml" "$secrets_root/zitadel-steps.yaml"
-printf 'Generated ZITADEL secrets in %s. Preserve the master key and remove the initial admin password after first-login rotation.\n' "$secrets_root"
+render_secret "$secrets_root/zitadel-secrets.yaml" "$script_dir/zitadel-secrets.example.yaml" -e "s|REPLACE_POSTGRES_ADMIN_PASSWORD|$postgres_password|g" -e "s|REPLACE_ZITADEL_DATABASE_PASSWORD|$zitadel_password|g"
+render_secret "$secrets_root/zitadel-steps.yaml" "$script_dir/zitadel-steps.example.yaml" -e "s|REPLACE_INITIAL_ADMIN_PASSWORD|$admin_password|g" -e "s|REPLACE_INITIAL_ADMIN_EMAIL|$admin_email|g"
+sync -f "$secrets_root" 2>/dev/null || sync
+printf 'Generated root-owned ZITADEL secrets. Preserve the master key and remove the initial administrator password after rotation.\n'

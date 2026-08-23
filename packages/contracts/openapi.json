@@ -188,6 +188,7 @@
         "type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"],
         "x-blazn-error-status": {
           "access_expired": 401,
+		  "activation_confirmation_required": 403,
           "authorization_capacity": 503,
           "authorization_not_found": 404,
           "authorization_pending": 428,
@@ -196,6 +197,7 @@
           "device_revoked": 401,
           "expired_token": 400,
           "forwarded_identity_invalid": 400,
+		  "identity_provider_unavailable": 503,
           "identity_rejected": 403,
           "internal_error": 500,
           "invalid_json": 400,
@@ -212,7 +214,7 @@
           "unauthorized": 401
         },
         "properties": {
-		  "code": {"type": "string", "enum": ["access_expired", "authorization_capacity", "authorization_not_found", "authorization_pending", "device_not_found", "device_proof_invalid", "device_revoked", "expired_token", "forwarded_identity_invalid", "identity_rejected", "internal_error", "invalid_json", "invalid_public_key", "invalid_request", "method_not_allowed", "not_found", "object_storage_unavailable", "proxy_auth_invalid", "rate_limited", "request_too_large", "session_revoked", "slow_down", "unauthorized"]},
+		  "code": {"type": "string", "enum": ["access_expired", "activation_confirmation_required", "authorization_capacity", "authorization_not_found", "authorization_pending", "device_not_found", "device_proof_invalid", "device_revoked", "expired_token", "forwarded_identity_invalid", "identity_provider_unavailable", "identity_rejected", "internal_error", "invalid_json", "invalid_public_key", "invalid_request", "method_not_allowed", "not_found", "object_storage_unavailable", "proxy_auth_invalid", "rate_limited", "request_too_large", "session_revoked", "slow_down", "unauthorized"]},
           "message": {"type": "string", "minLength": 1, "maxLength": 1024},
           "requestId": {"type": "string", "minLength": 1, "maxLength": 128}
         }

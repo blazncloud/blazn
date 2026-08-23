@@ -5,6 +5,10 @@ services:
       ZITADEL_CLIENT_ID: ${ZITADEL_CLIENT_ID:?set the qualified Blazn ZITADEL web client ID}
       ZITADEL_CLIENT_SECRET_FILE: /run/secrets/zitadel_client_secret
       ZITADEL_REQUIRE_MFA: ${ZITADEL_REQUIRE_MFA:-true}
+      ZITADEL_REVIEWED_RELEASE: ${ZITADEL_REVIEWED_RELEASE:?set the reviewed ZITADEL release}
+      ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST: ${ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST:?set the reviewed assurance policy digest}
+      ZITADEL_REVIEWED_ACR_VALUES: ${ZITADEL_REVIEWED_ACR_VALUES:?set exact reviewed ZITADEL ACR values}
+      ZITADEL_REVIEWED_MFA_AMR_SETS: ${ZITADEL_REVIEWED_MFA_AMR_SETS:?set exact reviewed multi-method AMR sets}
       OIDC_COOKIE_KEY_FILE: /run/secrets/oidc_cookie_key
     secrets:
       - zitadel_client_secret

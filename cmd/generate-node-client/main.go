@@ -21,8 +21,8 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "73c3703e8715a841ed6a1c7cfb6b6b296449b43978108c9665025dc825a213b0"
-	commonOpenAPISHA256    = "cbb5b7fa0d8add9a8f38ed36a0853704cfeb480d7a6051f3b8965c739e160e34"
+	openAPISHA256          = "afec6e5eb06f127fe7abf3f880973b59a1fc42664e0a160cb2cc4b862ff04db7"
+	commonOpenAPISHA256    = "3a8ff28d4ffd9d36daa2711e95a2748d709347bb480c9e7a4678d5870506f3d0"
 	planSHA256             = "b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f"
 	receiptSHA256          = "459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6"
 	operationReceiptSHA256 = "95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b"
@@ -450,11 +450,11 @@ func validateNodeError(document map[string]any) error {
 		return fmt.Errorf("NodeError field bounds changed")
 	}
 	want := map[string]int{
-		"access_expired": 401, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
+		"access_expired": 401, "activation_confirmation_required": 403, "authorization_capacity": 503, "authorization_not_found": 404, "authorization_pending": 428,
 		"capability_digest_invalid": 400, "device_not_found": 404, "device_proof_invalid": 403, "device_revoked": 401,
 		"enrollment_consumed": 410, "enrollment_expired": 410, "enrollment_invalid": 400, "enrollment_not_found": 404,
 		"expired_token": 400, "forwarded_identity_invalid": 400, "heartbeat_replay": 409, "heartbeat_skew": 400,
-		"identity_rejected": 403, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
+		"identity_provider_unavailable": 503, "identity_rejected": 403, "idempotency_conflict": 409, "internal_error": 500, "invalid_json": 400,
 		"invalid_public_key": 400, "invalid_request": 400, "join_credential_consumed": 410, "join_credential_invalid": 400,
 		"membership_required": 403, "method_not_allowed": 405, "node_broker_unavailable": 503, "node_not_found": 404, "not_found": 404,
 		"object_storage_unavailable": 503, "permission_denied": 403, "proxy_auth_invalid": 403, "rate_limited": 429,

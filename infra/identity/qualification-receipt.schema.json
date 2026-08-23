@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/contracts/identity-qualification-receipt-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "issuer", "imageDigests", "gates", "backup", "observedAt"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.identity.qualification/v1"},
+    "issuer": {"type": "string", "pattern": "^https://"},
+    "imageDigests": {"type": "array", "minItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "@sha256:[0-9a-f]{64}$"}},
+    "gates": {
+      "type": "object", "additionalProperties": false,
+      "required": ["composeBootstrap", "tlsIssuer", "oidcDiscovery", "authorizationCodePkce", "verifiedEmail", "reviewedAcrMfa", "legacyLogin", "oidcAwareHealth", "deviceConfirmation"],
+      "properties": {
+        "composeBootstrap": {"const": true}, "tlsIssuer": {"const": true}, "oidcDiscovery": {"const": true},
+        "authorizationCodePkce": {"const": true}, "verifiedEmail": {"const": true}, "reviewedAcrMfa": {"const": true},
+        "legacyLogin": {"const": true}, "oidcAwareHealth": {"const": true}, "deviceConfirmation": {"const": true}
+      }
+    },
+    "backup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["databaseRestore", "masterKeyRestore", "patVolumeRestore", "exactImageRollback"],
+      "properties": {"databaseRestore": {"const": true}, "masterKeyRestore": {"const": true}, "patVolumeRestore": {"const": true}, "exactImageRollback": {"const": true}}
+    },
+    "observedAt": {"type": "string", "format": "date-time"}
+  }
+}

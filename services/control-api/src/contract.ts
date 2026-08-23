@@ -1,5 +1,6 @@
 export const API_ERROR_STATUS = {
   access_expired: 401,
+	activation_confirmation_required: 403,
   authorization_capacity: 503,
   authorization_not_found: 404,
   authorization_pending: 428,
@@ -9,6 +10,7 @@ export const API_ERROR_STATUS = {
   expired_token: 400,
   forwarded_identity_invalid: 400,
   identity_rejected: 403,
+	identity_provider_unavailable: 503,
   internal_error: 500,
   invalid_json: 400,
   invalid_public_key: 400,
