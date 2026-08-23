@@ -199,7 +199,9 @@ func TestAuthenticatedBrokerRoutesEveryFrozenMetadataMethod(t *testing.T) {
 		{"artifact.get", `{"artifactId":"` + brokerTestArtifactID + `"}`, resultArtifactEnvelope},
 	} {
 		schema, _, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest(testCase.method, testCase.params))
-		if failure != nil || schema != testCase.schema { t.Fatalf("method=%s schema=%q failure=%#v", testCase.method, schema, failure) }
+		if failure != nil || schema != testCase.schema {
+			t.Fatalf("method=%s schema=%q failure=%#v", testCase.method, schema, failure)
+		}
 	}
 }
 
@@ -216,7 +218,11 @@ func TestAuthenticatedBrokerRejectsSchemaInvalidParamsBeforeAuthorityUse(t *test
 		{"artifact.get", `{"artifactId":"not-a-uuid"}`},
 	} {
 		_, _, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest(testCase.method, testCase.params))
-		if failure == nil || failure.Code != "invalid_request" { t.Fatalf("method=%s failure=%#v", testCase.method, failure) }
+		if failure == nil || failure.Code != "invalid_request" {
+			t.Fatalf("method=%s failure=%#v", testCase.method, failure)
+		}
 	}
-	if len(api.tokens) != 0 { t.Fatalf("invalid requests reached API with tokens: %#v", api.tokens) }
+	if len(api.tokens) != 0 {
+		t.Fatalf("invalid requests reached API with tokens: %#v", api.tokens)
+	}
 }

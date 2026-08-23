@@ -309,12 +309,16 @@ func validBrokerRunCreateParams(params brokerRunCreateParams) bool {
 	}
 	seenIDs := map[string]bool{}
 	for _, id := range params.InputArtifactIDs {
-		if !brokerUUIDPattern.MatchString(id) || seenIDs[id] { return false }
+		if !brokerUUIDPattern.MatchString(id) || seenIDs[id] {
+			return false
+		}
 		seenIDs[id] = true
 	}
 	seenNames := map[string]bool{}
 	for _, name := range params.OutputNames {
-		if !brokerOutputNamePattern.MatchString(name) || seenNames[name] { return false }
+		if !brokerOutputNamePattern.MatchString(name) || seenNames[name] {
+			return false
+		}
 		seenNames[name] = true
 	}
 	return true
