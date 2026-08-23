@@ -84,7 +84,7 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	wantArtifacts := []sandboxcontrol.ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.json", MediaType: "application/json", Required: true}}
 	want := sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
-		Command: []string{"/bin/true"}, Architecture: "amd64", RuntimeClassName: "",
+		Command: []string{"true"}, Architecture: "amd64", RuntimeClassName: "",
 		TrustLevel: sandboxcontrol.TrustApprovedPOC, NonSensitive: true,
 		CPURequest: "100m", MemoryRequest: "128Mi", EphemeralStorageRequest: "1Gi",
 		CPULimit: "1", MemoryLimit: "1Gi", EphemeralStorageLimit: "2Gi",
@@ -195,7 +195,8 @@ func TestKubernetesBackendHonorsCancellationAndHealthIsReadOnly(t *testing.T) {
 	fake := &fakeSandboxAdapter{block: true}
 	healthCalls := 0
 	backend, err := NewKubernetesBackend(KubernetesBackendConfig{Adapter: fake,
-		Health: func(context.Context) error { healthCalls++; return nil }, AbsencePollInterval: time.Millisecond})
+		Health: func(context.Context) error { healthCalls++; return nil }, ArtifactExportSupported: true,
+		AbsencePollInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
