@@ -96,7 +96,10 @@ Compatible Runs bind the selected proxy decision to one exact normalized
 the exact frozen route identity and version. Every other request uses that same
 primary route unless it is the single frozen fallback request, and each closed
 `model.usage` payload repeats the route identity and version of its exact earlier
-request. Terminal model-request counts and input/output token totals equal the
+request. These authority checks apply to every compatible snapshot while a Run
+is still active as well as after it terminates. A billing event, whenever
+present, must exactly bind the authoritative pricing receipt; terminal Runs
+require it. Terminal model-request counts and input/output token totals equal the
 normalized request and usage events rather than uncorroborated adapter counters.
 One closed `billing.recorded` event binds the authoritative pricing and receipt
 identity; control-plane and proxy receipts have matching authoritative event
