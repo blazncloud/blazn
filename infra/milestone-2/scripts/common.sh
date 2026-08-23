@@ -155,8 +155,9 @@ control_plane_compose() {
     require_absolute_path BLAZN_IDENTITY_ENV_FILE "$identity_env"
     assert_not_symlink_chain "$identity_env"
     assert_regular_file_owned_mode "$identity_env" 0 600
-    [ -f "$infra_root/compose.identity.yaml" ] && [ ! -L "$infra_root/compose.identity.yaml" ] || \
+    if [ ! -f "$infra_root/compose.identity.yaml" ] || [ -L "$infra_root/compose.identity.yaml" ]; then
       die "identity Compose overlay is unavailable"
+    fi
     docker compose -f "$infra_root/compose.yaml" -f "$infra_root/compose.identity.yaml" \
       --env-file "$env_file" --env-file "$identity_env" "$@"
   else
@@ -171,8 +172,9 @@ validate_identity_overlay() {
   require_absolute_path BLAZN_IDENTITY_ENV_FILE "$identity_env"
   assert_not_symlink_chain "$identity_env"
   assert_regular_file_owned_mode "$identity_env" 0 600
-  [ -f "$infra_root/compose.identity.yaml" ] && [ ! -L "$infra_root/compose.identity.yaml" ] || \
+  if [ ! -f "$infra_root/compose.identity.yaml" ] || [ -L "$infra_root/compose.identity.yaml" ]; then
     die "identity Compose overlay is unavailable"
+  fi
   identity_size=$(wc -c <"$identity_env" | tr -d ' ')
   case $identity_size in ''|*[!0-9]*) die "identity environment size is invalid" ;; esac
   [ "$identity_size" -le 8192 ] || die "identity environment is unexpectedly large"
@@ -193,7 +195,9 @@ validate_identity_overlay() {
   assert_regular_file_owned_mode "$identity_root/oidc-cookie-key" 0 600
   client_secret_size=$(wc -c <"$identity_root/zitadel-client-secret" | tr -d ' ')
   case $client_secret_size in ''|*[!0-9]*) die "ZITADEL client secret size is invalid" ;; esac
-  [ "$client_secret_size" -ge 16 ] && [ "$client_secret_size" -le 1024 ] || die "ZITADEL client secret size is invalid"
+  if [ "$client_secret_size" -lt 16 ] || [ "$client_secret_size" -gt 1024 ]; then
+    die "ZITADEL client secret size is invalid"
+  fi
   [ "$(wc -c <"$identity_root/oidc-cookie-key" | tr -d ' ')" = 43 ] || die "OIDC cookie key must contain 32 base64url bytes"
   LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$identity_root/oidc-cookie-key" || die "OIDC cookie key is invalid"
 }
