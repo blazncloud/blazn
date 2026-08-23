@@ -16,12 +16,13 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     await admin.query("INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES($1,$2,'Controller Test','salt','hash')", [userId, `${userId}@example.test`]);
     await admin.query("INSERT INTO workspaces(id,slug,name,created_by) VALUES($1,$2,'Controller Test',$3)", [workspaceId, `controller-${userId.slice(0, 8)}`, userId]);
     await admin.query("INSERT INTO workspace_memberships(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId]);
+    await assert.rejects(controllerOne.query("SELECT * FROM sandbox_controller_claim($1,$2)", ["retired-controller", 30]), hasCode("42501"));
 
     const staleStateSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "ready" });
     const staleStateOperationId = await insertOperation(admin, workspaceId, staleStateSandboxId, userId, "stop");
     const staleVersionSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped" });
     const staleVersionOperationId = await insertOperation(admin, workspaceId, staleVersionSandboxId, userId, "stop");
-    const createSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    const createSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested", withArtifact: true });
     const createOperationId = await insertOperation(admin, workspaceId, createSandboxId, userId, "create");
     const claims = await Promise.all([first.claim("controller-a", 30), second.claim("controller-b", 30)]);
     const claimed = claims.find((value) => value !== undefined)!;
@@ -38,8 +39,10 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.equal(claimed.attempt, 1);
     assert.equal((await admin.query("SELECT state FROM sandboxes WHERE id=$1", [createSandboxId])).rows[0]?.state, "queued");
     assert.equal(claimed.templateDigest, `sha256:${"a".repeat(64)}`);
+    assert.equal(claimed.requestedBy, userId);
     assert.deepEqual(claimed.command, ["/bin/true"]);
     assert.deepEqual(claimed.sources.map((source) => [source.name, source.commit]), [["source", "1".repeat(40)]]);
+    assert.deepEqual(claimed.artifacts, [{ name: "patch", path: "/workspace/artifacts/change.patch", mediaType: "text/plain", required: true }]);
     assert.equal(await first.renew(createOperationId, "controller-a", randomUUID(), 30), undefined);
 
     const owner = claims[0] ? first : second;
@@ -177,13 +180,14 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
 
 async function seedSandbox(admin: Pool, workspaceId: string, userId: string, options: {
   state: "requested" | "ready" | "stopping"; desiredState?: "ready" | "stopped"; expired?: boolean;
-  version?: number; backend?: [uid: string, resourceVersion: string, admissionId: string];
+  version?: number; backend?: [uid: string, resourceVersion: string, admissionId: string]; withArtifact?: boolean;
 }): Promise<string> {
   const sandboxId = randomUUID(), templateId = randomUUID(), versionId = randomUUID(), suffix = sandboxId.slice(0, 8);
   const spec = { version: "1", variants: [{ name: "linux-amd64", architecture: "amd64",
     imageIndex: `registry.invalid/poc@sha256:${"b".repeat(64)}`, imageDigest: `registry.invalid/poc@sha256:${"c".repeat(64)}`,
     placementProfile: "poc-linux-amd64-v1", command: ["/bin/true"], resources: { requests: { cpu: "100m", memory: "128Mi", ephemeralStorage: "1Gi" }, limits: { cpu: "500m", memory: "512Mi", ephemeralStorage: "2Gi" } } }],
-    repositories: [{ name: "source", url: "https://github.com/blazncloud/blazn.git", destination: "/workspace/src/blazn", writable: true }], artifacts: [] };
+    repositories: [{ name: "source", url: "https://github.com/blazncloud/blazn.git", destination: "/workspace/src/blazn", writable: true }],
+    artifacts: options.withArtifact ? [{ name: "patch", path: "/workspace/artifacts/change.patch", mediaType: "text/plain", required: true }] : [] };
   const createdAt = options.expired ? new Date(Date.now() - 120_000) : new Date();
   const expiresAt = options.expired ? new Date(Date.now() - 60_000) : new Date(Date.now() + 600_000);
   await admin.query("BEGIN");
@@ -192,6 +196,7 @@ async function seedSandbox(admin: Pool, workspaceId: string, userId: string, opt
     await admin.query("INSERT INTO sandbox_template_versions(id,workspace_id,template_id,version,canonical_spec,spec,content_digest,created_by) VALUES($1,$2,$3,'1',$4,$5,$6,$7)", [versionId, workspaceId, templateId, Buffer.from(JSON.stringify(spec)), spec, "a".repeat(64), userId]);
     await admin.query("INSERT INTO sandbox_template_version_variants(version_id,workspace_id,template_id,name,architecture,image_index_digest,image_child_digest,placement_profile,command,resources) VALUES($1,$2,$3,'linux-amd64','amd64',$4,$5,'poc-linux-amd64-v1',$6::jsonb,$7::jsonb)", [versionId, workspaceId, templateId, `registry.invalid/poc@sha256:${"b".repeat(64)}`, `registry.invalid/poc@sha256:${"c".repeat(64)}`, JSON.stringify(["/bin/true"]), JSON.stringify(spec.variants[0]!.resources)]);
     await admin.query("INSERT INTO sandbox_template_version_repositories(version_id,workspace_id,template_id,name,url,destination,writable) VALUES($1,$2,$3,'source','https://github.com/blazncloud/blazn.git','/workspace/src/blazn',true)", [versionId, workspaceId, templateId]);
+    if (options.withArtifact) await admin.query("INSERT INTO sandbox_template_version_artifacts(version_id,workspace_id,template_id,name,path,media_type,required) VALUES($1,$2,$3,'patch','/workspace/artifacts/change.patch','text/plain',true)", [versionId, workspaceId, templateId]);
     await admin.query("INSERT INTO sandbox_template_version_status(version_id,workspace_id,template_id,status,changed_by) VALUES($1,$2,$3,'published',$4)", [versionId, workspaceId, templateId, userId]);
     await admin.query("UPDATE sandbox_templates SET current_published_version_id=$1 WHERE id=$2", [versionId, templateId]);
     await admin.query(`INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,
@@ -203,6 +208,7 @@ async function seedSandbox(admin: Pool, workspaceId: string, userId: string, opt
       options.desiredState ?? "ready", options.backend?.[0] ?? null, options.backend?.[1] ?? null, options.backend?.[2] ?? null,
       "d".repeat(64), expiresAt, createdAt, options.version ?? 1]);
     await admin.query("INSERT INTO sandbox_sources(sandbox_id,workspace_id,template_version_id,repository_name,commit) VALUES($1,$2,$3,'source',$4)", [sandboxId, workspaceId, versionId, "1".repeat(40)]);
+    if (options.withArtifact) await admin.query("INSERT INTO sandbox_artifact_contract_entries(sandbox_id,workspace_id,template_version_id,name,path,media_type,required) VALUES($1,$2,$3,'patch','/workspace/artifacts/change.patch','text/plain',true)", [sandboxId, workspaceId, versionId]);
     await admin.query("COMMIT"); return sandboxId;
   } catch (error) { await admin.query("ROLLBACK"); throw error; }
 }

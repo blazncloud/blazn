@@ -10,10 +10,18 @@ export interface SandboxControllerSource {
   commit: string;
 }
 
+export interface SandboxControllerArtifactContractEntry {
+  name: string;
+  path: string;
+  mediaType: string;
+  required: boolean;
+}
+
 export interface SandboxControllerWorkItem {
   operationId: string;
   workspaceId: string;
   sandboxId: string;
+  requestedBy: string;
   operationType: SandboxOperationType;
   expectedSandboxVersion: number;
   leaseToken: string;
@@ -39,6 +47,7 @@ export interface SandboxControllerWorkItem {
   backendResourceVersion: string | null;
   expiresAt: string;
   sources: SandboxControllerSource[];
+  artifacts: SandboxControllerArtifactContractEntry[];
 }
 
 export interface SandboxControllerCompletion {
@@ -65,7 +74,7 @@ export class PgSandboxControllerStore {
   }
 
   async claim(workerId: string, leaseSeconds: number): Promise<SandboxControllerWorkItem | undefined> {
-    const result = await this.database.query("SELECT * FROM sandbox_controller_claim($1,$2)", [workerId, leaseSeconds]);
+    const result = await this.database.query("SELECT * FROM sandbox_controller_claim_v2($1,$2)", [workerId, leaseSeconds]);
     return result.rows[0] ? workItemRow(result.rows[0]) : undefined;
   }
 
@@ -121,8 +130,14 @@ function workItemRow(row: QueryResultRow): SandboxControllerWorkItem {
   if (![urls.length, destinations.length, writable.length, commits.length].every((length) => length === names.length)) {
     throw new Error("sandbox controller source columns are inconsistent");
   }
+  const artifactNames = requiredStringArray(row.artifact_names), artifactPaths = requiredStringArray(row.artifact_paths),
+    artifactMediaTypes = requiredStringArray(row.artifact_media_types), artifactRequired = requiredBooleanArray(row.artifact_required);
+  if (![artifactPaths.length, artifactMediaTypes.length, artifactRequired.length].every((length) => length === artifactNames.length)) {
+    throw new Error("sandbox controller artifact columns are inconsistent");
+  }
   return {
     operationId: row.operation_id, workspaceId: row.workspace_id, sandboxId: row.sandbox_id,
+    requestedBy: row.requested_by,
     operationType: row.operation_type, expectedSandboxVersion: Number(row.expected_sandbox_version),
     leaseToken: row.lease_token, leaseExpiresAt: timestamp(row.lease_expires_at), attempt: Number(row.attempt),
     allocationMode: row.allocation_mode, desiredState: row.desired_state, architecture: row.architecture,
@@ -135,6 +150,8 @@ function workItemRow(row: QueryResultRow): SandboxControllerWorkItem {
     backendResourceVersion: row.backend_resource_version, expiresAt: timestamp(row.expires_at),
     sources: names.map((name, index) => ({ name, url: urls[index]!, destination: destinations[index]!,
       writable: writable[index]!, commit: commits[index]! })),
+    artifacts: artifactNames.map((name, index) => ({ name, path: artifactPaths[index]!,
+      mediaType: artifactMediaTypes[index]!, required: artifactRequired[index]! })),
   };
 }
 

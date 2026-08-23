@@ -130,3 +130,17 @@ test("sandbox controller migration exposes only fenced database authority", asyn
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /p_(?:payload|result|error|conditions) jsonb/);
 });
+
+test("sandbox controller v2 claim returns immutable owner and ordered artifact bindings", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/014_sandbox_controller_claim_contract.sql"), "utf8");
+  assert.match(sql, /sandbox_controller_claim_v2/);
+  assert.match(sql, /s\.requested_by/);
+  assert.match(sql, /array_agg\(entry\.name ORDER BY entry\.name\)/);
+  assert.match(sql, /array_agg\(entry\.path ORDER BY entry\.name\)/);
+  assert.match(sql, /array_agg\(entry\.media_type ORDER BY entry\.name\)/);
+  assert.match(sql, /array_agg\(entry\.required ORDER BY entry\.name\)/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION sandbox_controller_claim\(text,integer\) FROM blazn_sandbox_controller/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION sandbox_controller_claim_v2\(text,integer\) TO blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_sandbox_controller/);
+});

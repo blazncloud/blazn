@@ -34,6 +34,47 @@ func (e *fakeExporter) Export(_ context.Context, sandbox SandboxRecord, specs []
 	return append([]ArtifactReceipt(nil), e.receipts...), nil
 }
 
+func TestCreateReceiptBindsExactAdmissionWorkloadIdentity(t *testing.T) {
+	receipt, err := NewReceipt("request-admission-1", OperationCreate, SandboxRecord{
+		Name: "sandbox-a", Namespace: Namespace, UID: "sandbox-uid", ResourceVersion: "101",
+		WorkspaceID: "workspace-a", OwnerID: "owner-a", QueueName: QueueName,
+		TrustLevel: TrustApprovedPOC, State: StateReady, ArtifactContractDigest: "sha256:" + strings.Repeat("a", 64),
+	}, nil, time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTerminalCreateReceipt(receipt); err == nil {
+		t.Fatal("name-only create receipt passed the terminal admission boundary")
+	}
+	identity := WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: "sandbox-a-workload", UID: "workload-uid-1", ResourceVersion: "202", ClusterQueue: "poc-cluster"}
+	bound, err := AttachAdmissionIdentity(receipt, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateTerminalCreateReceipt(bound); err != nil {
+		t.Fatal(err)
+	}
+	if bound.Admission == nil || bound.Admission.UID != identity.UID || bound.Digest == receipt.Digest {
+		t.Fatalf("admission identity was not bound into the receipt digest: %#v", bound)
+	}
+
+	tampered := bound
+	tampered.Admission = &WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: identity.Name, UID: "replacement-uid", ResourceVersion: identity.ResourceVersion, ClusterQueue: identity.ClusterQueue}
+	if err := ValidateTerminalCreateReceipt(tampered); err == nil {
+		t.Fatal("tampered Workload UID passed receipt validation")
+	}
+	if _, err := AttachAdmissionIdentity(receipt, WorkloadIdentity{APIVersion: AdmissionAPIVersion, Namespace: Namespace, Name: identity.Name, UID: "", ResourceVersion: identity.ResourceVersion, ClusterQueue: identity.ClusterQueue}); err == nil {
+		t.Fatal("name-only Workload identity was accepted")
+	}
+	for _, invalidName := range []string{"bad..name", "bad.-segment", strings.Repeat("a", 64)} {
+		invalid := identity
+		invalid.Name = invalidName
+		if _, err := AttachAdmissionIdentity(receipt, invalid); err == nil {
+			t.Fatalf("invalid Workload name %q was accepted", invalidName)
+		}
+	}
+}
+
 type fakeAPI struct {
 	t                     *testing.T
 	server                *httptest.Server
