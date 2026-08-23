@@ -17,11 +17,14 @@ var workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 var quantityPattern = regexp.MustCompile(`^[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?$`)
 var commitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
+const defaultLeaseSafetyMargin = time.Second
+
 type Controller struct {
-	store   Store
-	backend Backend
-	config  Config
-	now     func() time.Time
+	store             Store
+	backend           Backend
+	config            Config
+	now               func() time.Time
+	leaseSafetyMargin time.Duration
 }
 
 type heartbeatKind uint8
@@ -37,6 +40,12 @@ type heartbeatResult struct {
 	err  error
 }
 
+type renewResult struct {
+	expiresAt time.Time
+	ok        bool
+	err       error
+}
+
 func New(store Store, backend Backend, config Config) (*Controller, error) {
 	if store == nil || backend == nil {
 		return nil, fmt.Errorf("sandbox controller dependencies are required")
@@ -44,12 +53,13 @@ func New(store Store, backend Backend, config Config) (*Controller, error) {
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
-	return &Controller{store: store, backend: backend, config: config, now: time.Now}, nil
+	return &Controller{store: store, backend: backend, config: config, now: time.Now,
+		leaseSafetyMargin: defaultLeaseSafetyMargin}, nil
 }
 
 func validateConfig(config Config) error {
 	effectiveLease := config.Lease.Truncate(time.Second)
-	if !workerPattern.MatchString(config.WorkerID) || config.Lease < 5*time.Second || config.Lease > 300*time.Second || config.RenewEvery <= 0 || config.RenewEvery > effectiveLease-time.Second || config.PollEvery <= 0 || config.OperationTimeout < config.PollEvery || config.IdleDelay <= 0 || config.RetryDelay < time.Second || config.RetryDelay > time.Hour || config.ExpiryEvery <= 0 || config.ExpiryBatch < 1 || config.ExpiryBatch > 100 {
+	if !workerPattern.MatchString(config.WorkerID) || config.Lease < 5*time.Second || config.Lease > 300*time.Second || config.RenewEvery <= 0 || config.RenewEvery >= effectiveLease-defaultLeaseSafetyMargin || config.PollEvery <= 0 || config.OperationTimeout < config.PollEvery || config.IdleDelay <= 0 || config.RetryDelay < time.Second || config.RetryDelay > time.Hour || config.ExpiryEvery <= 0 || config.ExpiryBatch < 1 || config.ExpiryBatch > 100 {
 		return fmt.Errorf("sandbox controller configuration is invalid")
 	}
 	return nil
@@ -129,33 +139,78 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, item WorkItem, done chan<- heartbeatResult) {
 	ticker := time.NewTicker(c.config.RenewEvery)
 	defer ticker.Stop()
+	watchdog := time.NewTimer(c.untilLeaseSafetyDeadline(item.LeaseExpiresAt))
+	defer watchdog.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			done <- heartbeatResult{kind: heartbeatStopped}
 			return
+		case <-watchdog.C:
+			done <- heartbeatResult{kind: heartbeatLeaseLost}
+			cancel()
+			return
 		case <-ticker.C:
-			expiresAt, ok, err := c.store.Renew(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, int(c.config.Lease/time.Second))
-			if err != nil {
-				if ctx.Err() != nil {
-					done <- heartbeatResult{kind: heartbeatStopped}
-					return
-				}
-				done <- heartbeatResult{kind: heartbeatStoreError, err: err}
-				cancel()
+			result := make(chan renewResult, 1)
+			renewCtx, renewCancel := context.WithDeadline(ctx, item.LeaseExpiresAt.Add(-c.leaseSafetyMargin))
+			go func() {
+				expiresAt, ok, err := c.store.Renew(renewCtx, item.OperationID, c.config.WorkerID,
+					item.LeaseToken, int(c.config.Lease/time.Second))
+				result <- renewResult{expiresAt: expiresAt, ok: ok, err: err}
+			}()
+			select {
+			case <-ctx.Done():
+				renewCancel()
+				done <- heartbeatResult{kind: heartbeatStopped}
 				return
-			}
-			if !ok || !c.leaseCoversNextRenew(expiresAt) {
+			case <-watchdog.C:
+				renewCancel()
 				done <- heartbeatResult{kind: heartbeatLeaseLost}
 				cancel()
 				return
+			case renewed := <-result:
+				renewCancel()
+				if renewed.err != nil {
+					if ctx.Err() != nil {
+						done <- heartbeatResult{kind: heartbeatStopped}
+						return
+					}
+					if c.untilLeaseSafetyDeadline(item.LeaseExpiresAt) <= 0 {
+						done <- heartbeatResult{kind: heartbeatLeaseLost}
+					} else {
+						done <- heartbeatResult{kind: heartbeatStoreError, err: renewed.err}
+					}
+					cancel()
+					return
+				}
+				if !renewed.ok || !c.leaseCoversNextRenew(renewed.expiresAt) {
+					done <- heartbeatResult{kind: heartbeatLeaseLost}
+					cancel()
+					return
+				}
+				item.LeaseExpiresAt = renewed.expiresAt
+				resetTimer(watchdog, c.untilLeaseSafetyDeadline(item.LeaseExpiresAt))
 			}
 		}
 	}
 }
 
 func (c *Controller) leaseCoversNextRenew(expiresAt time.Time) bool {
-	return !expiresAt.IsZero() && expiresAt.After(c.now().Add(c.config.RenewEvery))
+	return !expiresAt.IsZero() && expiresAt.After(c.now().Add(c.config.RenewEvery+c.leaseSafetyMargin))
+}
+
+func (c *Controller) untilLeaseSafetyDeadline(expiresAt time.Time) time.Duration {
+	return expiresAt.Add(-c.leaseSafetyMargin).Sub(c.now())
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
 }
 
 func (c *Controller) execute(ctx context.Context, item WorkItem) error {
