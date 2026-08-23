@@ -50,7 +50,7 @@ test("DevelopmentProject freezes exact platforms, lock digests, paths, and commi
 test("committed test commands reject direct shells and embedded credentials", async () => {
   const good = await readJSON(path.join(fixtures, "project-good.json"));
   assert.deepEqual(verifyDevelopmentProjectCommands(good), []);
-  for (const argv of [["sh", "-c", "npm test"], ["/usr/bin/env", "npm", "test"], ["npm", "test", "--api-key=forbidden"], ["npm", "test", "OPENAI_API_KEY=forbidden"], ["npm", "test", "--header", "Authorization: Basic forbidden"], ["npm", "test", "-HX-Api-Key: forbidden"], ["npm", "test", "https://example.invalid/test?api_key=forbidden"], ["npm", "test", "https://example.invalid/test?%61pi_key=forbidden"], ["npm", "test", "https://token@example.invalid/pkg"]]) {
+  for (const argv of [["sh", "-c", "npm test"], ["/usr/bin/env", "npm", "test"], ["npm", "test", "--api-key=forbidden"], ["npm", "test", "OPENAI_API_KEY=forbidden"], ["npm", "test", "--header", "Authorization: Basic forbidden"], ["npm", "test", "--header", "Authorization", "Basic", "forbidden"], ["npm", "test", "-H", "X-Api-Key", "forbidden"], ["npm", "test", "-HX-Api-Key: forbidden"], ["npm", "test", "https://example.invalid/test?api_key=forbidden"], ["npm", "test", "https://example.invalid/test?%252561pi_key=forbidden"], ["npm", "test", "https://token@example.invalid/pkg"], ["npm", "test", "x".repeat(4097)]]) {
     const candidate = structuredClone(good);
     ((candidate.tests as Record<string, Record<string, unknown>>).poc!).argv = argv;
     assert.notDeepEqual(verifyDevelopmentProjectCommands(candidate), [], `accepted unsafe argv ${JSON.stringify(argv)}`);
@@ -120,11 +120,19 @@ test("controller finalization verifies committed inputs, tenant resolution, evid
     ["cross-tenant Run", (value) => { ((value.finalization as { run: Record<string, unknown> }).run).workspaceId = "40000000-0000-4000-8000-000000000099"; }],
     ["cross-tenant reference Build", (value) => { ((value.finalization as { referenceBuild: Record<string, unknown> }).referenceBuild).workspaceId = "40000000-0000-4000-8000-000000000099"; }],
     ["cross-project Artifact", (value) => { ((value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts[0]!).projectId = "20000000-0000-4000-8000-000000000099"; }],
+    ["wrong Artifact role kind", (value) => { ((value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts[0]!).kind = "development.test"; }],
+    ["wrong Artifact media", (value) => { ((value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts[0]!).mediaType = "document"; }],
+    ["missing Artifact content digest", (value) => { delete ((value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts[0]!).contentDigest; }],
+    ["duplicate Artifact identity", (value) => { const artifacts = (value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts; artifacts[1]!.id = artifacts[0]!.id; }],
+    ["duplicate Artifact role", (value) => { const artifacts = (value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts; artifacts[1]!.role = artifacts[0]!.role; }],
     ["unresolved Artifact", (value) => { (value.finalization as { artifacts: Array<Record<string, unknown>> }).artifacts.pop(); }],
     ["uncommitted test result", (value) => { ((value.evidence as { projectTests: { results: Record<string, unknown> } }).projectTests.results).extra = { passed: true, artifactId: "80000000-0000-4000-8000-000000000012" }; }],
     ["wrong source test evidence", (value) => { ((value.evidence as { projectTests: Record<string, unknown> }).projectTests).sourceCommit = "2".repeat(40); }],
     ["substituted source repository", (value) => { ((value.source as Record<string, unknown>)).repository = "https://github.com/attacker/substitute.git"; }],
     ["substituted builder profile", (value) => { ((value.builder as Record<string, unknown>)).profile = "untrusted-builder"; }],
+    ["substituted builder identity", (value) => { ((value.builder as Record<string, unknown>)).id = "50000000-0000-4000-8000-000000000099"; }],
+    ["substituted builder image", (value) => { ((value.builder as Record<string, unknown>)).imageDigest = "registry.blazn.invalid/system/other@sha256:" + "4".repeat(64); }],
+    ["substituted builder version", (value) => { ((value.builder as Record<string, unknown>)).version = "v0.26.0"; }],
     ["substituted index repository", (value) => { ((value.outputs as Record<string, unknown>)).imageIndexDigest = "evil.invalid/poc/coding-agent@sha256:" + "5".repeat(64); }],
     ["substituted child repository", (value) => { (((value.outputs as { images: Array<Record<string, unknown>> }).images)[0]!).digest = "evil.invalid/poc/coding-agent@sha256:" + "6".repeat(64); }],
     ["substituted refresh repository", (value) => { (((value.outputs as { refreshArtifacts: Record<string, Record<string, unknown>> }).refreshArtifacts)["linux/amd64"]!).imageDigest = "evil.invalid/poc/coding-agent@sha256:" + "6".repeat(64); }],
@@ -134,6 +142,7 @@ test("controller finalization verifies committed inputs, tenant resolution, evid
     ["self reproducibility comparison", (value) => { const comparison = ((value.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison); comparison.referenceBuildId = value.id; }],
     ["mismatched reproducibility material", (value) => { const comparison = ((value.evidence as { reproducibility: { comparison: Record<string, unknown> } }).reproducibility.comparison); comparison.referenceMaterialDigest = `sha256:${"f".repeat(64)}`; }],
     ["changed reference inputs", (value) => { ((value.finalization as { referenceBuild: { source: Record<string, unknown> } }).referenceBuild.source).commit = "2".repeat(40); }],
+    ["changed reference builder tuple", (value) => { ((value.finalization as { referenceBuild: { builder: Record<string, unknown> } }).referenceBuild.builder).version = "v0.24.0"; }],
     ["forged reference receipt", (value) => { ((value.finalization as { referenceBuild: Record<string, unknown> }).referenceBuild).receiptDigest = `sha256:${"f".repeat(64)}`; }],
     ["substituted publication target", (value) => { ((value.publicationTarget as Record<string, unknown>)).templateId = "50000000-0000-4000-8000-000000000099"; }],
     ["cross-workspace publication target", (value) => { ((value.finalization as { publicationTarget: Record<string, unknown> }).publicationTarget).workspaceId = "40000000-0000-4000-8000-000000000099"; }],

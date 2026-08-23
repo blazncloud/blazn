@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { URL } from "node:url";
 
 type ObjectValue = Record<string, unknown>;
 
@@ -23,7 +24,30 @@ const secretHeader = /(?:^|[=\s]|-h)(?:authorization|proxy-authorization|x-api-k
 const secretQuery = /[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|credential|authorization)=/i;
 
 function decodedArgument(value: string): string {
-  try { return decodeURIComponent(value); } catch { return value; }
+  if (value.length > 4096) throw new Error("test argument exceeds credential scan bound");
+  let decoded = value;
+  for (let index = 0; index < 4; index++) {
+    let next: string;
+    try { next = decodeURIComponent(decoded); } catch { throw new Error("test argument contains invalid percent encoding"); }
+    if (next === decoded) return decoded;
+    decoded = next;
+  }
+  try { if (decodeURIComponent(decoded) !== decoded) throw new Error("test argument exceeds percent-decoding bound"); } catch { throw new Error("test argument contains invalid percent encoding"); }
+  return decoded;
+}
+function credentialQuery(value: string): boolean {
+  try {
+    const parsed = new URL(value, "https://blazn.invalid");
+    for (const key of parsed.searchParams.keys()) {
+      const canonical = key.toLowerCase().replaceAll("-", "").replaceAll("_", "");
+      if (["apikey", "accesstoken", "authtoken", "token", "secret", "password", "credential", "authorization"].includes(canonical)) return true;
+    }
+  } catch { return true; }
+  return secretQuery.test(value);
+}
+function credentialHeader(value: string): boolean {
+  const canonical = value.trim().toLowerCase().replace(/^--header(?:=|\s*)/, "").replace(/^-h/, "").split(/[:=\s]/, 1)[0]!.replaceAll("_", "-");
+  return ["authorization", "proxy-authorization", "x-api-key", "api-key", "apikey"].includes(canonical);
 }
 
 export function verifyDevelopmentProjectCommands(project: unknown): string[] {
@@ -38,9 +62,14 @@ export function verifyDevelopmentProjectCommands(project: unknown): string[] {
     }
     const executable = (argv[0] as string).split("/").at(-1)?.toLowerCase() ?? "";
     if (shellNames.has(executable)) errors.push(`test ${name} directly invokes a shell or env launcher`);
-    for (const argument of argv as string[]) {
-      const decoded = decodedArgument(argument);
-      if (secretFlag.test(decoded) || secretAssignment.test(decoded) || secretHeader.test(decoded) || secretQuery.test(decoded) || /bearer\s+\S/i.test(decoded) || /:\/\/[^/\s]+@/.test(decoded)) {
+    for (let index = 0; index < argv.length; index++) {
+      const argument = argv[index] as string;
+      let decoded: string;
+      try { decoded = decodedArgument(argument); } catch { errors.push(`test ${name} argv cannot be safely credential-scanned`); break; }
+      const headerFlag = decoded === "-H" || decoded === "--header";
+      let next = "";
+      try { next = headerFlag && index + 1 < argv.length ? decodedArgument(argv[index + 1] as string) : ""; } catch { errors.push(`test ${name} argv cannot be safely credential-scanned`); break; }
+      if ((headerFlag && (!next || credentialHeader(next))) || credentialHeader(decoded) || secretFlag.test(decoded) || secretAssignment.test(decoded) || secretHeader.test(decoded) || credentialQuery(decoded) || /bearer\s+\S/i.test(decoded) || /:\/\/[^/\s]+@/.test(decoded)) {
         errors.push(`test ${name} argv contains credential-like material`);
         break;
       }
@@ -60,7 +89,7 @@ function buildInputIdentity(value: ObjectValue): ObjectValue {
     dependencyLocks: value.dependencyLocks,
     planDigest: value.planDigest,
     platforms: value.platforms,
-    builderProfile: object(value.builder)?.profile ?? value.builderProfile,
+    builder: value.builder,
   };
 }
 export function developmentBuildInputDigest(value: unknown): string {
@@ -68,7 +97,7 @@ export function developmentBuildInputDigest(value: unknown): string {
 }
 export function developmentRefreshInputsDigest(buildValue: unknown, platform: string): string {
   const build = object(buildValue) ?? {};
-  return developmentDigest({schemaVersion: "blazn.dev/refresh-input/v1alpha1", platform, template: build.template, source: build.source, dependencyLocks: build.dependencyLocks, buildContextDigest: build.buildContextDigest, planDigest: build.planDigest});
+  return developmentDigest({schemaVersion: "blazn.dev/refresh-input/v1alpha1", platform, template: build.template, source: build.source, dependencyLocks: build.dependencyLocks, buildContextDigest: build.buildContextDigest, planDigest: build.planDigest, builder: build.builder});
 }
 export function developmentRefreshCacheKey(inputsDigest: string): string {
   return developmentDigest({schemaVersion: "blazn.dev/refresh-cache/v1alpha1", inputsDigest});
@@ -85,6 +114,25 @@ function collectTypedArtifactIDs(outputs: ObjectValue, evidence: ObjectValue): S
   add(object(object(evidence.reproducibility)?.comparison)?.artifactId);
   add(object(evidence.reproducibility)?.reviewArtifactId);
   return ids;
+}
+function expectedArtifactRoles(outputs: ObjectValue, evidence: ObjectValue): Map<string,string> {
+  const roles = new Map<string,string>();
+  const add = (role: string, value: unknown) => { if (typeof value === "string") roles.set(role, value); };
+  for (const [platform, refresh] of Object.entries(object(outputs.refreshArtifacts) ?? {})) add(`refresh/${platform}`, object(refresh)?.artifactId);
+  add("provenance", evidence.provenanceArtifactId); add("signature", evidence.signatureArtifactId); add("sbom", evidence.sbomArtifactId);
+  for (const [name, result] of Object.entries(object(object(evidence.projectTests)?.results) ?? {})) add(`project-test/${name}`, object(result)?.artifactId);
+  for (const name of ["securityTests", "lifecycleTests"] as const) for (const result of Array.isArray(evidence[name]) ? evidence[name] as unknown[] : []) add(`${name === "securityTests" ? "security" : "lifecycle"}/${text(object(result)?.platform)}`, object(result)?.artifactId);
+  add("cleanup", object(evidence.cleanup)?.artifactId); add("reproducibility-comparison", object(object(evidence.reproducibility)?.comparison)?.artifactId); add("reproducibility-review", object(evidence.reproducibility)?.reviewArtifactId);
+  return roles;
+}
+function expectedArtifactKind(role: string): string {
+  if (role.startsWith("refresh/")) return "development.refresh";
+  if (role === "provenance") return "development.provenance";
+  if (role === "signature") return "development.signature";
+  if (role === "sbom") return "development.sbom";
+  if (role.startsWith("project-test/") || role.startsWith("security/") || role.startsWith("lifecycle/")) return "development.test";
+  if (role.startsWith("reproducibility-")) return "development.reproducibility";
+  return "development.cleanup";
 }
 
 // This verifier is the machine-readable cross-resource half of the JSON
@@ -120,15 +168,20 @@ export function verifyDevelopmentFinalization(projectValue: unknown, buildValue:
   const declared = new Set((Array.isArray(evidence.artifactIds) ? evidence.artifactIds : []).filter((id): id is string => typeof id === "string"));
   const typed = collectTypedArtifactIDs(outputs, evidence);
   for (const id of typed) if (!declared.has(id)) errors.push(`typed evidence Artifact ${id} is absent from artifactIds`);
-  const resolved = new Set<string>();
+  const resolved = new Set<string>(), resolvedRoles = new Set<string>();
+  const expectedRoles = expectedArtifactRoles(outputs, evidence);
   for (const raw of Array.isArray(finalization.artifacts) ? finalization.artifacts : []) {
     const artifact = object(raw) ?? {};
-    const id = text(artifact.id);
+    const id = text(artifact.id), role = text(artifact.role);
     if (!id || resolved.has(id)) errors.push("resolved Artifact identities must be unique");
+    if (!role || resolvedRoles.has(role)) errors.push("resolved Artifact roles must be unique");
     resolved.add(id);
+    resolvedRoles.add(role);
     if (artifact.workspaceId !== build.workspaceId || artifact.projectId !== build.projectId) errors.push(`resolved Artifact ${id} is outside the Build tenant`);
+    if (expectedRoles.get(role) !== id || artifact.kind !== expectedArtifactKind(role) || artifact.mediaType !== "data" || !/^sha256:[0-9a-f]{64}$/.test(text(artifact.contentDigest))) errors.push(`resolved Artifact ${id} does not satisfy role ${role}`);
   }
   if (!sameJSON([...declared].sort(), [...resolved].sort())) errors.push("resolved Artifacts do not exactly match Build artifactIds");
+  if (!sameJSON([...expectedRoles.keys()].sort(), [...resolvedRoles].sort())) errors.push("resolved Artifact roles do not exactly match typed Build evidence");
 
   const imageByPlatform = new Map<string, string>();
   for (const raw of Array.isArray(outputs.images) ? outputs.images : []) {
