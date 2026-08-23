@@ -50,9 +50,11 @@ run-scoped lease must exactly match one declaration, the Agent's model route,
 repository, or tool set, and its declared lifetime; terminal Runs retain only
 revoked lease metadata and never secret material. Nonterminal Runs may record
 an active lease with `revokedAt=null`; terminal Runs require an ordered
-revocation timestamp for every lease. Declaration capability/scope pairs and
-lease IDs are unique, with one lease for every declaration and exactly one
-model lease bound to the selected Agent route.
+revocation timestamp for every lease. A capability refusal records no lease at
+all. Issuance occurs within the Run lifecycle before its first event, and every
+lease remains unexpired through the authoritative observed lifecycle.
+Declaration capability/scope pairs and lease IDs are unique, with one lease for
+every declaration and exactly one model lease bound to the selected Agent route.
 Authenticated proxy profiles must use `model.proxy`. A broader provider
 credential is refused unless the Profile resolves an approved, same-Workspace
 DIRECT authorization bound to the exact Profile, route version, capability,
@@ -74,7 +76,11 @@ state. The source-authority table is exhaustive over the closed event type
 enumeration, so no event type receives implicit source authority. Extension
 payloads are bounded scalar maps and recursive credential scanning rejects
 canonical provider keys, separated secret-key names, and credential-like
-values.
+values. Secret-key suffix matching is case-normalized, known provider token
+forms are rejected even under neutral metadata keys, and the allowlist contains
+only explicit non-secret authorization metadata. Every normalized tool event
+must name a tool allowed by both the immutable AgentVersion and selected
+HarnessProfile.
 
 Follow-ups retain the Session and Conversation IDs. Resume increments a
 generation and resumes event/message cursors. Cancellation is complete only
@@ -109,6 +115,9 @@ complete. A successful Run always names the exact resolved patch Artifact in
 At run time the selected Profile digest, model route, tools, DIRECT
 authorization, credential declarations, and leases are revalidated against the
 immutable AgentVersion rather than trusting publication-time validation.
+The same selected-profile compatibility checks are rerun for each standalone
+portable evaluation before its passing receipt is accepted. A Run also binds
+the canonical Agent ID, not only its AgentVersion ID.
 
 Run provenance captures exact AgentVersion, HarnessVersion, HarnessProfile,
 SandboxTemplateVersion, source repository/commit, model route/version/protocol,

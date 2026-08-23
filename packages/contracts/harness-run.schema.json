@@ -397,6 +397,9 @@
             },
             "then": {
                 "properties": {
+                    "credentialLeases": {
+                        "maxItems": 0
+                    },
                     "run": {
                         "properties": {
                             "sandboxId": {
