@@ -105,6 +105,9 @@ func (b *SecretServiceBackend) Lookup(ctx context.Context, ref string) ([]byte, 
 		return nil, unavailable(FailureBackendUnavailable, nil)
 	}
 	defer zeroSecretServiceItems(response.Items)
+	if err := lookupCtx.Err(); err != nil {
+		return nil, unavailable(FailureCancelled, err)
+	}
 	if response.OwnerUID != b.uid || !validSecretSession(response.Session) || len(response.Items) != 1 {
 		return nil, unavailable(FailureBackendUnavailable, nil)
 	}
@@ -142,29 +145,55 @@ type secretValue struct {
 	ContentType string
 }
 
+func (secretValue) String() string         { return "[REDACTED secret value]" }
+func (value secretValue) GoString() string { return value.String() }
+func (secretValue) MarshalJSON() ([]byte, error) {
+	return []byte(`"[REDACTED secret value]"`), nil
+}
+
+func zeroSecretValue(value *secretValue) {
+	zero(value.Parameters)
+	zero(value.Value)
+}
+
 func (dbusSecretServiceTransport) Lookup(ctx context.Context, request secretServiceRequest) (secretServiceResponse, error) {
 	if err := validateBusSocket(request.BusPath, request.UID); err != nil {
 		return secretServiceResponse{}, errSecretServiceTransport
 	}
-	unixConnection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: request.BusPath, Net: "unix"})
+	return lookupSecretServiceSocket(ctx, request)
+}
+
+func lookupSecretServiceSocket(ctx context.Context, request secretServiceRequest) (secretServiceResponse, error) {
+	rawConnection, err := (&net.Dialer{}).DialContext(ctx, "unix", request.BusPath)
 	if err != nil {
 		return secretServiceResponse{}, errSecretServiceTransport
+	}
+	unixConnection, ok := rawConnection.(*net.UnixConn)
+	if !ok {
+		_ = rawConnection.Close()
+		return secretServiceResponse{}, errSecretServiceTransport
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := unixConnection.SetDeadline(deadline); err != nil {
+			_ = unixConnection.Close()
+			return secretServiceResponse{}, errSecretServiceTransport
+		}
 	}
 	peerUID, err := unixPeerUID(unixConnection)
 	if err != nil || peerUID != request.UID {
 		_ = unixConnection.Close()
 		return secretServiceResponse{}, errSecretServiceTransport
 	}
-	connection, err := dbus.NewConn(unixConnection)
+	connection, err := dbus.NewConn(unixConnection, dbus.WithContext(ctx))
 	if err != nil {
 		_ = unixConnection.Close()
 		return secretServiceResponse{}, errSecretServiceTransport
 	}
 	defer connection.Close()
-	if err := connection.Auth(nil); err != nil {
+	if err := runSecretServiceStage(ctx, connection, func() error { return connection.Auth(nil) }); err != nil {
 		return secretServiceResponse{}, errSecretServiceTransport
 	}
-	if err := connection.Hello(); err != nil {
+	if err := runSecretServiceStage(ctx, connection, connection.Hello); err != nil {
 		return secretServiceResponse{}, errSecretServiceTransport
 	}
 
@@ -180,7 +209,7 @@ func (dbusSecretServiceTransport) Lookup(ctx context.Context, request secretServ
 	if err := service.CallWithContext(ctx, secretServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant("")).Store(&sessionOutput, &sessionPath); err != nil || sessionOutput.Value() != "" || !validSecretSession(string(sessionPath)) {
 		return secretServiceResponse{}, errSecretServiceTransport
 	}
-	defer connection.Object(owner, sessionPath).CallWithContext(context.Background(), secretSessionInterface+".Close", dbus.FlagNoReplyExpected)
+	defer connection.Object(owner, sessionPath).CallWithContext(ctx, secretSessionInterface+".Close", dbus.FlagNoReplyExpected)
 
 	attributes := map[string]string{"service": request.Service, "account": request.Account}
 	var unlocked, locked []dbus.ObjectPath
@@ -216,18 +245,32 @@ func (dbusSecretServiceTransport) Lookup(ctx context.Context, request secretServ
 		}
 		var secret secretValue
 		if err := object.CallWithContext(ctx, secretItemInterface+".GetSecret", 0, sessionPath).Store(&secret); err != nil {
-			zero(secret.Value)
+			zeroSecretValue(&secret)
 			zeroSecretServiceItems(response.Items)
 			return secretServiceResponse{}, errSecretServiceTransport
 		}
 		if secret.Session != sessionPath || len(secret.Parameters) != 0 || (secret.ContentType != "" && secret.ContentType != "text/plain") {
-			zero(secret.Value)
+			zeroSecretValue(&secret)
 			zeroSecretServiceItems(response.Items)
 			return secretServiceResponse{}, errSecretServiceTransport
 		}
 		response.Items = append(response.Items, secretServiceItem{Path: string(path), Session: string(secret.Session), Attributes: itemAttributes, Value: secret.Value})
 	}
 	return response, nil
+}
+
+func runSecretServiceStage(ctx context.Context, connection *dbus.Conn, stage func() error) error {
+	result := make(chan error, 1)
+	go func() {
+		result <- stage()
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		_ = connection.Close()
+		return ctx.Err()
+	}
 }
 
 func validateBusSocket(path string, uid int) error {
