@@ -205,14 +205,14 @@ func (f *fakeController) Stop(_ context.Context, proof state.LiveListenerProof) 
 }
 
 type fakeStore struct {
-	journal       *state.Journal
-	stale         bool
-	activateFault string
-	panicRecover  bool
-	reconcileErr  error
-	recoverErr    error
-	scopeHeld     bool
-	reconcileCalls int
+	journal         *state.Journal
+	stale           bool
+	activateFault   string
+	panicRecover    bool
+	reconcileErr    error
+	recoverErr      error
+	scopeHeld       bool
+	reconcileCalls  int
 	beforeReconcile func(int)
 }
 
