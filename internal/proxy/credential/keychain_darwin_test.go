@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 type recordingKeychainTransport struct {
@@ -83,8 +84,9 @@ func TestDarwinKeychainBackendFailureClassification(t *testing.T) {
 	}{
 		{name: "not found", status: errSecItemNotFound, kind: KeychainNotFound},
 		{name: "interaction not allowed", status: errSecInteractionNotAllowed, kind: KeychainLockedOrDenied},
+		{name: "interaction required", status: errSecInteractionRequired, kind: KeychainLockedOrDenied},
 		{name: "authentication failed", status: errSecAuthFailed, kind: KeychainLockedOrDenied},
-		{name: "user cancelled prompt", status: errSecUserCanceled, kind: KeychainLockedOrDenied},
+		{name: "user cancelled prompt", status: errSecUserCanceled, kind: KeychainCancelled},
 		{name: "unknown status", status: -1, kind: KeychainBackendError},
 		{name: "transport error", err: errors.New("sensitive native failure"), kind: KeychainBackendError},
 		{name: "native bounds", err: errKeychainValueBounds, kind: KeychainInvalidValue},
@@ -95,6 +97,105 @@ func TestDarwinKeychainBackendFailureClassification(t *testing.T) {
 			_, err := backend.Lookup(context.Background(), "node-route://local/model")
 			assertKeychainKind(t, err, test.kind)
 		})
+	}
+}
+
+func TestLookupDarwinKeychainUsesDefaultAndScrubsBeforeFree(t *testing.T) {
+	const (
+		defaultKeychain = uintptr(0x101)
+		itemRef         = uintptr(0x202)
+		service         = "com.blazn.proxy.destination.v1alpha1"
+		account         = "workspace-vault://team/provider-key"
+	)
+	tests := []struct {
+		name         string
+		raw          []byte
+		status       int32
+		cancelInFind bool
+		wantStatus   int32
+		wantErr      error
+		wantValue    string
+	}{
+		{name: "success", raw: []byte("secret-value"), wantValue: "secret-value"},
+		{name: "cancel after allocation", raw: []byte("secret-value"), cancelInFind: true, wantErr: context.Canceled},
+		{name: "oversize", raw: bytes.Repeat([]byte{'x'}, MaxCredentialBytes+1), wantErr: errKeychainValueBounds},
+		{name: "native status failure", raw: []byte("secret-value"), status: errSecItemNotFound, wantStatus: errSecItemNotFound},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			events := []string{}
+			native := darwinKeychainNative{
+				copyDefault: func(out *uintptr) int32 {
+					events = append(events, "copy-default")
+					*out = defaultKeychain
+					return errSecSuccess
+				},
+				find: func(keychain uintptr, serviceLength uint32, _ uintptr, accountLength uint32, _ uintptr, length *uint32, data *unsafe.Pointer, item *uintptr) int32 {
+					events = append(events, "find")
+					if keychain != defaultKeychain {
+						t.Fatalf("find keychain=%#x, want explicit default %#x", keychain, defaultKeychain)
+					}
+					if serviceLength != uint32(len(service)) {
+						t.Fatalf("find service length=%d, want %d", serviceLength, len(service))
+					}
+					if accountLength != uint32(len(account)) {
+						t.Fatalf("find account length=%d, want %d", accountLength, len(account))
+					}
+					*length = uint32(len(test.raw))
+					if len(test.raw) > 0 {
+						*data = unsafe.Pointer(unsafe.SliceData(test.raw))
+					}
+					*item = itemRef
+					if test.cancelInFind {
+						cancel()
+					}
+					return test.status
+				},
+				freeContent: func(attributes uintptr, data unsafe.Pointer) int32 {
+					events = append(events, "free")
+					if attributes != 0 || data != unsafe.Pointer(unsafe.SliceData(test.raw)) {
+						t.Fatalf("free arguments attributes=%#x data=%p", attributes, data)
+					}
+					if !bytes.Equal(test.raw, make([]byte, len(test.raw))) {
+						t.Fatal("native password allocation was not scrubbed before free")
+					}
+					return errSecSuccess
+				},
+				release: func(ref uintptr) {
+					events = append(events, fmt.Sprintf("release-%#x", ref))
+				},
+			}
+
+			got, status, err := lookupDarwinKeychain(ctx, service, account, native)
+			if status != test.wantStatus || !errors.Is(err, test.wantErr) || string(got) != test.wantValue {
+				t.Fatalf("lookup value=%q status=%d err=%v, want value=%q status=%d err=%v", got, status, err, test.wantValue, test.wantStatus, test.wantErr)
+			}
+			wantEvents := []string{"copy-default", "find", "free", "release-0x202", "release-0x101"}
+			if fmt.Sprint(events) != fmt.Sprint(wantEvents) {
+				t.Fatalf("native events=%v, want %v", events, wantEvents)
+			}
+		})
+	}
+}
+
+func TestLookupDarwinKeychainReleasesDefaultReferenceOnCopyFailure(t *testing.T) {
+	const defaultKeychain = uintptr(0x101)
+	released := uintptr(0)
+	native := darwinKeychainNative{
+		copyDefault: func(out *uintptr) int32 {
+			*out = defaultKeychain
+			return -1
+		},
+		release: func(ref uintptr) { released = ref },
+	}
+	value, status, err := lookupDarwinKeychain(context.Background(), "service", "account", native)
+	if value != nil || status != -1 || err != nil {
+		t.Fatalf("lookup value=%q status=%d err=%v", value, status, err)
+	}
+	if released != defaultKeychain {
+		t.Fatalf("released=%#x, want default Keychain %#x", released, defaultKeychain)
 	}
 }
 
