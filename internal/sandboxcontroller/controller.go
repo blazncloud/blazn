@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -282,7 +283,7 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 		return err
 	}
 	if state.Exists {
-		if err := validateExisting(item, state); err != nil {
+		if err := validateDeleting(item, state); err != nil {
 			return &Failure{Code: "backend_identity_mismatch", SafeMessage: "cleanup backend identity changed", Ambiguous: true, Cause: err}
 		}
 	}
@@ -413,6 +414,23 @@ func validateExisting(item WorkItem, state BackendState) error {
 	}
 	return nil
 }
+
+func validateDeleting(item WorkItem, state BackendState) error {
+	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.Admission == nil ||
+		!state.Exists || !state.Deleting || !state.Record.Deleting || !state.CleanupFinalizerPresent ||
+		state.Record.UID != *item.BackendUID || state.Record.ResourceVersion == "" ||
+		state.Record.ResourceVersion == *item.BackendResourceVersion || state.Admission == nil ||
+		!reflect.DeepEqual(*state.Admission, *item.Admission) {
+		return fmt.Errorf("deleting backend tuple mismatch")
+	}
+	validationState := state
+	validationState.Record.State = sandboxcontrol.StateReady
+	if err := validateCreated(item, validationState); err != nil {
+		return fmt.Errorf("deleting backend identity is invalid: %w", err)
+	}
+	return nil
+}
+
 func wait(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
