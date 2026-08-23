@@ -222,15 +222,46 @@ func (a *Adapter) EnsureCreated(ctx context.Context, request CreateRequest, expe
 	var created kubeSandbox
 	postErr := a.call(ctx, http.MethodPost, a.collectionPath(), nil, manifest, &created, "application/json")
 	if postErr != nil {
+		if !ambiguousCreateError(postErr) {
+			return SandboxRecord{}, OperationReceipt{}, postErr
+		}
 		// POST failures can be ambiguous (transport loss, timeout, apiserver
-		// conflict after accepting the object). Resolve once by exact persisted
-		// UID/spec/intent, never by the deterministic name or labels alone.
+		// retryable failure after accepting the object). Resolve once by exact
+		// persisted UID/spec/intent, never after an authoritative rejection or
+		// conflict and never by the deterministic name or labels alone.
 		if err := a.call(ctx, http.MethodGet, a.resourcePath(request.Name), nil, nil, &created, ""); err != nil {
 			return SandboxRecord{}, OperationReceipt{}, postErr
 		}
 		return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, "", manifest, created, false)
 	}
 	return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, "", manifest, created, true)
+}
+
+type kubeHTTPStatusError struct {
+	statusCode int
+}
+
+func (e *kubeHTTPStatusError) Error() string {
+	return fmt.Sprintf("Kubernetes API returned HTTP %d", e.statusCode)
+}
+
+func ambiguousCreateError(err error) bool {
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrBackend || adapterErr.Cause == nil {
+		return false
+	}
+	var statusErr *kubeHTTPStatusError
+	if !errors.As(adapterErr.Cause, &statusErr) {
+		// A client/transport error does not prove whether the apiserver committed
+		// the request.
+		return true
+	}
+	switch statusErr.statusCode {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Adapter) finishEnsureCreated(ctx context.Context, request CreateRequest, artifactDigest, intentDigest, expectedUID string, manifest, created kubeSandbox, cleanup bool) (SandboxRecord, OperationReceipt, error) {
@@ -709,7 +740,7 @@ func decodeStatus(response *http.Response) error {
 	if detail == "" {
 		detail = http.StatusText(response.StatusCode)
 	}
-	return adapterError(code, httpStatus, detail, nil)
+	return adapterError(code, httpStatus, detail, &kubeHTTPStatusError{statusCode: response.StatusCode})
 }
 
 func verifyManaged(record SandboxRecord, workspaceID, ownerID string) error {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
 )
 
@@ -74,6 +73,9 @@ type observedWorkload struct {
 		} `json:"admission"`
 		Conditions []kubeCondition `json:"conditions"`
 	} `json:"status"`
+	Spec struct {
+		QueueName string `json:"queueName"`
+	} `json:"spec"`
 }
 
 type observedWorkloadList struct {
@@ -111,34 +113,55 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Sandbox create intent changed after creation", nil)
 	}
 
-	query := url.Values{"labelSelector": {admissionSelector(request.WorkspaceID, request.OwnerID, request.Name)}}
 	var pods observedPodList
-	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), query, nil, &pods, ""); err != nil {
+	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
 		return AdmissionObservation{}, err
 	}
-	if pods.APIVersion != podAPIVersion || pods.Kind != "PodList" || len(pods.Items) != 1 {
+	if pods.APIVersion != podAPIVersion || pods.Kind != "PodList" {
+		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod collection API drifted", nil)
+	}
+	podCandidates := make([]observedPod, 0, 1)
+	for _, candidate := range pods.Items {
+		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != podAPIVersion || candidate.Kind != podKind {
+			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod collection contained an invalid identity", nil)
+		}
+		if hasControllerUID(candidate.Metadata.OwnerReferences, record.UID) {
+			podCandidates = append(podCandidates, candidate)
+		}
+	}
+	if len(podCandidates) != 1 {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission requires exactly one API-stable owned Pod", nil)
 	}
-	pod := pods.Items[0]
-	if !validObservedIdentity(pod.APIVersion, pod.Kind, pod.Metadata) || pod.APIVersion != podAPIVersion || pod.Kind != podKind ||
-		!hasExactControllerOwner(pod.Metadata.OwnerReferences, APIVersion, Kind, request.Name, record.UID) ||
+	pod := podCandidates[0]
+	if !hasExactControllerOwner(pod.Metadata.OwnerReferences, APIVersion, Kind, request.Name, record.UID) ||
 		!sameJSON(pod.Spec, manifest.Spec.PodTemplate.Spec) || !hasAdmissionLabels(pod.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod substituted the Sandbox owner or material spec", nil)
 	}
 
 	var workloads observedWorkloadList
-	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), query, nil, &workloads, ""); err != nil {
+	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
 		return AdmissionObservation{}, err
 	}
-	if workloads.APIVersion != AdmissionAPIVersion || workloads.Kind != "WorkloadList" || len(workloads.Items) != 1 {
+	if workloads.APIVersion != AdmissionAPIVersion || workloads.Kind != "WorkloadList" {
+		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection API drifted", nil)
+	}
+	workloadCandidates := make([]observedWorkload, 0, 1)
+	for _, candidate := range workloads.Items {
+		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != AdmissionAPIVersion || candidate.Kind != workloadKind {
+			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection contained an invalid identity", nil)
+		}
+		if hasControllerUID(candidate.Metadata.OwnerReferences, pod.Metadata.UID) {
+			workloadCandidates = append(workloadCandidates, candidate)
+		}
+	}
+	if len(workloadCandidates) != 1 {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission requires exactly one API-stable Workload", nil)
 	}
-	workload := workloads.Items[0]
+	workload := workloadCandidates[0]
 	condition, admitted := exactAdmittedCondition(workload.Status.Conditions)
-	if !validObservedIdentity(workload.APIVersion, workload.Kind, workload.Metadata) || workload.APIVersion != AdmissionAPIVersion || workload.Kind != workloadKind ||
-		!hasExactControllerOwner(workload.Metadata.OwnerReferences, podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.UID) ||
+	if !hasExactControllerOwner(workload.Metadata.OwnerReferences, podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.UID) ||
 		!hasAdmissionLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Status.Admission == nil ||
-		!dnsNamePattern.MatchString(workload.Status.Admission.ClusterQueue) || !admitted {
+		workload.Spec.QueueName != QueueName || !dnsNamePattern.MatchString(workload.Status.Admission.ClusterQueue) || !admitted {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload did not preserve the exact admitted Pod ownership chain", nil)
 	}
 
