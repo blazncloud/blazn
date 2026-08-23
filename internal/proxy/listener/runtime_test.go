@@ -151,6 +151,25 @@ func TestRuntimeAlwaysGeneratesDistinctCredentials(t *testing.T) {
 	}
 }
 
+func TestRuntimeFormattingNeverTraversesSecrets(t *testing.T) {
+	runtime, err := Start(Config{Address: "127.0.0.1", Router: routerConfig(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Shutdown(context.Background())
+	token := runtime.credential.authenticateValue()
+	for _, formatted := range []string{fmt.Sprintf("%+v", runtime), fmt.Sprintf("%#v", runtime)} {
+		if formatted != "[REDACTED proxy listener runtime]" {
+			t.Fatalf("runtime formatting was not fully redacted: %q", formatted)
+		}
+		for _, secret := range []string{token, "local", "cloud", "workspace-vault://", "node-route://", "Bearer"} {
+			if strings.Contains(formatted, secret) {
+				t.Fatalf("runtime formatting exposed secret material %q", secret)
+			}
+		}
+	}
+}
+
 func TestShutdownDeadlineForcesTrackedConnectionClosed(t *testing.T) {
 	runtime, err := Start(Config{Address: "127.0.0.1", Router: routerConfig(t), ReadTimeout: time.Minute})
 	if err != nil {

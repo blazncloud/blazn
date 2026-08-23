@@ -50,6 +50,9 @@ type Runtime struct {
 	connections map[net.Conn]http.ConnState
 }
 
+func (*Runtime) String() string   { return "[REDACTED proxy listener runtime]" }
+func (*Runtime) GoString() string { return "[REDACTED proxy listener runtime]" }
+
 func Start(config Config) (*Runtime, error) {
 	address, err := netip.ParseAddr(config.Address)
 	if err != nil || !address.IsLoopback() {
