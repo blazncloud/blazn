@@ -1,4 +1,5 @@
 import type { QueryResultRow } from "pg";
+import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import type { SandboxAllocationMode, SandboxArchitecture, SandboxOperationStatus, SandboxOperationType } from "./sandbox-types.js";
 
@@ -29,6 +30,22 @@ export interface SandboxControllerAdmissionIdentity {
   sandboxId: string;
   admitted: true;
   condition: { type: "Admitted"; status: "True" };
+  digest: string;
+}
+
+export interface SandboxControllerObjectIdentity {
+  apiVersion: string;
+  kind: string;
+  namespace: string;
+  name: string;
+  uid: string;
+  resourceVersion: string;
+}
+
+export interface SandboxControllerAdmissionObservation {
+  sandbox: SandboxControllerObjectIdentity;
+  pod: SandboxControllerObjectIdentity;
+  workload: SandboxControllerAdmissionIdentity;
   digest: string;
 }
 
@@ -63,14 +80,16 @@ export interface SandboxControllerWorkItem {
   expiresAt: string;
   sources: SandboxControllerSource[];
   artifacts: SandboxControllerArtifactContractEntry[];
-  admission: SandboxControllerAdmissionIdentity | null;
+  persistedWorkloadDigest: string | null;
+  admissionObservation: SandboxControllerAdmissionObservation | null;
 }
 
 export interface SandboxControllerCompletion {
   status: Exclude<SandboxOperationStatus, "pending" | "running">;
   expectedBackendUid: string | null;
   expectedBackendResourceVersion: string | null;
-  expectedAdmissionDigest: string | null;
+  expectedWorkloadDigest: string | null;
+  expectedObservationDigest: string | null;
   cleanupComplete: boolean;
   artifactExportComplete: boolean;
   grantsRevoked: boolean;
@@ -90,7 +109,7 @@ export class PgSandboxControllerStore {
   }
 
   async claim(workerId: string, leaseSeconds: number): Promise<SandboxControllerWorkItem | undefined> {
-    const result = await this.database.query("SELECT * FROM sandbox_controller_claim_v2($1,$2)", [workerId, leaseSeconds]);
+    const result = await this.database.query("SELECT * FROM sandbox_controller_claim_v3($1,$2)", [workerId, leaseSeconds]);
     return result.rows[0] ? workItemRow(result.rows[0]) : undefined;
   }
 
@@ -103,15 +122,20 @@ export class PgSandboxControllerStore {
     return value ? timestamp(value) : undefined;
   }
 
-  async bindBackend(operationId: string, workerId: string, leaseToken: string, backend: { uid: string; resourceVersion: string; admission: SandboxControllerAdmissionIdentity }): Promise<boolean> {
-    const admission = backend.admission;
+  async bindBackend(operationId: string, workerId: string, leaseToken: string, observation: SandboxControllerAdmissionObservation): Promise<boolean> {
+    validateObservation(observation);
+    const admission = observation.workload;
     const result = await this.database.query<{ bound: boolean }>(
-      "SELECT sandbox_controller_bind_backend_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) AS bound",
-      [operationId, workerId, leaseToken, backend.uid, backend.resourceVersion, admission.apiVersion,
-        admission.namespace, admission.name, admission.uid, admission.resourceVersion, admission.clusterQueue,
+      "SELECT sandbox_controller_bind_backend_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) AS bound",
+      [operationId, workerId, leaseToken, observation.sandbox.uid, observation.sandbox.resourceVersion,
+        observation.sandbox.apiVersion, observation.sandbox.kind, observation.sandbox.namespace,
+        observation.sandbox.name, observation.sandbox.uid, observation.sandbox.resourceVersion,
+        observation.pod.apiVersion, observation.pod.kind, observation.pod.namespace,
+        observation.pod.name, observation.pod.uid, observation.pod.resourceVersion,
+        admission.apiVersion, admission.namespace, admission.name, admission.uid, admission.resourceVersion, admission.clusterQueue,
         admission.owner.apiVersion, admission.owner.kind, admission.owner.name, admission.owner.uid,
         admission.owner.controller, admission.workspaceId, admission.sandboxId, admission.admitted,
-        admission.condition.type, admission.condition.status, rawDigest(admission.digest)],
+        admission.condition.type, admission.condition.status, rawDigest(admission.digest), rawDigest(observation.digest)],
     );
     return result.rows[0]?.bound === true;
   }
@@ -127,9 +151,12 @@ export class PgSandboxControllerStore {
   async complete(operationId: string, workerId: string, leaseToken: string, completion: SandboxControllerCompletion): Promise<boolean> {
     const error = completion.error;
     const result = await this.database.query<{ completed: boolean }>(
-      "SELECT sandbox_controller_complete_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid[],$13::text[],$14,$15,$16) AS completed",
+      "SELECT sandbox_controller_complete_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17) AS completed",
       [operationId, workerId, leaseToken, completion.status, completion.expectedBackendUid,
-        completion.expectedBackendResourceVersion, completion.expectedAdmissionDigest ? rawDigest(completion.expectedAdmissionDigest) : null, completion.cleanupComplete,
+        completion.expectedBackendResourceVersion,
+        completion.expectedWorkloadDigest ? rawDigest(completion.expectedWorkloadDigest) : null,
+        completion.expectedObservationDigest ? rawDigest(completion.expectedObservationDigest) : null,
+        completion.cleanupComplete,
         completion.artifactExportComplete, completion.grantsRevoked, completion.backendDestroyed,
         completion.artifactIds, completion.warningCodes, error?.code ?? null, error?.message ?? null, error?.requestId ?? null],
     );
@@ -173,12 +200,22 @@ function workItemRow(row: QueryResultRow): SandboxControllerWorkItem {
       writable: writable[index]!, commit: commits[index]! })),
     artifacts: artifactNames.map((name, index) => ({ name, path: artifactPaths[index]!,
       mediaType: artifactMediaTypes[index]!, required: artifactRequired[index]! })),
-    admission: admissionRow(row),
+    ...observationRow(row),
   };
 }
 
-function admissionRow(row: QueryResultRow): SandboxControllerAdmissionIdentity | null {
-  if (row.admission_digest === null || row.admission_digest === undefined) return null;
+function observationRow(row: QueryResultRow): Pick<SandboxControllerWorkItem, "persistedWorkloadDigest" | "admissionObservation"> {
+  const workloadFields = [row.workload_api_version, row.workload_namespace, row.workload_name,
+    row.workload_uid, row.workload_resource_version, row.admitted_cluster_queue, row.owner_api_version,
+    row.owner_kind, row.owner_name, row.owner_uid, row.owner_controller, row.workspace_label,
+    row.sandbox_label, row.admitted, row.condition_type, row.condition_status];
+  const observationFields = [row.pod_api_version, row.pod_kind, row.pod_namespace, row.pod_name,
+    row.pod_uid, row.pod_resource_version, row.observation_digest];
+  if (row.admission_digest === null || row.admission_digest === undefined) {
+    if (workloadFields.some(present) || observationFields.some(present)) throw new Error("sandbox controller admission observation is partially populated");
+    return { persistedWorkloadDigest: null, admissionObservation: null };
+  }
+  if (workloadFields.some((value) => !present(value))) throw new Error("sandbox controller admission identity is incomplete");
   const identity = {
     apiVersion: row.workload_api_version, namespace: row.workload_namespace, name: row.workload_name,
     uid: row.workload_uid, resourceVersion: row.workload_resource_version, clusterQueue: row.admitted_cluster_queue,
@@ -197,7 +234,47 @@ function admissionRow(row: QueryResultRow): SandboxControllerAdmissionIdentity |
     throw new Error("sandbox controller admission identity is inconsistent");
   }
   rawDigest(identity.digest);
-  return identity as SandboxControllerAdmissionIdentity;
+  const workload = identity as SandboxControllerAdmissionIdentity;
+  if (!observationFields.some(present)) return { persistedWorkloadDigest: workload.digest, admissionObservation: null };
+  if (observationFields.some((value) => !present(value))) throw new Error("sandbox controller admission observation is incomplete");
+  const observation: SandboxControllerAdmissionObservation = {
+    sandbox: { apiVersion: "agents.x-k8s.io/v1beta1", kind: "Sandbox", namespace: "blazn-poc-sandboxes",
+      name: row.sandbox_id, uid: row.backend_uid, resourceVersion: row.backend_resource_version },
+    pod: { apiVersion: row.pod_api_version, kind: row.pod_kind, namespace: row.pod_namespace,
+      name: row.pod_name, uid: row.pod_uid, resourceVersion: row.pod_resource_version },
+    workload,
+    digest: `sha256:${String(row.observation_digest).trim()}`,
+  };
+  validateObservation(observation);
+  return { persistedWorkloadDigest: workload.digest, admissionObservation: observation };
+}
+
+function present(value: unknown): boolean { return value !== null && value !== undefined; }
+
+function validateObservation(value: SandboxControllerAdmissionObservation): void {
+  const workloadCanonical = ["sandbox-workload-admission-v1", value.workload.apiVersion,
+    value.workload.namespace, value.workload.name, value.workload.uid, value.workload.resourceVersion,
+    value.workload.clusterQueue, value.workload.owner.apiVersion, value.workload.owner.kind,
+    value.workload.owner.name, value.workload.owner.uid, String(value.workload.owner.controller),
+    value.workload.workspaceId, value.workload.sandboxId, String(value.workload.admitted),
+    value.workload.condition.type, value.workload.condition.status].join("\n");
+  const workloadDigest = `sha256:${createHash("sha256").update(workloadCanonical).digest("hex")}`;
+  const observationCanonical = ["sandbox-admission-observation-v1", value.sandbox.apiVersion,
+    value.sandbox.kind, value.sandbox.namespace, value.sandbox.name, value.sandbox.uid,
+    value.sandbox.resourceVersion, value.pod.apiVersion, value.pod.kind, value.pod.namespace,
+    value.pod.name, value.pod.uid, value.pod.resourceVersion, value.workload.apiVersion,
+    value.workload.namespace, value.workload.name, value.workload.uid, value.workload.resourceVersion,
+    value.workload.clusterQueue, value.workload.owner.apiVersion, value.workload.owner.kind,
+    value.workload.owner.name, value.workload.owner.uid, String(value.workload.owner.controller),
+    value.workload.workspaceId, value.workload.sandboxId, String(value.workload.admitted),
+    value.workload.condition.type, value.workload.condition.status, value.workload.digest].join("\n");
+  const observationDigest = `sha256:${createHash("sha256").update(observationCanonical).digest("hex")}`;
+  if (value.sandbox.apiVersion !== "agents.x-k8s.io/v1beta1" || value.sandbox.kind !== "Sandbox" ||
+      value.sandbox.namespace !== "blazn-poc-sandboxes" || value.pod.apiVersion !== "v1" ||
+      value.pod.kind !== "Pod" || value.pod.namespace !== "blazn-poc-sandboxes" ||
+      value.sandbox.name !== value.workload.sandboxId || value.sandbox.name !== value.workload.owner.name ||
+      value.sandbox.uid !== value.workload.owner.uid || workloadDigest !== value.workload.digest ||
+      observationDigest !== value.digest) throw new Error("sandbox controller admission observation is inconsistent");
 }
 
 function rawDigest(value: string): string {

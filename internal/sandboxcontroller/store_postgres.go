@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	claimSQL    = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v2($1,$2) claimed"
+	claimSQL    = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v3($1,$2) claimed"
 	renewSQL    = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
-	bindSQL     = "SELECT public.sandbox_controller_bind_backend_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)"
+	bindSQL     = "SELECT public.sandbox_controller_bind_backend_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
 	retrySQL    = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
-	completeSQL = "SELECT public.sandbox_controller_complete_v2($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::uuid[],$13::text[],$14,$15,$16)"
+	completeSQL = "SELECT public.sandbox_controller_complete_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
 	expirySQL   = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
 )
 
@@ -109,19 +109,30 @@ func databaseLeaseRemaining(expiresAt, databaseNow time.Time, queryElapsed time.
 	return expiresAt.Sub(databaseNow) - queryElapsed
 }
 
-func (s *PgStore) BindBackend(ctx context.Context, operationID, workerID, leaseToken string, record sandboxcontrol.SandboxRecord, admission sandboxcontrol.WorkloadIdentity) (bool, error) {
-	digest, err := rawDigest(admission.Digest)
+func (s *PgStore) BindBackend(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation) (bool, error) {
+	workloadDigest, err := rawDigest(observation.Workload.Digest)
+	if err != nil {
+		return false, err
+	}
+	observationDigest, err := rawDigest(observation.Digest)
 	if err != nil {
 		return false, err
 	}
 	var bound bool
 	err = s.executor.QueryRow(ctx, bindSQL, operationID, workerID, leaseToken,
-		record.UID, record.ResourceVersion, admission.APIVersion, admission.Namespace,
-		admission.Name, admission.UID, admission.ResourceVersion, admission.ClusterQueue,
-		admission.Owner.APIVersion, admission.Owner.Kind, admission.Owner.Name,
-		admission.Owner.UID, admission.Owner.Controller, admission.WorkspaceID,
-		admission.SandboxID, admission.Admitted, admission.Condition.Type,
-		admission.Condition.Status, digest).Scan(&bound)
+		observation.Sandbox.UID, observation.Sandbox.ResourceVersion,
+		observation.Sandbox.APIVersion, observation.Sandbox.Kind, observation.Sandbox.Namespace,
+		observation.Sandbox.Name, observation.Sandbox.UID, observation.Sandbox.ResourceVersion,
+		observation.Pod.APIVersion, observation.Pod.Kind, observation.Pod.Namespace,
+		observation.Pod.Name, observation.Pod.UID, observation.Pod.ResourceVersion,
+		observation.Workload.APIVersion, observation.Workload.Namespace,
+		observation.Workload.Name, observation.Workload.UID, observation.Workload.ResourceVersion,
+		observation.Workload.ClusterQueue, observation.Workload.Owner.APIVersion,
+		observation.Workload.Owner.Kind, observation.Workload.Owner.Name,
+		observation.Workload.Owner.UID, observation.Workload.Owner.Controller,
+		observation.Workload.WorkspaceID, observation.Workload.SandboxID,
+		observation.Workload.Admitted, observation.Workload.Condition.Type,
+		observation.Workload.Condition.Status, workloadDigest, observationDigest).Scan(&bound)
 	return bound, err
 }
 
@@ -139,13 +150,21 @@ func (s *PgStore) Retry(ctx context.Context, operationID, workerID, leaseToken s
 }
 
 func (s *PgStore) Complete(ctx context.Context, operationID, workerID, leaseToken string, completion Completion) (bool, error) {
-	var admissionDigest any
-	if completion.ExpectedAdmissionDigest != nil {
-		digest, err := rawDigest(*completion.ExpectedAdmissionDigest)
+	var workloadDigest any
+	if completion.ExpectedWorkloadDigest != nil {
+		digest, err := rawDigest(*completion.ExpectedWorkloadDigest)
 		if err != nil {
 			return false, err
 		}
-		admissionDigest = digest
+		workloadDigest = digest
+	}
+	var observationDigest any
+	if completion.ExpectedObservationDigest != nil {
+		digest, err := rawDigest(*completion.ExpectedObservationDigest)
+		if err != nil {
+			return false, err
+		}
+		observationDigest = digest
 	}
 	var errorCode, errorMessage, errorRequestID any
 	if completion.Error != nil {
@@ -154,7 +173,7 @@ func (s *PgStore) Complete(ctx context.Context, operationID, workerID, leaseToke
 	var completed bool
 	err := s.executor.QueryRow(ctx, completeSQL, operationID, workerID, leaseToken,
 		completion.Status, completion.ExpectedBackendUID, completion.ExpectedBackendResourceVersion,
-		admissionDigest, completion.CleanupComplete, completion.ArtifactExportComplete,
+		workloadDigest, observationDigest, completion.CleanupComplete, completion.ArtifactExportComplete,
 		completion.GrantsRevoked, completion.BackendDestroyed, completion.ArtifactIDs,
 		completion.WarningCodes, errorCode, errorMessage, errorRequestID).Scan(&completed)
 	return completed, err
@@ -225,6 +244,13 @@ type workItemRow struct {
 	Admitted                *bool     `json:"admitted"`
 	ConditionType           *string   `json:"condition_type"`
 	ConditionStatus         *string   `json:"condition_status"`
+	PodAPIVersion           *string   `json:"pod_api_version"`
+	PodKind                 *string   `json:"pod_kind"`
+	PodNamespace            *string   `json:"pod_namespace"`
+	PodName                 *string   `json:"pod_name"`
+	PodUID                  *string   `json:"pod_uid"`
+	PodResourceVersion      *string   `json:"pod_resource_version"`
+	ObservationDigest       *string   `json:"observation_digest"`
 }
 
 func decodeWorkItem(payload []byte) (*WorkItem, error) {
@@ -274,24 +300,28 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 		item.Artifacts = append(item.Artifacts, Artifact{Name: name, Path: row.ArtifactPaths[index],
 			MediaType: row.ArtifactMediaTypes[index], Required: row.ArtifactRequired[index]})
 	}
-	admission, err := decodeAdmission(row)
+	observation, workloadDigest, err := decodeObservation(row)
 	if err != nil {
 		return nil, err
 	}
-	item.Admission = admission
+	item.AdmissionObservation = observation
+	item.PersistedWorkloadDigest = workloadDigest
 	return item, nil
 }
 
-func decodeAdmission(row workItemRow) (*sandboxcontrol.WorkloadIdentity, error) {
+func decodeObservation(row workItemRow) (*sandboxcontrol.AdmissionObservation, *string, error) {
 	if row.AdmissionDigest == nil {
 		if row.WorkloadAPIVersion != nil || row.WorkloadNamespace != nil || row.WorkloadName != nil ||
 			row.WorkloadUID != nil || row.WorkloadResourceVersion != nil || row.AdmittedClusterQueue != nil ||
 			row.OwnerAPIVersion != nil || row.OwnerKind != nil || row.OwnerName != nil || row.OwnerUID != nil ||
 			row.OwnerController != nil || row.WorkspaceLabel != nil || row.SandboxLabel != nil || row.Admitted != nil ||
 			row.ConditionType != nil || row.ConditionStatus != nil {
-			return nil, errors.New("sandbox controller admission identity is partially populated")
+			return nil, nil, errors.New("sandbox controller admission identity is partially populated")
 		}
-		return nil, nil
+		if hasObservationColumns(row) {
+			return nil, nil, errors.New("sandbox controller admission observation is partially populated")
+		}
+		return nil, nil, nil
 	}
 	requiredStrings := []*string{row.WorkloadAPIVersion, row.WorkloadNamespace, row.WorkloadName,
 		row.WorkloadUID, row.WorkloadResourceVersion, row.AdmittedClusterQueue, row.OwnerAPIVersion,
@@ -299,11 +329,11 @@ func decodeAdmission(row workItemRow) (*sandboxcontrol.WorkloadIdentity, error) 
 		row.ConditionType, row.ConditionStatus}
 	for _, value := range requiredStrings {
 		if value == nil || *value == "" {
-			return nil, errors.New("sandbox controller admission identity is incomplete")
+			return nil, nil, errors.New("sandbox controller admission identity is incomplete")
 		}
 	}
 	if row.OwnerController == nil || row.Admitted == nil {
-		return nil, errors.New("sandbox controller admission identity is incomplete")
+		return nil, nil, errors.New("sandbox controller admission identity is incomplete")
 	}
 	digest := "sha256:" + strings.TrimSpace(*row.AdmissionDigest)
 	identity := &sandboxcontrol.WorkloadIdentity{
@@ -322,9 +352,9 @@ func decodeAdmission(row workItemRow) (*sandboxcontrol.WorkloadIdentity, error) 
 		!identity.Owner.Controller || !identity.Admitted || identity.Condition.Type != "Admitted" ||
 		identity.Condition.Status != "True" || identity.WorkspaceID != row.WorkspaceID ||
 		identity.SandboxID != row.SandboxID || identity.Owner.Name != row.SandboxID ||
-		row.BackendUID == nil || identity.Owner.UID != *row.BackendUID || row.AdmissionID == nil ||
+		row.BackendUID == nil || row.BackendResourceVersion == nil || identity.Owner.UID != *row.BackendUID || row.AdmissionID == nil ||
 		identity.UID != *row.AdmissionID || !sha256Pattern.MatchString(identity.Digest) {
-		return nil, errors.New("sandbox controller admission identity is inconsistent")
+		return nil, nil, errors.New("sandbox controller admission identity is inconsistent")
 	}
 	claimedDigest := identity.Digest
 	record := sandboxcontrol.SandboxRecord{Name: row.SandboxID, Namespace: sandboxcontrol.Namespace,
@@ -333,15 +363,41 @@ func decodeAdmission(row workItemRow) (*sandboxcontrol.WorkloadIdentity, error) 
 		ArtifactContractDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
 	receipt, err := sandboxcontrol.NewReceipt("controller-admission-check", sandboxcontrol.OperationCreate, record, nil, time.Unix(1, 0))
 	if err != nil {
-		return nil, errors.New("sandbox controller admission identity cannot be verified")
+		return nil, nil, errors.New("sandbox controller admission identity cannot be verified")
 	}
 	identity.Digest = ""
 	bound, err := sandboxcontrol.AttachAdmissionIdentity(receipt, *identity)
 	if err != nil || bound.Admission == nil || bound.Admission.Digest != claimedDigest {
-		return nil, errors.New("sandbox controller admission digest is inconsistent")
+		return nil, nil, errors.New("sandbox controller admission digest is inconsistent")
 	}
 	identity.Digest = claimedDigest
-	return identity, nil
+	if !hasObservationColumns(row) {
+		return nil, &claimedDigest, nil
+	}
+	for _, value := range []*string{row.PodAPIVersion, row.PodKind, row.PodNamespace, row.PodName,
+		row.PodUID, row.PodResourceVersion, row.ObservationDigest} {
+		if value == nil || *value == "" {
+			return nil, nil, errors.New("sandbox controller admission observation is incomplete")
+		}
+	}
+	observation := &sandboxcontrol.AdmissionObservation{
+		Sandbox: sandboxcontrol.ObjectIdentity{APIVersion: sandboxcontrol.APIVersion,
+			Kind: sandboxcontrol.Kind, Namespace: sandboxcontrol.Namespace, Name: row.SandboxID,
+			UID: *row.BackendUID, ResourceVersion: *row.BackendResourceVersion},
+		Pod: sandboxcontrol.ObjectIdentity{APIVersion: *row.PodAPIVersion, Kind: *row.PodKind,
+			Namespace: *row.PodNamespace, Name: *row.PodName, UID: *row.PodUID,
+			ResourceVersion: *row.PodResourceVersion},
+		Workload: *identity, Digest: "sha256:" + strings.TrimSpace(*row.ObservationDigest),
+	}
+	if err := sandboxcontrol.ValidateAdmissionObservation(*observation); err != nil {
+		return nil, nil, fmt.Errorf("sandbox controller admission observation is inconsistent: %w", err)
+	}
+	return observation, &claimedDigest, nil
+}
+
+func hasObservationColumns(row workItemRow) bool {
+	return row.PodAPIVersion != nil || row.PodKind != nil || row.PodNamespace != nil ||
+		row.PodName != nil || row.PodUID != nil || row.PodResourceVersion != nil || row.ObservationDigest != nil
 }
 
 func rawDigest(value string) (string, error) {
