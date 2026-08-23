@@ -161,6 +161,11 @@ func TestCleanupRequiresBackendGrantRevocationProof(t *testing.T) {
 	item.BackendUID, item.BackendResourceVersion, item.Admission =
 		pointer(state.Record.UID), pointer(state.Record.ResourceVersion), state.Admission
 	item.AdmissionID = pointer(state.Admission.UID)
+	state.Record.ResourceVersion = "resource-version-delete"
+	state.Record.Deleting = true
+	state.Deleting = true
+	state.CleanupFinalizerPresent = true
+	state.Record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
 	store := &fakeStore{}
 	backend := &fakeBackend{deleting: state, finalized: CleanupResult{
 		CleanupComplete: true, ArtifactExportComplete: true, BackendDestroyed: true,

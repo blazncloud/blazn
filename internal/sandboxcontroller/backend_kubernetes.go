@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
@@ -33,6 +34,14 @@ type KubernetesBackend struct {
 	health                  func(context.Context) error
 	artifactExportSupported bool
 	absencePollInterval     time.Duration
+	evidenceMu              sync.Mutex
+	evidence                map[string]kubernetesBackendEvidence
+}
+
+type kubernetesBackendEvidence struct {
+	record      sandboxcontrol.SandboxRecord
+	observation *sandboxcontrol.AdmissionObservation
+	cleanup     *CleanupResult
 }
 
 func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, error) {
@@ -47,7 +56,8 @@ func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, e
 	}
 	return &KubernetesBackend{adapter: config.Adapter, health: config.Health,
 		artifactExportSupported: config.ArtifactExportSupported,
-		absencePollInterval:     config.AbsencePollInterval}, nil
+		absencePollInterval:     config.AbsencePollInterval,
+		evidence:                make(map[string]kubernetesBackendEvidence)}, nil
 }
 
 func (b *KubernetesBackend) Health(ctx context.Context) error {
@@ -75,6 +85,10 @@ func (b *KubernetesBackend) EnsureCreated(ctx context.Context, item WorkItem) (B
 	if err := verifyReceipt(receipt, sandboxcontrol.OperationCreate, request, record); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "sandbox create receipt identity changed", false, true, err)
 	}
+	if err := verifyLiveRecord(item, request, record, nil, false, true); err != nil {
+		return BackendState{}, backendFailure("backend_identity_mismatch", "sandbox create identity changed", false, true, err)
+	}
+	b.retainRecord(item, record)
 	return stateFromRecord(record), nil
 }
 
@@ -83,17 +97,33 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem) (Backend
 	if err != nil {
 		return BackendState{}, err
 	}
-	record := expectedRecord(item)
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, nil)
+	trusted, ok := b.retainedRecord(item)
+	if item.BackendUID == nil && !ok {
+		return BackendState{}, backendFailure("backend_identity_unavailable", "sandbox create identity is unavailable after restart", false, true, nil)
+	}
+	record, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
+	if err != nil {
+		return BackendState{}, classifyAdapter("observe", err)
+	}
+	if err := verifyLiveRecord(item, request, record, retainedRecord(ok, trusted), item.BackendUID != nil, true); err != nil {
+		return BackendState{}, backendFailure("backend_identity_mismatch", "backend identity changed before admission", false, true, err)
+	}
+	b.retainRecord(item, record)
+	if record.State != sandboxcontrol.StateReady {
+		return stateFromRecord(record), nil
+	}
+	expected, hasExpected := b.retainedObservation(item)
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, retainedObservation(hasExpected, expected))
 	if err != nil {
 		return BackendState{}, classifyAdapter("observe", err)
 	}
 	if err := verifyObservation(item, observation); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend admission identity changed", false, true, err)
 	}
-	record.UID = observation.Sandbox.UID
-	record.ResourceVersion = observation.Sandbox.ResourceVersion
-	record.State = sandboxcontrol.StateReady
+	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
+		return BackendState{}, backendFailure("backend_identity_mismatch", "backend admission record changed", false, true, nil)
+	}
+	b.retainObservation(item, observation)
 	identity := observation.Workload
 	return BackendState{Record: record, Admission: &identity, AdmissionObservation: &observation,
 		Exists: true, Ready: true}, nil
@@ -107,14 +137,48 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem) (Bac
 	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.Admission == nil {
 		return BackendState{}, backendFailure("cleanup_identity_missing", "cleanup lacks exact backend evidence", true, true, nil)
 	}
-	record := expectedRecord(item)
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, nil)
+	retained, hasRetained := b.retainedObservation(item)
+	record, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
+	if err != nil {
+		var adapterErr *sandboxcontrol.AdapterError
+		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound && hasRetained {
+			if err := verifyObservation(item, retained); err != nil {
+				return BackendState{}, backendFailure("cleanup_identity_mismatch", "retained cleanup identity changed", false, true, err)
+			}
+			identity := retained.Workload
+			return BackendState{Admission: &identity, AdmissionObservation: &retained}, nil
+		}
+		return BackendState{}, classifyCleanupObservation(err)
+	}
+	_, hasCleanup := b.retainedCleanup(item)
+	if err := verifyLiveRecord(item, request, record, nil, !record.Deleting, !record.Deleting || !hasCleanup); err != nil {
+		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
+	}
+	if record.Deleting {
+		if !hasRetained {
+			return BackendState{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence evidence is unavailable after restart", true, true, nil)
+		}
+		if err := verifyObservation(item, retained); err != nil {
+			return BackendState{}, backendFailure("cleanup_identity_mismatch", "retained cleanup identity changed", false, true, err)
+		}
+		identity := retained.Workload
+		if hasCleanup {
+			return BackendState{Admission: &identity, AdmissionObservation: &retained}, nil
+		}
+		return BackendState{Record: record, Admission: &identity, AdmissionObservation: &retained,
+			Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(record.Finalizers)}, nil
+	}
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, retainedObservation(hasRetained, retained))
 	if err != nil {
 		return BackendState{}, classifyCleanupObservation(err)
 	}
 	if err := verifyObservation(item, observation); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
+	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
+		return BackendState{}, backendFailure("backend_identity_mismatch", "cleanup admission record changed", false, true, nil)
+	}
+	b.retainObservation(item, observation)
 	artifacts, digest, err := artifactContract(request.Artifacts)
 	if err != nil {
 		return BackendState{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
@@ -131,7 +195,9 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem) (Bac
 	if err != nil {
 		return BackendState{}, backendFailure("cleanup_state_ambiguous", "cleanup state could not be proven", true, true, err)
 	}
-	if live.UID != *item.BackendUID || !live.Deleting || live.ArtifactContractDigest != digest || !reflect.DeepEqual(live.Artifacts, artifacts) {
+	if err := verifyLiveRecord(item, request, live, &record, false, true); err != nil ||
+		live.ResourceVersion == *item.BackendResourceVersion || !live.Deleting ||
+		live.ArtifactContractDigest != digest || !reflect.DeepEqual(live.Artifacts, artifacts) {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, nil)
 	}
 	identity := observation.Workload
@@ -140,10 +206,17 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem) (Bac
 }
 
 func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state BackendState) (CleanupResult, error) {
-	if state.AdmissionObservation == nil || item.BackendUID == nil || item.Admission == nil {
+	if item.BackendUID == nil || item.Admission == nil {
 		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence evidence is unavailable after restart", true, true, nil)
 	}
-	if err := verifyObservation(item, *state.AdmissionObservation); err != nil {
+	observation, ok := b.retainedObservation(item)
+	if state.AdmissionObservation != nil {
+		observation, ok = *state.AdmissionObservation, true
+	}
+	if !ok {
+		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence evidence is unavailable after restart", true, true, nil)
+	}
+	if err := verifyObservation(item, observation); err != nil {
 		return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
 	request, err := b.request(item)
@@ -154,23 +227,32 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 	if err != nil {
 		return CleanupResult{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
 	}
-	receipt, err := b.adapter.Finalize(ctx, "controller-"+item.OperationID, item.WorkspaceID,
-		item.RequestedBy, item.SandboxID, *item.BackendUID, state.Record.ResourceVersion, artifacts, digest)
-	if err != nil {
-		return CleanupResult{}, classifyAdapter("cleanup", err)
-	}
-	if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
-		return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
+	result, finalized := b.retainedCleanup(item)
+	if !finalized {
+		if !state.Exists || !state.Deleting || !state.CleanupFinalizerPresent {
+			return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup completion receipt is unavailable after restart", true, true, nil)
+		}
+		receipt, err := b.adapter.Finalize(ctx, "controller-"+item.OperationID, item.WorkspaceID,
+			item.RequestedBy, item.SandboxID, *item.BackendUID, state.Record.ResourceVersion, artifacts, digest)
+		if err != nil {
+			return CleanupResult{}, classifyAdapter("cleanup", err)
+		}
+		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
+			return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
+		}
+		ids := make([]string, 0, len(receipt.Artifacts))
+		for _, artifact := range receipt.Artifacts {
+			ids = append(ids, artifact.ObjectKey)
+		}
+		result = CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
+			ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
+		b.retainCleanup(item, result)
 	}
 	for {
-		err = b.adapter.ObserveAbsence(ctx, *state.AdmissionObservation)
+		err = b.adapter.ObserveAbsence(ctx, observation)
 		if err == nil {
-			ids := make([]string, 0, len(receipt.Artifacts))
-			for _, artifact := range receipt.Artifacts {
-				ids = append(ids, artifact.ObjectKey)
-			}
-			return CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
-				ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}, nil
+			b.forgetEvidence(item)
+			return result, nil
 		}
 		var adapterErr *sandboxcontrol.AdapterError
 		if !errors.As(err, &adapterErr) || adapterErr.Code != sandboxcontrol.ErrCleanupIncomplete {
@@ -180,6 +262,131 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 			return CleanupResult{}, ctx.Err()
 		}
 	}
+}
+
+func verifyLiveRecord(item WorkItem, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord,
+	trusted *sandboxcontrol.SandboxRecord, requirePersistedVersion, requireFinalizer bool) error {
+	artifacts, digest, err := artifactContract(request.Artifacts)
+	if err != nil {
+		return err
+	}
+	if record.Name != item.SandboxID || record.Namespace != sandboxcontrol.Namespace || record.WorkspaceID != item.WorkspaceID ||
+		record.OwnerID != item.RequestedBy || record.QueueName != sandboxcontrol.QueueName || record.UID == "" ||
+		record.ResourceVersion == "" || record.RuntimeClassName != "" || record.TrustLevel != sandboxcontrol.TrustApprovedPOC ||
+		record.ArtifactContractDigest != digest || !reflect.DeepEqual(record.Artifacts, artifacts) ||
+		requireFinalizer && !hasFinalizer(record.Finalizers) {
+		return errors.New("live Sandbox record does not match the trusted work item")
+	}
+	if trusted != nil && (record.UID != trusted.UID || trusted.CreateIntentDigest != "" && record.CreateIntentDigest != trusted.CreateIntentDigest) {
+		return errors.New("live Sandbox record changed from the created identity")
+	}
+	if item.BackendUID != nil && record.UID != *item.BackendUID {
+		return errors.New("live Sandbox UID changed")
+	}
+	if requirePersistedVersion && item.BackendResourceVersion != nil && record.ResourceVersion != *item.BackendResourceVersion {
+		return errors.New("live Sandbox resource version changed before mutation")
+	}
+	return nil
+}
+
+func retainedRecord(ok bool, record sandboxcontrol.SandboxRecord) *sandboxcontrol.SandboxRecord {
+	if !ok {
+		return nil
+	}
+	copy := cloneSandboxRecord(record)
+	return &copy
+}
+
+func retainedObservation(ok bool, observation sandboxcontrol.AdmissionObservation) *sandboxcontrol.AdmissionObservation {
+	if !ok {
+		return nil
+	}
+	copy := observation
+	return &copy
+}
+
+func evidenceKey(item WorkItem) string {
+	return item.WorkspaceID + "\x00" + item.RequestedBy + "\x00" + item.SandboxID
+}
+
+func (b *KubernetesBackend) retainRecord(item WorkItem, record sandboxcontrol.SandboxRecord) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	entry := b.evidence[evidenceKey(item)]
+	entry.record = cloneSandboxRecord(record)
+	b.evidence[evidenceKey(item)] = entry
+}
+
+func (b *KubernetesBackend) retainedRecord(item WorkItem) (sandboxcontrol.SandboxRecord, bool) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	entry, ok := b.evidence[evidenceKey(item)]
+	if !ok || entry.record.UID == "" {
+		return sandboxcontrol.SandboxRecord{}, false
+	}
+	return cloneSandboxRecord(entry.record), true
+}
+
+func (b *KubernetesBackend) retainObservation(item WorkItem, observation sandboxcontrol.AdmissionObservation) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	entry := b.evidence[evidenceKey(item)]
+	copy := observation
+	entry.observation = &copy
+	b.evidence[evidenceKey(item)] = entry
+}
+
+func (b *KubernetesBackend) retainedObservation(item WorkItem) (sandboxcontrol.AdmissionObservation, bool) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	entry, ok := b.evidence[evidenceKey(item)]
+	if !ok || entry.observation == nil {
+		return sandboxcontrol.AdmissionObservation{}, false
+	}
+	return *entry.observation, true
+}
+
+func (b *KubernetesBackend) retainCleanup(item WorkItem, result CleanupResult) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	entry := b.evidence[evidenceKey(item)]
+	copy := cloneCleanupResult(result)
+	entry.cleanup = &copy
+	b.evidence[evidenceKey(item)] = entry
+}
+
+func (b *KubernetesBackend) retainedCleanup(item WorkItem) (CleanupResult, bool) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	entry, ok := b.evidence[evidenceKey(item)]
+	if !ok || entry.cleanup == nil {
+		return CleanupResult{}, false
+	}
+	return cloneCleanupResult(*entry.cleanup), true
+}
+
+func (b *KubernetesBackend) forgetEvidence(item WorkItem) {
+	b.evidenceMu.Lock()
+	defer b.evidenceMu.Unlock()
+	delete(b.evidence, evidenceKey(item))
+}
+
+func cloneSandboxRecord(record sandboxcontrol.SandboxRecord) sandboxcontrol.SandboxRecord {
+	copy := record
+	copy.Finalizers = append([]string(nil), record.Finalizers...)
+	copy.Artifacts = append([]sandboxcontrol.ArtifactExport(nil), record.Artifacts...)
+	copy.Labels = make(map[string]string, len(record.Labels))
+	for key, value := range record.Labels {
+		copy.Labels[key] = value
+	}
+	return copy
+}
+
+func cloneCleanupResult(result CleanupResult) CleanupResult {
+	copy := result
+	copy.ArtifactIDs = append([]string(nil), result.ArtifactIDs...)
+	copy.WarningCodes = append([]string(nil), result.WarningCodes...)
+	return copy
 }
 
 func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest, error) {
@@ -209,18 +416,6 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 		EphemeralStorageRequest: item.Resources.EphemeralRequest, CPULimit: item.Resources.CPULimit,
 		MemoryLimit: item.Resources.MemoryLimit, EphemeralStorageLimit: item.Resources.EphemeralLimit,
 		ExpiresAt: item.ExpiresAt, Artifacts: artifacts}, nil
-}
-
-func expectedRecord(item WorkItem) sandboxcontrol.SandboxRecord {
-	record := sandboxcontrol.SandboxRecord{Name: item.SandboxID, Namespace: sandboxcontrol.Namespace,
-		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, QueueName: sandboxcontrol.QueueName}
-	if item.BackendUID != nil {
-		record.UID = *item.BackendUID
-	}
-	if item.BackendResourceVersion != nil {
-		record.ResourceVersion = *item.BackendResourceVersion
-	}
-	return record
 }
 
 func stateFromRecord(record sandboxcontrol.SandboxRecord) BackendState {
@@ -259,10 +454,38 @@ func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcon
 	if err := sandboxcontrol.ValidateReceipt(receipt); err != nil {
 		return err
 	}
+	_, artifactDigest, err := artifactContract(request.Artifacts)
+	if err != nil {
+		return err
+	}
 	if receipt.Operation != operation || receipt.RequestID != request.RequestID || receipt.Name != request.Name ||
 		receipt.Namespace != sandboxcontrol.Namespace || receipt.WorkspaceID != request.WorkspaceID ||
-		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != sandboxcontrol.QueueName {
+		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != sandboxcontrol.QueueName ||
+		receipt.RuntimeClass != request.RuntimeClassName || receipt.ArtifactContractDigest != artifactDigest ||
+		operation != sandboxcontrol.OperationFinalize && receipt.ResourceVersion != record.ResourceVersion ||
+		operation == sandboxcontrol.OperationFinalize && receipt.ResourceVersion == record.ResourceVersion {
 		return errors.New("adapter receipt does not match the requested identity")
+	}
+	if operation != sandboxcontrol.OperationFinalize && len(receipt.Artifacts) != 0 {
+		return errors.New("non-finalize receipt returned artifact evidence")
+	}
+	if operation == sandboxcontrol.OperationFinalize {
+		expected := make(map[string]sandboxcontrol.ArtifactExport, len(request.Artifacts))
+		seen := make(map[string]bool, len(receipt.Artifacts))
+		for _, artifact := range request.Artifacts {
+			expected[artifact.Name] = artifact
+		}
+		for _, artifact := range receipt.Artifacts {
+			if _, ok := expected[artifact.Name]; !ok || seen[artifact.Name] {
+				return errors.New("finalize receipt returned unexpected artifact evidence")
+			}
+			seen[artifact.Name] = true
+		}
+		for name, artifact := range expected {
+			if artifact.Required && !seen[name] {
+				return errors.New("finalize receipt omitted required artifact evidence")
+			}
+		}
 	}
 	return nil
 }
@@ -301,7 +524,9 @@ func classifyAdapter(operation string, err error) error {
 		return backendFailure("backend_transport_failure", "sandbox backend request failed", true, false, err)
 	case sandboxcontrol.ErrConflict, sandboxcontrol.ErrIdentityBoundary, sandboxcontrol.ErrResourceVersionStale:
 		return backendFailure("backend_identity_mismatch", "sandbox backend identity could not be proven", false, true, err)
-	case sandboxcontrol.ErrCleanupIncomplete, sandboxcontrol.ErrArtifactExport:
+	case sandboxcontrol.ErrArtifactExport:
+		return backendFailure("cleanup_incomplete", "sandbox artifact export did not complete", operation == "cleanup", false, err)
+	case sandboxcontrol.ErrCleanupIncomplete:
 		return backendFailure("cleanup_incomplete", "sandbox cleanup could not be proven complete", operation == "cleanup", true, err)
 	case sandboxcontrol.ErrNotFound:
 		return backendFailure("backend_not_found", "sandbox backend identity is absent", operation != "cleanup", operation == "cleanup", err)

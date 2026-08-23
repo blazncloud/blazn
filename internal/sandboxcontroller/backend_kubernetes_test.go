@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,58 +13,131 @@ import (
 )
 
 type fakeSandboxAdapter struct {
-	calls       []string
-	request     sandboxcontrol.CreateRequest
-	record      sandboxcontrol.SandboxRecord
-	observation sandboxcontrol.AdmissionObservation
-	ensureErr   error
-	observeErr  error
-	deleteErr   error
-	getErr      error
-	finalizeErr error
-	absenceErrs []error
-	block       bool
+	mu            sync.Mutex
+	calls         []string
+	request       sandboxcontrol.CreateRequest
+	record        sandboxcontrol.SandboxRecord
+	getRecords    []sandboxcontrol.SandboxRecord
+	observation   sandboxcontrol.AdmissionObservation
+	ensureErr     error
+	observeErr    error
+	deleteErr     error
+	getErr        error
+	finalizeErr   error
+	absenceErrs   []error
+	afterFinalize func()
+	block         bool
 }
 
 func (f *fakeSandboxAdapter) EnsureCreated(ctx context.Context, request sandboxcontrol.CreateRequest, expectedUID string) (sandboxcontrol.SandboxRecord, sandboxcontrol.OperationReceipt, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "ensure")
 	f.request = request
-	if f.block {
+	record, block, err := cloneSandboxRecord(f.record), f.block, f.ensureErr
+	f.mu.Unlock()
+	if block {
 		<-ctx.Done()
 		return sandboxcontrol.SandboxRecord{}, sandboxcontrol.OperationReceipt{}, ctx.Err()
 	}
-	if f.ensureErr != nil {
-		return sandboxcontrol.SandboxRecord{}, sandboxcontrol.OperationReceipt{}, f.ensureErr
+	if err != nil {
+		return sandboxcontrol.SandboxRecord{}, sandboxcontrol.OperationReceipt{}, err
 	}
-	return f.record, operationReceipt(request.RequestID, sandboxcontrol.OperationCreate, f.record, nil), nil
+	if expectedUID != "" && expectedUID != record.UID {
+		return sandboxcontrol.SandboxRecord{}, sandboxcontrol.OperationReceipt{}, adapterConflict("create expected UID changed")
+	}
+	return record, operationReceipt(request.RequestID, sandboxcontrol.OperationCreate, record, nil), nil
 }
 
-func (f *fakeSandboxAdapter) Get(context.Context, string, string, string) (sandboxcontrol.SandboxRecord, error) {
+func (f *fakeSandboxAdapter) Get(_ context.Context, workspaceID, ownerID, name string) (sandboxcontrol.SandboxRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "get")
-	return f.record, f.getErr
+	if f.getErr != nil {
+		return sandboxcontrol.SandboxRecord{}, f.getErr
+	}
+	if workspaceID != f.record.WorkspaceID || ownerID != f.record.OwnerID || name != f.record.Name {
+		return sandboxcontrol.SandboxRecord{}, &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrIdentityBoundary, Status: 404, SafeDetail: "get identity changed"}
+	}
+	if len(f.getRecords) != 0 {
+		f.record = cloneSandboxRecord(f.getRecords[0])
+		f.getRecords = f.getRecords[1:]
+	}
+	return cloneSandboxRecord(f.record), nil
 }
 
-func (f *fakeSandboxAdapter) ObserveAdmission(ctx context.Context, request sandboxcontrol.CreateRequest, _ sandboxcontrol.SandboxRecord, _ *sandboxcontrol.AdmissionObservation) (sandboxcontrol.AdmissionObservation, error) {
+func (f *fakeSandboxAdapter) ObserveAdmission(ctx context.Context, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord, expected *sandboxcontrol.AdmissionObservation) (sandboxcontrol.AdmissionObservation, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "observe")
 	f.request = request
-	if f.block {
+	current, observation := cloneSandboxRecord(f.record), f.observation
+	block, err := f.block, f.observeErr
+	f.mu.Unlock()
+	if block {
 		<-ctx.Done()
 		return sandboxcontrol.AdmissionObservation{}, ctx.Err()
 	}
-	return f.observation, f.observeErr
+	if err != nil {
+		return sandboxcontrol.AdmissionObservation{}, err
+	}
+	if record.UID != current.UID || record.ResourceVersion != current.ResourceVersion ||
+		record.ArtifactContractDigest != current.ArtifactContractDigest || !reflect.DeepEqual(record.Artifacts, current.Artifacts) {
+		return sandboxcontrol.AdmissionObservation{}, adapterConflict("observe record was not exact")
+	}
+	if current.State != sandboxcontrol.StateReady {
+		return sandboxcontrol.AdmissionObservation{}, adapterConflict("admission is not ready")
+	}
+	if expected != nil && !reflect.DeepEqual(*expected, observation) {
+		return sandboxcontrol.AdmissionObservation{}, adapterConflict("admission observation changed")
+	}
+	return observation, nil
 }
 
-func (f *fakeSandboxAdapter) Delete(_ context.Context, requestID, _, _, _, _, _, _ string) (sandboxcontrol.OperationReceipt, error) {
+func (f *fakeSandboxAdapter) Delete(_ context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion, digest string) (sandboxcontrol.OperationReceipt, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "delete")
-	return operationReceipt(requestID, sandboxcontrol.OperationDelete, f.record, nil), f.deleteErr
+	if f.deleteErr != nil {
+		return sandboxcontrol.OperationReceipt{}, f.deleteErr
+	}
+	if workspaceID != f.record.WorkspaceID || ownerID != f.record.OwnerID || name != f.record.Name ||
+		uid != f.record.UID || resourceVersion != f.record.ResourceVersion || digest != f.record.ArtifactContractDigest || f.record.Deleting {
+		return sandboxcontrol.OperationReceipt{}, adapterConflict("delete precondition changed")
+	}
+	receipt := operationReceipt(requestID, sandboxcontrol.OperationDelete, f.record, nil)
+	f.record.Deleting = true
+	f.record.State = sandboxcontrol.StateStopping
+	f.record.ResourceVersion = "resource-version-delete"
+	return receipt, nil
 }
 
-func (f *fakeSandboxAdapter) Finalize(_ context.Context, requestID, _, _, _, _, _ string, _ []sandboxcontrol.ArtifactExport, _ string) (sandboxcontrol.OperationReceipt, error) {
+func (f *fakeSandboxAdapter) Finalize(_ context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string, artifacts []sandboxcontrol.ArtifactExport, digest string) (sandboxcontrol.OperationReceipt, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, "finalize")
-	return operationReceipt(requestID, sandboxcontrol.OperationFinalize, f.record, nil), f.finalizeErr
+	if f.finalizeErr != nil {
+		err := f.finalizeErr
+		f.mu.Unlock()
+		return sandboxcontrol.OperationReceipt{}, err
+	}
+	if workspaceID != f.record.WorkspaceID || ownerID != f.record.OwnerID || name != f.record.Name || uid != f.record.UID ||
+		resourceVersion != f.record.ResourceVersion || !f.record.Deleting || !hasFinalizer(f.record.Finalizers) ||
+		digest != f.record.ArtifactContractDigest || !reflect.DeepEqual(artifacts, f.record.Artifacts) {
+		f.mu.Unlock()
+		return sandboxcontrol.OperationReceipt{}, adapterConflict("finalize precondition changed")
+	}
+	f.record.ResourceVersion = "resource-version-finalize"
+	f.record.Finalizers = nil
+	receipt := operationReceipt(requestID, sandboxcontrol.OperationFinalize, f.record, artifactReceipts(f.record, artifacts))
+	afterFinalize := f.afterFinalize
+	f.mu.Unlock()
+	if afterFinalize != nil {
+		afterFinalize()
+	}
+	return receipt, nil
 }
 
 func (f *fakeSandboxAdapter) ObserveAbsence(context.Context, sandboxcontrol.AdmissionObservation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, "absence")
 	if len(f.absenceErrs) == 0 {
 		return nil
@@ -73,9 +147,30 @@ func (f *fakeSandboxAdapter) ObserveAbsence(context.Context, sandboxcontrol.Admi
 	return err
 }
 
+func (f *fakeSandboxAdapter) setGetError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getErr = err
+}
+
+func (f *fakeSandboxAdapter) snapshotCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func adapterConflict(detail string) error {
+	return &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrConflict, Status: 409, SafeDetail: detail}
+}
+
 func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	item, record, observation := backendFixture(t)
-	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	pending := cloneSandboxRecord(record)
+	pending.State = sandboxcontrol.StatePending
+	ready := cloneSandboxRecord(record)
+	ready.ResourceVersion = "resource-version-ready"
+	observation.Sandbox.ResourceVersion = ready.ResourceVersion
+	fake := &fakeSandboxAdapter{record: pending, getRecords: []sandboxcontrol.SandboxRecord{pending, ready}, observation: observation}
 	backend := newTestKubernetesBackend(t, fake, true)
 	state, err := backend.EnsureCreated(context.Background(), item)
 	if err != nil {
@@ -95,9 +190,17 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	if !state.Exists || state.Ready || state.Admission != nil {
 		t.Fatalf("creation claimed admission before observation: %#v", state)
 	}
+	queued, err := backend.Observe(context.Background(), item)
+	if err != nil || queued.Ready || queued.Admission != nil || queued.Record.UID != record.UID || queued.Record.ArtifactContractDigest != record.ArtifactContractDigest {
+		t.Fatalf("pending Sandbox was not returned as queued evidence: state=%#v err=%v", queued, err)
+	}
 	observed, err := backend.Observe(context.Background(), item)
 	if err != nil || !observed.Ready || observed.AdmissionObservation == nil || !reflect.DeepEqual(*observed.Admission, observation.Workload) {
 		t.Fatalf("full admission evidence was not returned: state=%#v err=%v", observed, err)
+	}
+	if observed.Record.ResourceVersion != ready.ResourceVersion || observed.Record.ArtifactContractDigest != record.ArtifactContractDigest ||
+		!reflect.DeepEqual(fake.snapshotCalls(), []string{"ensure", "get", "get", "observe"}) {
+		t.Fatalf("create evidence was not retained exactly: state=%#v calls=%v", observed, fake.snapshotCalls())
 	}
 }
 
@@ -118,8 +221,8 @@ func TestKubernetesBackendRefusesSourcesAndUnsupportedRequiredArtifactsBeforeMut
 			fake := &fakeSandboxAdapter{record: record, observation: observation}
 			backend := newTestKubernetesBackend(t, fake, false)
 			_, err := backend.EnsureCreated(context.Background(), candidate)
-			if err == nil || len(fake.calls) != 0 {
-				t.Fatalf("refusal mutated backend: calls=%v err=%v", fake.calls, err)
+			if err == nil || len(fake.snapshotCalls()) != 0 {
+				t.Fatalf("refusal mutated backend: calls=%v err=%v", fake.snapshotCalls(), err)
 			}
 		})
 	}
@@ -128,8 +231,6 @@ func TestKubernetesBackendRefusesSourcesAndUnsupportedRequiredArtifactsBeforeMut
 func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	bindBackendIdentity(&item, record, observation.Workload)
-	record.Deleting = true
-	record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
 	fake := &fakeSandboxAdapter{record: record, observation: observation,
 		absenceErrs: []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "still deleting"}, nil}}
 	backend := newTestKubernetesBackend(t, fake, true)
@@ -137,12 +238,18 @@ func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if state.Record.ResourceVersion == *item.BackendResourceVersion || !state.Record.Deleting || !state.CleanupFinalizerPresent {
+		t.Fatalf("delete did not return the advanced deletion identity: %#v", state)
+	}
+	if err := validateDeleting(item, state); err != nil {
+		t.Fatalf("controller rejected the exact post-delete identity: %v", err)
+	}
 	result, err := backend.Finalize(context.Background(), item, state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(fake.calls, []string{"observe", "delete", "get", "finalize", "absence", "absence"}) {
-		t.Fatalf("cleanup sequence=%v", fake.calls)
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "observe", "delete", "get", "finalize", "absence", "absence"}) {
+		t.Fatalf("cleanup sequence=%v", fake.snapshotCalls())
 	}
 	if !result.CleanupComplete || !result.ArtifactExportComplete || !result.GrantsRevoked || !result.BackendDestroyed {
 		t.Fatalf("incomplete cleanup result: %#v", result)
@@ -156,12 +263,75 @@ func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T
 	_, err := backend.Finalize(context.Background(), item, BackendState{})
 	assertAmbiguousRetryable(t, err)
 
-	fake := &fakeSandboxAdapter{observeErr: &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrNotFound, Status: 404, SafeDetail: "secret-backend-material"}}
+	fake := &fakeSandboxAdapter{getErr: &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrNotFound, Status: 404, SafeDetail: "secret-backend-material"}}
 	backend = newTestKubernetesBackend(t, fake, true)
 	_, err = backend.BeginDelete(context.Background(), item)
 	assertAmbiguousRetryable(t, err)
-	if strings.Contains(err.Error(), "secret-backend-material") || !reflect.DeepEqual(fake.calls, []string{"observe"}) {
-		t.Fatalf("already-deleted cleanup leaked or mutated: calls=%v err=%v", fake.calls, err)
+	if strings.Contains(err.Error(), "secret-backend-material") || !reflect.DeepEqual(fake.snapshotCalls(), []string{"get"}) {
+		t.Fatalf("already-deleted cleanup leaked or mutated: calls=%v err=%v", fake.snapshotCalls(), err)
+	}
+}
+
+func TestKubernetesBackendRetainsFinalizedObservationAcrossSameProcessRetry(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	bindBackendIdentity(&item, record, observation.Workload)
+	ctx, cancel := context.WithCancel(context.Background())
+	fake := &fakeSandboxAdapter{record: record, observation: observation,
+		absenceErrs:   []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "still deleting"}},
+		afterFinalize: cancel}
+	backend := newTestKubernetesBackend(t, fake, true)
+	state, err := backend.BeginDelete(context.Background(), item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Finalize(ctx, item, state); !errors.Is(err, context.Canceled) {
+		t.Fatalf("finalize cancellation was not preserved: %v", err)
+	}
+	fake.setGetError(&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrNotFound, Status: 404, SafeDetail: "gone"})
+	retryState, err := backend.BeginDelete(context.Background(), item)
+	if err != nil || retryState.Exists || retryState.AdmissionObservation == nil {
+		t.Fatalf("same-process retry lost exact absence evidence: state=%#v err=%v", retryState, err)
+	}
+	result, err := backend.Finalize(context.Background(), item, retryState)
+	if err != nil || !result.CleanupComplete || !result.ArtifactExportComplete || !result.GrantsRevoked || !result.BackendDestroyed {
+		t.Fatalf("same-process retry did not recover the receipted cleanup: result=%#v err=%v", result, err)
+	}
+	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "absence", "get", "absence"}
+	if !reflect.DeepEqual(fake.snapshotCalls(), wantCalls) {
+		t.Fatalf("same-process recovery sequence=%v", fake.snapshotCalls())
+	}
+	fresh := newTestKubernetesBackend(t, fake, true)
+	_, err = fresh.BeginDelete(context.Background(), item)
+	assertAmbiguousRetryable(t, err)
+}
+
+func TestKubernetesBackendEvidenceCacheIsConcurrent(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	backend := newTestKubernetesBackend(t, fake, true)
+	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	const observers = 24
+	errorsFound := make(chan error, observers)
+	var group sync.WaitGroup
+	for index := 0; index < observers; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			state, err := backend.Observe(context.Background(), item)
+			if err == nil && (!state.Ready || state.AdmissionObservation == nil) {
+				err = errors.New("concurrent observation returned incomplete evidence")
+			}
+			errorsFound <- err
+		}()
+	}
+	group.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -188,6 +358,11 @@ func TestKubernetesBackendClassifiesTransportIdentityAndResidueWithoutLeaks(t *t
 			}
 		})
 	}
+	artifactErr := &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrArtifactExport, Status: 502, SafeDetail: secret}
+	failure, ok := BackendFailure(classifyAdapter("cleanup", artifactErr))
+	if !ok || !failure.Retryable || failure.Ambiguous || strings.Contains(failure.Error(), secret) {
+		t.Fatalf("safe artifact retry classification=%#v", failure)
+	}
 }
 
 func TestKubernetesBackendHonorsCancellationAndHealthIsReadOnly(t *testing.T) {
@@ -200,28 +375,35 @@ func TestKubernetesBackendHonorsCancellationAndHealthIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := backend.Health(context.Background()); err != nil || healthCalls != 1 || len(fake.calls) != 0 {
-		t.Fatalf("health mutated adapter: health=%d calls=%v err=%v", healthCalls, fake.calls, err)
+	if err := backend.Health(context.Background()); err != nil || healthCalls != 1 || len(fake.snapshotCalls()) != 0 {
+		t.Fatalf("health mutated adapter: health=%d calls=%v err=%v", healthCalls, fake.snapshotCalls(), err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = backend.EnsureCreated(ctx, item)
-	if !errors.Is(err, context.Canceled) || len(fake.calls) != 0 {
-		t.Fatalf("canceled create reached adapter: calls=%v err=%v", fake.calls, err)
+	if !errors.Is(err, context.Canceled) || len(fake.snapshotCalls()) != 0 {
+		t.Fatalf("canceled create reached adapter: calls=%v err=%v", fake.snapshotCalls(), err)
 	}
 }
 
 func TestValidateWorkItemRequiresCanonicalImmutableImageReferences(t *testing.T) {
 	item, _, _ := backendFixture(t)
-	for _, image := range []string{
+	invalid := []string{
 		"sha256:" + strings.Repeat("a", 64),
 		"registry.invalid/poc:latest",
 		"registry.invalid/poc@sha256:" + strings.Repeat("A", 64),
-	} {
-		candidate := item
-		candidate.ImageDigest = image
-		if err := validateWorkItem(candidate); err == nil {
-			t.Fatalf("invalid child image reference accepted: %q", image)
+	}
+	for _, field := range []struct {
+		name   string
+		mutate func(*WorkItem, string)
+	}{{name: "index", mutate: func(item *WorkItem, image string) { item.ImageIndexDigest = image }},
+		{name: "child", mutate: func(item *WorkItem, image string) { item.ImageDigest = image }}} {
+		for _, image := range invalid {
+			candidate := item
+			field.mutate(&candidate, image)
+			if err := validateWorkItem(candidate); err == nil {
+				t.Fatalf("invalid %s image reference accepted: %q", field.name, image)
+			}
 		}
 	}
 	if err := validateWorkItem(item); err != nil {
@@ -252,6 +434,8 @@ func backendFixture(t *testing.T) (WorkItem, sandboxcontrol.SandboxRecord, sandb
 	}
 	record := state.Record
 	record.Artifacts, record.ArtifactContractDigest = canonical, digest
+	record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
+	record.TrustLevel = sandboxcontrol.TrustApprovedPOC
 	observation := sandboxcontrol.AdmissionObservation{
 		Sandbox:  sandboxcontrol.ObjectIdentity{APIVersion: sandboxcontrol.APIVersion, Kind: sandboxcontrol.Kind, Namespace: sandboxcontrol.Namespace, Name: item.SandboxID, UID: record.UID, ResourceVersion: record.ResourceVersion},
 		Pod:      sandboxcontrol.ObjectIdentity{APIVersion: "v1", Kind: "Pod", Namespace: sandboxcontrol.Namespace, Name: "pod-1", UID: "pod-uid", ResourceVersion: "pod-rv"},
@@ -277,6 +461,16 @@ func operationReceipt(requestID string, operation sandboxcontrol.Operation, reco
 		panic(err)
 	}
 	return receipt
+}
+
+func artifactReceipts(record sandboxcontrol.SandboxRecord, artifacts []sandboxcontrol.ArtifactExport) []sandboxcontrol.ArtifactReceipt {
+	receipts := make([]sandboxcontrol.ArtifactReceipt, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		receipts = append(receipts, sandboxcontrol.ArtifactReceipt{SchemaVersion: sandboxcontrol.ArtifactSchema,
+			Name: artifact.Name, ObjectKey: "workspaces/" + record.WorkspaceID + "/sandboxes/" + record.Name + "/artifacts/" + artifact.Name,
+			SHA256: "sha256:" + strings.Repeat("e", 64), Size: 1, ExportedAt: time.Unix(2, 0).UTC().Format(time.RFC3339Nano)})
+	}
+	return receipts
 }
 
 func assertAmbiguousRetryable(t *testing.T, err error) {
