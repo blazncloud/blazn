@@ -172,6 +172,22 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
 
+test("migration sequence contains exactly nineteen collision-free revisions", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const directory = path.resolve(here, "../migrations");
+  const migrations = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
+  assert.equal(migrations.length, 19);
+  assert.deepEqual(
+    migrations.map((name) => name.slice(0, 3)),
+    Array.from({ length: 19 }, (_, index) => String(index + 1).padStart(3, "0")),
+  );
+  assert.deepEqual(migrations.slice(-3), [
+    "017_run_synthetic_execution.sql",
+    "018_project_profiles.sql",
+    "019_sandbox_admission_observation.sql",
+  ]);
+});
+
 test("sandbox controller observation migration requires complete restart-safe Pod evidence", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/019_sandbox_admission_observation.sql"), "utf8");
