@@ -816,6 +816,15 @@ func TestHealthyLifecycleContentionUsesConflictAndDeadlineResults(t *testing.T) 
 		}
 	})
 
+	t.Run("on initial activation race disappears", func(t *testing.T) {
+		service, store, _, _, _, _ := testService(t)
+		store.activateErr = errors.Join(errActivationRace, state.ErrLifecycleConflict)
+		result, err := service.On(context.Background(), "policy.json", "auto")
+		if !errors.Is(err, ErrLifecycleConflict) || errors.Is(err, ErrRecovery) || result.Status != "conflict" || result.State != "unknown" || result.ExitCode != 6 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
 	t.Run("run initial activation race disappears", func(t *testing.T) {
 		service, store, _, _, _, _ := testService(t)
 		store.activateErr = errors.Join(errActivationRace, state.ErrLifecycleConflict)
