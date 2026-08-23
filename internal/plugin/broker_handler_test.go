@@ -78,8 +78,14 @@ func (a *fakeBrokerAPI) CancelRun(_ context.Context, token, workspaceID, project
 	a.idempotency = key
 	return a.run, a.record(token, workspaceID, projectID)
 }
-func (a *fakeBrokerAPI) RecordSyntheticRunProgress(_ context.Context, token, workspaceID, projectID, runID, key string, request client.SyntheticRunProgressRequest) (client.ProgressAck, error) { a.idempotency=key;return client.ProgressAck{RunID:runID,Sequence:request.Sequence,RunVersion:2,Status:client.RunStatusRunning},a.record(token,workspaceID,projectID) }
-func (a *fakeBrokerAPI) CompleteSyntheticRun(_ context.Context, token, workspaceID, projectID, _runID, key string, _ client.CompleteSyntheticRunRequest) (client.RunEnvelope, error) { a.idempotency=key;return a.run,a.record(token,workspaceID,projectID) }
+func (a *fakeBrokerAPI) RecordSyntheticRunProgress(_ context.Context, token, workspaceID, projectID, runID, key string, request client.SyntheticRunProgressRequest) (client.ProgressAck, error) {
+	a.idempotency = key
+	return client.ProgressAck{RunID: runID, Sequence: request.Sequence, RunVersion: 2, Status: client.RunStatusRunning}, a.record(token, workspaceID, projectID)
+}
+func (a *fakeBrokerAPI) CompleteSyntheticRun(_ context.Context, token, workspaceID, projectID, _runID, key string, _ client.CompleteSyntheticRunRequest) (client.RunEnvelope, error) {
+	a.idempotency = key
+	return a.run, a.record(token, workspaceID, projectID)
+}
 func (a *fakeBrokerAPI) ListArtifacts(_ context.Context, token, workspaceID, projectID, _, _ string) (client.ArtifactList, error) {
 	return a.artifacts, a.record(token, workspaceID, projectID)
 }
@@ -128,14 +134,35 @@ func TestAuthenticatedBrokerDescriptionAdvertisesOnlyImplementedCapabilities(t *
 }
 
 func TestAuthenticatedBrokerRoutesSyntheticProgressAndCompletion(t *testing.T) {
-	digest := "sha256:"+strings.Repeat("f",64)
-	run := client.Run{ID:brokerTestRunID,WorkspaceID:brokerTestWorkspaceID,ProjectID:brokerTestProjectID,Kind:"content.render",ProofClass:client.ProofClassSynthetic,Status:client.RunStatusSucceeded,Version:3,PlanDigest:digest,InputArtifactIDs:[]string{},OutputNames:[]string{},RequestedBy:"55555555-5555-4555-8555-555555555555",Receipt:&client.RunReceipt{SchemaVersion:"blazn.run/receipt/v1alpha1",ProofClass:client.ProofClassSynthetic,Outcome:client.RunReceiptOutcomeSucceeded,PlanDigest:digest,ArtifactIDs:[]string{},Summary:client.RunReceiptSummary{Steps:1,Warnings:[]string{}}},CreatedAt:"2026-08-23T00:00:00Z",StartedAt:"2026-08-23T00:00:01Z",CompletedAt:"2026-08-23T00:00:02Z"}
-	api:=&fakeBrokerAPI{run:client.RunEnvelope{Run:run}};handler,runtimeContext:=brokerTestHandler(t,api,&fakeBrokerSessions{})
-	schema,value,failure:=handler.Handle(context.Background(),"content",runtimeContext,brokerTestRequest("run.synthetic.progress",`{"runId":"`+brokerTestRunID+`","sequence":0,"phase":"render.plan","percent":0}`));ack,ok:=value.(client.ProgressAck);if failure!=nil||schema!=resultProgressAck||!ok||ack.RunVersion!=2||!strings.HasPrefix(api.idempotency,"broker-v1-"){t.Fatalf("schema=%q value=%#v key=%q failure=%#v",schema,value,api.idempotency,failure)}
-	schema,value,failure=handler.Handle(context.Background(),"content",runtimeContext,brokerTestRequest("run.synthetic.complete",`{"runId":"`+brokerTestRunID+`","expectedVersion":2,"planDigest":"`+digest+`","artifactIds":[],"summary":{"steps":1,"warnings":[]},"idempotencyKey":"complete-run-1"}`));completed,ok:=value.(client.RunEnvelope);if failure!=nil||schema!=resultRunEnvelope||!ok||completed.Run.Status!=client.RunStatusSucceeded||api.idempotency=="complete-run-1"{t.Fatalf("schema=%q value=%#v key=%q failure=%#v",schema,value,api.idempotency,failure)}
+	digest := "sha256:" + strings.Repeat("f", 64)
+	run := client.Run{ID: brokerTestRunID, WorkspaceID: brokerTestWorkspaceID, ProjectID: brokerTestProjectID, Kind: "content.render", ProofClass: client.ProofClassSynthetic, Status: client.RunStatusSucceeded, Version: 3, PlanDigest: digest, InputArtifactIDs: []string{}, OutputNames: []string{}, RequestedBy: "55555555-5555-4555-8555-555555555555", Receipt: &client.RunReceipt{SchemaVersion: "blazn.run/receipt/v1alpha1", ProofClass: client.ProofClassSynthetic, Outcome: client.RunReceiptOutcomeSucceeded, PlanDigest: digest, ArtifactIDs: []string{}, Summary: client.RunReceiptSummary{Steps: 1, Warnings: []string{}}}, CreatedAt: "2026-08-23T00:00:00Z", StartedAt: "2026-08-23T00:00:01Z", CompletedAt: "2026-08-23T00:00:02Z"}
+	api := &fakeBrokerAPI{run: client.RunEnvelope{Run: run}}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	schema, value, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest("run.synthetic.progress", `{"runId":"`+brokerTestRunID+`","sequence":0,"phase":"render.plan","percent":0}`))
+	ack, ok := value.(client.ProgressAck)
+	if failure != nil || schema != resultProgressAck || !ok || ack.RunVersion != 2 || !strings.HasPrefix(api.idempotency, "broker-v1-") {
+		t.Fatalf("schema=%q value=%#v key=%q failure=%#v", schema, value, api.idempotency, failure)
+	}
+	schema, value, failure = handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest("run.synthetic.complete", `{"runId":"`+brokerTestRunID+`","expectedVersion":2,"planDigest":"`+digest+`","artifactIds":[],"summary":{"steps":1,"warnings":[]},"idempotencyKey":"complete-run-1"}`))
+	completed, ok := value.(client.RunEnvelope)
+	if failure != nil || schema != resultRunEnvelope || !ok || completed.Run.Status != client.RunStatusSucceeded || api.idempotency == "complete-run-1" {
+		t.Fatalf("schema=%q value=%#v key=%q failure=%#v", schema, value, api.idempotency, failure)
+	}
 }
 
-func TestAuthenticatedBrokerRejectsInvalidSyntheticExecutionBeforeAuthorityUse(t *testing.T){api:=&fakeBrokerAPI{};handler,runtimeContext:=brokerTestHandler(t,api,&fakeBrokerSessions{});for _,testCase:=range []struct{method,params string}{{"run.synthetic.progress",`{"runId":"`+brokerTestRunID+`","sequence":1,"phase":"render","percent":101}`},{"run.synthetic.complete",`{"runId":"`+brokerTestRunID+`","expectedVersion":1,"planDigest":"sha256:`+strings.Repeat("a",64)+`","artifactIds":[],"summary":{"steps":0,"warnings":[]},"idempotencyKey":"short"}`}}{_,_,failure:=handler.Handle(context.Background(),"content",runtimeContext,brokerTestRequest(testCase.method,testCase.params));if failure==nil||failure.Code!="invalid_request"{t.Fatalf("method=%s failure=%#v",testCase.method,failure)}};if len(api.tokens)!=0{t.Fatalf("invalid synthetic requests reached API: %#v",api.tokens)}}
+func TestAuthenticatedBrokerRejectsInvalidSyntheticExecutionBeforeAuthorityUse(t *testing.T) {
+	api := &fakeBrokerAPI{}
+	handler, runtimeContext := brokerTestHandler(t, api, &fakeBrokerSessions{})
+	for _, testCase := range []struct{ method, params string }{{"run.synthetic.progress", `{"runId":"` + brokerTestRunID + `","sequence":1,"phase":"render","percent":101}`}, {"run.synthetic.complete", `{"runId":"` + brokerTestRunID + `","expectedVersion":1,"planDigest":"sha256:` + strings.Repeat("a", 64) + `","artifactIds":[],"summary":{"steps":0,"warnings":[]},"idempotencyKey":"short"}`}} {
+		_, _, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest(testCase.method, testCase.params))
+		if failure == nil || failure.Code != "invalid_request" {
+			t.Fatalf("method=%s failure=%#v", testCase.method, failure)
+		}
+	}
+	if len(api.tokens) != 0 {
+		t.Fatalf("invalid synthetic requests reached API: %#v", api.tokens)
+	}
+}
 
 func TestAuthenticatedBrokerBindsProjectAndKeepsTokenOutOfPayload(t *testing.T) {
 	api := &fakeBrokerAPI{project: client.ProjectEnvelope{Project: client.Project{ID: brokerTestProjectID, WorkspaceID: brokerTestWorkspaceID, Name: "Content"}}}

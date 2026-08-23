@@ -224,8 +224,12 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.ProgressAck, error) {
 			return h.authority.api.RecordSyntheticRunProgress(ctx, token, c.WorkspaceID, c.ProjectID, params.RunID, key, input)
 		})
-		if err != nil { return brokerCallFailure(err) }
-		if value.RunID != params.RunID || value.Sequence != *params.Sequence || value.RunVersion < 1 || value.Status != client.RunStatusRunning { return invalidBrokerResult() }
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if value.RunID != params.RunID || value.Sequence != *params.Sequence || value.RunVersion < 1 || value.Status != client.RunStatusRunning {
+			return invalidBrokerResult()
+		}
 		return resultProgressAck, value, nil
 	case "run.synthetic.complete":
 		var params brokerRunCompleteParams
@@ -237,8 +241,12 @@ func (h *authenticatedBrokerHandler) handleAuthenticated(ctx context.Context, pl
 		value, err := brokerWithSession(ctx, h.authority, c, func(token string) (client.RunEnvelope, error) {
 			return h.authority.api.CompleteSyntheticRun(ctx, token, c.WorkspaceID, c.ProjectID, params.RunID, key, input)
 		})
-		if err != nil { return brokerCallFailure(err) }
-		if value.Run.ID != params.RunID || !validBrokerRun(value.Run, c) || value.Run.ProofClass != client.ProofClassSynthetic || value.Run.Status != client.RunStatusSucceeded || value.Run.PlanDigest != params.PlanDigest { return invalidBrokerResult() }
+		if err != nil {
+			return brokerCallFailure(err)
+		}
+		if value.Run.ID != params.RunID || !validBrokerRun(value.Run, c) || value.Run.ProofClass != client.ProofClassSynthetic || value.Run.Status != client.RunStatusSucceeded || value.Run.PlanDigest != params.PlanDigest {
+			return invalidBrokerResult()
+		}
 		return resultRunEnvelope, value, nil
 	case "artifact.list":
 		var params brokerListParams
@@ -300,9 +308,25 @@ type brokerRunCancelParams struct {
 type brokerArtifactIdentityParams struct {
 	ArtifactID string `json:"artifactId"`
 }
-type brokerRunProgressParams struct { RunID string `json:"runId"`; Sequence *int `json:"sequence"`; Phase string `json:"phase"`; Percent *int `json:"percent"`; Message string `json:"message,omitempty"` }
-type brokerRunCompleteSummary struct { Steps *int `json:"steps"`; Warnings []string `json:"warnings"` }
-type brokerRunCompleteParams struct { RunID string `json:"runId"`; ExpectedVersion int `json:"expectedVersion"`; PlanDigest string `json:"planDigest"`; ArtifactIDs []string `json:"artifactIds"`; Summary brokerRunCompleteSummary `json:"summary"`; IdempotencyKey string `json:"idempotencyKey"` }
+type brokerRunProgressParams struct {
+	RunID    string `json:"runId"`
+	Sequence *int   `json:"sequence"`
+	Phase    string `json:"phase"`
+	Percent  *int   `json:"percent"`
+	Message  string `json:"message,omitempty"`
+}
+type brokerRunCompleteSummary struct {
+	Steps    *int     `json:"steps"`
+	Warnings []string `json:"warnings"`
+}
+type brokerRunCompleteParams struct {
+	RunID           string                   `json:"runId"`
+	ExpectedVersion int                      `json:"expectedVersion"`
+	PlanDigest      string                   `json:"planDigest"`
+	ArtifactIDs     []string                 `json:"artifactIds"`
+	Summary         brokerRunCompleteSummary `json:"summary"`
+	IdempotencyKey  string                   `json:"idempotencyKey"`
+}
 
 func newBrokerDescription(capabilities []string) brokerDescription {
 	values := append([]string(nil), capabilities...)
@@ -366,8 +390,27 @@ func validBrokerRunListParams(params brokerListParams) bool {
 func validBrokerArtifactListParams(params brokerListParams) bool {
 	return len(params.Cursor) <= 512 && (params.Status == "" || params.Status == "pending" || params.Status == "ready" || params.Status == "failed" || params.Status == "deleted" || params.Status == "all")
 }
-func validBrokerRunProgressParams(value brokerRunProgressParams) bool { return brokerUUIDPattern.MatchString(value.RunID)&&value.Sequence!=nil&&*value.Sequence>=0&&brokerPhasePattern.MatchString(value.Phase)&&value.Percent!=nil&&*value.Percent>=0&&*value.Percent<=100&&len(value.Message)<=512 }
-func validBrokerRunCompleteParams(value brokerRunCompleteParams) bool { if !brokerUUIDPattern.MatchString(value.RunID)||value.ExpectedVersion<1||!brokerDigestPattern.MatchString(value.PlanDigest)||value.ArtifactIDs==nil||len(value.ArtifactIDs)>1000||value.Summary.Steps==nil||*value.Summary.Steps<0||value.Summary.Warnings==nil||len(value.Summary.Warnings)>100||!validBrokerIdempotencyKey(value.IdempotencyKey){return false};seen:=map[string]bool{};for _,id:=range value.ArtifactIDs{if !brokerUUIDPattern.MatchString(id)||seen[id]{return false};seen[id]=true};for _,warning:=range value.Summary.Warnings{if len(warning)>512{return false}};return true }
+func validBrokerRunProgressParams(value brokerRunProgressParams) bool {
+	return brokerUUIDPattern.MatchString(value.RunID) && value.Sequence != nil && *value.Sequence >= 0 && brokerPhasePattern.MatchString(value.Phase) && value.Percent != nil && *value.Percent >= 0 && *value.Percent <= 100 && len(value.Message) <= 512
+}
+func validBrokerRunCompleteParams(value brokerRunCompleteParams) bool {
+	if !brokerUUIDPattern.MatchString(value.RunID) || value.ExpectedVersion < 1 || !brokerDigestPattern.MatchString(value.PlanDigest) || value.ArtifactIDs == nil || len(value.ArtifactIDs) > 1000 || value.Summary.Steps == nil || *value.Summary.Steps < 0 || value.Summary.Warnings == nil || len(value.Summary.Warnings) > 100 || !validBrokerIdempotencyKey(value.IdempotencyKey) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, id := range value.ArtifactIDs {
+		if !brokerUUIDPattern.MatchString(id) || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	for _, warning := range value.Summary.Warnings {
+		if len(warning) > 512 {
+			return false
+		}
+	}
+	return true
+}
 
 func decodeBrokerParams(raw json.RawMessage, output any) error {
 	trimmed := bytes.TrimSpace(raw)
