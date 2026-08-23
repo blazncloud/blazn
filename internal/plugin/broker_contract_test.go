@@ -67,7 +67,7 @@ func TestBrokerDocumentationFreezesFramingAndProofBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(encoded)
-	for _, marker := range []string{"16-byte big-endian header", "BLAZN_PLUGIN_BROKER_FD=3", "proofClass=synthetic", "exact digest/size match", "Partial or cancelled uploads are removed"} {
+	for _, marker := range []string{"16-byte big-endian header", "BLAZN_PLUGIN_BROKER_FD=3", "proofClass=synthetic", "sole two-response exchange", "artifact-upload-ready/v1", "terminal `artifact-envelope/v1`", "exact digest/size match", "Partial or cancelled uploads are removed"} {
 		if !strings.Contains(text, marker) {
 			t.Fatalf("broker documentation lacks %q", marker)
 		}

@@ -15,12 +15,32 @@ const addFormats = ("default" in formatsModule ? formatsModule.default : formats
 const contract = path.resolve(here, "../../../packages/contracts/runs.openapi.json");
 const migration = path.resolve(here, "../migrations/012_runs_artifacts.sql");
 
-test("Run and Artifact OpenAPI exposes only Project-scoped public routes", async () => {
+test("Run and Artifact OpenAPI exposes only Project-scoped routes", async () => {
   const document = await SwaggerParser.validate(contract) as unknown as { paths: Record<string, Record<string, { operationId?: string }>> };
-  assert.equal(Object.keys(document.paths).length, 5);
+  assert.equal(Object.keys(document.paths).length, 8);
   const operations = Object.values(document.paths).flatMap((route) => Object.values(route).map((operation) => operation.operationId)).sort();
-  assert.deepEqual(operations, ["cancelRun", "createRun", "getArtifact", "getRun", "listArtifacts", "listRuns"]);
+  assert.deepEqual(operations, ["cancelRun", "completeSyntheticRun", "createRun", "getArtifact", "getRun", "listArtifacts", "listRuns", "recordSyntheticRunProgress", "uploadSyntheticRunArtifact"]);
   assert.equal(Object.keys(document.paths).every((route) => route.startsWith("/v1/workspaces/{workspaceId}/projects/{projectId}/")), true);
+});
+
+test("synthetic execution schemas are closed, bounded, and cannot set authority", async () => {
+  const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> }; paths: Record<string, Record<string, unknown>> };
+  const ajv = new Ajv2020({ strict: true, strictRequired: false, allErrors: true }); addFormats(ajv);
+  const progress = ajv.compile(document.components.schemas.SyntheticRunProgressRequest!);
+  assert.equal(progress({ sequence: 0, phase: "render.plan", percent: 0, message: "ready" }), true, JSON.stringify(progress.errors));
+  assert.equal(progress({ sequence: 0, phase: "render.plan", percent: 0, workspaceId: "00000000-0000-4000-8000-000000000001" }), false);
+  assert.equal(progress({ sequence: 1, phase: "render", percent: 101 }), false);
+  const completion = ajv.compile(document.components.schemas.CompleteSyntheticRunRequest!);
+  const value = { expectedVersion: 2, planDigest: `sha256:${"a".repeat(64)}`, artifactIds: [], summary: { steps: 1, warnings: [] } };
+  assert.equal(completion(value), true, JSON.stringify(completion.errors));
+  assert.equal(completion({ ...value, proofClass: "local" }), false);
+  const upload = ajv.compile(document.components.schemas.ArtifactUploadMetadata!);
+  assert.equal(upload({ name: "preview.mp4", kind: "content.video", mediaType: "video", sizeBytes: 12, digest: `sha256:${"b".repeat(64)}` }), true, JSON.stringify(upload.errors));
+  assert.equal(upload({ name: "preview.mp4", kind: "content.video", mediaType: "video", sizeBytes: 1073741825, digest: `sha256:${"b".repeat(64)}` }), false);
+  const text = JSON.stringify(document.paths["/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/artifacts"]);
+  assert.match(text, /X-Blazn-Artifact-Metadata/);
+  assert.match(text, /1073741824/);
+  for (const forbidden of ["accessToken", "refreshToken", "objectKey", "signedUrl", "placement"]) assert.equal(text.includes(forbidden), false);
 });
 
 test("Run schema separates synthetic proof from populated live placement", async () => {
