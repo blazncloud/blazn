@@ -113,18 +113,26 @@ OIDC_COOKIE_KEY_FILE=/run/secrets/oidc_cookie_key
 ```
 
 These values and secrets are intentionally absent from the base control-plane
-Compose file. After the qualification gate passes, enable the integration with
-the additive overlay so an ordinary control-plane restart cannot accidentally
-activate an unqualified identity provider:
+Compose file. After the qualification gate passes, install the eight exact
+nonsecret entries from `infra/milestone-2/env.identity.example` in the
+root-owned `/etc/blazn/identity/control-api.env`. Persist these two entries in
+the systemd-loaded `/etc/blazn/control-plane/control-plane.env`:
 
-```sh
-docker compose \
-  --env-file /etc/blazn/control-plane.env \
-  --env-file /etc/blazn/identity/control-api.env \
-  -f infra/milestone-2/compose.yaml \
-  -f infra/milestone-2/compose.identity.yaml \
-  up -d --wait
+```text
+BLAZN_IDENTITY_ENABLED=true
+BLAZN_IDENTITY_ENV_FILE=/etc/blazn/identity/control-api.env
 ```
+
+Reconcile the ownership receipt under the control-plane mutation lock, then
+restart `blazn-control-plane.service`. The lifecycle scripts use a canonical
+snapshot of the validated identity environment for build, start, supervision,
+preflight, and stop; a systemd restart therefore preserves the overlay. The
+enabled state, all reviewed nonsecret identity values, and both secret-file
+digests are part of the live control-plane configuration digest.
+
+Rollback is explicit: set `BLAZN_IDENTITY_ENABLED=false`, reconcile the receipt
+under the same approval and mutation lock, then restart the unit. The disabled
+digest and base Compose invocation are distinct from the enabled deployment.
 
 ## Registration, social identity, and MFA policy
 

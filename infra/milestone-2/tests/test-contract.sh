@@ -172,6 +172,9 @@ grep -F 'compose.identity.yaml' "$ROOT_DIR/scripts/common.sh" >/dev/null
 # This intentionally asserts a literal shell variable in the preflight script.
 # shellcheck disable=SC2016
 grep -F 'validate_identity_overlay "$ROOT_DIR"' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
+grep -F 'BLAZN_IDENTITY_ENABLED=false' "$ROOT_DIR/env.example" >/dev/null
+grep -F 'BLAZN_IDENTITY_ENV_FILE=/etc/blazn/identity/control-api.env' "$ROOT_DIR/env.example" >/dev/null
+grep -F 'identity-runtime sha256:' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_RELEASE' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_ACR_VALUES' "$ROOT_DIR/scripts/common.sh" >/dev/null

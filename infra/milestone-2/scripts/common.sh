@@ -146,6 +146,18 @@ identity_overlay_enabled() {
   esac
 }
 
+identity_environment_names() {
+  printf '%s\n' \
+    BLAZN_IDENTITY_SECRETS_ROOT \
+    ZITADEL_ISSUER_URL \
+    ZITADEL_CLIENT_ID \
+    ZITADEL_REQUIRE_MFA \
+    ZITADEL_REVIEWED_RELEASE \
+    ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST \
+    ZITADEL_REVIEWED_ACR_VALUES \
+    ZITADEL_REVIEWED_MFA_AMR_SETS
+}
+
 validate_identity_policy_fields() {
   identity_env=$1
   for identity_name in ZITADEL_REVIEWED_RELEASE ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST ZITADEL_REVIEWED_ACR_VALUES ZITADEL_REVIEWED_MFA_AMR_SETS; do
@@ -161,20 +173,78 @@ validate_identity_policy_fields() {
   printf '%s\n' "$identity_amr" | LC_ALL=C grep -Eq '^([a-z0-9._:-]{1,64}\+){1,}[a-z0-9._:-]{1,64}(;([a-z0-9._:-]{1,64}\+){1,}[a-z0-9._:-]{1,64})*$' || die "reviewed ZITADEL MFA AMR sets are invalid"
 }
 
+validate_identity_environment_values() {
+  identity_env=$1
+  identity_size=$(wc -c <"$identity_env" | tr -d ' ')
+  case $identity_size in ''|*[!0-9]*) die "identity environment size is invalid" ;; esac
+  [ "$identity_size" -le 8192 ] || die "identity environment is unexpectedly large"
+  if LC_ALL=C grep -Ev '^[A-Z][A-Z0-9_]*=[a-zA-Z0-9._@:/+,;-]+[[:space:]]*$|^[[:space:]]*(#.*)?$' "$identity_env" | grep . >/dev/null; then
+    die "identity environment contains unsupported syntax"
+  fi
+  if sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$identity_env" | \
+      LC_ALL=C grep -Ev '^(BLAZN_IDENTITY_SECRETS_ROOT|ZITADEL_ISSUER_URL|ZITADEL_CLIENT_ID|ZITADEL_REQUIRE_MFA|ZITADEL_REVIEWED_RELEASE|ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST|ZITADEL_REVIEWED_ACR_VALUES|ZITADEL_REVIEWED_MFA_AMR_SETS)$' | grep . >/dev/null; then
+    die "identity environment contains an unreviewed key"
+  fi
+  for identity_name in $(identity_environment_names); do
+    [ "$(grep -c "^${identity_name}=" "$identity_env")" -eq 1 ] || die "$identity_name must occur exactly once"
+  done
+  identity_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$identity_env")
+  identity_issuer=$(sed -n 's/^ZITADEL_ISSUER_URL=//p' "$identity_env")
+  identity_client=$(sed -n 's/^ZITADEL_CLIENT_ID=//p' "$identity_env")
+  identity_mfa=$(sed -n 's/^ZITADEL_REQUIRE_MFA=//p' "$identity_env")
+  [ "$identity_root" = /etc/blazn/identity/secrets ] || die "identity secrets root differs from the reviewed path"
+  [ "$identity_issuer" = https://auth.blazn.benpelo.com ] || die "ZITADEL issuer differs from the reviewed public origin"
+  case $identity_client in ''|*[!0-9]*) die "ZITADEL client ID is invalid" ;; esac
+  [ "$identity_mfa" = true ] || die "ZITADEL MFA enforcement must remain enabled"
+  validate_identity_policy_fields "$identity_env"
+}
+
 control_plane_compose() {
   infra_root=$1
   env_file=$2
   shift 2
   if identity_overlay_enabled; then
     identity_env=${BLAZN_IDENTITY_ENV_FILE:-/etc/blazn/identity/control-api.env}
-    require_absolute_path BLAZN_IDENTITY_ENV_FILE "$identity_env"
-    assert_not_symlink_chain "$identity_env"
-    assert_regular_file_owned_mode "$identity_env" 0 600
-    if [ ! -f "$infra_root/compose.identity.yaml" ] || [ -L "$infra_root/compose.identity.yaml" ]; then
-      die "identity Compose overlay is unavailable"
+    if ! identity_before=$(identity_runtime_digest "$infra_root"); then
+      return 1
     fi
-    docker compose -f "$infra_root/compose.yaml" -f "$infra_root/compose.identity.yaml" \
-      --env-file "$env_file" --env-file "$identity_env" "$@"
+    identity_snapshot=$(mktemp "${TMPDIR:-/tmp}/blazn-identity-compose.XXXXXX") || die "identity environment snapshot cannot be created"
+    chmod 0600 "$identity_snapshot"
+    for identity_name in $(identity_environment_names); do
+      sed -n "s/^${identity_name}=//p" "$identity_env" | sed "s/^/${identity_name}=/" >>"$identity_snapshot"
+    done
+    identity_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$identity_snapshot")
+    identity_snapshot_digest=$({
+      printf 'enabled=true\n'
+      cat "$identity_snapshot"
+      printf 'client-secret=sha256:%s\n' "$(sha256_file "$identity_root/zitadel-client-secret")"
+      printf 'cookie-key=sha256:%s\n' "$(sha256_file "$identity_root/oidc-cookie-key")"
+    } | sha256sum | awk '{ print $1 }')
+    if [ "$identity_snapshot_digest" != "$identity_before" ]; then
+      unlink "$identity_snapshot" 2>/dev/null || true
+      die "identity environment changed while creating its Compose snapshot"
+    fi
+    if (
+      unset BLAZN_IDENTITY_SECRETS_ROOT ZITADEL_ISSUER_URL ZITADEL_CLIENT_ID ZITADEL_REQUIRE_MFA \
+        ZITADEL_REVIEWED_RELEASE ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST \
+        ZITADEL_REVIEWED_ACR_VALUES ZITADEL_REVIEWED_MFA_AMR_SETS
+      docker compose -f "$infra_root/compose.yaml" -f "$infra_root/compose.identity.yaml" \
+        --env-file "$env_file" --env-file "$identity_snapshot" "$@"
+    ); then
+      identity_status=0
+    else
+      identity_status=$?
+    fi
+    if identity_after=$(identity_runtime_digest "$infra_root"); then
+      if [ "$identity_before" != "$identity_after" ]; then
+        printf 'blazn-m2: identity authority changed during Compose invocation\n' >&2
+        identity_status=1
+      fi
+    else
+      identity_status=1
+    fi
+    unlink "$identity_snapshot" 2>/dev/null || identity_status=1
+    [ "$identity_status" -eq 0 ] || return "$identity_status"
   else
     docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" "$@"
   fi
@@ -190,24 +260,8 @@ validate_identity_overlay() {
   if [ ! -f "$infra_root/compose.identity.yaml" ] || [ -L "$infra_root/compose.identity.yaml" ]; then
     die "identity Compose overlay is unavailable"
   fi
-  identity_size=$(wc -c <"$identity_env" | tr -d ' ')
-  case $identity_size in ''|*[!0-9]*) die "identity environment size is invalid" ;; esac
-  [ "$identity_size" -le 8192 ] || die "identity environment is unexpectedly large"
-  if LC_ALL=C grep -Ev '^[A-Z][A-Z0-9_]*=[a-zA-Z0-9._@:/+,;-]+[[:space:]]*$|^[[:space:]]*(#.*)?$' "$identity_env" | grep . >/dev/null; then
-    die "identity environment contains unsupported syntax"
-  fi
+  validate_identity_environment_values "$identity_env"
   identity_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$identity_env")
-  identity_issuer=$(sed -n 's/^ZITADEL_ISSUER_URL=//p' "$identity_env")
-  identity_client=$(sed -n 's/^ZITADEL_CLIENT_ID=//p' "$identity_env")
-  identity_mfa=$(sed -n 's/^ZITADEL_REQUIRE_MFA=//p' "$identity_env")
-  for identity_name in BLAZN_IDENTITY_SECRETS_ROOT ZITADEL_ISSUER_URL ZITADEL_CLIENT_ID ZITADEL_REQUIRE_MFA; do
-    [ "$(grep -c "^${identity_name}=" "$identity_env")" -eq 1 ] || die "$identity_name must occur exactly once"
-  done
-  [ "$identity_root" = /etc/blazn/identity/secrets ] || die "identity secrets root differs from the reviewed path"
-  [ "$identity_issuer" = https://auth.blazn.benpelo.com ] || die "ZITADEL issuer differs from the reviewed public origin"
-  case $identity_client in ''|*[!0-9]*) die "ZITADEL client ID is invalid" ;; esac
-  [ "$identity_mfa" = true ] || die "ZITADEL MFA enforcement must remain enabled"
-  validate_identity_policy_fields "$identity_env"
   assert_directory_owned_mode /etc/blazn/identity 0 700
   assert_directory_owned_mode "$identity_root" 0 700
   assert_regular_file_owned_mode "$identity_root/zitadel-client-secret" 0 600
@@ -219,6 +273,21 @@ validate_identity_overlay() {
   fi
   [ "$(wc -c <"$identity_root/oidc-cookie-key" | tr -d ' ')" = 43 ] || die "OIDC cookie key must contain 32 base64url bytes"
   LC_ALL=C grep -Eq '^[A-Za-z0-9_-]{43}$' "$identity_root/oidc-cookie-key" || die "OIDC cookie key is invalid"
+}
+
+identity_runtime_digest() {
+  infra_root=$1
+  validate_identity_overlay "$infra_root"
+  identity_env=${BLAZN_IDENTITY_ENV_FILE:-/etc/blazn/identity/control-api.env}
+  identity_root=$(sed -n 's/^BLAZN_IDENTITY_SECRETS_ROOT=//p' "$identity_env")
+  {
+    printf 'enabled=true\n'
+    for identity_name in $(identity_environment_names); do
+      sed -n "s/^${identity_name}=/${identity_name}=/p" "$identity_env"
+    done
+    printf 'client-secret=sha256:%s\n' "$(sha256_file "$identity_root/zitadel-client-secret")"
+    printf 'cookie-key=sha256:%s\n' "$(sha256_file "$identity_root/oidc-cookie-key")"
+  } | sha256sum | awk '{ print $1 }'
 }
 
 control_api_source_digest() {
@@ -337,6 +406,11 @@ control_plane_config_digest() {
       find ../node -type f -print0
     } | LC_ALL=C sort -z | xargs -0 sha256sum
     printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"
+    if identity_overlay_enabled; then
+      printf 'identity-runtime sha256:%s\n' "$(identity_runtime_digest "$root")"
+    else
+      printf 'identity-runtime disabled\n'
+    fi
   ) | sha256sum | awk '{ print $1 }'
 }
 
