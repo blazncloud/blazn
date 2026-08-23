@@ -15,7 +15,7 @@ broker_mode=$(sed -n 's/^BLAZN_NODE_BROKER_LOOPBACK=//p' "$ENV_FILE"); [ -n "$br
 load_control_api_image "$ROOT_DIR"
 
 compose() {
-  if [ "$broker_mode" = enabled ]; then docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" --profile node-broker "$@"; else docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" "$@"; fi
+  if [ "$broker_mode" = enabled ]; then control_plane_compose "$ROOT_DIR" "$ENV_FILE" --profile node-broker "$@"; else control_plane_compose "$ROOT_DIR" "$ENV_FILE" "$@"; fi
 }
 
 trap 'exit 0' HUP INT TERM

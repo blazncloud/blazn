@@ -14,4 +14,4 @@ ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.
 assert_regular_file_owned_mode "$ENV_FILE" 0 600
 broker_mode=$(sed -n 's/^BLAZN_NODE_BROKER_LOOPBACK=//p' "$ENV_FILE"); [ -n "$broker_mode" ] || broker_mode=disabled; case "$broker_mode" in enabled|disabled) ;; *) die "Node broker loopback binding must be enabled or disabled without duplicates" ;; esac
 load_control_api_image "$ROOT_DIR"
-if [ "$broker_mode" = enabled ]; then docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" --profile node-broker stop; else docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" stop; fi
+if [ "$broker_mode" = enabled ]; then control_plane_compose "$ROOT_DIR" "$ENV_FILE" --profile node-broker stop; else control_plane_compose "$ROOT_DIR" "$ENV_FILE" stop; fi

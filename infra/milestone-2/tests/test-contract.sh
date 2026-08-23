@@ -158,7 +158,9 @@ if grep -F 'compose up' "$ROOT_DIR/scripts/run-control-plane.sh" >/dev/null; the
 fi
 grep -F 'up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 build_script=$ROOT_DIR/scripts/build-control-api.sh
-grep -F 'docker compose' "$build_script" >/dev/null
+# This intentionally asserts literal shell variables in the build script.
+# shellcheck disable=SC2016
+grep -F 'control_plane_compose "$ROOT_DIR" "$ENV_FILE" build api' "$build_script" >/dev/null
 grep -F 'build api' "$build_script" >/dev/null
 grep -F 'source_before=' "$build_script" >/dev/null
 grep -F 'source_after=' "$build_script" >/dev/null
@@ -166,6 +168,17 @@ grep -F 'candidate_image=' "$build_script" >/dev/null
 grep -F 'final_image=blazn-control-api:source-' "$build_script" >/dev/null
 grep -F 'build-control-api.sh' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 grep -F 'services/control-api/src services/control-api/migrations packages/contracts' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'compose.identity.yaml' "$ROOT_DIR/scripts/common.sh" >/dev/null
+# This intentionally asserts a literal shell variable in the preflight script.
+# shellcheck disable=SC2016
+grep -F 'validate_identity_overlay "$ROOT_DIR"' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_RELEASE' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_ACR_VALUES' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
+for runtime_script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do
+  grep -F 'control_plane_compose' "$ROOT_DIR/scripts/$runtime_script" >/dev/null
+done
 grep -F 'controlApi' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
 grep -F 'verify_control_api_containers' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 grep -F 'verify_control_api_containers' "$ROOT_DIR/scripts/run-control-plane.sh" >/dev/null

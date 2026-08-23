@@ -27,7 +27,7 @@ cleanup() {
   docker image rm "$candidate_image" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT HUP INT TERM
-CONTROL_API_IMAGE=$candidate_image docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" build api
+CONTROL_API_IMAGE=$candidate_image control_plane_compose "$ROOT_DIR" "$ENV_FILE" build api
 candidate_id=$(docker image inspect "$candidate_image" --format '{{.Id}}') || die "candidate control API build did not produce an image"
 source_after=sha256:$(control_api_source_digest "$ROOT_DIR")
 [ "$source_before" = "$source_after" ] || die "control API source changed during build; candidate and prior receipt were preserved"

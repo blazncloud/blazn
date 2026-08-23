@@ -115,6 +115,7 @@ if [ "$MODE" != plan ]; then
   require_command sha256sum
   require_command cmp
   load_control_api_image "$ROOT_DIR"
+  validate_identity_overlay "$ROOT_DIR"
   control_api_build_receipt=${BLAZN_CONTROL_API_BUILD_RECEIPT:-/var/lib/blazn/ownership/control-api-build.json}
   control_api_source=$(jq -er .sourceDigest "$control_api_build_receipt")
   control_api_image=$(jq -er .image "$control_api_build_receipt")
@@ -174,7 +175,7 @@ if [ "$MODE" != plan ]; then
     assert_regular_file_owned_mode "$ENV_FILE" 0 600
     verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
     for service in postgres object api; do
-      container=$(docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" ps -q "$service")
+      container=$(control_plane_compose "$ROOT_DIR" "$ENV_FILE" ps -q "$service")
       [ -n "$container" ] || die "live service has no running container: $service"
       identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}' "$container")
       [ "$identity" = "blazn-m2/$service" ] || die "live container identity is not receipt-scoped: $service"
@@ -186,7 +187,7 @@ if [ "$MODE" != plan ]; then
       remainder=${binding#*:}
       container_port=${remainder%%:*}
       host_port=${remainder##*:}
-      actual=$(docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" port "$service" "$container_port")
+      actual=$(control_plane_compose "$ROOT_DIR" "$ENV_FILE" port "$service" "$container_port")
       [ "$actual" = "127.0.0.1:$host_port" ] || die "live service has an unexpected published binding: $service ($actual)"
     done
   fi
