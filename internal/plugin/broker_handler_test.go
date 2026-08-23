@@ -125,7 +125,7 @@ func TestAuthenticatedBrokerDescriptionAdvertisesOnlyImplementedCapabilities(t *
 	handler, runtimeContext := brokerTestHandler(t, &fakeBrokerAPI{}, &fakeBrokerSessions{})
 	schema, value, failure := handler.Handle(context.Background(), "content", runtimeContext, brokerTestRequest("broker.describe", `{}`))
 	description, ok := value.(brokerDescription)
-	if failure != nil || schema != resultBrokerDescription || !ok || strings.Join(description.AvailableCapabilities, ",") != "artifact.read,broker.describe,project.read,run.cancel,run.create,run.read,run.synthetic.execute" {
+	if failure != nil || schema != resultBrokerDescription || !ok || strings.Join(description.AvailableCapabilities, ",") != "artifact.read,artifact.write,broker.describe,project.read,run.cancel,run.create,run.read,run.synthetic.execute" {
 		t.Fatalf("schema=%q value=%#v failure=%#v", schema, value, failure)
 	}
 	runtimeContext.ProjectID = ""
