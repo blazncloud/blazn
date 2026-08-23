@@ -26,6 +26,8 @@ var (
 	ErrSessionUnsupported   = errors.New("proxy session activation is unsupported")
 	ErrDifferentPolicy      = errors.New("proxy already active with a different policy")
 	ErrDifferentScope       = errors.New("proxy already active in a different mode or OS session")
+	ErrLifecycleConflict    = state.ErrLifecycleConflict
+	ErrLifecycleDeadline    = errors.New("proxy lifecycle deadline exceeded")
 	ErrCARemovalUnsupported = errors.New("proxy CA removal is unsupported")
 	ErrRecovery             = state.ErrRecoveryRequired
 	errActivationRace       = errors.New("proxy activation lost its pre-publication lifecycle fence")
@@ -77,7 +79,7 @@ type Store interface {
 	RecoverExact(context.Context, state.EnvironmentRestorer, state.ListenerController, state.ExpectedRecovery) (state.RecoveryResult, error)
 	AcquireScope(context.Context, string, int64) (*ScopeLease, error)
 	RenewScope(context.Context, *ScopeLease) error
-	ReleaseScope(context.Context, *ScopeLease) error
+	RecoverScope(context.Context, *ScopeLease, state.EnvironmentRestorer, state.ListenerController) (state.RecoveryResult, error)
 }
 type ScopeLease struct {
 	mu           sync.Mutex
@@ -129,10 +131,10 @@ func (p PersistentStore) RenewScope(ctx context.Context, lease *ScopeLease) erro
 	}
 	return err
 }
-func (p PersistentStore) ReleaseScope(ctx context.Context, lease *ScopeLease) error {
+func (p PersistentStore) RecoverScope(ctx context.Context, lease *ScopeLease, environment state.EnvironmentRestorer, listener state.ListenerController) (state.RecoveryResult, error) {
 	lease.mu.Lock()
 	defer lease.mu.Unlock()
-	return p.Value.CancelReservation(ctx, lease.reservation)
+	return p.Value.RecoverExpectedReserved(ctx, lease.reservation, environment, listener, state.ExpectedRecovery{ActivationID: lease.ActivationID, Generation: lease.Generation})
 }
 func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, mechanism string, publish func() error) (err error) {
 	reservation, err := p.Value.Reserve(ctx, journal.Nonce, 30*time.Second)
@@ -323,6 +325,9 @@ func (s *Service) reconcileForOn(ctx context.Context) (state.Reconciliation, err
 }
 
 func (s *Service) reconcileOn(ctx context.Context, current state.Reconciliation, reconcileErr error, digest, requestedMode string) (Result, error, bool) {
+	if result, err, handled := s.lifecycleFailure("proxy on", reconcileErr); handled {
+		return result, err, true
+	}
 	if current.State == state.ReconciliationRecoveryRequired || errors.Is(reconcileErr, state.ErrRecoveryRequired) {
 		return s.result("proxy on", "recovery_required", "recovery_required", 9), ErrRecovery, true
 	}
@@ -378,6 +383,10 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 		defer cancel()
 		cleanup, cleanupErr := s.recoverExpected(cleanupCtx, "proxy run", result.ActivationID, result.Generation)
 		result.State, result.Cleanup, result.ManualRemediation = cleanup.State, cleanup.Cleanup, cleanup.ManualRemediation
+		if lifecycle, lifecycleErr, handled := s.lifecycleFailure("proxy run", leaseErr); handled && cleanupErr == nil {
+			result.Status, result.ExitCode = lifecycle.Status, lifecycle.ExitCode
+			return result, lifecycleErr
+		}
 		result.Status, result.ExitCode = "recovery_required", 9
 		return result, errors.Join(ErrRecovery, leaseErr, cleanupErr)
 	}
@@ -406,8 +415,7 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 		recovered := recover()
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		releaseErr := s.deps.Store.ReleaseScope(recoveryCtx, lease)
-		cleanup, cleanupErr := s.recoverExpected(recoveryCtx, "proxy run", result.ActivationID, result.Generation)
+		cleanup, cleanupErr := s.recoverScope(recoveryCtx, "proxy run", lease)
 		result.State, result.Cleanup, result.ManualRemediation = cleanup.State, cleanup.Cleanup, cleanup.ManualRemediation
 		if recovered != nil {
 			err = errors.New("proxy runner panicked")
@@ -418,9 +426,11 @@ func (s *Service) Run(ctx context.Context, policyPath string, argv []string) (re
 			err = errors.Join(err, renewErr)
 		default:
 		}
-		err = errors.Join(err, releaseErr, cleanupErr)
+		err = errors.Join(err, cleanupErr)
 		if cleanupErr != nil {
 			result.Status, result.ExitCode = "recovery_required", 9
+		} else if lifecycle, _, handled := s.lifecycleFailure("proxy run", err); handled {
+			result.Status, result.ExitCode = lifecycle.Status, lifecycle.ExitCode
 		} else if err != nil {
 			result.Status = "failed"
 		} else {
@@ -554,10 +564,18 @@ func (s *Service) recoverExpected(ctx context.Context, command, id string, gener
 		return s.deps.Store.RecoverExact(callCtx, s.deps.Environment, s, state.ExpectedRecovery{ActivationID: id, Generation: generation})
 	})
 }
+func (s *Service) recoverScope(ctx context.Context, command string, lease *ScopeLease) (Result, error) {
+	return s.recoverWith(ctx, command, lease.ActivationID, lease.Generation, func(callCtx context.Context) (state.RecoveryResult, error) {
+		return s.deps.Store.RecoverScope(callCtx, lease, s.deps.Environment, s)
+	})
+}
 func (s *Service) recover(ctx context.Context, command string) (result Result, err error) {
 	bounded, cancel := boundedContext(ctx)
 	defer cancel()
 	current, reconcileErr := s.deps.Store.Reconcile(bounded)
+	if result, err, handled := s.lifecycleFailure(command, reconcileErr); handled {
+		return result, err
+	}
 	if current.ActivationID != "" && current.Generation > 0 {
 		return s.recoverExpected(bounded, command, current.ActivationID, current.Generation)
 	}
@@ -664,6 +682,9 @@ func (s *Service) Stop(ctx context.Context, proof state.LiveListenerProof) error
 }
 func (s *Service) Status(ctx context.Context) (Result, error) {
 	value, err := s.deps.Store.Reconcile(ctx)
+	if result, lifecycleErr, handled := s.lifecycleFailure("proxy status", err); handled {
+		return result, lifecycleErr
+	}
 	result := s.result("proxy status", string(value.State), string(value.State), 0)
 	result.ActivationID, result.PolicyDigest, result.Mode = value.ActivationID, value.PolicyDigest, value.Mode
 	if err != nil {
@@ -732,6 +753,15 @@ func boundedContext(parent context.Context) (context.Context, context.CancelFunc
 		return context.WithCancel(parent)
 	}
 	return context.WithTimeout(parent, cleanupTimeout)
+}
+func (s *Service) lifecycleFailure(command string, err error) (Result, error, bool) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return s.result(command, "deadline", "unknown", 8), errors.Join(ErrLifecycleDeadline, err), true
+	}
+	if errors.Is(err, state.ErrLifecycleConflict) {
+		return s.result(command, "conflict", "unknown", 6), err, true
+	}
+	return Result{}, nil, false
 }
 func shutdownVerified(ctx context.Context, managed ManagedListener) error {
 	bounded, cancel := boundedContext(ctx)

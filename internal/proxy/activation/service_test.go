@@ -44,6 +44,7 @@ type fakeEnvironment struct {
 	resolvedMode string
 	session      string
 	afterPublish func()
+	beforeCAS    func()
 }
 
 func newFakeEnvironment() *fakeEnvironment {
@@ -96,6 +97,11 @@ func (f *fakeEnvironment) BaseEnvironment() []string {
 	return result
 }
 func (f *fakeEnvironment) CompareAndSet(_ context.Context, request state.CompareAndSetRequest) (state.CompareAndSetResult, error) {
+	if f.beforeCAS != nil {
+		operation := f.beforeCAS
+		f.beforeCAS = nil
+		operation()
+	}
 	value, present := f.values[request.Name]
 	if !present && request.PriorPresent {
 		return state.CASAlreadyRestored, nil
@@ -329,12 +335,12 @@ func (f *fakeStore) RenewScope(context.Context, *ScopeLease) error {
 	}
 	return nil
 }
-func (f *fakeStore) ReleaseScope(context.Context, *ScopeLease) error {
+func (f *fakeStore) RecoverScope(ctx context.Context, lease *ScopeLease, environment state.EnvironmentRestorer, controller state.ListenerController) (state.RecoveryResult, error) {
 	if !f.scopeHeld {
-		return state.ErrLifecycleConflict
+		return state.RecoveryResult{}, state.ErrLifecycleConflict
 	}
-	f.scopeHeld = false
-	return nil
+	defer func() { f.scopeHeld = false }()
+	return f.RecoverExact(ctx, environment, controller, state.ExpectedRecovery{ActivationID: lease.ActivationID, Generation: lease.Generation})
 }
 
 type fakeRunner struct {
@@ -707,7 +713,12 @@ func TestRunUsesExactArgvAndAlwaysRestores(t *testing.T) {
 }
 
 func TestPersistentStoreRunRetainsScopeFenceUntilChildCleanup(t *testing.T) {
-	storeValue, err := newStateStoreAt(filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy"), os.Getuid())
+	root := filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy")
+	storeValue, err := newStateStoreAt(root, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingStore, err := newStateStoreAt(root, os.Getuid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,9 +727,14 @@ func TestPersistentStoreRunRetainsScopeFenceUntilChildCleanup(t *testing.T) {
 	factory := &fakeFactory{listeners: map[int]*fakeListener{}, controller: controller}
 	policies := &fakePolicies{policy: fixturePolicy(t), digest: testDigest}
 	runner := &fakeRunner{exit: 23}
-	var overlappingErr error
+	var childOverlapErr, cleanupOverlapErr error
 	runner.beforeReturn = func() {
-		_, overlappingErr = storeValue.Reserve(context.Background(), strings.Repeat("q", 32), time.Minute)
+		_, childOverlapErr = competingStore.Reserve(context.Background(), strings.Repeat("q", 32), time.Minute)
+	}
+	environment.beforeCAS = func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		_, cleanupOverlapErr = competingStore.Reserve(ctx, strings.Repeat("s", 32), time.Minute)
 	}
 	service, err := New(Dependencies{
 		Store: PersistentStore{Value: storeValue}, Environment: environment, Listeners: factory, Controller: controller,
@@ -736,21 +752,63 @@ func TestPersistentStoreRunRetainsScopeFenceUntilChildCleanup(t *testing.T) {
 	if strings.Join(runner.argv, "|") != "tool|exact argument" {
 		t.Fatalf("child was not invoked with exact argv: %q", runner.argv)
 	}
-	if !errors.Is(overlappingErr, state.ErrLifecycleConflict) {
-		t.Fatalf("overlapping lifecycle reservation error = %v", overlappingErr)
+	if !errors.Is(childOverlapErr, state.ErrLifecycleConflict) {
+		t.Fatalf("child-overlap lifecycle reservation error = %v", childOverlapErr)
+	}
+	if !errors.Is(cleanupOverlapErr, context.DeadlineExceeded) {
+		t.Fatalf("competing store entered cleanup handoff = %v", cleanupOverlapErr)
 	}
 
-	reservation, err := storeValue.Reserve(context.Background(), strings.Repeat("r", 32), time.Minute)
+	reservation, err := competingStore.Reserve(context.Background(), strings.Repeat("r", 32), time.Minute)
 	if err != nil {
 		t.Fatalf("scope reservation was not released after cleanup: %v", err)
 	}
-	if err := storeValue.CancelReservation(context.Background(), reservation); err != nil {
+	if err := competingStore.CancelReservation(context.Background(), reservation); err != nil {
 		t.Fatal(err)
 	}
 	current, err := storeValue.Reconcile(context.Background())
 	if err != nil || current.State != state.ReconciliationInactive {
 		t.Fatalf("post-run reconciliation = %+v, %v", current, err)
 	}
+}
+
+func TestHealthyLifecycleContentionUsesConflictAndDeadlineResults(t *testing.T) {
+	for _, command := range []string{"status", "off"} {
+		t.Run(command, func(t *testing.T) {
+			service, store, _, _, _, _ := testService(t)
+			store.reconcileErr = state.ErrLifecycleConflict
+			var result Result
+			var err error
+			if command == "status" {
+				result, err = service.Status(context.Background())
+			} else {
+				result, err = service.Off(context.Background(), false)
+			}
+			if !errors.Is(err, ErrLifecycleConflict) || errors.Is(err, ErrRecovery) || result.Status != "conflict" || result.State != "unknown" || result.ExitCode != 6 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+
+	t.Run("on bounded wait", func(t *testing.T) {
+		service, store, _, _, _, _ := testService(t)
+		store.reconcileErr = state.ErrLifecycleConflict
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		result, err := service.On(ctx, "policy.json", "auto")
+		if !errors.Is(err, ErrLifecycleDeadline) || errors.Is(err, ErrRecovery) || result.Status != "deadline" || result.State != "unknown" || result.ExitCode != 8 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
+
+	t.Run("run acquisition", func(t *testing.T) {
+		service, store, _, _, _, _ := testService(t)
+		store.scopeHeld = true
+		result, err := service.Run(context.Background(), "policy.json", []string{"tool"})
+		if !errors.Is(err, ErrLifecycleConflict) || errors.Is(err, ErrRecovery) || result.Status != "conflict" || result.ExitCode != 6 {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+	})
 }
 
 func TestRunCleanupFailureOverridesTerminalSuccess(t *testing.T) {

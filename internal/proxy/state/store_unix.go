@@ -170,6 +170,18 @@ func (s *Store) withOwnedReservation(ctx context.Context, reservation Reservatio
 	})
 }
 
+// withFinalReservation retains an exact caller-owned reservation throughout
+// an operation and releases it before dropping the lifecycle lock, even when
+// the operation reports a recoverable failure.
+func (s *Store) withFinalReservation(ctx context.Context, reservation Reservation, operation func(*lockedStore) error) error {
+	return s.withOwnedReservation(ctx, reservation, func(locked *lockedStore) (err error) {
+		defer func() {
+			err = errors.Join(err, removeSecureFile(s.paths.Reservation, s.uid, s.faults))
+		}()
+		return operation(locked)
+	})
+}
+
 func (s *Store) CancelReservation(ctx context.Context, reservation Reservation) error {
 	return s.withLifecycleLock(ctx, func(locked *lockedStore) error {
 		current, err := locked.readReservation()
