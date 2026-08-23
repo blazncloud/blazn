@@ -7,6 +7,7 @@
     "required": [
         "schemaVersion",
         "adapterKind",
+        "workspaceId",
         "harnessVersionId",
         "profileId",
         "platform",
@@ -27,6 +28,7 @@
                 "generic-cli"
             ]
         },
+        "workspaceId": {"type":"string","format":"uuid"},
         "harnessVersionId": {
             "type": "string",
             "format": "uuid"
@@ -188,7 +190,7 @@
                         "format": "uuid"
                     }
                 },
-                "evidenceArtifacts":{"type":"array","minItems":8,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["id","role","kind","mediaType","contentDigest"],"properties":{"id":{"type":"string","format":"uuid"},"role":{"type":"string","minLength":1,"maxLength":96},"kind":{"const":"harness.conformance"},"mediaType":{"const":"application/vnd.blazn.harness-conformance+json"},"contentDigest":{"$ref":"#/$defs/digest"}}}},
+                "evidenceArtifacts":{"type":"array","minItems":8,"maxItems":32,"items":{"type":"object","additionalProperties":false,"required":["id","workspaceId","role","kind","mediaType","contentDigest"],"properties":{"id":{"type":"string","format":"uuid"},"workspaceId":{"type":"string","format":"uuid"},"role":{"type":"string","minLength":1,"maxLength":96},"kind":{"const":"harness.conformance"},"mediaType":{"const":"application/vnd.blazn.harness-conformance+json"},"contentDigest":{"$ref":"#/$defs/digest"}}}},
                 "runId": {
                     "type": "string",
                     "format": "uuid"
@@ -197,7 +199,7 @@
                     "$ref": "#/$defs/digest"
                 },
                 "parityGroupId":{"type":"string","format":"uuid"},
-                "runReceipt":{"type":"object","additionalProperties":false,"required":["runId","receiptDigest","agentVersionId","agentVersionDigest","harnessVersionId","harnessVersionDigest","profileId","profileDigest","sourceRepository","sourceCommit","templateVersionId","templateDigest","taskDigest","resultDigest"],"properties":{"runId":{"type":"string","format":"uuid"},"receiptDigest":{"$ref":"#/$defs/digest"},"agentVersionId":{"type":"string","format":"uuid"},"agentVersionDigest":{"$ref":"#/$defs/digest"},"harnessVersionId":{"type":"string","format":"uuid"},"harnessVersionDigest":{"$ref":"#/$defs/digest"},"profileId":{"type":"string","format":"uuid"},"profileDigest":{"$ref":"#/$defs/digest"},"sourceRepository":{"type":"string","format":"uri"},"sourceCommit":{"type":"string","pattern":"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},"templateVersionId":{"type":"string","format":"uuid"},"templateDigest":{"$ref":"#/$defs/digest"},"taskDigest":{"$ref":"#/$defs/digest"},"resultDigest":{"$ref":"#/$defs/digest"}}}
+                "runReceipt":{"type":"object","additionalProperties":false,"required":["runId","workspaceId","receiptDigest","agentVersionId","agentVersionDigest","harnessVersionId","harnessVersionDigest","profileId","profileDigest","sourceRepository","sourceCommit","templateVersionId","templateDigest","taskDigest","resultDigest"],"properties":{"runId":{"type":"string","format":"uuid"},"workspaceId":{"type":"string","format":"uuid"},"receiptDigest":{"$ref":"#/$defs/digest"},"agentVersionId":{"type":"string","format":"uuid"},"agentVersionDigest":{"$ref":"#/$defs/digest"},"harnessVersionId":{"type":"string","format":"uuid"},"harnessVersionDigest":{"$ref":"#/$defs/digest"},"profileId":{"type":"string","format":"uuid"},"profileDigest":{"$ref":"#/$defs/digest"},"sourceRepository":{"type":"string","format":"uri"},"sourceCommit":{"type":"string","pattern":"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"},"templateVersionId":{"type":"string","format":"uuid"},"templateDigest":{"$ref":"#/$defs/digest"},"taskDigest":{"$ref":"#/$defs/digest"},"resultDigest":{"$ref":"#/$defs/digest"}}}
             }
         }
     },
