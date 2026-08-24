@@ -18,7 +18,12 @@ if [ -L "$TOKEN_FILE" ] || [ ! -f "$TOKEN_FILE" ]; then
 fi
 [ "$(stat -c '%u:%a:%h' -- "$TOKEN_FILE")" = 0:600:1 ] || die "token file must be root-owned mode 0600 with one link"
 token=$(cat "$TOKEN_FILE")
-printf '%s\n' "$token" | LC_ALL=C grep -Eq '^[A-Za-z0-9._~-]{32,4096}$' || die "token format is invalid"
+token_size=$(printf '%s' "$token" | wc -c | tr -d ' ')
+case $token_size in ''|*[!0-9]*) die "token size is invalid" ;; esac
+if [ "$token_size" -lt 32 ] || [ "$token_size" -gt 4096 ]; then
+  die "token size is invalid"
+fi
+printf '%s\n' "$token" | LC_ALL=C grep -Eq '^[A-Za-z0-9._~-]+$' || die "token format is invalid"
 
 for asset in branding.json logo-light.svg logo-dark.svg icon-light.svg icon-dark.svg; do
   path=$BRANDING_DIR/$asset
