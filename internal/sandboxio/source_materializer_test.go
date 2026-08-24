@@ -53,8 +53,11 @@ func TestGitMaterializerWritesExactRegularTreeAndAdoptsReceipt(t *testing.T) {
 	}
 	for name, mode := range map[string]os.FileMode{"README.md": 0o400, "bin/run": 0o500, "nested/value.txt": 0o400} {
 		info, err := os.Stat(filepath.Join(destination, filepath.FromSlash(name)))
-		if err != nil || info.Mode().Perm() != mode {
-			t.Fatalf("%s mode=%v err=%v", name, info.Mode().Perm(), err)
+		if err != nil {
+			t.Fatalf("%s stat: %v", name, err)
+		}
+		if info.Mode().Perm() != mode {
+			t.Fatalf("%s mode=%v", name, info.Mode().Perm())
 		}
 	}
 	adopted, err := materializer.Materialize(context.Background(), manifest, canonical)
@@ -127,6 +130,27 @@ func TestSourceTransportRejectsCredentialsOriginEscapeAndBudgetOverflow(t *testi
 	redirect.URL.Host = "attacker.test"
 	if err := sameOriginRedirect(redirect, []*http.Request{request}); err == nil {
 		t.Fatal("cross-origin redirect accepted")
+	}
+}
+
+func TestSecureGitFetcherAgainstPublicExactCommit(t *testing.T) {
+	if os.Getenv("BLAZN_TEST_PUBLIC_GIT") != "1" {
+		t.Skip("set BLAZN_TEST_PUBLIC_GIT=1 on a disposable network-enabled lane")
+	}
+	destination := t.TempDir()
+	source := Source{Name: "source", URL: "https://github.com/git-fixtures/basic.git", Destination: "/workspace/src/source", Commit: "6ecf0ef2c2dffb796033e5a02219af86ec6584e5"}
+	manifest := SourceManifest{SchemaVersion: SourceManifestVersion, Sources: []Source{source}}
+	canonical, err := MarshalSourceManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializer := GitMaterializer{Fetcher: SecureGitFetcher{MaxNetworkBytes: 64 << 20}, ResolveDestination: func(Source) string { return destination }}
+	receipt, err := materializer.Materialize(context.Background(), manifest, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Sources) != 1 || receipt.Sources[0].Commit != source.Commit || receipt.Sources[0].FileCount == 0 || receipt.Sources[0].TotalBytes == 0 {
+		t.Fatalf("receipt=%#v", receipt)
 	}
 }
 
