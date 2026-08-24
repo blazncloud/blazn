@@ -162,6 +162,7 @@ RETURNS SETOF development_projects LANGUAGE plpgsql SECURITY DEFINER SET search_
 DECLARE raw_digest text:=substring(p_template_digest from 8); registry text:=p_manifest#>>'{build,registryRepository}';
   actor uuid:=public.development_runtime_actor(p_session_id,p_access_token);
   policy_authority jsonb; registry_authority jsonb;
+  template_authority public.sandbox_template_versions%ROWTYPE; template_status text;
 BEGIN
   IF actor IS NULL OR NOT public.development_runtime_authorized(p_workspace_id,p_project_id,p_session_id,p_access_token,true) OR
      NOT EXISTS(SELECT 1 FROM public.projects WHERE id=p_project_id AND workspace_id=p_workspace_id AND status='active') THEN RETURN; END IF;
@@ -181,20 +182,22 @@ BEGIN
     'createdAt',to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) INTO registry_authority
   FROM public.development_registry_repositories WHERE workspace_id=p_workspace_id AND repository=registry AND status='active' FOR SHARE;
   IF policy_authority IS NULL OR registry_authority IS NULL THEN RETURN; END IF;
+  SELECT v,s.status INTO template_authority,template_status
+  FROM public.sandbox_template_versions v JOIN public.sandbox_template_version_status s ON s.version_id=v.id
+  WHERE v.id=p_template_version_id AND v.workspace_id=p_workspace_id AND v.template_id=p_publication_template_id
+    AND v.content_digest=raw_digest AND s.status='published' FOR SHARE OF v,s;
+  IF NOT FOUND OR template_status<>'published' THEN RETURN; END IF;
   IF p_expected_version=0 THEN
     RETURN QUERY INSERT INTO public.development_projects(project_id,workspace_id,manifest,manifest_digest,template_version_id,template_version,template_digest,publication_template_id,registry_repository,policy_snapshot,registry_authorization,created_by)
-      SELECT p_project_id,p_workspace_id,p_manifest,p_manifest_digest,v.id,v.version,v.content_digest,p_publication_template_id,registry,policy_authority,registry_authority,actor
-      FROM public.sandbox_template_versions v JOIN public.sandbox_template_version_status s ON s.version_id=v.id
-      WHERE v.id=p_template_version_id AND v.workspace_id=p_workspace_id AND v.template_id=p_publication_template_id AND v.content_digest=raw_digest AND s.status='published'
+      VALUES(p_project_id,p_workspace_id,p_manifest,p_manifest_digest,template_authority.id,template_authority.version,
+        template_authority.content_digest,p_publication_template_id,registry,policy_authority,registry_authority,actor)
       ON CONFLICT(project_id) DO NOTHING RETURNING *;
   ELSE
     RETURN QUERY UPDATE public.development_projects project SET manifest=p_manifest,manifest_digest=p_manifest_digest,
-      template_version_id=v.id,template_version=v.version,template_digest=v.content_digest,
+      template_version_id=template_authority.id,template_version=template_authority.version,template_digest=template_authority.content_digest,
       publication_template_id=p_publication_template_id,registry_repository=registry,policy_snapshot=policy_authority,registry_authorization=registry_authority,
       version=project.version+1,updated_at=clock_timestamp()
-      FROM public.sandbox_template_versions v JOIN public.sandbox_template_version_status s ON s.version_id=v.id
       WHERE project.workspace_id=p_workspace_id AND project.project_id=p_project_id AND project.version=p_expected_version
-        AND v.id=p_template_version_id AND v.workspace_id=p_workspace_id AND v.template_id=p_publication_template_id AND v.content_digest=raw_digest AND s.status='published'
       RETURNING project.*;
   END IF;
 END $$;
