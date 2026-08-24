@@ -27,6 +27,7 @@ export function createPatch(task, source) {
   }
   const modified = solveTask(task, source);
   const before = source.trimEnd().split("\n"), after = modified.trimEnd().split("\n");
+  if (before.length !== after.length) throw new Error("task replacement must preserve line topology");
   const lines = [`--- a/${task.sourcePath}`, `+++ b/${task.sourcePath}`, `@@ -1,${before.length} +1,${after.length} @@`];
   for (let index = 0; index < before.length; index++) {
     if (before[index] === after[index]) lines.push(` ${before[index]}`);

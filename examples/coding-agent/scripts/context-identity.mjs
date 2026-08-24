@@ -15,12 +15,10 @@ export const contextFiles = [
   "test/context-identity.test.mjs"
 ];
 const closedDirectories = {
-  fixtures: ["source", "task.json"],
   "fixtures/source": ["calculator.mjs"],
-  scripts: ["context-identity.mjs"],
-  src: ["coding-agent.mjs"],
-  test: ["coding-agent.test.mjs", "context-identity.test.mjs"]
+  src: ["coding-agent.mjs"]
 };
+const contextDirectories = ["fixtures", "fixtures/source", "scripts", "src", "test"];
 const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const canonical = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -30,10 +28,12 @@ const canonical = (value) => {
 
 export async function buildContextIdentity(root) {
   const directories = new Map();
-  for (const [directory, expected] of Object.entries(closedDirectories)) {
+  for (const directory of contextDirectories) {
     const info = await lstat(path.join(root, directory));
     if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o755) throw new Error(`unsafe context directory ${directory}`);
     directories.set(directory, { dev: info.dev, ino: info.ino });
+  }
+  for (const [directory, expected] of Object.entries(closedDirectories)) {
     const actual = (await readdir(path.join(root, directory))).sort();
     if (canonical(actual) !== canonical([...expected].sort())) throw new Error(`unexpected file in closed directory ${directory}`);
   }

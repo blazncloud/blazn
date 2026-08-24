@@ -87,6 +87,7 @@ const identities=await json("fixtures/identities.json"),agentDigest=developmentD
 assert.deepEqual({projectId:identities.projectId,templateId:identities.templateId,templateVersionId:identities.templateVersionId,templateDigest:identities.templateDigest,agentId:identities.agentId,agentVersionId:identities.agentVersionId,agentDigest:identities.agentDigest},{projectId:manifest.projectId,templateId:manifest.publicationTarget.templateId,templateVersionId:manifest.template.versionId,templateDigest,agentId:agent.metadata.id,agentVersionId:"71000000-0000-4000-8000-000000000006",agentDigest});
 
 const lockDigest = sha256(await readFile(path.join(example, "package-lock.json")));
+const packageManifest=await json("package.json");assert.equal(packageManifest.engines.node,"22.19.0");assert.equal(packageManifest.packageManager,"npm@10.9.3");
 assert.equal(manifest.dependencyLocks["examples/coding-agent/package-lock.json"], lockDigest);
 assert.equal(identities.dependencyLockDigest, lockDigest);
 assert.equal(identities.buildContextDigest, await buildContextIdentity(example));
