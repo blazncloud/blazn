@@ -3,6 +3,7 @@ package development
 import (
 	"bytes"
 	"encoding/base64"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,10 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 		"manifest nested JSON text with signed URL": func(bundle *evidenceBundle) {
 			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"log":"{\"result\":{\"url\":\"https://bucket.s3.example.test/object?X-Amz-Signature=abcdef\"}}"}`)
 		},
+		"manifest nested fully encoded signed URL": func(bundle *evidenceBundle) {
+			encoded := url.QueryEscape(url.QueryEscape("https://bucket.s3.example.test/object?X-Amz-Signature=abcdef"))
+			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"details":{"log":"download=` + encoded + `"}}`)
+		},
 		"duplicate artifact ID": func(bundle *evidenceBundle) {
 			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `","` + testArtifactID + `"]}`)
 		},
@@ -103,6 +108,13 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 		},
 		"embedded signed URL in plaintext file": func(bundle *evidenceBundle) {
 			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte(`download URL: https://account.blob.core.windows.net/container/object?sv=2024-11-04&sig=abcdef status=ready`))
+		},
+		"fully encoded signed URL in plaintext file": func(bundle *evidenceBundle) {
+			encoded := url.QueryEscape("https://bucket.s3.example.test/object?X-Amz-Signature=abcdef")
+			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte("download URL: " + encoded + " status=ready"))
+		},
+		"malformed escape in plaintext file": func(bundle *evidenceBundle) {
+			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte("download URL: https%3A%2F%2Fexample.test%2Fobject%3Fsig%ZZsecret"))
 		},
 		"invalid base64": func(bundle *evidenceBundle) { bundle.Files[0].ContentBase64 = "%%%" },
 		"oversize file": func(bundle *evidenceBundle) {

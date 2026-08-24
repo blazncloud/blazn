@@ -231,9 +231,27 @@ func containsForbidden(value any) bool {
 }
 
 func containsCredentialString(value string) bool {
-	if credentialValuePattern.MatchString(value) {
-		return true
+	decoded := value
+	for index := 0; index <= 4; index++ {
+		if credentialValuePattern.MatchString(decoded) || containsCredentialURL(decoded) {
+			return true
+		}
+		if index == 4 {
+			return false
+		}
+		next, err := url.QueryUnescape(decoded)
+		if err != nil {
+			return true
+		}
+		if next == decoded {
+			return false
+		}
+		decoded = next
 	}
+	return false
+}
+
+func containsCredentialURL(value string) bool {
 	for _, candidate := range embeddedURLPattern.FindAllString(value, -1) {
 		parsed, err := url.Parse(candidate)
 		if err == nil && parsed.User != nil {

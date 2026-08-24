@@ -1,6 +1,7 @@
 package development
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,7 @@ func TestValidateRejectsSignedURLArgumentsAndInvalidRepositoryAuthorities(t *tes
 		"aws signature":          "https://bucket.s3.example.test/item?X-Amz-Signature=secret",
 		"normalized aws variant": "https://bucket.s3.example.test/item?x_amz_signature=secret",
 		"encoded aws variant":    "https://bucket.s3.example.test/item?X%2dAmz%2dSignature=secret",
+		"fully encoded aws URL":  url.QueryEscape("https://bucket.s3.example.test/item?X-Amz-Signature=secret"),
 		"google signature":       "log=https://storage.googleapis.test/item?X-Goog-Signature=secret",
 		"generic URI userinfo":   "http://user:password@example.test/item",
 	} {
