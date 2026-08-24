@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -14,8 +15,13 @@ import (
 )
 
 type NodeEnrollOptions = nodepkg.CommandEnrollOptions
+
+var nodeUUIDPatternCLI = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
+	List(context.Context, string) (client.NodeList, error)
+	Get(context.Context, string) (client.Node, error)
 	Recover(context.Context) (client.NodeInstallReceipt, error)
 	Repair(context.Context) (client.NodeInstallReceipt, error)
 	Uninstall(context.Context, bool) (client.NodeInstallReceipt, error)
@@ -56,6 +62,43 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 	}
 	ctx := context.Background()
 	switch args[0] {
+	case "list":
+		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true})
+		if err != nil || len(pos) != 0 || flags["workspace"] == "" {
+			return a.nodeUsage(format, errors.New("node list requires --workspace WORKSPACE"))
+		}
+		result, err := commands.List(ctx, flags["workspace"])
+		if err != nil {
+			return a.writeError(format, ExitFailure, "node_failed", err.Error())
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		for _, node := range result.Items {
+			fmt.Fprintf(a.stdout, "%s\t%s\t%s\teligible=%t\tcapability=%s\n", node.ID, node.Name, node.LifecycleState, node.AgentEligible, capabilityVersion(node.CapabilityVersion))
+		}
+		return ExitSuccess
+	case "get", "capacity":
+		if len(args) != 2 || !nodeUUIDPatternCLI.MatchString(args[1]) {
+			return a.nodeUsage(format, fmt.Errorf("node %s requires NODE", args[0]))
+		}
+		result, err := commands.Get(ctx, args[1])
+		if err != nil {
+			return a.writeError(format, ExitFailure, "node_failed", err.Error())
+		}
+		if args[0] == "capacity" {
+			view := nodeCapacityView{NodeID: result.ID, Name: result.Name, LifecycleState: result.LifecycleState, TrustState: result.TrustState, AgentEligible: result.AgentEligible, CapabilityVersion: result.CapabilityVersion, KubernetesBinding: result.KubernetesBinding}
+			if format == OutputJSON {
+				return a.writeJSON(view)
+			}
+			fmt.Fprintf(a.stdout, "Node %s capacity: eligible=%t, lifecycle=%s, trust=%s, capability=%s\n", result.ID, result.AgentEligible, result.LifecycleState, result.TrustState, capabilityVersion(result.CapabilityVersion))
+			return ExitSuccess
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "Node %s (%s) [%s, trust=%s, eligible=%t, capability=%s]\n", result.ID, result.Name, result.LifecycleState, result.TrustState, result.AgentEligible, capabilityVersion(result.CapabilityVersion))
+		return ExitSuccess
 	case "enroll":
 		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true, "request-id": true, "name": true, "mode": true, "machine-fingerprint": true, "profile": true, "cluster-id": true, "node-name": true, "node-uid": true, "resource-version": true})
 		if err != nil || len(pos) != 0 {
@@ -131,6 +174,23 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 	default:
 		return a.writeError(format, ExitUsage, "unknown_command", fmt.Sprintf("unknown node command %q", args[0]))
 	}
+}
+
+type nodeCapacityView struct {
+	NodeID            string                    `json:"nodeId"`
+	Name              string                    `json:"name"`
+	LifecycleState    client.NodeLifecycleState `json:"lifecycleState"`
+	TrustState        client.NodeTrustState     `json:"trustState"`
+	AgentEligible     bool                      `json:"agentEligible"`
+	CapabilityVersion *int64                    `json:"capabilityVersion"`
+	KubernetesBinding *client.KubernetesBinding `json:"kubernetesBinding,omitempty"`
+}
+
+func capabilityVersion(value *int64) string {
+	if value == nil {
+		return "none"
+	}
+	return fmt.Sprint(*value)
 }
 
 func (a *App) nodeUsage(format OutputFormat, err error) int {

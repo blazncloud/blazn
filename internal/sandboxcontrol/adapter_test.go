@@ -1336,6 +1336,9 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 	if object.APIVersion != APIVersion || object.Kind != Kind || object.Metadata.Namespace != Namespace || object.Metadata.Labels[ManagedLabel] != "true" || !reflect.DeepEqual(object.Metadata.Finalizers, []string{CleanupFinalizer}) {
 		t.Fatalf("metadata=%#v", object.Metadata)
 	}
+	if object.Spec.ShutdownPolicy != "Delete" || object.Spec.OperatingMode != "Running" {
+		t.Fatalf("lifecycle intent=%#v", object.Spec)
+	}
 	pod := object.Spec.PodTemplate
 	if pod.Metadata.Labels[QueueLabel] != QueueName || pod.Spec.ServiceAccountName != ServiceAccountName || pod.Spec.AutomountServiceAccountToken || pod.Spec.RuntimeClassName != "gvisor" || pod.Spec.NodeSelector["blazn.dev/sandbox-eligible"] != "true" {
 		t.Fatalf("pod=%#v", pod)

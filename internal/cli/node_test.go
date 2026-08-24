@@ -19,6 +19,15 @@ type fakeNodeCommands struct {
 	uninstallManaged bool
 }
 
+func (*fakeNodeCommands) List(context.Context, string) (client.NodeList, error) {
+	version := int64(2)
+	return client.NodeList{Items: []client.Node{{ID: "30000000-0000-4000-8000-000000000001", Name: "worker-a", LifecycleState: "active", TrustState: "verified", AgentEligible: true, CapabilityVersion: &version}}}, nil
+}
+func (*fakeNodeCommands) Get(context.Context, string) (client.Node, error) {
+	version := int64(2)
+	return client.Node{ID: "30000000-0000-4000-8000-000000000001", Name: "worker-a", LifecycleState: "active", TrustState: "verified", AgentEligible: true, CapabilityVersion: &version}, nil
+}
+
 func (f *fakeNodeCommands) Serve(context.Context, time.Duration) error { return nil }
 
 func (f *fakeNodeCommands) Enroll(_ context.Context, options NodeEnrollOptions) (nodepkg.EnrollResult, error) {
@@ -69,12 +78,33 @@ func TestNodeHelpAndHeartbeat(t *testing.T) {
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
 	app.node = func(bool) (nodeCommands, error) { return fake, nil }
-	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
+	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node list|get|capacity|enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
 		t.Fatalf("help=%q code=%d", stdout.String(), code)
 	}
 	stdout.Reset()
 	if code := app.Run([]string{"node", "heartbeat"}); code != 0 || fake.heartbeats != 1 {
 		t.Fatalf("code=%d calls=%d", code, fake.heartbeats)
+	}
+}
+
+func TestNodeListGetAndCapacityExposeEligibility(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := New(&stdout, &stderr, BuildInfo{})
+	app.node = func(bool) (nodeCommands, error) { return &fakeNodeCommands{}, nil }
+	if code := app.Run([]string{"node", "list", "--workspace", "workspace-a"}); code != ExitSuccess || !strings.Contains(stdout.String(), "eligible=true") {
+		t.Fatalf("list code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	if code := app.Run([]string{"node", "get", "30000000-0000-4000-8000-000000000001"}); code != ExitSuccess || !strings.Contains(stdout.String(), "trust=verified") {
+		t.Fatalf("get code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	if code := app.Run([]string{"--output", "json", "node", "capacity", "30000000-0000-4000-8000-000000000001"}); code != ExitSuccess {
+		t.Fatalf("capacity code=%d stderr=%q", code, stderr.String())
+	}
+	var capacity nodeCapacityView
+	if err := json.Unmarshal(stdout.Bytes(), &capacity); err != nil || !capacity.AgentEligible || capacity.CapabilityVersion == nil || *capacity.CapabilityVersion != 2 {
+		t.Fatalf("capacity=%#v json=%q err=%v", capacity, stdout.String(), err)
 	}
 }
 

@@ -2,10 +2,12 @@ package sandbox
 
 import (
 	"bytes"
+	_ "crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -13,17 +15,75 @@ import (
 	"unicode/utf8"
 
 	"github.com/blazncloud/blazn/internal/client"
+	"github.com/distribution/reference"
 )
 
 var (
 	dnsNamePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	versionPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	imagePattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$`)
 	quantityPattern   = regexp.MustCompile(`^(?:[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?|0\.[0-9]+)$`)
 	mediaPattern      = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
 	repositoryPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+(?:\.git)?$`)
 )
+
+// IsImmutableOCIReference reports whether value is the canonical immutable
+// image reference accepted by the Sandbox contract.
+func IsImmutableOCIReference(value string) bool {
+	if len(value) == 0 || len(value) > 512 || value != strings.ToLower(value) {
+		return false
+	}
+	slash := strings.IndexByte(value, '/')
+	if slash <= 0 || !validRegistryAuthority(value[:slash]) {
+		return false
+	}
+	named, err := reference.ParseNormalizedNamed(value)
+	if err != nil || reference.Domain(named) != value[:slash] || named.String() != value {
+		return false
+	}
+	if _, tagged := named.(reference.Tagged); tagged {
+		return false
+	}
+	digested, ok := named.(reference.Digested)
+	return ok && digested.Digest().Algorithm().String() == "sha256" &&
+		strings.HasSuffix(value, "@"+digested.Digest().String())
+}
+
+func validRegistryAuthority(authority string) bool {
+	if authority == "" || strings.ContainsAny(authority, "@/[]") {
+		return false
+	}
+	host := authority
+	if strings.ContainsRune(authority, ':') {
+		var port string
+		var err error
+		host, port, err = net.SplitHostPort(authority)
+		if err != nil {
+			return false
+		}
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 || strconv.Itoa(value) != port {
+			return false
+		}
+	}
+	if host == "localhost" || net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 || !strings.ContainsRune(host, '.') {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 type manifestDocument struct {
 	APIVersion string       `json:"apiVersion"`
@@ -139,8 +199,8 @@ func validateDocument(d manifestDocument, failures *[]string) {
 		require(variant.Architecture == "amd64" || variant.Architecture == "arm64", prefix+".architecture must be amd64 or arm64", failures)
 		require(!architectures[variant.Architecture], prefix+".architecture must be unique", failures)
 		architectures[variant.Architecture] = true
-		validBoundedPattern(variant.ImageIndex, imagePattern, 512, prefix+".imageIndex", failures)
-		validBoundedPattern(variant.ImageDigest, imagePattern, 512, prefix+".imageDigest", failures)
+		require(IsImmutableOCIReference(variant.ImageIndex), prefix+".imageIndex is invalid", failures)
+		require(IsImmutableOCIReference(variant.ImageDigest), prefix+".imageDigest is invalid", failures)
 		require(len(variant.Command) >= 1 && len(variant.Command) <= 32, prefix+".command must contain 1 to 32 entries", failures)
 		for j, item := range variant.Command {
 			require(codePointLength(item, 1, 1024), fmt.Sprintf("%s.command[%d] must contain 1 to 1024 characters", prefix, j), failures)

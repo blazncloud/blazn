@@ -38,6 +38,33 @@ type CommandRuntime struct {
 	CleanupClient      PrivilegedClient
 }
 
+type managementAPI interface {
+	ListNodes(context.Context, string, string) (client.NodeList, error)
+	GetNode(context.Context, string, string) (client.Node, error)
+}
+
+func (c *CommandRuntime) List(ctx context.Context, workspaceID string) (client.NodeList, error) {
+	if c.Service == nil || c.Service.api == nil || c.AccessToken == "" || workspaceID == "" {
+		return client.NodeList{}, errors.New("node list dependencies are unavailable")
+	}
+	api, ok := c.Service.api.(managementAPI)
+	if !ok {
+		return client.NodeList{}, errors.New("node management API is unavailable")
+	}
+	return api.ListNodes(ctx, c.AccessToken, workspaceID)
+}
+
+func (c *CommandRuntime) Get(ctx context.Context, nodeID string) (client.Node, error) {
+	if c.Service == nil || c.Service.api == nil || c.AccessToken == "" || nodeID == "" {
+		return client.Node{}, errors.New("node get dependencies are unavailable")
+	}
+	api, ok := c.Service.api.(managementAPI)
+	if !ok {
+		return client.Node{}, errors.New("node management API is unavailable")
+	}
+	return api.GetNode(ctx, c.AccessToken, nodeID)
+}
+
 func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOptions) (EnrollResult, error) {
 	if c.Service == nil {
 		return EnrollResult{}, errors.New("node enrollment service is unavailable")

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blazncloud/blazn/internal/sandbox"
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 	"github.com/blazncloud/blazn/internal/sandboxio"
 )
@@ -23,7 +24,6 @@ import (
 var workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 var quantityPattern = regexp.MustCompile(`^[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?$`)
 var commitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
-var immutableImagePattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$`)
 var sourceNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const defaultLeaseSafetyMargin = time.Second
@@ -479,7 +479,7 @@ func validateWorkItem(item WorkItem) error {
 		return fmt.Errorf("missing immutable work item fields")
 	}
 	if item.TemplateVersionID == "" || !sha256Pattern.MatchString(item.TemplateDigest) ||
-		!immutableImagePattern.MatchString(item.ImageIndexDigest) || !immutableImagePattern.MatchString(item.ImageDigest) ||
+		!sandbox.IsImmutableOCIReference(item.ImageIndexDigest) || !sandbox.IsImmutableOCIReference(item.ImageDigest) ||
 		item.VariantName == "" {
 		return fmt.Errorf("immutable image identity is invalid")
 	}
