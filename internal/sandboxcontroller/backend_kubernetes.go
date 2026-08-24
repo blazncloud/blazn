@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/blazncloud/blazn/internal/sandbox"
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 	"github.com/blazncloud/blazn/internal/sandboxio"
 )
@@ -58,7 +59,7 @@ type kubernetesBackendEvidence struct {
 }
 
 func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, error) {
-	if config.Adapter == nil || config.Health == nil || !immutableImagePattern.MatchString(config.HelperImage) {
+	if config.Adapter == nil || config.Health == nil || !sandbox.IsImmutableOCIReference(config.HelperImage) {
 		return nil, errors.New("Kubernetes backend dependencies are required")
 	}
 	if config.AbsencePollInterval == 0 {
