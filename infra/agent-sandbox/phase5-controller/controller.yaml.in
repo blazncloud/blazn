@@ -20,9 +20,6 @@ rules:
 - apiGroups: ["agents.x-k8s.io"]
   resources: ["sandboxes"]
   verbs: ["create", "delete", "get", "list", "patch"]
-- apiGroups: ["agents.x-k8s.io"]
-  resources: ["sandboxes/status"]
-  verbs: ["get"]
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["list"]
@@ -42,34 +39,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: blazn-sandbox-controller
-subjects:
-- kind: ServiceAccount
-  name: blazn-sandbox-controller
-  namespace: blazn-poc-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: blazn-sandbox-controller-runtimeclass-reader
-  labels:
-    app.kubernetes.io/name: blazn-sandbox-controller
-    app.kubernetes.io/part-of: blazn-poc
-rules:
-- apiGroups: ["node.k8s.io"]
-  resources: ["runtimeclasses"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: blazn-sandbox-controller-runtimeclass-reader
-  labels:
-    app.kubernetes.io/name: blazn-sandbox-controller
-    app.kubernetes.io/part-of: blazn-poc
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: blazn-sandbox-controller-runtimeclass-reader
 subjects:
 - kind: ServiceAccount
   name: blazn-sandbox-controller
@@ -121,6 +90,8 @@ spec:
         args:
         - /var/run/blazn-db-projection/BLAZN_DATABASE_URL_SECRET_KEY
         - /var/run/blazn-private/database-url
+        - /var/run/blazn-api-ca/ca.crt
+        - /var/run/blazn-private/kubernetes-ca.crt
         resources:
           requests:
             cpu: 5m
@@ -145,6 +116,9 @@ spec:
           readOnly: true
         - name: database-url-private
           mountPath: /var/run/blazn-private
+        - name: api-ca
+          mountPath: /var/run/blazn-api-ca
+          readOnly: true
       containers:
       - name: controller
         image: BLAZN_CONTROLLER_IMAGE
@@ -162,7 +136,7 @@ spec:
         - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT
           value: "BLAZN_KUBERNETES_API_PORT"
         - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE
-          value: /var/run/blazn-api-ca/ca.crt
+          value: /var/run/blazn-private/kubernetes-ca.crt
         - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE
           value: /var/run/blazn-api-token/token
         resources:
@@ -190,10 +164,6 @@ spec:
         - name: api-token
           mountPath: /var/run/blazn-api-token
           readOnly: true
-        - name: api-ca
-          mountPath: /var/run/blazn-api-ca/ca.crt
-          subPath: ca.crt
-          readOnly: true
       volumes:
       - name: database-url-projection
         projected:
@@ -208,7 +178,7 @@ spec:
       - name: database-url-private
         emptyDir:
           medium: Memory
-          sizeLimit: 64Ki
+          sizeLimit: 2Mi
       - name: api-token
         projected:
           defaultMode: 0440

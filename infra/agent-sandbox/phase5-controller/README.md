@@ -13,9 +13,13 @@ pinned to the multi-platform Go image digest. The final `scratch` image has no
 shell or package manager, runs as numeric UID/GID 65532, and contains only the
 two static binaries and the public CA bundle needed by PostgreSQL TLS.
 
-The render accepts only `repository@sha256:<64 lowercase hex>` and rejects a
-tag in the image name. Image publication, registry access, signature or
-provenance verification, and live image-pull proof remain separate gates.
+The render accepts only an explicit
+`registry/repository@sha256:<64 lowercase hex>` authority and rejects implicit
+registries and tags in the image name. A portless registry must be a strict DNS
+name (or `localhost`); a registry with a port uses the same DNS validation and
+a canonical port in the range 1-65535. Image publication, registry access,
+signature or provenance verification, and live image-pull proof remain separate
+gates.
 
 ## Render contract
 
@@ -52,14 +56,17 @@ The output assumes the separately owned namespaces `blazn-poc-system` and
 `blazn-poc-sandboxes` already exist. It creates a tokenless ServiceAccount and
 uses only a 600-second projected API token with an explicit audience. Its Role
 can create/delete/patch and read Sandboxes only in `blazn-poc-sandboxes`; Pod
-and Kueue Workload access is list-only there. The sole cluster-scoped grant is
-`get` on RuntimeClasses. There is no Secret, Node, CRD, webhook, namespace, or
-wildcard authority.
+and Kueue Workload access is list-only there. It has no separate Sandbox status
+subresource grant, ClusterRole, or other cluster-scoped authority and no Secret,
+Node, RuntimeClass, CRD, webhook, namespace, or wildcard authority. RuntimeClass
+access may be added only in a separate PR that wires and qualifies an exact
+runtime capability.
 
-The database URL Secret is projected read-only for kubelet. A same-UID init
-binary copies its value without logging it into a memory-backed private
-`emptyDir` as a UID-65532, mode-0600, single-link regular file. That exact file
-shape is required by the controller's strict reader. The main container sees
+The database URL Secret and public Kubernetes CA are projected read-only for
+kubelet. A same-UID init binary copies the normalized database URL and exact,
+bounded CA contents without logging either into a memory-backed private
+`emptyDir` as UID-65532, mode-0600, single-link regular files. Those exact file
+shapes are required by the controller's strict readers. The main container sees
 the private volume read-only. Both containers use a read-only root filesystem,
 non-root identity, RuntimeDefault seccomp, drop all capabilities, deny privilege
 escalation, and fixed CPU/memory requests and limits. Host namespaces and host

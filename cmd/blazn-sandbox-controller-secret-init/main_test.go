@@ -36,6 +36,43 @@ func TestCopySecretProducesStrictReaderShape(t *testing.T) {
 	}
 }
 
+func TestCopyCAProducesExactStrictReaderShape(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source-ca")
+	destinationDirectory := filepath.Join(directory, "private")
+	contents := []byte("\n-----BEGIN CERTIFICATE-----\nexact-ca-contents\n-----END CERTIFICATE-----\n")
+	if err := os.WriteFile(source, contents, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(destinationDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(destinationDirectory, "kubernetes-ca.crt")
+	if err := copyExactFile(source, destination, maxCABytes); err != nil {
+		t.Fatalf("copy CA: %v", err)
+	}
+	copied, err := os.ReadFile(destination)
+	if err != nil || string(copied) != string(contents) {
+		t.Fatalf("CA contents changed during copy")
+	}
+	info, err := os.Lstat(destination)
+	if err != nil || info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
+		t.Fatalf("unexpected private CA mode: %v", err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Getuid() || stat.Nlink != 1 {
+		t.Fatal("private CA does not match strict reader ownership")
+	}
+
+	oversized := filepath.Join(directory, "oversized-ca")
+	if err := os.WriteFile(oversized, []byte(strings.Repeat("x", maxCABytes+1)), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyExactFile(oversized, filepath.Join(destinationDirectory, "oversized-output"), maxCABytes); err == nil {
+		t.Fatal("oversized CA was accepted")
+	}
+}
+
 func TestCopySecretFailsClosed(t *testing.T) {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "source")
@@ -82,7 +119,47 @@ func TestCopySecretFailsClosed(t *testing.T) {
 }
 
 func TestRunRequiresExactArguments(t *testing.T) {
-	if run(nil) == nil || run([]string{"one"}) == nil || run([]string{"one", "two", "three"}) == nil {
+	if run(nil) == nil || run([]string{"one", "two"}) == nil || run([]string{"one", "two", "three"}) == nil || run([]string{"one", "two", "three", "two"}) == nil {
 		t.Fatal("invalid argument count accepted")
+	}
+}
+
+func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
+	directory := t.TempDir()
+	private := filepath.Join(directory, "private")
+	if err := os.Mkdir(private, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	databaseSource := filepath.Join(directory, "database-url")
+	caSource := filepath.Join(directory, "ca.crt")
+	if err := os.WriteFile(databaseSource, []byte(" postgres://controller@10.0.0.1/blazn\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	caContents := []byte("-----BEGIN CERTIFICATE-----\nexact\n-----END CERTIFICATE-----\n")
+	if err := os.WriteFile(caSource, caContents, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	databaseDestination := filepath.Join(private, "database-url")
+	caDestination := filepath.Join(private, "kubernetes-ca.crt")
+	if err := run([]string{databaseSource, databaseDestination, caSource, caDestination}); err != nil {
+		t.Fatalf("initialize private files: %v", err)
+	}
+	if value, err := os.ReadFile(databaseDestination); err != nil || string(value) != "postgres://controller@10.0.0.1/blazn" {
+		t.Fatal("database URL was not normalized into the private file")
+	}
+	if value, err := os.ReadFile(caDestination); err != nil || string(value) != string(caContents) {
+		t.Fatal("CA was not copied exactly into the private file")
+	}
+
+	secondPrivate := filepath.Join(directory, "private-failure")
+	if err := os.Mkdir(secondPrivate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	partialDatabase := filepath.Join(secondPrivate, "database-url")
+	if err := run([]string{databaseSource, partialDatabase, filepath.Join(directory, "missing-ca"), filepath.Join(secondPrivate, "kubernetes-ca.crt")}); err == nil {
+		t.Fatal("missing CA source was accepted")
+	}
+	if _, err := os.Lstat(partialDatabase); !os.IsNotExist(err) {
+		t.Fatal("partial database URL remained after CA copy failure")
 	}
 }
