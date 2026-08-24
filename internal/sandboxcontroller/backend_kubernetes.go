@@ -370,7 +370,9 @@ func (b *KubernetesBackend) retainedRecord(item WorkItem) (sandboxcontrol.Sandbo
 func cloneSandboxRecord(record sandboxcontrol.SandboxRecord) sandboxcontrol.SandboxRecord {
 	copy := record
 	copy.Finalizers = append([]string(nil), record.Finalizers...)
-	copy.Artifacts = append([]sandboxcontrol.ArtifactExport(nil), record.Artifacts...)
+	if record.Artifacts != nil {
+		copy.Artifacts = append([]sandboxcontrol.ArtifactExport{}, record.Artifacts...)
+	}
 	copy.Labels = make(map[string]string, len(record.Labels))
 	for key, value := range record.Labels {
 		copy.Labels[key] = value
