@@ -59,6 +59,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 		resultRow{values: []any{true}},
 		resultRow{values: []any{true}},
 		resultRow{values: []any{sql.NullString{String: "80000000-0000-4000-8000-000000000001", Valid: true}, sql.NullTime{Time: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC), Valid: true}}},
+		resultRow{values: []any{true}},
 		resultRow{values: []any{string(RetryScheduled)}},
 		resultRow{values: []any{true}},
 		resultRow{values: []any{3}},
@@ -88,6 +89,9 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	if persisted, recorded, err := store.RecordArtifact(context.Background(), "operation", "worker", "lease", artifactObservation, artifact); err != nil || !recorded || persisted.ID != "80000000-0000-4000-8000-000000000001" || persisted.ExportedAt != "2026-08-24T12:00:00Z" {
 		t.Fatalf("record artifact: persisted=%#v recorded=%v err=%v", persisted, recorded, err)
 	}
+	if completed, err := store.CompleteArtifactExport(context.Background(), "operation", "worker", "lease", artifactObservation, []string{}); err != nil || !completed {
+		t.Fatalf("complete artifact export: completed=%v err=%v", completed, err)
+	}
 	if outcome, err := store.Retry(context.Background(), "operation", "worker", "lease", 10,
 		SafeError{Code: "backend_failure", Message: "safe", RequestID: "request-123"}); err != nil || outcome != RetryScheduled {
 		t.Fatalf("retry: outcome=%q err=%v", outcome, err)
@@ -101,7 +105,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	if count, err := store.EnqueueExpired(context.Background(), 4); err != nil || count != 3 {
 		t.Fatalf("expiry: count=%d err=%v", count, err)
 	}
-	queries := []string{bindSQL, recordSourcesSQL, recordArtifactSQL, retrySQL, completeSQL, expirySQL}
+	queries := []string{bindSQL, recordSourcesSQL, recordArtifactSQL, completeArtifactExportSQL, retrySQL, completeSQL, expirySQL}
 	for index, query := range queries {
 		if executor.calls[index].query != query {
 			t.Fatalf("query %d was %q, want %q", index, executor.calls[index].query, query)

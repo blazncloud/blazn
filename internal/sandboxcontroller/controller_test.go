@@ -24,6 +24,7 @@ type fakeStore struct {
 	retryCalls      int
 	completionCalls int
 	artifactRecords int
+	artifactPhases  int
 }
 
 type renewResponse struct {
@@ -72,6 +73,10 @@ func (s *fakeStore) RecordArtifact(_ context.Context, _, _, _ string, _ sandboxc
 	artifact.ID = "80000000-0000-4000-8000-000000000001"
 	artifact.ExportedAt = "2026-08-24T12:00:00Z"
 	return artifact, true, nil
+}
+func (s *fakeStore) CompleteArtifactExport(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, warnings []string) (bool, error) {
+	s.artifactPhases++
+	return true, nil
 }
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
 	s.retryCalls++
@@ -334,9 +339,33 @@ func TestCleanupExportsAndPersistsArtifactsBeforeBackendDelete(t *testing.T) {
 	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 ||
+	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 || store.artifactPhases != 1 ||
 		store.completion == nil || !reflect.DeepEqual(store.completion.ArtifactIDs, []string{"80000000-0000-4000-8000-000000000001"}) {
-		t.Fatalf("order=%v records=%d completion=%#v", backend.order, store.artifactRecords, store.completion)
+		t.Fatalf("order=%v records=%d phases=%d completion=%#v", backend.order, store.artifactRecords, store.artifactPhases, store.completion)
+	}
+}
+
+func TestCleanupRestartAdoptsCompletedArtifactPhase(t *testing.T) {
+	item, state := createFixture(t)
+	item.OperationType, item.DesiredState = "delete", "deleted"
+	bindWorkItem(&item, state)
+	item.ArtifactExportComplete = true
+	item.ArtifactWarningCodes = []string{"optional_artifact_missing:logs"}
+	item.Artifacts = []Artifact{{Name: "logs", Path: "/workspace/artifacts/logs", MediaType: "text/plain", Required: false}}
+	state.Record.Artifacts = []sandboxcontrol.ArtifactExport{{Name: "logs", Path: "/workspace/artifacts/logs", MediaType: "text/plain", Required: false}}
+	_, state.Record.ArtifactContractDigest, _ = sandboxcontrol.CanonicalArtifactContract(state.Record.Artifacts)
+	state.Record.ResourceVersion, state.Record.Deleting, state.Deleting = "resource-version-delete", true, true
+	state.Record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
+	state.CleanupFinalizerPresent = true
+	store := &fakeStore{}
+	backend := &fakeBackend{deleting: state, finalized: CleanupResult{CleanupComplete: true,
+		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if backend.artifactExports != 0 || store.artifactPhases != 0 || store.completion == nil ||
+		!reflect.DeepEqual(store.completion.WarningCodes, item.ArtifactWarningCodes) {
+		t.Fatalf("restart repeated export or lost receipt: exports=%d phases=%d completion=%#v", backend.artifactExports, store.artifactPhases, store.completion)
 	}
 }
 

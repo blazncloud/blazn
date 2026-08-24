@@ -367,8 +367,8 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.AdmissionObservation == nil {
 		return &Failure{Code: "missing_backend_identity", SafeMessage: "cleanup lacks exact backend identity", Ambiguous: true}
 	}
-	warningCodes := []string{}
-	if len(item.Artifacts) != 0 {
+	warningCodes := append([]string(nil), item.ArtifactWarningCodes...)
+	if !item.ArtifactExportComplete && len(item.Artifacts) != 0 {
 		artifactBackend, ok := c.backend.(ArtifactBackend)
 		if !ok {
 			return &Failure{Code: "artifact_export_unsupported", SafeMessage: "artifact export runtime is unavailable", Ambiguous: true}
@@ -402,7 +402,19 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 			exported.Artifacts[index] = persisted
 		}
 		item.PersistedArtifacts = exported.Artifacts
-		warningCodes = append(warningCodes, exported.WarningCodes...)
+		warningCodes = append([]string(nil), exported.WarningCodes...)
+	}
+	if !item.ArtifactExportComplete {
+		sort.Strings(warningCodes)
+		completed, err := c.store.CompleteArtifactExport(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, *item.AdmissionObservation, warningCodes)
+		if err != nil {
+			return err
+		}
+		if !completed {
+			return nil
+		}
+		item.ArtifactExportComplete = true
+		item.ArtifactWarningCodes = append([]string(nil), warningCodes...)
 	}
 	state, err := c.backend.BeginDelete(ctx, item, item.AdmissionObservation)
 	if err != nil {
@@ -422,7 +434,9 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	}
 	uid, rv := *item.BackendUID, *item.BackendResourceVersion
 	workloadDigest, observationDigest := item.AdmissionObservation.Workload.Digest, item.AdmissionObservation.Digest
-	warningCodes = append(warningCodes, result.WarningCodes...)
+	if len(result.WarningCodes) != 0 {
+		return &Failure{Code: "cleanup_warning_mismatch", SafeMessage: "cleanup returned warnings outside the durable artifact export receipt", Ambiguous: true}
+	}
 	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: warningCodes})
 	if err != nil {
 		return err
@@ -519,6 +533,27 @@ func validateWorkItem(item WorkItem) error {
 			return fmt.Errorf("persisted artifact identity is invalid")
 		}
 		seenPersistedArtifacts[artifact.Name] = true
+	}
+	if item.OperationType == "create" && (item.ArtifactExportComplete || len(item.ArtifactWarningCodes) != 0) ||
+		!item.ArtifactExportComplete && len(item.ArtifactWarningCodes) != 0 {
+		return fmt.Errorf("artifact export phase is invalid")
+	}
+	seenWarnings := map[string]bool{}
+	for index, warning := range item.ArtifactWarningCodes {
+		name := strings.TrimPrefix(warning, "optional_artifact_missing:")
+		contract, ok := artifactContracts[name]
+		if warning != "optional_artifact_missing:"+name || !ok || contract.Required || seenPersistedArtifacts[name] ||
+			index > 0 && item.ArtifactWarningCodes[index-1] >= warning {
+			return fmt.Errorf("artifact export warning is invalid")
+		}
+		seenWarnings[name] = true
+	}
+	if item.ArtifactExportComplete {
+		for name, contract := range artifactContracts {
+			if !seenPersistedArtifacts[name] && (contract.Required || !seenWarnings[name]) {
+				return fmt.Errorf("artifact export phase is incomplete")
+			}
+		}
 	}
 	if item.OperationType == "create" && item.DesiredState != "ready" || item.OperationType == "stop" && item.DesiredState != "stopped" || item.OperationType == "delete" && item.DesiredState != "deleted" {
 		return fmt.Errorf("operation desired state mismatch")

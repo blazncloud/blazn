@@ -53,6 +53,8 @@ type WorkItem struct {
 	SourceMaterialization                                                         *sandboxio.SourceMaterializationReceipt
 	SourceBootstrapObservation                                                    *sandboxcontrol.AdmissionObservation
 	PersistedArtifacts                                                            []PersistedArtifact
+	ArtifactExportComplete                                                        bool
+	ArtifactWarningCodes                                                          []string
 }
 
 type LeaseWindow struct {
@@ -85,6 +87,7 @@ type Store interface {
 	BindBackend(context.Context, string, string, string, sandboxcontrol.AdmissionObservation) (bool, error)
 	RecordSources(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) (bool, error)
 	RecordArtifact(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, PersistedArtifact) (PersistedArtifact, bool, error)
+	CompleteArtifactExport(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, []string) (bool, error)
 	Retry(context.Context, string, string, string, int, SafeError) (RetryOutcome, error)
 	Complete(context.Context, string, string, string, Completion) (bool, error)
 	EnqueueExpired(context.Context, int) (int, error)

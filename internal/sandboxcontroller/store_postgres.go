@@ -17,14 +17,15 @@ import (
 )
 
 const (
-	claimSQL          = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v5($1,$2) claimed"
-	renewSQL          = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
-	bindSQL           = "SELECT public.sandbox_controller_bind_backend_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
-	recordSourcesSQL  = "SELECT public.sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)"
-	recordArtifactSQL = "SELECT public.sandbox_controller_record_artifact_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
-	retrySQL          = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
-	completeSQL       = "SELECT public.sandbox_controller_complete_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
-	expirySQL         = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
+	claimSQL                  = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v5($1,$2) claimed"
+	renewSQL                  = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
+	bindSQL                   = "SELECT public.sandbox_controller_bind_backend_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
+	recordSourcesSQL          = "SELECT public.sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)"
+	recordArtifactSQL         = "SELECT public.sandbox_controller_record_artifact_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
+	completeArtifactExportSQL = "SELECT public.sandbox_controller_complete_artifact_export_v1($1,$2,$3,$4,$5::text[])"
+	retrySQL                  = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
+	completeSQL               = "SELECT public.sandbox_controller_complete_v5($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
+	expirySQL                 = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
 )
 
 var sha256Pattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -208,6 +209,24 @@ func (s *PgStore) RecordArtifact(ctx context.Context, operationID, workerID, lea
 	return artifact, true, nil
 }
 
+func (s *PgStore) CompleteArtifactExport(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation, warnings []string) (bool, error) {
+	observationDigest, err := rawDigest(observation.Digest)
+	if err != nil {
+		return false, err
+	}
+	if warnings == nil || len(warnings) > 32 {
+		return false, errors.New("artifact export warnings are invalid")
+	}
+	for index, warning := range warnings {
+		if !strings.HasPrefix(warning, "optional_artifact_missing:") || index > 0 && warnings[index-1] >= warning {
+			return false, errors.New("artifact export warnings are invalid")
+		}
+	}
+	var completed bool
+	err = s.executor.QueryRow(ctx, completeArtifactExportSQL, operationID, workerID, leaseToken, observationDigest, warnings).Scan(&completed)
+	return completed, err
+}
+
 func (s *PgStore) Retry(ctx context.Context, operationID, workerID, leaseToken string, delaySeconds int, safe SafeError) (RetryOutcome, error) {
 	var outcome string
 	if err := s.executor.QueryRow(ctx, retrySQL, operationID, workerID, leaseToken, delaySeconds,
@@ -333,6 +352,8 @@ type workItemRow struct {
 	ExportedArtifactSizes      []int64         `json:"exported_artifact_sizes"`
 	ExportedArtifactKeys       []string        `json:"exported_artifact_keys"`
 	ExportedArtifactTimes      []time.Time     `json:"exported_artifact_times"`
+	ArtifactExportComplete     bool            `json:"artifact_export_complete"`
+	ArtifactExportWarningCodes []string        `json:"artifact_export_warning_codes"`
 }
 
 func decodeWorkItem(payload []byte) (*WorkItem, error) {
@@ -407,6 +428,16 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 			MediaType: contract.MediaType, Digest: digest, Size: row.ExportedArtifactSizes[index], ObjectKey: wantedKey,
 			ExportedAt: row.ExportedArtifactTimes[index].UTC().Format(time.RFC3339Nano)})
 	}
+	if !row.ArtifactExportComplete && len(row.ArtifactExportWarningCodes) != 0 {
+		return nil, errors.New("incomplete artifact export carries warnings")
+	}
+	for index, warning := range row.ArtifactExportWarningCodes {
+		if !strings.HasPrefix(warning, "optional_artifact_missing:") || index > 0 && row.ArtifactExportWarningCodes[index-1] >= warning {
+			return nil, errors.New("artifact export warnings are invalid")
+		}
+	}
+	item.ArtifactExportComplete = row.ArtifactExportComplete
+	item.ArtifactWarningCodes = append([]string(nil), row.ArtifactExportWarningCodes...)
 	observation, workloadDigest, err := decodeObservation(row)
 	if err != nil {
 		return nil, err

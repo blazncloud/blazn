@@ -101,6 +101,8 @@ export interface SandboxControllerWorkItem {
   sourceMaterialization: SandboxControllerSourceReceipt | null;
   sourceBootstrapObservation: SandboxControllerAdmissionObservation | null;
   persistedArtifacts: SandboxControllerPersistedArtifact[];
+  artifactExportComplete: boolean;
+  artifactWarningCodes: string[];
 }
 
 export interface SandboxControllerCompletion {
@@ -187,6 +189,17 @@ export class PgSandboxControllerStore {
     return result.rows[0]?.artifact_id ?? undefined;
   }
 
+  async completeArtifactExport(operationId: string, workerId: string, leaseToken: string,
+    observation: SandboxControllerAdmissionObservation, warningCodes: string[]): Promise<boolean> {
+    validateObservation(observation);
+    validateArtifactWarnings(warningCodes);
+    const result = await this.database.query<{ completed: boolean }>(
+      "SELECT sandbox_controller_complete_artifact_export_v1($1,$2,$3,$4,$5::text[]) AS completed",
+      [operationId, workerId, leaseToken, rawDigest(observation.digest), warningCodes],
+    );
+    return result.rows[0]?.completed === true;
+  }
+
   async retry(operationId: string, workerId: string, leaseToken: string, delaySeconds: number, error: { code: string; message: string; requestId: string }): Promise<SandboxControllerRetryResult> {
     const result = await this.database.query<{ outcome: SandboxControllerRetryResult }>(
       "SELECT sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7) AS outcome",
@@ -198,7 +211,7 @@ export class PgSandboxControllerStore {
   async complete(operationId: string, workerId: string, leaseToken: string, completion: SandboxControllerCompletion): Promise<boolean> {
     const error = completion.error;
     const result = await this.database.query<{ completed: boolean }>(
-      "SELECT sandbox_controller_complete_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17) AS completed",
+      "SELECT sandbox_controller_complete_v5($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17) AS completed",
       [operationId, workerId, leaseToken, completion.status, completion.expectedBackendUid,
         completion.expectedBackendResourceVersion,
         completion.expectedWorkloadDigest ? rawDigest(completion.expectedWorkloadDigest) : null,
@@ -230,6 +243,11 @@ function workItemRow(row: QueryResultRow): SandboxControllerWorkItem {
   if (![artifactPaths.length, artifactMediaTypes.length, artifactRequired.length].every((length) => length === artifactNames.length)) {
     throw new Error("sandbox controller artifact columns are inconsistent");
   }
+  const artifactExportComplete = row.artifact_export_complete;
+  if (typeof artifactExportComplete !== "boolean") throw new Error("sandbox artifact export phase is invalid");
+  const artifactWarningCodes = requiredStringArray(row.artifact_export_warning_codes);
+  validateArtifactWarnings(artifactWarningCodes);
+  if (!artifactExportComplete && artifactWarningCodes.length !== 0) throw new Error("incomplete artifact export carries warnings");
   return {
     operationId: row.operation_id, workspaceId: row.workspace_id, sandboxId: row.sandbox_id,
     requestedBy: row.requested_by,
@@ -248,7 +266,7 @@ function workItemRow(row: QueryResultRow): SandboxControllerWorkItem {
     artifacts: artifactNames.map((name, index) => ({ name, path: artifactPaths[index]!,
       mediaType: artifactMediaTypes[index]!, required: artifactRequired[index]! })),
     ...observationRow(row),
-    ...sourceReceiptRow(row), persistedArtifacts: persistedArtifactRows(row),
+    ...sourceReceiptRow(row), persistedArtifacts: persistedArtifactRows(row), artifactExportComplete, artifactWarningCodes,
   };
 }
 
@@ -295,6 +313,12 @@ function validateSourceReceipt(receipt: SandboxControllerSourceReceipt): void {
 
 function digest(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value); }
 function artifactName(value: unknown): value is string { return typeof value === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value); }
+function validateArtifactWarnings(warnings: string[]): void {
+  if (warnings.length > 32 || warnings.some((warning, index) =>
+    !/^optional_artifact_missing:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(warning) || index > 0 && warnings[index - 1]! >= warning)) {
+    throw new Error("sandbox artifact export warnings are invalid");
+  }
+}
 
 function observationRow(row: QueryResultRow): Pick<SandboxControllerWorkItem, "persistedWorkloadDigest" | "admissionObservation"> {
   const workloadFields = [row.workload_api_version, row.workload_namespace, row.workload_name,

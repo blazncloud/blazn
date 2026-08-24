@@ -25,7 +25,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
           'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
           'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
           'sandbox_controller_record_source_materialization_v1','sandbox_controller_claim_v5',
-          'sandbox_controller_record_artifact_v1')`, [role]);
+          'sandbox_controller_record_artifact_v1','sandbox_controller_complete_artifact_export_v1','sandbox_controller_complete_v5')`, [role]);
       assert.equal(privilege.rows[0]?.allowed, false, `${role} can execute a controller function`);
     }
     const publicPrivilege = await admin.query<{ count: string }>(`SELECT count(*)::text AS count FROM pg_proc p,
@@ -34,7 +34,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
         'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
         'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
         'sandbox_controller_record_source_materialization_v1','sandbox_controller_claim_v5',
-        'sandbox_controller_record_artifact_v1')
+        'sandbox_controller_record_artifact_v1','sandbox_controller_complete_artifact_export_v1','sandbox_controller_complete_v5')
         AND acl.grantee=0 AND acl.privilege_type='EXECUTE'`);
     assert.equal(publicPrivilege.rows[0]?.count, "0", "PUBLIC can execute a controller v2 function");
     for (const signature of [
@@ -45,6 +45,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
       "sandbox_controller_bind_backend_v3(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text,text)",
       "sandbox_controller_complete_v3(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)",
       "sandbox_controller_claim_v4(text,integer)",
+      "sandbox_controller_complete_v4(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)",
     ]) {
       const retired = await admin.query<{ allowed: boolean }>("SELECT has_function_privilege('blazn_sandbox_controller',$1,'EXECUTE') AS allowed", [signature]);
       assert.equal(retired.rows[0]?.allowed, false, `controller retained v2 authority ${signature}`);
@@ -224,6 +225,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.match(artifactId??"",/^[0-9a-f-]{36}$/);
     assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifact),artifactId);
     assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,{...artifact,digest:`sha256:${"e".repeat(64)}`}),undefined);
+    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,[]),true);
+    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,[]),true,"artifact phase replay failed");
     const stopCompletion = { status: "succeeded" as const, expectedBackendUid: "backend-stop", expectedBackendResourceVersion: "resource-stop",
       expectedWorkloadDigest: stop!.admissionObservation!.workload.digest,
       expectedObservationDigest: stop!.admissionObservation!.digest, cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true,
