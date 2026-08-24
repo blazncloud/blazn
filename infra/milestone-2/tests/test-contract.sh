@@ -186,7 +186,10 @@ for required in \
   'prebuilt) validate_control_api_build "$ROOT_DIR"' \
   'actual_archive=sha256:' \
   'RepoTags == [$image]' \
-  'archive_image_id=sha256:' \
+  'archive_image_id=$(jq' \
+  'tar -xOf "$archive" index.json' \
+  'manifest_path=blobs/sha256/' \
+  '.config.digest == $configDigest' \
   'buildMode:"prebuilt"'; do
   grep -F -- "$required" "$ROOT_DIR/scripts/start-control-plane.sh" "$ROOT_DIR/scripts/import-control-api-image.sh" >/dev/null
 done
