@@ -24,7 +24,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
         FROM pg_proc p WHERE p.proname IN ('sandbox_controller_claim_v2','sandbox_controller_bind_backend_v2','sandbox_controller_complete_v2',
           'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
           'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
-          'sandbox_controller_record_source_materialization_v1')`, [role]);
+          'sandbox_controller_record_source_materialization_v1','sandbox_controller_claim_v5',
+          'sandbox_controller_record_artifact_v1')`, [role]);
       assert.equal(privilege.rows[0]?.allowed, false, `${role} can execute a controller function`);
     }
     const publicPrivilege = await admin.query<{ count: string }>(`SELECT count(*)::text AS count FROM pg_proc p,
@@ -32,7 +33,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
       WHERE p.proname IN ('sandbox_controller_claim_v2','sandbox_controller_bind_backend_v2','sandbox_controller_complete_v2',
         'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
         'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
-        'sandbox_controller_record_source_materialization_v1')
+        'sandbox_controller_record_source_materialization_v1','sandbox_controller_claim_v5',
+        'sandbox_controller_record_artifact_v1')
         AND acl.grantee=0 AND acl.privilege_type='EXECUTE'`);
     assert.equal(publicPrivilege.rows[0]?.count, "0", "PUBLIC can execute a controller v2 function");
     for (const signature of [
@@ -42,6 +44,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
       "sandbox_controller_claim_v3(text,integer)",
       "sandbox_controller_bind_backend_v3(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text,text)",
       "sandbox_controller_complete_v3(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)",
+      "sandbox_controller_claim_v4(text,integer)",
     ]) {
       const retired = await admin.query<{ allowed: boolean }>("SELECT has_function_privilege('blazn_sandbox_controller',$1,'EXECUTE') AS allowed", [signature]);
       assert.equal(retired.rows[0]?.allowed, false, `controller retained v2 authority ${signature}`);
@@ -211,14 +214,20 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.equal(exhaustedState.rows[0]?.error.code, "lease_attempts_exhausted");
     assert.equal(await first.complete(exhaustedOperationId, "controller-exhausted", exhausted!.leaseToken, successCreate("never-bound", null)), false);
 
-    const stopSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", version: 2, backend: ["backend-stop", "resource-stop", "admission-stop"] });
+    const stopSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", version: 2, backend: ["backend-stop", "resource-stop", "admission-stop"], withArtifact: true });
     const stopOperationId = await insertOperation(admin, workspaceId, stopSandboxId, userId, "stop", 1);
     const stop = await first.claim("controller-stop", 30); assert.equal(stop?.operationId, stopOperationId);
     assert.ok(stop?.admissionObservation);
+    const artifactDigest=`sha256:${"d".repeat(64)}`,artifactKey=`workspaces/${workspaceId}/sandboxes/${stopSandboxId}/artifacts/patch`;
+    const artifact={name:"patch",path:"/workspace/artifacts/change.patch",mediaType:"text/plain",digest:artifactDigest,size:6,objectKey:artifactKey};
+    const artifactId=await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifact);
+    assert.match(artifactId??"",/^[0-9a-f-]{36}$/);
+    assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifact),artifactId);
+    assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,{...artifact,digest:`sha256:${"e".repeat(64)}`}),undefined);
     const stopCompletion = { status: "succeeded" as const, expectedBackendUid: "backend-stop", expectedBackendResourceVersion: "resource-stop",
       expectedWorkloadDigest: stop!.admissionObservation!.workload.digest,
       expectedObservationDigest: stop!.admissionObservation!.digest, cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true,
-      backendDestroyed: true, artifactIds: [], warningCodes: [], error: null };
+      backendDestroyed: true, artifactIds: [artifactId!], warningCodes: [], error: null };
     assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken,
       { ...stopCompletion, expectedObservationDigest: `sha256:${"0".repeat(64)}` }), false);
     assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken, stopCompletion), true);
