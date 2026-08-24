@@ -102,7 +102,7 @@ func (f *fakeSandboxAdapter) ObserveAdmission(ctx context.Context, request sandb
 		record.ArtifactContractDigest != current.ArtifactContractDigest || !reflect.DeepEqual(record.Artifacts, current.Artifacts) {
 		return sandboxcontrol.AdmissionObservation{}, adapterConflict("observe record was not exact")
 	}
-	if current.State != sandboxcontrol.StateReady {
+	if current.State != sandboxcontrol.StateReady && len(request.Sources) == 0 {
 		return sandboxcontrol.AdmissionObservation{}, adapterConflict("admission is not ready")
 	}
 	if err := sandboxcontrol.ValidateAdmissionObservation(observation); err != nil {

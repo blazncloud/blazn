@@ -140,15 +140,22 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod collection API drifted", nil)
 	}
 	podCandidates := make([]observedPod, 0, 1)
+	relatedPods := 0
 	for _, candidate := range pods.Items {
 		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != podAPIVersion || candidate.Kind != podKind {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod collection contained an invalid identity", nil)
+		}
+		if hasAdmissionLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
+			relatedPods++
 		}
 		if hasControllerUID(candidate.Metadata.OwnerReferences, record.UID) {
 			podCandidates = append(podCandidates, candidate)
 		}
 	}
 	if len(podCandidates) == 0 {
+		if relatedPods != 0 {
+			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod owner identity changed", nil)
+		}
 		return AdmissionObservation{}, adapterError(ErrAdmissionPending, 409, "admission Pod is pending", nil)
 	}
 	if len(podCandidates) != 1 {
@@ -168,15 +175,22 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection API drifted", nil)
 	}
 	workloadCandidates := make([]observedWorkload, 0, 1)
+	relatedWorkloads := 0
 	for _, candidate := range workloads.Items {
 		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != AdmissionAPIVersion || candidate.Kind != workloadKind {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection contained an invalid identity", nil)
+		}
+		if hasAdmissionLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
+			relatedWorkloads++
 		}
 		if hasControllerUID(candidate.Metadata.OwnerReferences, pod.Metadata.UID) {
 			workloadCandidates = append(workloadCandidates, candidate)
 		}
 	}
 	if len(workloadCandidates) == 0 {
+		if relatedWorkloads != 0 {
+			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload owner identity changed", nil)
+		}
 		return AdmissionObservation{}, adapterError(ErrAdmissionPending, 409, "admission Workload is pending", nil)
 	}
 	if len(workloadCandidates) != 1 {
