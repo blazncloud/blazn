@@ -44,15 +44,26 @@ valid_registry_host() {
 valid_image_repository() {
   repository=$1
   [ -n "$repository" ] && [ "${#repository}" -le 255 ] || return 1
-  case "$repository" in ''|/*|*/|*//*) return 1 ;; esac
+  case "$repository" in */*) ;; *) return 1 ;; esac
+  case "$repository" in /*|*/|*//*) return 1 ;; esac
   first=1
   while :; do
     component=${repository%%/*}
-    if [ "$first" -eq 1 ] && [ "${component#*:}" != "$component" ]; then
-      host=${component%:*}
-      port=${component##*:}
-      valid_registry_host "$host" || return 1
-      valid_port "$port" || return 1
+    if [ "$first" -eq 1 ]; then
+      case "$component" in
+        *:*)
+          host=${component%:*}
+          port=${component##*:}
+          valid_registry_host "$host" || return 1
+          valid_port "$port" || return 1
+          ;;
+        *.*|localhost)
+          valid_registry_host "$component" || return 1
+          ;;
+        *)
+          return 1
+          ;;
+      esac
     else
       valid_image_component "$component" || return 1
     fi

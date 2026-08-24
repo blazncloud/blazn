@@ -41,7 +41,7 @@ expect_fail() {
 for script in "$ROOT"/*.sh; do sh -n "$script"; done
 render "$tmp/ip.yaml"
 [ "$(stat -c '%a' "$tmp/ip.yaml")" = 400 ]
-[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 8 ]
+[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 6 ]
 [ "$(grep -Fxc "        image: $IMAGE" "$tmp/ip.yaml")" -eq 2 ]
 grep -F '  replicas: 0' "$tmp/ip.yaml" >/dev/null
 grep -F '  namespace: blazn-poc-system' "$tmp/ip.yaml" >/dev/null
@@ -50,9 +50,13 @@ grep -F 'automountServiceAccountToken: false' "$tmp/ip.yaml" >/dev/null
 grep -F 'expirationSeconds: 600' "$tmp/ip.yaml" >/dev/null
 grep -F 'audience: https://kubernetes.default.svc' "$tmp/ip.yaml" >/dev/null
 grep -F 'command: ["/blazn-sandbox-controller-secret-init"]' "$tmp/ip.yaml" >/dev/null
+[ "$(grep -Fxc '        - /var/run/blazn-api-ca/ca.crt' "$tmp/ip.yaml")" -eq 1 ]
+[ "$(grep -Fxc '        - /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
 grep -F 'mountPath: /var/run/blazn-private' "$tmp/ip.yaml" >/dev/null
+[ "$(grep -Fxc '          mountPath: /var/run/blazn-api-ca' "$tmp/ip.yaml")" -eq 1 ]
+[ "$(grep -Fxc '          value: /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
 grep -F 'medium: Memory' "$tmp/ip.yaml" >/dev/null
-grep -F 'sizeLimit: 64Ki' "$tmp/ip.yaml" >/dev/null
+grep -F 'sizeLimit: 2Mi' "$tmp/ip.yaml" >/dev/null
 grep -F 'readOnlyRootFilesystem: true' "$tmp/ip.yaml" >/dev/null
 grep -F 'allowPrivilegeEscalation: false' "$tmp/ip.yaml" >/dev/null
 grep -F 'drop: ["ALL"]' "$tmp/ip.yaml" >/dev/null
@@ -75,6 +79,14 @@ port_image='registry.example:5000/blazn/sandbox-controller@sha256:aaaaaaaaaaaaaa
 render "$tmp/registry-port.yaml" BLAZN_CONTROLLER_IMAGE="$port_image"
 [ "$(grep -Fxc "        image: $port_image" "$tmp/registry-port.yaml")" -eq 2 ]
 
+portless_image='registry.example/blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+render "$tmp/registry-portless.yaml" BLAZN_CONTROLLER_IMAGE="$portless_image"
+[ "$(grep -Fxc "        image: $portless_image" "$tmp/registry-portless.yaml")" -eq 2 ]
+
+localhost_image='localhost/blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+render "$tmp/registry-localhost.yaml" BLAZN_CONTROLLER_IMAGE="$localhost_image"
+[ "$(grep -Fxc "        image: $localhost_image" "$tmp/registry-localhost.yaml")" -eq 2 ]
+
 repository_component_250=$(printf '%0250d' 0 | tr 0 a)
 repository_255="r.io/$repository_component_250"
 [ "${#repository_255}" -eq 255 ]
@@ -95,6 +107,13 @@ expect_fail tag-plus-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbo
 expect_fail empty-repository-segment BLAZN_CONTROLLER_IMAGE=registry.example//blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail trailing-repository-slash BLAZN_CONTROLLER_IMAGE=registry.example/blazn/@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail invalid-repository-component BLAZN_CONTROLLER_IMAGE=registry.example/blazn/-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail unqualified-repository BLAZN_CONTROLLER_IMAGE=blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail registry-without-repository BLAZN_CONTROLLER_IMAGE=registry.example@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail underscore-portless-registry-host BLAZN_CONTROLLER_IMAGE=registry_example.com/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail consecutive-dot-portless-registry-host BLAZN_CONTROLLER_IMAGE=registry..example/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail leading-hyphen-portless-registry-host BLAZN_CONTROLLER_IMAGE=-registry.example/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail trailing-hyphen-portless-registry-host BLAZN_CONTROLLER_IMAGE=registry-.example/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail oversized-portless-registry-label BLAZN_CONTROLLER_IMAGE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail empty-registry-host BLAZN_CONTROLLER_IMAGE=:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail leading-dot-registry-host BLAZN_CONTROLLER_IMAGE=.registry.example:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail trailing-dot-registry-host BLAZN_CONTROLLER_IMAGE=registry.example.:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -144,8 +163,12 @@ if grep -E 'hostPort:|hostAliases:|hostUsers:|hostNetwork: true|hostPID: true|ho
   printf 'template contains forbidden host coupling\n' >&2
   exit 1
 fi
-if grep -E 'resources: \["(secrets|nodes|customresourcedefinitions|validatingwebhookconfigurations|mutatingwebhookconfigurations)"\]' "$ROOT/controller.yaml.in" >/dev/null; then
+if grep -E 'resources: \["(secrets|nodes|runtimeclasses|customresourcedefinitions|validatingwebhookconfigurations|mutatingwebhookconfigurations)"\]' "$ROOT/controller.yaml.in" >/dev/null; then
   printf 'template grants forbidden resources\n' >&2
+  exit 1
+fi
+if grep -F 'resources: ["sandboxes/status"]' "$ROOT/controller.yaml.in" >/dev/null; then
+  printf 'template grants unused Sandbox status subresource authority\n' >&2
   exit 1
 fi
 if grep -F '["*"]' "$ROOT/controller.yaml.in" >/dev/null; then
@@ -156,13 +179,16 @@ grep -F 'resources: ["sandboxes"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'verbs: ["create", "delete", "get", "list", "patch"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'resources: ["pods"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'resources: ["workloads"]' "$ROOT/controller.yaml.in" >/dev/null
-grep -F 'resources: ["runtimeclasses"]' "$ROOT/controller.yaml.in" >/dev/null
-grep -F 'verbs: ["get"]' "$ROOT/controller.yaml.in" >/dev/null
-grep -F 'verbs: ["list"]' "$ROOT/controller.yaml.in" >/dev/null
+[ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list", "patch"]' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -Fxc '  verbs: ["list"]' "$ROOT/controller.yaml.in")" -eq 2 ]
+[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 3 ]
+[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 3 ]
 [ "$(grep -c '^kind: Role$' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -c '^kind: RoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -c '^kind: ClusterRole$' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -c '^kind: ClusterRoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
+if grep -E '^kind: ClusterRole(Binding)?$' "$ROOT/controller.yaml.in" >/dev/null; then
+  printf 'template grants cluster-scoped RBAC\n' >&2
+  exit 1
+fi
 
 # These assertions intentionally match literal Dockerfile build arguments.
 # shellcheck disable=SC2016
