@@ -34,12 +34,17 @@ for required in \
   '/assets/v1/instance/policy/label/icon' \
   '/assets/v1/instance/policy/label/icon/dark' \
   '/admin/v1/policies/label/_activate' \
+  '/admin/v1/policies/label/_preview' \
   '--retry-max-time 30' \
   '--connect-timeout 3' \
   '--max-time 15' \
   'token_size=' \
   'token_size" -gt 4096' \
   "grep -Eq '^[A-Za-z0-9._~-]+" \
+  'read_request()' \
+  'write_request()' \
+  'cmp -s "$current" "$source_file"' \
+  'if ! active_matches "$actual"' \
   'stat -c '\''%u:%a:%h'\'''; do
   grep -F -- "$required" "$installer" >/dev/null
 done
