@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -14,6 +15,9 @@ import (
 )
 
 type NodeEnrollOptions = nodepkg.CommandEnrollOptions
+
+var nodeUUIDPatternCLI = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
 	List(context.Context, string) (client.NodeList, error)
@@ -75,7 +79,7 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 		}
 		return ExitSuccess
 	case "get", "capacity":
-		if len(args) != 2 || !uuidPatternCLI(args[1]) {
+		if len(args) != 2 || !nodeUUIDPatternCLI.MatchString(args[1]) {
 			return a.nodeUsage(format, fmt.Errorf("node %s requires NODE", args[0]))
 		}
 		result, err := commands.Get(ctx, args[1])
