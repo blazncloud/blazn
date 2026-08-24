@@ -29,6 +29,7 @@ var (
 	ErrLifecycleConflict    = state.ErrLifecycleConflict
 	ErrLifecycleDeadline    = errors.New("proxy lifecycle deadline exceeded")
 	ErrCARemovalUnsupported = errors.New("proxy CA removal is unsupported")
+	ErrEnvironmentChanged   = errors.New("proxy environment changed before publication")
 	ErrRecovery             = state.ErrRecoveryRequired
 	errActivationRace       = errors.New("proxy activation lost its pre-publication lifecycle fence")
 )
@@ -45,7 +46,10 @@ type Environment interface {
 	SessionIdentity(context.Context) (string, error)
 	ResolveMode(string) (string, string, error)
 	Snapshot(context.Context, []string) (map[string]PriorValue, error)
-	Publish(context.Context, string, []PublishedValue) error
+	// Publish atomically replaces all five protected variables only when their
+	// current values still match the complete snapshot. ErrEnvironmentChanged
+	// guarantees that no variable was mutated.
+	Publish(context.Context, string, map[string]PriorValue, []PublishedValue) error
 	BaseEnvironment() []string
 }
 
@@ -167,6 +171,12 @@ func (p PersistentStore) Activate(ctx context.Context, journal *state.Journal, m
 				callbackErr = fmt.Errorf("proxy publication panicked")
 			}
 			if callbackErr != nil {
+				if errors.Is(callbackErr, ErrEnvironmentChanged) {
+					if clearErr := tx.Clear(state.ExpectedActivation{Generation: journal.Generation, State: "publishing"}); clearErr != nil {
+						callbackErr = errors.Join(ErrRecovery, callbackErr, clearErr)
+					}
+					return
+				}
 				recovery := publishing
 				recovery.State = "recovery_required"
 				recovery.UpdatedAt = publishing.UpdatedAt.Add(time.Nanosecond)
@@ -201,8 +211,9 @@ type Runner interface {
 	Run(context.Context, []string, []string) (int, error)
 }
 type Event = proxycontract.Event
+type EventSink func(Event) error
 type EventReader interface {
-	Read(context.Context, string, bool) ([]Event, error)
+	Read(context.Context, string, bool, EventSink) error
 }
 
 type Dependencies struct {
@@ -532,12 +543,18 @@ func (s *Service) activate(ctx context.Context, command string, policy proxycont
 	if err != nil {
 		return s.result(command, "failed", "inactive", 7), err
 	}
+	if err := validateEnvironmentSnapshot(prior); err != nil {
+		return s.result(command, "failed", "inactive", 7), err
+	}
 	now := s.deps.Now().UTC()
 	journal := &state.Journal{SchemaVersion: state.SchemaVersion, ActivationID: activationID, Nonce: nonce, Generation: 1, State: "prepared", OwnerUID: s.deps.OwnerUID, Platform: s.deps.Environment.Platform(), Mode: mode, SessionIdentity: session, Policy: state.PolicyIdentity{ID: policy.ID, Version: int64(policy.Version), Digest: digest}, Binary: s.deps.Binary, Listener: identity, CA: nil, CreatedAt: now, UpdatedAt: now}
 	journal.Environment = journalEnvironment(prior, desired)
 	journal.RollbackActions = rollbackActions(mode)
-	publish := func() error { return s.deps.Environment.Publish(ctx, mechanism, desired) }
+	publish := func() error { return s.deps.Environment.Publish(ctx, mechanism, clonePriorValues(prior), desired) }
 	if err := s.deps.Store.Activate(ctx, journal, mechanism, publish); err != nil {
+		if errors.Is(err, ErrEnvironmentChanged) && !errors.Is(err, ErrRecovery) {
+			return s.result(command, "conflict", "inactive", 6), errors.Join(ErrLifecycleConflict, err)
+		}
 		return s.result(command, "recovery_required", "recovery_required", 9), errors.Join(ErrRecovery, err)
 	}
 	s.mu.Lock()
@@ -836,23 +853,32 @@ func (s *Service) Routes(_ context.Context, policyPath string) ([]Route, error) 
 	sort.Slice(values, func(i, j int) bool { return values[i].ID < values[j].ID })
 	return values, nil
 }
-func (s *Service) Tail(ctx context.Context, cursor string, follow bool) ([]Event, error) {
+func (s *Service) Tail(ctx context.Context, cursor string, follow bool, emit EventSink) error {
+	if emit == nil {
+		return errors.New("proxy event sink is required")
+	}
 	if s.deps.Events == nil {
-		return []Event{}, nil
+		return nil
 	}
-	events, err := s.deps.Events.Read(ctx, cursor, follow)
-	if err != nil {
-		return nil, err
-	}
-	if len(events) > 1000 {
-		return nil, errors.New("proxy event batch exceeds limit")
-	}
-	for _, event := range events {
-		if err := event.Validate(); err != nil {
-			return nil, errors.New("proxy event is outside the redacted contract")
+	count := 0
+	var sinkErr error
+	readErr := s.deps.Events.Read(ctx, cursor, follow, func(event Event) error {
+		if sinkErr != nil {
+			return sinkErr
 		}
-	}
-	return events, nil
+		count++
+		if !follow && count > 1000 {
+			sinkErr = errors.New("proxy event batch exceeds limit")
+			return sinkErr
+		}
+		if err := event.Validate(); err != nil {
+			sinkErr = errors.New("proxy event is outside the redacted contract")
+			return sinkErr
+		}
+		sinkErr = emit(event)
+		return sinkErr
+	})
+	return errors.Join(readErr, sinkErr)
 }
 func (s *Service) result(command, status, stateValue string, exit int) Result {
 	return Result{Command: command, ContractVersion: ContractVersion, Status: status, State: stateValue, Timestamp: s.deps.Now().UTC().Format(time.RFC3339), ExitCode: exit}
@@ -917,6 +943,24 @@ func journalEnvironment(prior map[string]PriorValue, desired []PublishedValue) [
 		result = append(result, state.JournalEnvironment{Name: item.Name, PriorPresent: before.Present, PriorValue: priorValue, DesiredValueDigest: digest(item.Value), ActivationMarker: item.Marker, RollbackAction: action})
 	}
 	return result
+}
+func validateEnvironmentSnapshot(prior map[string]PriorValue) error {
+	if len(prior) != len(state.EnvironmentNames) {
+		return errors.New("proxy environment snapshot is incomplete")
+	}
+	for _, name := range state.EnvironmentNames {
+		if _, ok := prior[name]; !ok {
+			return errors.New("proxy environment snapshot is incomplete")
+		}
+	}
+	return nil
+}
+func clonePriorValues(values map[string]PriorValue) map[string]PriorValue {
+	copy := make(map[string]PriorValue, len(values))
+	for name, value := range values {
+		copy[name] = value
+	}
+	return copy
 }
 func rollbackActions(mode string) []state.RollbackAction {
 	values := []state.RollbackAction{{Ordinal: 1, Operation: "restore_environment", Target: "documented_proxy_variables"}, {Ordinal: 2, Operation: "stop_listener", Target: "exact_listener_identity"}}

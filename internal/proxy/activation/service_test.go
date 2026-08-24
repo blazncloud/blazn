@@ -44,8 +44,10 @@ type fakeEnvironment struct {
 	resolvedMode   string
 	session        string
 	afterPublish   func()
+	beforePublish  func()
 	beforeSnapshot func()
 	beforeCAS      func()
+	omitSnapshot   string
 }
 
 func newFakeEnvironment() *fakeEnvironment {
@@ -82,10 +84,23 @@ func (f *fakeEnvironment) Snapshot(_ context.Context, names []string) (map[strin
 		value, ok := f.values[name]
 		result[name] = PriorValue{ok, value}
 	}
+	delete(result, f.omitSnapshot)
 	return result, nil
 }
-func (f *fakeEnvironment) Publish(_ context.Context, _ string, values []PublishedValue) error {
+func (f *fakeEnvironment) Publish(_ context.Context, _ string, prior map[string]PriorValue, values []PublishedValue) error {
 	f.publishCalls++
+	if f.beforePublish != nil {
+		operation := f.beforePublish
+		f.beforePublish = nil
+		operation()
+	}
+	for _, name := range state.EnvironmentNames {
+		expected, ok := prior[name]
+		value, present := f.values[name]
+		if !ok || present != expected.Present || present && value != expected.Value {
+			return ErrEnvironmentChanged
+		}
+	}
 	for _, item := range values {
 		f.values[item.Name] = item.Value
 		f.markers[item.Name] = item.Marker
@@ -252,6 +267,10 @@ func (f *fakeStore) Activate(_ context.Context, journal *state.Journal, _ string
 	}
 	f.journal.State = "publishing"
 	if err := publish(); err != nil {
+		if errors.Is(err, ErrEnvironmentChanged) {
+			f.journal = nil
+			return err
+		}
 		f.journal.State = "recovery_required"
 		return err
 	}
@@ -371,8 +390,8 @@ func (f *fakeRunner) Run(_ context.Context, argv, environment []string) (int, er
 
 type fakeEvents struct{}
 
-func (fakeEvents) Read(context.Context, string, bool) ([]Event, error) {
-	return []Event{{EventID: "90000000-0000-4000-8000-000000000001", Cursor: "1", Timestamp: "2026-08-22T00:00:00Z", Type: proxycontract.EventRequestStarted, ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", LogicalRequestID: "90000000-0000-4000-8000-000000000002", Attempt: 1, Protocol: proxycontract.ProtocolOpenAIChat, ModelAlias: "company-assistant", Policy: proxycontract.PolicyIdentity{ID: "11111111-1111-4111-8111-111111111111", Version: 1, Digest: testDigest}, RouteID: "33333333-3333-4333-8333-333333333333", DestinationClass: proxycontract.DestinationLocalNode, Outcome: proxycontract.OutcomeSuccess, ReasonCode: proxycontract.EventReasonNone, LatencyMS: 0}}, nil
+func (fakeEvents) Read(_ context.Context, _ string, _ bool, emit EventSink) error {
+	return emit(Event{EventID: "90000000-0000-4000-8000-000000000001", Cursor: "1", Timestamp: "2026-08-22T00:00:00Z", Type: proxycontract.EventRequestStarted, ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", LogicalRequestID: "90000000-0000-4000-8000-000000000002", Attempt: 1, Protocol: proxycontract.ProtocolOpenAIChat, ModelAlias: "company-assistant", Policy: proxycontract.PolicyIdentity{ID: "11111111-1111-4111-8111-111111111111", Version: 1, Digest: testDigest}, RouteID: "33333333-3333-4333-8333-333333333333", DestinationClass: proxycontract.DestinationLocalNode, Outcome: proxycontract.OutcomeSuccess, ReasonCode: proxycontract.EventReasonNone, LatencyMS: 0})
 }
 
 type integrationCredentials struct{}
@@ -468,6 +487,69 @@ func TestOnIsJournaledIdempotentAndOffRestoresDirectConnectivity(t *testing.T) {
 	}
 	if environment.values["OPENAI_API_KEY"] != "prior-openai" || environment.values["HTTP_PROXY"] != "direct" || store.journal != nil {
 		t.Fatal("off did not restore exact direct state")
+	}
+}
+
+func TestActivationPublishCASConflictIsAtomic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "account", ".local", "share", "blazn", "proxy")
+	storeValue, err := newStateStoreAt(root, os.Getuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := newFakeEnvironment()
+	environment.beforePublish = func() { environment.values["OPENAI_API_KEY"] = "concurrent-user-key" }
+	controller := &fakeController{proofs: map[int]state.LiveListenerProof{}}
+	factory := &fakeFactory{listeners: map[int]*fakeListener{}, controller: controller}
+	service, err := New(Dependencies{
+		Store: PersistentStore{Value: storeValue}, Environment: environment, Listeners: factory, Controller: controller,
+		Policies: &fakePolicies{policy: fixturePolicy(t), digest: testDigest}, Runner: &fakeRunner{}, Events: fakeEvents{},
+		Binary: state.BinaryIdentity{Path: "/usr/local/bin/blazn", Digest: testDigest}, OwnerUID: os.Getuid(), Now: time.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if !errors.Is(err, ErrLifecycleConflict) || errors.Is(err, ErrRecovery) || result.Status != "conflict" || result.State != "inactive" || result.ExitCode != 6 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if environment.values["OPENAI_API_KEY"] != "concurrent-user-key" || len(environment.values) != 2 || len(environment.markers) != 0 {
+		t.Fatalf("conflicting publication mutated environment: values=%v markers=%v", environment.values, environment.markers)
+	}
+	current, reconcileErr := storeValue.Reconcile(context.Background())
+	if reconcileErr != nil || current.State != state.ReconciliationInactive {
+		t.Fatalf("conflicting publication left state: current=%+v err=%v", current, reconcileErr)
+	}
+	for _, listener := range factory.listeners {
+		if listener.alive || !listener.stopped {
+			t.Fatal("conflicting publication left listener running")
+		}
+	}
+}
+
+func TestActivationRejectsIncompleteEnvironmentSnapshot(t *testing.T) {
+	service, store, environment, factory, _, _ := testService(t)
+	environment.omitSnapshot = "ANTHROPIC_AUTH_TOKEN"
+	result, err := service.On(context.Background(), "policy.json", "auto")
+	if err == nil || result.State != "inactive" || store.journal != nil || environment.publishCalls != 0 {
+		t.Fatalf("result=%+v err=%v journal=%v publishes=%d", result, err, store.journal, environment.publishCalls)
+	}
+	for _, listener := range factory.listeners {
+		if listener.alive || !listener.stopped {
+			t.Fatal("incomplete snapshot left listener running")
+		}
+	}
+}
+
+func TestRollbackPreservesPostPublicationEnvironmentEdit(t *testing.T) {
+	service, store, environment, _, _, _ := testService(t)
+	if _, err := service.On(context.Background(), "policy.json", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	environment.values["OPENAI_API_KEY"] = "new-user-key"
+	environment.markers["OPENAI_API_KEY"] = "user-owned-marker"
+	result, err := service.Off(context.Background(), false)
+	if !errors.Is(err, ErrRecovery) || result.State != "recovery_required" || environment.values["OPENAI_API_KEY"] != "new-user-key" || store.journal == nil {
+		t.Fatalf("result=%+v err=%v values=%v journal=%+v", result, err, environment.values, store.journal)
 	}
 }
 
@@ -975,7 +1057,11 @@ func TestAbruptListenerLossDoctorRoutesAndTail(t *testing.T) {
 	if err != nil || len(routes) != 2 || strings.Contains(fmt.Sprintf("%+v", routes), "node-route://") || strings.Contains(fmt.Sprintf("%+v", routes), "workspace-vault://") {
 		t.Fatalf("routes=%+v err=%v", routes, err)
 	}
-	events, err := service.Tail(context.Background(), "", false)
+	events := []Event{}
+	err = service.Tail(context.Background(), "", false, func(event Event) error {
+		events = append(events, event)
+		return nil
+	})
 	if err != nil || len(events) != 1 || strings.Contains(fmt.Sprintf("%+v", events), "secret") {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}

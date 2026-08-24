@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/proxy/activation"
 	"github.com/blazncloud/blazn/internal/proxycontract"
@@ -17,6 +19,8 @@ type fakeProxyCommands struct {
 	follow, yes, removeCA        bool
 	result                       activation.Result
 	err                          error
+	tailEmitted                  chan struct{}
+	tailRelease                  chan struct{}
 }
 
 func (f *fakeProxyCommands) On(_ context.Context, policy, mode string) (activation.Result, error) {
@@ -39,9 +43,34 @@ func (f *fakeProxyCommands) Routes(_ context.Context, policy string) ([]activati
 	f.method, f.policy = "routes", policy
 	return []activation.Route{{ID: "local", DestinationClass: "local_node", DestinationProtocol: "openai-chat", Endpoint: "http://127.0.0.1:11434/v1"}}, f.err
 }
-func (f *fakeProxyCommands) Tail(_ context.Context, cursor string, follow bool) ([]activation.Event, error) {
+func (f *fakeProxyCommands) Tail(_ context.Context, cursor string, follow bool, emit activation.EventSink) error {
 	f.method, f.cursor, f.follow = "tail", cursor, follow
-	return []activation.Event{{EventID: "90000000-0000-4000-8000-000000000001", Cursor: "2", Timestamp: "2026-08-22T00:00:00Z", Type: proxycontract.EventRequestStarted, ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", LogicalRequestID: "90000000-0000-4000-8000-000000000002", Attempt: 1, Protocol: proxycontract.ProtocolOpenAIChat, ModelAlias: "company-assistant", Policy: proxycontract.PolicyIdentity{ID: "11111111-1111-4111-8111-111111111111", Version: 1, Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, RouteID: "33333333-3333-4333-8333-333333333333", DestinationClass: proxycontract.DestinationLocalNode, Outcome: proxycontract.OutcomeSuccess, ReasonCode: proxycontract.EventReasonNone, LatencyMS: 0}}, f.err
+	if err := emit(activation.Event{EventID: "90000000-0000-4000-8000-000000000001", Cursor: "2", Timestamp: "2026-08-22T00:00:00Z", Type: proxycontract.EventRequestStarted, ActivationID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", LogicalRequestID: "90000000-0000-4000-8000-000000000002", Attempt: 1, Protocol: proxycontract.ProtocolOpenAIChat, ModelAlias: "company-assistant", Policy: proxycontract.PolicyIdentity{ID: "11111111-1111-4111-8111-111111111111", Version: 1, Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, RouteID: "33333333-3333-4333-8333-333333333333", DestinationClass: proxycontract.DestinationLocalNode, Outcome: proxycontract.OutcomeSuccess, ReasonCode: proxycontract.EventReasonNone, LatencyMS: 0}); err != nil {
+		return err
+	}
+	if f.tailEmitted != nil {
+		close(f.tailEmitted)
+	}
+	if f.tailRelease != nil {
+		<-f.tailRelease
+	}
+	return f.err
+}
+
+type synchronizedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(value)
+}
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
 func (f *fakeProxyCommands) Run(_ context.Context, policy string, argv []string) (activation.Result, error) {
 	f.method, f.policy, f.argv = "run", policy, append([]string(nil), argv...)
@@ -117,6 +146,12 @@ func TestProxyCLIRejectsAmbiguousFlagsAndMapsStableErrors(t *testing.T) {
 		t.Fatalf("scope code=%d out=%s", code, stdout)
 	}
 	stdout.Reset()
+	fake.err = activation.ErrSessionUnsupported
+	fake.result = activation.Result{ExitCode: 7}
+	if code := app.Run([]string{"proxy", "on", "--policy", "p", "--mode", "session", "--output=json"}); code != 7 || !strings.Contains(stdout.String(), "PROXY_SESSION_UNSUPPORTED") {
+		t.Fatalf("session unsupported code=%d out=%s", code, stdout)
+	}
+	stdout.Reset()
 	fake.err = errors.Join(activation.ErrLifecycleConflict, errors.New("reservation contained sk-proj-secret"))
 	fake.result = activation.Result{ExitCode: 6}
 	if code := app.Run([]string{"proxy", "status", "--output=json"}); code != 6 || !strings.Contains(stdout.String(), "PROXY_LIFECYCLE_CONFLICT") || strings.Contains(stdout.String(), "sk-proj-secret") {
@@ -127,6 +162,37 @@ func TestProxyCLIRejectsAmbiguousFlagsAndMapsStableErrors(t *testing.T) {
 	fake.result = activation.Result{ExitCode: 8}
 	if code := app.Run([]string{"proxy", "off", "--output=json"}); code != 8 || !strings.Contains(stdout.String(), "PROXY_LIFECYCLE_DEADLINE") || strings.Contains(stdout.String(), "adapter secret") {
 		t.Fatalf("lifecycle deadline code=%d out=%s", code, stdout)
+	}
+}
+
+func TestProxyTailFollowWritesFirstEventBeforeProducerCompletes(t *testing.T) {
+	fake := &fakeProxyCommands{tailEmitted: make(chan struct{}), tailRelease: make(chan struct{})}
+	stdout, stderr := &synchronizedBuffer{}, &bytes.Buffer{}
+	app := New(stdout, stderr, BuildInfo{})
+	app.proxy = func() (proxyCommands, error) { return fake, nil }
+	done := make(chan int, 1)
+	go func() { done <- app.Run([]string{"--output=jsonl", "proxy", "tail", "--follow"}) }()
+	select {
+	case <-fake.tailEmitted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first streamed event")
+	}
+	if !strings.Contains(stdout.String(), `"type":"request_started"`) {
+		t.Fatalf("first event was not observable before completion: %s", stdout.String())
+	}
+	select {
+	case code := <-done:
+		t.Fatalf("tail completed before producer release with code %d", code)
+	default:
+	}
+	close(fake.tailRelease)
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("tail code=%d stderr=%s", code, stderr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tail did not complete after producer release")
 	}
 }
 

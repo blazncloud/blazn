@@ -20,7 +20,8 @@ blazn proxy reset --yes [--remove-ca]
 ```
 
 `run` passes exact argv without a shell. JSON Lines are accepted only by
-`tail`. Route output excludes credential references. Tail accepts only bounded
+`tail`, and `tail --follow` requires JSON Lines so each validated event can be
+emitted with backpressure as it arrives. Route output excludes credential references. Tail accepts only bounded
 fixed operational event fields; arbitrary content cannot enter its output.
 `--remove-ca` is reserved but returns `PROXY_CA_REMOVAL_UNSUPPORTED` in this
 core lane; it never reports success until a later platform adapter implements
@@ -30,7 +31,9 @@ receipted trust removal.
 
 The core reserves the per-user lifecycle fence, performs policy/listener
 preflight outside the held lock, snapshots exactly the five documented
-variables, and then reacquires the fence. It writes and fsyncs the protected
+variables, and then reacquires the fence. Publication compare-and-sets the
+complete snapshot atomically, so a concurrent user edit wins without a partial
+write. It writes and fsyncs the protected
 `prepared` journal before publication, advances through `publishing`, and only
 then writes the bound `active` journal and redundant receipt. A publication
 error or recovered panic leaves `recovery_required` evidence. A crash after the

@@ -16,7 +16,7 @@ type proxyCommands interface {
 	Status(context.Context) (activation.Result, error)
 	Doctor(context.Context, string) (activation.Result, error)
 	Routes(context.Context, string) ([]activation.Route, error)
-	Tail(context.Context, string, bool) ([]activation.Event, error)
+	Tail(context.Context, string, bool, activation.EventSink) error
 	Run(context.Context, string, []string) (activation.Result, error)
 	Reset(context.Context, bool, bool) (activation.Result, error)
 }
@@ -91,17 +91,31 @@ func (a *App) runProxy(format OutputFormat, args []string) int {
 		if err != nil || len(values.positionals) != 0 {
 			return a.proxyUsage(format, "proxy tail accepts [--cursor CURSOR] [--follow]")
 		}
-		events, callErr := runtime.Tail(ctx, values.flags["cursor"], values.present["follow"])
+		follow := values.present["follow"]
+		if follow && format != OutputJSONL {
+			return a.proxyUsage(format, "proxy tail --follow requires --output jsonl")
+		}
+		events := make([]activation.Event, 0)
+		writeFailure := 0
+		callErr := runtime.Tail(ctx, values.flags["cursor"], follow, func(event activation.Event) error {
+			if format == OutputJSONL {
+				if code := a.writeJSON(event); code != ExitSuccess {
+					writeFailure = code
+					return errors.New("proxy tail output failed")
+				}
+				return nil
+			}
+			events = append(events, event)
+			return nil
+		})
+		if writeFailure != 0 {
+			return writeFailure
+		}
 		if callErr != nil {
 			return a.writeProxyError(format, callErr, 1)
 		}
 		if format == OutputJSONL {
-			for _, event := range events {
-				if code := a.writeJSON(event); code != 0 {
-					return code
-				}
-			}
-			return 0
+			return ExitSuccess
 		}
 		if format == OutputJSON {
 			return a.writeJSON(map[string]any{"command": "proxy tail", "contractVersion": activation.ContractVersion, "status": "success", "state": "active", "timestamp": time.Now().UTC().Format(time.RFC3339), "exitCode": 0, "events": events})
@@ -250,6 +264,10 @@ func publicProxyError(err error, suggested int) (int, string, string) {
 		code = "PROXY_ALREADY_ACTIVE_DIFFERENT_SCOPE"
 		message = "proxy is already active in a different mode or OS session"
 		exit = 6
+	case errors.Is(err, activation.ErrSessionUnsupported):
+		code = "PROXY_SESSION_UNSUPPORTED"
+		message = "proxy session activation is unsupported"
+		exit = 7
 	case errors.Is(err, activation.ErrRecovery):
 		code = "RECOVERY_REQUIRED"
 		message = "proxy recovery is required"
