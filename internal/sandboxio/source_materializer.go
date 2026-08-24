@@ -192,7 +192,7 @@ func openEmptyOrMaterializedDestination(destination string) (*os.Root, []os.DirE
 	if err != nil {
 		return nil, nil, protocolError("source_destination_unsafe", err)
 	}
-	entries, err := root.ReadDir(".")
+	entries, err := readRootDir(root, ".")
 	if err != nil {
 		root.Close()
 		return nil, nil, protocolError("source_destination_unsafe", err)
@@ -306,7 +306,7 @@ func collectTreeFiles(repository *git.Repository, tree *object.Tree, prefix stri
 }
 
 func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceMaterialization) error {
-	entries, err := root.ReadDir(".")
+	entries, err := readRootDir(root, ".")
 	if err != nil || len(entries) == 0 {
 		return protocolError("source_materialization_changed", err)
 	}
@@ -317,7 +317,7 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		items, err := root.ReadDir(directory)
+		items, err := readRootDir(root, directory)
 		if err != nil {
 			return err
 		}
@@ -369,6 +369,15 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 		return protocolError("source_materialization_changed", err)
 	}
 	return nil
+}
+
+func readRootDir(root *os.Root, name string) ([]os.DirEntry, error) {
+	directory, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	entries, readErr := directory.ReadDir(-1)
+	return entries, errors.Join(readErr, directory.Close())
 }
 
 func sourceReceiptDigest(receipt SourceMaterializationReceipt) (string, error) {
