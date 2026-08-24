@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { renderLegacyActivationPage, renderLegacyAuthResult, sendHtml } from "./auth-page.js";
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db.js";
 import { HttpError, jsonBody, requireExactKeys, requiredSecret, requiredString, sendJson } from "./http.js";
@@ -102,18 +103,12 @@ async function startDeviceAuthorization(request: IncomingMessage, response: Serv
   });
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
-}
-
 async function activationPage(response: ServerResponse, code: string): Promise<void> {
   const escaped = code.replace(/[^A-Z0-9-]/g, "");
   const authorization = await database.query<{ device_name: string; platform: string }>("SELECT device_name, platform FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [escaped]);
   const device = authorization.rows[0];
   if (!device) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Authorize Blazn</title></head><body><main><h1>Authorize Blazn CLI</h1><p>Device: <strong>${escapeHtml(device.device_name)}</strong></p><p>Platform: ${escapeHtml(device.platform)}</p><p>Confirm that this code matches the CLI before continuing.</p><form method="post" action="/v1/auth/device/approve"><label>Code <input name="user_code" value="${escaped}" readonly required></label><label>Account login <input name="email" type="email" autocomplete="username" required></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button>Authorize this device</button></form></main></body></html>`;
-  response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'", "x-frame-options": "DENY", "referrer-policy": "no-referrer" });
-  response.end(html);
+  sendHtml(response, 200, renderLegacyActivationPage({ code: escaped, deviceName: device.device_name, platform: device.platform }));
 }
 
 async function formBody(request: IncomingMessage, limit = 64 * 1024): Promise<Record<string, unknown>> {
@@ -164,9 +159,7 @@ async function approveDevice(request: IncomingMessage, response: ServerResponse)
     client.release();
   }
   if (contentType.startsWith("application/x-www-form-urlencoded")) {
-    const html = "<!doctype html><html><body><h1>Device authorized</h1><p>You may return to the CLI.</p></body></html>";
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html), "cache-control": "no-store" });
-    response.end(html);
+    sendHtml(response, 200, renderLegacyAuthResult("Device authorized", "This machine is now connected to your Blazn account.", true));
   } else {
     sendJson(response, 200, { status: "approved" });
   }
