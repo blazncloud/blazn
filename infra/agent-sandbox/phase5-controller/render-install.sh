@@ -153,7 +153,9 @@ valid_port "$BLAZN_KUBERNETES_API_PORT" || fail "BLAZN_KUBERNETES_API_PORT is in
 valid_port "$BLAZN_BEN1_POSTGRES_PORT" || fail "BLAZN_BEN1_POSTGRES_PORT is invalid"
 valid_port "$BLAZN_OBJECT_ENDPOINT_PORT" || fail "BLAZN_OBJECT_ENDPOINT_PORT is invalid"
 printf '%s\n' "$BLAZN_OBJECT_REGION" | LC_ALL=C grep -Eq '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' || fail "BLAZN_OBJECT_REGION is invalid"
-[ "${#BLAZN_OBJECT_BUCKET}" -ge 3 ] && [ "${#BLAZN_OBJECT_BUCKET}" -le 63 ] && valid_registry_host "$BLAZN_OBJECT_BUCKET" || fail "BLAZN_OBJECT_BUCKET is invalid"
+if [ "${#BLAZN_OBJECT_BUCKET}" -lt 3 ] || [ "${#BLAZN_OBJECT_BUCKET}" -gt 63 ] || ! valid_registry_host "$BLAZN_OBJECT_BUCKET"; then
+  fail "BLAZN_OBJECT_BUCKET is invalid"
+fi
 printf '%s\n' "$BLAZN_KUBERNETES_API_AUDIENCE" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9./:_-]{0,252}$' || fail "BLAZN_KUBERNETES_API_AUDIENCE is invalid"
 
 case "$BLAZN_DATABASE_ENDPOINT_KIND" in
