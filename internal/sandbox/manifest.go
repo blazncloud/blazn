@@ -62,7 +62,7 @@ func validRegistryAuthority(authority string) bool {
 			return false
 		}
 		value, err := strconv.Atoi(port)
-		if err != nil || value < 1 || value > 65535 {
+		if err != nil || value < 1 || value > 65535 || strconv.Itoa(value) != port {
 			return false
 		}
 	}

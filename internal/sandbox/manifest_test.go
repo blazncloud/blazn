@@ -63,6 +63,9 @@ func TestImmutableOCIReferenceUsesCanonicalRegistryAndRepositoryIdentity(t *test
 	digest := "sha256:" + strings.Repeat("a", 64)
 	for _, value := range []string{
 		"registry.example.test/blazn/sandbox@" + digest,
+		"registry.example.test:80/blazn/sandbox@" + digest,
+		"registry.example.test:443/blazn/sandbox__image@" + digest,
+		"registry.example.test/blazn/sandbox--image@" + digest,
 		"localhost:5000/blazn/sandbox@" + digest,
 		"127.0.0.1:5000/blazn/sandbox@" + digest,
 	} {
@@ -75,6 +78,7 @@ func TestImmutableOCIReferenceUsesCanonicalRegistryAndRepositoryIdentity(t *test
 		"registry.example.test/blazn/sandbox:latest@" + digest,
 		"registry.example.test:0/blazn/sandbox@" + digest,
 		"registry.example.test:65536/blazn/sandbox@" + digest,
+		"registry.example.test:080/blazn/sandbox@" + digest,
 		"bad-.example.test/blazn/sandbox@" + digest,
 		"registry.example.test/blazn//sandbox@" + digest,
 		"REGISTRY.example.test/blazn/sandbox@" + digest,
