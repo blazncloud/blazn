@@ -63,6 +63,12 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 		"manifest credential": func(bundle *evidenceBundle) {
 			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"access_token":"redacted"}`)
 		},
+		"manifest bearer value": func(bundle *evidenceBundle) {
+			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"note":"Bearer abcdefghijklmnop"}`)
+		},
+		"manifest signed URL value": func(bundle *evidenceBundle) {
+			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"download":"https://example.test/object?X-Amz-Signature=abcdef"}`)
+		},
 		"duplicate artifact ID": func(bundle *evidenceBundle) {
 			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `","` + testArtifactID + `"]}`)
 		},
@@ -85,6 +91,9 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 		"windows separator":       func(bundle *evidenceBundle) { bundle.Files[0].Path = `dir\escape` },
 		"credential file": func(bundle *evidenceBundle) {
 			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte(`{"password":"redacted"}`))
+		},
+		"plaintext credential file": func(bundle *evidenceBundle) {
+			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte(`authorization=super-secret-value`))
 		},
 		"invalid base64": func(bundle *evidenceBundle) { bundle.Files[0].ContentBase64 = "%%%" },
 		"oversize file": func(bundle *evidenceBundle) {
@@ -172,6 +181,24 @@ func TestWriteEvidenceRefusesExistingAndSymlinkedTargets(t *testing.T) {
 				t.Fatalf("pre-existing path changed: %q %v", content, err)
 			}
 		})
+	}
+}
+
+func TestWriteEvidenceRefusesSymlinkedParentComponent(t *testing.T) {
+	bundle := evidenceBundle{
+		Manifest: []byte(`{"artifactIds":["` + testArtifactID + `"]}`),
+		Files:    []evidenceFile{{ArtifactID: testArtifactID, Path: "artifact", ContentBase64: "eA=="}},
+	}
+	realParent := t.TempDir()
+	linkedParent := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeEvidence(filepath.Join(linkedParent, "export"), testBuildID, bundle); err == nil {
+		t.Fatal("symlinked parent component accepted")
+	}
+	if _, err := os.Lstat(filepath.Join(realParent, "export")); !os.IsNotExist(err) {
+		t.Fatalf("output escaped through symlinked parent: %v", err)
 	}
 }
 

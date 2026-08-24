@@ -63,7 +63,7 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 	case "doctor":
 		output = helpOutput{Command: "doctor", Usage: "blazn doctor [--output human|json]", Summary: "Run deterministic checks without network access."}
 	case "dev":
-		output = helpOutput{Command: "dev", Usage: "blazn dev validate|build|test|status|evidence|publish [options]", Summary: "Operate the frozen Development build workflow.", Commands: []helpCommand{{Name: "validate", Summary: "Validate a DevelopmentProject offline"}, {Name: "build", Summary: "Request an immutable multi-architecture Build"}, {Name: "test", Summary: "Request the POC test suite for a Build"}, {Name: "status", Summary: "Get Build status"}, {Name: "evidence", Summary: "Export bounded redacted Build evidence"}, {Name: "publish", Summary: "Publish an eligible Build"}}}
+		output = helpOutput{Command: "dev", Usage: "blazn dev validate|build|status [options]", Summary: "Operate the available Development build workflow.", Commands: []helpCommand{{Name: "validate", Summary: "Validate a DevelopmentProject offline"}, {Name: "build", Summary: "Request an immutable multi-architecture Build"}, {Name: "status", Summary: "Get Build status"}}}
 	case "uninstall":
 		output = helpOutput{Command: "uninstall", Usage: "blazn uninstall --yes [--output human|json]", Summary: "Remove a direct installation owned by its Blazn receipt while preserving configuration."}
 	case "auth":

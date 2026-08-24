@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,8 @@ const (
 	maxEvidenceBytes     = 64 * 1024 * 1024
 	evidenceManifestPath = "manifest.json"
 )
+
+var credentialValuePattern = regexp.MustCompile(`(?i)(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)\s*[:=]\s*[^\s,;]{4,}|\b(?:github_pat_|gh[pousr]_|sk-)[a-z0-9_-]{12,}|\bAKIA[0-9A-Z]{16}\b)`)
 
 type BuildDocument struct {
 	raw           json.RawMessage
@@ -107,14 +110,8 @@ func NewService(s workspacepkg.SessionProvider, c workspacepkg.ContextStore, h *
 func (s *Service) Build(ctx context.Context, commit, requestID string) (BuildDocument, error) {
 	return s.mutate(ctx, http.MethodPost, "/development-builds", requestID, map[string]any{"commit": commit})
 }
-func (s *Service) Test(ctx context.Context, id, suite, requestID string) (BuildDocument, error) {
-	return s.mutate(ctx, http.MethodPost, "/development-builds/"+id+"/tests", requestID, map[string]any{"suite": suite})
-}
 func (s *Service) Status(ctx context.Context, id string) (BuildDocument, error) {
 	return s.requestBuild(ctx, http.MethodGet, "/development-builds/"+id, "", nil)
-}
-func (s *Service) Publish(ctx context.Context, id string, version int, requestID string) (BuildDocument, error) {
-	return s.mutate(ctx, http.MethodPost, "/development-builds/"+id+"/publication", requestID, map[string]any{"expectedVersion": version})
 }
 func (s *Service) mutate(ctx context.Context, method, path, requestID string, body any) (BuildDocument, error) {
 	if len(requestID) < 8 || len(requestID) > 128 {
@@ -181,40 +178,6 @@ func (s *Service) requestBuild(ctx context.Context, method, suffix, requestID st
 	return result, err
 }
 
-func (s *Service) Evidence(ctx context.Context, id, directory string) (EvidenceExport, error) {
-	selection, session, err := s.selection(ctx)
-	if err != nil {
-		return EvidenceExport{}, err
-	}
-	pathValue := "/v1/workspaces/" + url.PathEscape(selection.WorkspaceID) + "/projects/" + url.PathEscape(selection.ProjectID) + "/development-builds/" + url.PathEscape(id) + "/evidence"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.sessions.Origin()+pathValue, nil)
-	if err != nil {
-		return EvidenceExport{}, err
-	}
-	request.Header.Set("Authorization", "Bearer "+session.AccessToken)
-	request.Header.Set("Accept", "application/json")
-	response, err := s.client.Do(request)
-	if err != nil {
-		return EvidenceExport{}, err
-	}
-	defer response.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil || len(payload) > maxResponseBytes {
-		return EvidenceExport{}, errors.New("development evidence response exceeds its bound")
-	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return EvidenceExport{}, apiError(response.StatusCode, payload)
-	}
-	var envelope struct {
-		BuildID string         `json:"buildId"`
-		Bundle  evidenceBundle `json:"bundle"`
-	}
-	if err := strictJSON(payload, &envelope); err != nil || envelope.BuildID != id {
-		return EvidenceExport{}, errors.New("development evidence response is invalid")
-	}
-	return writeEvidence(directory, envelope.BuildID, envelope.Bundle)
-}
-
 func (s *Service) selection(ctx context.Context) (workspacepkg.Selection, workspacepkg.Session, error) {
 	session, err := s.sessions.Session(ctx, false)
 	if err != nil {
@@ -260,6 +223,39 @@ func containsForbidden(value any) bool {
 				return true
 			}
 		}
+	case string:
+		return containsCredentialString(current)
+	}
+	return false
+}
+
+func containsCredentialString(value string) bool {
+	if credentialValuePattern.MatchString(value) {
+		return true
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	if parsed.User != nil {
+		return true
+	}
+	for key := range parsed.Query() {
+		normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
+		if signedURLCredentialField(normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func signedURLCredentialField(normalized string) bool {
+	if credentialField(normalized) {
+		return true
+	}
+	switch normalized {
+	case "sig", "signature", "xamzsignature", "xamzcredential", "xamzsecuritytoken", "googleaccessid":
+		return true
 	}
 	return false
 }
@@ -286,11 +282,10 @@ func writeEvidence(directory, buildID string, bundle evidenceBundle) (result Evi
 	}
 	parent := filepath.Dir(absolute)
 	base := filepath.Base(absolute)
-	resolved, err := filepath.EvalSymlinks(parent)
-	if err != nil || resolved != parent || base == "." || base == string(filepath.Separator) {
+	if base == "." || base == string(filepath.Separator) {
 		return EvidenceExport{}, errors.New("evidence output parent is unsafe")
 	}
-	parentRoot, err := os.OpenRoot(parent)
+	parentRoot, err := openDirectoryRoot(parent)
 	if err != nil {
 		return EvidenceExport{}, errors.New("evidence output parent cannot be opened safely")
 	}
@@ -338,15 +333,13 @@ func writeEvidence(directory, buildID string, bundle evidenceBundle) (result Evi
 		if err := createEvidenceParents(root, filepath.FromSlash(file.path), createdDirectories, &created); err != nil {
 			return EvidenceExport{}, err
 		}
-		if err := writeEvidenceFile(root, filepath.FromSlash(file.path), file.content); err != nil {
+		if err := writeEvidenceFile(root, filepath.FromSlash(file.path), file.content, &created); err != nil {
 			return EvidenceExport{}, err
 		}
-		created = append(created, filepath.FromSlash(file.path))
 	}
-	if err := writeEvidenceFile(root, evidenceManifestPath, validated.canonical); err != nil {
+	if err := writeEvidenceFile(root, evidenceManifestPath, validated.canonical, &created); err != nil {
 		return EvidenceExport{}, err
 	}
-	created = append(created, evidenceManifestPath)
 	digest := sha256.Sum256(validated.canonical)
 	return EvidenceExport{BuildID: buildID, Directory: absolute, ManifestDigest: "sha256:" + hex.EncodeToString(digest[:]), ArtifactIDs: validated.artifactIDs}, nil
 }
@@ -417,11 +410,58 @@ func validateEvidence(bundle evidenceBundle) (validatedEvidence, error) {
 }
 
 func containsCredentialBytes(content []byte) bool {
-	if !json.Valid(content) {
-		return false
+	if credentialValuePattern.Match(content) {
+		return true
 	}
 	var value any
-	return json.Unmarshal(content, &value) == nil && containsForbidden(value)
+	if json.Unmarshal(content, &value) == nil {
+		return containsForbidden(value)
+	}
+	return containsCredentialString(string(content))
+}
+
+func openDirectoryRoot(absolute string) (*os.Root, error) {
+	clean := filepath.Clean(absolute)
+	if !filepath.IsAbs(clean) {
+		return nil, errors.New("directory path must be absolute")
+	}
+	volume := filepath.VolumeName(clean)
+	rootPath := string(filepath.Separator)
+	if volume != "" {
+		rootPath = volume + string(filepath.Separator)
+	}
+	current, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, err
+	}
+	relative := strings.TrimPrefix(clean, rootPath)
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		before, statErr := current.Lstat(component)
+		if statErr != nil || !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+			current.Close()
+			return nil, errors.New("directory path contains an unsafe component")
+		}
+		next, openErr := current.OpenRoot(component)
+		if openErr != nil {
+			current.Close()
+			return nil, openErr
+		}
+		after, statErr := next.Stat(".")
+		if statErr != nil || !os.SameFile(before, after) {
+			next.Close()
+			current.Close()
+			return nil, errors.New("directory path was substituted")
+		}
+		if closeErr := current.Close(); closeErr != nil {
+			next.Close()
+			return nil, closeErr
+		}
+		current = next
+	}
+	return current, nil
 }
 
 func createEvidenceParents(root *os.Root, name string, createdDirectories map[string]bool, created *[]string) error {
@@ -447,11 +487,12 @@ func createEvidenceParents(root *os.Root, name string, createdDirectories map[st
 	return nil
 }
 
-func writeEvidenceFile(root *os.Root, name string, content []byte) error {
+func writeEvidenceFile(root *os.Root, name string, content []byte, created *[]string) error {
 	handle, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return errors.New("evidence file cannot be created safely")
 	}
+	*created = append(*created, name)
 	_, writeErr := handle.Write(content)
 	closeErr := handle.Close()
 	if writeErr != nil || closeErr != nil {

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,20 +21,8 @@ func (f *fakeDevelopmentCommands) Build(_ context.Context, ref, key string) (dev
 	f.calls = append(f.calls, "build:"+ref+":"+key)
 	return f.build, f.err
 }
-func (f *fakeDevelopmentCommands) Test(_ context.Context, id, suite, key string) (developmentpkg.BuildDocument, error) {
-	f.calls = append(f.calls, "test:"+id+":"+suite+":"+key)
-	return f.build, f.err
-}
 func (f *fakeDevelopmentCommands) Status(_ context.Context, id string) (developmentpkg.BuildDocument, error) {
 	f.calls = append(f.calls, "status:"+id)
-	return f.build, f.err
-}
-func (f *fakeDevelopmentCommands) Evidence(_ context.Context, id, dir string) (developmentpkg.EvidenceExport, error) {
-	f.calls = append(f.calls, "evidence:"+id+":"+dir)
-	return developmentpkg.EvidenceExport{BuildID: id, Directory: dir, ManifestDigest: "sha256:" + strings.Repeat("a", 64), ArtifactIDs: []string{}}, f.err
-}
-func (f *fakeDevelopmentCommands) Publish(_ context.Context, id string, version int, key string) (developmentpkg.BuildDocument, error) {
-	f.calls = append(f.calls, "publish:"+id+":"+key)
 	return f.build, f.err
 }
 
@@ -49,7 +39,7 @@ func TestDevelopmentCommandsMatchFrozenSurface(t *testing.T) {
 	for _, test := range []struct {
 		args []string
 		call string
-	}{{[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:"}, {[]string{"dev", "test", id, "--suite", "poc", "--request-id", "request-2"}, "test:"}, {[]string{"dev", "status", id}, "status:"}, {[]string{"dev", "evidence", id, "--output-dir", "evidence"}, "evidence:"}, {[]string{"dev", "publish", id, "--expected-version", "1", "--request-id", "request-3"}, "publish:"}} {
+	}{{[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:"}, {[]string{"dev", "status", id}, "status:"}} {
 		stdout.Reset()
 		stderr.Reset()
 		before := len(fake.calls)
@@ -67,12 +57,24 @@ func TestDevelopmentUsageFailsBeforeRuntime(t *testing.T) {
 	app := New(stdout, stderr, BuildInfo{})
 	called := false
 	app.development = func() (developmentCommands, error) { called = true; return nil, nil }
-	for _, args := range [][]string{{"dev", "build", "--ref", "main", "--request-id", "request-1"}, {"dev", "test", "bad", "--suite", "poc", "--request-id", "request-2"}, {"dev", "publish", "30000000-0000-4000-8000-000000000001", "--expected-version", "0", "--request-id", "request-3"}} {
+	for _, args := range [][]string{{"dev", "build", "--ref", "main", "--request-id", "request-1"}, {"dev", "status", "bad"}} {
 		if code := app.Run(args); code != ExitUsage {
 			t.Fatalf("%v code=%d", args, code)
 		}
 	}
 	if called {
 		t.Fatal("invalid input constructed runtime")
+	}
+}
+
+func TestDevelopmentValidateJSONReturnsFailureForInvalidManifest(t *testing.T) {
+	manifest := filepath.Join(t.TempDir(), "blazn.yaml")
+	if err := os.WriteFile(manifest, []byte("not: [valid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	app := New(stdout, stderr, BuildInfo{})
+	if code := app.Run([]string{"--output", "json", "dev", "validate", "-f", manifest}); code != ExitFailure {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/blazncloud/blazn/internal/auth"
@@ -16,10 +15,7 @@ import (
 
 type developmentCommands interface {
 	Build(context.Context, string, string) (developmentpkg.BuildDocument, error)
-	Test(context.Context, string, string, string) (developmentpkg.BuildDocument, error)
 	Status(context.Context, string) (developmentpkg.BuildDocument, error)
-	Evidence(context.Context, string, string) (developmentpkg.EvidenceExport, error)
-	Publish(context.Context, string, int, string) (developmentpkg.BuildDocument, error)
 }
 
 func (a *App) runDevelopment(format OutputFormat, args []string) int {
@@ -42,7 +38,13 @@ func (a *App) runDevelopment(format OutputFormat, args []string) int {
 		}
 		result, _ := developmentpkg.Validate(data)
 		if format == OutputJSON {
-			return a.writeJSON(result)
+			if code := a.writeJSON(result); code != ExitSuccess {
+				return code
+			}
+			if !result.Valid {
+				return ExitFailure
+			}
+			return ExitSuccess
 		}
 		if result.Valid {
 			fmt.Fprintf(a.stdout, "DevelopmentProject is valid (%s)\n", *result.ManifestDigest)
@@ -69,17 +71,6 @@ func (a *App) runDevelopment(format OutputFormat, args []string) int {
 		}
 		result, err := commands.Build(ctx, firstFlag(values, "ref"), firstFlag(values, "request-id"))
 		return a.writeDevelopmentBuild(format, result, err)
-	case "test":
-		values, positional, err := parseSandboxFlags(args[1:], map[string]flagKind{"suite": flagValue, "request-id": flagValue}, false)
-		if err != nil || len(positional) != 1 || !uuidPatternCLI(positional[0]) || firstFlag(values, "suite") != "poc" || !validRequestID(firstFlag(values, "request-id")) {
-			return a.developmentUsage(format, "dev test requires BUILD --suite poc --request-id ID")
-		}
-		commands, err := a.development()
-		if err != nil {
-			return a.writeDevelopmentError(format, err)
-		}
-		result, err := commands.Test(ctx, positional[0], "poc", firstFlag(values, "request-id"))
-		return a.writeDevelopmentBuild(format, result, err)
 	case "status":
 		if len(args) != 2 || !uuidPatternCLI(args[1]) {
 			return a.developmentUsage(format, "dev status requires BUILD")
@@ -89,36 +80,6 @@ func (a *App) runDevelopment(format OutputFormat, args []string) int {
 			return a.writeDevelopmentError(format, err)
 		}
 		result, err := commands.Status(ctx, args[1])
-		return a.writeDevelopmentBuild(format, result, err)
-	case "evidence":
-		values, positional, err := parseSandboxFlags(args[1:], map[string]flagKind{"output-dir": flagValue}, false)
-		if err != nil || len(positional) != 1 || !uuidPatternCLI(positional[0]) || firstFlag(values, "output-dir") == "" {
-			return a.developmentUsage(format, "dev evidence requires BUILD --output-dir DIRECTORY")
-		}
-		commands, err := a.development()
-		if err != nil {
-			return a.writeDevelopmentError(format, err)
-		}
-		result, err := commands.Evidence(ctx, positional[0], firstFlag(values, "output-dir"))
-		if err != nil {
-			return a.writeDevelopmentError(format, err)
-		}
-		if format == OutputJSON {
-			return a.writeJSON(result)
-		}
-		fmt.Fprintf(a.stdout, "Exported evidence for Build %s to %s (%s)\n", result.BuildID, result.Directory, result.ManifestDigest)
-		return ExitSuccess
-	case "publish":
-		values, positional, err := parseSandboxFlags(args[1:], map[string]flagKind{"expected-version": flagValue, "request-id": flagValue}, false)
-		version, versionErr := strconv.Atoi(firstFlag(values, "expected-version"))
-		if err != nil || versionErr != nil || version < 1 || len(positional) != 1 || !uuidPatternCLI(positional[0]) || !validRequestID(firstFlag(values, "request-id")) {
-			return a.developmentUsage(format, "dev publish requires BUILD --expected-version N --request-id ID")
-		}
-		commands, err := a.development()
-		if err != nil {
-			return a.writeDevelopmentError(format, err)
-		}
-		result, err := commands.Publish(ctx, positional[0], version, firstFlag(values, "request-id"))
 		return a.writeDevelopmentBuild(format, result, err)
 	default:
 		return a.developmentUsage(format, fmt.Sprintf("unknown dev command %q", command))
