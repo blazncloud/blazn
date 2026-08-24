@@ -211,6 +211,71 @@ func TestControllerRejectsSubstitutedProcessEvidenceAndExpectedProof(t *testing.
 	}
 }
 
+func TestRestartDiscoveryReauthenticatesPersistedMaterialWithoutPersistence(t *testing.T) {
+	platform := newFakePlatform()
+	starter := &Controller{Platform: platform, HandshakeTimeout: time.Second, ControlTimeout: time.Second}
+	managed, err := starter.Start(context.Background(), testStartRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter.mu.Lock()
+	known := starter.known[managed.Proof().PID]
+	starter.mu.Unlock()
+	persisted := PersistedListener{
+		Proof:          managed.Proof(),
+		ControlAddress: known.controlAddress,
+		ExecutablePath: known.executablePath,
+		PublicKey:      known.publicKey,
+		ListenerToken:  known.listenerToken,
+	}
+	discovery := &Controller{Platform: platform, ControlTimeout: time.Second}
+	proof, live, err := discovery.Discover(context.Background(), persisted)
+	if err != nil || !live || proof != managed.Proof() {
+		t.Fatalf("discover failed: live=%t proof=%#v err=%v", live, proof, err)
+	}
+	if proof, live, err := discovery.Inspect(context.Background(), managed.Proof().PID); err != nil || !live || proof != managed.Proof() {
+		t.Fatalf("discovered listener was not registered: live=%t proof=%#v err=%v", live, proof, err)
+	}
+
+	mutations := map[string]func(*PersistedListener, *fakePlatform){
+		"pid reuse": func(_ *PersistedListener, value *fakePlatform) { value.evidence.ProcessStartIdentity = "reused" },
+		"uid":       func(_ *PersistedListener, value *fakePlatform) { value.evidence.OwnerUID++ },
+		"path":      func(_ *PersistedListener, value *fakePlatform) { value.evidence.ExecutablePath = "/tmp/substitute" },
+		"inode":     func(_ *PersistedListener, value *fakePlatform) { value.evidence.ExecutableIdentity = "dev:9/inode:9" },
+		"sha": func(_ *PersistedListener, value *fakePlatform) {
+			value.evidence.BinaryDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		},
+		"key": func(value *PersistedListener, _ *fakePlatform) {
+			value.PublicKey = strings.Repeat("A", len(value.PublicKey))
+		},
+		"token": func(value *PersistedListener, _ *fakePlatform) {
+			value.ListenerToken = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+		},
+		"socket": func(value *PersistedListener, _ *fakePlatform) { value.ControlAddress = "/tmp/replaced.sock" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			candidate := persisted
+			candidatePlatform := newFakePlatform()
+			// Reuse the live authenticated runtime/public key from the starter.
+			candidatePlatform.runtime = platform.runtime
+			candidatePlatform.child = platform.child
+			candidatePlatform.evidence = platform.evidence
+			mutate(&candidate, candidatePlatform)
+			controller := &Controller{Platform: candidatePlatform, ControlTimeout: 50 * time.Millisecond}
+			if _, live, err := controller.Discover(context.Background(), candidate); err == nil || live {
+				t.Fatalf("substituted persisted material accepted: live=%t err=%v", live, err)
+			}
+			controller.mu.Lock()
+			_, registered := controller.known[candidate.Proof.PID]
+			controller.mu.Unlock()
+			if registered {
+				t.Fatal("failed discovery registered listener")
+			}
+		})
+	}
+}
+
 func TestControllerRejectsIncompleteProcessIdentity(t *testing.T) {
 	mutations := map[string]func(*fakePlatform){
 		"zero child pid":               func(p *fakePlatform) { p.child.pid = 0; p.runtime.pid = 0; p.evidence.PID = 0 },

@@ -45,6 +45,23 @@ type Platform interface {
 	DialControl(context.Context, int, string) (io.ReadWriteCloser, error)
 }
 
+// PersistedListener is the minimum restart material a protected state owner
+// must supply to rediscover a listener. This package deliberately provides no
+// persistence implementation for the listener token or public key.
+type PersistedListener struct {
+	Proof          state.LiveListenerProof
+	ControlAddress string
+	ExecutablePath string
+	PublicKey      string
+	ListenerToken  string
+}
+
+// RestartDiscovery validates caller-supplied protected restart material
+// against fresh OS evidence and the authenticated control protocol.
+type RestartDiscovery interface {
+	Discover(context.Context, PersistedListener) (state.LiveListenerProof, bool, error)
+}
+
 type StartRequest struct {
 	Metadata    Metadata
 	Policy      []byte
@@ -186,6 +203,31 @@ func (c *Controller) Inspect(ctx context.Context, pid int) (state.LiveListenerPr
 	if proof != known.proof || evidence.ExecutablePath != known.executablePath || !evidenceMatchesProof(evidence, proof) {
 		return state.LiveListenerProof{}, false, ErrUnauthorized
 	}
+	return proof, true, nil
+}
+
+func (c *Controller) Discover(ctx context.Context, persisted PersistedListener) (state.LiveListenerProof, bool, error) {
+	if c == nil || c.Platform == nil || !validLiveProof(persisted.Proof) || !filepath.IsAbs(persisted.ExecutablePath) || filepath.Clean(persisted.ExecutablePath) != persisted.ExecutablePath || !filepath.IsAbs(persisted.ControlAddress) || filepath.Clean(persisted.ControlAddress) != persisted.ControlAddress || len(persisted.ControlAddress) > 256 || persisted.PublicKey == "" || !validListenerToken(persisted.ListenerToken) {
+		return state.LiveListenerProof{}, false, ErrUnavailable
+	}
+	evidence, live, err := c.Platform.Evidence(ctx, persisted.Proof.PID)
+	if err != nil || !live {
+		return state.LiveListenerProof{}, live, safeError(err)
+	}
+	if evidence.ExecutablePath != persisted.ExecutablePath || !evidenceMatchesProof(evidence, persisted.Proof) {
+		return state.LiveListenerProof{}, false, ErrUnauthorized
+	}
+	known := knownListener{controlAddress: persisted.ControlAddress, executablePath: persisted.ExecutablePath, publicKey: persisted.PublicKey, listenerToken: persisted.ListenerToken, proof: persisted.Proof}
+	proof, err := c.control(ctx, persisted.Proof.PID, "inspect", known)
+	if err != nil || proof != persisted.Proof {
+		return state.LiveListenerProof{}, false, errors.Join(ErrUnauthorized, err)
+	}
+	c.mu.Lock()
+	if c.known == nil {
+		c.known = map[int]knownListener{}
+	}
+	c.known[persisted.Proof.PID] = known
+	c.mu.Unlock()
 	return proof, true, nil
 }
 
