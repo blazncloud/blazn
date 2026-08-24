@@ -1,6 +1,7 @@
 package sandboxcontroller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,10 +27,12 @@ const (
 var kubernetesDNSNamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`)
 
 type KubernetesConfig struct {
-	BaseURL     string
-	CAFile      string
-	TokenFile   string
-	HelperImage string
+	BaseURL         string
+	CAFile          string
+	TokenFile       string
+	HelperImage     string
+	SourceDNSCIDRs  []string
+	SourceHostCIDRs map[string][]string
 }
 
 type RuntimeConfig struct {
@@ -128,8 +131,27 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 	if !immutableImagePattern.MatchString(helperImage) {
 		return KubernetesConfig{}, errors.New("sandbox I/O helper image is invalid")
 	}
+	dnsRaw, hostsRaw := getenv("BLAZN_SANDBOX_SOURCE_DNS_CIDRS"), getenv("BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON")
+	var dnsCIDRs []string
+	var hostCIDRs map[string][]string
+	if dnsRaw != "" || hostsRaw != "" {
+		if dnsRaw == "" || hostsRaw == "" {
+			return KubernetesConfig{}, errors.New("sandbox source egress configuration is incomplete")
+		}
+		for _, value := range strings.Split(dnsRaw, ",") {
+			if value == "" || strings.TrimSpace(value) != value {
+				return KubernetesConfig{}, errors.New("sandbox source DNS CIDRs are invalid")
+			}
+			dnsCIDRs = append(dnsCIDRs, value)
+		}
+		decoder := json.NewDecoder(strings.NewReader(hostsRaw))
+		if err := decoder.Decode(&hostCIDRs); err != nil || decoder.Decode(&struct{}{}) != io.EOF || len(hostCIDRs) == 0 {
+			return KubernetesConfig{}, errors.New("sandbox source host CIDRs are invalid")
+		}
+	}
 	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
-	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage}, nil
+	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage,
+		SourceDNSCIDRs: dnsCIDRs, SourceHostCIDRs: hostCIDRs}, nil
 }
 
 func validKubernetesHost(value string) bool {

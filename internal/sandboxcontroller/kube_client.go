@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 const (
@@ -74,7 +75,29 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 		return nil, errors.New("sandbox controller Kubernetes adapter configuration is invalid")
 	}
 	health := func(ctx context.Context) error { return kubernetesAPIHealth(ctx, client, config.BaseURL) }
-	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: false, HelperImage: config.HelperImage})
+	var sourceRuntime *KubernetesSourceRuntime
+	if len(config.SourceDNSCIDRs) != 0 || len(config.SourceHostCIDRs) != 0 {
+		network, err := NewKubernetesSourceNetwork(KubernetesSourceNetworkConfig{BaseURL: config.BaseURL, HTTPClient: client,
+			DNSCIDRs: config.SourceDNSCIDRs, SourceCIDRs: config.SourceHostCIDRs})
+		if err != nil {
+			return nil, err
+		}
+		execTransport, err := newKubernetesExecTransport(config)
+		if err != nil {
+			return nil, err
+		}
+		ioController, err := sandboxio.NewController(sandboxio.ControllerConfig{Transport: execTransport,
+			Owners: kubernetesPodOwnerVerifier{baseURL: config.BaseURL, client: client}, Timeout: sandboxio.SourceTimeout})
+		if err != nil {
+			return nil, err
+		}
+		sourceRuntime, err = NewKubernetesSourceRuntime(KubernetesSourceRuntimeConfig{Network: network, IO: ioController})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: false,
+		HelperImage: config.HelperImage, SourceRuntime: sourceRuntime})
 }
 
 func newKubernetesHTTPClient(config KubernetesConfig) (*http.Client, error) {

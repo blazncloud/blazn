@@ -60,7 +60,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 	if timeout == 0 {
 		timeout = DefaultTimeout
 	}
-	if timeout < time.Second || timeout > time.Minute {
+	if timeout < time.Second || timeout > SourceTimeout {
 		return nil, errors.New("sandbox I/O controller timeout is invalid")
 	}
 	return &Controller{transport: config.Transport, owners: config.Owners, timeout: timeout}, nil
