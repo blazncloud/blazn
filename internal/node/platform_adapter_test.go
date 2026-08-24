@@ -1181,8 +1181,8 @@ func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
 		t.Fatalf("idempotent binding=%#v patch=%d err=%v", binding, patchCalls, err)
 	}
 	join.ExpectedResourceVersion = "8"
-	if err := engine.verify(context.Background(), plan, join); err != nil {
-		t.Fatalf("released active receipt did not verify for retry: %v", err)
+	if err := engine.verifyActivatedCapacityState(context.Background(), plan, join); err != nil {
+		t.Fatalf("released capacity state did not verify for retry: %v", err)
 	}
 	persisted, err := loadRootAuthority(authorityPath)
 	if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "8" {
