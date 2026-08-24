@@ -1104,10 +1104,10 @@ func TestPlatformAdapterReleasesCapacityAndAdvancesExactBinding(t *testing.T) {
 func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
 	authorization, identity, signer := validBootstrapAuthorizationWithSigner(t)
 	plan := authorization.Expected.Plan
-	plan.Mutations = []client.NodeInstallMutation{
-		{Ordinal: 1, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
-		{Ordinal: 2, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
-	}
+	plan.Mutations = append(plan.Mutations,
+		client.NodeInstallMutation{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		client.NodeInstallMutation{Ordinal: 5, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+	)
 	plan.Digest = ""
 	plan.Signature = ""
 	digest, err := client.NodeInstallPlanDigest(plan)

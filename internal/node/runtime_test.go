@@ -83,11 +83,12 @@ func TestDaemonRuntimeStartsAndHeartbeatsFromServiceStateWithoutUserToken(t *tes
 	}
 	plan := installPlan()
 	plan.ExpiresAt = "2026-08-22T13:00:00Z"
+	capability := testCapability()
 	state := FileStateStore{Root: paths.ServiceStateRoot}
-	if err := state.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: server.URL, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, UpdatedAt: plan.IssuedAt}); err != nil {
+	if err := state.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: server.URL, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &capability.Worker.KubernetesBinding, UpdatedAt: plan.IssuedAt}); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := newProductionDaemonCommandRuntime(paths, "v-test", server.Client(), fixedCapability{capability: testCapability()})
+	runtime, err := newProductionDaemonCommandRuntime(paths, "v-test", server.Client(), fixedCapability{capability: capability})
 	if err != nil || runtime.AccessToken != "" || runtime.Service != nil || runtime.Daemon == nil {
 		t.Fatalf("runtime=%#v err=%v", runtime, err)
 	}
