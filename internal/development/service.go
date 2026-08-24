@@ -34,6 +34,7 @@ const (
 )
 
 var credentialValuePattern = regexp.MustCompile(`(?i)(?:\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)\s*[:=]\s*[^\s,;]{4,}|\b(?:github_pat_|gh[pousr]_|sk-)[a-z0-9_-]{12,}|\bAKIA[0-9A-Z]{16}\b)`)
+var embeddedURLPattern = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^\s"'<>]+`)
 
 type BuildDocument struct {
 	raw           json.RawMessage
@@ -212,7 +213,7 @@ func containsForbidden(value any) bool {
 	switch current := value.(type) {
 	case map[string]any:
 		for key, child := range current {
-			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
+			normalized := normalizeCredentialKey(key)
 			if credentialField(normalized) || containsForbidden(child) {
 				return true
 			}
@@ -233,17 +234,31 @@ func containsCredentialString(value string) bool {
 	if credentialValuePattern.MatchString(value) {
 		return true
 	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return false
-	}
-	if parsed.User != nil {
-		return true
-	}
-	for key := range parsed.Query() {
-		normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
-		if signedURLCredentialField(normalized) {
+	for _, candidate := range embeddedURLPattern.FindAllString(value, -1) {
+		parsed, err := url.Parse(candidate)
+		if err == nil && parsed.User != nil {
 			return true
+		}
+		queryStart := strings.IndexByte(candidate, '?')
+		if queryStart < 0 {
+			continue
+		}
+		rawQuery := candidate[queryStart+1:]
+		if fragmentStart := strings.IndexByte(rawQuery, '#'); fragmentStart >= 0 {
+			rawQuery = rawQuery[:fragmentStart]
+		}
+		for _, field := range strings.FieldsFunc(rawQuery, func(character rune) bool { return character == '&' || character == ';' }) {
+			key := strings.SplitN(field, "=", 2)[0]
+			for index := 0; index < 4; index++ {
+				decoded, decodeErr := url.QueryUnescape(key)
+				if decodeErr != nil || decoded == key {
+					break
+				}
+				key = decoded
+			}
+			if signedURLCredentialField(normalizeCredentialKey(key)) {
+				return true
+			}
 		}
 	}
 	return false
@@ -254,10 +269,20 @@ func signedURLCredentialField(normalized string) bool {
 		return true
 	}
 	switch normalized {
-	case "sig", "signature", "xamzsignature", "xamzcredential", "xamzsecuritytoken", "googleaccessid":
+	case "sig", "signature", "xamzsignature", "xamzcredential", "xamzsecuritytoken", "xamzsignedheaders", "awsaccesskeyid", "xgoogsignature", "xgoogcredential", "xgoogsecuritytoken", "googlesignature", "googleaccessid":
 		return true
 	}
 	return false
+}
+
+func normalizeCredentialKey(value string) string {
+	var normalized strings.Builder
+	for _, character := range strings.ToLower(value) {
+		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' {
+			normalized.WriteRune(character)
+		}
+	}
+	return normalized.String()
 }
 
 func credentialField(normalized string) bool {

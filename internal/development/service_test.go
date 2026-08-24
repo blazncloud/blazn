@@ -69,6 +69,12 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 		"manifest signed URL value": func(bundle *evidenceBundle) {
 			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"download":"https://example.test/object?X-Amz-Signature=abcdef"}`)
 		},
+		"manifest embedded signed URL in log text": func(bundle *evidenceBundle) {
+			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"log":"download completed from https://account.blob.core.windows.net/container/object?sv=2024-11-04&sig=abcdef at 12:00"}`)
+		},
+		"manifest nested JSON text with signed URL": func(bundle *evidenceBundle) {
+			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `"],"log":"{\"result\":{\"url\":\"https://bucket.s3.example.test/object?X-Amz-Signature=abcdef\"}}"}`)
+		},
 		"duplicate artifact ID": func(bundle *evidenceBundle) {
 			bundle.Manifest = []byte(`{"artifactIds":["` + testArtifactID + `","` + testArtifactID + `"]}`)
 		},
@@ -94,6 +100,9 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 		},
 		"plaintext credential file": func(bundle *evidenceBundle) {
 			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte(`authorization=super-secret-value`))
+		},
+		"embedded signed URL in plaintext file": func(bundle *evidenceBundle) {
+			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte(`download URL: https://account.blob.core.windows.net/container/object?sv=2024-11-04&sig=abcdef status=ready`))
 		},
 		"invalid base64": func(bundle *evidenceBundle) { bundle.Files[0].ContentBase64 = "%%%" },
 		"oversize file": func(bundle *evidenceBundle) {

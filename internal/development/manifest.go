@@ -65,7 +65,6 @@ var (
 	registryPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
 	secretFlagPattern = regexp.MustCompile(`(?i)^--?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|credential|authorization)[a-z0-9_-]*(?:=|$)`)
 	secretAssign      = regexp.MustCompile(`(?i)^[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION)[A-Z0-9_]*=`)
-	secretQuery       = regexp.MustCompile(`(?i)[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|credential|authorization)=`)
 )
 
 func ReadFile(name string) ([]byte, error) {
@@ -135,8 +134,7 @@ func validateManifest(value Manifest) []string {
 	if !digestPattern.MatchString(value.Template.Digest) {
 		errorsFound = append(errorsFound, "template.digest is invalid")
 	}
-	parsed, err := url.Parse(value.Repository.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Port() != "" && parsed.Port() != "443" || len(strings.Split(strings.Trim(parsed.Path, "/"), "/")) != 2 {
+	if !validRepositoryURL(value.Repository.URL) {
 		errorsFound = append(errorsFound, "repository.url is invalid")
 	}
 	if len(value.Platforms) != 2 || value.Platforms[0] != "linux/amd64" || value.Platforms[1] != "linux/arm64" {
@@ -186,6 +184,46 @@ func validateManifest(value Manifest) []string {
 	return errorsFound
 }
 
+func validRepositoryURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Opaque != "" || parsed.User != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	port := parsed.Port()
+	if port != "" && port != "443" {
+		return false
+	}
+	// Repository authorities are deliberately limited to an exact DNS hostname
+	// with an optional HTTPS default port. This rejects empty, ambiguous, and
+	// user-info-like authorities rather than letting url.Parse repair them.
+	expectedAuthority := parsed.Hostname()
+	if port != "" {
+		expectedAuthority += ":" + port
+	}
+	if parsed.Host != expectedAuthority || !validRepositoryHostname(parsed.Hostname()) {
+		return false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+}
+
+func validRepositoryHostname(value string) bool {
+	if len(value) < 1 || len(value) > 253 || strings.HasSuffix(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if len(label) < 1 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if character != '-' && (character < '0' || character > '9') && (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func repositoryPath(value string) bool {
 	if len(value) < 1 || len(value) > 512 || filepath.IsAbs(value) || strings.ContainsRune(value, '\x00') {
 		return false
@@ -219,7 +257,7 @@ func unsafeArgument(value string) bool {
 		decoded = next
 	}
 	lower := strings.ToLower(decoded)
-	return secretFlagPattern.MatchString(decoded) || secretAssign.MatchString(decoded) || secretQuery.MatchString(decoded) || strings.Contains(lower, "bearer ") || strings.Contains(decoded, "://") && strings.Contains(strings.SplitN(decoded, "://", 2)[1], "@")
+	return secretFlagPattern.MatchString(decoded) || secretAssign.MatchString(decoded) || containsCredentialString(decoded) || strings.Contains(lower, "bearer ")
 }
 
 func validateJSONTopology(data []byte) error {
