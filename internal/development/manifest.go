@@ -50,13 +50,20 @@ type PublicationTarget struct {
 	TemplateID string `json:"templateId"`
 }
 type Build struct {
-	Context, Dockerfile, RegistryRepository string
+	Context            string `json:"context"`
+	Dockerfile         string `json:"dockerfile"`
+	RegistryRepository string `json:"registryRepository"`
 }
 type TestDefinition struct {
 	Argv           []string `json:"argv"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 }
-type Policy struct{ BuilderProfile, NetworkProfile, ResourceProfile, PublicationPolicy string }
+type Policy struct {
+	BuilderProfile    string `json:"builderProfile"`
+	NetworkProfile    string `json:"networkProfile"`
+	ResourceProfile   string `json:"resourceProfile"`
+	PublicationPolicy string `json:"publicationPolicy"`
+}
 
 var (
 	uuidPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)

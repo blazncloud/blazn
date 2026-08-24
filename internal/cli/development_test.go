@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +13,15 @@ import (
 )
 
 type fakeDevelopmentCommands struct {
-	calls []string
-	build developmentpkg.BuildDocument
-	err   error
+	calls   []string
+	project developmentpkg.ProjectDocument
+	build   developmentpkg.BuildDocument
+	err     error
+}
+
+func (f *fakeDevelopmentCommands) Register(_ context.Context, manifest developmentpkg.Manifest, version int, key string) (developmentpkg.ProjectDocument, error) {
+	f.calls = append(f.calls, fmt.Sprintf("register:%s:%d:%s", manifest.ProjectID, version, key))
+	return f.project, f.err
 }
 
 func (f *fakeDevelopmentCommands) Build(_ context.Context, ref, key string) (developmentpkg.BuildDocument, error) {
@@ -39,14 +46,14 @@ func TestDevelopmentCommandsMatchFrozenSurface(t *testing.T) {
 	for _, test := range []struct {
 		args []string
 		call string
-	}{{[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:"}, {[]string{"dev", "status", id}, "status:"}} {
+	}{{[]string{"dev", "register", "-f", "../../examples/coding-agent/blazn.yaml", "--request-id", "register-request-1"}, "register:20000000-0000-4000-8000-000000000001:0:register-request-1"}, {[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:" + strings.Repeat("1", 40) + ":request-1"}, {[]string{"dev", "status", id}, "status:" + id}} {
 		stdout.Reset()
 		stderr.Reset()
 		before := len(fake.calls)
 		if code := app.Run(test.args); code != ExitSuccess {
 			t.Fatalf("%v code=%d stderr=%q", test.args, code, stderr.String())
 		}
-		if len(fake.calls) != before+1 || !strings.HasPrefix(fake.calls[before], test.call) {
+		if len(fake.calls) != before+1 || fake.calls[before] != test.call {
 			t.Fatalf("%v calls=%v", test.args, fake.calls)
 		}
 	}
@@ -57,13 +64,30 @@ func TestDevelopmentUsageFailsBeforeRuntime(t *testing.T) {
 	app := New(stdout, stderr, BuildInfo{})
 	called := false
 	app.development = func() (developmentCommands, error) { called = true; return nil, nil }
-	for _, args := range [][]string{{"dev", "build", "--ref", "main", "--request-id", "request-1"}, {"dev", "status", "bad"}} {
+	for _, args := range [][]string{{"dev", "register", "--expected-version", "-1", "--request-id", "request-1"}, {"dev", "register", "--expected-version", "0", "--request-id", "short"}, {"dev", "build", "--ref", "main", "--request-id", "request-1"}, {"dev", "status", "bad"}} {
 		if code := app.Run(args); code != ExitUsage {
 			t.Fatalf("%v code=%d", args, code)
 		}
 	}
 	if called {
 		t.Fatal("invalid input constructed runtime")
+	}
+}
+
+func TestDevelopmentRegisterRejectsInvalidManifestBeforeRuntime(t *testing.T) {
+	manifest := filepath.Join(t.TempDir(), "blazn.yaml")
+	if err := os.WriteFile(manifest, []byte(`{"schemaVersion":"wrong"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	app := New(stdout, stderr, BuildInfo{})
+	called := false
+	app.development = func() (developmentCommands, error) { called = true; return nil, nil }
+	if code := app.Run([]string{"dev", "register", "-f", manifest, "--expected-version", "0", "--request-id", "register-request-1"}); code != ExitFailure {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if called {
+		t.Fatal("invalid manifest constructed runtime")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/blazncloud/blazn/internal/auth"
@@ -14,6 +15,7 @@ import (
 )
 
 type developmentCommands interface {
+	Register(context.Context, developmentpkg.Manifest, int, string) (developmentpkg.ProjectDocument, error)
 	Build(context.Context, string, string) (developmentpkg.BuildDocument, error)
 	Status(context.Context, string) (developmentpkg.BuildDocument, error)
 }
@@ -57,6 +59,36 @@ func (a *App) runDevelopment(format OutputFormat, args []string) int {
 	}
 	ctx := context.Background()
 	switch command {
+	case "register":
+		values, positional, err := parseSandboxFlags(args[1:], map[string]flagKind{"f": flagValue, "expected-version": flagValue, "request-id": flagValue}, false)
+		version, versionErr := nonNegativeVersion(firstFlag(values, "expected-version"))
+		if err != nil || versionErr != nil || len(positional) != 0 || !validRequestID(firstFlag(values, "request-id")) {
+			return a.developmentUsage(format, "dev register requires --request-id ID and accepts optional -f FILE and --expected-version VERSION")
+		}
+		file := firstFlag(values, "f")
+		if file == "" {
+			file = "blazn.yaml"
+		}
+		data, err := developmentpkg.ReadFile(file)
+		if err != nil {
+			return a.writeError(format, ExitFailure, "development_project_invalid", err.Error())
+		}
+		validation, manifest := developmentpkg.Validate(data)
+		if !validation.Valid || manifest == nil {
+			if format == OutputJSON {
+				return a.writeError(format, ExitFailure, "development_project_invalid", strings.Join(validation.Errors, "; "))
+			}
+			for _, message := range validation.Errors {
+				fmt.Fprintf(a.stderr, "blazn: %s\n", message)
+			}
+			return ExitFailure
+		}
+		commands, err := a.development()
+		if err != nil {
+			return a.writeDevelopmentError(format, err)
+		}
+		result, err := commands.Register(ctx, *manifest, version, firstFlag(values, "request-id"))
+		return a.writeDevelopmentProject(format, result, err)
 	case "build":
 		values, positional, err := parseSandboxFlags(args[1:], map[string]flagKind{"ref": flagValue, "request-id": flagValue}, false)
 		if err != nil || len(positional) != 0 || firstFlag(values, "ref") == "" || !validRequestID(firstFlag(values, "request-id")) {
@@ -84,6 +116,18 @@ func (a *App) runDevelopment(format OutputFormat, args []string) int {
 	default:
 		return a.developmentUsage(format, fmt.Sprintf("unknown dev command %q", command))
 	}
+}
+
+func (a *App) writeDevelopmentProject(format OutputFormat, result developmentpkg.ProjectDocument, err error) int {
+	if err != nil {
+		return a.writeDevelopmentError(format, err)
+	}
+	if format == OutputJSON {
+		return a.writeJSON(result)
+	}
+	projectID, version, digest := result.Summary()
+	fmt.Fprintf(a.stdout, "DevelopmentProject %s registered [version %d, %s]\n", projectID, version, digest)
+	return ExitSuccess
 }
 
 func (a *App) developmentUsage(format OutputFormat, message string) int {
@@ -134,6 +178,16 @@ func exactCommit(value string) bool {
 		}
 	}
 	return true
+}
+func nonNegativeVersion(value string) (int, error) {
+	if value == "" {
+		return 0, nil
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 0 {
+		return 0, errors.New("--expected-version must be at least 0")
+	}
+	return number, nil
 }
 func uuidPatternCLI(value string) bool {
 	if len(value) != 36 {
