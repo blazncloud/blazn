@@ -2,10 +2,12 @@ package sandbox
 
 import (
 	"bytes"
+	_ "crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"regexp"
 	"sort"
 	"strconv"
@@ -13,13 +15,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/blazncloud/blazn/internal/client"
+	"github.com/distribution/reference"
 )
 
 var (
 	dnsNamePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	versionPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	imagePattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$`)
 	quantityPattern   = regexp.MustCompile(`^(?:[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?|0\.[0-9]+)$`)
 	mediaPattern      = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
 	repositoryPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+(?:\.git)?$`)
@@ -28,7 +30,59 @@ var (
 // IsImmutableOCIReference reports whether value is the canonical immutable
 // image reference accepted by the Sandbox contract.
 func IsImmutableOCIReference(value string) bool {
-	return len(value) <= 512 && imagePattern.MatchString(value)
+	if len(value) == 0 || len(value) > 512 || value != strings.ToLower(value) {
+		return false
+	}
+	slash := strings.IndexByte(value, '/')
+	if slash <= 0 || !validRegistryAuthority(value[:slash]) {
+		return false
+	}
+	named, err := reference.ParseNormalizedNamed(value)
+	if err != nil || reference.Domain(named) != value[:slash] || named.String() != value {
+		return false
+	}
+	if _, tagged := named.(reference.Tagged); tagged {
+		return false
+	}
+	digested, ok := named.(reference.Digested)
+	return ok && digested.Digest().Algorithm().String() == "sha256" &&
+		strings.HasSuffix(value, "@"+digested.Digest().String())
+}
+
+func validRegistryAuthority(authority string) bool {
+	if authority == "" || strings.ContainsAny(authority, "@/[]") {
+		return false
+	}
+	host := authority
+	if strings.ContainsRune(authority, ':') {
+		var port string
+		var err error
+		host, port, err = net.SplitHostPort(authority)
+		if err != nil {
+			return false
+		}
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return false
+		}
+	}
+	if host == "localhost" || net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 || !strings.ContainsRune(host, '.') {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if !(character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type manifestDocument struct {
