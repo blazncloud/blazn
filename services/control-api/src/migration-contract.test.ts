@@ -202,8 +202,9 @@ test("artifact export migration fences immutable object evidence and UUID replay
   assert.match(sql, /target\.warning_codes<>p_warning_codes/);
   assert.match(sql, /array_agg\(a\.id ORDER BY a\.name\)/);
   assert.match(sql, /REVOKE ALL ON TABLE sandbox_artifacts,sandbox_artifact_export_receipts[\s\S]*blazn_sandbox_controller/);
+  assert.match(sql, /GRANT SELECT ON TABLE sandbox_artifacts TO blazn_runtime/);
   assert.match(sql, /REVOKE ALL ON FUNCTION[\s\S]*sandbox_controller_complete_v4[\s\S]*FROM blazn_sandbox_controller/);
-  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_(?:artifacts|artifact_export_receipts)/);
+  assert.doesNotMatch(sql, /GRANT (?:INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_(?:artifacts|artifact_export_receipts)/);
 });
 
 test("source materialization migration fences exact receipts before create completion", async () => {

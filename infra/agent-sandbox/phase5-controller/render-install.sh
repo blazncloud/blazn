@@ -41,6 +41,13 @@ valid_registry_host() {
   done
 }
 
+is_ipv4_address() {
+  printf '%s\n' "$1" | awk -F. '
+    NF != 4 { exit 1 }
+    { for (i = 1; i <= 4; i++) if ($i !~ /^(0|[1-9][0-9]{0,2})$/ || $i + 0 > 255) exit 1 }
+  '
+}
+
 valid_image_repository() {
   repository=$1
   [ -n "$repository" ] && [ "${#repository}" -le 255 ] || return 1
@@ -153,7 +160,8 @@ valid_port "$BLAZN_KUBERNETES_API_PORT" || fail "BLAZN_KUBERNETES_API_PORT is in
 valid_port "$BLAZN_BEN1_POSTGRES_PORT" || fail "BLAZN_BEN1_POSTGRES_PORT is invalid"
 valid_port "$BLAZN_OBJECT_ENDPOINT_PORT" || fail "BLAZN_OBJECT_ENDPOINT_PORT is invalid"
 printf '%s\n' "$BLAZN_OBJECT_REGION" | LC_ALL=C grep -Eq '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' || fail "BLAZN_OBJECT_REGION is invalid"
-if [ "${#BLAZN_OBJECT_BUCKET}" -lt 3 ] || [ "${#BLAZN_OBJECT_BUCKET}" -gt 63 ] || ! valid_registry_host "$BLAZN_OBJECT_BUCKET"; then
+if [ "${#BLAZN_OBJECT_BUCKET}" -lt 3 ] || [ "${#BLAZN_OBJECT_BUCKET}" -gt 63 ] ||
+   ! valid_registry_host "$BLAZN_OBJECT_BUCKET" || is_ipv4_address "$BLAZN_OBJECT_BUCKET"; then
   fail "BLAZN_OBJECT_BUCKET is invalid"
 fi
 printf '%s\n' "$BLAZN_KUBERNETES_API_AUDIENCE" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9./:_-]{0,252}$' || fail "BLAZN_KUBERNETES_API_AUDIENCE is invalid"

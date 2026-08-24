@@ -170,6 +170,7 @@ expect_fail broad-object-cidr BLAZN_OBJECT_ENDPOINT_CIDR=10.20.30.0/24
 expect_fail bad-object-port BLAZN_OBJECT_ENDPOINT_PORT=0
 expect_fail bad-object-region BLAZN_OBJECT_REGION=US_TEST
 expect_fail bad-object-bucket BLAZN_OBJECT_BUCKET=Bad_Bucket
+expect_fail ipv4-object-bucket BLAZN_OBJECT_BUCKET=192.168.1.1
 
 touch "$tmp/existing.yaml"
 if render "$tmp/existing.yaml" >/dev/null 2>&1; then

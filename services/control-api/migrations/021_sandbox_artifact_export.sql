@@ -179,6 +179,7 @@ $$;
 
 REVOKE ALL ON TABLE sandbox_artifacts,sandbox_artifact_export_receipts
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker, blazn_sandbox_controller;
+GRANT SELECT ON TABLE sandbox_artifacts TO blazn_runtime;
 REVOKE ALL ON FUNCTION
   sandbox_controller_record_artifact_v1(uuid,text,uuid,text,text,text,text,text,text,text,text,bigint,text),
   sandbox_controller_complete_artifact_export_v1(uuid,text,uuid,text,text[]),
