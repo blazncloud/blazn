@@ -24,7 +24,7 @@ func TestConfigFromEnvReadsDatabaseURLOnlyFromSafeFile(t *testing.T) {
 		"BLAZN_SANDBOX_CONTROLLER_EXPIRY_BATCH":      "12",
 		"KUBERNETES_SERVICE_HOST":                    "10.96.0.1",
 		"KUBERNETES_SERVICE_PORT_HTTPS":              "443",
-		"BLAZN_SANDBOX_IO_IMAGE":                    testSandboxIOImage,
+		"BLAZN_SANDBOX_IO_IMAGE":                     testSandboxIOImage,
 	}
 	config, err := ConfigFromEnv(func(key string) string { return values[key] })
 	if err != nil {
@@ -46,7 +46,7 @@ func TestConfigFromEnvValidatesEffectiveDatabaseLeaseSchedule(t *testing.T) {
 		"BLAZN_SANDBOX_CONTROLLER_WORKER_ID":         "controller-1",
 		"KUBERNETES_SERVICE_HOST":                    "kubernetes.default.svc",
 		"KUBERNETES_SERVICE_PORT_HTTPS":              "443",
-		"BLAZN_SANDBOX_IO_IMAGE":                    testSandboxIOImage,
+		"BLAZN_SANDBOX_IO_IMAGE":                     testSandboxIOImage,
 	}
 	for _, test := range []struct {
 		name, lease, renew string
@@ -84,7 +84,7 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT":       "443",
 		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE":    "/run/blazn/kubernetes-ca.crt",
 		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE": "/var/run/secrets/kubernetes.io/serviceaccount/token",
-		"BLAZN_SANDBOX_IO_IMAGE":                        testSandboxIOImage,
+		"BLAZN_SANDBOX_IO_IMAGE":                         testSandboxIOImage,
 	}
 	config, err := kubernetesConfigFromEnv(func(key string) string { return valid[key] })
 	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" {

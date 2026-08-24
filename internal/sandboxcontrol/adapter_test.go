@@ -369,7 +369,9 @@ func TestCreateIntentDigestBindsEveryMaterialRequestField(t *testing.T) {
 		{"workspace", func(v *CreateRequest) { v.WorkspaceID = "workspace-b" }},
 		{"owner", func(v *CreateRequest) { v.OwnerID = "owner-b" }},
 		{"image", func(v *CreateRequest) { v.Image = "registry.example.test/other@sha256:" + strings.Repeat("b", 64) }},
-		{"helper image", func(v *CreateRequest) { v.HelperImage = "registry.example.test/other-helper@sha256:" + strings.Repeat("c", 64) }},
+		{"helper image", func(v *CreateRequest) {
+			v.HelperImage = "registry.example.test/other-helper@sha256:" + strings.Repeat("c", 64)
+		}},
 		{"command", func(v *CreateRequest) { v.Command[0] = "bash" }},
 		{"architecture", func(v *CreateRequest) { v.Architecture = "arm64" }},
 		{"runtime", func(v *CreateRequest) { v.RuntimeClassName = "kata" }},
@@ -383,7 +385,9 @@ func TestCreateIntentDigestBindsEveryMaterialRequestField(t *testing.T) {
 		{"ephemeral limit", func(v *CreateRequest) { v.EphemeralStorageLimit = "7Gi" }},
 		{"expiry", func(v *CreateRequest) { v.ExpiresAt = v.ExpiresAt.Add(time.Nanosecond) }},
 		{"artifacts", func(v *CreateRequest) { v.Artifacts[0].Required = false }},
-		{"sources", func(v *CreateRequest) { v.Sources = []SourceMount{{Name: "source", URL: "https://example.test/source.git", Destination: "/workspace/src/source", Commit: strings.Repeat("d", 40)}} }},
+		{"sources", func(v *CreateRequest) {
+			v.Sources = []SourceMount{{Name: "source", URL: "https://example.test/source.git", Destination: "/workspace/src/source", Commit: strings.Repeat("d", 40)}}
+		}},
 	}
 	for _, testCase := range mutations {
 		t.Run(testCase.name, func(t *testing.T) {

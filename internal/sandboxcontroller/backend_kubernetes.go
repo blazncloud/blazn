@@ -368,7 +368,7 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 	return sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
 		HelperImage: b.helperImage,
-		Command: append([]string(nil), item.Command...), Architecture: item.Architecture,
+		Command:     append([]string(nil), item.Command...), Architecture: item.Architecture,
 		RuntimeClassName: "", TrustLevel: sandboxcontrol.TrustApprovedPOC, NonSensitive: true,
 		CPURequest: item.Resources.CPURequest, MemoryRequest: item.Resources.MemoryRequest,
 		EphemeralStorageRequest: item.Resources.EphemeralRequest, CPULimit: item.Resources.CPULimit,

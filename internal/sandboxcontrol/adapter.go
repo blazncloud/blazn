@@ -666,7 +666,7 @@ func render(request CreateRequest, artifactContractDigest, createIntentDigest st
 	return kubeSandbox{
 		APIVersion: APIVersion, Kind: Kind,
 		Metadata: kubeMetadata{Name: request.Name, Namespace: Namespace, Labels: labels, Annotations: annotations, Finalizers: []string{CleanupFinalizer}},
-		Spec: kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: renderPodSpec(request)}},
+		Spec:     kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: renderPodSpec(request)}},
 	}
 }
 

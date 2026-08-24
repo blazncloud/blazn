@@ -67,7 +67,7 @@ type fakeArtifactFS struct {
 }
 
 func (f *fakeArtifactFS) Lstat(string) (fs.FileInfo, error) { return f.info, nil }
-func (f *fakeArtifactFS) Open(string) (ArtifactFile, error)  { return f.file, nil }
+func (f *fakeArtifactFS) Open(string) (ArtifactFile, error) { return f.file, nil }
 
 type fakeArtifactFile struct {
 	body  *strings.Reader

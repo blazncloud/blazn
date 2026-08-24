@@ -202,7 +202,7 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	want := sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
 		HelperImage: testSandboxIOImage,
-		Command: []string{"true"}, Architecture: "amd64", RuntimeClassName: "",
+		Command:     []string{"true"}, Architecture: "amd64", RuntimeClassName: "",
 		TrustLevel: sandboxcontrol.TrustApprovedPOC, NonSensitive: true,
 		CPURequest: "100m", MemoryRequest: "128Mi", EphemeralStorageRequest: "1Gi",
 		CPULimit: "1", MemoryLimit: "1Gi", EphemeralStorageLimit: "2Gi",
@@ -499,7 +499,7 @@ func TestKubernetesBackendHonorsCancellationAndHealthIsReadOnly(t *testing.T) {
 	healthCalls := 0
 	backend, err := NewKubernetesBackend(KubernetesBackendConfig{Adapter: fake,
 		Health: func(context.Context) error { healthCalls++; return nil }, ArtifactExportSupported: true,
-		HelperImage: testSandboxIOImage,
+		HelperImage:         testSandboxIOImage,
 		AbsencePollInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -544,7 +544,7 @@ func newTestKubernetesBackend(t *testing.T, adapter SandboxControlAdapter, artif
 	t.Helper()
 	backend, err := NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter,
 		Health: func(context.Context) error { return nil }, ArtifactExportSupported: artifacts,
-		HelperImage: testSandboxIOImage,
+		HelperImage:         testSandboxIOImage,
 		AbsencePollInterval: time.Millisecond})
 	if err != nil {
 		t.Fatal(err)

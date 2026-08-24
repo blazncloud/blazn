@@ -110,7 +110,7 @@ func (c *Controller) exchange(ctx context.Context, target FrozenPodTarget, comma
 	if err := EncodeRequest(&request, operation, body); err != nil {
 		return nil, err
 	}
-	output := newBoundedBuffer(int64(MaxHeaderBytes)+maxBody+4)
+	output := newBoundedBuffer(int64(MaxHeaderBytes) + maxBody + 4)
 	execErr := c.transport.Exec(ctx, target, append([]string(nil), command...), bytes.NewReader(request.Bytes()), output)
 	ownerErr := c.owners.VerifyPodOwner(ctx, target)
 	if ownerErr != nil {

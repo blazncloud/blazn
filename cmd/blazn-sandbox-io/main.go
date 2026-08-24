@@ -14,7 +14,7 @@ import (
 const (
 	bootstrapDirectory = "/run/blazn-bootstrap"
 	bootstrapMarker    = "validated"
-	artifactDirectory = "/workspace/artifacts"
+	artifactDirectory  = "/workspace/artifacts"
 )
 
 func main() { os.Exit(run(os.Args, os.Stdin, os.Stdout)) }
