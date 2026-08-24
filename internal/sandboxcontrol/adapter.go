@@ -88,6 +88,7 @@ type kubeMetadata struct {
 
 type kubeSandboxSpec struct {
 	ShutdownPolicy string          `json:"shutdownPolicy"`
+	OperatingMode  string          `json:"operatingMode"`
 	PodTemplate    kubePodTemplate `json:"podTemplate"`
 }
 
@@ -680,7 +681,7 @@ func render(request CreateRequest, artifactContractDigest, createIntentDigest st
 	return kubeSandbox{
 		APIVersion: APIVersion, Kind: Kind,
 		Metadata: kubeMetadata{Name: request.Name, Namespace: Namespace, Labels: labels, Annotations: annotations, Finalizers: []string{CleanupFinalizer}},
-		Spec:     kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: renderPodSpec(request)}},
+		Spec:     kubeSandboxSpec{ShutdownPolicy: "Delete", OperatingMode: "Running", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: renderPodSpec(request)}},
 	}
 }
 
