@@ -109,7 +109,7 @@ upload_asset() {
     sed -n '1,20p' "$current" >&2
     die "branding asset read failed: $source_file"
   fi
-  if ! write_request POST "$api_path" --header 'Content-Type: image/svg+xml' --data-binary "@$source_file" >"$mutation_response"; then
+  if ! write_request POST "$api_path" --form "file=@$source_file;type=image/svg+xml" >"$mutation_response"; then
     sed -n '1,20p' "$mutation_response" >&2
     die "branding asset upload failed: $source_file"
   fi
