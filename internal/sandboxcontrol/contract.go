@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 const (
@@ -386,6 +388,13 @@ func validateSources(sources []SourceMount) error {
 				return adapterError(ErrInvalidRequest, 400, "source mount destinations overlap", nil)
 			}
 		}
+	}
+	manifest := sandboxio.SourceManifest{SchemaVersion: sandboxio.SourceManifestVersion, Sources: make([]sandboxio.Source, len(sources))}
+	for index, source := range sources {
+		manifest.Sources[index] = sandboxio.Source{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit, Writable: source.Writable}
+	}
+	if _, err := sandboxio.MarshalSourceManifest(manifest); err != nil {
+		return adapterError(ErrInvalidRequest, 400, "source mount violates the helper protocol", err)
 	}
 	return nil
 }

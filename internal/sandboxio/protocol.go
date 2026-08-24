@@ -10,10 +10,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -183,12 +185,9 @@ func ValidateSourceManifest(body []byte) (SourceManifest, []byte, error) {
 	}
 	seenNames, seenDestinations := map[string]bool{}, map[string]bool{}
 	for _, source := range manifest.Sources {
-		parsed, err := url.Parse(source.URL)
-		if err != nil || !namePattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) ||
-			parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-			parsed.Port() != "" && parsed.Port() != "443" ||
+		if !namePattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) || !validSourceURL(source.URL) ||
 			!validWorkspacePath(source.Destination, "/workspace/src/") || seenNames[source.Name] || seenDestinations[source.Destination] {
-			return SourceManifest{}, nil, protocolError("source_manifest_invalid", err)
+			return SourceManifest{}, nil, protocolError("source_manifest_invalid", nil)
 		}
 		seenNames[source.Name], seenDestinations[source.Destination] = true, true
 	}
@@ -210,6 +209,54 @@ func ValidateSourceManifest(body []byte) (SourceManifest, []byte, error) {
 		return SourceManifest{}, nil, protocolError("source_manifest_invalid", err)
 	}
 	return manifest, canonical, nil
+}
+
+func validSourceURL(value string) bool {
+	if len(value) == 0 || len(value) > 2048 || strings.ContainsAny(value, "\\\x00\r\n\t") {
+		return false
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		parsed.RawPath != "" || parsed.Host == "" || parsed.Path == "" || path.Clean(parsed.Path) != parsed.Path || strings.ContainsAny(parsed.Path, "\\\x00\r\n\t") {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" || host != strings.ToLower(host) || strings.HasSuffix(host, ".") || !validSourceURLHost(host) {
+		return false
+	}
+	port := parsed.Port()
+	if port != "" {
+		if port != "443" {
+			return false
+		}
+		parsedPort, err := strconv.Atoi(port)
+		if err != nil || parsedPort != 443 {
+			return false
+		}
+	}
+	authority := host
+	if strings.Contains(host, ":") {
+		authority = "[" + host + "]"
+	}
+	if port != "" {
+		authority += ":" + port
+	}
+	return parsed.Host == authority && parsed.String() == value
+}
+
+func validSourceURLHost(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String() == host && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast()
+	}
+	if len(host) > 253 || strings.Trim(host, "0123456789.") == "" {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if !namePattern.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 
 func DecodeArtifactRequest(body []byte) (ArtifactRequest, error) {

@@ -610,7 +610,7 @@ func (f SecureGitFetcher) Fetch(ctx context.Context, source Source, scratch stri
 		return nil, protocolError("source_commit_algorithm_unsupported", nil)
 	}
 	parsed, err := url.Parse(source.URL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || !validSourceURL(source.URL) {
 		return nil, protocolError("source_url_invalid", err)
 	}
 	limit := f.MaxNetworkBytes

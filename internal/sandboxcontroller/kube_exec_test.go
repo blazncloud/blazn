@@ -80,6 +80,18 @@ func TestKubernetesExecRejectsProcessFailureAndGenericCommands(t *testing.T) {
 	}
 }
 
+func TestKubernetesExecUsesSourceContextDeadlineBeyondHTTPFallback(t *testing.T) {
+	now := time.Unix(100, 0)
+	ctx, cancel := context.WithDeadline(context.Background(), now.Add(sandboxio.SourceTimeout))
+	defer cancel()
+	if got := kubernetesExecDeadline(ctx, now); !got.Equal(now.Add(sandboxio.SourceTimeout)) {
+		t.Fatalf("source deadline=%s", got)
+	}
+	if got := kubernetesExecDeadline(context.Background(), now); !got.Equal(now.Add(kubernetesRequestTimeout)) {
+		t.Fatalf("fallback deadline=%s", got)
+	}
+}
+
 func TestKubernetesPodOwnerVerifierPinsPodAndSandboxUID(t *testing.T) {
 	podUID := "pod-uid"
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {

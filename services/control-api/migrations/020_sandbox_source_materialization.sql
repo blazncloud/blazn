@@ -1,6 +1,10 @@
 -- Fence credential-free source materialization receipts to the exact active
 -- create lease and persisted Sandbox -> Pod -> Workload observation.
 
+ALTER TABLE sandbox_template_version_repositories
+  ADD CONSTRAINT sandbox_repository_https_443 CHECK (
+    url ~ '^https://[A-Za-z0-9.-]+(:443)?/[A-Za-z0-9._~!$&''()*+,;=:@%/-]+$');
+
 DO $$ BEGIN
   IF EXISTS(
     SELECT 1 FROM sandbox_template_version_repositories parent

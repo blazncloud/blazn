@@ -548,7 +548,7 @@ func validControllerSource(source Source) bool {
 
 func validSourceHostname(hostname string) bool {
 	if ip := net.ParseIP(hostname); ip != nil {
-		return ip.String() == hostname
+		return ip.String() == hostname && !ip.IsUnspecified() && !ip.IsLoopback() && !ip.IsMulticast()
 	}
 	if strings.Trim(hostname, "0123456789.") == "" {
 		return false

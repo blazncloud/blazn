@@ -95,10 +95,7 @@ func (t *kubernetesExecTransport) Exec(ctx context.Context, target sandboxio.Fro
 	if connection.Config() == nil || len(connection.Config().Protocol) != 1 || connection.Config().Protocol[0] != kubernetesExecProtocol {
 		return errors.New("Kubernetes exec did not negotiate v5.channel.k8s.io")
 	}
-	deadline := time.Now().Add(kubernetesRequestTimeout)
-	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
-		deadline = value
-	}
+	deadline := kubernetesExecDeadline(ctx, time.Now())
 	if err := connection.SetDeadline(deadline); err != nil {
 		return err
 	}
@@ -150,6 +147,13 @@ func (t *kubernetesExecTransport) Exec(ctx context.Context, target sandboxio.Fro
 			return errors.New("Kubernetes exec returned an unknown stream")
 		}
 	}
+}
+
+func kubernetesExecDeadline(ctx context.Context, now time.Time) time.Time {
+	if deadline, ok := ctx.Deadline(); ok {
+		return deadline
+	}
+	return now.Add(kubernetesRequestTimeout)
 }
 
 func writeExecOutput(output io.Writer, body []byte) error {
