@@ -58,7 +58,8 @@
                 },
                 "resourceVersion": {
                     "type": "integer",
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 9007199254740991
                 }
             }
         },
@@ -336,7 +337,8 @@
                         },
                         "routeVersion": {
                             "type": "integer",
-                            "minimum": 1
+                            "minimum": 1,
+                            "maximum": 9007199254740991
                         },
                         "protocol": {
                             "enum": [
@@ -468,7 +470,7 @@
                                 "workspaceId":{"$ref":"#/$defs/id"},
                                 "profileId":{"$ref":"#/$defs/id"},
                                 "routeId":{"$ref":"#/$defs/id"},
-                                "routeVersion":{"type":"integer","minimum":1},
+                                "routeVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},
                                 "capability":{"enum":["model.openai","model.anthropic"]},
                                 "provider":{"enum":["openai","anthropic"]},
                                 "status":{"const":"approved"}
@@ -478,7 +480,8 @@
                 },
                 "resourceVersion": {
                     "type": "integer",
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 9007199254740991
                 }
             }
         }

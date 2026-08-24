@@ -89,7 +89,8 @@
                 },
                 "version": {
                     "type": "integer",
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 9007199254740991
                 },
                 "requestedBy": {
                     "$ref": "#/$defs/id"
@@ -125,11 +126,13 @@
                 },
                 "messageCursor": {
                     "type": "integer",
-                    "minimum": 0
+                    "minimum": 0,
+                    "maximum": 9007199254740991
                 },
                 "eventCursor": {
                     "type": "integer",
-                    "minimum": 0
+                    "minimum": 0,
+                    "maximum": 9007199254740991
                 },
                 "followUpCount": {
                     "type": "integer",
@@ -214,7 +217,8 @@
                         },
                         "version": {
                             "type": "integer",
-                            "minimum": 1
+                            "minimum": 1,
+                            "maximum": 9007199254740991
                         },
                         "protocol": {
                             "enum": [
@@ -244,9 +248,9 @@
                         }
                     }
                 },
-                "proxyDecision": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["eventId","requestId","outcome","routeId","routeVersion","policyId","policyVersion","authentication","authorizationId"],"properties":{"eventId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/id"},"outcome":{"enum":["ROUTED","DIRECT","BYPASS"]},"routeId":{"$ref":"#/$defs/id"},"routeVersion":{"type":"integer","minimum":1},"policyId":{"$ref":"#/$defs/id"},"policyVersion":{"type":"integer","minimum":1},"authentication":{"enum":["proxy-workload-proof","provider-capability-proof"]},"authorizationId":{"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]}}}]},
-                "fallbackAttempt": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["attempt","approved","primaryFailureEventId","approvalEventId","requestEventId","decisionEventId","primaryRouteId","primaryRouteVersion","fallbackRouteId","fallbackRouteVersion","authorizationId","approvalReceiptId","requestId","receiptId","policyId","policyVersion"],"properties":{"attempt":{"const":1},"approved":{"const":true},"primaryFailureEventId":{"$ref":"#/$defs/id"},"approvalEventId":{"$ref":"#/$defs/id"},"requestEventId":{"$ref":"#/$defs/id"},"decisionEventId":{"$ref":"#/$defs/id"},"primaryRouteId":{"$ref":"#/$defs/id"},"primaryRouteVersion":{"type":"integer","minimum":1},"fallbackRouteId":{"$ref":"#/$defs/id"},"fallbackRouteVersion":{"type":"integer","minimum":1},"authorizationId":{"$ref":"#/$defs/id"},"approvalReceiptId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/id"},"receiptId":{"$ref":"#/$defs/id"},"policyId":{"$ref":"#/$defs/id"},"policyVersion":{"type":"integer","minimum":1}}}]},
-                "billing": {"type":"object","additionalProperties":false,"required":["mode","currency","amountMicros","pricingId","pricingVersion","receiptId","source"],"properties":{"mode":{"enum":["priced","zero-cost"]},"currency":{"const":"USD"},"amountMicros":{"type":"integer","minimum":0},"pricingId":{"$ref":"#/$defs/id"},"pricingVersion":{"type":"integer","minimum":1},"receiptId":{"$ref":"#/$defs/id"},"source":{"enum":["proxy-receipt","control-plane-receipt"]}},"allOf":[{"if":{"properties":{"mode":{"const":"zero-cost"}},"required":["mode"]},"then":{"properties":{"amountMicros":{"const":0}}}},{"if":{"properties":{"mode":{"const":"priced"}},"required":["mode"]},"then":{"properties":{"amountMicros":{"minimum":1}}}}]},
+                "proxyDecision": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["eventId","requestId","outcome","routeId","routeVersion","policyId","policyVersion","authentication","authorizationId"],"properties":{"eventId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/id"},"outcome":{"enum":["ROUTED","DIRECT","BYPASS"]},"routeId":{"$ref":"#/$defs/id"},"routeVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"policyId":{"$ref":"#/$defs/id"},"policyVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"authentication":{"enum":["proxy-workload-proof","provider-capability-proof"]},"authorizationId":{"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]}}}]},
+                "fallbackAttempt": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["attempt","approved","primaryFailureEventId","approvalEventId","requestEventId","decisionEventId","primaryRouteId","primaryRouteVersion","fallbackRouteId","fallbackRouteVersion","authorizationId","approvalReceiptId","requestId","receiptId","policyId","policyVersion"],"properties":{"attempt":{"const":1},"approved":{"const":true},"primaryFailureEventId":{"$ref":"#/$defs/id"},"approvalEventId":{"$ref":"#/$defs/id"},"requestEventId":{"$ref":"#/$defs/id"},"decisionEventId":{"$ref":"#/$defs/id"},"primaryRouteId":{"$ref":"#/$defs/id"},"primaryRouteVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"fallbackRouteId":{"$ref":"#/$defs/id"},"fallbackRouteVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"authorizationId":{"$ref":"#/$defs/id"},"approvalReceiptId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/id"},"receiptId":{"$ref":"#/$defs/id"},"policyId":{"$ref":"#/$defs/id"},"policyVersion":{"type":"integer","minimum":1,"maximum":9007199254740991}}}]},
+                "billing": {"type":"object","additionalProperties":false,"required":["mode","currency","amountMicros","pricingId","pricingVersion","receiptId","source"],"properties":{"mode":{"enum":["priced","zero-cost"]},"currency":{"const":"USD"},"amountMicros":{"type":"integer","minimum":0,"maximum":9007199254740991},"pricingId":{"$ref":"#/$defs/id"},"pricingVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"receiptId":{"$ref":"#/$defs/id"},"source":{"enum":["proxy-receipt","control-plane-receipt"]}},"allOf":[{"if":{"properties":{"mode":{"const":"zero-cost"}},"required":["mode"]},"then":{"properties":{"amountMicros":{"const":0}}}},{"if":{"properties":{"mode":{"const":"priced"}},"required":["mode"]},"then":{"properties":{"amountMicros":{"minimum":1}}}}]},
                 "node": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["id","architecture","bindingUid","bindingResourceVersion"],"properties":{"id":{"$ref":"#/$defs/id"},"architecture":{"enum":["amd64","arm64"]},"bindingUid":{"type":"string","minLength":1,"maxLength":128},"bindingResourceVersion":{"type":"string","minLength":1,"maxLength":128}}}]},
                 "workerProtocol": {
                     "const": "blazn.dev/harness-worker/v1alpha1"
@@ -352,19 +356,23 @@
                             "properties": {
                                 "modelRequests": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
                                 },
                                 "inputTokens": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
                                 },
                                 "outputTokens": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
                                 },
                                 "durationMs": {
                                     "type": "integer",
-                                    "minimum": 0
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
                                 }
                             }
                         },
@@ -665,7 +673,8 @@
                 },
                 "sequence": {
                     "type": "integer",
-                    "minimum": 0
+                    "minimum": 0,
+                    "maximum": 9007199254740991
                 },
                 "cursor": {
                     "type": "string",
@@ -774,7 +783,7 @@
                                         "properties": {
                                             "requestId": {"$ref":"#/$defs/id"},
                                             "routeId": {"$ref":"#/$defs/id"},
-                                            "routeVersion": {"type":"integer","minimum":1}
+                                            "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991}
                                         }
                                     },
                                     {
@@ -783,7 +792,7 @@
                                         "properties": {
                                             "requestId": {"$ref":"#/$defs/id"},
                                             "routeId": {"$ref":"#/$defs/id"},
-                                            "routeVersion": {"type":"integer","minimum":1},
+                                            "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
                                             "attempt": {"const":1},
                                             "authorizationId": {"$ref":"#/$defs/id"}
                                         }
@@ -804,9 +813,9 @@
                                 "properties": {
                                     "requestId": {"$ref":"#/$defs/id"},
                                     "routeId": {"$ref":"#/$defs/id"},
-                                    "routeVersion": {"type":"integer","minimum":1},
-                                    "inputTokens": {"type":"integer","minimum":0},
-                                    "outputTokens": {"type":"integer","minimum":0}
+                                    "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
+                                    "inputTokens": {"type":"integer","minimum":0,"maximum":9007199254740991},
+                                    "outputTokens": {"type":"integer","minimum":0,"maximum":9007199254740991}
                                 }
                             },
                             "extensions": {"maxProperties":0}
@@ -824,9 +833,9 @@
                                     "requestId": {"$ref":"#/$defs/id"},
                                     "outcome": {"enum":["ROUTED","DIRECT","BYPASS"]},
                                     "routeId": {"$ref":"#/$defs/id"},
-                                    "routeVersion": {"type":"integer","minimum":1},
+                                    "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
                                     "policyId": {"$ref":"#/$defs/id"},
-                                    "policyVersion": {"type":"integer","minimum":1},
+                                    "policyVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
                                     "authentication": {"enum":["proxy-workload-proof","provider-capability-proof"]},
                                     "authorizationId": {"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]}
                                 }
@@ -845,9 +854,9 @@
                                 "properties": {
                                     "mode": {"enum":["priced","zero-cost"]},
                                     "currency": {"const":"USD"},
-                                    "amountMicros": {"type":"integer","minimum":0},
+                                    "amountMicros": {"type":"integer","minimum":0,"maximum":9007199254740991},
                                     "pricingId": {"$ref":"#/$defs/id"},
-                                    "pricingVersion": {"type":"integer","minimum":1},
+                                    "pricingVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
                                     "receiptId": {"$ref":"#/$defs/id"},
                                     "source": {"enum":["proxy-receipt","control-plane-receipt"]}
                                 }

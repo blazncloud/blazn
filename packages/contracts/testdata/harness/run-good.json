@@ -35,7 +35,7 @@
     "provenance": {
         "agentVersion": {
             "id": "11000000-0000-4000-8000-000000000001",
-            "digest": "sha256:fd1d592c0e68a13be41dd0012d74eb689d5852f57c8ecac3a0ff93a4228aff5b"
+            "digest": "sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28"
         },
         "harnessVersion": {
             "id": "20000000-0000-4000-8000-000000000001",
@@ -43,7 +43,7 @@
         },
         "harnessProfile": {
             "id": "21000000-0000-4000-8000-000000000001",
-            "digest": "sha256:fcdc1a3402105248c947780c71d94dd1569b5fb538c1584e109c4c456748c316"
+            "digest": "sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74"
         },
         "sandboxTemplateVersion": {
             "id": "60000000-0000-4000-8000-000000000001",
@@ -120,7 +120,7 @@
     },
     "credentialLeases": [
         {"id":"75000000-0000-4000-8000-000000000001","capability":"model.proxy","scope":"route:70000000-0000-4000-8000-000000000001:1","issuedAt":"2026-08-22T00:00:01Z","expiresAt":"2026-08-22T00:15:01Z","status":"revoked","revokedAt":"2026-08-22T00:05:00Z"},
-        {"id":"75000000-0000-4000-8000-000000000002","capability":"repository.read","scope":"repo:blazncloud/blazn","issuedAt":"2026-08-22T00:00:01Z","expiresAt":"2026-08-22T00:15:01Z","status":"revoked","revokedAt":"2026-08-22T00:05:00Z"}
+        {"id":"75000000-0000-4000-8000-000000000002","capability":"repository.read","scope":"repo:github.com:443/blazncloud/blazn","issuedAt":"2026-08-22T00:00:01Z","expiresAt":"2026-08-22T00:15:01Z","status":"revoked","revokedAt":"2026-08-22T00:05:00Z"}
     ],
     "messages": [
         {"id":"35000000-0000-4000-8000-000000000001","runId":"30000000-0000-4000-8000-000000000001","sessionId":"33000000-0000-4000-8000-000000000001","conversationId":"34000000-0000-4000-8000-000000000001","generation":0,"ordinal":1,"role":"assistant","parentMessageId":null,"followUpToMessageId":null,"contentDigest":"sha256:3535353535353535353535353535353535353535353535353535353535353535","createdAt":"2026-08-22T00:01:00Z"},
@@ -394,6 +394,6 @@
             "outputTokens": 50,
             "durationMs": 300000
         },
-        "receiptDigest": "sha256:d00ecd5b22c113a715f850cf55830913ba0c2ec3fbbb00e2761fc8f10c5690d0"
+        "receiptDigest": "sha256:2e3f1f7009580967d18baaeaa3a98433e4901aeb8bd553eb34e43628c813d15b"
     }
 }

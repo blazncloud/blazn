@@ -99,7 +99,7 @@
       },
       {
         "capability": "repository.read",
-        "scope": "repo:blazncloud/blazn",
+        "scope": "repo:github.com:443/blazncloud/blazn",
         "leaseSeconds": 900
       }
     ],
@@ -120,7 +120,7 @@
     },
     "status": "approved",
     "directProviderAuthorization": null,
-    "digest": "sha256:ad03a4f57b52353abc2090a13c586a646e64975000962d53c27397387ddf3541",
+    "digest": "sha256:b09c95dde98743163562643b162bad543f2cecc3fd20ea6cf73dd55bbe7e32cb",
     "resourceVersion": 1
   }
 }

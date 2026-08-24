@@ -43,7 +43,7 @@
                 "linux/arm64"
             ]
         },
-        "resolvedHarness":{"type":"object","additionalProperties":false,"required":["definition","version","profile"],"properties":{"definition":{"type":"object","additionalProperties":false,"required":["id","kind","resourceVersion"],"properties":{"id":{"type":"string","format":"uuid"},"kind":{"enum":["hermes","codex-cli","claude-code","generic-cli"]},"resourceVersion":{"type":"integer","minimum":1}}},"version":{"type":"object","additionalProperties":false,"required":["id","digest"],"properties":{"id":{"type":"string","format":"uuid"},"digest":{"$ref":"#/$defs/digest"}}},"profile":{"type":"object","additionalProperties":false,"required":["id","workspaceId","digest"],"properties":{"id":{"type":"string","format":"uuid"},"workspaceId":{"type":"string","format":"uuid"},"digest":{"$ref":"#/$defs/digest"}}}}},
+        "resolvedHarness":{"type":"object","additionalProperties":false,"required":["definition","version","profile"],"properties":{"definition":{"type":"object","additionalProperties":false,"required":["id","kind","resourceVersion"],"properties":{"id":{"type":"string","format":"uuid"},"kind":{"enum":["hermes","codex-cli","claude-code","generic-cli"]},"resourceVersion":{"type":"integer","minimum":1,"maximum":9007199254740991}}},"version":{"type":"object","additionalProperties":false,"required":["id","digest"],"properties":{"id":{"type":"string","format":"uuid"},"digest":{"$ref":"#/$defs/digest"}}},"profile":{"type":"object","additionalProperties":false,"required":["id","workspaceId","digest"],"properties":{"id":{"type":"string","format":"uuid"},"workspaceId":{"type":"string","format":"uuid"},"digest":{"$ref":"#/$defs/digest"}}}}},
         "cases": {
             "type": "array",
             "minItems": 8,
@@ -88,7 +88,8 @@
                 },
                 "version": {
                     "type": "integer",
-                    "minimum": 1
+                    "minimum": 1,
+                    "maximum": 9007199254740991
                 },
                 "agentVersionId": {
                     "type": "string",

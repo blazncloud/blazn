@@ -154,6 +154,28 @@ test("normalized lifecycle, follow-up, resume, cancellation, provenance and term
   ((cancelled.session as Record<string,Record<string,unknown>>).cancellation!).processTreeTerminated=true;((cancelled.session as Record<string,Record<string,unknown>>).cancellation!).credentialsRevoked=false;assert.match(verifyHarnessRun(agent,bundle,cancelled).join(" "),/credential revocation/);
 });
 
+test("repository credentials bind host, effective port, and repository path",async()=>{
+  const agent=await json(path.join(fixtures,"agent-good.json")),bundles=await Promise.all(["hermes-profile.json","codex-profile.json","claude-profile.json","generic-profile.json"].map((file)=>json(path.join(fixtures,file))));
+  assert.deepEqual(verifyAgentCompatibility(agent,bundles),[]);
+  const substituted=structuredClone(agent),version=substituted.version as Record<string,unknown>,repository=version.repository as Record<string,unknown>;
+  repository.url="https://attacker.example/blazncloud/blazn.git";
+  version.digest=agentVersionDigest(version);
+  assert.match(verifyAgentCompatibility(substituted,bundles).join(" "),/repository credential/);
+  repository.url="https://github.com:8443/blazncloud/blazn.git";
+  version.digest=agentVersionDigest(version);
+  assert.match(verifyAgentCompatibility(substituted,bundles).join(" "),/repository credential/);
+});
+
+test("receipt-digested counters reject integers outside JSON safe range",async()=>{
+  const agent=await json(path.join(fixtures,"agent-good.json")),bundle=await json(path.join(fixtures,"hermes-profile.json")),run=await json(path.join(fixtures,"run-good.json"));
+  const billing=(run.provenance as Record<string,Record<string,unknown>>).billing!;
+  billing.amountMicros=Number.MAX_SAFE_INTEGER+1;
+  assert.equal(harnessTerminalReceiptDigest(run),"");
+  assert.match(verifyHarnessRun(agent,bundle,run).join(" "),/JSON safe integer|billing receipt/);
+  const schema=await json(path.join(contracts,"harness-run.schema.json")),validator=new Ajv2020({allErrors:true,strict:false}).compile(schema);
+  assert.equal(validator(run),false,"unsafe billing integer passed schema");
+});
+
 test("portable evaluation requires identical conformance cases and Artifact evidence",async()=>{
   const value=await json(path.join(fixtures,"evaluation-good.json")),schema=await json(path.join(contracts,"harness-conformance.schema.json")),agent=await json(path.join(fixtures,"agent-good.json")),parity=[],parityBundles=[];
   const hermesBundle=await json(path.join(fixtures,"hermes-profile.json"));validate(schema,value);assert.deepEqual(verifyPortableEvaluation(value,hermesBundle,agent),[]);
