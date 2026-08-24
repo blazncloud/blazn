@@ -61,9 +61,30 @@ identity field plus the admitted condition and cluster queue, so a
 syntactically valid substitution cannot rewrite cleanup evidence independently
 of the terminal create receipt's own admission digest.
 
-This slice does not wire `cmd/controller`, install or change Kubernetes
-resources, publish an image, or claim Gate 4C or Gate 5. Those remain subsequent
-stacked work and live qualification.
+## Phase 5 in-cluster controller client
+
+The stacked controller executable constructs the narrow adapter only after its
+complete database and Kubernetes configuration has validated. The Kubernetes
+endpoint is always an exact `https://host:port` assembled from strictly parsed
+controller settings (or the standard in-cluster service host and HTTPS port).
+It trusts only the configured, real CA file, disables environment proxies and
+redirect following, and bounds dialing, TLS negotiation, response headers,
+response bodies, idle connections, and the whole request. Its read-only
+collection health check must succeed before the controller's first queue claim.
+
+The projected ServiceAccount token is not a configuration value and is never
+passed to or cached by the adapter. The authorization transport opens it afresh
+for every request. Kubernetes' atomic projection symlink layout is accepted
+only while its resolved target remains inside the mounted volume; owner, mode,
+size, link count, inode, and the symlink resolution are rechecked around each
+read. Rotation therefore takes effect on the next request without putting a
+token in logs or error details. The CA deliberately has a stricter contract: it
+must be a stable, owner-safe regular file rather than a projected symlink.
+
+This slice does not install or change a ServiceAccount, Role, RoleBinding, CRD,
+deployment, image, namespace, queue, or other Kubernetes resource. Artifact
+export transport is also still unavailable, so required exports fail closed.
+Those installation and live-qualification steps remain subsequent work.
 
 ## Runtime trust
 

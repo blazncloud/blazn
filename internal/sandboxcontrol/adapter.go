@@ -748,9 +748,12 @@ func (a *Adapter) call(ctx context.Context, method, path string, query url.Value
 	if output == nil || response.StatusCode == http.StatusNoContent {
 		return nil
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, a.maxBytes))
+	decoder := json.NewDecoder(io.LimitReader(response.Body, a.maxBytes+1))
 	if err := decoder.Decode(output); err != nil {
 		return adapterError(ErrBackend, 502, "Kubernetes API response is invalid", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return adapterError(ErrBackend, 502, "Kubernetes API response is invalid", errors.New("response contains trailing or oversized data"))
 	}
 	return nil
 }

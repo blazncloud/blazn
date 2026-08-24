@@ -20,6 +20,8 @@ func TestConfigFromEnvReadsDatabaseURLOnlyFromSafeFile(t *testing.T) {
 		"BLAZN_SANDBOX_CONTROLLER_WORKER_ID":         "controller-1",
 		"BLAZN_SANDBOX_CONTROLLER_LEASE":             "45s",
 		"BLAZN_SANDBOX_CONTROLLER_EXPIRY_BATCH":      "12",
+		"KUBERNETES_SERVICE_HOST":                    "10.96.0.1",
+		"KUBERNETES_SERVICE_PORT_HTTPS":              "443",
 	}
 	config, err := ConfigFromEnv(func(key string) string { return values[key] })
 	if err != nil {
@@ -39,6 +41,8 @@ func TestConfigFromEnvValidatesEffectiveDatabaseLeaseSchedule(t *testing.T) {
 	base := map[string]string{
 		"BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE": secret,
 		"BLAZN_SANDBOX_CONTROLLER_WORKER_ID":         "controller-1",
+		"KUBERNETES_SERVICE_HOST":                    "kubernetes.default.svc",
+		"KUBERNETES_SERVICE_PORT_HTTPS":              "443",
 	}
 	for _, test := range []struct {
 		name, lease, renew string
@@ -67,6 +71,59 @@ func TestConfigFromEnvValidatesEffectiveDatabaseLeaseSchedule(t *testing.T) {
 	values["BLAZN_SANDBOX_CONTROLLER_RENEW_EVERY"] = "3s"
 	if _, err := ConfigFromEnv(func(key string) string { return values[key] }); err != nil {
 		t.Fatalf("safe fractional lease schedule was rejected: %v", err)
+	}
+}
+
+func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
+	valid := map[string]string{
+		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST":       "kubernetes.default.svc",
+		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT":       "443",
+		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE":    "/run/blazn/kubernetes-ca.crt",
+		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE": "/var/run/secrets/kubernetes.io/serviceaccount/token",
+	}
+	config, err := kubernetesConfigFromEnv(func(key string) string { return valid[key] })
+	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" {
+		t.Fatalf("valid endpoint rejected: config=%#v err=%v", config, err)
+	}
+	valid["BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST"] = "fd00::1"
+	config, err = kubernetesConfigFromEnv(func(key string) string { return valid[key] })
+	if err != nil || config.BaseURL != "https://[fd00::1]:443" {
+		t.Fatalf("valid IPv6 endpoint rejected: config=%#v err=%v", config, err)
+	}
+	valid["BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST"] = "kubernetes.default.svc"
+	for _, test := range []struct{ key, value string }{
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST", value: "KUBERNETES.default.svc"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST", value: "kubernetes.default.svc."},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST", value: "127.0.0.1:6443"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST", value: "0.0.0.0"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT", value: "0443"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT", value: "+443"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT", value: "65536"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE", value: "relative/ca.crt"},
+		{key: "BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE", value: "/var/run/../token"},
+	} {
+		t.Run(test.key+"="+test.value, func(t *testing.T) {
+			values := make(map[string]string, len(valid))
+			for key, value := range valid {
+				values[key] = value
+			}
+			values[test.key] = test.value
+			if _, err := kubernetesConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+				t.Fatal("invalid Kubernetes configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestKubernetesConfigUsesOnlyValidatedServiceEnvironmentFallback(t *testing.T) {
+	values := map[string]string{"KUBERNETES_SERVICE_HOST": "10.96.0.1", "KUBERNETES_SERVICE_PORT_HTTPS": "443"}
+	config, err := kubernetesConfigFromEnv(func(key string) string { return values[key] })
+	if err != nil || config.BaseURL != "https://10.96.0.1:443" || config.CAFile != defaultKubernetesCAFile || config.TokenFile != defaultKubernetesTokenFile {
+		t.Fatalf("service environment fallback failed: config=%#v err=%v", config, err)
+	}
+	values["KUBERNETES_SERVICE_HOST"] = "10.96.0.1/path"
+	if _, err := kubernetesConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("malformed service environment host was accepted")
 	}
 }
 
