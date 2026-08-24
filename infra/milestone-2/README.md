@@ -165,6 +165,61 @@ Migration `002` must revoke v1's persisted default table/sequence privileges,
 revoke existing broad table grants, and then apply explicit table grants. The
 operator reconciles the main receipt in a separate reviewed lock operation.
 
+## Bootstrap password recovery
+
+Password recovery is an explicit operator operation; neither normal API startup
+nor the restart-idempotent identity bootstrap invokes it. Use only the reviewed,
+receipt-bound control API image containing this recovery command. First apply
+its migrations using the normal locked deployment procedure. Recovery is
+isolated behind a hardened migration-owned database function executable only by
+the bootstrap role; registered device rows are not changed.
+
+Run the following from a root operator shell. The documented entry point is the
+normal mutation-lock wrapper, which supplies a new fencing token to the
+repository-owned recovery script. `systemd-ask-password` prompts without
+terminal echo, and the replacement password never appears in argv, environment
+variables, or shell history. Set `BLAZN_SECRETS_ROOT` and the other Compose
+variables from the installed environment exactly as for a normal control-plane
+operation.
+
+```sh
+staged=$(sudo mktemp /run/blazn-password-recovery.XXXXXX)
+sudo chown root:root "$staged"
+sudo chmod 0400 "$staged"
+sudo sh -c 'systemd-ask-password "New Blazn password:" >"$1"' sh "$staged"
+correlation_id=password-recovery-$(date -u +%Y%m%dT%H%M%SZ)
+if sudo /opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh \
+    password-recovery "$correlation_id" auto \
+    /opt/blazn/infra/milestone-2/scripts/recover-bootstrap-password.sh "$staged"; then
+  sudo rm -f -- "$staged"
+  blazn auth login
+else
+  printf 'Recovery did not complete; preserve the staged file and follow the non-secret reconciliation message.\n' >&2
+fi
+```
+
+The script validates root execution, the lock token, configuration, and a
+root-owned non-symlink staged file with mode 0400 or 0440. Before database work,
+it copies that file to a mode-0400 candidate beside `initial-password`, leaving
+the old installed secret active. The container runs as root solely to read that
+candidate mount; its existing dropped capabilities and no-new-privileges policy
+still apply. A database-command failure removes the candidate and leaves the
+old secret untouched. After password update, session revocation, and
+invalidation of outstanding device authorizations commit together, the script
+changes the candidate to the installed mode 0444 and atomically renames it over
+`initial-password`. A permission or rename failure preserves the candidate;
+reconciliation accepts the same root-owned, same-content candidate in mode 0400
+or 0444 and safely retries activation.
+
+If the locked command fails, do not remove the staged file. A failure or
+interrupt after the database may have committed preserves the candidate and
+prints non-secret reconciliation guidance. Rerun the same locked command with
+the same staged file and a new correlation ID; it verifies the candidate,
+safely repeats the rotation, and retries activation. Remove the staged file
+only after the script prints its generic completion message. Investigate
+without printing either secret file. Then all clients must use a fresh
+`blazn auth login`; existing registered device records remain available.
+
 ## Evidence and tests
 
 - `tests/test-preflight.sh` proves fail-closed behavior for same-filesystem

@@ -153,9 +153,15 @@ if [ "$MODE" = deploy ]; then
      .images == [$postgresImage,$minioImage,$minioMcImage] and
      .configDigest == $configDigest' \
     "$RECEIPT_PATH" >/dev/null || die "ownership receipt does not match the requested deployment"
-  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url initial-password s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
+  for secret in postgres-password migration-database-url bootstrap-database-url runtime-database-url s3-root-access-key s3-root-secret-key s3-runtime-access-key s3-runtime-secret-key proxy-auth-secret; do
     assert_regular_file_owned_mode "$SECRETS_ROOT/$secret" 0 444
   done
+  if [ ! -f "$SECRETS_ROOT/initial-password" ] || [ -L "$SECRETS_ROOT/initial-password" ]; then
+    die "initial-password must be a non-symlink regular file"
+  fi
+  [ "$(stat -c '%u' "$SECRETS_ROOT/initial-password")" = 0 ] || die "initial-password must be owned by root"
+  [ "$(stat -c '%a' "$SECRETS_ROOT/initial-password")" = 444 ] || \
+    die "initial-password must have mode 0444"
 fi
 
 printf '{"status":"ok","mode":"%s","bindAddress":"%s","ports":[%s,%s,%s,%s],"dataBytesFree":%s,"backupBytesFree":%s,"dataInodesFree":%s,"backupInodesFree":%s,"separateFilesystem":true}\n' \
