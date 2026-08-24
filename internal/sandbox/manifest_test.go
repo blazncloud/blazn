@@ -59,6 +59,39 @@ func TestValidateTemplateRejectsTrailingDocument(t *testing.T) {
 	}
 }
 
+func TestImmutableOCIReferenceUsesCanonicalRegistryAndRepositoryIdentity(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	for _, value := range []string{
+		"registry.example.test/blazn/sandbox@" + digest,
+		"registry.example.test:80/blazn/sandbox@" + digest,
+		"registry.example.test:443/blazn/sandbox__image@" + digest,
+		"registry.example.test/blazn/sandbox--image@" + digest,
+		"registry.example.test/" + strings.Repeat("a", 255) + "@" + digest,
+		"localhost:5000/blazn/sandbox@" + digest,
+		"127.0.0.1:5000/blazn/sandbox@" + digest,
+	} {
+		if !IsImmutableOCIReference(value) {
+			t.Errorf("canonical reference %q was rejected", value)
+		}
+	}
+	for _, value := range []string{
+		"blazn/sandbox@" + digest,
+		"registry.example.test/blazn/sandbox:latest@" + digest,
+		"registry.example.test:0/blazn/sandbox@" + digest,
+		"registry.example.test:65536/blazn/sandbox@" + digest,
+		"registry.example.test:080/blazn/sandbox@" + digest,
+		"bad-.example.test/blazn/sandbox@" + digest,
+		"registry.example.test/blazn//sandbox@" + digest,
+		"registry.example.test/" + strings.Repeat("a", 256) + "@" + digest,
+		"REGISTRY.example.test/blazn/sandbox@" + digest,
+		"registry.example.test/blazn/sandbox@sha256:" + strings.Repeat("A", 64),
+	} {
+		if IsImmutableOCIReference(value) {
+			t.Errorf("non-canonical reference %q was accepted", value)
+		}
+	}
+}
+
 func TestValidateTemplateNullUTF8URLAndCodePointBoundaries(t *testing.T) {
 	manifest, _ := os.ReadFile("../../packages/contracts/testdata/sandbox/template-good.json")
 	t.Run("null optional array", func(t *testing.T) {

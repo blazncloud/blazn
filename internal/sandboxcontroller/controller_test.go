@@ -720,8 +720,8 @@ func createFixture(t *testing.T) (WorkItem, BackendState) {
 		ExpectedSandboxVersion: 1, LeaseToken: "lease-token", Attempt: 1,
 		AllocationMode: "direct", DesiredState: "ready", Architecture: "amd64",
 		TemplateVersionID: "template-1", TemplateDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		VariantName: "amd64", ImageIndexDigest: "registry.invalid/poc@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		ImageDigest:      "registry.invalid/poc@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		VariantName: "amd64", ImageIndexDigest: "registry.example.test/blazn/sandbox@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ImageDigest:      "registry.example.test/blazn/sandbox@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		PlacementProfile: "poc-linux-amd64-v1", QueueName: sandboxcontrol.QueueName,
 		Command: []string{"true"}, Resources: Resources{CPURequest: "100m", MemoryRequest: "128Mi",
 			EphemeralRequest: "1Gi", CPULimit: "1", MemoryLimit: "1Gi", EphemeralLimit: "2Gi"},
@@ -751,6 +751,36 @@ func bindWorkItem(item *WorkItem, state BackendState) {
 	item.AdmissionID = pointer(state.AdmissionObservation.Workload.UID)
 	item.PersistedWorkloadDigest = pointer(state.AdmissionObservation.Workload.Digest)
 	item.AdmissionObservation = state.AdmissionObservation
+}
+
+func TestValidateWorkItemRejectsMalformedImageReferences(t *testing.T) {
+	valid, _ := createFixture(t)
+	tests := []struct {
+		name      string
+		reference string
+	}{
+		{name: "tag", reference: "registry.example.test/blazn/sandbox:latest"},
+		{name: "digest only", reference: "sha256:" + strings.Repeat("a", 64)},
+		{name: "uppercase", reference: "registry.example.test/Blazn/sandbox@sha256:" + strings.Repeat("a", 64)},
+		{name: "malformed digest", reference: "registry.example.test/blazn/sandbox@sha256:abc"},
+		{name: "credentials", reference: "user:password@registry.example.test/blazn/sandbox@sha256:" + strings.Repeat("a", 64)},
+		{name: "parent traversal", reference: "registry.example.test/blazn/../sandbox@sha256:" + strings.Repeat("a", 64)},
+		{name: "empty segment", reference: "registry.example.test/blazn//sandbox@sha256:" + strings.Repeat("a", 64)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			item := valid
+			item.ImageIndexDigest = test.reference
+			if err := validateWorkItem(item); err == nil {
+				t.Fatalf("malformed image index reference %q was accepted", test.reference)
+			}
+			item = valid
+			item.ImageDigest = test.reference
+			if err := validateWorkItem(item); err == nil {
+				t.Fatalf("malformed image reference %q was accepted", test.reference)
+			}
+		})
+	}
 }
 
 func pointer[T any](value T) *T { return &value }

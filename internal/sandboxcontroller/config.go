@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandbox"
 )
 
 const maxDatabaseURLBytes = 16 * 1024
@@ -130,7 +132,7 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 		return KubernetesConfig{}, errors.New("sandbox controller Kubernetes credential paths are invalid")
 	}
 	helperImage := getenv("BLAZN_SANDBOX_IO_IMAGE")
-	if !immutableImagePattern.MatchString(helperImage) {
+	if !sandbox.IsImmutableOCIReference(helperImage) {
 		return KubernetesConfig{}, errors.New("sandbox I/O helper image is invalid")
 	}
 	dnsRaw, hostsRaw := getenv("BLAZN_SANDBOX_SOURCE_DNS_CIDRS"), getenv("BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON")
