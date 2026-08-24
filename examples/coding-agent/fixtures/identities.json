@@ -9,5 +9,5 @@
   "agentDigest": "sha256:ae26cfbe9a26de8c0cff7d35f978e04e202e366640f6673d5b02625f6eebe241",
   "baseImageDigest": "docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9",
   "dependencyLockDigest": "sha256:6fb5b20eeaea986be5c70f41a45840f51531fdddbf6120d81be94207784a978a",
-  "buildContextDigest": "sha256:af0542b6bb693b950a4c0764ad73c2485993cd2a7081a699b77f9dffb0f1028c"
+  "buildContextDigest": "sha256:173656cf419aa10610eb2fffd446a5f159fd4549c4ce0102322f4410a69d8d1d"
 }
