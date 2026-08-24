@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build darwin
 
 package cli
 
@@ -14,6 +14,8 @@ type appProcessIO struct {
 	stderr io.Writer
 }
 
+// Darwin keeps the stable scoped runner and session-unsupported behavior until
+// descriptor-backed child spawn and launchctl inheritance proof are available.
 func newDefaultProxyCommands(streams appProcessIO) (proxyCommands, error) {
 	return scopedrun.NewProduction(streams.stdin, streams.stdout, streams.stderr)
 }

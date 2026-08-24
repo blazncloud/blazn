@@ -429,6 +429,7 @@ type Reconciliation struct {
 	PolicyDigest    string
 	Mode            string
 	ListenerProof   *LiveListenerProof
+	ListenerAddress string
 	ReceiptRepaired bool
 }
 
@@ -485,7 +486,7 @@ func reconcileLocked(locked *lockedStore, result *Reconciliation, semanticErr *e
 	}
 	if receiptErr == nil {
 		proof := proofFromReceipt(receipt)
-		*result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required", PolicyDigest: receipt.PolicyDigest, Mode: receipt.Mode, ListenerProof: &proof}
+		*result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required", PolicyDigest: receipt.PolicyDigest, Mode: receipt.Mode, ListenerProof: &proof, ListenerAddress: receipt.Listener.Address}
 		*semanticErr = ErrRecoveryRequired
 		return nil
 	}
@@ -504,7 +505,7 @@ func reconciliationFromJournal(journal *Journal, repaired bool) Reconciliation {
 	proof := proofFromJournal(journal)
 	return Reconciliation{
 		State: state, ActivationID: journal.ActivationID, Generation: journal.Generation,
-		LifecycleState: journal.State, PolicyDigest: journal.Policy.Digest, Mode: journal.Mode, ListenerProof: &proof, ReceiptRepaired: repaired,
+		LifecycleState: journal.State, PolicyDigest: journal.Policy.Digest, Mode: journal.Mode, ListenerProof: &proof, ListenerAddress: journal.Listener.Address, ReceiptRepaired: repaired,
 	}
 }
 

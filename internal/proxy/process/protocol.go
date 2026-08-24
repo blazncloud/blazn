@@ -40,10 +40,11 @@ const (
 )
 
 var (
-	ErrUnavailable      = errors.New("proxy process core is unavailable")
-	ErrProtocol         = errors.New("proxy process protocol rejected")
-	ErrUnauthorized     = errors.New("proxy listener control unauthorized")
-	ErrSpawnUnsupported = errors.New("proxy process spawn is unsupported on this platform")
+	ErrUnavailable                = errors.New("proxy process core is unavailable")
+	ErrProtocol                   = errors.New("proxy process protocol rejected")
+	ErrUnauthorized               = errors.New("proxy listener control unauthorized")
+	ErrSpawnUnsupported           = errors.New("proxy process spawn is unsupported on this platform")
+	ErrRestartMaterialUnavailable = errors.New("protected proxy listener restart material is unavailable")
 )
 
 var (
@@ -100,6 +101,7 @@ type Handshake struct {
 	Address        string    `json:"address"`
 	ControlAddress string    `json:"controlAddress"`
 	ListenerToken  string    `json:"listenerToken"`
+	Environment    []string  `json:"environment"`
 	PublicKey      string    `json:"publicKey"`
 	Proof          WireProof `json:"proof"`
 	Challenge      string    `json:"challenge"`
@@ -142,6 +144,44 @@ func proofFromWire(value WireProof) state.LiveListenerProof {
 func fingerprint(public ed25519.PublicKey) string {
 	sum := sha256.Sum256(public)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func fingerprintFromEncodedPublicKey(value string) string {
+	public, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	if err != nil || len(public) != ed25519.PublicKeySize || base64.RawURLEncoding.EncodeToString(public) != value {
+		return ""
+	}
+	return fingerprint(ed25519.PublicKey(public))
+}
+
+func validChildEnvironment(values []string, address string) bool {
+	if len(values) != len(state.EnvironmentNames) || !validListenerAddress(address) {
+		return false
+	}
+	parsed := make(map[string]string, len(values))
+	for _, entry := range values {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || !validEnvironmentName(name) || strings.ContainsAny(value, "\x00\r\n") {
+			return false
+		}
+		if _, duplicate := parsed[name]; duplicate {
+			return false
+		}
+		parsed[name] = value
+	}
+	base := "http://" + address
+	token := parsed["OPENAI_API_KEY"]
+	return parsed["OPENAI_BASE_URL"] == base+"/v1" && parsed["ANTHROPIC_BASE_URL"] == base &&
+		validListenerToken(token) && parsed["ANTHROPIC_API_KEY"] == token && parsed["ANTHROPIC_AUTH_TOKEN"] == token
+}
+
+func validEnvironmentName(name string) bool {
+	for _, allowed := range state.EnvironmentNames {
+		if name == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func freshChallenge() (string, error) {

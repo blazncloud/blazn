@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/blazncloud/blazn/internal/proxycontract"
@@ -84,8 +85,44 @@ type Snapshot struct {
 	values map[string][]byte
 }
 
+// Resolved is a caller-owned bootstrap copy. Value must be zeroed after the
+// authenticated child transport has copied it.
+type Resolved struct {
+	Reference string
+	Value     []byte
+}
+
 func (*Snapshot) String() string   { return "[REDACTED credential snapshot]" }
 func (*Snapshot) GoString() string { return "[REDACTED credential snapshot]" }
+
+// Export returns deterministic caller-owned copies without formatting secret
+// material or exposing lookup completion order.
+func (s *Snapshot) Export() []Resolved {
+	if s == nil {
+		return nil
+	}
+	references := make([]string, 0, len(s.values))
+	for reference := range s.values {
+		references = append(references, reference)
+	}
+	sort.Strings(references)
+	result := make([]Resolved, 0, len(references))
+	for _, reference := range references {
+		result = append(result, Resolved{Reference: reference, Value: append([]byte(nil), s.values[reference]...)})
+	}
+	return result
+}
+
+// Destroy best-effort zeroes the activation-local snapshot. It is idempotent.
+func (s *Snapshot) Destroy() {
+	if s == nil {
+		return
+	}
+	for reference, value := range s.values {
+		zero(value)
+		delete(s.values, reference)
+	}
+}
 
 type request struct {
 	ref     string

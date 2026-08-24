@@ -78,6 +78,10 @@ func TestControllerEndToEndFreshProofAndAuthenticatedStop(t *testing.T) {
 	if managed.Identity().PID != platform.evidence.PID || managed.ListenerToken() != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
 		t.Fatal("start did not return child identity and in-memory listener token")
 	}
+	environment, err := managed.ChildEnvironment([]string{"PATH=/bin", "OPENAI_API_KEY=old"})
+	if err != nil || len(environment) != 6 || environment[0] != "PATH=/bin" {
+		t.Fatalf("authenticated exact-five child environment mismatch: %#v err=%v", environment, err)
+	}
 	proof, live, err := controller.Inspect(context.Background(), managed.Identity().PID)
 	if err != nil || !live || proof != managed.Proof() {
 		t.Fatalf("inspect proof mismatch: live=%v err=%v", live, err)
@@ -235,6 +239,12 @@ func TestRestartDiscoveryReauthenticatesPersistedMaterialWithoutPersistence(t *t
 	}
 	if proof, live, err := discovery.Inspect(context.Background(), managed.Proof().PID); err != nil || !live || proof != managed.Proof() {
 		t.Fatalf("discovered listener was not registered: live=%t proof=%#v err=%v", live, proof, err)
+	}
+	fingerprintOnly := persisted
+	fingerprintOnly.PublicKey = ""
+	fingerprintDiscovery := &Controller{Platform: platform, ControlTimeout: time.Second}
+	if proof, live, err := fingerprintDiscovery.Discover(context.Background(), fingerprintOnly); err != nil || !live || proof != managed.Proof() {
+		t.Fatalf("fingerprint-only discovery failed: live=%t proof=%#v err=%v", live, proof, err)
 	}
 
 	mutations := map[string]func(*PersistedListener, *fakePlatform){
@@ -550,7 +560,7 @@ func TestBootstrapSecretsStayOffArgvEnvironmentFilesAndFormatting(t *testing.T) 
 	}
 }
 
-func TestHiddenInvocationIsExactAndDefaultFactoryUnavailable(t *testing.T) {
+func TestHiddenInvocationIsExactAndDefaultFactoryRejectsUntrustedBootstrap(t *testing.T) {
 	if !IsChildInvocation([]string{ChildCommand, ProtocolVersion}) || IsChildInvocation([]string{ChildCommand}) || IsChildInvocation([]string{ChildCommand, ProtocolVersion, "secret"}) {
 		t.Fatal("hidden child invocation was not exact")
 	}
@@ -562,8 +572,8 @@ func TestHiddenInvocationIsExactAndDefaultFactoryUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = writer.Close()
-	if err := <-result; !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("default child adapter unexpectedly available: %v", err)
+	if err := <-result; err == nil {
+		t.Fatal("default child adapter accepted untrusted bootstrap")
 	}
 }
 
@@ -756,9 +766,19 @@ type fakeRuntime struct {
 	once                    sync.Once
 }
 
-func (r *fakeRuntime) Address() string                 { return r.address }
-func (r *fakeRuntime) ControlAddress() string          { return r.control }
-func (r *fakeRuntime) ListenerToken() string           { return r.token }
+func (r *fakeRuntime) Address() string        { return r.address }
+func (r *fakeRuntime) ControlAddress() string { return r.control }
+func (r *fakeRuntime) ListenerToken() string  { return r.token }
+func (r *fakeRuntime) ChildEnvironment(base []string) ([]string, error) {
+	result := append([]string(nil), base...)
+	return append(result,
+		"OPENAI_BASE_URL=http://"+r.address+"/v1",
+		"OPENAI_API_KEY="+r.token,
+		"ANTHROPIC_BASE_URL=http://"+r.address,
+		"ANTHROPIC_API_KEY="+r.token,
+		"ANTHROPIC_AUTH_TOKEN="+r.token,
+	), nil
+}
 func (r *fakeRuntime) Identity() (int, string, string) { return r.pid, r.start, r.executable }
 func (r *fakeRuntime) ServeControl(ctx context.Context, handler func(context.Context, ControlRequest) (ControlResponse, error)) error {
 	r.handler = handler

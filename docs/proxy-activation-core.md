@@ -81,18 +81,21 @@ forwards TERM, INT, HUP, and QUIT, preserves exit or signal status, and applies
 a bounded TERM-then-kill cancellation path. It never writes HTTP proxy values,
 CA/trust state, provider/application configuration, or shell configuration.
 
-## Deferred platform qualification
+## Linux session wiring and deferred native qualification
 
-Real launchctl and user-systemd publication, a durable listener child and
-authenticated control channel, OS process inspection after a restart, and the
-native twenty-cycle/crash/reboot/config-snapshot matrix remain in later PRs.
+Linux now wires the reviewed systemd user-environment adapter, descriptor-backed
+detached listener child, authenticated control channel, Secret Service resolver,
+and OS process inspection into the default command factory. Activation remains
+capability-gated: the production systemd probe currently cannot prove desktop
+inheritance, so `auto` and `session` fail before state or listener mutation until
+that native proof is qualified. The native twenty-cycle/crash/reboot/config-
+snapshot matrix remains in a later qualification slice.
 Darwin descriptor-backed child execution also remains deferred: `/dev/fd`
 entries are not executable on macOS, so the native process adapter returns the
 stable `ErrSpawnUnsupported` failure before creating a child rather than
 falling back to a pathname that can be substituted after verification.
-`proxy on`, `off`, `status`, `doctor`, `routes`, `tail`, and `reset` remain
-unavailable (with `on` reporting session unsupported) until those proofs
-exist. `process_environment` is a no-op publication mechanism used
+On Linux, `proxy on` becomes available only after the complete capability
+preflight succeeds. `process_environment` remains a no-op publication mechanism used
 only by `proxy run`; the five selected values are passed to that exact child and
 are not written into the parent or OS session. `on` accepts only the journaled
 `session` mode with the matching native publication mechanism. Linux or macOS
@@ -100,10 +103,13 @@ are not written into the parent or OS session. `on` accepts only the journaled
 that durable session boundary; it never writes a synthetic `scoped_only` or
 other out-of-contract journal mode.
 
-`EmbeddedListenerFactory` and the default unavailable CLI factory are core/test
-boundaries, not production session implementations. Production `proxy on`
-remains unavailable until a native adapter supplies a durable listener child,
-an authenticated control channel, and restart-safe process proof. The core's
+`EmbeddedListenerFactory` remains a core/test boundary. The Linux default
+factory uses the durable child. Across CLI restarts it derives the owner-only
+control socket from the activation ID and protected state root, recovers the
+listener token only from the validated exact-five systemd environment, verifies
+fresh OS evidence, authenticates a challenge, and binds the returned public key
+to the journaled fingerprint. No control secret or raw path is added to state.
+The core's
 injected fake adapters exercise journal crash
 points, stale state, API independence, abrupt listener loss, idempotency, exact
 argv, compare-and-set restoration, and application-config non-mutation.

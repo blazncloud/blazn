@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,8 +47,9 @@ type Platform interface {
 }
 
 // PersistedListener is the minimum restart material a protected state owner
-// must supply to rediscover a listener. This package deliberately provides no
-// persistence implementation for the listener token or public key.
+// must supply to rediscover a listener. PublicKey may be empty when the caller
+// has a persisted key fingerprint: the signed response key is then bound to
+// that fingerprint before authority is registered.
 type PersistedListener struct {
 	Proof          state.LiveListenerProof
 	ControlAddress string
@@ -69,18 +71,44 @@ type StartRequest struct {
 }
 
 type Managed struct {
-	controller *Controller
-	child      Child
-	identity   state.ListenerIdentity
-	proof      state.LiveListenerProof
-	token      string
+	controller  *Controller
+	child       Child
+	identity    state.ListenerIdentity
+	proof       state.LiveListenerProof
+	token       string
+	environment []string
 }
 
 func (m *Managed) Identity() state.ListenerIdentity { return m.identity }
 func (m *Managed) Proof() state.LiveListenerProof   { return m.proof }
 func (m *Managed) ListenerToken() string            { return m.token }
-func (m *Managed) String() string                   { return "[REDACTED managed proxy process]" }
-func (m *Managed) GoString() string                 { return "[REDACTED managed proxy process]" }
+func (m *Managed) ChildEnvironment(base []string) ([]string, error) {
+	if m == nil || !validChildEnvironment(m.environment, m.identity.Address) {
+		return nil, ErrUnavailable
+	}
+	result := make([]string, 0, len(base)+len(m.environment))
+	for _, entry := range base {
+		name, _, _ := strings.Cut(entry, "=")
+		if !validEnvironmentName(name) {
+			result = append(result, entry)
+		}
+	}
+	return append(result, m.environment...), nil
+}
+func (m *Managed) Inspect(ctx context.Context) (state.LiveListenerProof, bool, error) {
+	if m == nil || m.controller == nil {
+		return state.LiveListenerProof{}, false, ErrUnavailable
+	}
+	return m.controller.Inspect(ctx, m.proof.PID)
+}
+func (m *Managed) Shutdown(ctx context.Context) error {
+	if m == nil || m.controller == nil {
+		return ErrUnavailable
+	}
+	return m.controller.Stop(ctx, m.proof)
+}
+func (m *Managed) String() string   { return "[REDACTED managed proxy process]" }
+func (m *Managed) GoString() string { return "[REDACTED managed proxy process]" }
 
 type Controller struct {
 	Platform         Platform
@@ -89,6 +117,12 @@ type Controller struct {
 	StopGrace        time.Duration
 	mu               sync.Mutex
 	known            map[int]knownListener
+	expected         map[int]expectedListener
+}
+
+type expectedListener struct {
+	proof          state.LiveListenerProof
+	executablePath string
 }
 
 type knownListener struct {
@@ -98,6 +132,22 @@ type knownListener struct {
 	listenerToken  string
 	proof          state.LiveListenerProof
 	child          Child
+}
+
+// Expect registers non-authoritative state evidence for recovery. It grants no
+// signal or control authority: it only lets Inspect classify fresh OS evidence
+// that contradicts the exact recorded identity as safe PID reuse/absence.
+func (c *Controller) Expect(proof state.LiveListenerProof, executablePath string) error {
+	if c == nil || !validLiveProof(proof) || !filepath.IsAbs(executablePath) || filepath.Clean(executablePath) != executablePath {
+		return ErrUnavailable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.expected == nil {
+		c.expected = make(map[int]expectedListener)
+	}
+	c.expected[proof.PID] = expectedListener{proof: proof, executablePath: executablePath}
+	return nil
 }
 
 func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Managed, err error) {
@@ -179,7 +229,7 @@ func (c *Controller) Start(ctx context.Context, request StartRequest) (_ *Manage
 	c.mu.Unlock()
 	_ = evidence
 	cleanup = false
-	return &Managed{controller: c, child: child, identity: identity, proof: proof, token: handshake.ListenerToken}, nil
+	return &Managed{controller: c, child: child, identity: identity, proof: proof, token: handshake.ListenerToken, environment: append([]string(nil), handshake.Environment...)}, nil
 }
 
 func (c *Controller) Inspect(ctx context.Context, pid int) (state.LiveListenerProof, bool, error) {
@@ -192,8 +242,19 @@ func (c *Controller) Inspect(ctx context.Context, pid int) (state.LiveListenerPr
 	}
 	c.mu.Lock()
 	known, ok := c.known[pid]
+	expected, expectedOK := c.expected[pid]
 	c.mu.Unlock()
-	if !ok || evidence.ExecutablePath != known.executablePath || !evidenceMatchesProof(evidence, known.proof) {
+	if !ok {
+		if expectedOK && (evidence.ExecutablePath != expected.executablePath || !evidenceMatchesProof(evidence, expected.proof)) {
+			return state.LiveListenerProof{}, false, nil
+		}
+		// A live same-UID process at the recorded PID is not proof that it is
+		// ours. Fail closed unless the caller first authenticates restart material
+		// through Discover, so recovery neither signals the PID nor restores
+		// publication beneath an unverified listener.
+		return state.LiveListenerProof{}, false, ErrRestartMaterialUnavailable
+	}
+	if evidence.ExecutablePath != known.executablePath || !evidenceMatchesProof(evidence, known.proof) {
 		return state.LiveListenerProof{}, false, nil
 	}
 	proof, err := c.control(ctx, pid, "inspect", known)
@@ -207,7 +268,7 @@ func (c *Controller) Inspect(ctx context.Context, pid int) (state.LiveListenerPr
 }
 
 func (c *Controller) Discover(ctx context.Context, persisted PersistedListener) (state.LiveListenerProof, bool, error) {
-	if c == nil || c.Platform == nil || !validLiveProof(persisted.Proof) || !filepath.IsAbs(persisted.ExecutablePath) || filepath.Clean(persisted.ExecutablePath) != persisted.ExecutablePath || !filepath.IsAbs(persisted.ControlAddress) || filepath.Clean(persisted.ControlAddress) != persisted.ControlAddress || len(persisted.ControlAddress) > 256 || persisted.PublicKey == "" || !validListenerToken(persisted.ListenerToken) {
+	if c == nil || c.Platform == nil || !validLiveProof(persisted.Proof) || !filepath.IsAbs(persisted.ExecutablePath) || filepath.Clean(persisted.ExecutablePath) != persisted.ExecutablePath || !filepath.IsAbs(persisted.ControlAddress) || filepath.Clean(persisted.ControlAddress) != persisted.ControlAddress || len(persisted.ControlAddress) > 256 || !validListenerToken(persisted.ListenerToken) {
 		return state.LiveListenerProof{}, false, ErrUnavailable
 	}
 	evidence, live, err := c.Platform.Evidence(ctx, persisted.Proof.PID)
@@ -227,6 +288,7 @@ func (c *Controller) Discover(ctx context.Context, persisted PersistedListener) 
 		c.known = map[int]knownListener{}
 	}
 	c.known[persisted.Proof.PID] = known
+	delete(c.expected, persisted.Proof.PID)
 	c.mu.Unlock()
 	return proof, true, nil
 }
@@ -290,7 +352,7 @@ func (c *Controller) waitForDiscoveredExit(ctx context.Context, expected state.L
 }
 
 func (c *Controller) verifyHandshake(ctx context.Context, pid int, metadata Metadata, expectedChallenge string, value Handshake) (state.LiveListenerProof, Evidence, error) {
-	if value.Version != ProtocolVersion || value.Kind != "handshake" || !validListenerAddress(value.Address) || value.ControlAddress == "" || len(value.ControlAddress) > 256 || validListenerToken(value.ListenerToken) == false || value.Challenge != expectedChallenge || !validChallenge(value.Challenge) {
+	if value.Version != ProtocolVersion || value.Kind != "handshake" || !validListenerAddress(value.Address) || value.ControlAddress == "" || len(value.ControlAddress) > 256 || validListenerToken(value.ListenerToken) == false || !validChildEnvironment(value.Environment, value.Address) || value.Challenge != expectedChallenge || !validChallenge(value.Challenge) {
 		return state.LiveListenerProof{}, Evidence{}, ErrProtocol
 	}
 	proof := proofFromWire(value.Proof)
@@ -330,11 +392,14 @@ func (c *Controller) control(ctx context.Context, pid int, action string, known 
 	if err := readFrameContext(controlCtx, connection, MaxControlBytes, &response); err != nil {
 		return state.LiveListenerProof{}, safeError(err)
 	}
-	if response.Version != ProtocolVersion || response.Kind != "control_response" || response.Action != action || response.Challenge != challenge || !response.Accepted || response.PublicKey != known.publicKey {
+	if response.Version != ProtocolVersion || response.Kind != "control_response" || response.Action != action || response.Challenge != challenge || !response.Accepted || (known.publicKey != "" && response.PublicKey != known.publicKey) {
 		return state.LiveListenerProof{}, ErrUnauthorized
 	}
 	if err := verifyResponse(response.PublicKey, response.Signature, "control_response", action, challenge, response.Proof, true); err != nil {
 		return state.LiveListenerProof{}, err
+	}
+	if fingerprintFromEncodedPublicKey(response.PublicKey) != known.proof.ListenerKeyFingerprint {
+		return state.LiveListenerProof{}, ErrUnauthorized
 	}
 	return proofFromWire(response.Proof), nil
 }

@@ -22,6 +22,7 @@ type Runtime interface {
 	Address() string
 	ControlAddress() string
 	ListenerToken() string
+	ChildEnvironment([]string) ([]string, error)
 	Identity() (pid int, processStartIdentity, executableIdentity string)
 	ServeControl(context.Context, func(context.Context, ControlRequest) (ControlResponse, error)) error
 	Shutdown(context.Context) error
@@ -82,7 +83,11 @@ func RunChild(ctx context.Context, bootstrapReader io.ReadCloser, handshakeWrite
 	if !validListenerToken(listenerToken) {
 		return ErrUnavailable
 	}
-	handshake := Handshake{Version: ProtocolVersion, Kind: "handshake", Address: runtime.Address(), ControlAddress: runtime.ControlAddress(), ListenerToken: listenerToken, PublicKey: base64.RawURLEncoding.EncodeToString(public), Proof: wire, Challenge: challenge, Signature: signature}
+	environment, err := runtime.ChildEnvironment(nil)
+	if err != nil || !validChildEnvironment(environment, runtime.Address()) {
+		return ErrUnavailable
+	}
+	handshake := Handshake{Version: ProtocolVersion, Kind: "handshake", Address: runtime.Address(), ControlAddress: runtime.ControlAddress(), ListenerToken: listenerToken, Environment: append([]string(nil), environment...), PublicKey: base64.RawURLEncoding.EncodeToString(public), Proof: wire, Challenge: challenge, Signature: signature}
 	if err := writeFrame(handshakeWriter, MaxHandshakeBytes, handshake); err != nil {
 		return safeError(err)
 	}
@@ -136,9 +141,10 @@ func (unavailableFactory) Start(context.Context, Bootstrap) (Runtime, error) {
 	return nil, ErrUnavailable
 }
 
-// DefaultChildMain is intentionally unavailable until a reviewed platform
-// listener/control-socket adapter is wired. It accepts only inherited anonymous
-// pipe descriptors; no bootstrap fields are accepted through argv/environment.
+// DefaultChildMain accepts bootstrap material only through inherited anonymous
+// pipes. Platform selection is compile-time: Linux installs the reviewed
+// resolved runtime, while platforms without descriptor-backed spawn keep the
+// stable unavailable behavior.
 func DefaultChildMain(ctx context.Context, bootstrapReader io.ReadCloser, handshakeWriter io.WriteCloser) error {
-	return RunChild(ctx, bootstrapReader, handshakeWriter, unavailableFactory{})
+	return RunChild(ctx, bootstrapReader, handshakeWriter, defaultRuntimeFactory())
 }

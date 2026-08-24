@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,12 +66,27 @@ func (f ResolvedRuntimeFactory) Start(ctx context.Context, bootstrap Bootstrap) 
 		_ = proxyRuntime.Shutdown(cleanupCtx)
 		credentials.zero()
 	}
-	token, err := freshChallenge()
-	if err != nil {
+	environment, err := proxyRuntime.ChildEnvironment(nil)
+	if err != nil || !validChildEnvironment(environment, proxyRuntime.Address()) {
 		cleanup()
 		return nil, ErrUnavailable
 	}
-	controlAddress := filepath.Join(f.ControlDirectory, "proxy-"+token[:16]+".sock")
+	var token string
+	for _, entry := range environment {
+		name, value, _ := strings.Cut(entry, "=")
+		if name == "OPENAI_API_KEY" {
+			token = value
+			break
+		}
+	}
+	if !validListenerToken(token) {
+		cleanup()
+		return nil, ErrUnavailable
+	}
+	// The control socket name is derived solely from authenticated journal
+	// identity. A restarted controller can recover it without persisting a raw
+	// path or accepting path authority from environment/state.
+	controlAddress := filepath.Join(f.ControlDirectory, "proxy-control-"+bootstrap.Metadata.ActivationID+".sock")
 	control, err := net.ListenUnix("unix", &net.UnixAddr{Name: controlAddress, Net: "unix"})
 	if err != nil {
 		cleanup()
@@ -160,6 +176,9 @@ type resolvedRuntime struct {
 func (r *resolvedRuntime) Address() string        { return r.proxy.Address() }
 func (r *resolvedRuntime) ControlAddress() string { return r.controlPath }
 func (r *resolvedRuntime) ListenerToken() string  { return r.token }
+func (r *resolvedRuntime) ChildEnvironment(base []string) ([]string, error) {
+	return r.proxy.ChildEnvironment(base)
+}
 func (r *resolvedRuntime) Identity() (int, string, string) {
 	return r.evidence.PID, r.evidence.ProcessStartIdentity, r.evidence.ExecutableIdentity
 }
