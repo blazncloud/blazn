@@ -295,6 +295,9 @@ func DecodeBuild(raw json.RawMessage) (BuildDocument, error) {
 }
 
 func DecodeProject(raw json.RawMessage) (ProjectDocument, error) {
+	if err := validateJSONTopology(raw); err != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
 	var summary struct {
 		WorkspaceID    string   `json:"workspaceId"`
 		ProjectID      string   `json:"projectId"`

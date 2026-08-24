@@ -141,14 +141,22 @@ func TestDecodeProjectRejectsMalformedPersistedOutput(t *testing.T) {
 		t.Fatalf("valid persisted output rejected: %v", err)
 	}
 	for name, candidate := range map[string]string{
-		"unknown field":   valid[:len(valid)-1] + `,"accessToken":"secret-value"}`,
-		"bad creator":     strings.Replace(valid, "10000000-0000-4000-8000-000000000002", "not-a-user", 1),
-		"bad timestamp":   strings.Replace(valid, "2026-08-24T00:00:00Z", "yesterday", 1),
-		"wrong workspace": strings.Replace(valid, registerWorkspaceID, "not-a-workspace", 1),
+		"unknown field":                     valid[:len(valid)-1] + `,"accessToken":"secret-value"}`,
+		"bad creator":                       strings.Replace(valid, "10000000-0000-4000-8000-000000000002", "not-a-user", 1),
+		"bad timestamp":                     strings.Replace(valid, "2026-08-24T00:00:00Z", "yesterday", 1),
+		"wrong workspace":                   strings.Replace(valid, registerWorkspaceID, "not-a-workspace", 1),
+		"shadowed credential-bearing field": strings.Replace(valid, `"manifestDigest":"`, `"manifestDigest":"github_pat_12345678901234567890","manifestDigest":"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DecodeProject([]byte(candidate)); err == nil {
+			project, err := DecodeProject([]byte(candidate))
+			if err == nil {
 				t.Fatal("malformed persisted output accepted")
+			}
+			if strings.Contains(string(project.raw), "github_pat_") {
+				t.Fatal("rejected Project retained unsafe raw output")
+			}
+			if strings.Contains(err.Error(), "github_pat_") {
+				t.Fatal("rejected Project exposed unsafe response content in its error")
 			}
 		})
 	}
