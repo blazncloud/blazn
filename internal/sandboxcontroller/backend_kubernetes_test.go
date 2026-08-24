@@ -715,6 +715,7 @@ func backendFixture(t *testing.T) (WorkItem, sandboxcontrol.SandboxRecord, sandb
 
 func bindPersistedArtifact(t *testing.T, item *WorkItem) {
 	t.Helper()
+	item.OperationType, item.DesiredState = "stop", "stopped"
 	if len(item.Artifacts) != 1 {
 		t.Fatalf("artifact fixture count=%d", len(item.Artifacts))
 	}
