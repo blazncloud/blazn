@@ -206,6 +206,43 @@ func TestKubernetesCredentialFilesRejectUnsafeCAAndTokenProjection(t *testing.T)
 	}
 }
 
+func TestKubernetesCARequiresStrictConcatenatedCertificateBlocks(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	validBundle := append(append(append([]byte{}, certificate...), []byte(" \n\t\r\n")...), certificate...)
+	validPath := filepath.Join(t.TempDir(), "valid-ca.crt")
+	if err := os.WriteFile(validPath, validBundle, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readKubernetesCA(validPath); err != nil {
+		t.Fatalf("valid concatenated CA certificates rejected: %v", err)
+	}
+
+	for _, test := range []struct {
+		name     string
+		contents []byte
+	}{
+		{name: "leading garbage", contents: append([]byte("not-a-certificate\n"), certificate...)},
+		{name: "inter-block garbage", contents: append(append(append([]byte{}, certificate...), []byte("not-whitespace\n")...), certificate...)},
+		{name: "trailing garbage", contents: append(append([]byte{}, certificate...), []byte("not-whitespace\n")...)},
+		{name: "duplicate begin marker", contents: append([]byte(kubernetesCertificatePEM+"\n"), certificate...)},
+		{name: "duplicate trailing begin marker", contents: append(append([]byte{}, certificate...), []byte(kubernetesCertificatePEM+"\n")...)},
+		{name: "non-certificate block", contents: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("not-a-key")})},
+		{name: "malformed certificate block", contents: []byte(kubernetesCertificatePEM + "\n%%%\n-----END CERTIFICATE-----\n")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ca.crt")
+			if err := os.WriteFile(path, test.contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readKubernetesCA(path); err == nil {
+				t.Fatal("malformed CA bundle was accepted")
+			}
+		})
+	}
+}
+
 func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
 	directory := t.TempDir()
 	version := filepath.Join(directory, "..2026_08_23_00_00_00")

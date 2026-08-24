@@ -29,6 +29,7 @@ const (
 	maxKubernetesResponseBytes = 4 << 20
 	maxKubernetesHeaderBytes   = 64 << 10
 	kubernetesRequestTimeout   = 30 * time.Second
+	kubernetesCertificatePEM   = "-----BEGIN CERTIFICATE-----"
 )
 
 type kubernetesFileOps struct {
@@ -228,10 +229,17 @@ func readKubernetesCA(path string) (*x509.CertPool, error) {
 		return nil, errors.New("sandbox controller Kubernetes CA file is unsafe")
 	}
 	pool := x509.NewCertPool()
-	remaining, certificates := contents, 0
+	remaining, certificates := bytes.TrimSpace(contents), 0
 	for len(remaining) != 0 {
+		if !bytes.HasPrefix(remaining, []byte(kubernetesCertificatePEM)) {
+			return nil, errors.New("sandbox controller Kubernetes CA file is invalid")
+		}
 		block, rest := pem.Decode(remaining)
 		if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 {
+			return nil, errors.New("sandbox controller Kubernetes CA file is invalid")
+		}
+		consumed := remaining[:len(remaining)-len(rest)]
+		if bytes.Count(consumed, []byte("-----BEGIN ")) != 1 {
 			return nil, errors.New("sandbox controller Kubernetes CA file is invalid")
 		}
 		certificate, parseErr := x509.ParseCertificate(block.Bytes)
