@@ -144,4 +144,9 @@ func TestKubernetesSourceNetworkRejectsUnapprovedHostsCIDRsAndUnknownOwnedPolicy
 	if err := network.Prepare(context.Background(), item, *state.AdmissionObservation); err == nil {
 		t.Fatal("unknown managed policy was accepted")
 	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if _, exists := api.policies[bootstrapPolicyName(item)]; exists {
+		t.Fatal("failed policy-set verification left temporary source egress behind")
+	}
 }

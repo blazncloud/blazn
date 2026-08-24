@@ -94,8 +94,12 @@ BEGIN
   WHERE o.id=p_operation_id AND o.status='running' AND o.type='create' AND j.completed_at IS NULL
     AND j.lease_owner=p_worker_id AND j.lease_token=p_lease_token AND j.lease_expires_at>clock_timestamp()
   FOR UPDATE OF o,j,s;
-  IF NOT FOUND OR
-     p_manifest_digest !~ '^[0-9a-f]{64}$' OR p_receipt_digest !~ '^[0-9a-f]{64}$' THEN RETURN false; END IF;
+  IF NOT FOUND OR p_expected_backend_uid IS NULL OR p_expected_backend_resource_version IS NULL OR
+     p_expected_observation_digest IS NULL OR p_manifest_digest IS NULL OR p_receipt_digest IS NULL OR
+     p_expected_backend_uid !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' OR
+     p_expected_backend_resource_version !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' OR
+     p_expected_observation_digest !~ '^[0-9a-f]{64}$' OR p_manifest_digest !~ '^[0-9a-f]{64}$' OR
+     p_receipt_digest !~ '^[0-9a-f]{64}$' THEN RETURN false; END IF;
 
   IF jsonb_typeof(p_bootstrap_observation)<>'object' OR jsonb_strip_nulls(p_bootstrap_observation)<>p_bootstrap_observation OR
      jsonb_typeof(p_bootstrap_observation->'sandbox')<>'object' OR jsonb_typeof(p_bootstrap_observation->'pod')<>'object' OR
@@ -114,6 +118,22 @@ BEGIN
        ARRAY['apiVersion','controller','kind','name','uid']::text[] OR
      (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation#>'{workload,condition}') key)<>
        ARRAY['status','type']::text[] OR
+     jsonb_typeof(p_bootstrap_observation#>'{sandbox,apiVersion}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{sandbox,kind}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{sandbox,namespace}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{sandbox,name}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{sandbox,uid}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{sandbox,resourceVersion}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{pod,apiVersion}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{pod,kind}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{pod,namespace}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{pod,name}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{pod,uid}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{pod,resourceVersion}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,apiVersion}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,namespace}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,name}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,uid}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,resourceVersion}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,clusterQueue}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,workspaceId}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,sandboxId}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,digest}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,admitted}')<>'boolean' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,owner,apiVersion}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,owner,kind}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,owner,name}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,owner,uid}')<>'string' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,owner,controller}')<>'boolean' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,condition,type}')<>'string' OR jsonb_typeof(p_bootstrap_observation#>'{workload,condition,status}')<>'string' OR
      p_bootstrap_observation#>>'{sandbox,apiVersion}'<>'agents.x-k8s.io/v1beta1' OR
      p_bootstrap_observation#>>'{sandbox,kind}'<>'Sandbox' OR
      p_bootstrap_observation#>>'{sandbox,namespace}'<>'blazn-poc-sandboxes' OR
@@ -171,20 +191,22 @@ BEGIN
   FROM public.sandbox_sources s JOIN public.sandbox_template_version_repositories r
     ON r.version_id=s.template_version_id AND r.workspace_id=s.workspace_id AND r.name=s.repository_name
   WHERE s.sandbox_id=target.sandbox_id AND s.workspace_id=target.workspace_id;
+  IF jsonb_typeof(p_receipt)<>'object' OR jsonb_strip_nulls(p_receipt)<>p_receipt OR
+     jsonb_typeof(p_receipt->'sources')<>'array' THEN RETURN false; END IF;
   IF expected_manifest IS NULL OR expected_manifest<>p_manifest_digest OR
-     jsonb_typeof(p_receipt)<>'object' OR
      (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_receipt) key)<>
        ARRAY['digest','manifestDigest','schemaVersion','sources']::text[] OR
      p_receipt->>'schemaVersion'<>'blazn.dev/sandbox-source-materialization/v1' OR
      p_receipt->>'manifestDigest'<>'sha256:'||p_manifest_digest OR
-     p_receipt->>'digest'<>'sha256:'||p_receipt_digest OR jsonb_typeof(p_receipt->'sources')<>'array' OR
+     p_receipt->>'digest'<>'sha256:'||p_receipt_digest OR
      jsonb_array_length(p_receipt->'sources')<>(SELECT count(*) FROM public.sandbox_sources s WHERE s.sandbox_id=target.sandbox_id) OR
      public.sandbox_source_receipt_digest(p_manifest_digest,p_receipt->'sources')<>p_receipt_digest THEN RETURN false; END IF;
 
   FOR item IN
     SELECT value,position FROM jsonb_array_elements(p_receipt->'sources') WITH ORDINALITY listed(value,position) ORDER BY position
   LOOP
-    IF jsonb_typeof(item.value)<>'object' OR
+    IF jsonb_typeof(item.value)<>'object' OR jsonb_strip_nulls(item.value)<>item.value THEN RETURN false; END IF;
+    IF
        (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(item.value) key)<>
          ARRAY['commit','contentDigest','destination','fileCount','name','totalBytes','tree','url','writable']::text[] OR
        item.value->>'name' !~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' OR

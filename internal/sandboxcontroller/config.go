@@ -148,6 +148,17 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 		if err := decoder.Decode(&hostCIDRs); err != nil || decoder.Decode(&struct{}{}) != io.EOF || len(hostCIDRs) == 0 {
 			return KubernetesConfig{}, errors.New("sandbox source host CIDRs are invalid")
 		}
+		if _, err := canonicalCIDRs(dnsCIDRs); err != nil {
+			return KubernetesConfig{}, errors.New("sandbox source DNS CIDRs are invalid")
+		}
+		for host, cidrs := range hostCIDRs {
+			if !validSourceHostname(host) || host != strings.ToLower(host) {
+				return KubernetesConfig{}, errors.New("sandbox source host is invalid")
+			}
+			if _, err := canonicalCIDRs(cidrs); err != nil {
+				return KubernetesConfig{}, errors.New("sandbox source host CIDRs are invalid")
+			}
+		}
 	}
 	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
 	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage,

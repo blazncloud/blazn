@@ -70,7 +70,8 @@ type networkPolicySpec struct {
 }
 
 type networkPolicySelector struct {
-	MatchLabels map[string]string `json:"matchLabels"`
+	MatchLabels      map[string]string `json:"matchLabels"`
+	MatchExpressions []json.RawMessage `json:"matchExpressions,omitempty"`
 }
 type networkPolicyEgress struct {
 	To    []networkPolicyPeer `json:"to"`
@@ -89,7 +90,9 @@ type networkPolicyPort struct {
 
 func NewKubernetesSourceNetwork(config KubernetesSourceNetworkConfig) (*KubernetesSourceNetwork, error) {
 	endpoint, err := url.Parse(config.BaseURL)
-	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" || config.HTTPClient == nil {
+	if err != nil || endpoint.Scheme != "https" || endpoint.User != nil || endpoint.Host == "" || endpoint.Path != "" || endpoint.RawPath != "" ||
+		endpoint.RawQuery != "" || endpoint.Fragment != "" || !validKubernetesHost(endpoint.Hostname()) || !validKubernetesPort(endpoint.Port()) ||
+		endpoint.Host != net.JoinHostPort(endpoint.Hostname(), endpoint.Port()) || config.HTTPClient == nil {
 		return nil, errors.New("source NetworkPolicy client configuration is invalid")
 	}
 	dns, err := canonicalCIDRs(config.DNSCIDRs)
@@ -126,10 +129,14 @@ func (n *KubernetesSourceNetwork) Prepare(ctx context.Context, item WorkItem, ob
 	if _, err := n.ensure(ctx, deny); err != nil {
 		return err
 	}
-	if _, err := n.ensure(ctx, allow); err != nil {
+	createdAllow, err := n.ensure(ctx, allow)
+	if err != nil {
 		return err
 	}
-	return n.verifyOwnedSet(ctx, item, []string{bootstrapPolicyName(item), runtimePolicyName(item)})
+	if err := n.verifyOwnedSet(ctx, item, []string{bootstrapPolicyName(item), runtimePolicyName(item)}); err != nil {
+		return errors.Join(err, n.delete(ctx, createdAllow))
+	}
+	return nil
 }
 
 func (n *KubernetesSourceNetwork) Restrict(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation, receipt sandboxio.SourceMaterializationReceipt) error {
@@ -245,17 +252,27 @@ func (n *KubernetesSourceNetwork) delete(ctx context.Context, policy networkPoli
 }
 
 func (n *KubernetesSourceNetwork) verifyOwnedSet(ctx context.Context, item WorkItem, wanted []string) error {
-	selector := url.Values{"labelSelector": []string{sandboxcontrol.ManagedLabel + "=true," + sandboxcontrol.SandboxIDLabel + "=" + item.SandboxID}}
 	var list struct {
 		Items []networkPolicy `json:"items"`
 	}
-	status, err := n.call(ctx, http.MethodGet, n.collectionPath()+"?"+selector.Encode(), nil, &list)
+	status, err := n.call(ctx, http.MethodGet, n.collectionPath(), nil, &list)
 	if err != nil || status != http.StatusOK {
 		return errors.Join(err, fmt.Errorf("NetworkPolicy list returned HTTP %d", status))
 	}
-	actual := make([]string, len(list.Items))
-	for index, policy := range list.Items {
-		actual[index] = policy.Metadata.Name
+	actual := make([]string, 0, len(wanted))
+	wantedSet := make(map[string]bool, len(wanted))
+	for _, name := range wanted {
+		wantedSet[name] = true
+	}
+	podLabels := map[string]string{sandboxcontrol.ManagedLabel: "true", sandboxcontrol.WorkspaceLabel: item.WorkspaceID, sandboxcontrol.SandboxIDLabel: item.SandboxID}
+	for _, policy := range list.Items {
+		if wantedSet[policy.Metadata.Name] {
+			actual = append(actual, policy.Metadata.Name)
+			continue
+		}
+		if selectorMayMatch(policy.Spec.PodSelector, podLabels) {
+			return errors.New("an unowned NetworkPolicy may select the Sandbox Pod")
+		}
 	}
 	sort.Strings(actual)
 	sort.Strings(wanted)
@@ -263,6 +280,18 @@ func (n *KubernetesSourceNetwork) verifyOwnedSet(ctx context.Context, item WorkI
 		return errors.New("managed NetworkPolicy set differs from the exact phase")
 	}
 	return nil
+}
+
+func selectorMayMatch(selector networkPolicySelector, labels map[string]string) bool {
+	if len(selector.MatchExpressions) != 0 {
+		return true
+	}
+	for name, value := range selector.MatchLabels {
+		if labels[name] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *KubernetesSourceNetwork) call(ctx context.Context, method, endpoint string, input, output any) (int, error) {

@@ -194,7 +194,11 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 	}
 	defer root.Close()
 	if len(entries) != 0 {
-		return adoptMaterialization(ctx, root, source)
+		result, err := adoptMaterialization(ctx, root, source)
+		if err != nil || !stableRootPath(root, destination) {
+			return SourceMaterialization{}, protocolError("source_destination_unsafe", err)
+		}
+		return result, nil
 	}
 	repository, err := m.Fetcher.Fetch(ctx, source)
 	if err != nil {
@@ -265,7 +269,16 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 	if err := markerFile.Close(); err != nil {
 		return SourceMaterialization{}, protocolError("source_write_failed", err)
 	}
+	if !stableRootPath(root, destination) {
+		return SourceMaterialization{}, protocolError("source_destination_unsafe", nil)
+	}
 	return result, nil
+}
+
+func stableRootPath(root *os.Root, destination string) bool {
+	opened, err := root.Stat(".")
+	current, currentErr := os.Lstat(destination)
+	return err == nil && currentErr == nil && opened.IsDir() && current.IsDir() && os.SameFile(opened, current)
 }
 
 func openEmptyOrMaterializedDestination(destination string) (*os.Root, []os.DirEntry, error) {
@@ -276,6 +289,12 @@ func openEmptyOrMaterializedDestination(destination string) (*os.Root, []os.DirE
 	root, err := os.OpenRoot(destination)
 	if err != nil {
 		return nil, nil, protocolError("source_destination_unsafe", err)
+	}
+	opened, err := root.Stat(".")
+	current, currentErr := os.Lstat(destination)
+	if err != nil || currentErr != nil || !opened.IsDir() || !current.IsDir() || !os.SameFile(info, opened) || !os.SameFile(opened, current) {
+		root.Close()
+		return nil, nil, protocolError("source_destination_unsafe", errors.Join(err, currentErr))
 	}
 	entries, err := readRootDir(root, ".")
 	if err != nil {
@@ -425,18 +444,28 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 				}
 				continue
 			}
-			if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > MaxSourceBytes-total {
+			if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > MaxSourceBytes-total || linkCount(info) != 1 {
 				return errors.New("unsafe materialized source file")
 			}
 			file, err := root.Open(name)
 			if err != nil {
 				return err
 			}
+			opened, statErr := file.Stat()
+			if statErr != nil || !opened.Mode().IsRegular() || opened.Size() != info.Size() || linkCount(opened) != 1 || !os.SameFile(info, opened) {
+				_ = file.Close()
+				return errors.Join(statErr, errors.New("materialized source file changed before read"))
+			}
 			contentHash := sha256.New()
-			written, copyErr := io.CopyN(contentHash, file, info.Size())
+			written, copyErr := io.Copy(contentHash, io.LimitReader(file, info.Size()+1))
+			finalFD, finalErr := file.Stat()
 			closeErr := file.Close()
-			if copyErr != nil || closeErr != nil || written != info.Size() {
-				return errors.Join(copyErr, closeErr)
+			finalPath, pathErr := root.Lstat(name)
+			if copyErr != nil || closeErr != nil || finalErr != nil || pathErr != nil || written != info.Size() ||
+				!finalFD.Mode().IsRegular() || linkCount(finalFD) != 1 || linkCount(finalPath) != 1 ||
+				!os.SameFile(info, finalFD) || !os.SameFile(finalFD, finalPath) || finalFD.Size() != info.Size() ||
+				finalFD.Mode() != info.Mode() || !finalFD.ModTime().Equal(info.ModTime()) {
+				return errors.Join(copyErr, closeErr, finalErr, pathErr, errors.New("materialized source file changed during read"))
 			}
 			mode := filemode.Regular
 			if info.Mode().Perm()&0o100 != 0 {
