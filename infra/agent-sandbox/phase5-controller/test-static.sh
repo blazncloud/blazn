@@ -5,6 +5,7 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(CDPATH='' cd -- "$ROOT/../../.." && pwd)
 RENDER=$ROOT/render-install.sh
 IMAGE='registry.example/blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+HELPER_IMAGE='registry.example/blazn/sandbox-io@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/blazn-phase5-controller-static.XXXXXX")
 cleanup() {
   find "$tmp" -xdev -type f -delete
@@ -17,6 +18,7 @@ render() {
   shift
   env \
     BLAZN_CONTROLLER_IMAGE="$IMAGE" \
+    BLAZN_SANDBOX_IO_IMAGE="$HELPER_IMAGE" \
     BLAZN_DATABASE_URL_SECRET_NAME=controller-db-url \
     BLAZN_DATABASE_URL_SECRET_KEY=database-url \
     BLAZN_DATABASE_ENDPOINT_KIND=ip \
@@ -47,6 +49,7 @@ grep -F '  replicas: 0' "$tmp/ip.yaml" >/dev/null
 grep -F '  namespace: blazn-poc-system' "$tmp/ip.yaml" >/dev/null
 grep -F '  namespace: blazn-poc-sandboxes' "$tmp/ip.yaml" >/dev/null
 grep -F 'automountServiceAccountToken: false' "$tmp/ip.yaml" >/dev/null
+grep -F "          value: \"$HELPER_IMAGE\"" "$tmp/ip.yaml" >/dev/null
 grep -F 'expirationSeconds: 600' "$tmp/ip.yaml" >/dev/null
 grep -F 'audience: https://kubernetes.default.svc' "$tmp/ip.yaml" >/dev/null
 grep -F 'command: ["/blazn-sandbox-controller-secret-init"]' "$tmp/ip.yaml" >/dev/null
@@ -65,7 +68,7 @@ grep -F 'cidr: 10.20.30.40/32' "$tmp/ip.yaml" >/dev/null
 grep -F 'cidr: 10.20.30.41/32' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 2 ]
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR'
 if grep -E "$placeholder_pattern" "$tmp/ip.yaml" >/dev/null; then
   printf 'render left an unresolved placeholder\n' >&2
   exit 1
@@ -102,6 +105,7 @@ grep -F 'protocol: UDP' "$tmp/hostname.yaml" >/dev/null
 grep -F 'protocol: TCP' "$tmp/hostname.yaml" >/dev/null
 
 expect_fail missing-image BLAZN_CONTROLLER_IMAGE=
+expect_fail missing-helper BLAZN_SANDBOX_IO_IMAGE=
 expect_fail tag-only BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller:latest
 expect_fail tag-plus-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller:v1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail empty-repository-segment BLAZN_CONTROLLER_IMAGE=registry.example//blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

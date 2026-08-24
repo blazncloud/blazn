@@ -74,7 +74,7 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 		return nil, errors.New("sandbox controller Kubernetes adapter configuration is invalid")
 	}
 	health := func(ctx context.Context) error { return kubernetesAPIHealth(ctx, client, config.BaseURL) }
-	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: false})
+	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: false, HelperImage: config.HelperImage})
 }
 
 func newKubernetesHTTPClient(config KubernetesConfig) (*http.Client, error) {

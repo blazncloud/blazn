@@ -26,9 +26,10 @@ const (
 var kubernetesDNSNamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`)
 
 type KubernetesConfig struct {
-	BaseURL   string
-	CAFile    string
-	TokenFile string
+	BaseURL     string
+	CAFile      string
+	TokenFile   string
+	HelperImage string
 }
 
 type RuntimeConfig struct {
@@ -123,8 +124,12 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 	if !validAbsoluteFilePath(caFile) || !validAbsoluteFilePath(tokenFile) || caFile == tokenFile {
 		return KubernetesConfig{}, errors.New("sandbox controller Kubernetes credential paths are invalid")
 	}
+	helperImage := getenv("BLAZN_SANDBOX_IO_IMAGE")
+	if !immutableImagePattern.MatchString(helperImage) {
+		return KubernetesConfig{}, errors.New("sandbox I/O helper image is invalid")
+	}
 	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
-	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile}, nil
+	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage}, nil
 }
 
 func validKubernetesHost(value string) bool {

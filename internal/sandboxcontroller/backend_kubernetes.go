@@ -26,6 +26,7 @@ type KubernetesBackendConfig struct {
 	Adapter                 SandboxControlAdapter
 	Health                  func(context.Context) error
 	ArtifactExportSupported bool
+	HelperImage             string
 	AbsencePollInterval     time.Duration
 }
 
@@ -33,6 +34,7 @@ type KubernetesBackend struct {
 	adapter                 SandboxControlAdapter
 	health                  func(context.Context) error
 	artifactExportSupported bool
+	helperImage             string
 	absencePollInterval     time.Duration
 	createLocksMu           sync.Mutex
 	createLocks             map[string]*kubernetesCreateLock
@@ -50,7 +52,7 @@ type kubernetesBackendEvidence struct {
 }
 
 func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, error) {
-	if config.Adapter == nil || config.Health == nil {
+	if config.Adapter == nil || config.Health == nil || !immutableImagePattern.MatchString(config.HelperImage) {
 		return nil, errors.New("Kubernetes backend dependencies are required")
 	}
 	if config.AbsencePollInterval == 0 {
@@ -61,6 +63,7 @@ func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, e
 	}
 	return &KubernetesBackend{adapter: config.Adapter, health: config.Health,
 		artifactExportSupported: config.ArtifactExportSupported,
+		helperImage:             config.HelperImage,
 		absencePollInterval:     config.AbsencePollInterval,
 		createLocks:             make(map[string]*kubernetesCreateLock),
 		evidence:                make(map[string]kubernetesBackendEvidence)}, nil
@@ -364,6 +367,7 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 	}
 	return sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
+		HelperImage: b.helperImage,
 		Command: append([]string(nil), item.Command...), Architecture: item.Architecture,
 		RuntimeClassName: "", TrustLevel: sandboxcontrol.TrustApprovedPOC, NonSensitive: true,
 		CPURequest: item.Resources.CPURequest, MemoryRequest: item.Resources.MemoryRequest,

@@ -415,5 +415,5 @@ func tlsKubernetesFixture(t *testing.T, server *httptest.Server) (KubernetesConf
 	if err != nil {
 		t.Fatal(err)
 	}
-	return KubernetesConfig{BaseURL: "https://" + parsed.Host, CAFile: caFile, TokenFile: filepath.Join(directory, "token")}, rotate
+	return KubernetesConfig{BaseURL: "https://" + parsed.Host, CAFile: caFile, TokenFile: filepath.Join(directory, "token"), HelperImage: testSandboxIOImage}, rotate
 }

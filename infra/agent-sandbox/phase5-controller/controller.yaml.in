@@ -139,6 +139,8 @@ spec:
           value: /var/run/blazn-private/kubernetes-ca.crt
         - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE
           value: /var/run/blazn-api-token/token
+        - name: BLAZN_SANDBOX_IO_IMAGE
+          value: "BLAZN_SANDBOX_IO_IMAGE"
         resources:
           requests:
             cpu: 50m

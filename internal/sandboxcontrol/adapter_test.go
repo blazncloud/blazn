@@ -1,6 +1,7 @@
 package sandboxcontrol
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,7 +16,10 @@ import (
 	"time"
 )
 
-const testImage = "registry.example.test/blazn/sandbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const (
+	testImage       = "registry.example.test/blazn/sandbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	testHelperImage = "registry.example.test/blazn/sandbox-io@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
 
 type fakeExporter struct {
 	mu       sync.Mutex
@@ -365,6 +369,7 @@ func TestCreateIntentDigestBindsEveryMaterialRequestField(t *testing.T) {
 		{"workspace", func(v *CreateRequest) { v.WorkspaceID = "workspace-b" }},
 		{"owner", func(v *CreateRequest) { v.OwnerID = "owner-b" }},
 		{"image", func(v *CreateRequest) { v.Image = "registry.example.test/other@sha256:" + strings.Repeat("b", 64) }},
+		{"helper image", func(v *CreateRequest) { v.HelperImage = "registry.example.test/other-helper@sha256:" + strings.Repeat("c", 64) }},
 		{"command", func(v *CreateRequest) { v.Command[0] = "bash" }},
 		{"architecture", func(v *CreateRequest) { v.Architecture = "arm64" }},
 		{"runtime", func(v *CreateRequest) { v.RuntimeClassName = "kata" }},
@@ -378,12 +383,14 @@ func TestCreateIntentDigestBindsEveryMaterialRequestField(t *testing.T) {
 		{"ephemeral limit", func(v *CreateRequest) { v.EphemeralStorageLimit = "7Gi" }},
 		{"expiry", func(v *CreateRequest) { v.ExpiresAt = v.ExpiresAt.Add(time.Nanosecond) }},
 		{"artifacts", func(v *CreateRequest) { v.Artifacts[0].Required = false }},
+		{"sources", func(v *CreateRequest) { v.Sources = []SourceMount{{Name: "source", URL: "https://example.test/source.git", Destination: "/workspace/src/source", Commit: strings.Repeat("d", 40)}} }},
 	}
 	for _, testCase := range mutations {
 		t.Run(testCase.name, func(t *testing.T) {
 			changed := base
 			changed.Command = append([]string(nil), base.Command...)
 			changed.Artifacts = append([]ArtifactExport(nil), base.Artifacts...)
+			changed.Sources = append([]SourceMount(nil), base.Sources...)
 			testCase.mutate(&changed)
 			got, err := createIntentDigest(changed)
 			if err != nil {
@@ -412,6 +419,90 @@ func TestCreateRequiresBothEphemeralStorageBounds(t *testing.T) {
 	} {
 		request := testCreate()
 		mutate(&request)
+		assertCode(t, ValidateCreate(request, trustedRuntimes()), ErrInvalidRequest)
+	}
+}
+
+func TestRenderedSandboxIOPodContractIsExactTokenlessAndCredentialFree(t *testing.T) {
+	request := testCreate()
+	request.Sources = []SourceMount{
+		{Name: "repo", URL: "https://example.test/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40), Writable: true},
+		{Name: "vendor", URL: "https://example.test/vendor.git", Destination: "/workspace/src/repo/vendor", Commit: strings.Repeat("b", 40), Writable: false},
+	}
+	canonicalArtifacts, artifactDigest, err := CanonicalArtifactContract(request.Artifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Artifacts = canonicalArtifacts
+	request.Sources, err = canonicalSources(request.Sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := createIntentDigest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := render(request, artifactDigest, intent)
+	pod := object.Spec.PodTemplate.Spec
+	if pod.ServiceAccountName != ServiceAccountName || pod.AutomountServiceAccountToken || len(pod.Containers) != 1 || len(pod.InitContainers) != 2 || len(pod.Volumes) != 4 {
+		t.Fatalf("pod contract=%#v", pod)
+	}
+	bootstrap, sidecar := pod.InitContainers[0], pod.InitContainers[1]
+	if bootstrap.Name != "sandbox-bootstrap" || bootstrap.Image != testHelperImage || !reflect.DeepEqual(bootstrap.Command, []string{"/blazn-sandbox-io", "wait-bootstrap"}) || bootstrap.RestartPolicy != "" ||
+		sidecar.Name != "sandbox-artifact-io" || sidecar.Image != testHelperImage || !reflect.DeepEqual(sidecar.Command, []string{"/blazn-sandbox-io", "wait-artifact"}) || sidecar.RestartPolicy != "Always" {
+		t.Fatalf("helpers bootstrap=%#v sidecar=%#v", bootstrap, sidecar)
+	}
+	if len(sidecar.VolumeMounts) != 1 || sidecar.VolumeMounts[0] != (kubeVolumeMount{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}) {
+		t.Fatalf("artifact sidecar mount escaped boundary: %#v", sidecar.VolumeMounts)
+	}
+	readonlyNested := false
+	for _, mount := range pod.Containers[0].VolumeMounts {
+		if mount.MountPath == "/workspace" {
+			t.Fatal("main received a broad workspace volume")
+		}
+		if mount.MountPath == "/workspace/src/repo/vendor" && mount.ReadOnly {
+			readonlyNested = true
+		}
+	}
+	if !readonlyNested {
+		t.Fatalf("nested read-only source mount missing: %#v", pod.Containers[0].VolumeMounts)
+	}
+	for _, helper := range pod.InitContainers {
+		if helper.SecurityContext["allowPrivilegeEscalation"] != false || helper.SecurityContext["readOnlyRootFilesystem"] != true ||
+			helper.Resources["requests"]["cpu"] != "10m" || helper.Resources["limits"]["ephemeral-storage"] != "64Mi" {
+			t.Fatalf("helper security/resources drifted: %#v", helper)
+		}
+	}
+	for _, volume := range pod.Volumes {
+		if volume.EmptyDir["sizeLimit"] == nil || volume.EmptyDir["sizeLimit"] == "" {
+			t.Fatalf("unbounded volume: %#v", volume)
+		}
+	}
+	raw, err := json.Marshal(pod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{`"env"`, `"envFrom"`, `"secret"`, `"hostPath"`, `"hostNetwork"`, `"hostPID"`, `"hostIPC"`, `"privileged"`, `"serviceAccountToken"`} {
+		if bytes.Contains(raw, []byte(forbidden)) {
+			t.Fatalf("forbidden Pod field %s in %s", forbidden, raw)
+		}
+	}
+	if !bytes.Contains(raw, []byte(testHelperImage)) || !digestPattern.MatchString(intent) {
+		t.Fatal("helper digest was not bound into Pod and create intent")
+	}
+}
+
+func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) {
+	missing := testCreate()
+	missing.HelperImage = ""
+	assertCode(t, ValidateCreate(missing, trustedRuntimes()), ErrInvalidRequest)
+	for _, source := range []SourceMount{
+		{Name: "source", URL: "https://user:password@example.test/repo", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)},
+		{Name: "source", URL: "https://example.test/repo", Destination: "/workspace/src/../escape", Commit: strings.Repeat("a", 40)},
+		{Name: "source", URL: "https://example.test/repo", Destination: "/workspace/src/repo", Commit: "main"},
+	} {
+		request := testCreate()
+		request.Sources = []SourceMount{source}
 		assertCode(t, ValidateCreate(request, trustedRuntimes()), ErrInvalidRequest)
 	}
 }
@@ -1147,6 +1238,26 @@ func materialPodSpecMutations() map[string]func(map[string]any) {
 			volume := spec["volumes"].([]any)[0].(map[string]any)
 			volume["hostPath"] = map[string]any{"path": "/", "type": "Directory"}
 		},
+		"helper digest": func(spec map[string]any) {
+			helper := spec["initContainers"].([]any)[0].(map[string]any)
+			helper["image"] = testImage
+		},
+		"helper command": func(spec map[string]any) {
+			helper := spec["initContainers"].([]any)[0].(map[string]any)
+			helper["command"] = []any{"sh"}
+		},
+		"helper privilege": func(spec map[string]any) {
+			helper := spec["initContainers"].([]any)[0].(map[string]any)
+			helper["securityContext"].(map[string]any)["privileged"] = true
+		},
+		"helper environment": func(spec map[string]any) {
+			helper := spec["initContainers"].([]any)[0].(map[string]any)
+			helper["env"] = []any{map[string]any{"name": "TOKEN", "value": "secret"}}
+		},
+		"artifact mount writable": func(spec map[string]any) {
+			helper := spec["initContainers"].([]any)[0].(map[string]any)
+			helper["volumeMounts"].([]any)[0].(map[string]any)["readOnly"] = false
+		},
 	}
 }
 
@@ -1169,7 +1280,7 @@ func testAdapter(t *testing.T, fake *fakeAPI, exporter ArtifactExporter) *Adapte
 
 func testCreate() CreateRequest {
 	return CreateRequest{
-		RequestID: "request-create-1", Name: "sandbox-a", WorkspaceID: "workspace-a", OwnerID: "owner-a", Image: testImage,
+		RequestID: "request-create-1", Name: "sandbox-a", WorkspaceID: "workspace-a", OwnerID: "owner-a", Image: testImage, HelperImage: testHelperImage,
 		Command: []string{"sh", "-c", "sleep 3600"}, Architecture: "amd64", RuntimeClassName: "gvisor", TrustLevel: TrustUntrusted,
 		CPURequest: "100m", MemoryRequest: "64Mi", EphemeralStorageRequest: "1Gi", CPULimit: "200m", MemoryLimit: "128Mi", EphemeralStorageLimit: "6Gi", ExpiresAt: time.Now().Add(time.Hour),
 		Artifacts: []ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.txt", MediaType: "text/plain", Required: true}},
@@ -1194,7 +1305,7 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 		t.Fatalf("container=%#v", pod.Spec.Containers[0])
 	}
 	resources := pod.Spec.Containers[0].Resources
-	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) {
+	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) || len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Image != testHelperImage {
 		t.Fatalf("resource or create-intent boundary missing: resources=%#v annotations=%#v", resources, object.Metadata.Annotations)
 	}
 }

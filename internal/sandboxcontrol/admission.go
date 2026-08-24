@@ -308,16 +308,22 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 	if !removeExactDefault(observed, "tolerations", defaultTolerations) {
 		return false
 	}
-	containers, ok := observed["containers"].([]any)
-	if !ok {
-		return false
-	}
-	for _, value := range containers {
-		container, ok := value.(map[string]any)
-		if !ok || !removeExactDefault(container, "imagePullPolicy", "IfNotPresent") ||
-			!removeExactDefault(container, "terminationMessagePath", "/dev/termination-log") ||
-			!removeExactDefault(container, "terminationMessagePolicy", "File") {
+	for _, field := range []string{"containers", "initContainers"} {
+		containers, exists := observed[field]
+		if !exists && field == "initContainers" {
+			continue
+		}
+		values, ok := containers.([]any)
+		if !ok {
 			return false
+		}
+		for _, value := range values {
+			container, ok := value.(map[string]any)
+			if !ok || !removeExactDefault(container, "imagePullPolicy", "IfNotPresent") ||
+				!removeExactDefault(container, "terminationMessagePath", "/dev/termination-log") ||
+				!removeExactDefault(container, "terminationMessagePolicy", "File") {
+				return false
+			}
 		}
 	}
 	return reflect.DeepEqual(observed, expectedObject)

@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type ArtifactExporter interface {
@@ -106,6 +108,7 @@ type kubePodSpec struct {
 	NodeSelector                 map[string]string `json:"nodeSelector"`
 	SecurityContext              map[string]any    `json:"securityContext"`
 	Containers                   []kubeContainer   `json:"containers"`
+	InitContainers               []kubeContainer   `json:"initContainers,omitempty"`
 	Volumes                      []kubeVolume      `json:"volumes"`
 }
 
@@ -113,9 +116,16 @@ type kubeContainer struct {
 	Name            string                       `json:"name"`
 	Image           string                       `json:"image"`
 	Command         []string                     `json:"command"`
+	RestartPolicy   string                       `json:"restartPolicy,omitempty"`
 	SecurityContext map[string]any               `json:"securityContext"`
 	Resources       map[string]map[string]string `json:"resources"`
-	VolumeMounts    []map[string]any             `json:"volumeMounts"`
+	VolumeMounts    []kubeVolumeMount            `json:"volumeMounts"`
+}
+
+type kubeVolumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
 }
 
 type kubeVolume struct {
@@ -221,6 +231,11 @@ func (a *Adapter) EnsureCreated(ctx context.Context, request CreateRequest, expe
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
 	request.Artifacts = canonicalArtifacts
+	canonicalSourceMounts, err := canonicalSources(request.Sources)
+	if err != nil {
+		return SandboxRecord{}, OperationReceipt{}, err
+	}
+	request.Sources = canonicalSourceMounts
 	intentDigest, err := createIntentDigest(request)
 	if err != nil {
 		return SandboxRecord{}, OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "create intent cannot be canonicalized", err)
@@ -651,20 +666,59 @@ func render(request CreateRequest, artifactContractDigest, createIntentDigest st
 	return kubeSandbox{
 		APIVersion: APIVersion, Kind: Kind,
 		Metadata: kubeMetadata{Name: request.Name, Namespace: Namespace, Labels: labels, Annotations: annotations, Finalizers: []string{CleanupFinalizer}},
-		Spec: kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: kubePodSpec{
-			RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
-			RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
-			SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
-			Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
-				SecurityContext: map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}},
-				Resources: map[string]map[string]string{
-					"requests": {"cpu": request.CPURequest, "memory": request.MemoryRequest, "ephemeral-storage": request.EphemeralStorageRequest},
-					"limits":   {"cpu": request.CPULimit, "memory": request.MemoryLimit, "ephemeral-storage": request.EphemeralStorageLimit},
-				},
-				VolumeMounts: []map[string]any{{"name": "workspace", "mountPath": "/workspace"}}}},
-			Volumes: []kubeVolume{{Name: "workspace", EmptyDir: map[string]any{"sizeLimit": "6Gi"}}},
-		}}},
+		Spec: kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: renderPodSpec(request)}},
 	}
+}
+
+func renderPodSpec(request CreateRequest) kubePodSpec {
+	mainMounts := make([]kubeVolumeMount, 0, len(request.Sources)+1)
+	volumes := make([]kubeVolume, 0, len(request.Sources)+2)
+	initContainers := []kubeContainer{}
+	if len(request.Sources) > 0 {
+		bootstrapMounts := make([]kubeVolumeMount, 0, len(request.Sources)+1)
+		for index, source := range request.Sources {
+			name := fmt.Sprintf("source-%02d", index)
+			volumes = append(volumes, kubeVolume{Name: name, EmptyDir: map[string]any{"sizeLimit": request.EphemeralStorageLimit}})
+			bootstrapMounts = append(bootstrapMounts, kubeVolumeMount{Name: name, MountPath: source.Destination})
+			mainMounts = append(mainMounts, kubeVolumeMount{Name: name, MountPath: source.Destination, ReadOnly: !source.Writable})
+		}
+		volumes = append(volumes, kubeVolume{Name: "bootstrap-state", EmptyDir: map[string]any{"medium": "Memory", "sizeLimit": "1Mi"}})
+		bootstrapMounts = append(bootstrapMounts, kubeVolumeMount{Name: "bootstrap-state", MountPath: "/run/blazn-bootstrap"})
+		initContainers = append(initContainers, helperContainer(sandboxio.BootstrapContainer, request.HelperImage,
+			[]string{sandboxio.HelperBinary, "wait-bootstrap"}, "", bootstrapMounts))
+	}
+	if len(request.Artifacts) > 0 {
+		volumes = append(volumes, kubeVolume{Name: "artifacts", EmptyDir: map[string]any{"sizeLimit": request.EphemeralStorageLimit}})
+		mainMounts = append(mainMounts, kubeVolumeMount{Name: "artifacts", MountPath: "/workspace/artifacts"})
+		initContainers = append(initContainers, helperContainer(sandboxio.ArtifactContainer, request.HelperImage,
+			[]string{sandboxio.HelperBinary, "wait-artifact"}, "Always",
+			[]kubeVolumeMount{{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}}))
+	}
+	return kubePodSpec{
+		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
+		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
+		SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
+		Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
+			SecurityContext: restrictedContainerSecurity(),
+			Resources: map[string]map[string]string{
+				"requests": {"cpu": request.CPURequest, "memory": request.MemoryRequest, "ephemeral-storage": request.EphemeralStorageRequest},
+				"limits":   {"cpu": request.CPULimit, "memory": request.MemoryLimit, "ephemeral-storage": request.EphemeralStorageLimit},
+			}, VolumeMounts: mainMounts}},
+		InitContainers: initContainers, Volumes: volumes,
+	}
+}
+
+func helperContainer(name, image string, command []string, restartPolicy string, mounts []kubeVolumeMount) kubeContainer {
+	return kubeContainer{Name: name, Image: image, Command: command, RestartPolicy: restartPolicy,
+		SecurityContext: restrictedContainerSecurity(),
+		Resources: map[string]map[string]string{
+			"requests": {"cpu": "10m", "memory": "16Mi", "ephemeral-storage": "16Mi"},
+			"limits":   {"cpu": "100m", "memory": "64Mi", "ephemeral-storage": "64Mi"},
+		}, VolumeMounts: mounts}
+}
+
+func restrictedContainerSecurity() map[string]any {
+	return map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}}
 }
 
 func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {

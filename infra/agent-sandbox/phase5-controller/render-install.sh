@@ -94,6 +94,7 @@ output=$1
 
 for name in \
   BLAZN_CONTROLLER_IMAGE \
+  BLAZN_SANDBOX_IO_IMAGE \
   BLAZN_DATABASE_URL_SECRET_NAME \
   BLAZN_DATABASE_URL_SECRET_KEY \
   BLAZN_DATABASE_ENDPOINT_KIND \
@@ -115,6 +116,17 @@ valid_image_repository "$image_repository" || fail "BLAZN_CONTROLLER_IMAGE repos
 printf '%s\n' "$image_digest" | LC_ALL=C grep -Eq '^[0-9a-f]{64}$' || fail "BLAZN_CONTROLLER_IMAGE digest is invalid"
 image_name=${image_repository##*/}
 case "$image_name" in *:*) fail "BLAZN_CONTROLLER_IMAGE must not contain a mutable tag" ;; esac
+
+case "$BLAZN_SANDBOX_IO_IMAGE" in
+  *@sha256:????????????????????????????????????????????????????????????????) ;;
+  *) fail "BLAZN_SANDBOX_IO_IMAGE must be a full sha256 digest reference" ;;
+esac
+helper_repository=${BLAZN_SANDBOX_IO_IMAGE%@sha256:*}
+helper_digest=${BLAZN_SANDBOX_IO_IMAGE##*@sha256:}
+valid_image_repository "$helper_repository" || fail "BLAZN_SANDBOX_IO_IMAGE repository is invalid"
+printf '%s\n' "$helper_digest" | LC_ALL=C grep -Eq '^[0-9a-f]{64}$' || fail "BLAZN_SANDBOX_IO_IMAGE digest is invalid"
+helper_name=${helper_repository##*/}
+case "$helper_name" in *:*) fail "BLAZN_SANDBOX_IO_IMAGE must not contain a mutable tag" ;; esac
 
 valid_dns_label "$BLAZN_DATABASE_URL_SECRET_NAME" || fail "BLAZN_DATABASE_URL_SECRET_NAME is invalid"
 valid_key "$BLAZN_DATABASE_URL_SECRET_KEY" || fail "BLAZN_DATABASE_URL_SECRET_KEY is invalid"
@@ -142,6 +154,7 @@ trap cleanup EXIT HUP INT TERM
 
 sed \
   -e "s|BLAZN_CONTROLLER_IMAGE|$BLAZN_CONTROLLER_IMAGE|g" \
+  -e "s|BLAZN_SANDBOX_IO_IMAGE|$BLAZN_SANDBOX_IO_IMAGE|g" \
   -e "s|BLAZN_DATABASE_URL_SECRET_NAME|$BLAZN_DATABASE_URL_SECRET_NAME|g" \
   -e "s|BLAZN_DATABASE_URL_SECRET_KEY|$BLAZN_DATABASE_URL_SECRET_KEY|g" \
   -e "s|BLAZN_KUBERNETES_API_HOST|$api_host|g" \
@@ -155,7 +168,7 @@ sed \
 if [ "$BLAZN_DATABASE_ENDPOINT_KIND" = hostname ]; then
   sed "s|BLAZN_DNS_CIDR|$BLAZN_DNS_CIDR|g" "$ROOT/dns-egress.yaml.in" >>"$tmp"
 fi
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR'
 if LC_ALL=C grep -E "$placeholder_pattern" "$tmp" >/dev/null; then
   fail "rendered manifest contains an unresolved placeholder"
 fi

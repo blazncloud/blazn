@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"sort"
@@ -96,6 +97,14 @@ type ArtifactExport struct {
 	Required  bool   `json:"required"`
 }
 
+type SourceMount struct {
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Destination string `json:"destination"`
+	Commit      string `json:"commit"`
+	Writable    bool   `json:"writable"`
+}
+
 type ArtifactReceipt struct {
 	SchemaVersion string `json:"schemaVersion"`
 	Name          string `json:"name"`
@@ -111,6 +120,7 @@ type CreateRequest struct {
 	WorkspaceID             string
 	OwnerID                 string
 	Image                   string
+	HelperImage             string
 	Command                 []string
 	Architecture            string
 	RuntimeClassName        string
@@ -123,6 +133,7 @@ type CreateRequest struct {
 	MemoryLimit             string
 	EphemeralStorageLimit   string
 	ExpiresAt               time.Time
+	Sources                 []SourceMount
 	Artifacts               []ArtifactExport
 }
 
@@ -242,6 +253,13 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	if !imagePattern.MatchString(request.Image) || len(request.Command) == 0 || len(request.Command) > 32 {
 		return adapterError(ErrInvalidRequest, 400, "image or command is invalid", nil)
 	}
+	if len(request.Sources) > 0 || len(request.Artifacts) > 0 {
+		if !imagePattern.MatchString(request.HelperImage) || request.HelperImage == request.Image {
+			return adapterError(ErrInvalidRequest, 400, "sandbox I/O helper image is invalid", nil)
+		}
+	} else if request.HelperImage != "" {
+		return adapterError(ErrInvalidRequest, 400, "unused sandbox I/O helper image is invalid", nil)
+	}
 	for _, argument := range request.Command {
 		if argument == "" || len(argument) > 1024 || strings.ContainsRune(argument, '\x00') {
 			return adapterError(ErrInvalidRequest, 400, "command argument is invalid", nil)
@@ -257,6 +275,9 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	}
 	if request.ExpiresAt.IsZero() || !request.ExpiresAt.After(time.Now().Add(-time.Minute)) {
 		return adapterError(ErrInvalidRequest, 400, "expiry is invalid", nil)
+	}
+	if err := validateSources(request.Sources); err != nil {
+		return err
 	}
 	if err := validateArtifactExports(request.Artifacts); err != nil {
 		return err
@@ -284,11 +305,16 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 // createIntentDigest is the adapter's internal idempotency boundary. It binds
 // every CreateRequest field after set-like values have been canonicalized.
 func createIntentDigest(request CreateRequest) (string, error) {
+	canonicalSources, err := canonicalSources(request.Sources)
+	if err != nil {
+		return "", err
+	}
 	canonicalArtifacts, _, err := CanonicalArtifactContract(request.Artifacts)
 	if err != nil {
 		return "", err
 	}
 	request.Artifacts = canonicalArtifacts
+	request.Sources = canonicalSources
 	type canonicalCreateIntent struct {
 		Schema                  string           `json:"schema"`
 		RequestID               string           `json:"requestId"`
@@ -296,6 +322,7 @@ func createIntentDigest(request CreateRequest) (string, error) {
 		WorkspaceID             string           `json:"workspaceId"`
 		OwnerID                 string           `json:"ownerId"`
 		Image                   string           `json:"image"`
+		HelperImage             string           `json:"helperImage"`
 		Command                 []string         `json:"command"`
 		Architecture            string           `json:"architecture"`
 		RuntimeClassName        string           `json:"runtimeClassName"`
@@ -308,24 +335,59 @@ func createIntentDigest(request CreateRequest) (string, error) {
 		MemoryLimit             string           `json:"memoryLimit"`
 		EphemeralStorageLimit   string           `json:"ephemeralStorageLimit"`
 		ExpiresAt               string           `json:"expiresAt"`
+		Sources                 []SourceMount    `json:"sources"`
 		Artifacts               []ArtifactExport `json:"artifacts"`
+		PodSpec                 kubePodSpec      `json:"podSpec"`
 	}
 	encoded, err := json.Marshal(canonicalCreateIntent{
-		Schema: "blazn.dev/sandbox-create-intent/v1", RequestID: request.RequestID,
+		Schema: "blazn.dev/sandbox-create-intent/v2", RequestID: request.RequestID,
 		Name: request.Name, WorkspaceID: request.WorkspaceID, OwnerID: request.OwnerID,
-		Image: request.Image, Command: append([]string(nil), request.Command...),
+		Image: request.Image, HelperImage: request.HelperImage, Command: append([]string(nil), request.Command...),
 		Architecture: request.Architecture, RuntimeClassName: request.RuntimeClassName,
 		TrustLevel: request.TrustLevel, NonSensitive: request.NonSensitive,
 		CPURequest: request.CPURequest, MemoryRequest: request.MemoryRequest,
 		EphemeralStorageRequest: request.EphemeralStorageRequest, CPULimit: request.CPULimit,
 		MemoryLimit: request.MemoryLimit, EphemeralStorageLimit: request.EphemeralStorageLimit,
-		ExpiresAt: request.ExpiresAt.UTC().Format(time.RFC3339Nano), Artifacts: canonicalArtifacts,
+		ExpiresAt: request.ExpiresAt.UTC().Format(time.RFC3339Nano), Sources: canonicalSources,
+		Artifacts: canonicalArtifacts, PodSpec: renderPodSpec(request),
 	})
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(encoded)
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+func validateSources(sources []SourceMount) error {
+	if len(sources) > 32 {
+		return adapterError(ErrInvalidRequest, 400, "source mount limit exceeded", nil)
+	}
+	seenNames, seenDestinations := map[string]bool{}, map[string]bool{}
+	commitPattern := regexp.MustCompile(`^[0-9a-f]{40}$`)
+	for _, source := range sources {
+		parsed, err := url.Parse(source.URL)
+		if err != nil || !dnsLabelPattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) ||
+			parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			!strings.HasPrefix(source.Destination, "/workspace/src/") || path.Clean(source.Destination) != source.Destination ||
+			strings.Contains(source.Destination, "..") || strings.Contains(source.Destination, `\`) || len(source.Destination) > 512 ||
+			seenNames[source.Name] || seenDestinations[source.Destination] {
+			return adapterError(ErrInvalidRequest, 400, "source mount is invalid", err)
+		}
+		seenNames[source.Name], seenDestinations[source.Destination] = true, true
+	}
+	return nil
+}
+
+func canonicalSources(sources []SourceMount) ([]SourceMount, error) {
+	if err := validateSources(sources); err != nil {
+		return nil, err
+	}
+	canonical := append([]SourceMount(nil), sources...)
+	sort.Slice(canonical, func(i, j int) bool { return canonical[i].Name < canonical[j].Name })
+	if canonical == nil {
+		canonical = []SourceMount{}
+	}
+	return canonical, nil
 }
 
 func validateArtifactExports(artifacts []ArtifactExport) error {
