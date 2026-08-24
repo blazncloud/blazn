@@ -21,7 +21,8 @@ import (
 const (
 	ProtocolVersion       = "blazn.dev/sandbox-io/v1"
 	SourceManifestVersion = "blazn.dev/sandbox-source-manifest/v1"
-	OperationBootstrap    = "bootstrap.validate"
+	OperationBootstrap    = "bootstrap.materialize"
+	OperationRelease      = "bootstrap.release"
 	OperationArtifact     = "artifact.read"
 	StatusOK              = "ok"
 	StatusError           = "error"
@@ -30,11 +31,12 @@ const (
 	MaxArtifactBytes      = 8 << 20
 	MaxSources            = 32
 	DefaultTimeout        = 15 * time.Second
+	SourceTimeout         = 2 * time.Minute
 )
 
 var (
 	namePattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
-	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	commitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
@@ -68,6 +70,16 @@ type SourceManifest struct {
 
 type ArtifactRequest struct {
 	Path string `json:"path"`
+}
+
+type ReleaseRequest struct {
+	ReceiptDigest string `json:"receiptDigest"`
+}
+
+type ReleaseReceipt struct {
+	SchemaVersion string `json:"schemaVersion"`
+	ReceiptDigest string `json:"receiptDigest"`
+	Released      bool   `json:"released"`
 }
 
 type ProtocolError struct {
@@ -113,7 +125,7 @@ func DecodeRequest(ctx context.Context, reader io.Reader, expectedOperation stri
 }
 
 func EncodeResponse(writer io.Writer, header ResponseHeader, body []byte) error {
-	if header.Version != ProtocolVersion || header.Operation != OperationBootstrap && header.Operation != OperationArtifact ||
+	if header.Version != ProtocolVersion || header.Operation != OperationBootstrap && header.Operation != OperationRelease && header.Operation != OperationArtifact ||
 		header.Status != StatusOK && header.Status != StatusError || header.BodyBytes != int64(len(body)) || header.BodyBytes < 0 || header.BodyBytes > MaxArtifactBytes {
 		return protocolError("response_header_invalid", nil)
 	}
@@ -218,6 +230,22 @@ func MarshalArtifactRequest(request ArtifactRequest) ([]byte, error) {
 	return encoded, nil
 }
 
+func MarshalReleaseRequest(request ReleaseRequest) ([]byte, error) {
+	encoded, err := json.Marshal(request)
+	if err != nil || !digestPattern.MatchString(request.ReceiptDigest) {
+		return nil, protocolError("release_request_invalid", err)
+	}
+	return encoded, nil
+}
+
+func DecodeReleaseRequest(body []byte) (ReleaseRequest, error) {
+	var request ReleaseRequest
+	if len(body) == 0 || len(body) > 1024 || decodeClosed(body, &request) != nil || !digestPattern.MatchString(request.ReceiptDigest) {
+		return ReleaseRequest{}, protocolError("release_request_invalid", nil)
+	}
+	return request, nil
+}
+
 func SuccessHeader(operation string, body []byte) ResponseHeader {
 	digest := sha256.Sum256(body)
 	return ResponseHeader{Version: ProtocolVersion, Operation: operation, Status: StatusOK, BodyBytes: int64(len(body)), SHA256: "sha256:" + hex.EncodeToString(digest[:])}
@@ -243,6 +271,8 @@ func requestBodyLimit(operation string) (int64, error) {
 	switch operation {
 	case OperationBootstrap:
 		return MaxManifestBytes, nil
+	case OperationRelease:
+		return 1024, nil
 	case OperationArtifact:
 		return 1024, nil
 	default:

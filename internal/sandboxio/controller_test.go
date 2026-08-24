@@ -19,12 +19,18 @@ func TestControllerPinsTargetCommandAndChecksOwnerBeforeAndAfter(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := FrozenPodTarget{Namespace: "blazn-poc-sandboxes", PodName: "sandbox-a-pod", PodUID: "pod-uid-1", SandboxUID: "sandbox-uid-1", Container: BootstrapContainer}
-	manifest, err := controller.Bootstrap(context.Background(), target, testManifest())
-	if err != nil || !reflect.DeepEqual(manifest, testManifest()) {
-		t.Fatalf("manifest=%#v err=%v", manifest, err)
+	receipt, err := controller.Bootstrap(context.Background(), target, testManifest())
+	if err != nil || len(receipt.Sources) != 1 || receipt.Sources[0].Commit != testManifest().Sources[0].Commit {
+		t.Fatalf("receipt=%#v err=%v", receipt, err)
 	}
 	if owners.calls != 2 || !reflect.DeepEqual(transport.target, target) || !reflect.DeepEqual(transport.command, []string{HelperBinary, "bootstrap"}) {
 		t.Fatalf("owners=%d target=%#v command=%v", owners.calls, transport.target, transport.command)
+	}
+	if err := controller.Release(context.Background(), target, receipt.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(transport.command, []string{HelperBinary, "release"}) {
+		t.Fatalf("release command=%v", transport.command)
 	}
 
 	target.Container = ArtifactContainer
@@ -109,13 +115,21 @@ type protocolTransport struct {
 	command  []string
 	inject   bool
 	artifact []byte
+	state    *memoryBootstrapState
 }
 
 func (t *protocolTransport) Exec(ctx context.Context, target FrozenPodTarget, command []string, input io.Reader, output io.Writer) error {
 	t.target, t.command = target, append([]string(nil), command...)
 	var response bytes.Buffer
 	if target.Container == BootstrapContainer {
-		if err := ServeBootstrap(ctx, input, &response, nil); err != nil {
+		if t.state == nil {
+			t.state = &memoryBootstrapState{}
+		}
+		if len(command) == 2 && command[1] == "release" {
+			if err := ServeRelease(ctx, input, &response, t.state); err != nil {
+				return err
+			}
+		} else if err := ServeBootstrap(ctx, input, &response, testMaterializer{}, t.state); err != nil {
 			return err
 		}
 	} else {

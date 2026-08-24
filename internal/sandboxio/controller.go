@@ -65,23 +65,42 @@ func NewController(config ControllerConfig) (*Controller, error) {
 	return &Controller{transport: config.Transport, owners: config.Owners, timeout: timeout}, nil
 }
 
-func (c *Controller) Bootstrap(ctx context.Context, target FrozenPodTarget, manifest SourceManifest) (SourceManifest, error) {
+func (c *Controller) Bootstrap(ctx context.Context, target FrozenPodTarget, manifest SourceManifest) (SourceMaterializationReceipt, error) {
 	if err := validateTarget(target, BootstrapContainer); err != nil {
-		return SourceManifest{}, err
+		return SourceMaterializationReceipt{}, err
 	}
 	body, err := MarshalSourceManifest(manifest)
 	if err != nil {
-		return SourceManifest{}, err
+		return SourceMaterializationReceipt{}, err
 	}
 	response, err := c.exchange(ctx, target, []string{HelperBinary, "bootstrap"}, OperationBootstrap, body, MaxManifestBytes)
 	if err != nil {
-		return SourceManifest{}, err
+		return SourceMaterializationReceipt{}, err
 	}
-	validated, canonical, err := ValidateSourceManifest(response)
-	if err != nil || !bytes.Equal(canonical, body) {
-		return SourceManifest{}, protocolError("bootstrap_echo_mismatch", err)
+	receipt, err := DecodeSourceMaterializationReceipt(response, &manifest)
+	if err != nil {
+		return SourceMaterializationReceipt{}, err
 	}
-	return validated, nil
+	return receipt, nil
+}
+
+func (c *Controller) Release(ctx context.Context, target FrozenPodTarget, receiptDigest string) error {
+	if err := validateTarget(target, BootstrapContainer); err != nil {
+		return err
+	}
+	body, err := MarshalReleaseRequest(ReleaseRequest{ReceiptDigest: receiptDigest})
+	if err != nil {
+		return err
+	}
+	response, err := c.exchange(ctx, target, []string{HelperBinary, "release"}, OperationRelease, body, 1024)
+	if err != nil {
+		return err
+	}
+	var receipt ReleaseReceipt
+	if err := decodeClosed(response, &receipt); err != nil || receipt.SchemaVersion != SourceReceiptVersion || receipt.ReceiptDigest != receiptDigest || !receipt.Released {
+		return protocolError("bootstrap_release_mismatch", err)
+	}
+	return nil
 }
 
 func (c *Controller) ReadArtifact(ctx context.Context, target FrozenPodTarget, artifactPath string) (Artifact, error) {

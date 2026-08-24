@@ -14,6 +14,7 @@ import (
 const (
 	bootstrapDirectory = "/run/blazn-bootstrap"
 	bootstrapMarker    = "validated"
+	bootstrapReceipt   = "materialization.json"
 	artifactDirectory  = "/workspace/artifacts"
 )
 
@@ -28,9 +29,18 @@ func run(arguments []string, input *os.File, output *os.File) int {
 	defer stop()
 	switch arguments[1] {
 	case "bootstrap":
+		ctx, cancel := context.WithTimeout(ctx, sandboxio.SourceTimeout)
+		defer cancel()
+		state := sandboxio.FileBootstrapState{Directory: bootstrapDirectory, ReceiptName: bootstrapReceipt, MarkerName: bootstrapMarker}
+		if err := sandboxio.ServeBootstrap(ctx, input, output, sandboxio.GitMaterializer{Fetcher: sandboxio.SecureGitFetcher{}}, state); err != nil {
+			return 1
+		}
+		return 0
+	case "release":
 		ctx, cancel := context.WithTimeout(ctx, sandboxio.DefaultTimeout)
 		defer cancel()
-		if err := sandboxio.ServeBootstrap(ctx, input, output, sandboxio.FileCompleter{Directory: bootstrapDirectory, Name: bootstrapMarker}); err != nil {
+		state := sandboxio.FileBootstrapState{Directory: bootstrapDirectory, ReceiptName: bootstrapReceipt, MarkerName: bootstrapMarker}
+		if err := sandboxio.ServeRelease(ctx, input, output, state); err != nil {
 			return 1
 		}
 		return 0

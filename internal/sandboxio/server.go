@@ -2,19 +2,20 @@ package sandboxio
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
-type BootstrapCompleter interface {
-	Complete(context.Context, SourceManifest, []byte) error
+type BootstrapState interface {
+	Store(context.Context, SourceMaterializationReceipt, []byte) error
+	Release(context.Context, string) (ReleaseReceipt, []byte, error)
 }
 
-func ServeBootstrap(ctx context.Context, input io.Reader, output io.Writer, completer BootstrapCompleter) error {
+func ServeBootstrap(ctx context.Context, input io.Reader, output io.Writer, materializer SourceMaterializer, state BootstrapState) error {
 	_, body, err := DecodeRequest(ctx, input, OperationBootstrap)
 	if err != nil {
 		return respondError(output, OperationBootstrap, err)
@@ -26,12 +27,40 @@ func ServeBootstrap(ctx context.Context, input io.Reader, output io.Writer, comp
 	if err != nil {
 		return respondError(output, OperationBootstrap, err)
 	}
-	if completer != nil {
-		if err := completer.Complete(ctx, manifest, canonical); err != nil {
-			return respondError(output, OperationBootstrap, protocolError("bootstrap_completion_failed", err))
-		}
+	if materializer == nil || state == nil {
+		return respondError(output, OperationBootstrap, protocolError("source_materializer_unavailable", nil))
 	}
-	return EncodeResponse(output, SuccessHeader(OperationBootstrap, canonical), canonical)
+	receipt, err := materializer.Materialize(ctx, manifest, canonical)
+	if err != nil {
+		return respondError(output, OperationBootstrap, err)
+	}
+	encoded, err := MarshalSourceMaterializationReceipt(receipt)
+	if err != nil {
+		return respondError(output, OperationBootstrap, err)
+	}
+	if err := state.Store(ctx, receipt, encoded); err != nil {
+		return respondError(output, OperationBootstrap, protocolError("source_receipt_store_failed", err))
+	}
+	return EncodeResponse(output, SuccessHeader(OperationBootstrap, encoded), encoded)
+}
+
+func ServeRelease(ctx context.Context, input io.Reader, output io.Writer, state BootstrapState) error {
+	_, body, err := DecodeRequest(ctx, input, OperationRelease)
+	if err != nil {
+		return respondError(output, OperationRelease, err)
+	}
+	if err := requireEOF(ctx, input); err != nil {
+		return respondError(output, OperationRelease, protocolError("protocol_injection", err))
+	}
+	request, err := DecodeReleaseRequest(body)
+	if err != nil || state == nil {
+		return respondError(output, OperationRelease, protocolError("release_request_invalid", err))
+	}
+	_, encoded, err := state.Release(ctx, request.ReceiptDigest)
+	if err != nil {
+		return respondError(output, OperationRelease, err)
+	}
+	return EncodeResponse(output, SuccessHeader(OperationRelease, encoded), encoded)
 }
 
 func ServeArtifact(ctx context.Context, input io.Reader, output io.Writer, fileSystem ArtifactFileSystem) error {
@@ -57,42 +86,44 @@ func ServeArtifact(ctx context.Context, input io.Reader, output io.Writer, fileS
 	return EncodeResponse(output, header, artifact.Body)
 }
 
-type FileCompleter struct {
-	Directory string
-	Name      string
+type FileBootstrapState struct {
+	Directory   string
+	ReceiptName string
+	MarkerName  string
 }
 
-func (f FileCompleter) Complete(ctx context.Context, _ SourceManifest, canonical []byte) error {
+func (f FileBootstrapState) Store(ctx context.Context, receipt SourceMaterializationReceipt, canonical []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if f.Directory == "" || f.Name == "" || f.Name == "." || f.Name == ".." {
-		return errors.New("bootstrap marker configuration is invalid")
+	if err := f.validate(); err != nil {
+		return err
 	}
 	root, err := os.OpenRoot(f.Directory)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	digest := sha256.Sum256(canonical)
-	content := []byte("sha256:" + hex.EncodeToString(digest[:]) + "\n")
-	file, err := root.OpenFile(f.Name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+	if decoded, err := DecodeSourceMaterializationReceipt(canonical, nil); err != nil || decoded.Digest != receipt.Digest {
+		return errors.New("bootstrap receipt is invalid")
+	}
+	file, err := root.OpenFile(f.ReceiptName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
 	if errors.Is(err, os.ErrExist) {
-		existing, readErr := root.Open(f.Name)
+		existing, readErr := root.Open(f.ReceiptName)
 		if readErr != nil {
 			return readErr
 		}
 		defer existing.Close()
-		body, readErr := io.ReadAll(io.LimitReader(existing, int64(len(content)+1)))
-		if readErr != nil || string(body) != string(content) {
-			return errors.New("bootstrap marker differs from validated manifest")
+		body, readErr := io.ReadAll(io.LimitReader(existing, MaxManifestBytes+1))
+		if readErr != nil || string(body) != string(canonical) {
+			return errors.New("bootstrap receipt differs from materialized sources")
 		}
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if _, err := file.Write(content); err != nil {
+	if _, err := file.Write(canonical); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -101,6 +132,78 @@ func (f FileCompleter) Complete(ctx context.Context, _ SourceManifest, canonical
 		return err
 	}
 	return file.Close()
+}
+
+func (f FileBootstrapState) Release(ctx context.Context, receiptDigest string) (ReleaseReceipt, []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return ReleaseReceipt{}, nil, err
+	}
+	if err := f.validate(); err != nil || !digestPattern.MatchString(receiptDigest) {
+		return ReleaseReceipt{}, nil, protocolError("release_request_invalid", err)
+	}
+	root, err := os.OpenRoot(f.Directory)
+	if err != nil {
+		return ReleaseReceipt{}, nil, err
+	}
+	defer root.Close()
+	receiptFile, err := root.Open(f.ReceiptName)
+	if err != nil {
+		return ReleaseReceipt{}, nil, protocolError("source_receipt_unavailable", err)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(receiptFile, MaxManifestBytes+1))
+	closeErr := receiptFile.Close()
+	if readErr != nil || closeErr != nil || len(body) > MaxManifestBytes {
+		return ReleaseReceipt{}, nil, protocolError("source_receipt_invalid", errors.Join(readErr, closeErr))
+	}
+	receipt, err := DecodeSourceMaterializationReceipt(body, nil)
+	if err != nil || receipt.Digest != receiptDigest {
+		return ReleaseReceipt{}, nil, protocolError("source_receipt_mismatch", err)
+	}
+	markerContent := []byte(receiptDigest + "\n")
+	marker, err := root.OpenFile(f.MarkerName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
+	if errors.Is(err, os.ErrExist) {
+		existing, openErr := root.Open(f.MarkerName)
+		if openErr != nil {
+			return ReleaseReceipt{}, nil, openErr
+		}
+		existingBody, readErr := io.ReadAll(io.LimitReader(existing, int64(len(markerContent)+1)))
+		closeErr := existing.Close()
+		if readErr != nil || closeErr != nil || string(existingBody) != string(markerContent) {
+			return ReleaseReceipt{}, nil, protocolError("bootstrap_release_changed", errors.Join(readErr, closeErr))
+		}
+	} else if err != nil {
+		return ReleaseReceipt{}, nil, err
+	} else {
+		if _, err := marker.Write(markerContent); err != nil {
+			_ = marker.Close()
+			return ReleaseReceipt{}, nil, err
+		}
+		if err := marker.Sync(); err != nil {
+			_ = marker.Close()
+			return ReleaseReceipt{}, nil, err
+		}
+		if err := marker.Close(); err != nil {
+			return ReleaseReceipt{}, nil, err
+		}
+	}
+	release := ReleaseReceipt{SchemaVersion: SourceReceiptVersion, ReceiptDigest: receiptDigest, Released: true}
+	encoded, err := json.Marshal(release)
+	if err != nil {
+		return ReleaseReceipt{}, nil, err
+	}
+	return release, encoded, nil
+}
+
+func (f FileBootstrapState) validate() error {
+	for _, name := range []string{f.ReceiptName, f.MarkerName} {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\x00") {
+			return errors.New("bootstrap state configuration is invalid")
+		}
+	}
+	if f.Directory == "" || f.ReceiptName == f.MarkerName {
+		return errors.New("bootstrap state configuration is invalid")
+	}
+	return nil
 }
 
 func WaitForBootstrap(ctx context.Context, directory, name string, interval time.Duration) error {

@@ -10,6 +10,7 @@ COPY internal/sandboxio ./internal/sandboxio
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -buildvcs=false -trimpath -tags netgo,osusergo -ldflags='-s -w' -o /out/blazn-sandbox-io ./cmd/blazn-sandbox-io
 
 FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build --chmod=0555 /out/blazn-sandbox-io /blazn-sandbox-io
 USER 65532:65532
 ENTRYPOINT ["/blazn-sandbox-io"]

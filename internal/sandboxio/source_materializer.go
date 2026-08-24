@@ -58,6 +58,10 @@ type GitRepositoryFetcher interface {
 	Fetch(context.Context, Source) (*git.Repository, error)
 }
 
+type SourceMaterializer interface {
+	Materialize(context.Context, SourceManifest, []byte) (SourceMaterializationReceipt, error)
+}
+
 type GitMaterializer struct {
 	Fetcher            GitRepositoryFetcher
 	ResolveDestination func(Source) string
@@ -79,9 +83,11 @@ func (m GitMaterializer) Materialize(ctx context.Context, manifest SourceManifes
 		return SourceMaterializationReceipt{}, protocolError("source_fetcher_unavailable", nil)
 	}
 	validated, canonical, err := ValidateSourceManifest(canonicalManifest)
-	if err != nil || !sameManifest(validated, manifest) || string(canonical) != string(canonicalManifest) {
+	wantedCanonical, wantedErr := MarshalSourceManifest(manifest)
+	if err != nil || wantedErr != nil || string(wantedCanonical) != string(canonicalManifest) || string(canonical) != string(canonicalManifest) {
 		return SourceMaterializationReceipt{}, protocolError("source_manifest_invalid", err)
 	}
+	manifest = validated
 	manifestHash := sha256.Sum256(canonical)
 	receipt := SourceMaterializationReceipt{SchemaVersion: SourceReceiptVersion, ManifestDigest: "sha256:" + hex.EncodeToString(manifestHash[:]), Sources: make([]SourceMaterialization, 0, len(manifest.Sources))}
 	for _, source := range manifest.Sources {
@@ -96,6 +102,67 @@ func (m GitMaterializer) Materialize(ctx context.Context, manifest SourceManifes
 		return SourceMaterializationReceipt{}, protocolError("source_receipt_invalid", err)
 	}
 	return receipt, nil
+}
+
+func MarshalSourceMaterializationReceipt(receipt SourceMaterializationReceipt) ([]byte, error) {
+	if err := ValidateSourceMaterializationReceipt(receipt, nil); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil || len(encoded) > MaxManifestBytes {
+		return nil, protocolError("source_receipt_invalid", err)
+	}
+	return encoded, nil
+}
+
+func DecodeSourceMaterializationReceipt(body []byte, manifest *SourceManifest) (SourceMaterializationReceipt, error) {
+	if len(body) == 0 || len(body) > MaxManifestBytes {
+		return SourceMaterializationReceipt{}, protocolError("source_receipt_invalid", nil)
+	}
+	var receipt SourceMaterializationReceipt
+	if err := decodeClosed(body, &receipt); err != nil {
+		return SourceMaterializationReceipt{}, protocolError("source_receipt_invalid", err)
+	}
+	if err := ValidateSourceMaterializationReceipt(receipt, manifest); err != nil {
+		return SourceMaterializationReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func ValidateSourceMaterializationReceipt(receipt SourceMaterializationReceipt, manifest *SourceManifest) error {
+	if receipt.SchemaVersion != SourceReceiptVersion || !digestPattern.MatchString(receipt.ManifestDigest) || !digestPattern.MatchString(receipt.Digest) || receipt.Sources == nil || len(receipt.Sources) > MaxSources {
+		return protocolError("source_receipt_invalid", nil)
+	}
+	for index, source := range receipt.Sources {
+		if !namePattern.MatchString(source.Name) || source.URL == "" || !validWorkspacePath(source.Destination, "/workspace/src/") || !commitPattern.MatchString(source.Commit) || !commitPattern.MatchString(source.Tree) || !digestPattern.MatchString(source.ContentDigest) || source.FileCount < 0 || source.FileCount > MaxSourceFiles || source.TotalBytes < 0 || source.TotalBytes > MaxSourceBytes || index > 0 && receipt.Sources[index-1].Name >= source.Name {
+			return protocolError("source_receipt_invalid", nil)
+		}
+	}
+	wanted, err := sourceReceiptDigest(receipt)
+	if err != nil || wanted != receipt.Digest {
+		return protocolError("source_receipt_invalid", err)
+	}
+	if manifest != nil {
+		canonical, err := MarshalSourceManifest(*manifest)
+		if err != nil {
+			return protocolError("source_receipt_invalid", err)
+		}
+		normalized, _, err := ValidateSourceManifest(canonical)
+		if err != nil {
+			return protocolError("source_receipt_invalid", err)
+		}
+		digest := sha256.Sum256(canonical)
+		if receipt.ManifestDigest != "sha256:"+hex.EncodeToString(digest[:]) || len(receipt.Sources) != len(normalized.Sources) {
+			return protocolError("source_receipt_mismatch", nil)
+		}
+		for index, source := range normalized.Sources {
+			actual := receipt.Sources[index]
+			if actual.Name != source.Name || actual.URL != source.URL || actual.Destination != source.Destination || actual.Commit != source.Commit || actual.Writable != source.Writable {
+				return protocolError("source_receipt_mismatch", nil)
+			}
+		}
+	}
+	return nil
 }
 
 func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (SourceMaterialization, error) {
@@ -396,12 +463,6 @@ func writeDigestField(writer io.Writer, value string) {
 	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
 	_, _ = writer.Write(size[:])
 	_, _ = io.WriteString(writer, value)
-}
-
-func sameManifest(left, right SourceManifest) bool {
-	encodedLeft, _ := json.Marshal(left)
-	encodedRight, _ := json.Marshal(right)
-	return string(encodedLeft) == string(encodedRight)
 }
 
 var gitTransportMu sync.Mutex
