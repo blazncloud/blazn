@@ -259,8 +259,9 @@ test("Development runtime migration freezes tenant, version, no-delete, and cont
   assert.match(sql, /a\.workspace_id=target\.workspace_id AND a\.project_id=target\.project_id/);
   assert.match(sql, /principal}'<>'blazn-development-controller'/);
   assert.match(sql, /p_document#>'\{publication,published\}' <> 'null'::jsonb/);
-  assert.match(sql, /REVOKE DELETE ON TABLE development_projects, development_builds FROM blazn_runtime/);
-  assert.match(sql, /REVOKE UPDATE ON TABLE development_builds FROM blazn_runtime/);
+  assert.match(sql, /REVOKE ALL ON TABLE development_policy_profiles,development_registry_repositories,development_projects,[\s\S]*development_reproducibility_baselines[\s\S]*blazn_runtime/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION development_runtime_get_project[\s\S]*development_runtime_list_builds[\s\S]*TO blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*development_(?:projects|builds|registry_repositories|reproducibility_baselines)/);
   assert.match(sql, /REVOKE ALL ON FUNCTION development_controller_finalize[\s\S]*blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT EXECUTE ON FUNCTION development_controller_finalize/);
 });
