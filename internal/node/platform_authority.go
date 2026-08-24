@@ -191,6 +191,12 @@ func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, aut
 	}
 	store := FileStateStore{Root: root}
 	receipt, receiptErr := store.LoadReceipt()
+	if request.Operation == RootReleaseCapacity || request.Operation == RootVerify && request.ActivationGrant != nil {
+		if receiptErr != nil || request.Receipt == nil || request.ActivationGrant == nil || !sameJSON(receipt, *request.Receipt) {
+			return errors.New("expired capacity transition lacks its exact active receipt")
+		}
+		return verifyActivationRecoveryEvidence(authority, receipt, *request.ActivationGrant)
+	}
 	if request.Operation == RootObserve {
 		if receiptErr != nil {
 			return errors.New("expired observation lacks active receipt")
@@ -286,6 +292,21 @@ func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, aut
 		if receiptErr != nil || verifyAuthorityReceipt(authority, receipt, "active", "removed", "recovery_required") != nil {
 			return errors.New("expired WAL removal lacks terminal receipt")
 		}
+	}
+	return nil
+}
+
+func verifyActivationRecoveryEvidence(authority RootInstallAuthority, receipt client.NodeInstallReceipt, grant client.NodeActivationGrant) error {
+	if err := verifyAuthorityReceipt(authority, receipt, "active"); err != nil {
+		return err
+	}
+	receiptDigest, err := client.NodeInstallReceiptDigest(receipt)
+	if err != nil || authority.KubernetesBinding == nil || client.VerifyNodeActivationGrant(grant, authority.PlanSigningKey, authority.Plan.NodeID, authority.Plan.PlanID, receiptDigest, grant.KubernetesBinding) != nil {
+		return errors.New("expired capacity transition lacks server activation authorization")
+	}
+	grantBinding := grant.KubernetesBinding
+	if grantBinding.ClusterID != authority.KubernetesBinding.ClusterID || grantBinding.NodeName != authority.KubernetesBinding.NodeName || grantBinding.NodeUID != authority.KubernetesBinding.NodeUID {
+		return errors.New("expired capacity transition activation binding differs from root authority")
 	}
 	return nil
 }

@@ -389,7 +389,7 @@ func TestHeartbeatUsesOnlyNodeProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	heartbeat := NodeHeartbeat{NodeID: testUUIDA, IdentityGeneration: 1, BootID: "boot", Sequence: 0, SentAt: "2026-08-21T00:00:00Z", CapabilityDigest: digest, Capability: capability}
+	heartbeat := NodeHeartbeat{NodeID: testUUIDA, IdentityGeneration: 1, BootID: "boot", Sequence: 0, SentAt: "2026-08-21T00:00:00Z", PriorKubernetesResourceVersion: "opaque-rv", CapabilityDigest: digest, Capability: capability}
 	if err := api.SubmitNodeHeartbeat(context.Background(), "proof", heartbeat); err != nil {
 		t.Fatal(err)
 	}
@@ -407,12 +407,12 @@ func TestActivateNodeUsesProofIdempotencyAndReceiptBody(t *testing.T) {
 			t.Fatalf("body=%#v err=%v", body, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(Node{ID: testUUIDC, WorkspaceID: testUUIDD, Name: "worker-a", Kind: "shared", Platform: NodePlatformLinux, Architecture: NodeArchAMD64, LifecycleState: "active", TrustState: "verified", Version: 3, KubernetesBinding: &binding, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:01:00Z"})
+		_ = json.NewEncoder(w).Encode(NodeActivationResponse{Node: Node{ID: testUUIDC, WorkspaceID: testUUIDD, Name: "worker-a", Kind: "shared", Platform: NodePlatformLinux, Architecture: NodeArchAMD64, LifecycleState: "active", TrustState: "verified", Version: 3, KubernetesBinding: &binding, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:01:00Z"}, ActivationGrant: NodeActivationGrant{NodeID: testUUIDC}})
 	}))
 	defer server.Close()
 	api, _ := New(server.URL, server.Client())
 	result, err := api.ActivateNode(context.Background(), "proof", "activate-key", NodeActivationRequest{ExpectedVersion: 2, Receipt: receipt, KubernetesBinding: binding})
-	if err != nil || result.ID != testUUIDC {
+	if err != nil || result.Node.ID != testUUIDC {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }

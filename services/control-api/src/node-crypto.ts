@@ -68,6 +68,7 @@ export interface NodePlanSigner {
   readonly keyId: string;
   publicKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;
   sign(unsignedPlan: Record<string, unknown>): Promise<Record<string, unknown>>;
+  signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class FileNodePlanSigner implements NodePlanSigner {
@@ -86,6 +87,14 @@ export class FileNodePlanSigner implements NodePlanSigner {
     const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
     const key = await readEd25519PrivateKey(this.privateKeyFile);
     const signature = sign(null, Buffer.from(`blazn-node-install-plan-v1\n${digest}`, "utf8"), key).toString("base64url");
+    return { ...normalized, digest, signature };
+  }
+  async signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const normalized: Record<string, unknown> = { ...unsignedGrant, signingKeyId: this.keyId };
+    delete normalized.digest; delete normalized.signature;
+    const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
+    const key = await readEd25519PrivateKey(this.privateKeyFile);
+    const signature = sign(null, Buffer.from(`blazn-node-capacity-activation-grant-v1\n${digest}`, "utf8"), key).toString("base64url");
     return { ...normalized, digest, signature };
   }
 }

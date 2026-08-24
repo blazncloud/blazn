@@ -11,12 +11,14 @@ export interface NodePlanContext {
 export interface NodePlanFactory {
   signingKey(): Promise<NodePlanSigningKey>;
   create(context: NodePlanContext): Promise<Record<string, unknown>>;
+  signActivationGrant?(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class TemplateNodePlanFactory implements NodePlanFactory {
   constructor(private readonly templateFile: string, private readonly signer: NodePlanSigner) {}
 
   signingKey(): Promise<NodePlanSigningKey> { return this.signer.publicKey(); }
+  signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>> { return this.signer.signActivationGrant(unsignedGrant); }
 
   async create(context: NodePlanContext): Promise<Record<string, unknown>> {
     const parsed: unknown = JSON.parse(await readFile(this.templateFile, "utf8"));

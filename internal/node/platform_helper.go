@@ -44,7 +44,7 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	if json.Unmarshal(data, &raw) != nil {
 		return errors.New("root helper request is invalid")
 	}
-	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true, "wal": true, "receipt": true}
+	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true, "wal": true, "receipt": true, "activationGrant": true}
 	for key := range raw {
 		if !allowed[key] {
 			return fmt.Errorf("root helper field %q is unsupported", key)
@@ -97,8 +97,11 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 }
 
 func validateRootRequestShape(request RootRequest) error {
+	if request.ActivationGrant != nil && request.Operation != RootReleaseCapacity && request.Operation != RootVerify {
+		return errors.New("root activation grant is not valid for this operation")
+	}
 	noMutationFields := func() bool {
-		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil && request.WAL == nil && request.Receipt == nil
+		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil && request.WAL == nil && request.Receipt == nil && request.ActivationGrant == nil
 	}
 	switch request.Operation {
 	case RootAuthorize:
@@ -134,11 +137,11 @@ func validateRootRequestShape(request RootRequest) error {
 			return errors.New("root quarantine request fields are invalid")
 		}
 	case RootReleaseCapacity:
-		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt == nil {
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt == nil || request.ActivationGrant == nil {
 			return errors.New("root capacity release request fields are invalid")
 		}
 	case RootVerify:
-		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || (request.Receipt == nil) != (request.ActivationGrant == nil) {
 			return errors.New("root verify request fields are invalid")
 		}
 	case RootCreateWAL, RootSaveWAL:
@@ -344,9 +347,12 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
 		return RootResponse{KubernetesBinding: binding}, err
 	case RootReleaseCapacity:
-		binding, err := e.releaseNodeCapacity(ctx, request.Plan, request.Join, request.Receipt)
+		binding, err := e.releaseNodeCapacity(ctx, request.Plan, request.Join, request.Receipt, request.ActivationGrant)
 		return RootResponse{KubernetesBinding: binding}, err
 	case RootVerify:
+		if request.ActivationGrant != nil {
+			return RootResponse{}, e.verifyActivatedCapacityState(ctx, request.Plan, request.Join)
+		}
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	case RootFinalizeState:
 		return RootResponse{}, e.finalizeServiceState(ctx, request.Plan)
@@ -1589,8 +1595,8 @@ type capacityNodeState struct {
 	Unschedulable                *bool
 }
 
-func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding, receipt *client.NodeInstallReceipt) (*client.KubernetesBinding, error) {
-	if join == nil || receipt == nil || join.ClusterID != plan.Cluster.ID || join.ExpectedNodeName != plan.Hostname || join.ExpectedNodeUID == "" || join.ExpectedResourceVersion == "" {
+func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding, receipt *client.NodeInstallReceipt, grant *client.NodeActivationGrant) (*client.KubernetesBinding, error) {
+	if join == nil || receipt == nil || grant == nil || join.ClusterID != plan.Cluster.ID || join.ExpectedNodeName != plan.Hostname || join.ExpectedNodeUID == "" || join.ExpectedResourceVersion == "" {
 		return nil, errors.New("capacity release requires the exact installed node binding")
 	}
 	_, _, authorityPath, err := e.authorityPaths()
@@ -1601,8 +1607,13 @@ func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.N
 	if err != nil || authority.KubernetesBinding == nil || verifyAuthorityReceipt(authority, *receipt, "active") != nil {
 		return nil, errors.New("capacity release lacks a trusted active install receipt")
 	}
+	receiptDigest, err := client.NodeInstallReceiptDigest(*receipt)
+	if err != nil || client.VerifyNodeActivationGrant(*grant, authority.PlanSigningKey, plan.NodeID, plan.PlanID, receiptDigest, grant.KubernetesBinding) != nil {
+		return nil, errors.New("capacity release lacks a valid server activation grant")
+	}
 	authorized := authority.KubernetesBinding
-	if authorized.ClusterID != join.ClusterID || authorized.NodeName != join.ExpectedNodeName || authorized.NodeUID != join.ExpectedNodeUID {
+	grantBinding := grant.KubernetesBinding
+	if authorized.ClusterID != join.ClusterID || authorized.NodeName != join.ExpectedNodeName || authorized.NodeUID != join.ExpectedNodeUID || grantBinding.ClusterID != authorized.ClusterID || grantBinding.NodeName != authorized.NodeName || grantBinding.NodeUID != authorized.NodeUID || grantBinding.ResourceVersion != join.ExpectedResourceVersion {
 		return nil, errors.New("capacity release binding differs from root authority")
 	}
 	state, err := e.readCapacityNode(ctx, plan, authorized.NodeName)
@@ -1702,6 +1713,18 @@ func validateCapacityState(state capacityNodeState) (bool, error) {
 		return false, errors.New("capacity release found partially released node state")
 	}
 	return released, nil
+}
+
+func (e NativeRootEngine) verifyActivatedCapacityState(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
+	if binding == nil || binding.ClusterID != plan.Cluster.ID || binding.ExpectedNodeName != plan.Hostname || binding.ExpectedNodeUID == "" || binding.ExpectedResourceVersion == "" {
+		return errors.New("activated-capacity verification binding is invalid")
+	}
+	state, err := e.readCapacityNode(ctx, plan, binding.ExpectedNodeName)
+	if err != nil || state.Name != binding.ExpectedNodeName || state.UID != binding.ExpectedNodeUID || state.ResourceVersion == "" {
+		return errors.New("activated-capacity verification differs from the authorized node")
+	}
+	_, err = validateCapacityState(state)
+	return err
 }
 
 func (e NativeRootEngine) readCapacityNode(ctx context.Context, plan client.NodeInstallPlan, name string) (capacityNodeState, error) {

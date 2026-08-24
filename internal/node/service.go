@@ -18,7 +18,7 @@ type API interface {
 	CreateNodeEnrollment(context.Context, string, string, string, client.CreateNodeEnrollmentRequest) (client.NodeEnrollmentSecret, error)
 	ExchangeNodeEnrollment(context.Context, string, client.ExchangeNodeEnrollmentRequest) (client.ExchangeNodeEnrollmentResponse, error)
 	SubmitNodeHeartbeat(context.Context, string, client.NodeHeartbeat) error
-	ActivateNode(context.Context, string, string, client.NodeActivationRequest) (client.Node, error)
+	ActivateNode(context.Context, string, string, client.NodeActivationRequest) (client.NodeActivationResponse, error)
 }
 
 type EnrollOptions struct {
@@ -59,6 +59,14 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	}
 	if options.AccessToken == "" || options.WorkspaceID == "" || len(options.IdempotencyKey) < 8 || options.Name == "" || options.MachineFingerprint == "" || options.Profile.ID == "" {
 		return EnrollResult{}, errors.New("node enrollment inputs are incomplete")
+	}
+	if install && s.installer == nil {
+		return EnrollResult{}, errors.New("privileged installer is unavailable")
+	}
+	if install {
+		if recovered, ok, err := s.recoverActivatedCapacity(ctx, options); ok || err != nil {
+			return recovered, err
+		}
 	}
 	identity, err := s.identities.LoadOrCreate()
 	if err != nil {
@@ -131,14 +139,25 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 		if err != nil {
 			return result, err
 		}
-		activated, err := s.api.ActivateNode(ctx, proof, "node-activate-"+receipt.ReceiptID, activation)
+		activationResponse, err := s.api.ActivateNode(ctx, proof, "node-activate-"+receipt.ReceiptID, activation)
 		if err != nil {
 			return result, fmt.Errorf("activate installed node: %w", err)
 		}
+		activated := activationResponse.Node
 		if err := client.ValidateNode(activated); err != nil || activated.ID != response.Plan.NodeID || activated.LifecycleState != "active" || activated.TrustState != "verified" || activated.KubernetesBinding == nil || *activated.KubernetesBinding != *state.KubernetesBinding {
 			return result, errors.New("activation response differs from the installed node")
 		}
-		releasedBinding, err := s.installer.ReleaseNodeCapacity(ctx, response.Plan, receipt)
+		receiptDigest, err := client.NodeInstallReceiptDigest(receipt)
+		if err != nil || client.VerifyNodeActivationGrant(activationResponse.ActivationGrant, state.Pin.PlanSigningKey, response.Plan.NodeID, response.Plan.PlanID, receiptDigest, *state.KubernetesBinding) != nil {
+			return result, errors.New("activation grant differs from the installed node")
+		}
+		state.ActivationGrant = &activationResponse.ActivationGrant
+		state.UpdatedAt = nowString(s.now())
+		if err := s.state.SaveRuntime(state); err != nil {
+			return result, fmt.Errorf("persist server-authorized activation grant before capacity release: %w", err)
+		}
+		result.State = state
+		releasedBinding, err := s.installer.ReleaseNodeCapacity(ctx, response.Plan, receipt, activationResponse.ActivationGrant)
 		if err != nil {
 			return result, fmt.Errorf("release activated node capacity: %w", err)
 		}
@@ -156,6 +175,38 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) recoverActivatedCapacity(ctx context.Context, options EnrollOptions) (EnrollResult, bool, error) {
+	state, err := s.state.LoadRuntime()
+	if err != nil || state.ActivationGrant == nil || state.KubernetesBinding == nil {
+		return EnrollResult{}, false, nil
+	}
+	plan := state.Exchange.Plan
+	if state.Pin.WorkspaceID != options.WorkspaceID || state.Pin.IdempotencyKey != options.IdempotencyKey || state.Pin.Hostname != options.Name || state.Pin.MachineFingerprint != options.MachineFingerprint || state.Pin.ProfileID != options.Profile.ID || plan.NodeID == "" || plan.PlanID == "" {
+		return EnrollResult{}, false, nil
+	}
+	receipt, err := s.installer.LoadReceipt()
+	if err != nil {
+		return EnrollResult{State: state}, true, errors.New("persisted activation grant lacks its exact active receipt")
+	}
+	receiptDigest, err := client.NodeInstallReceiptDigest(receipt)
+	if err != nil || client.VerifyNodeActivationGrant(*state.ActivationGrant, state.Pin.PlanSigningKey, plan.NodeID, plan.PlanID, receiptDigest, state.ActivationGrant.KubernetesBinding) != nil || state.ActivationGrant.KubernetesBinding.ClusterID != state.KubernetesBinding.ClusterID || state.ActivationGrant.KubernetesBinding.NodeName != state.KubernetesBinding.NodeName || state.ActivationGrant.KubernetesBinding.NodeUID != state.KubernetesBinding.NodeUID {
+		return EnrollResult{State: state}, true, errors.New("persisted activation recovery evidence is invalid")
+	}
+	released, err := s.installer.RecoverActivatedCapacity(ctx, plan, receipt, *state.ActivationGrant, state.ActivationGrant.KubernetesBinding)
+	if err != nil {
+		return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, fmt.Errorf("recover activated node capacity: %w", err)
+	}
+	state.KubernetesBinding = released
+	state.UpdatedAt = nowString(s.now())
+	if err := s.state.SaveRuntime(state); err != nil {
+		return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, fmt.Errorf("persist recovered Kubernetes binding: %w", err)
+	}
+	if err := s.installer.FinalizeServiceState(ctx, plan); err != nil {
+		return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, fmt.Errorf("finalize recovered daemon-owned node state: %w", err)
+	}
+	return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, nil
 }
 
 func verifyExchange(response client.ExchangeNodeEnrollmentResponse, pin EnrollmentPin, identity Identity, options EnrollOptions, now time.Time) error {

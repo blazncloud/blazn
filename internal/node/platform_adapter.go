@@ -55,18 +55,19 @@ const (
 )
 
 type RootRequest struct {
-	SchemaVersion string                     `json:"schemaVersion"`
-	Operation     RootOperation              `json:"operation"`
-	Platform      string                     `json:"platform"`
-	Plan          client.NodeInstallPlan     `json:"plan"`
-	Ordinal       int64                      `json:"ordinal,omitempty"`
-	BackupRoot    string                     `json:"backupRoot,omitempty"`
-	Prior         *PriorState                `json:"prior,omitempty"`
-	Material      *RootMaterial              `json:"material,omitempty"`
-	Join          *RootJoinBinding           `json:"join,omitempty"`
-	Bootstrap     *RootBootstrapRequest      `json:"bootstrap,omitempty"`
-	WAL           *InstallWAL                `json:"wal,omitempty"`
-	Receipt       *client.NodeInstallReceipt `json:"receipt,omitempty"`
+	SchemaVersion   string                      `json:"schemaVersion"`
+	Operation       RootOperation               `json:"operation"`
+	Platform        string                      `json:"platform"`
+	Plan            client.NodeInstallPlan      `json:"plan"`
+	Ordinal         int64                       `json:"ordinal,omitempty"`
+	BackupRoot      string                      `json:"backupRoot,omitempty"`
+	Prior           *PriorState                 `json:"prior,omitempty"`
+	Material        *RootMaterial               `json:"material,omitempty"`
+	Join            *RootJoinBinding            `json:"join,omitempty"`
+	Bootstrap       *RootBootstrapRequest       `json:"bootstrap,omitempty"`
+	WAL             *InstallWAL                 `json:"wal,omitempty"`
+	Receipt         *client.NodeInstallReceipt  `json:"receipt,omitempty"`
+	ActivationGrant *client.NodeActivationGrant `json:"activationGrant,omitempty"`
 }
 type RootBootstrapRequest struct {
 	EnrollmentID       string                                `json:"enrollmentId"`
@@ -290,13 +291,14 @@ func (a *PlatformAdapter) FinalizeServiceState(ctx context.Context, plan client.
 	return err
 }
 
-func (a *PlatformAdapter) ReleaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt) (*client.KubernetesBinding, error) {
+func (a *PlatformAdapter) ReleaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt, grant client.NodeActivationGrant) (*client.KubernetesBinding, error) {
 	if a.joined == nil || a.joined.ExpectedNodeUID == "" || a.joined.ExpectedResourceVersion == "" {
 		return nil, errors.New("capacity release requires the verified Kubernetes binding")
 	}
 	request := a.request(RootReleaseCapacity, plan, 0)
 	request.Join = a.joined
 	request.Receipt = &receipt
+	request.ActivationGrant = &grant
 	response, err := a.Privileged.Call(ctx, request)
 	if err != nil {
 		return nil, err
@@ -307,6 +309,21 @@ func (a *PlatformAdapter) ReleaseNodeCapacity(ctx context.Context, plan client.N
 	a.joined.ExpectedResourceVersion = response.KubernetesBinding.ResourceVersion
 	binding := *response.KubernetesBinding
 	return &binding, nil
+}
+
+func (a *PlatformAdapter) RecoverActivatedCapacity(ctx context.Context, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt, grant client.NodeActivationGrant, binding client.KubernetesBinding) (*client.KubernetesBinding, error) {
+	if binding.ClusterID != plan.Cluster.ID || binding.NodeName != plan.Hostname || binding.NodeUID == "" || binding.ResourceVersion == "" {
+		return nil, errors.New("activated-capacity recovery binding is invalid")
+	}
+	a.joined = &RootJoinBinding{ClusterID: binding.ClusterID, ExpectedNodeName: binding.NodeName, ExpectedNodeUID: binding.NodeUID, ExpectedResourceVersion: binding.ResourceVersion}
+	request := a.request(RootVerify, plan, 0)
+	request.Join = a.joined
+	request.Receipt = &receipt
+	request.ActivationGrant = &grant
+	if _, err := a.Privileged.Call(ctx, request); err != nil {
+		return nil, err
+	}
+	return a.ReleaseNodeCapacity(ctx, plan, receipt, grant)
 }
 func (a *PlatformAdapter) RemoveServiceSupport(ctx context.Context, plan client.NodeInstallPlan) error {
 	_, err := a.Privileged.Call(ctx, a.request(RootRemoveSupport, plan, 0))

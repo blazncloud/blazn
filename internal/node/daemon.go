@@ -70,6 +70,9 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if capability.Host.Platform != state.Exchange.Plan.Target.Platform || capability.Host.Architecture != state.Exchange.Plan.Target.Architecture || capability.Worker.Architecture != state.Exchange.Plan.Target.Architecture || capability.Worker.KubernetesBinding.ClusterID != state.Exchange.Plan.Cluster.ID {
 		return HeartbeatResult{}, errors.New("node capability differs from the verified install plan binding")
 	}
+	if state.KubernetesBinding == nil || state.KubernetesBinding.ClusterID != capability.Worker.KubernetesBinding.ClusterID || state.KubernetesBinding.NodeName != capability.Worker.KubernetesBinding.NodeName || state.KubernetesBinding.NodeUID != capability.Worker.KubernetesBinding.NodeUID || state.KubernetesBinding.ResourceVersion == "" {
+		return HeartbeatResult{}, errors.New("node capability lacks the exact persisted Kubernetes transition origin")
+	}
 	digest, err := client.NodeCapabilityDigest(capability)
 	if err != nil {
 		return HeartbeatResult{}, err
@@ -84,13 +87,19 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	}
 	d.sequence++
 	sentAt := d.now().UTC().Format(time.RFC3339Nano)
-	heartbeat := client.NodeHeartbeat{NodeID: state.Exchange.Plan.NodeID, IdentityGeneration: state.Exchange.Identity.Generation, BootID: d.bootID, Sequence: d.sequence, SentAt: sentAt, CapabilityDigest: digest, Capability: capability}
+	heartbeat := client.NodeHeartbeat{NodeID: state.Exchange.Plan.NodeID, IdentityGeneration: state.Exchange.Identity.Generation, BootID: d.bootID, Sequence: d.sequence, SentAt: sentAt, PriorKubernetesResourceVersion: state.KubernetesBinding.ResourceVersion, CapabilityDigest: digest, Capability: capability}
 	proof, err := nodeProof(identity.PrivateKey, "blazn-node-heartbeat-v1", heartbeat)
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
 	if err := d.api.SubmitNodeHeartbeat(ctx, proof, heartbeat); err != nil {
 		return HeartbeatResult{}, err
+	}
+	updatedBinding := capability.Worker.KubernetesBinding
+	state.KubernetesBinding = &updatedBinding
+	state.UpdatedAt = sentAt
+	if err := d.state.SaveRuntime(state); err != nil {
+		return HeartbeatResult{}, fmt.Errorf("persist accepted Kubernetes heartbeat transition: %w", err)
 	}
 	return HeartbeatResult{NodeID: heartbeat.NodeID, BootID: heartbeat.BootID, Sequence: heartbeat.Sequence, SentAt: sentAt}, nil
 }

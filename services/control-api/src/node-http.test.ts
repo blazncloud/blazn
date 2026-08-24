@@ -16,7 +16,7 @@ test("enrollment token stays in the bounded exchange body",async()=>{
 
 test("node service proof is singular and never accepted from the JSON body",async()=>{
   let calls=0;const service={async heartbeat(){calls++;}} as unknown as NodeService;const server=nodeServer(new NodeHttpRouter(service));await listen(server);
-  const body={nodeId,identityGeneration:1,bootId:"boot",sequence:0,sentAt:"2026-08-22T12:00:00Z",capabilityDigest:`sha256:${"a".repeat(64)}`,capability:{version:1}};
+  const body={nodeId,identityGeneration:1,bootId:"boot",sequence:0,sentAt:"2026-08-22T12:00:00Z",priorKubernetesResourceVersion:"opaque-rv",capabilityDigest:`sha256:${"a".repeat(64)}`,capability:{version:1}};
   try{const missing=await fetch(origin(server)+"/v1/node-service/heartbeats",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...body,proof:"x".repeat(86)})});assert.equal(missing.status,400);assert.equal(calls,0);
     const accepted=await fetch(origin(server)+"/v1/node-service/heartbeats",{method:"POST",headers:{"content-type":"application/json","x-blazn-node-proof":"x".repeat(86)},body:JSON.stringify(body)});assert.equal(accepted.status,204);assert.equal(calls,1);
   }finally{await close(server);}
