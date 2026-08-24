@@ -221,7 +221,7 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 			if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
 				return BackendState{}, classifyCleanupObservation(err)
 			}
-			return BackendState{AdmissionObservation: expected}, nil
+			return BackendState{AdmissionObservation: expected, AbsenceObserved: true}, nil
 		}
 		return BackendState{}, classifyCleanupObservation(err)
 	}
@@ -304,6 +304,8 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
 			return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
 		}
+	} else if !state.AbsenceObserved {
+		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup absence was not observed", true, true, nil)
 	}
 	result := CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
 		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}

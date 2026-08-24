@@ -96,6 +96,7 @@ type BackendState struct {
 	Record                                           sandboxcontrol.SandboxRecord
 	AdmissionObservation                             *sandboxcontrol.AdmissionObservation
 	Exists, Ready, Deleting, CleanupFinalizerPresent bool
+	AbsenceObserved                                  bool
 }
 type CleanupResult struct {
 	ArtifactIDs, WarningCodes                              []string

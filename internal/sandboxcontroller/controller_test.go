@@ -318,6 +318,7 @@ func TestCleanupExportsAndPersistsArtifactsBeforeBackendDelete(t *testing.T) {
 	item.Artifacts = []Artifact{{Name: "result", Path: "/workspace/artifacts/result", MediaType: "text/plain", Required: true}}
 	state.Record.Name, state.Record.WorkspaceID = item.SandboxID, item.WorkspaceID
 	state.Record.UID, state.Record.ResourceVersion = observation.Sandbox.UID, observation.Sandbox.ResourceVersion
+	state.Record.ResourceVersion = "resource-version-delete"
 	state.Record.State, state.Record.Deleting = sandboxcontrol.StateStopping, true
 	state.Record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
 	state.Record.Artifacts = []sandboxcontrol.ArtifactExport{{Name: "result", Path: item.Artifacts[0].Path, MediaType: "text/plain", Required: true}}
@@ -665,8 +666,8 @@ func TestValidateWorkItemRejectsNoncanonicalAndDuplicateSources(t *testing.T) {
 
 func createFixture(t *testing.T) (WorkItem, BackendState) {
 	t.Helper()
-	record := sandboxcontrol.SandboxRecord{Name: "sandbox-1", Namespace: sandboxcontrol.Namespace,
-		UID: "backend-uid", ResourceVersion: "resource-version-1", WorkspaceID: "workspace-1",
+	record := sandboxcontrol.SandboxRecord{Name: "30000000-0000-4000-8000-000000000001", Namespace: sandboxcontrol.Namespace,
+		UID: "backend-uid", ResourceVersion: "resource-version-1", WorkspaceID: "40000000-0000-4000-8000-000000000001",
 		OwnerID: "owner-1", QueueName: sandboxcontrol.QueueName, State: sandboxcontrol.StateReady,
 		ArtifactContractDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	identity := sandboxcontrol.WorkloadIdentity{APIVersion: sandboxcontrol.AdmissionAPIVersion,

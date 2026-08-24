@@ -379,6 +379,7 @@ func TestKubernetesBackendRefusesSourcesAndUnsupportedRequiredArtifactsBeforeMut
 func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	bindBackendIdentity(&item, record, observation)
+	bindPersistedArtifact(t, &item)
 	fake := &fakeSandboxAdapter{record: record, observation: observation,
 		absenceErrs: []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "still deleting"}, nil}}
 	backend := newTestKubernetesBackend(t, fake, true)
@@ -407,24 +408,29 @@ func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testin
 func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	bindBackendIdentity(&item, record, observation)
+	bindPersistedArtifact(t, &item)
 	backend := newTestKubernetesBackend(t, &fakeSandboxAdapter{}, true)
 	_, err := backend.Finalize(context.Background(), item, BackendState{}, item.AdmissionObservation)
 	assertAmbiguousRetryable(t, err)
 
 	fake := &fakeSandboxAdapter{getErr: &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrNotFound, Status: 404, SafeDetail: "secret-backend-material"}}
 	backend = newTestKubernetesBackend(t, fake, true)
-	_, err = backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
+	state, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "absence"}) {
 		t.Fatalf("already-deleted cleanup leaked or mutated: calls=%v err=%v", fake.snapshotCalls(), err)
 	}
+	if result, err := backend.Finalize(context.Background(), item, state, item.AdmissionObservation); err != nil || !result.BackendDestroyed {
+		t.Fatalf("restart-safe absence completion=%#v err=%v", result, err)
+	}
 }
 
 func TestKubernetesBackendDoesNotUseTransientCleanupEvidenceAsAuthority(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	bindBackendIdentity(&item, record, observation)
+	bindPersistedArtifact(t, &item)
 	ctx, cancel := context.WithCancel(context.Background())
 	fake := &fakeSandboxAdapter{record: record, observation: observation,
 		absenceErrs:   []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "still deleting"}},
@@ -442,8 +448,10 @@ func TestKubernetesBackendDoesNotUseTransientCleanupEvidenceAsAuthority(t *testi
 	if err != nil || retryState.Exists || retryState.AdmissionObservation == nil {
 		t.Fatalf("same-process retry lost exact absence evidence: state=%#v err=%v", retryState, err)
 	}
-	_, err = backend.Finalize(context.Background(), item, retryState, item.AdmissionObservation)
-	assertAmbiguousRetryable(t, err)
+	result, err := backend.Finalize(context.Background(), item, retryState, item.AdmissionObservation)
+	if err != nil || !result.BackendDestroyed {
+		t.Fatalf("persisted absence recovery=%#v err=%v", result, err)
+	}
 	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "absence", "get", "absence"}
 	if !reflect.DeepEqual(fake.snapshotCalls(), wantCalls) {
 		t.Fatalf("same-process recovery sequence=%v", fake.snapshotCalls())
@@ -703,6 +711,20 @@ func backendFixture(t *testing.T) (WorkItem, sandboxcontrol.SandboxRecord, sandb
 		t.Fatal(err)
 	}
 	return item, record, observation
+}
+
+func bindPersistedArtifact(t *testing.T, item *WorkItem) {
+	t.Helper()
+	if len(item.Artifacts) != 1 {
+		t.Fatalf("artifact fixture count=%d", len(item.Artifacts))
+	}
+	key, err := ArtifactObjectKey(item.WorkspaceID, item.SandboxID, item.Artifacts[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.PersistedArtifacts = []PersistedArtifact{{ID: "80000000-0000-4000-8000-000000000001", Name: item.Artifacts[0].Name,
+		Path: item.Artifacts[0].Path, MediaType: item.Artifacts[0].MediaType, Digest: "sha256:" + strings.Repeat("b", 64),
+		Size: 12, ObjectKey: key, ExportedAt: "2026-08-24T12:00:00Z"}}
 }
 
 func bindBackendIdentity(item *WorkItem, record sandboxcontrol.SandboxRecord, observation sandboxcontrol.AdmissionObservation) {
