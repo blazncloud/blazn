@@ -13,7 +13,7 @@ function fakeDatabase(userRows: { id: string }[] = [{ id: "bootstrap-user" }], f
     async query(sql: string, values?: unknown[]) {
       calls.push(values === undefined ? { sql } : { sql, values });
       if (failOn && sql.startsWith(failOn)) throw new Error("injected database failure");
-      if (sql.startsWith("SELECT id FROM users")) return { rows: userRows, rowCount: userRows.length };
+      if (sql.startsWith("SELECT public.rotate_bootstrap_password") && userRows.length !== 1) throw new Error("configured bootstrap identity must exist exactly once");
       return { rows: [], rowCount: 0 };
     },
     release() {},
@@ -25,20 +25,16 @@ test("rotates the configured identity and invalidates authentication without cha
   const { database, calls } = fakeDatabase();
   await rotateBootstrapPassword(database, "owner@example.test", "replacement-password");
 
-  assert.deepEqual(calls.slice(0, 4).map(({ sql }) => sql), [
+  assert.deepEqual(calls.map(({ sql }) => sql), [
     "BEGIN",
-    "SELECT pg_advisory_xact_lock(hashtext('blazn-initial-identity'))",
-    "LOCK TABLE sessions, device_authorizations IN SHARE ROW EXCLUSIVE MODE",
-    "SELECT id FROM users WHERE email=$1 FOR UPDATE",
+    "SELECT public.rotate_bootstrap_password($1,$2,$3)",
+    "COMMIT",
   ]);
-  assert.deepEqual(calls[3]?.values, ["owner@example.test"]);
-  const update = calls.find(({ sql }) => sql.startsWith("UPDATE users"));
-  assert.ok(update?.values);
-  assert.equal(await verifyPassword("replacement-password", String(update.values[0]), String(update.values[1])), true);
-  assert.ok(calls.some(({ sql, values }) => sql.startsWith("UPDATE sessions SET revoked_at=COALESCE") && values?.[0] === "bootstrap-user"));
-  assert.ok(calls.some(({ sql }) => sql.startsWith("UPDATE device_authorizations SET expires_at=LEAST")));
-  assert.equal(calls.some(({ sql }) => /UPDATE\s+devices/i.test(sql)), false);
-  assert.equal(calls.at(-1)?.sql, "COMMIT");
+  const recovery = calls[1];
+  assert.ok(recovery?.values);
+  assert.equal(recovery.values[0], "owner@example.test");
+  assert.equal(await verifyPassword("replacement-password", String(recovery.values[1]), String(recovery.values[2])), true);
+  assert.equal(calls.some(({ sql }) => /(?:UPDATE|LOCK TABLE).*devices/i.test(sql)), false);
 });
 
 test("fails closed and rolls back when the configured identity is absent or duplicated", async () => {
@@ -46,7 +42,7 @@ test("fails closed and rolls back when the configured identity is absent or dupl
     const { database, calls } = fakeDatabase(rows);
     await assert.rejects(rotateBootstrapPassword(database, "owner@example.test", "replacement-password"), /exactly once/);
     assert.equal(calls.at(-1)?.sql, "ROLLBACK");
-    assert.equal(calls.some(({ sql }) => sql.startsWith("UPDATE users")), false);
+    assert.equal(calls.some(({ sql }) => /UPDATE\s+users/i.test(sql)), false);
   }
 });
 
@@ -56,8 +52,8 @@ test("rejects a short password before opening a transaction", async () => {
   assert.deepEqual(calls, []);
 });
 
-test("rolls back password and revocations when an update fails", async () => {
-  const { database, calls } = fakeDatabase([{ id: "bootstrap-user" }], "UPDATE device_authorizations");
+test("rolls back password and revocations when the recovery function fails", async () => {
+  const { database, calls } = fakeDatabase([{ id: "bootstrap-user" }], "SELECT public.rotate_bootstrap_password");
   await assert.rejects(rotateBootstrapPassword(database, "owner@example.test", "replacement-password"), /injected/);
   assert.equal(calls.at(-1)?.sql, "ROLLBACK");
   assert.equal(calls.some(({ sql }) => sql === "COMMIT"), false);

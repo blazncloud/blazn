@@ -15,14 +15,7 @@ export async function rotateBootstrapPassword(database: RecoveryDatabase, login:
   let commitAttempted = false;
   try {
     await client.query("BEGIN");
-    await client.query("SELECT pg_advisory_xact_lock(hashtext('blazn-initial-identity'))");
-    await client.query("LOCK TABLE sessions, device_authorizations IN SHARE ROW EXCLUSIVE MODE");
-    const identity = await client.query<{ id: string }>("SELECT id FROM users WHERE email=$1 FOR UPDATE", [login]);
-    if (identity.rowCount !== 1 || !identity.rows[0]) throw new Error("configured bootstrap identity must exist exactly once");
-
-    await client.query("UPDATE users SET password_salt=$1,password_hash=$2 WHERE id=$3", [record.salt, record.hash, identity.rows[0].id]);
-    await client.query("UPDATE sessions SET revoked_at=COALESCE(revoked_at, now()) WHERE user_id=$1", [identity.rows[0].id]);
-    await client.query("UPDATE device_authorizations SET expires_at=LEAST(expires_at, now()),consumed_at=COALESCE(consumed_at, now()) WHERE consumed_at IS NULL");
+    await client.query("SELECT public.rotate_bootstrap_password($1,$2,$3)", [login, record.salt, record.hash]);
     commitAttempted = true;
     await client.query("COMMIT");
   } catch (error) {
