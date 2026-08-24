@@ -54,6 +54,9 @@ func ReadArtifact(fileSystem ArtifactFileSystem, absolutePath string, maxBytes i
 	for index := range parts {
 		candidate := path.Join(parts[:index+1]...)
 		info, err := fileSystem.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			return Artifact{}, protocolError("artifact_not_found", err)
+		}
 		if err != nil || info.Mode()&fs.ModeSymlink != 0 || index < len(parts)-1 && !info.IsDir() {
 			return Artifact{}, protocolError("artifact_path_unsafe", err)
 		}
