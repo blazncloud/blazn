@@ -153,6 +153,26 @@ class StaticQualificationTest(unittest.TestCase):
             for path in paths
         ))
 
+    def rewrite_all_identities(self, mutate) -> None:
+        manifest_path = self.output / "run.json"
+        manifest = json.loads(manifest_path.read_text())
+        mutate(manifest["identity"])
+        for descriptor in manifest["receipts"]:
+            receipt_path = self.output / descriptor["path"]
+            receipt = json.loads(receipt_path.read_text())
+            mutate(receipt["identity"])
+            receipt["checksum"] = evidence.checksum(receipt)
+            self.write_json(receipt_path, receipt)
+            descriptor["digest"] = evidence.digest_file(receipt_path)
+            descriptor["bytes"] = receipt_path.stat().st_size
+        manifest["manifestDigest"] = evidence.digest_bytes(evidence.canonical({key: item for key, item in manifest.items() if key != "manifestDigest"}))
+        self.write_json(manifest_path, manifest)
+        paths = sorted([manifest_path, *(self.output / "receipts").glob("*.json")], key=lambda item: item.relative_to(self.output).as_posix())
+        (self.output / "SHA256SUMS").write_text("".join(
+            f"{evidence.digest_file(path)[len('sha256:'):]}  {path.relative_to(self.output).as_posix()}\n"
+            for path in paths
+        ))
+
     def command(self, action: str, *extra: str, approve: bool = True, profile_path: pathlib.Path | None = None, state_path: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
         profile_path = profile_path or self.profile_path
         state_path = state_path or self.state_path
@@ -276,6 +296,17 @@ class StaticQualificationTest(unittest.TestCase):
         os.replace(replacement, self.session_lock)
         result = self.command("cycle", "--cycle", "1", "--case", "normal-stop")
         self.assert_failed(result, "identity differs")
+
+        locks = {
+            "coordinator": qualification.lock_identity(self.coordinator_lock),
+            "session": qualification.lock_identity(self.session_lock),
+        }
+        identity = qualification.identity(self.profile, self.correlation, locks)
+        collapsed = copy.deepcopy(identity)
+        collapsed["locks"]["session"] = copy.deepcopy(collapsed["locks"]["coordinator"])
+        collapsed["locks"]["session"]["path"] = str(self.session_lock)
+        with self.assertRaisesRegex(evidence.EvidenceError, "distinct"):
+            evidence.validate_identity(collapsed)
 
     def test_config_mutation_residue_and_redaction_are_rejected(self) -> None:
         self.assertEqual(self.command("capture-before").returncode, 0)
@@ -441,6 +472,11 @@ class StaticQualificationTest(unittest.TestCase):
         self.rehash_finalized_receipt(receipt, value)
         result = self.command("verify", approve=False)
         self.assert_failed(result, "zero-residue")
+
+        self.rehash_finalized_receipt(receipt, copy.deepcopy(original))
+        self.rewrite_all_identities(lambda identity: identity["locks"]["session"].update({"path": "/tmp/\x00evil"}))
+        result = self.command("verify", approve=False)
+        self.assert_failed(result, "lock path")
 
 
 if __name__ == "__main__":

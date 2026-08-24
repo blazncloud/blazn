@@ -193,17 +193,25 @@ def validate_identity(identity: Any) -> None:
     locks = identity["locks"]
     if not isinstance(locks, dict) or set(locks) != {"coordinator", "session"}:
         raise EvidenceError("identity locks must bind coordinator and session")
+    expected_key = hashlib.sha256(f"{identity['hostId']}\n{identity['userId']}".encode()).hexdigest()[:24]
     for name, lock in locks.items():
         required_lock = {"path", "device", "inode", "uid", "mode"}
         if not isinstance(lock, dict) or set(lock) != required_lock:
             raise EvidenceError(f"invalid {name} lock identity")
         path = pathlib.Path(str(lock["path"]))
-        if not path.is_absolute() or pathlib.Path(os.path.normpath(str(lock["path"]))) != path or path == pathlib.Path("/"):
+        if "\x00" in str(lock["path"]) or not path.is_absolute() or pathlib.Path(os.path.normpath(str(lock["path"]))) != path or path == pathlib.Path("/"):
             raise EvidenceError(f"invalid {name} lock path")
         if any(isinstance(lock[field], bool) or not isinstance(lock[field], int) or lock[field] < 0 for field in ("device", "inode", "uid")):
             raise EvidenceError(f"invalid {name} lock inode identity")
         if lock["inode"] == 0 or lock["mode"] not in {"0600", "0640", "0644"}:
             raise EvidenceError(f"invalid {name} lock metadata")
+        expected_name = f"proxy-{name}-{expected_key}.lock"
+        if path.name != expected_name:
+            raise EvidenceError(f"invalid {name} lock basename")
+    if locks["coordinator"]["path"] == locks["session"]["path"] or (
+        locks["coordinator"]["device"], locks["coordinator"]["inode"]
+    ) == (locks["session"]["device"], locks["session"]["inode"]):
+        raise EvidenceError("coordinator and session lock identities must be distinct")
 
 
 def strict_result(value: Any, required: set[str], label: str) -> dict[str, Any]:
