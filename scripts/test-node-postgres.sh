@@ -175,29 +175,29 @@ INSERT INTO node_install_plans(id,workspace_id,node_id,enrollment_id,approved_by
   ('99999999-9999-4999-8999-999999999999','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','55555555-5555-4555-8555-555555555555','11111111-1111-4111-8111-111111111111','plan-key-a',repeat('1',64),'node-plan/v1',repeat('A',86),'{}',now(),now()+interval '5 minutes','issued'),
   ('aaaaaaaa-1111-4111-8111-111111111111','bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','44444444-4444-4444-8444-444444444444','66666666-6666-4666-8666-666666666666','22222222-2222-4222-8222-222222222222','plan-key-b',repeat('2',64),'node-plan/v1',repeat('A',86),'{}',now(),now()+interval '5 minutes','issued');
 
-INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
-  ('bbbbbbbb-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('3',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}');
+INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload,activation_idempotency_key,request_digest,expected_node_version) VALUES
+  ('bbbbbbbb-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('3',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}','activation-key-a',repeat('7',64),1);
 
 DO $$
 BEGIN
   BEGIN
-    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
-      ('cccccccc-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','aaaaaaaa-1111-4111-8111-111111111111',repeat('4',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}');
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload,activation_idempotency_key,request_digest,expected_node_version) VALUES
+      ('cccccccc-1111-4111-8111-111111111111','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','aaaaaaaa-1111-4111-8111-111111111111',repeat('4',64),'node_identity',1,repeat('e',64),'node-identity/v1',repeat('A',86),'{}','activation-key-cross',repeat('8',64),1);
     RAISE EXCEPTION 'cross-bound install receipt accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
   BEGIN
-    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
-      ('cccccccc-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('d',64),'node_identity',99,repeat('e',64),'node-identity/v99',repeat('A',86),'{}');
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload,activation_idempotency_key,request_digest,expected_node_version) VALUES
+      ('cccccccc-2222-4222-8222-222222222222','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('d',64),'node_identity',99,repeat('e',64),'node-identity/v99',repeat('A',86),'{}','activation-key-generation',repeat('9',64),1);
     RAISE EXCEPTION 'unbound install receipt signer generation accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
   BEGIN
-    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
-      ('cccccccc-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('b',64),'node_identity',1,repeat('d',64),'node-identity/v1',repeat('A',86),'{}');
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload,activation_idempotency_key,request_digest,expected_node_version) VALUES
+      ('cccccccc-3333-4333-8333-333333333333','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('b',64),'node_identity',1,repeat('d',64),'node-identity/v1',repeat('A',86),'{}','activation-key-fingerprint',repeat('a',64),1);
     RAISE EXCEPTION 'install receipt signer fingerprint mismatch accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
   BEGIN
-    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload) VALUES
-      ('cccccccc-4444-4444-8444-444444444444','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('a',64),'node_identity',1,repeat('e',64),'wrong-key/v1',repeat('A',86),'{}');
+    INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload,activation_idempotency_key,request_digest,expected_node_version) VALUES
+      ('cccccccc-4444-4444-8444-444444444444','aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','33333333-3333-4333-8333-333333333333','99999999-9999-4999-8999-999999999999',repeat('a',64),'node_identity',1,repeat('e',64),'wrong-key/v1',repeat('A',86),'{}','activation-key-signing',repeat('b',64),1);
     RAISE EXCEPTION 'install receipt signer key mismatch accepted';
   EXCEPTION WHEN foreign_key_violation THEN NULL; END;
 END $$;

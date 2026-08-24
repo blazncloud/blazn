@@ -1041,8 +1041,21 @@ func TestPlatformAdapterReleasesCapacityAndAdvancesExactBinding(t *testing.T) {
 }
 
 func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
-	authorization, identity := validBootstrapAuthorization(t)
+	authorization, identity, signer := validBootstrapAuthorizationWithSigner(t)
 	plan := authorization.Expected.Plan
+	plan.Mutations = []client.NodeInstallMutation{
+		{Ordinal: 1, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		{Ordinal: 2, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+	}
+	plan.Digest = ""
+	plan.Signature = ""
+	digest, err := client.NodeInstallPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest = digest
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+	authorization.Expected.Plan = plan
 	stateStore := &memoryState{}
 	installer := NewInstaller(&mockPlatform{failAt: -1}, stateStore)
 	installer.uid = func() int64 { return 0 }
