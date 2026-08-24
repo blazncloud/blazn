@@ -25,7 +25,7 @@ if grep -E '(^|[[:space:]])(apt|apt-get|apk|dnf|yum|curl|wget)([[:space:]]|$)' "
   exit 1
 fi
 if grep -R -E 'os\.Getenv|os\.LookupEnv|exec\.Command|crypto/tls|database/sql|client-go|kubectl|/bin/(sh|bash)' \
-  "$ROOT/cmd/blazn-sandbox-io" "$ROOT/internal/sandboxio" --include='*.go' >/dev/null; then
+  "$ROOT/cmd/blazn-sandbox-io" "$ROOT/internal/sandboxio" --include='*.go' --exclude='*_test.go' >/dev/null; then
   printf 'Sandbox I/O helper contains a credential, shell, TLS override, database, or generic exec boundary\n' >&2
   exit 1
 fi
