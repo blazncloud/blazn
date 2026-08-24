@@ -99,6 +99,11 @@ func TestKubernetesArtifactRuntimeExportsBeforeCleanupAndAdoptsPersistedRows(t *
 	if err != nil || len(second.Artifacts) != 1 || second.Artifacts[0].ID != persisted.ID || objects.puts != 1 || transport.calls != 3 {
 		t.Fatalf("adoption=%#v puts=%d reads=%d err=%v", second, objects.puts, transport.calls, err)
 	}
+	objects.bodies[persisted.ObjectKey] = []byte("forged\n")
+	if _, err := runtime.Export(context.Background(), item, observation); err == nil {
+		t.Fatal("persisted artifact with matching metadata and wrong object bytes was adopted")
+	}
+	objects.bodies[persisted.ObjectKey] = []byte("result\n")
 	objects.objects[persisted.ObjectKey] = ArtifactObjectHead{Size: persisted.Size, DigestSize: persisted.Size, MediaType: "application/octet-stream"}
 	if _, err := runtime.Export(context.Background(), item, observation); err == nil {
 		t.Fatal("mismatched persisted object was adopted")
