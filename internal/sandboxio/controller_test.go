@@ -92,7 +92,7 @@ func TestControllerPreservesFramedHelperErrorThroughSuccessfulExec(t *testing.T)
 	}
 	target := FrozenPodTarget{Namespace: "blazn-poc-sandboxes", PodName: "sandbox-a-pod", PodUID: "pod-uid-1", SandboxUID: "sandbox-uid-1", Container: ArtifactContainer}
 	_, err = controller.ReadArtifact(context.Background(), target, "/workspace/artifacts/missing")
-	if !IsProtocolError(err, "artifact_path_unsafe") || strings.Contains(err.Error(), "transport failed") {
+	if !IsProtocolError(err, "artifact_not_found") || strings.Contains(err.Error(), "transport failed") {
 		t.Fatalf("framed helper error was not preserved: %v", err)
 	}
 }
