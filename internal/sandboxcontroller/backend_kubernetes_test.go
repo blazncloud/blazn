@@ -452,7 +452,7 @@ func TestKubernetesBackendDoesNotUseTransientCleanupEvidenceAsAuthority(t *testi
 	if err != nil || !result.BackendDestroyed {
 		t.Fatalf("persisted absence recovery=%#v err=%v", result, err)
 	}
-	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "absence", "get", "absence"}
+	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "absence", "get", "absence", "absence"}
 	if !reflect.DeepEqual(fake.snapshotCalls(), wantCalls) {
 		t.Fatalf("same-process recovery sequence=%v", fake.snapshotCalls())
 	}
