@@ -262,6 +262,9 @@ func TestKubernetesBackendMapsSourcesOnlyWithConfiguredRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		if failure, ok := BackendFailure(err); ok {
+			t.Fatalf("%v: %v", err, failure.Cause)
+		}
 		t.Fatal(err)
 	}
 	want := []sandboxcontrol.SourceMount{{Name: "repo", URL: item.Sources[0].URL, Destination: item.Sources[0].Destination, Commit: item.Sources[0].Commit}}

@@ -17,6 +17,7 @@ const (
 )
 
 var objectIdentityPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var podNamePattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$`)
 
 type FrozenPodTarget struct {
 	Namespace  string
@@ -153,7 +154,7 @@ func (c *Controller) exchange(ctx context.Context, target FrozenPodTarget, comma
 }
 
 func validateTarget(target FrozenPodTarget, expectedContainer string) error {
-	if !namePattern.MatchString(target.Namespace) || !namePattern.MatchString(target.PodName) ||
+	if !namePattern.MatchString(target.Namespace) || !podNamePattern.MatchString(target.PodName) || len(target.PodName) > 253 ||
 		!objectIdentityPattern.MatchString(target.PodUID) || !objectIdentityPattern.MatchString(target.SandboxUID) || target.Container != expectedContainer {
 		return errors.New("sandbox helper target is invalid")
 	}
