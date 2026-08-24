@@ -203,6 +203,9 @@ func (s *PgStore) RecordArtifact(ctx context.Context, operationID, workerID, lea
 	err = s.executor.QueryRow(ctx, recordArtifactSQL, operationID, workerID, leaseToken,
 		observation.Sandbox.UID, observation.Sandbox.ResourceVersion, workloadDigest, observationDigest,
 		artifact.Name, artifact.Path, artifact.MediaType, contentDigest, artifact.Size, artifact.ObjectKey).Scan(&id, &exported)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PersistedArtifact{}, false, nil
+	}
 	if err != nil || !id.Valid || !exported.Valid {
 		return PersistedArtifact{}, false, err
 	}

@@ -200,6 +200,21 @@ func TestPgStoreClaimReturnsNoWork(t *testing.T) {
 	}
 }
 
+func TestPgStoreRecordArtifactTreatsFencedNoRowAsRefusal(t *testing.T) {
+	executor := &fakeExecutor{rows: []sqlRow{resultRow{err: sql.ErrNoRows}}}
+	store := &PgStore{executor: executor}
+	observation := storeObservationFixture()
+	observation.Sandbox.Name = "30000000-0000-4000-8000-000000000001"
+	observation.Workload.WorkspaceID = "40000000-0000-4000-8000-000000000001"
+	artifact := PersistedArtifact{Name: "result", Path: "/workspace/artifacts/result", MediaType: "text/plain",
+		Digest: "sha256:" + strings.Repeat("d", 64), Size: 6}
+	artifact.ObjectKey, _ = ArtifactObjectKey(observation.Workload.WorkspaceID, observation.Sandbox.Name, artifact.Name)
+	persisted, recorded, err := store.RecordArtifact(context.Background(), "operation", "worker", "stale-lease", observation, artifact)
+	if err != nil || recorded || persisted != (PersistedArtifact{}) {
+		t.Fatalf("fenced artifact record: persisted=%#v recorded=%v err=%v", persisted, recorded, err)
+	}
+}
+
 func TestPgStoreClaimRequiresCanonicalAllOrNoneObservation(t *testing.T) {
 	row := observationRowFixture()
 	observation, digest, err := decodeObservation(row)
