@@ -113,6 +113,13 @@ func TestWriteEvidenceRejectsAdversarialBundlesBeforeOutput(t *testing.T) {
 			encoded := url.QueryEscape("https://bucket.s3.example.test/object?X-Amz-Signature=abcdef")
 			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte("download URL: " + encoded + " status=ready"))
 		},
+		"over-depth encoded signed URL fails closed": func(bundle *evidenceBundle) {
+			encoded := "https://bucket.s3.example.test/object?X-Amz-Signature=abcdef"
+			for range 6 {
+				encoded = url.QueryEscape(encoded)
+			}
+			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte("download URL: " + encoded + " status=ready"))
+		},
 		"malformed escape in plaintext file": func(bundle *evidenceBundle) {
 			bundle.Files[0].ContentBase64 = base64.StdEncoding.EncodeToString([]byte("download URL: https%3A%2F%2Fexample.test%2Fobject%3Fsig%ZZsecret"))
 		},

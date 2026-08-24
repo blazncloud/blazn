@@ -237,7 +237,8 @@ func containsCredentialString(value string) bool {
 			return true
 		}
 		if index == 4 {
-			return false
+			next, err := url.QueryUnescape(decoded)
+			return err != nil || next != decoded
 		}
 		next, err := url.QueryUnescape(decoded)
 		if err != nil {
