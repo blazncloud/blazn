@@ -71,6 +71,17 @@ if grep -F 'port: 53' "$tmp/ip.yaml" >/dev/null; then
   exit 1
 fi
 
+port_image='registry.example:5000/blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+render "$tmp/registry-port.yaml" BLAZN_CONTROLLER_IMAGE="$port_image"
+[ "$(grep -Fxc "        image: $port_image" "$tmp/registry-port.yaml")" -eq 2 ]
+
+repository_component_250=$(printf '%0250d' 0 | tr 0 a)
+repository_255="r.io/$repository_component_250"
+[ "${#repository_255}" -eq 255 ]
+repository_255_image="$repository_255@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+render "$tmp/repository-255.yaml" BLAZN_CONTROLLER_IMAGE="$repository_255_image"
+[ "$(grep -Fxc "        image: $repository_255_image" "$tmp/repository-255.yaml")" -eq 2 ]
+
 render "$tmp/hostname.yaml" BLAZN_DATABASE_ENDPOINT_KIND=hostname BLAZN_DNS_CIDR=10.20.30.53/32
 grep -F 'cidr: 10.20.30.53/32' "$tmp/hostname.yaml" >/dev/null
 [ "$(grep -Fc 'port: 53' "$tmp/hostname.yaml")" -eq 2 ]
@@ -84,7 +95,20 @@ expect_fail tag-plus-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbo
 expect_fail empty-repository-segment BLAZN_CONTROLLER_IMAGE=registry.example//blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail trailing-repository-slash BLAZN_CONTROLLER_IMAGE=registry.example/blazn/@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail invalid-repository-component BLAZN_CONTROLLER_IMAGE=registry.example/blazn/-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail empty-registry-host BLAZN_CONTROLLER_IMAGE=:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail leading-dot-registry-host BLAZN_CONTROLLER_IMAGE=.registry.example:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail trailing-dot-registry-host BLAZN_CONTROLLER_IMAGE=registry.example.:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail consecutive-dot-registry-host BLAZN_CONTROLLER_IMAGE=registry..example:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail leading-hyphen-registry-label BLAZN_CONTROLLER_IMAGE=-registry.example:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail trailing-hyphen-registry-label BLAZN_CONTROLLER_IMAGE=registry-.example:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail oversized-registry-label BLAZN_CONTROLLER_IMAGE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+expect_fail ipv6-registry-host BLAZN_CONTROLLER_IMAGE='[2001:db8::1]:5000/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+expect_fail nonnumeric-registry-port BLAZN_CONTROLLER_IMAGE=registry.example:https/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail invalid-registry-port BLAZN_CONTROLLER_IMAGE=registry.example:65536/blazn/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+repository_component_251="${repository_component_250}a"
+repository_256="r.io/$repository_component_251"
+[ "${#repository_256}" -eq 256 ]
+expect_fail oversized-repository BLAZN_CONTROLLER_IMAGE="$repository_256@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 expect_fail uppercase-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller@sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 expect_fail broad-api BLAZN_KUBERNETES_API_CIDR=10.20.30.0/24
 expect_fail broad-database BLAZN_BEN1_POSTGRES_CIDR=10.20.30.0/24
