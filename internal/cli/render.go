@@ -32,6 +32,7 @@ var rootCommands = []helpCommand{
 	{Name: "auth", Summary: "Authenticate this device and manage sessions"},
 	{Name: "content", Summary: "Manage Content media workflows (plugin)"},
 	{Name: "doctor", Summary: "Run offline readiness checks"},
+	{Name: "dev", Summary: "Validate, build, test, inspect, and publish development projects"},
 	{Name: "help", Summary: "Show help for a command"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
 	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
@@ -61,6 +62,8 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		output = helpOutput{Command: "version", Usage: "blazn version [--output human|json]", Summary: "Show build and contract version information."}
 	case "doctor":
 		output = helpOutput{Command: "doctor", Usage: "blazn doctor [--output human|json]", Summary: "Run deterministic checks without network access."}
+	case "dev":
+		output = helpOutput{Command: "dev", Usage: "blazn dev validate|build|test|status|evidence|publish [options]", Summary: "Operate the frozen Development build workflow.", Commands: []helpCommand{{Name: "validate", Summary: "Validate a DevelopmentProject offline"}, {Name: "build", Summary: "Request an immutable multi-architecture Build"}, {Name: "test", Summary: "Request the POC test suite for a Build"}, {Name: "status", Summary: "Get Build status"}, {Name: "evidence", Summary: "Export bounded redacted Build evidence"}, {Name: "publish", Summary: "Publish an eligible Build"}}}
 	case "uninstall":
 		output = helpOutput{Command: "uninstall", Usage: "blazn uninstall --yes [--output human|json]", Summary: "Remove a direct installation owned by its Blazn receipt while preserving configuration."}
 	case "auth":
