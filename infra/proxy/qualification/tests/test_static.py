@@ -259,6 +259,24 @@ class StaticQualificationTest(unittest.TestCase):
         with self.assertRaisesRegex(qualification.QualificationError, "without following links"):
             qualification.open_lock_file(exact_name_symlink, os.getuid())
 
+        real_directory = self.root / "real-lock-directory"
+        real_directory.mkdir()
+        nested_lock = real_directory / self.coordinator_lock.name
+        nested_lock.touch(mode=0o600)
+        linked_directory = self.root / "linked-lock-directory"
+        linked_directory.symlink_to(real_directory, target_is_directory=True)
+        with self.assertRaisesRegex(qualification.QualificationError, "without following links"):
+            qualification.open_lock_file(linked_directory / nested_lock.name, os.getuid())
+
+    def test_run_identity_rejects_lock_replacement(self) -> None:
+        self.assertEqual(self.command("capture-before").returncode, 0)
+        replacement = self.root / "replacement.lock"
+        replacement.touch(mode=0o600)
+        replacement.chmod(0o600)
+        os.replace(replacement, self.session_lock)
+        result = self.command("cycle", "--cycle", "1", "--case", "normal-stop")
+        self.assert_failed(result, "identity differs")
+
     def test_config_mutation_residue_and_redaction_are_rejected(self) -> None:
         self.assertEqual(self.command("capture-before").returncode, 0)
         changed = copy.deepcopy(self.state)
@@ -278,7 +296,12 @@ class StaticQualificationTest(unittest.TestCase):
         profile = qualification.validate_profile(self.profile)
         with self.assertRaisesRegex(evidence.EvidenceError, "forbidden"):
             evidence.assert_redacted({"prompt": "must never appear"})
-        for value in ({"api_key": "opaque"}, {"client-secret": "opaque"}, {"safe": "ghp_abcdefghijklmnop"}):
+        for value in (
+            {"api_key": "opaque"}, {"client-secret": "opaque"}, {"key": "opaque-secret-value"},
+            {"safe": "ghp_abcdefghijklmnop"}, {"safe": "sk-ant-api03-abcdefghijklmnop"},
+            {"safe": "sk-abcdefghijklmnopqrstuvwxyz"},
+            {"safe": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"},
+        ):
             with self.assertRaises(evidence.EvidenceError):
                 evidence.assert_redacted(value)
 
@@ -346,6 +369,16 @@ class StaticQualificationTest(unittest.TestCase):
         path = self.root / f"proof-{client}-{decision}.json"
         self.write_json(path, value)
         return path
+
+    def test_route_proof_action_binds_frozen_full_input(self) -> None:
+        proof_path = self.proof("codex", "0.147.0", "ROUTED")
+        frozen = json.loads(proof_path.read_text())
+        namespace = type("Args", (), {"action": "route-proof", "proof": str(proof_path), "cycle": None, "case": None})()
+        approved_action = qualification.operation(namespace, frozen)
+        self.write_json(proof_path, json.loads(self.proof("codex", "0.147.0", "DIRECT").read_text()))
+        self.assertNotEqual(approved_action, qualification.operation(namespace))
+        status, validated = qualification.validate_route_proof(frozen, self.profile)
+        self.assertEqual((status, validated["decision"]), ("passed", "ROUTED"))
 
     def test_complete_fake_matrix_finalizes_and_tamper_fails(self) -> None:
         result = self.command("capture-before")

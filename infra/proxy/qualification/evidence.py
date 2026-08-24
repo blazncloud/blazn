@@ -49,7 +49,7 @@ FORBIDDEN_KEYS = {
     "proxyauthorization", "apikey", "cookie", "cookies", "setcookie", "privatekey",
     "clientsecret", "secret", "password", "credential", "credentialvalue",
     "listenercredential", "listenertoken", "requestbody", "responsebody", "inputtext",
-    "outputtext",
+    "outputtext", "key", "secretkey", "signingkey", "encryptionkey",
 }
 FORBIDDEN_TEXT = (
     b"authorization: bearer ", b"authorization: basic ", b"proxy-authorization:", b"set-cookie:",
@@ -60,7 +60,7 @@ FORBIDDEN_TEXT = (
     b'"accessToken"', b'"refreshToken"', b'"clientSecret"',
 )
 FORBIDDEN_SECRET_TEXT = re.compile(
-    rb"(?:sk-(?:proj|svcacct)-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{12,}|xox[baprs]-[a-z0-9-]{8,}|akia[0-9a-z]{12,})",
+    rb"(?:sk-ant-api03-[a-z0-9_-]{8,}|sk-(?:proj|svcacct)-[a-z0-9_-]{8,}|sk-[a-z0-9]{20,}|gh[pousr]_[a-z0-9]{12,}|xox[baprs]-[a-z0-9-]{8,}|akia[0-9a-z]{12,}|eyj[a-z0-9_-]{7,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})",
     re.IGNORECASE,
 )
 
@@ -178,7 +178,7 @@ def scan_file(path: pathlib.Path) -> None:
 
 
 def validate_identity(identity: Any) -> None:
-    required = {"correlationId", "sourceHead", "sourceTree", "binaryDigest", "policyDigest", "hostId", "userId", "sessionId"}
+    required = {"correlationId", "sourceHead", "sourceTree", "binaryDigest", "policyDigest", "hostId", "userId", "sessionId", "locks"}
     if not isinstance(identity, dict) or set(identity) != required:
         raise EvidenceError("identity must contain the exact source/binary/policy/host/user/session fields")
     if not CORRELATION.fullmatch(str(identity["correlationId"])):
@@ -190,6 +190,20 @@ def validate_identity(identity: Any) -> None:
     for name in ("hostId", "userId", "sessionId"):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}", str(identity[name])):
             raise EvidenceError(f"invalid {name}")
+    locks = identity["locks"]
+    if not isinstance(locks, dict) or set(locks) != {"coordinator", "session"}:
+        raise EvidenceError("identity locks must bind coordinator and session")
+    for name, lock in locks.items():
+        required_lock = {"path", "device", "inode", "uid", "mode"}
+        if not isinstance(lock, dict) or set(lock) != required_lock:
+            raise EvidenceError(f"invalid {name} lock identity")
+        path = pathlib.Path(str(lock["path"]))
+        if not path.is_absolute() or pathlib.Path(os.path.normpath(str(lock["path"]))) != path or path == pathlib.Path("/"):
+            raise EvidenceError(f"invalid {name} lock path")
+        if any(isinstance(lock[field], bool) or not isinstance(lock[field], int) or lock[field] < 0 for field in ("device", "inode", "uid")):
+            raise EvidenceError(f"invalid {name} lock inode identity")
+        if lock["inode"] == 0 or lock["mode"] not in {"0600", "0640", "0644"}:
+            raise EvidenceError(f"invalid {name} lock metadata")
 
 
 def strict_result(value: Any, required: set[str], label: str) -> dict[str, Any]:

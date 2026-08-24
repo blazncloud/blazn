@@ -40,14 +40,18 @@ Every executable receipt is bound to:
 - exact host, user, and login-session identifiers;
 - one `proxyqual-*` correlation identifier;
 - a profile digest;
-- the inode identities of both the coordinator lock and local host/user lock;
-- the exact action, cycle number, fault case, client, and route decision.
+- the absolute path, device, inode, owner, and mode of both the coordinator lock
+  and local host/user lock;
+- the exact action, cycle number, fault case, and a digest of the complete
+  canonical route proof where applicable.
 
 The local lock basename is derived from `SHA256(hostId + "\n" + userId)` and
 prevents two coordinators from targeting one host/user session. Both lock files
 must be pre-created regular, non-symlink files, mode `0600`, `0640`, or `0644`,
 and not writable by group or other. Both are acquired non-blocking for each
-receipt. The coordinator lock is a scheduling fence; panic-safe `proxy off`
+receipt through component-by-component no-follow directory traversal. Replacing
+either lock changes the run identity and prevents another receipt from being
+appended. The coordinator lock is a scheduling fence; panic-safe `proxy off`
 continues to rely on the product's own per-user activation lock rather than this
 evidence lock.
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
 import datetime as dt
 import fcntl
 import hashlib
@@ -227,7 +228,7 @@ def git_output(*arguments: str) -> str:
     return result.stdout.strip()
 
 
-def identity(profile: dict[str, Any], correlation: str) -> dict[str, str]:
+def identity(profile: dict[str, Any], correlation: str, locks: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
         "correlationId": correlation,
         "sourceHead": profile["source"]["head"],
@@ -237,6 +238,7 @@ def identity(profile: dict[str, Any], correlation: str) -> dict[str, str]:
         "hostId": profile["owner"]["hostId"],
         "userId": profile["owner"]["userId"],
         "sessionId": profile["owner"]["sessionId"],
+        "locks": locks,
     }
 
 
@@ -249,36 +251,70 @@ def validate_lock_info(info: os.stat_result, expected_uid: int | None = None) ->
         raise QualificationError("approval-bound lock has an unexpected owner")
 
 
-def lock_identity_from_info(info: os.stat_result) -> str:
-    return f"{info.st_dev}:{info.st_ino}:{info.st_uid}:{stat.S_IMODE(info.st_mode):o}"
+def lock_identity_from_info(path: pathlib.Path, info: os.stat_result) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "uid": info.st_uid,
+        "mode": f"{stat.S_IMODE(info.st_mode):04o}",
+    }
+
+
+def open_at(directory_fd: int, component: str, flags: int) -> int:
+    if os.open in os.supports_dir_fd:
+        return os.open(component, flags, dir_fd=directory_fd)
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        function = libc.openat
+        function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint]
+        function.restype = ctypes.c_int
+    except (AttributeError, OSError) as exc:
+        raise QualificationError("platform cannot enforce no-follow lock traversal") from exc
+    descriptor = function(directory_fd, os.fsencode(component), flags, 0)
+    if descriptor < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), component)
+    return descriptor
 
 
 def open_lock_file(raw: str | pathlib.Path, expected_uid: int | None = None):
     path = clean_absolute_path(str(raw), "lock")
-    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    required_flags = ("O_CLOEXEC", "O_NOFOLLOW", "O_DIRECTORY")
+    if any(not hasattr(os, name) for name in required_flags):
+        raise QualificationError("platform cannot enforce no-follow lock traversal")
+    directory_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_DIRECTORY
+    final_flags = os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW
+    directory_fd = os.open("/", directory_flags)
     try:
-        descriptor = os.open(path, flags)
+        for component in path.parts[1:-1]:
+            next_fd = open_at(directory_fd, component, directory_flags)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        descriptor = open_at(directory_fd, path.name, final_flags)
     except FileNotFoundError as exc:
         raise QualificationError("approval-bound lock must be pre-created") from exc
     except OSError as exc:
         raise QualificationError("approval-bound lock could not be opened without following links") from exc
+    finally:
+        os.close(directory_fd)
     try:
         info = os.fstat(descriptor)
         validate_lock_info(info, expected_uid)
-        return os.fdopen(descriptor, "r+"), lock_identity_from_info(info)
+        return os.fdopen(descriptor, "r+"), lock_identity_from_info(path, info)
     except Exception:
         os.close(descriptor)
         raise
 
 
-def lock_identity(path: pathlib.Path) -> str:
+def lock_identity(path: pathlib.Path) -> dict[str, Any]:
     stream, identity_value = open_lock_file(path)
     stream.close()
     return identity_value
 
 
 @contextlib.contextmanager
-def exclusive_locks(profile: dict[str, Any]) -> Iterator[dict[str, str]]:
+def exclusive_locks(profile: dict[str, Any]) -> Iterator[dict[str, dict[str, Any]]]:
     expected_uid = os.getuid()
     streams = []
     identities = []
@@ -299,18 +335,19 @@ def exclusive_locks(profile: dict[str, Any]) -> Iterator[dict[str, str]]:
             stream.close()
 
 
-def operation(args: argparse.Namespace) -> str:
+def operation(args: argparse.Namespace, route_proof: dict[str, Any] | None = None) -> str:
     if args.action == "cycle":
         return f"cycle:{args.cycle:02d}:{args.case}"
     if args.action == "recovery":
         return f"recovery:{args.case}"
     if args.action == "route-proof":
-        proof = read_json(pathlib.Path(args.proof), "route proof")
-        return f"route-proof:{proof.get('client', '')}:{proof.get('decision', '')}"
+        if route_proof is None:
+            route_proof = read_json(pathlib.Path(args.proof), "route proof")
+        return f"route-proof:{route_proof.get('client', '')}:{route_proof.get('decision', '')}:{digest(canonical(route_proof))[len('sha256:'):]}"
     return args.action
 
 
-def approval_digest(action: str, correlation: str, profile_digest: str, profile: dict[str, Any], locks: dict[str, str]) -> str:
+def approval_digest(action: str, correlation: str, profile_digest: str, profile: dict[str, Any], locks: dict[str, dict[str, Any]]) -> str:
     value = {
         "action": action,
         "correlationId": correlation,
@@ -547,8 +584,9 @@ def make_receipt(action: str, status_value: str, identity_value: dict[str, str],
     return receipt
 
 
-def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: str, correlation: str, state_value: dict[str, Any]) -> dict[str, Any]:
-    identity_value = identity(profile, correlation)
+def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: str, correlation: str,
+            locks: dict[str, dict[str, Any]], state_value: dict[str, Any], route_proof: dict[str, Any] | None = None) -> dict[str, Any]:
+    identity_value = identity(profile, correlation, locks)
     if args.action == "capture-before":
         root = pathlib.Path(args.evidence)
         if not (root / "run.json").exists():
@@ -605,7 +643,9 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
         }
         receipt = make_receipt("recovery", "recovery_required" if ambiguous else "passed", identity_value, profile_digest, result)
     elif args.action == "route-proof":
-        status_value, result = validate_route_proof(read_json(pathlib.Path(args.proof), "route proof"), profile)
+        if route_proof is None:
+            raise QualificationError("route proof was not frozen before approval")
+        status_value, result = validate_route_proof(route_proof, profile)
         receipt = make_receipt("route-proof", status_value, identity_value, profile_digest, result)
     elif args.action == "cleanup":
         baseline = load_baseline(args.evidence)
@@ -694,14 +734,15 @@ def main() -> None:
         verify_source(profile, allow_dirty_fake=fake)
         verify_artifacts(profile)
         args.adapter = adapter
-        action_value = operation(args)
+        route_proof = read_json(pathlib.Path(args.proof), "route proof") if args.action == "route-proof" else None
+        action_value = operation(args, route_proof)
         with exclusive_locks(profile) as locks:
             approval_input = approval_digest(action_value, correlation, profile_digest, profile, locks)
             expected = f"APPROVE:{correlation}:{profile['owner']['hostId']}:{profile['owner']['userId']}:{profile['owner']['sessionId']}:{action_value}:{approval_input}"
             if os.environ.get("BLAZN_PROXY_QUALIFICATION_APPROVAL") != expected:
                 raise QualificationError(f"approval must equal {expected}")
             state_value = load_fake_state(args, profile)
-            receipt = execute(args, profile, profile_digest, correlation, state_value)
+            receipt = execute(args, profile, profile_digest, correlation, locks, state_value, route_proof)
         print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
     except (QualificationError, evidence.EvidenceError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
         raise SystemExit(f"proxy qualification: {exc}") from exc

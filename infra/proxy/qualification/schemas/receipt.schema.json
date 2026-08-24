@@ -22,7 +22,7 @@
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["correlationId", "sourceHead", "sourceTree", "binaryDigest", "policyDigest", "hostId", "userId", "sessionId"],
+      "required": ["correlationId", "sourceHead", "sourceTree", "binaryDigest", "policyDigest", "hostId", "userId", "sessionId", "locks"],
       "properties": {
         "correlationId": {"type": "string", "pattern": "^proxyqual-[a-z0-9][a-z0-9-]{7,55}$"},
         "sourceHead": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
@@ -31,7 +31,19 @@
         "policyDigest": {"$ref": "#/$defs/digest"},
         "hostId": {"$ref": "#/$defs/identifier"},
         "userId": {"$ref": "#/$defs/identifier"},
-        "sessionId": {"$ref": "#/$defs/identifier"}
+        "sessionId": {"$ref": "#/$defs/identifier"},
+        "locks": {
+          "type": "object", "additionalProperties": false, "required": ["coordinator", "session"],
+          "properties": {"coordinator": {"$ref": "#/$defs/lockIdentity"}, "session": {"$ref": "#/$defs/lockIdentity"}}
+        }
+      }
+    },
+    "lockIdentity": {
+      "type": "object", "additionalProperties": false, "required": ["path", "device", "inode", "uid", "mode"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+        "device": {"type": "integer", "minimum": 0}, "inode": {"type": "integer", "minimum": 1},
+        "uid": {"type": "integer", "minimum": 0}, "mode": {"enum": ["0600", "0640", "0644"]}
       }
     },
     "directConnectivity": {
