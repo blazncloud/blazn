@@ -76,18 +76,23 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 	}
 	health := func(ctx context.Context) error { return kubernetesAPIHealth(ctx, client, config.BaseURL) }
 	var sourceRuntime *KubernetesSourceRuntime
-	if len(config.SourceDNSCIDRs) != 0 || len(config.SourceHostCIDRs) != 0 {
-		network, err := NewKubernetesSourceNetwork(KubernetesSourceNetworkConfig{BaseURL: config.BaseURL, HTTPClient: client,
-			DNSCIDRs: config.SourceDNSCIDRs, SourceCIDRs: config.SourceHostCIDRs})
-		if err != nil {
-			return nil, err
-		}
+	var artifactRuntime *KubernetesArtifactRuntime
+	var ioController *sandboxio.Controller
+	needsIO := len(config.SourceDNSCIDRs) != 0 || len(config.SourceHostCIDRs) != 0 || config.ArtifactEndpoint != ""
+	if needsIO {
 		execTransport, err := newKubernetesExecTransport(config)
 		if err != nil {
 			return nil, err
 		}
-		ioController, err := sandboxio.NewController(sandboxio.ControllerConfig{Transport: execTransport,
+		ioController, err = sandboxio.NewController(sandboxio.ControllerConfig{Transport: execTransport,
 			Owners: kubernetesPodOwnerVerifier{baseURL: config.BaseURL, client: client}, Timeout: sandboxio.SourceTimeout})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(config.SourceDNSCIDRs) != 0 || len(config.SourceHostCIDRs) != 0 {
+		network, err := NewKubernetesSourceNetwork(KubernetesSourceNetworkConfig{BaseURL: config.BaseURL, HTTPClient: client,
+			DNSCIDRs: config.SourceDNSCIDRs, SourceCIDRs: config.SourceHostCIDRs})
 		if err != nil {
 			return nil, err
 		}
@@ -96,8 +101,23 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 			return nil, err
 		}
 	}
-	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: false,
-		HelperImage: config.HelperImage, SourceRuntime: sourceRuntime})
+	if config.ArtifactEndpoint != "" {
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			return nil, errors.New("artifact object system roots are unavailable")
+		}
+		objects, err := NewS3ArtifactStore(S3ArtifactStoreConfig{Endpoint: config.ArtifactEndpoint, Region: config.ArtifactRegion,
+			Bucket: config.ArtifactBucket, AccessKeyFile: config.ArtifactAccessKeyFile, SecretKeyFile: config.ArtifactSecretKeyFile, RootCAs: roots})
+		if err != nil {
+			return nil, err
+		}
+		artifactRuntime, err = NewKubernetesArtifactRuntime(KubernetesArtifactRuntimeConfig{IO: ioController, Objects: objects})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: artifactRuntime != nil,
+		HelperImage: config.HelperImage, SourceRuntime: sourceRuntime, ArtifactRuntime: artifactRuntime})
 }
 
 func newKubernetesHTTPClient(config KubernetesConfig) (*http.Client, error) {

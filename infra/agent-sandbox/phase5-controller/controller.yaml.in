@@ -98,6 +98,10 @@ spec:
         - /var/run/blazn-private/database-url
         - /var/run/blazn-api-ca/ca.crt
         - /var/run/blazn-private/kubernetes-ca.crt
+        - /var/run/blazn-object-projection/BLAZN_OBJECT_ACCESS_KEY
+        - /var/run/blazn-private/object-access
+        - /var/run/blazn-object-projection/BLAZN_OBJECT_SECRET_KEY
+        - /var/run/blazn-private/object-secret
         resources:
           requests:
             cpu: 5m
@@ -125,6 +129,9 @@ spec:
         - name: api-ca
           mountPath: /var/run/blazn-api-ca
           readOnly: true
+        - name: object-credentials-projection
+          mountPath: /var/run/blazn-object-projection
+          readOnly: true
       containers:
       - name: controller
         image: BLAZN_CONTROLLER_IMAGE
@@ -151,6 +158,16 @@ spec:
           value: "BLAZN_SOURCE_DNS_CIDR"
         - name: BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON
           value: '{"BLAZN_SOURCE_HOST":["BLAZN_SOURCE_CIDR"]}'
+        - name: BLAZN_SANDBOX_ARTIFACT_ENDPOINT
+          value: "https://BLAZN_OBJECT_ENDPOINT_HOST:BLAZN_OBJECT_ENDPOINT_PORT"
+        - name: BLAZN_SANDBOX_ARTIFACT_REGION
+          value: "BLAZN_OBJECT_REGION"
+        - name: BLAZN_SANDBOX_ARTIFACT_BUCKET
+          value: "BLAZN_OBJECT_BUCKET"
+        - name: BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE
+          value: /var/run/blazn-private/object-access
+        - name: BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE
+          value: /var/run/blazn-private/object-secret
         resources:
           requests:
             cpu: 50m
@@ -199,6 +216,19 @@ spec:
               audience: BLAZN_KUBERNETES_API_AUDIENCE
               expirationSeconds: 600
               path: token
+      - name: object-credentials-projection
+        projected:
+          defaultMode: 0440
+          sources:
+          - secret:
+              name: BLAZN_OBJECT_SECRET_NAME
+              items:
+              - key: BLAZN_OBJECT_ACCESS_KEY
+                path: BLAZN_OBJECT_ACCESS_KEY
+                mode: 0440
+              - key: BLAZN_OBJECT_SECRET_KEY
+                path: BLAZN_OBJECT_SECRET_KEY
+                mode: 0440
       - name: api-ca
         configMap:
           name: kube-root-ca.crt
@@ -248,3 +278,9 @@ spec:
     ports:
     - protocol: TCP
       port: BLAZN_BEN1_POSTGRES_PORT
+  - to:
+    - ipBlock:
+        cidr: BLAZN_OBJECT_ENDPOINT_CIDR
+    ports:
+    - protocol: TCP
+      port: BLAZN_OBJECT_ENDPOINT_PORT

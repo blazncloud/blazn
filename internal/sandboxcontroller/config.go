@@ -27,12 +27,14 @@ const (
 var kubernetesDNSNamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`)
 
 type KubernetesConfig struct {
-	BaseURL         string
-	CAFile          string
-	TokenFile       string
-	HelperImage     string
-	SourceDNSCIDRs  []string
-	SourceHostCIDRs map[string][]string
+	BaseURL                                          string
+	CAFile                                           string
+	TokenFile                                        string
+	HelperImage                                      string
+	SourceDNSCIDRs                                   []string
+	SourceHostCIDRs                                  map[string][]string
+	ArtifactEndpoint, ArtifactRegion, ArtifactBucket string
+	ArtifactAccessKeyFile, ArtifactSecretKeyFile     string
 }
 
 type RuntimeConfig struct {
@@ -160,9 +162,27 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 			}
 		}
 	}
+	artifactValues := []string{getenv("BLAZN_SANDBOX_ARTIFACT_ENDPOINT"), getenv("BLAZN_SANDBOX_ARTIFACT_REGION"),
+		getenv("BLAZN_SANDBOX_ARTIFACT_BUCKET"), getenv("BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE"), getenv("BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE")}
+	artifactConfigured := false
+	for _, value := range artifactValues {
+		artifactConfigured = artifactConfigured || value != ""
+	}
+	if artifactConfigured {
+		for _, value := range artifactValues {
+			if value == "" {
+				return KubernetesConfig{}, errors.New("sandbox artifact object configuration is incomplete")
+			}
+		}
+		if !validAbsoluteFilePath(artifactValues[3]) || !validAbsoluteFilePath(artifactValues[4]) || artifactValues[3] == artifactValues[4] {
+			return KubernetesConfig{}, errors.New("sandbox artifact credential paths are invalid")
+		}
+	}
 	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
 	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage,
-		SourceDNSCIDRs: dnsCIDRs, SourceHostCIDRs: hostCIDRs}, nil
+		SourceDNSCIDRs: dnsCIDRs, SourceHostCIDRs: hostCIDRs,
+		ArtifactEndpoint: artifactValues[0], ArtifactRegion: artifactValues[1], ArtifactBucket: artifactValues[2],
+		ArtifactAccessKeyFile: artifactValues[3], ArtifactSecretKeyFile: artifactValues[4]}, nil
 }
 
 func validKubernetesHost(value string) bool {

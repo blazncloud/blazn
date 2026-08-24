@@ -119,7 +119,8 @@ func TestCopySecretFailsClosed(t *testing.T) {
 }
 
 func TestRunRequiresExactArguments(t *testing.T) {
-	if run(nil) == nil || run([]string{"one", "two"}) == nil || run([]string{"one", "two", "three"}) == nil || run([]string{"one", "two", "three", "two"}) == nil {
+	if run(nil) == nil || run([]string{"one", "two"}) == nil || run([]string{"one", "two", "three", "four"}) == nil ||
+		run([]string{"one", "two", "three", "four", "five", "six", "seven", "two"}) == nil {
 		t.Fatal("invalid argument count accepted")
 	}
 }
@@ -132,6 +133,7 @@ func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
 	}
 	databaseSource := filepath.Join(directory, "database-url")
 	caSource := filepath.Join(directory, "ca.crt")
+	accessSource, objectSecretSource := filepath.Join(directory, "object-access"), filepath.Join(directory, "object-secret")
 	if err := os.WriteFile(databaseSource, []byte(" postgres://controller@10.0.0.1/blazn\n"), 0o440); err != nil {
 		t.Fatal(err)
 	}
@@ -139,9 +141,17 @@ func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
 	if err := os.WriteFile(caSource, caContents, 0o440); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(accessSource, []byte("ACCESSKEY123456\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(objectSecretSource, []byte("object-secret-material-123456\n"), 0o440); err != nil {
+		t.Fatal(err)
+	}
 	databaseDestination := filepath.Join(private, "database-url")
 	caDestination := filepath.Join(private, "kubernetes-ca.crt")
-	if err := run([]string{databaseSource, databaseDestination, caSource, caDestination}); err != nil {
+	accessDestination, objectSecretDestination := filepath.Join(private, "object-access"), filepath.Join(private, "object-secret")
+	if err := run([]string{databaseSource, databaseDestination, caSource, caDestination,
+		accessSource, accessDestination, objectSecretSource, objectSecretDestination}); err != nil {
 		t.Fatalf("initialize private files: %v", err)
 	}
 	if value, err := os.ReadFile(databaseDestination); err != nil || string(value) != "postgres://controller@10.0.0.1/blazn" {
@@ -150,13 +160,20 @@ func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
 	if value, err := os.ReadFile(caDestination); err != nil || string(value) != string(caContents) {
 		t.Fatal("CA was not copied exactly into the private file")
 	}
+	if value, err := os.ReadFile(accessDestination); err != nil || string(value) != "ACCESSKEY123456" {
+		t.Fatal("object access key was not normalized into the private file")
+	}
+	if value, err := os.ReadFile(objectSecretDestination); err != nil || string(value) != "object-secret-material-123456" {
+		t.Fatal("object secret was not normalized into the private file")
+	}
 
 	secondPrivate := filepath.Join(directory, "private-failure")
 	if err := os.Mkdir(secondPrivate, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	partialDatabase := filepath.Join(secondPrivate, "database-url")
-	if err := run([]string{databaseSource, partialDatabase, filepath.Join(directory, "missing-ca"), filepath.Join(secondPrivate, "kubernetes-ca.crt")}); err == nil {
+	if err := run([]string{databaseSource, partialDatabase, filepath.Join(directory, "missing-ca"), filepath.Join(secondPrivate, "kubernetes-ca.crt"),
+		accessSource, filepath.Join(secondPrivate, "object-access"), objectSecretSource, filepath.Join(secondPrivate, "object-secret")}); err == nil {
 		t.Fatal("missing CA source was accepted")
 	}
 	if _, err := os.Lstat(partialDatabase); !os.IsNotExist(err) {

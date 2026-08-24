@@ -23,14 +23,32 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) != 4 || args[1] == args[3] {
-		return errors.New("database URL and CA source and destination paths are required")
+	if len(args) != 8 {
+		return errors.New("database, CA, and object credential source and destination paths are required")
+	}
+	destinations := map[string]bool{}
+	for _, index := range []int{1, 3, 5, 7} {
+		if destinations[args[index]] {
+			return errors.New("private file destinations must be distinct")
+		}
+		destinations[args[index]] = true
 	}
 	if err := copySecret(args[0], args[1]); err != nil {
 		return err
 	}
 	if err := copyExactFile(args[2], args[3], maxCABytes); err != nil {
 		_ = os.Remove(args[1])
+		return err
+	}
+	if err := copySecret(args[4], args[5]); err != nil {
+		_ = os.Remove(args[1])
+		_ = os.Remove(args[3])
+		return err
+	}
+	if err := copySecret(args[6], args[7]); err != nil {
+		_ = os.Remove(args[1])
+		_ = os.Remove(args[3])
+		_ = os.Remove(args[5])
 		return err
 	}
 	return nil

@@ -87,9 +87,14 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 		"BLAZN_SANDBOX_IO_IMAGE":                         testSandboxIOImage,
 		"BLAZN_SANDBOX_SOURCE_DNS_CIDRS":                 "10.152.183.10/32",
 		"BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON":           `{"github.com":["140.82.112.4/32"]}`,
+		"BLAZN_SANDBOX_ARTIFACT_ENDPOINT":                "https://s3.example.test:9443",
+		"BLAZN_SANDBOX_ARTIFACT_REGION":                  "us-test-1",
+		"BLAZN_SANDBOX_ARTIFACT_BUCKET":                  "blazn-artifacts",
+		"BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE":         "/run/blazn/object-access",
+		"BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE":         "/run/blazn/object-secret",
 	}
 	config, err := kubernetesConfigFromEnv(func(key string) string { return valid[key] })
-	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" || len(config.SourceDNSCIDRs) != 1 || len(config.SourceHostCIDRs["github.com"]) != 1 {
+	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" || len(config.SourceDNSCIDRs) != 1 || len(config.SourceHostCIDRs["github.com"]) != 1 || config.ArtifactEndpoint != "https://s3.example.test:9443" {
 		t.Fatalf("valid endpoint rejected: config=%#v err=%v", config, err)
 	}
 	valid["BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST"] = "fd00::1"
@@ -126,6 +131,10 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 		func(values map[string]string) { values["BLAZN_SANDBOX_SOURCE_DNS_CIDRS"] = "10.0.0.1/32, 10.0.0.2/32" },
 		func(values map[string]string) {
 			values["BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON"] = `{"github.com":["140.82.112.4/32"]} trailing`
+		},
+		func(values map[string]string) { values["BLAZN_SANDBOX_ARTIFACT_BUCKET"] = "" },
+		func(values map[string]string) {
+			values["BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE"] = values["BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE"]
 		},
 	} {
 		values := make(map[string]string, len(valid))

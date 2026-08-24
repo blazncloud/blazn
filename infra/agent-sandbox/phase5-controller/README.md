@@ -35,6 +35,13 @@ BLAZN_KUBERNETES_API_PORT='16443' \
 BLAZN_KUBERNETES_API_AUDIENCE='https://kubernetes.default.svc' \
 BLAZN_BEN1_POSTGRES_CIDR='10.0.0.11/32' \
 BLAZN_BEN1_POSTGRES_PORT='5432' \
+BLAZN_OBJECT_SECRET_NAME='blazn-sandbox-controller-object-credentials' \
+BLAZN_OBJECT_ACCESS_KEY='access-key' \
+BLAZN_OBJECT_SECRET_KEY='secret-key' \
+BLAZN_OBJECT_ENDPOINT_CIDR='10.0.0.12/32' \
+BLAZN_OBJECT_ENDPOINT_PORT='9443' \
+BLAZN_OBJECT_REGION='us-test-1' \
+BLAZN_OBJECT_BUCKET='blazn-artifacts' \
 BLAZN_SOURCE_HOST='github.com' \
 BLAZN_SOURCE_CIDR='140.82.112.4/32' \
 BLAZN_SOURCE_DNS_CIDR='10.0.0.53/32' \
@@ -70,16 +77,16 @@ Node, RuntimeClass, CRD, webhook, namespace, or wildcard authority. RuntimeClass
 access may be added only in a separate PR that wires and qualifies an exact
 runtime capability.
 
-The database URL Secret and public Kubernetes CA are projected read-only for
+The database URL Secret, separately owned object credential Secret, and public Kubernetes CA are projected read-only for
 kubelet. A same-UID init binary copies the normalized database URL and exact,
-bounded CA contents without logging either into a memory-backed private
+bounded CA contents plus the two normalized object credential values without logging them into a memory-backed private
 `emptyDir` as UID-65532, mode-0600, single-link regular files. Those exact file
 shapes are required by the controller's strict readers. The main container sees
 the private volume read-only. Both containers use a read-only root filesystem,
 non-root identity, RuntimeDefault seccomp, drop all capabilities, deny privilege
 escalation, and fixed CPU/memory requests and limits. Host namespaces and host
 mounts are absent. Default-deny NetworkPolicies admit only the rendered API,
-PostgreSQL, and optional resolver endpoints.
+PostgreSQL, object-store, and optional resolver endpoints.
 
 ## Suspension and live blockers
 
