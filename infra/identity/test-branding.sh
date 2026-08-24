@@ -34,6 +34,9 @@ for required in \
   '/assets/v1/instance/policy/label/icon' \
   '/assets/v1/instance/policy/label/icon/dark' \
   '/admin/v1/policies/label/_activate' \
+  '--retry-max-time 30' \
+  '--connect-timeout 3' \
+  '--max-time 15' \
   'stat -c '\''%u:%a:%h'\'''; do
   grep -F -- "$required" "$installer" >/dev/null
 done
