@@ -109,7 +109,7 @@ type kubePodSpec struct {
 	SecurityContext              map[string]any    `json:"securityContext"`
 	Containers                   []kubeContainer   `json:"containers"`
 	InitContainers               []kubeContainer   `json:"initContainers,omitempty"`
-	Volumes                      []kubeVolume      `json:"volumes"`
+	Volumes                      []kubeVolume      `json:"volumes,omitempty"`
 }
 
 type kubeContainer struct {
@@ -119,7 +119,7 @@ type kubeContainer struct {
 	RestartPolicy   string                       `json:"restartPolicy,omitempty"`
 	SecurityContext map[string]any               `json:"securityContext"`
 	Resources       map[string]map[string]string `json:"resources"`
-	VolumeMounts    []kubeVolumeMount            `json:"volumeMounts"`
+	VolumeMounts    []kubeVolumeMount            `json:"volumeMounts,omitempty"`
 }
 
 type kubeVolumeMount struct {
@@ -718,7 +718,7 @@ func helperContainer(name, image string, command []string, restartPolicy string,
 }
 
 func restrictedContainerSecurity() map[string]any {
-	return map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}}
+	return map[string]any{"allowPrivilegeEscalation": false, "privileged": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}}
 }
 
 func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {

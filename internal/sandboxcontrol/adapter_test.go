@@ -486,7 +486,7 @@ func TestRenderedSandboxIOPodContractIsExactTokenlessAndCredentialFree(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{`"env"`, `"envFrom"`, `"secret"`, `"hostPath"`, `"hostNetwork"`, `"hostPID"`, `"hostIPC"`, `"privileged"`, `"serviceAccountToken"`} {
+	for _, forbidden := range []string{`"env"`, `"envFrom"`, `"secret"`, `"hostPath"`, `"hostNetwork"`, `"hostPID"`, `"hostIPC"`, `"privileged":true`, `"serviceAccountToken"`} {
 		if bytes.Contains(raw, []byte(forbidden)) {
 			t.Fatalf("forbidden Pod field %s in %s", forbidden, raw)
 		}
@@ -508,6 +508,28 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 		request := testCreate()
 		request.Sources = []SourceMount{source}
 		assertCode(t, ValidateCreate(request, trustedRuntimes()), ErrInvalidRequest)
+	}
+	withoutIO := testCreate()
+	withoutIO.Artifacts, withoutIO.HelperImage = nil, ""
+	if err := ValidateCreate(withoutIO, trustedRuntimes()); err != nil {
+		t.Fatalf("I/O-free Sandbox rejected: %v", err)
+	}
+	_, artifactDigest, err := CanonicalArtifactContract(withoutIO.Artifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := createIntentDigest(withoutIO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(render(withoutIO, artifactDigest, intent).Spec.PodTemplate.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, omitted := range []string{`"initContainers"`, `"volumes"`, `"volumeMounts"`} {
+		if bytes.Contains(raw, []byte(omitted)) {
+			t.Fatalf("empty optional Pod field %s was rendered: %s", omitted, raw)
+		}
 	}
 }
 
