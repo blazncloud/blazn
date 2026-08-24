@@ -197,7 +197,7 @@ test("source materialization migration fences exact receipts before create compl
   assert.match(sql, /sandbox_controller_record_source_materialization_v1/);
   assert.match(sql, /sandbox_controller_bind_backend_v4/);
   assert.match(sql, /j\.lease_expires_at>clock_timestamp\(\)/);
-  assert.match(sql, /target\.observation_digest<>p_expected_observation_digest/);
+  assert.match(sql, /p_bootstrap_observation->>'digest'<>'sha256:'\|\|p_expected_observation_digest/);
   assert.match(sql, /ON CONFLICT \(sandbox_id\) DO NOTHING/);
   assert.match(sql, /sandbox_controller_claim_v4/);
   assert.match(sql, /sandbox_controller_complete_v4/);
