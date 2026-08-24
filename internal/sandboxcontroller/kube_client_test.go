@@ -206,6 +206,104 @@ func TestKubernetesCredentialFilesRejectUnsafeCAAndTokenProjection(t *testing.T)
 	}
 }
 
+func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
+	directory := t.TempDir()
+	version := filepath.Join(directory, "..2026_08_23_00_00_00")
+	if err := os.Mkdir(version, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(version, "token"), []byte("safe-projected-token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(version), filepath.Join(directory, "..data")); err != nil {
+		t.Fatal(err)
+	}
+	token := filepath.Join(directory, "token")
+	if err := os.Symlink("..data/token", token); err != nil {
+		t.Fatal(err)
+	}
+	value, err := readProjectedServiceAccountToken(token)
+	if err != nil || value != "safe-projected-token" {
+		t.Fatalf("safe Kubernetes projection rejected: value=%q err=%v", value, err)
+	}
+}
+
+func TestProjectedTokenRejectsWritableIntermediateDirectory(t *testing.T) {
+	for _, mode := range []os.FileMode{0o770, 0o777} {
+		t.Run(fmt.Sprintf("mode-%#o", mode), func(t *testing.T) {
+			directory := t.TempDir()
+			intermediate := filepath.Join(directory, "nested")
+			version := filepath.Join(intermediate, "version")
+			if err := os.MkdirAll(version, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(version, "token"), []byte("unsafe-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(intermediate, mode); err != nil {
+				t.Fatal(err)
+			}
+			token := filepath.Join(directory, "token")
+			if err := os.Symlink("nested/version/token", token); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readProjectedServiceAccountToken(token); err == nil {
+				t.Fatal("token beneath a writable intermediate directory was accepted")
+			}
+		})
+	}
+}
+
+func TestProjectedTokenRejectsIntermediateDirectoryChangeDuringRead(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(string) error
+	}{
+		{name: "mode", mutate: func(path string) error { return os.Chmod(path, 0o770) }},
+		{name: "symlink swap", mutate: func(path string) error {
+			original := path + ".original"
+			if err := os.Rename(path, original); err != nil {
+				return err
+			}
+			return os.Symlink(filepath.Base(original), path)
+		}},
+		{name: "inode replacement", mutate: func(path string) error {
+			original := path + ".original"
+			if err := os.Rename(path, original); err != nil {
+				return err
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(path, "token"), []byte("replacement-token"), 0o600)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			intermediate := filepath.Join(directory, "nested")
+			if err := os.Mkdir(intermediate, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			resolved := filepath.Join(intermediate, "token")
+			if err := os.WriteFile(resolved, []byte("original-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			token := filepath.Join(directory, "token")
+			if err := os.Symlink("nested/token", token); err != nil {
+				t.Fatal(err)
+			}
+			ops := kubernetesFileOps{lstat: os.Lstat, evalSymlinks: filepath.EvalSymlinks,
+				open: func(name string) (*os.File, error) {
+					return os.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+				},
+				afterRead: func() error { return test.mutate(intermediate) }}
+			if _, err := readProjectedServiceAccountTokenWithOps(token, ops); err == nil {
+				t.Fatal("intermediate directory mutation during read was accepted")
+			}
+		})
+	}
+}
+
 func TestProjectedTokenRejectsInodeOrModeChangeDuringRead(t *testing.T) {
 	for _, test := range []struct {
 		name   string

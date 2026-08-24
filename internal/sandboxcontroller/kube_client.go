@@ -38,6 +38,11 @@ type kubernetesFileOps struct {
 	afterRead    func() error
 }
 
+type kubernetesDirectoryIdentity struct {
+	path string
+	info os.FileInfo
+}
+
 type bearerTokenTransport struct {
 	base      http.RoundTripper
 	readToken func() (string, error)
@@ -271,24 +276,18 @@ func readProjectedServiceAccountTokenWithOps(path string, ops kubernetesFileOps)
 	if err != nil || !pathWithin(realDirectory, resolved) {
 		return unsafe()
 	}
-	volumeInfo, volumeErr := ops.lstat(realDirectory)
-	targetDirectoryInfo, targetDirectoryErr := ops.lstat(filepath.Dir(resolved))
-	if volumeErr != nil || targetDirectoryErr != nil || !safeKubernetesDirectory(volumeInfo) || !safeKubernetesDirectory(targetDirectoryInfo) {
+	directories, err := inspectKubernetesDirectoryChain(realDirectory, filepath.Dir(resolved), ops.lstat)
+	if err != nil {
 		return unsafe()
 	}
 	contents, err := readStableRegularFileWithOps(resolved, maxServiceAccountTokenSize, true, ops)
 	if err != nil {
 		return unsafe()
 	}
+	realDirectoryAfter, directoryErr := ops.evalSymlinks(filepath.Dir(path))
 	resolvedAfter, err := ops.evalSymlinks(path)
-	if err != nil || resolvedAfter != resolved {
-		return unsafe()
-	}
-	finalVolumeInfo, finalVolumeErr := ops.lstat(realDirectory)
-	finalTargetDirectoryInfo, finalTargetDirectoryErr := ops.lstat(filepath.Dir(resolved))
-	if finalVolumeErr != nil || finalTargetDirectoryErr != nil || !os.SameFile(volumeInfo, finalVolumeInfo) ||
-		!os.SameFile(targetDirectoryInfo, finalTargetDirectoryInfo) || !safeKubernetesDirectory(finalVolumeInfo) ||
-		!safeKubernetesDirectory(finalTargetDirectoryInfo) {
+	if directoryErr != nil || realDirectoryAfter != realDirectory || err != nil || resolvedAfter != resolved ||
+		!stableKubernetesDirectoryChain(directories, ops.lstat) {
 		return unsafe()
 	}
 	token := strings.TrimSpace(string(contents))
@@ -350,6 +349,49 @@ func safeKubernetesOwner(info os.FileInfo) bool {
 
 func safeKubernetesDirectory(info os.FileInfo) bool {
 	return info != nil && info.IsDir() && info.Mode().Perm()&0o022 == 0 && safeKubernetesOwner(info)
+}
+
+func inspectKubernetesDirectoryChain(root, target string, lstat func(string) (os.FileInfo, error)) ([]kubernetesDirectoryIdentity, error) {
+	if lstat == nil || !filepath.IsAbs(root) || !filepath.IsAbs(target) {
+		return nil, errors.New("Kubernetes credential directory chain is invalid")
+	}
+	relative, err := filepath.Rel(root, target)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		return nil, errors.New("Kubernetes credential directory escapes its volume")
+	}
+	paths := []string{root}
+	if relative != "." {
+		current := root
+		for _, component := range strings.Split(relative, string(os.PathSeparator)) {
+			if component == "" || component == "." || component == ".." {
+				return nil, errors.New("Kubernetes credential directory chain is invalid")
+			}
+			current = filepath.Join(current, component)
+			paths = append(paths, current)
+		}
+	}
+	identities := make([]kubernetesDirectoryIdentity, 0, len(paths))
+	for _, directory := range paths {
+		info, err := lstat(directory)
+		if err != nil || !safeKubernetesDirectory(info) {
+			return nil, errors.New("Kubernetes credential directory is unsafe")
+		}
+		identities = append(identities, kubernetesDirectoryIdentity{path: directory, info: info})
+	}
+	return identities, nil
+}
+
+func stableKubernetesDirectoryChain(identities []kubernetesDirectoryIdentity, lstat func(string) (os.FileInfo, error)) bool {
+	if len(identities) == 0 || lstat == nil {
+		return false
+	}
+	for _, identity := range identities {
+		current, err := lstat(identity.path)
+		if err != nil || !safeKubernetesDirectory(current) || !os.SameFile(identity.info, current) {
+			return false
+		}
+	}
+	return true
 }
 
 func pathWithin(directory, candidate string) bool {
