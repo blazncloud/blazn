@@ -107,12 +107,10 @@ Project writes require an expected version and idempotency key. Build requests
 accept only an exact source commit and idempotency key; the service resolves the
 committed DevelopmentProject, creates a same-tenant canonical Run, and records
 the Build as ineligible with `build_not_succeeded`. There is no delete route.
-The runtime database role cannot update or finalize Builds. Migration 017
-retains an ungranted controller finalizer which requires the fixed controller
-authority, exact expected version, same-tenant Run, reference Build, and ready
-typed Artifacts, and refuses any non-null publication identity. Installing the
-separately authenticated controller and granting that function are deliberately
-outside this slice.
+The runtime database role cannot update or finalize Builds. Migration 022
+retains only an ungranted, fail-closed controller-finalizer stub. The later
+controller slice must replace it with normalized evidence persistence and an
+atomic canonical Run/Build terminal transition before receiving EXECUTE.
 
 ## CLI acceptance surface
 

@@ -1,6 +1,6 @@
 import type { WorkspacePrincipal, WorkspaceRole } from "./workspace-types.js";
 
-export type DevelopmentPrincipal = WorkspacePrincipal;
+export interface DevelopmentPrincipal extends WorkspacePrincipal {sessionId:string;accessToken:string}
 export type DevelopmentBuildStatus = "queued"|"building"|"testing"|"succeeded"|"failed"|"cancelled";
 
 export interface DevelopmentProjectRecord {

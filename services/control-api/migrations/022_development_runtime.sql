@@ -35,6 +35,7 @@ CREATE TABLE development_projects (
   publication_template_id uuid NOT NULL,
   registry_repository text NOT NULL,
   policy_snapshot jsonb NOT NULL,
+  registry_authorization jsonb NOT NULL,
   created_by uuid NOT NULL REFERENCES users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -50,7 +51,8 @@ CREATE TABLE development_projects (
   CHECK (manifest#>>'{template,digest}' = 'sha256:'||trim(template_digest)),
   CHECK (manifest#>>'{publicationTarget,templateId}' = publication_template_id::text),
   CHECK (manifest#>>'{build,registryRepository}' = registry_repository),
-  CHECK (manifest->'policy'=policy_snapshot),
+  CHECK (policy_snapshot->>'schemaVersion'='blazn.dev/development-policy-snapshot/v1'),
+  CHECK (registry_authorization->>'repository'=registry_repository),
   CHECK (NOT workspace_json_contains_secret_key(manifest))
 );
 
@@ -76,6 +78,7 @@ CREATE TABLE development_builds (
   publication_candidate_digest char(64) NOT NULL CHECK (publication_candidate_digest ~ '^[0-9a-f]{64}$'),
   registry_repository text NOT NULL,
   policy_snapshot jsonb NOT NULL,
+  registry_authorization jsonb NOT NULL,
   plan_digest text NOT NULL CHECK (plan_digest ~ '^sha256:[0-9a-f]{64}$'),
   publication_eligible boolean NOT NULL DEFAULT false,
   refusal_reasons text[] NOT NULL DEFAULT ARRAY['build_not_succeeded']::text[],
@@ -89,6 +92,7 @@ CREATE TABLE development_builds (
   UNIQUE (id, workspace_id, project_id),
   UNIQUE (run_id),
   CHECK (cardinality(refusal_reasons) BETWEEN 0 AND 32),
+  CHECK (refusal_reasons <@ ARRAY['build_not_succeeded','build_cancelled','mutable_output','missing_architecture','digest_mismatch','project_test_failed','secret_finding','security_test_failed','lifecycle_test_failed','cleanup_failed','reproducibility_unexplained','stale_build_version','unauthorized']::text[]),
   CHECK (NOT publication_eligible OR cardinality(refusal_reasons) = 0),
   CHECK (publication_eligible OR cardinality(refusal_reasons) > 0),
   CHECK ((status IN ('queued','building','testing')) = (completed_at IS NULL)),
@@ -116,43 +120,77 @@ CREATE TABLE development_reproducibility_baselines (
 CREATE INDEX development_builds_project_status_id_idx
   ON development_builds(workspace_id, project_id, status, id);
 
-CREATE FUNCTION development_runtime_authorized(p_workspace_id uuid,p_project_id uuid,p_operate boolean)
-RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public AS $$
-  SELECT EXISTS(SELECT 1 FROM public.workspaces w JOIN public.workspace_memberships m ON m.workspace_id=w.id
-    JOIN public.projects p ON p.workspace_id=w.id AND p.id=p_project_id
-    WHERE w.id=p_workspace_id AND w.status='active' AND p.status='active' AND m.status='active'
-      AND m.user_id=current_setting('blazn.development_user_id',true)::uuid
-      AND (NOT p_operate OR m.role IN ('owner','administrator','operator')))
+CREATE FUNCTION development_runtime_actor(p_session_id uuid,p_access_token text)
+RETURNS uuid LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+  SELECT s.user_id FROM public.sessions s JOIN public.devices d ON d.id=s.device_id AND d.user_id=s.user_id
+  WHERE s.id=p_session_id AND p_access_token ~ '^[A-Za-z0-9_-]{43}$'
+    AND s.token_hash=encode(public.digest(p_access_token,'sha256'),'hex')
+    AND s.revoked_at IS NULL AND s.access_expires_at>clock_timestamp() AND d.revoked_at IS NULL
 $$;
 
-CREATE FUNCTION development_runtime_get_project(p_workspace_id uuid,p_project_id uuid)
-RETURNS SETOF development_projects LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public
-AS $$ SELECT * FROM public.development_projects WHERE workspace_id=p_workspace_id AND project_id=p_project_id
-  AND public.development_runtime_authorized(p_workspace_id,p_project_id,false) $$;
+CREATE FUNCTION development_runtime_access(p_workspace_id uuid,p_project_id uuid,p_session_id uuid,p_access_token text)
+RETURNS TABLE(workspace_status text,role text,project_status text,actor uuid)
+LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+  SELECT w.status,m.role,p.status,s.user_id FROM public.sessions s
+    JOIN public.devices d ON d.id=s.device_id AND d.user_id=s.user_id
+    JOIN public.workspace_memberships m ON m.user_id=s.user_id AND m.status='active'
+    JOIN public.workspaces w ON w.id=m.workspace_id
+    JOIN public.projects p ON p.workspace_id=w.id AND p.id=p_project_id
+  WHERE s.id=p_session_id AND p_access_token ~ '^[A-Za-z0-9_-]{43}$'
+    AND s.token_hash=encode(public.digest(p_access_token,'sha256'),'hex')
+    AND s.revoked_at IS NULL AND s.access_expires_at>clock_timestamp() AND d.revoked_at IS NULL
+    AND w.id=p_workspace_id
+  FOR SHARE OF s,d,m,w,p
+$$;
 
-CREATE FUNCTION development_runtime_put_project(p_workspace_id uuid,p_project_id uuid,p_expected_version bigint,
+CREATE FUNCTION development_runtime_authorized(p_workspace_id uuid,p_project_id uuid,p_session_id uuid,p_access_token text,p_operate boolean)
+RETURNS boolean LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+  SELECT EXISTS(SELECT 1 FROM public.development_runtime_access(p_workspace_id,p_project_id,p_session_id,p_access_token) access
+    WHERE access.workspace_status='active' AND access.project_status='active'
+      AND (NOT p_operate OR access.role IN ('owner','administrator','operator')))
+$$;
+
+CREATE FUNCTION development_runtime_get_project(p_workspace_id uuid,p_project_id uuid,p_session_id uuid,p_access_token text)
+RETURNS SETOF development_projects LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public
+AS $$ SELECT * FROM public.development_projects WHERE workspace_id=p_workspace_id AND project_id=p_project_id
+  AND public.development_runtime_authorized(p_workspace_id,p_project_id,p_session_id,p_access_token,false) $$;
+
+CREATE FUNCTION development_runtime_put_project(p_workspace_id uuid,p_project_id uuid,p_session_id uuid,p_access_token text,p_expected_version bigint,
   p_manifest jsonb,p_manifest_digest text,p_template_version_id uuid,p_template_digest text,
-  p_publication_template_id uuid,p_created_by uuid)
+  p_publication_template_id uuid)
 RETURNS SETOF development_projects LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE raw_digest text:=substring(p_template_digest from 8); registry text:=p_manifest#>>'{build,registryRepository}';
+  actor uuid:=public.development_runtime_actor(p_session_id,p_access_token);
+  policy_authority jsonb; registry_authority jsonb;
 BEGIN
-  IF NOT public.development_runtime_authorized(p_workspace_id,p_project_id,true) OR
-     NOT EXISTS(SELECT 1 FROM public.projects WHERE id=p_project_id AND workspace_id=p_workspace_id AND status='active') OR
-     NOT EXISTS(SELECT 1 FROM public.development_registry_repositories WHERE workspace_id=p_workspace_id AND repository=registry AND status='active') OR
-     NOT EXISTS(SELECT 1 FROM public.development_policy_profiles WHERE kind='builder' AND name=p_manifest#>>'{policy,builderProfile}' AND active) OR
-     NOT EXISTS(SELECT 1 FROM public.development_policy_profiles WHERE kind='network' AND name=p_manifest#>>'{policy,networkProfile}' AND active) OR
-     NOT EXISTS(SELECT 1 FROM public.development_policy_profiles WHERE kind='resource' AND name=p_manifest#>>'{policy,resourceProfile}' AND active) OR
-     NOT EXISTS(SELECT 1 FROM public.development_policy_profiles WHERE kind='publication' AND name=p_manifest#>>'{policy,publicationPolicy}' AND active) THEN RETURN; END IF;
+  IF actor IS NULL OR NOT public.development_runtime_authorized(p_workspace_id,p_project_id,p_session_id,p_access_token,true) OR
+     NOT EXISTS(SELECT 1 FROM public.projects WHERE id=p_project_id AND workspace_id=p_workspace_id AND status='active') THEN RETURN; END IF;
+  SELECT jsonb_build_object('schemaVersion','blazn.dev/development-policy-snapshot/v1',
+    'builder',jsonb_build_object('name',builder.name,'version',builder.version),
+    'network',jsonb_build_object('name',network.name,'version',network.version),
+    'resource',jsonb_build_object('name',resource.name,'version',resource.version),
+    'publication',jsonb_build_object('name',publication.name,'version',publication.version)) INTO policy_authority
+  FROM public.development_policy_profiles builder,public.development_policy_profiles network,
+    public.development_policy_profiles resource,public.development_policy_profiles publication
+  WHERE builder.kind='builder' AND builder.name=p_manifest#>>'{policy,builderProfile}' AND builder.active AND
+    network.kind='network' AND network.name=p_manifest#>>'{policy,networkProfile}' AND network.active AND
+    resource.kind='resource' AND resource.name=p_manifest#>>'{policy,resourceProfile}' AND resource.active AND
+    publication.kind='publication' AND publication.name=p_manifest#>>'{policy,publicationPolicy}' AND publication.active
+  FOR SHARE OF builder,network,resource,publication;
+  SELECT jsonb_build_object('repository',repository,'authorizedBy',authorized_by,'auditEventId',audit_event_id,
+    'createdAt',to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) INTO registry_authority
+  FROM public.development_registry_repositories WHERE workspace_id=p_workspace_id AND repository=registry AND status='active' FOR SHARE;
+  IF policy_authority IS NULL OR registry_authority IS NULL THEN RETURN; END IF;
   IF p_expected_version=0 THEN
-    RETURN QUERY INSERT INTO public.development_projects(project_id,workspace_id,manifest,manifest_digest,template_version_id,template_version,template_digest,publication_template_id,registry_repository,policy_snapshot,created_by)
-      SELECT p_project_id,p_workspace_id,p_manifest,p_manifest_digest,v.id,v.version,v.content_digest,p_publication_template_id,registry,p_manifest->'policy',p_created_by
+    RETURN QUERY INSERT INTO public.development_projects(project_id,workspace_id,manifest,manifest_digest,template_version_id,template_version,template_digest,publication_template_id,registry_repository,policy_snapshot,registry_authorization,created_by)
+      SELECT p_project_id,p_workspace_id,p_manifest,p_manifest_digest,v.id,v.version,v.content_digest,p_publication_template_id,registry,policy_authority,registry_authority,actor
       FROM public.sandbox_template_versions v JOIN public.sandbox_template_version_status s ON s.version_id=v.id
       WHERE v.id=p_template_version_id AND v.workspace_id=p_workspace_id AND v.template_id=p_publication_template_id AND v.content_digest=raw_digest AND s.status='published'
       ON CONFLICT(project_id) DO NOTHING RETURNING *;
   ELSE
     RETURN QUERY UPDATE public.development_projects project SET manifest=p_manifest,manifest_digest=p_manifest_digest,
       template_version_id=v.id,template_version=v.version,template_digest=v.content_digest,
-      publication_template_id=p_publication_template_id,registry_repository=registry,policy_snapshot=p_manifest->'policy',
+      publication_template_id=p_publication_template_id,registry_repository=registry,policy_snapshot=policy_authority,registry_authorization=registry_authority,
       version=project.version+1,updated_at=clock_timestamp()
       FROM public.sandbox_template_versions v JOIN public.sandbox_template_version_status s ON s.version_id=v.id
       WHERE project.workspace_id=p_workspace_id AND project.project_id=p_project_id AND project.version=p_expected_version
@@ -162,35 +200,54 @@ BEGIN
 END $$;
 
 CREATE FUNCTION development_runtime_create_build(p_id uuid,p_workspace_id uuid,p_project_id uuid,p_run_id uuid,
-  p_requested_by uuid,p_commit text,p_plan_digest text)
+  p_session_id uuid,p_access_token text,p_expected_project_version bigint,p_expected_manifest_digest text,p_commit text,p_plan_digest text)
 RETURNS SETOF development_builds LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE project public.development_projects%ROWTYPE; target public.sandbox_templates%ROWTYPE;
+  actor uuid:=public.development_runtime_actor(p_session_id,p_access_token);
+  policy_authority jsonb; registry_authority jsonb;
 BEGIN
-  IF NOT public.development_runtime_authorized(p_workspace_id,p_project_id,true) THEN RETURN; END IF;
+  IF actor IS NULL OR NOT public.development_runtime_authorized(p_workspace_id,p_project_id,p_session_id,p_access_token,true) THEN RETURN; END IF;
   SELECT d.* INTO project FROM public.projects p JOIN public.development_projects d ON d.project_id=p.id AND d.workspace_id=p.workspace_id
-    WHERE p.id=p_project_id AND p.workspace_id=p_workspace_id AND p.status='active' FOR UPDATE OF p,d;
-  IF NOT FOUND OR NOT EXISTS(SELECT 1 FROM public.development_registry_repositories r WHERE r.workspace_id=project.workspace_id AND r.repository=project.registry_repository AND r.status='active') THEN RETURN; END IF;
+    WHERE p.id=p_project_id AND p.workspace_id=p_workspace_id AND p.status='active'
+      AND d.version=p_expected_project_version AND d.manifest_digest=p_expected_manifest_digest FOR UPDATE OF p,d;
+  IF NOT FOUND THEN RETURN; END IF;
+  SELECT jsonb_build_object('repository',repository,'authorizedBy',authorized_by,'auditEventId',audit_event_id,
+    'createdAt',to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')) INTO registry_authority
+  FROM public.development_registry_repositories WHERE workspace_id=project.workspace_id AND repository=project.registry_repository AND status='active' FOR SHARE;
+  SELECT jsonb_build_object('schemaVersion','blazn.dev/development-policy-snapshot/v1',
+    'builder',jsonb_build_object('name',builder.name,'version',builder.version),
+    'network',jsonb_build_object('name',network.name,'version',network.version),
+    'resource',jsonb_build_object('name',resource.name,'version',resource.version),
+    'publication',jsonb_build_object('name',publication.name,'version',publication.version)) INTO policy_authority
+  FROM public.development_policy_profiles builder,public.development_policy_profiles network,
+    public.development_policy_profiles resource,public.development_policy_profiles publication
+  WHERE builder.kind='builder' AND builder.name=project.manifest#>>'{policy,builderProfile}' AND builder.active AND
+    network.kind='network' AND network.name=project.manifest#>>'{policy,networkProfile}' AND network.active AND
+    resource.kind='resource' AND resource.name=project.manifest#>>'{policy,resourceProfile}' AND resource.active AND
+    publication.kind='publication' AND publication.name=project.manifest#>>'{policy,publicationPolicy}' AND publication.active
+  FOR SHARE OF builder,network,resource,publication;
+  IF registry_authority IS DISTINCT FROM project.registry_authorization OR policy_authority IS DISTINCT FROM project.policy_snapshot THEN RETURN; END IF;
   SELECT * INTO target FROM public.sandbox_templates WHERE id=project.publication_template_id AND workspace_id=project.workspace_id FOR UPDATE;
   IF NOT FOUND THEN RETURN; END IF;
   INSERT INTO public.runs(id,workspace_id,project_id,kind,proof_class,plan_digest,requested_by)
-    VALUES(p_run_id,p_workspace_id,p_project_id,'development.build','sandbox',p_plan_digest,p_requested_by);
+    VALUES(p_run_id,p_workspace_id,p_project_id,'development.build','sandbox',p_plan_digest,actor);
   RETURN QUERY INSERT INTO public.development_builds(id,workspace_id,project_id,run_id,requested_by,source_repository,source_commit,
       project_manifest_digest,project_version,project_snapshot,template_version_id,template_version,template_digest,
-      publication_template_id,publication_candidate_version_id,publication_draft_version,publication_candidate_digest,registry_repository,policy_snapshot,plan_digest)
-    VALUES(p_id,p_workspace_id,p_project_id,p_run_id,p_requested_by,project.manifest#>>'{repository,url}',p_commit,
+      publication_template_id,publication_candidate_version_id,publication_draft_version,publication_candidate_digest,registry_repository,policy_snapshot,registry_authorization,plan_digest)
+    VALUES(p_id,p_workspace_id,p_project_id,p_run_id,actor,project.manifest#>>'{repository,url}',p_commit,
       project.manifest_digest,project.version,project.manifest,project.template_version_id,project.template_version,project.template_digest,
-      project.publication_template_id,gen_random_uuid(),target.draft_revision,target.draft_digest,project.registry_repository,project.policy_snapshot,p_plan_digest)
+      project.publication_template_id,gen_random_uuid(),target.draft_revision,target.draft_digest,project.registry_repository,project.policy_snapshot,project.registry_authorization,p_plan_digest)
     RETURNING *;
 END $$;
 
-CREATE FUNCTION development_runtime_get_build(p_workspace_id uuid,p_project_id uuid,p_id uuid)
-RETURNS SETOF development_builds LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public
+CREATE FUNCTION development_runtime_get_build(p_workspace_id uuid,p_project_id uuid,p_session_id uuid,p_access_token text,p_id uuid)
+RETURNS SETOF development_builds LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public
 AS $$ SELECT * FROM public.development_builds WHERE workspace_id=p_workspace_id AND project_id=p_project_id AND id=p_id
-  AND public.development_runtime_authorized(p_workspace_id,p_project_id,false) $$;
-CREATE FUNCTION development_runtime_list_builds(p_workspace_id uuid,p_project_id uuid,p_status text,p_cursor uuid)
-RETURNS SETOF development_builds LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public
+  AND public.development_runtime_authorized(p_workspace_id,p_project_id,p_session_id,p_access_token,false) $$;
+CREATE FUNCTION development_runtime_list_builds(p_workspace_id uuid,p_project_id uuid,p_session_id uuid,p_access_token text,p_status text,p_cursor uuid)
+RETURNS SETOF development_builds LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public
 AS $$ SELECT * FROM public.development_builds WHERE workspace_id=p_workspace_id AND project_id=p_project_id
-  AND public.development_runtime_authorized(p_workspace_id,p_project_id,false)
+  AND public.development_runtime_authorized(p_workspace_id,p_project_id,p_session_id,p_access_token,false)
   AND (p_status='all' OR status=p_status) AND (p_cursor IS NULL OR id>p_cursor) ORDER BY id LIMIT 101 $$;
 
 -- This is the only terminal-write boundary. It is intentionally not granted to
@@ -211,6 +268,10 @@ DECLARE
   eligible boolean;
   reasons text[];
 BEGIN
+  -- Reserved fail-closed stub. The controller evidence/runtime slice replaces
+  -- this body only when normalized evidence and canonical Run finalization are available.
+  RETURN false;
+  /* unreachable until the controller slice replaces this function
   IF p_build_id IS NULL OR p_expected_version IS NULL OR p_expected_version < 1 OR
      p_document IS NULL OR jsonb_typeof(p_document) <> 'object' OR
      public.workspace_json_contains_secret_key(p_document) THEN
@@ -297,22 +358,23 @@ BEGIN
     started_at=coalesce(started_at,clock_timestamp()),completed_at=clock_timestamp(),
     error_code=CASE WHEN target_status='failed' THEN p_document->>'errorCode' ELSE NULL END
     WHERE id=target.id AND version=p_expected_version;
-  RETURN FOUND;
+  RETURN FOUND; */
 END
 $$;
 
 REVOKE ALL ON TABLE development_policy_profiles,development_registry_repositories,development_projects,
   development_builds,development_reproducibility_baselines
   FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller;
-REVOKE ALL ON FUNCTION development_runtime_authorized(uuid,uuid,boolean),development_runtime_get_project(uuid,uuid),
-  development_runtime_put_project(uuid,uuid,bigint,jsonb,text,uuid,text,uuid,uuid),
-  development_runtime_create_build(uuid,uuid,uuid,uuid,uuid,text,text),
-  development_runtime_get_build(uuid,uuid,uuid),development_runtime_list_builds(uuid,uuid,text,uuid)
+REVOKE ALL ON FUNCTION development_runtime_actor(uuid,text),development_runtime_access(uuid,uuid,uuid,text),
+  development_runtime_authorized(uuid,uuid,uuid,text,boolean),development_runtime_get_project(uuid,uuid,uuid,text),
+  development_runtime_put_project(uuid,uuid,uuid,text,bigint,jsonb,text,uuid,text,uuid),
+  development_runtime_create_build(uuid,uuid,uuid,uuid,uuid,text,bigint,text,text,text),
+  development_runtime_get_build(uuid,uuid,uuid,text,uuid),development_runtime_list_builds(uuid,uuid,uuid,text,text,uuid)
   FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller;
-GRANT EXECUTE ON FUNCTION development_runtime_get_project(uuid,uuid),
-  development_runtime_put_project(uuid,uuid,bigint,jsonb,text,uuid,text,uuid,uuid),
-  development_runtime_create_build(uuid,uuid,uuid,uuid,uuid,text,text),
-  development_runtime_get_build(uuid,uuid,uuid),development_runtime_list_builds(uuid,uuid,text,uuid)
+GRANT EXECUTE ON FUNCTION development_runtime_access(uuid,uuid,uuid,text),development_runtime_get_project(uuid,uuid,uuid,text),
+  development_runtime_put_project(uuid,uuid,uuid,text,bigint,jsonb,text,uuid,text,uuid),
+  development_runtime_create_build(uuid,uuid,uuid,uuid,uuid,text,bigint,text,text,text),
+  development_runtime_get_build(uuid,uuid,uuid,text,uuid),development_runtime_list_builds(uuid,uuid,uuid,text,text,uuid)
   TO blazn_runtime;
 REVOKE ALL ON FUNCTION development_controller_finalize(uuid,bigint,jsonb)
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker, blazn_sandbox_controller;

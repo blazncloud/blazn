@@ -247,7 +247,7 @@ test("sandbox controller observation migration requires complete restart-safe Po
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
 
-test("Development runtime migration freezes tenant, version, no-delete, and controller finalization authority", async () => {
+test("Development runtime migration freezes tenant, version, bearer proof, and closed finalization authority", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/022_development_runtime.sql"), "utf8");
   assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\) REFERENCES projects\(id, workspace_id\)/);
@@ -255,10 +255,12 @@ test("Development runtime migration freezes tenant, version, no-delete, and cont
   assert.match(sql, /FOREIGN KEY \(template_version_id, workspace_id, publication_template_id, template_version, template_digest\)/);
   assert.match(sql, /manifest#>>'\{template,digest\}' = 'sha256:'\|\|trim\(template_digest\)/);
   assert.match(sql, /CREATE FUNCTION development_controller_finalize/);
-  assert.match(sql, /reference\.workspace_id=target\.workspace_id[\s\S]*reference\.project_id=target\.project_id/);
-  assert.match(sql, /a\.workspace_id=target\.workspace_id AND a\.project_id=target\.project_id/);
-  assert.match(sql, /principal}'<>'blazn-development-controller'/);
-  assert.match(sql, /p_document#>'\{publication,published\}' <> 'null'::jsonb/);
+  assert.match(sql, /Reserved fail-closed stub[\s\S]*RETURN false/);
+  assert.match(sql, /s\.token_hash=encode\(public\.digest\(p_access_token,'sha256'\),'hex'\)/);
+  assert.doesNotMatch(sql, /current_setting\('blazn\.development_user_id'/);
+  assert.doesNotMatch(sql, /p_(?:created_by|requested_by)/);
+  assert.match(sql, /d\.version=p_expected_project_version AND d\.manifest_digest=p_expected_manifest_digest/);
+  assert.match(sql, /FOR SHARE OF builder,network,resource,publication/);
   assert.match(sql, /REVOKE ALL ON TABLE development_policy_profiles,development_registry_repositories,development_projects,[\s\S]*development_reproducibility_baselines[\s\S]*blazn_runtime/);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION development_runtime_get_project[\s\S]*development_runtime_list_builds[\s\S]*TO blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*development_(?:projects|builds|registry_repositories|reproducibility_baselines)/);

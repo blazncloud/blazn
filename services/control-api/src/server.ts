@@ -86,6 +86,7 @@ interface AuthenticatedSession {
   deviceId: string;
   email: string;
   displayName: string;
+  accessToken: string;
 }
 
 async function authenticate(request: IncomingMessage): Promise<AuthenticatedSession> {
@@ -103,7 +104,7 @@ async function authenticate(request: IncomingMessage): Promise<AuthenticatedSess
   const accessError = sessionAccessError({ sessionRevokedAt: row.session_revoked_at, deviceRevokedAt: row.device_revoked_at, accessExpiresAt: row.access_expires_at });
   if (accessError) throw new HttpError(accessError, accessError === "access_expired" ? "the access credential is expired" : "the session or device is revoked");
   await database.query("UPDATE devices SET last_seen_at = now() WHERE id = $1", [row.device_id]);
-  return { sessionId: row.session_id, userId: row.user_id, deviceId: row.device_id, email: row.email, displayName: row.display_name };
+  return { sessionId: row.session_id, userId: row.user_id, deviceId: row.device_id, email: row.email, displayName: row.display_name, accessToken: header.slice(7) };
 }
 
 async function health(response: ServerResponse): Promise<void> {
@@ -467,7 +468,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
   if (await routeSandboxRequest(sandboxRouter, request, response, url, () => authenticate(request))) return;
   if (developmentRouter.matches(url.pathname)) {
     const session = await authenticate(request);
-    return developmentRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+    return developmentRouter.handle(request, response, url, { userId: session.userId, sessionId: session.sessionId, accessToken: session.accessToken, email: session.email, displayName: session.displayName });
   }
   if (runRouter.matches(url.pathname)) {
     const session = await authenticate(request);
