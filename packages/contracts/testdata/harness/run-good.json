@@ -1,0 +1,399 @@
+{
+    "schemaVersion": "blazn.dev/harness-run/v1alpha1",
+    "run": {
+        "id": "30000000-0000-4000-8000-000000000001",
+        "workspaceId": "40000000-0000-4000-8000-000000000001",
+        "projectId": "50000000-0000-4000-8000-000000000001",
+        "agentId": "10000000-0000-4000-8000-000000000001",
+        "agentVersionId": "11000000-0000-4000-8000-000000000001",
+        "harnessProfileId": "21000000-0000-4000-8000-000000000001",
+        "harnessVersionId": "20000000-0000-4000-8000-000000000001",
+        "operationId": "31000000-0000-4000-8000-000000000001",
+        "sandboxId": "32000000-0000-4000-8000-000000000001",
+        "status": "succeeded",
+        "version": 7,
+        "requestedBy": "10000000-0000-4000-8000-000000000099",
+        "createdAt": "2026-08-22T00:00:00Z",
+        "completedAt": "2026-08-22T00:05:00Z"
+    },
+    "session": {
+        "id": "33000000-0000-4000-8000-000000000001",
+        "conversationId": "34000000-0000-4000-8000-000000000001",
+        "messageCursor": 2,
+        "eventCursor": 14,
+        "followUpCount": 1,
+        "resumeGeneration": 1,
+        "cancellation": {
+            "requested": false,
+            "acknowledged": false,
+            "processTreeTerminated": false,
+            "cleanupComplete": true,
+            "credentialsRevoked": true,
+            "artifactsHandled": true
+        }
+    },
+    "provenance": {
+        "agentVersion": {
+            "id": "11000000-0000-4000-8000-000000000001",
+            "digest": "sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28"
+        },
+        "harnessVersion": {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "digest": "sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7"
+        },
+        "harnessProfile": {
+            "id": "21000000-0000-4000-8000-000000000001",
+            "digest": "sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74"
+        },
+        "sandboxTemplateVersion": {
+            "id": "60000000-0000-4000-8000-000000000001",
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "modelRoute": {
+            "id": "70000000-0000-4000-8000-000000000001",
+            "version": 1,
+            "protocol": "openai-responses"
+        },
+        "source": {
+            "repository": "https://github.com/blazncloud/blazn.git",
+            "commit": "1111111111111111111111111111111111111111"
+        },
+        "proxyDecision": {
+            "eventId": "71000000-0000-4000-8000-000000000001",
+            "requestId": "74000000-0000-4000-8000-000000000001",
+            "outcome": "ROUTED",
+            "routeId": "70000000-0000-4000-8000-000000000001",
+            "routeVersion": 1,
+            "policyId": "73000000-0000-4000-8000-000000000001",
+            "policyVersion": 1,
+            "authentication": "proxy-workload-proof",
+            "authorizationId": null
+        },
+        "fallbackAttempt": null,
+        "billing": {
+            "mode": "zero-cost",
+            "currency": "USD",
+            "amountMicros": 0,
+            "pricingId": "77000000-0000-4000-8000-000000000001",
+            "pricingVersion": 1,
+            "receiptId": "78000000-0000-4000-8000-000000000001",
+            "source": "control-plane-receipt"
+        },
+        "node": {
+            "id": "72000000-0000-4000-8000-000000000001",
+            "architecture": "amd64",
+            "bindingUid": "node-uid",
+            "bindingResourceVersion": "42"
+        },
+        "workerProtocol": "blazn.dev/harness-worker/v1alpha1"
+    },
+    "compatibility": {
+        "checkedBeforeSandbox": true,
+        "compatible": true,
+        "required": [
+            "task.one-shot",
+            "message.follow-up",
+            "conversation.resume",
+            "event.structured",
+            "event.streaming",
+            "output.patch",
+            "output.artifact",
+            "cancel.graceful"
+        ],
+        "available": [
+            "task.one-shot",
+            "message.follow-up",
+            "conversation.resume",
+            "event.structured",
+            "event.streaming",
+            "tool.native",
+            "tool.mcp",
+            "output.patch",
+            "output.artifact",
+            "checkpoint.recovery",
+            "model.select",
+            "provider.configure",
+            "approval.prompt",
+            "cancel.graceful"
+        ],
+        "missing": []
+    },
+    "credentialLeases": [
+        {"id":"75000000-0000-4000-8000-000000000001","capability":"model.proxy","scope":"route:70000000-0000-4000-8000-000000000001:1","issuedAt":"2026-08-22T00:00:01Z","expiresAt":"2026-08-22T00:15:01Z","status":"revoked","revokedAt":"2026-08-22T00:05:00Z"},
+        {"id":"75000000-0000-4000-8000-000000000002","capability":"repository.read","scope":"repo:github.com:443/blazncloud/blazn","issuedAt":"2026-08-22T00:00:01Z","expiresAt":"2026-08-22T00:15:01Z","status":"revoked","revokedAt":"2026-08-22T00:05:00Z"}
+    ],
+    "messages": [
+        {"id":"35000000-0000-4000-8000-000000000001","runId":"30000000-0000-4000-8000-000000000001","sessionId":"33000000-0000-4000-8000-000000000001","conversationId":"34000000-0000-4000-8000-000000000001","generation":0,"ordinal":1,"role":"assistant","parentMessageId":null,"followUpToMessageId":null,"contentDigest":"sha256:3535353535353535353535353535353535353535353535353535353535353535","createdAt":"2026-08-22T00:01:00Z"},
+        {"id":"35000000-0000-4000-8000-000000000002","runId":"30000000-0000-4000-8000-000000000001","sessionId":"33000000-0000-4000-8000-000000000001","conversationId":"34000000-0000-4000-8000-000000000001","generation":1,"ordinal":2,"role":"user","parentMessageId":"35000000-0000-4000-8000-000000000001","followUpToMessageId":"35000000-0000-4000-8000-000000000001","contentDigest":"sha256:3636363636363636363636363636363636363636363636363636363636363636","createdAt":"2026-08-22T00:02:00Z"}
+    ],
+    "events": [
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000001",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 0,
+            "cursor": "e0",
+            "type": "harness.preparing",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:00:01Z",
+            "payload": {},
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000002",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 1,
+            "cursor": "e1",
+            "type": "harness.started",
+            "source": "adapter",
+            "observedAt": "2026-08-22T00:00:02Z",
+            "payload": {},
+            "extensions": {
+                "hermes.session": {
+                    "sourceSessionId": "redacted-opaque-id"
+                }
+            }
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000001",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 2,
+            "cursor": "model-request-1",
+            "type": "model.requested",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:00:03Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000001",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "71000000-0000-4000-8000-000000000001",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 3,
+            "cursor": "proxy-decision",
+            "type": "model.proxy-decided",
+            "source": "proxy",
+            "observedAt": "2026-08-22T00:00:04Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000001",
+                "outcome": "ROUTED",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1,
+                "policyId": "73000000-0000-4000-8000-000000000001",
+                "policyVersion": 1,
+                "authentication": "proxy-workload-proof",
+                "authorizationId": null
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000002",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 4,
+            "cursor": "model-usage-1",
+            "type": "model.usage",
+            "source": "proxy",
+            "observedAt": "2026-08-22T00:00:59Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000001",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1,
+                "inputTokens": 60,
+                "outputTokens": 30
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000003",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 5,
+            "cursor": "e5",
+            "type": "message.assistant",
+            "source": "harness",
+            "observedAt": "2026-08-22T00:01:00Z",
+            "payload": {
+                "messageId": "35000000-0000-4000-8000-000000000001"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000099",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 6,
+            "cursor": "message-user-followup",
+            "type": "message.user",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:02:00Z",
+            "payload": {
+                "messageId": "35000000-0000-4000-8000-000000000002"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000004",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 7,
+            "cursor": "e6",
+            "type": "followup.accepted",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:02:00Z",
+            "payload": {
+                "messageId": "35000000-0000-4000-8000-000000000002"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000005",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 8,
+            "cursor": "e7",
+            "type": "harness.resumed",
+            "source": "adapter",
+            "observedAt": "2026-08-22T00:02:01Z",
+            "payload": {
+                "generation": 1
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000003",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 9,
+            "cursor": "model-request-2",
+            "type": "model.requested",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:02:02Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000003",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000004",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 10,
+            "cursor": "model-usage-2",
+            "type": "model.usage",
+            "source": "proxy",
+            "observedAt": "2026-08-22T00:04:58Z",
+            "payload": {
+                "requestId": "74000000-0000-4000-8000-000000000003",
+                "routeId": "70000000-0000-4000-8000-000000000001",
+                "routeVersion": 1,
+                "inputTokens": 40,
+                "outputTokens": 20
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "82000000-0000-4000-8000-000000000005",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 11,
+            "cursor": "billing-recorded",
+            "type": "billing.recorded",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:04:58Z",
+            "payload": {
+                "mode": "zero-cost",
+                "currency": "USD",
+                "amountMicros": 0,
+                "pricingId": "77000000-0000-4000-8000-000000000001",
+                "pricingVersion": 1,
+                "receiptId": "78000000-0000-4000-8000-000000000001",
+                "source": "control-plane-receipt"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000006",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 12,
+            "cursor": "e11",
+            "type": "patch.created",
+            "source": "adapter",
+            "observedAt": "2026-08-22T00:04:59Z",
+            "payload": {
+                "artifactId": "36000000-0000-4000-8000-000000000001"
+            },
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000007",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 13,
+            "cursor": "e12",
+            "type": "artifact.created",
+            "source": "adapter",
+            "observedAt": "2026-08-22T00:04:59Z",
+            "payload": {"artifactId":"36000000-0000-4000-8000-000000000002"},
+            "extensions": {}
+        },
+        {
+            "schemaVersion": "blazn.dev/harness-event/v1alpha1",
+            "id": "80000000-0000-4000-8000-000000000008",
+            "runId": "30000000-0000-4000-8000-000000000001",
+            "sessionId": "33000000-0000-4000-8000-000000000001",
+            "sequence": 14,
+            "cursor": "e13",
+            "type": "result.terminal",
+            "source": "control-plane",
+            "observedAt": "2026-08-22T00:05:00Z",
+            "payload": {
+                "status": "succeeded"
+            },
+            "extensions": {}
+        }
+    ],
+    "result": {
+        "status": "succeeded",
+        "summary": "Completed the bounded task.",
+        "artifactIds": [
+            "36000000-0000-4000-8000-000000000001",
+            "36000000-0000-4000-8000-000000000002"
+        ],
+        "artifacts": [
+            {"id":"36000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","projectId":"50000000-0000-4000-8000-000000000001","role":"patch","kind":"agent.patch","mediaType":"text/x-diff","contentDigest":"sha256:3737373737373737373737373737373737373737373737373737373737373737"},
+            {"id":"36000000-0000-4000-8000-000000000002","workspaceId":"40000000-0000-4000-8000-000000000001","projectId":"50000000-0000-4000-8000-000000000001","role":"summary","kind":"agent.summary","mediaType":"text/markdown","contentDigest":"sha256:3838383838383838383838383838383838383838383838383838383838383838"}
+        ],
+        "patchArtifactId": "36000000-0000-4000-8000-000000000001",
+        "usage": {
+            "modelRequests": 2,
+            "inputTokens": 100,
+            "outputTokens": 50,
+            "durationMs": 300000
+        },
+        "receiptDigest": "sha256:2e3f1f7009580967d18baaeaa3a98433e4901aeb8bd553eb34e43628c813d15b"
+    }
+}

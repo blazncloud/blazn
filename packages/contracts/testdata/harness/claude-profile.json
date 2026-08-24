@@ -1,0 +1,135 @@
+{
+    "definition": {
+        "schemaVersion": "blazn.dev/harness-definition/v1alpha1",
+        "id": "19000000-0000-4000-8000-000000000003",
+        "kind": "claude-code",
+        "publisher": "anthropic",
+        "status": "approved",
+        "supportedPlatforms": [
+            "linux/amd64",
+            "linux/arm64"
+        ],
+        "securityPolicy": "poc-harness-restricted-v1",
+        "resourceVersion": 1
+    },
+    "version": {
+        "schemaVersion": "blazn.dev/harness-version/v1alpha1",
+        "id": "20000000-0000-4000-8000-000000000003",
+        "definitionId": "19000000-0000-4000-8000-000000000003",
+        "version": "0.1.0",
+        "digest": "sha256:b3e124400c4b748ff4ca54a238df0767f38bd523e019ed05494751c86cda2eb6",
+        "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
+        "implementation": {
+            "kind": "package",
+            "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        },
+        "executable": {
+            "identity": "blazn-claude-adapter",
+            "path": "/opt/blazn/claude",
+            "fixedArgv": [
+                "--output-format",
+                "stream-json"
+            ],
+            "environmentAllowlist": [
+                "ANTHROPIC_BASE_URL"
+            ],
+            "termination": {
+                "gracefulSignal": "SIGINT",
+                "graceSeconds": 20,
+                "killProcessTree": true
+            }
+        },
+        "inputMode": "native-session",
+        "parserVersion": "claude-stream-json/v1",
+        "capabilities": [
+            "task.one-shot",
+            "message.follow-up",
+            "conversation.resume",
+            "event.structured",
+            "event.streaming",
+            "tool.native",
+            "tool.mcp",
+            "output.patch",
+            "output.artifact",
+            "checkpoint.recovery",
+            "model.select",
+            "provider.configure",
+            "approval.prompt",
+            "cancel.graceful"
+        ],
+        "supportedPlatforms": [
+            "linux/amd64",
+            "linux/arm64"
+        ],
+        "credentialCapabilities": [
+            "model.anthropic",
+            "repository.read",
+            "tool.mcp"
+        ],
+        "compatibility": {
+            "workerProtocol": "blazn.dev/harness-worker/v1alpha1",
+            "sandboxControl": "agents.x-k8s.io/v1beta1",
+            "proxyProtocols": [
+                "anthropic-messages"
+            ]
+        },
+        "provenance": {
+            "repository": "https://github.com/anthropics/claude-code.git",
+            "commit": "3333333333333333333333333333333333333333",
+            "artifactDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "reviewId": "29000000-0000-4000-8000-000000000003"
+        }
+    },
+    "profile": {
+        "schemaVersion": "blazn.dev/harness-profile/v1alpha1",
+        "id": "21000000-0000-4000-8000-000000000003",
+        "workspaceId": "40000000-0000-4000-8000-000000000001",
+        "name": "claude-portable",
+        "harnessVersionId": "20000000-0000-4000-8000-000000000003",
+        "model": {
+            "routeId": "70000000-0000-4000-8000-000000000001",
+            "routeVersion": 1,
+            "protocol": "anthropic-messages"
+        },
+        "credentials": [
+            {
+                "capability": "model.anthropic",
+                "scope": "route:70000000-0000-4000-8000-000000000001:1",
+                "leaseSeconds": 900
+            },
+            {
+                "capability": "repository.read",
+        "scope": "repo:github.com:443/blazncloud/blazn",
+                "leaseSeconds": 900
+            }
+        ],
+        "tools": [
+            "repository",
+            "patch"
+        ],
+        "overrides": {
+            "stream-json": true,
+            "max-turns": 20
+        },
+        "policy": {
+            "approval": "deny-unlisted",
+            "network": "profile-bound",
+            "filesystem": "sandbox-only",
+            "maxRunSeconds": 1800,
+            "maxFollowUps": 10
+        },
+        "status": "approved",
+        "directProviderAuthorization": {
+            "id": "76000000-0000-4000-8000-000000000003",
+            "workspaceId": "40000000-0000-4000-8000-000000000001",
+            "profileId": "21000000-0000-4000-8000-000000000003",
+            "routeId": "70000000-0000-4000-8000-000000000001",
+            "routeVersion": 1,
+            "capability": "model.anthropic",
+            "provider": "anthropic",
+            "status": "approved"
+        },
+        "digest": "sha256:b0494c5d9df99ba3dc0e7d585fe54e9679bf2c3989ea090c6d92e3f6da400f4a",
+        "resourceVersion": 1
+    }
+}

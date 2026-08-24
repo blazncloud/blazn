@@ -1,0 +1,86 @@
+{
+    "agent": {
+        "schemaVersion": "blazn.dev/agent/v1alpha1",
+        "id": "10000000-0000-4000-8000-000000000001",
+        "workspaceId": "40000000-0000-4000-8000-000000000001",
+        "ownerId": "10000000-0000-4000-8000-000000000099",
+        "name": "portable-coding-agent",
+        "tags": [
+            "coding",
+            "portable"
+        ],
+        "status": "active",
+        "currentVersionId": "11000000-0000-4000-8000-000000000001",
+        "version": 1
+    },
+    "version": {
+        "schemaVersion": "blazn.dev/agent-version/v1alpha1",
+        "id": "11000000-0000-4000-8000-000000000001",
+        "agentId": "10000000-0000-4000-8000-000000000001",
+        "workspaceId": "40000000-0000-4000-8000-000000000001",
+        "version": 1,
+        "digest": "sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28",
+        "purpose": "Make one bounded code change and return a patch and summary.",
+        "instructions": "Work only in the approved repository. Do not push, merge, deploy, or access production services.",
+        "modelPolicy": {
+            "routeId": "70000000-0000-4000-8000-000000000001",
+            "routeVersion": 1,
+            "policyId": "73000000-0000-4000-8000-000000000001",
+            "policyVersion": 1,
+            "requiredProtocols": [
+                "openai-responses",
+                "anthropic-messages"
+            ],
+      "fallback": "one-approved-attempt",
+      "fallbackRoute": {
+        "routeId": "70000000-0000-4000-8000-000000000002",
+        "routeVersion": 1,
+        "authorizationId": "75000000-0000-4000-8000-000000000001",
+        "approvalReceiptId": "76000000-0000-4000-8000-000000000001"
+      }
+        },
+        "tools": [
+            "repository",
+            "patch"
+        ],
+        "template": {
+            "versionId": "60000000-0000-4000-8000-000000000001",
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "repository": {
+            "url": "https://github.com/blazncloud/blazn.git",
+            "commit": "1111111111111111111111111111111111111111",
+            "writable": true,
+            "pushAllowed": false
+        },
+        "resourceProfile": "poc-agent-small",
+        "requiredCapabilities": [
+            "task.one-shot",
+            "message.follow-up",
+            "conversation.resume",
+            "event.structured",
+            "event.streaming",
+            "output.patch",
+            "output.artifact",
+            "cancel.graceful"
+        ],
+        "allowedHarnessProfiles": [
+            {"id":"21000000-0000-4000-8000-000000000001","digest":"sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74"},
+            {"id":"21000000-0000-4000-8000-000000000002","digest":"sha256:b09c95dde98743163562643b162bad543f2cecc3fd20ea6cf73dd55bbe7e32cb"},
+            {"id":"21000000-0000-4000-8000-000000000003","digest":"sha256:b0494c5d9df99ba3dc0e7d585fe54e9679bf2c3989ea090c6d92e3f6da400f4a"},
+            {"id":"21000000-0000-4000-8000-000000000004","digest":"sha256:36eaf6d2454add2ed07371f44ad971471dcd6afb21402d6348b322a9c8ea6173"}
+        ],
+        "defaultHarnessProfileId": "21000000-0000-4000-8000-000000000001",
+        "evaluationId": "90000000-0000-4000-8000-000000000001",
+        "outputContract": {
+            "summary": true,
+            "patch": true,
+            "artifacts": [
+                "patch",
+                "summary"
+            ]
+        },
+        "createdBy": "10000000-0000-4000-8000-000000000099",
+        "createdAt": "2026-08-22T00:00:00Z"
+    }
+}

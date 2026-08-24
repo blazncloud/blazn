@@ -1,0 +1,127 @@
+{
+  "definition": {
+    "schemaVersion": "blazn.dev/harness-definition/v1alpha1",
+    "id": "19000000-0000-4000-8000-000000000001",
+    "kind": "hermes",
+    "publisher": "blazncloud",
+        "status": "approved",
+    "supportedPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "securityPolicy": "poc-harness-restricted-v1",
+    "resourceVersion": 1
+  },
+  "version": {
+    "schemaVersion": "blazn.dev/harness-version/v1alpha1",
+    "id": "20000000-0000-4000-8000-000000000001",
+    "definitionId": "19000000-0000-4000-8000-000000000001",
+    "version": "1.0.0",
+    "digest": "sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7",
+    "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
+    "implementation": {
+      "kind": "image",
+      "digest": "registry.blazn.invalid/harness/hermes@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "executable": {
+      "identity": "blazn-hermes-adapter",
+      "path": "/opt/blazn/hermes",
+      "fixedArgv": [
+        "run",
+        "--jsonl"
+      ],
+      "environmentAllowlist": [
+        "BLAZN_PROXY_URL"
+      ],
+      "termination": {
+        "gracefulSignal": "SIGINT",
+        "graceSeconds": 20,
+        "killProcessTree": true
+      }
+    },
+    "inputMode": "stdin-jsonl",
+    "parserVersion": "hermes/v1",
+    "capabilities": [
+      "task.one-shot",
+      "message.follow-up",
+      "conversation.resume",
+      "event.structured",
+      "event.streaming",
+      "tool.native",
+      "tool.mcp",
+      "output.patch",
+      "output.artifact",
+      "checkpoint.recovery",
+      "model.select",
+      "provider.configure",
+      "approval.prompt",
+      "cancel.graceful"
+    ],
+    "supportedPlatforms": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "credentialCapabilities": [
+      "model.proxy",
+      "repository.read",
+      "tool.mcp"
+    ],
+    "compatibility": {
+      "workerProtocol": "blazn.dev/harness-worker/v1alpha1",
+      "sandboxControl": "agents.x-k8s.io/v1beta1",
+      "proxyProtocols": [
+        "openai-responses",
+        "openai-chat"
+      ]
+    },
+    "provenance": {
+      "repository": "https://github.com/blazncloud/blazn.git",
+      "commit": "1111111111111111111111111111111111111111",
+      "artifactDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "reviewId": "29000000-0000-4000-8000-000000000001"
+    }
+  },
+  "profile": {
+    "schemaVersion": "blazn.dev/harness-profile/v1alpha1",
+    "id": "21000000-0000-4000-8000-000000000001",
+    "workspaceId": "40000000-0000-4000-8000-000000000001",
+    "name": "hermes-portable",
+    "harnessVersionId": "20000000-0000-4000-8000-000000000001",
+    "model": {
+      "routeId": "70000000-0000-4000-8000-000000000001",
+      "routeVersion": 1,
+      "protocol": "openai-responses"
+    },
+    "credentials": [
+      {
+        "capability": "model.proxy",
+        "scope": "route:70000000-0000-4000-8000-000000000001:1",
+        "leaseSeconds": 900
+      },
+      {
+        "capability": "repository.read",
+        "scope": "repo:github.com:443/blazncloud/blazn",
+        "leaseSeconds": 900
+      }
+    ],
+    "tools": [
+      "repository",
+      "patch"
+    ],
+    "overrides": {
+      "output-format": "jsonl",
+      "max-turns": 20
+    },
+    "policy": {
+      "approval": "deny-unlisted",
+      "network": "profile-bound",
+      "filesystem": "sandbox-only",
+      "maxRunSeconds": 1800,
+      "maxFollowUps": 10
+    },
+    "status": "approved",
+    "directProviderAuthorization": null,
+    "digest": "sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74",
+    "resourceVersion": 1
+  }
+}

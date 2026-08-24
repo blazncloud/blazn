@@ -1,0 +1,885 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://blazn.dev/contracts/harness-run.schema.json",
+    "title": "Blazn normalized Harness Run snapshot",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "schemaVersion",
+        "run",
+        "session",
+        "provenance",
+        "compatibility",
+        "credentialLeases",
+        "messages",
+        "events",
+        "result"
+    ],
+    "properties": {
+        "schemaVersion": {
+            "const": "blazn.dev/harness-run/v1alpha1"
+        },
+        "run": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "workspaceId",
+                "projectId",
+                "agentId",
+                "agentVersionId",
+                "harnessProfileId",
+                "harnessVersionId",
+                "operationId",
+                "sandboxId",
+                "status",
+                "version",
+                "requestedBy",
+                "createdAt"
+            ],
+            "properties": {
+                "id": {
+                    "$ref": "#/$defs/id"
+                },
+                "workspaceId": {
+                    "$ref": "#/$defs/id"
+                },
+                "projectId": {
+                    "$ref": "#/$defs/id"
+                },
+                "agentId": {
+                    "$ref": "#/$defs/id"
+                },
+                "agentVersionId": {
+                    "$ref": "#/$defs/id"
+                },
+                "harnessProfileId": {
+                    "$ref": "#/$defs/id"
+                },
+                "harnessVersionId": {
+                    "$ref": "#/$defs/id"
+                },
+                "operationId": {
+                    "$ref": "#/$defs/id"
+                },
+                "sandboxId": {
+                    "oneOf": [
+                        {
+                            "$ref": "#/$defs/id"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                "status": {
+                    "enum": [
+                        "validating",
+                        "queued",
+                        "preparing",
+                        "running",
+                        "waiting",
+                        "cancelling",
+                        "succeeded",
+                        "failed",
+                        "cancelled",
+                        "timed_out",
+                        "recovery_required"
+                    ]
+                },
+                "version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                },
+                "requestedBy": {
+                    "$ref": "#/$defs/id"
+                },
+                "createdAt": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "completedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                }
+            }
+        },
+        "session": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "conversationId",
+                "messageCursor",
+                "eventCursor",
+                "followUpCount",
+                "resumeGeneration",
+                "cancellation"
+            ],
+            "properties": {
+                "id": {
+                    "$ref": "#/$defs/id"
+                },
+                "conversationId": {
+                    "$ref": "#/$defs/id"
+                },
+                "messageCursor": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "eventCursor": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "followUpCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "resumeGeneration": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                },
+                "cancellation": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "requested",
+                        "acknowledged",
+                        "processTreeTerminated",
+                        "cleanupComplete",
+                        "credentialsRevoked",
+                        "artifactsHandled"
+                    ],
+                    "properties": {
+                        "requested": {
+                            "type": "boolean"
+                        },
+                        "acknowledged": {
+                            "type": "boolean"
+                        },
+                        "processTreeTerminated": {
+                            "type": "boolean"
+                        },
+                        "cleanupComplete": {
+                            "type": "boolean"
+                        },
+                        "credentialsRevoked": {"type":"boolean"},
+                        "artifactsHandled": {"type":"boolean"}
+                        }
+                    }
+                }
+            },
+        "provenance": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "agentVersion",
+                "harnessVersion",
+                "harnessProfile",
+                "sandboxTemplateVersion",
+                "modelRoute",
+                "source",
+                "proxyDecision",
+                "fallbackAttempt",
+                "billing",
+                "node",
+                "workerProtocol"
+            ],
+            "properties": {
+                "agentVersion": {
+                    "$ref": "#/$defs/versionRef"
+                },
+                "harnessVersion": {
+                    "$ref": "#/$defs/versionRef"
+                },
+                "harnessProfile": {
+                    "$ref": "#/$defs/versionRef"
+                },
+                "sandboxTemplateVersion": {
+                    "$ref": "#/$defs/versionRef"
+                },
+                "modelRoute": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "id",
+                        "version",
+                        "protocol"
+                    ],
+                    "properties": {
+                        "id": {
+                            "$ref": "#/$defs/id"
+                        },
+                        "version": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                        },
+                        "protocol": {
+                            "enum": [
+                                "openai-responses",
+                                "openai-chat",
+                                "anthropic-messages"
+                            ]
+                        }
+                    }
+                },
+                "source": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "repository",
+                        "commit"
+                    ],
+                    "properties": {
+                        "repository": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^https://[^@?#]+$"
+                        },
+                        "commit": {
+                            "type": "string",
+                            "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        }
+                    }
+                },
+                "proxyDecision": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["eventId","requestId","outcome","routeId","routeVersion","policyId","policyVersion","authentication","authorizationId"],"properties":{"eventId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/id"},"outcome":{"enum":["ROUTED","DIRECT","BYPASS"]},"routeId":{"$ref":"#/$defs/id"},"routeVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"policyId":{"$ref":"#/$defs/id"},"policyVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"authentication":{"enum":["proxy-workload-proof","provider-capability-proof"]},"authorizationId":{"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]}}}]},
+                "fallbackAttempt": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["attempt","approved","primaryFailureEventId","approvalEventId","requestEventId","decisionEventId","primaryRouteId","primaryRouteVersion","fallbackRouteId","fallbackRouteVersion","authorizationId","approvalReceiptId","requestId","receiptId","policyId","policyVersion"],"properties":{"attempt":{"const":1},"approved":{"const":true},"primaryFailureEventId":{"$ref":"#/$defs/id"},"approvalEventId":{"$ref":"#/$defs/id"},"requestEventId":{"$ref":"#/$defs/id"},"decisionEventId":{"$ref":"#/$defs/id"},"primaryRouteId":{"$ref":"#/$defs/id"},"primaryRouteVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"fallbackRouteId":{"$ref":"#/$defs/id"},"fallbackRouteVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"authorizationId":{"$ref":"#/$defs/id"},"approvalReceiptId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/id"},"receiptId":{"$ref":"#/$defs/id"},"policyId":{"$ref":"#/$defs/id"},"policyVersion":{"type":"integer","minimum":1,"maximum":9007199254740991}}}]},
+                "billing": {"type":"object","additionalProperties":false,"required":["mode","currency","amountMicros","pricingId","pricingVersion","receiptId","source"],"properties":{"mode":{"enum":["priced","zero-cost"]},"currency":{"const":"USD"},"amountMicros":{"type":"integer","minimum":0,"maximum":9007199254740991},"pricingId":{"$ref":"#/$defs/id"},"pricingVersion":{"type":"integer","minimum":1,"maximum":9007199254740991},"receiptId":{"$ref":"#/$defs/id"},"source":{"enum":["proxy-receipt","control-plane-receipt"]}},"allOf":[{"if":{"properties":{"mode":{"const":"zero-cost"}},"required":["mode"]},"then":{"properties":{"amountMicros":{"const":0}}}},{"if":{"properties":{"mode":{"const":"priced"}},"required":["mode"]},"then":{"properties":{"amountMicros":{"minimum":1}}}}]},
+                "node": {"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["id","architecture","bindingUid","bindingResourceVersion"],"properties":{"id":{"$ref":"#/$defs/id"},"architecture":{"enum":["amd64","arm64"]},"bindingUid":{"type":"string","minLength":1,"maxLength":128},"bindingResourceVersion":{"type":"string","minLength":1,"maxLength":128}}}]},
+                "workerProtocol": {
+                    "const": "blazn.dev/harness-worker/v1alpha1"
+                }
+            }
+        },
+        "compatibility": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "checkedBeforeSandbox",
+                "compatible",
+                "required",
+                "available",
+                "missing"
+            ],
+            "properties": {
+                "checkedBeforeSandbox": {
+                    "const": true
+                },
+                "compatible": {
+                    "type": "boolean"
+                },
+                "required": {
+                    "$ref": "#/$defs/capabilities"
+                },
+                "available": {
+                    "$ref": "#/$defs/capabilities"
+                },
+                "missing": {
+                    "$ref": "#/$defs/capabilities"
+                }
+            }
+        },
+        "credentialLeases":{"type":"array","maxItems":16,"uniqueItems":true,"items":{"type":"object","additionalProperties":false,"required":["id","capability","scope","issuedAt","expiresAt","status","revokedAt"],"properties":{"id":{"$ref":"#/$defs/id"},"capability":{"enum":["model.openai","model.anthropic","model.proxy","repository.read","tool.mcp"]},"scope":{"type":"string","pattern":"^(?:route|repo|tool):[a-z0-9][a-z0-9.:/_-]{0,119}$"},"issuedAt":{"type":"string","format":"date-time"},"expiresAt":{"type":"string","format":"date-time"},"status":{"enum":["active","revoked"]},"revokedAt":{"oneOf":[{"type":"null"},{"type":"string","format":"date-time"}]}},"allOf":[{"if":{"properties":{"status":{"const":"active"}},"required":["status"]},"then":{"properties":{"revokedAt":{"type":"null"}}}},{"if":{"properties":{"status":{"const":"revoked"}},"required":["status"]},"then":{"properties":{"revokedAt":{"type":"string","format":"date-time"}}}}]}},
+        "messages":{"type":"array","maxItems":1000,"items":{"type":"object","additionalProperties":false,"required":["id","runId","sessionId","conversationId","generation","ordinal","role","contentDigest","createdAt"],"properties":{"id":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"sessionId":{"$ref":"#/$defs/id"},"conversationId":{"$ref":"#/$defs/id"},"generation":{"type":"integer","minimum":0,"maximum":100},"ordinal":{"type":"integer","minimum":1,"maximum":10000},"role":{"enum":["user","assistant","tool"]},"parentMessageId":{"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]},"followUpToMessageId":{"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]},"contentDigest":{"$ref":"#/$defs/digest"},"createdAt":{"type":"string","format":"date-time"}}}},
+        "events": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+                "$ref": "#/$defs/event"
+            }
+        },
+        "result": {
+            "oneOf": [
+                {
+                    "type": "null"
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "status",
+                        "summary",
+                        "artifactIds",
+                        "artifacts",
+                        "patchArtifactId",
+                        "usage",
+                        "receiptDigest"
+                    ],
+                    "properties": {
+                        "status": {
+                            "enum": [
+                                "succeeded",
+                                "failed",
+                                "cancelled",
+                                "timed_out",
+                                "recovery_required"
+                            ]
+                        },
+                        "summary": {
+                            "type": "string",
+                            "maxLength": 32768
+                        },
+                        "artifactIds": {
+                            "type": "array",
+                            "maxItems": 128,
+                            "uniqueItems": true,
+                            "items": {
+                                "$ref": "#/$defs/id"
+                            }
+                        },
+                        "artifacts":{"type":"array","maxItems":128,"items":{"type":"object","additionalProperties":false,"required":["id","workspaceId","projectId","role","kind","mediaType","contentDigest"],"properties":{"id":{"$ref":"#/$defs/id"},"workspaceId":{"$ref":"#/$defs/id"},"projectId":{"$ref":"#/$defs/id"},"role":{"enum":["patch","summary","output"]},"kind":{"enum":["agent.patch","agent.summary","agent.output"]},"mediaType":{"enum":["text/x-diff","text/markdown","application/octet-stream"]},"contentDigest":{"$ref":"#/$defs/digest"}}}},
+                        "patchArtifactId": {
+                            "oneOf": [
+                                {
+                                    "$ref": "#/$defs/id"
+                                },
+                                {
+                                    "type": "null"
+                                }
+                            ]
+                        },
+                        "usage": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                                "modelRequests",
+                                "inputTokens",
+                                "outputTokens",
+                                "durationMs"
+                            ],
+                            "properties": {
+                                "modelRequests": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                },
+                                "inputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                },
+                                "outputTokens": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                },
+                                "durationMs": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                }
+                            }
+                        },
+                        "receiptDigest": {
+                            "$ref": "#/$defs/digest"
+                        }
+                    }
+                }
+            ]
+        }
+    },
+    "allOf": [
+        {
+            "if": {
+                "properties": {
+                    "compatibility": {
+                        "properties": {
+                            "compatible": {
+                                "const": false
+                            }
+                        },
+                        "required": [
+                            "compatible"
+                        ]
+                    }
+                },
+                "required": [
+                    "compatibility"
+                ]
+            },
+            "then": {
+                "properties": {
+                    "credentialLeases": {
+                        "maxItems": 0
+                    },
+                    "messages": {
+                        "maxItems": 0
+                    },
+                    "events": {
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "prefixItems": [
+                            {
+                                "properties": {
+                                    "type": {"const": "error"},
+                                    "source": {"const": "control-plane"},
+                                    "payload": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                            "code": {"const": "capability-mismatch"},
+                                            "missingCapabilities": {"type": "string", "minLength": 1, "maxLength": 4096}
+                                        },
+                                        "required": ["code", "missingCapabilities"]
+                                    },
+                                    "extensions": {"maxProperties": 0}
+                                },
+                                "required": ["type", "source", "payload", "extensions"]
+                            },
+                            {
+                                "properties": {
+                                    "type": {"const": "result.terminal"},
+                                    "source": {"const": "control-plane"},
+                                    "payload": {
+                                        "additionalProperties": false,
+                                        "properties": {"status": {"const": "failed"}},
+                                        "required": ["status"]
+                                    },
+                                    "extensions": {"maxProperties": 0}
+                                },
+                                "required": ["type", "source", "payload", "extensions"]
+                            }
+                        ]
+                    },
+                    "session": {
+                        "properties": {
+                            "messageCursor": {"const": 0},
+                            "eventCursor": {"const": 1},
+                            "followUpCount": {"const": 0},
+                            "resumeGeneration": {"const": 0},
+                            "cancellation": {
+                                "properties": {
+                                    "requested": {"const": false},
+                                    "acknowledged": {"const": false},
+                                    "processTreeTerminated": {"const": false},
+                                    "cleanupComplete": {"const": false},
+                                    "credentialsRevoked": {"const": false},
+                                    "artifactsHandled": {"const": false}
+                                }
+                            }
+                        }
+                    },
+                    "run": {
+                        "properties": {
+                            "sandboxId": {
+                                "type": "null"
+                            },
+                            "status": {
+                                "const": "failed"
+                            }
+                        }
+                    },
+                    "provenance": {"properties":{"proxyDecision":{"type":"null"},"fallbackAttempt":{"type":"null"},"billing":{"properties":{"mode":{"const":"zero-cost"},"amountMicros":{"const":0},"source":{"const":"control-plane-receipt"}}},"node":{"type":"null"}}},
+                    "result": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "const": "failed"
+                            },
+                            "summary": {"const": "Harness capability mismatch refused before Sandbox allocation."},
+                            "artifactIds": {"maxItems": 0},
+                            "artifacts": {"maxItems": 0},
+                            "patchArtifactId": {"type": "null"},
+                            "usage": {
+                                "properties": {
+                                    "modelRequests": {"const": 0},
+                                    "inputTokens": {"const": 0},
+                                    "outputTokens": {"const": 0}
+                                }
+                            }
+                        },
+                        "required": [
+                            "status"
+                        ]
+                    }
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": {
+                    "run": {
+                        "properties": {
+                            "status": {
+                                "enum": ["validating", "queued", "preparing", "running", "waiting", "cancelling"]
+                            }
+                        },
+                        "required": ["status"]
+                    }
+                },
+                "required": ["run"]
+            },
+            "then": {
+                "properties": {
+                    "result": {"type":"null"}
+                }
+            }
+        },
+        {"if":{"properties":{"compatibility":{"properties":{"compatible":{"const":true}},"required":["compatible"]}},"required":["compatibility"]},"then":{"properties":{"provenance":{"properties":{"proxyDecision":{"type":"object"},"node":{"type":"object"}}}}}},
+        {
+            "if": {
+                "properties": {
+                    "compatibility": {"properties":{"compatible":{"const":true}},"required":["compatible"]},
+                    "run": {"properties":{"status":{"enum":["succeeded","failed","cancelled","timed_out","recovery_required"]}},"required":["status"]}
+                },
+                "required": ["compatibility","run"]
+            },
+            "then": {"properties":{"run":{"properties":{"sandboxId":{"$ref":"#/$defs/id"}}}}}
+        },
+        {
+            "if": {
+                "properties": {
+                    "compatibility": {"properties":{"compatible":{"const":true}},"required":["compatible"]},
+                    "run": {"properties":{"status":{"const":"succeeded"}},"required":["status"]}
+                },
+                "required": ["compatibility","run"]
+            },
+            "then": {
+                "properties": {
+                    "session": {
+                        "properties": {
+                            "cancellation": {
+                                "properties": {
+                                    "requested": {"const": false},
+                                    "acknowledged": {"const": false},
+                                    "processTreeTerminated": {"const": false},
+                                    "cleanupComplete": {"const": true},
+                                    "credentialsRevoked": {"const": true},
+                                    "artifactsHandled": {"const": true}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "if": {
+                "properties": {
+                    "run": {
+                        "properties": {
+                            "status": {
+                                "enum": [
+                                    "succeeded",
+                                    "failed",
+                                    "cancelled",
+                                    "timed_out",
+                                    "recovery_required"
+                                ]
+                            }
+                        },
+                        "required": [
+                            "status"
+                        ]
+                    }
+                },
+                "required": [
+                    "run"
+                ]
+            },
+            "then": {
+                "properties": {
+                    "result": {
+                        "type": "object"
+                    }
+                },
+                "required": [
+                    "result"
+                ]
+            }
+        }
+    ],
+    "$defs": {
+        "id": {
+            "type": "string",
+            "format": "uuid"
+        },
+        "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "versionRef": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "id",
+                "digest"
+            ],
+            "properties": {
+                "id": {
+                    "$ref": "#/$defs/id"
+                },
+                "digest": {
+                    "$ref": "#/$defs/digest"
+                }
+            }
+        },
+        "capabilities": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+                "enum": [
+                    "task.one-shot",
+                    "message.follow-up",
+                    "conversation.resume",
+                    "event.structured",
+                    "event.streaming",
+                    "tool.native",
+                    "tool.mcp",
+                    "output.patch",
+                    "output.artifact",
+                    "checkpoint.recovery",
+                    "model.select",
+                    "provider.configure",
+                    "approval.prompt",
+                    "cancel.graceful"
+                ]
+            }
+        },
+        "event": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+                "schemaVersion",
+                "id",
+                "runId",
+                "sessionId",
+                "sequence",
+                "cursor",
+                "type",
+                "source",
+                "observedAt",
+                "payload",
+                "extensions"
+            ],
+            "properties": {
+                "schemaVersion": {
+                    "const": "blazn.dev/harness-event/v1alpha1"
+                },
+                "id": {
+                    "$ref": "#/$defs/id"
+                },
+                "runId": {
+                    "$ref": "#/$defs/id"
+                },
+                "sessionId": {
+                    "$ref": "#/$defs/id"
+                },
+                "sequence": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                },
+                "cursor": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                },
+                "type": {
+                    "enum": [
+                        "harness.preparing",
+                        "harness.ready",
+                        "harness.started",
+                        "harness.waiting",
+                        "harness.resumed",
+                        "harness.stopping",
+                        "harness.exited",
+                        "message.user",
+                        "message.assistant",
+                        "message.tool",
+                        "tool.requested",
+                        "tool.approved",
+                        "tool.started",
+                        "tool.completed",
+                        "tool.denied",
+                        "tool.failed",
+                        "approval.requested",
+                        "approval.resolved",
+                        "model.requested",
+                        "model.proxy-decided",
+                        "model.fallback-authorized",
+                        "model.fallback-decided",
+                        "model.usage",
+                        "billing.recorded",
+                        "artifact.created",
+                        "patch.created",
+                        "progress",
+                        "warning",
+                        "error",
+                        "followup.accepted",
+                        "cancellation.requested",
+                        "cancellation.acknowledged",
+                        "timeout",
+                        "result.terminal"
+                    ]
+                },
+                "source": {
+                    "enum": [
+                        "control-plane",
+                        "adapter",
+                        "harness",
+                        "proxy",
+                        "sandbox"
+                    ]
+                },
+                "observedAt": {
+                    "type": "string",
+                    "format": "date-time"
+                },
+                "payload": {
+                    "type": "object",
+                    "maxProperties": 32,
+                    "additionalProperties": {
+                        "type": [
+                            "string",
+                            "number",
+                            "integer",
+                            "boolean",
+                            "null"
+                        ],
+                        "maxLength": 4096
+                    }
+                },
+                "extensions": {
+                    "type": "object",
+                    "maxProperties": 8,
+                    "propertyNames": {
+                        "pattern": "^(?:hermes|codex|claude|generic)\\.[a-z][a-z0-9._-]{0,63}$"
+                    },
+                    "additionalProperties": {
+                        "type": "object",
+                        "maxProperties": 32,
+                        "propertyNames": {
+                            "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,63}$"
+                        },
+                        "additionalProperties": {
+                            "type": [
+                                "string",
+                                "number",
+                                "integer",
+                                "boolean",
+                                "null"
+                            ],
+                            "maxLength": 4096
+                        }
+                    }
+                }
+            },
+            "allOf": [
+                {
+                    "if": {"properties":{"type":{"const":"model.requested"}},"required":["type"]},
+                    "then": {
+                        "properties": {
+                            "payload": {
+                                "oneOf": [
+                                    {
+                                        "additionalProperties": false,
+                                        "required": ["requestId","routeId","routeVersion"],
+                                        "properties": {
+                                            "requestId": {"$ref":"#/$defs/id"},
+                                            "routeId": {"$ref":"#/$defs/id"},
+                                            "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991}
+                                        }
+                                    },
+                                    {
+                                        "additionalProperties": false,
+                                        "required": ["requestId","routeId","routeVersion","attempt","authorizationId"],
+                                        "properties": {
+                                            "requestId": {"$ref":"#/$defs/id"},
+                                            "routeId": {"$ref":"#/$defs/id"},
+                                            "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
+                                            "attempt": {"const":1},
+                                            "authorizationId": {"$ref":"#/$defs/id"}
+                                        }
+                                    }
+                                ]
+                            },
+                            "extensions": {"maxProperties":0}
+                        }
+                    }
+                },
+                {
+                    "if": {"properties":{"type":{"const":"model.usage"}},"required":["type"]},
+                    "then": {
+                        "properties": {
+                            "payload": {
+                                "additionalProperties": false,
+                                "required": ["requestId","routeId","routeVersion","inputTokens","outputTokens"],
+                                "properties": {
+                                    "requestId": {"$ref":"#/$defs/id"},
+                                    "routeId": {"$ref":"#/$defs/id"},
+                                    "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
+                                    "inputTokens": {"type":"integer","minimum":0,"maximum":9007199254740991},
+                                    "outputTokens": {"type":"integer","minimum":0,"maximum":9007199254740991}
+                                }
+                            },
+                            "extensions": {"maxProperties":0}
+                        }
+                    }
+                },
+                {
+                    "if": {"properties":{"type":{"const":"model.proxy-decided"}},"required":["type"]},
+                    "then": {
+                        "properties": {
+                            "payload": {
+                                "additionalProperties": false,
+                                "required": ["requestId","outcome","routeId","routeVersion","policyId","policyVersion","authentication","authorizationId"],
+                                "properties": {
+                                    "requestId": {"$ref":"#/$defs/id"},
+                                    "outcome": {"enum":["ROUTED","DIRECT","BYPASS"]},
+                                    "routeId": {"$ref":"#/$defs/id"},
+                                    "routeVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
+                                    "policyId": {"$ref":"#/$defs/id"},
+                                    "policyVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
+                                    "authentication": {"enum":["proxy-workload-proof","provider-capability-proof"]},
+                                    "authorizationId": {"oneOf":[{"$ref":"#/$defs/id"},{"type":"null"}]}
+                                }
+                            },
+                            "extensions": {"maxProperties":0}
+                        }
+                    }
+                },
+                {
+                    "if": {"properties":{"type":{"const":"billing.recorded"}},"required":["type"]},
+                    "then": {
+                        "properties": {
+                            "payload": {
+                                "additionalProperties": false,
+                                "required": ["mode","currency","amountMicros","pricingId","pricingVersion","receiptId","source"],
+                                "properties": {
+                                    "mode": {"enum":["priced","zero-cost"]},
+                                    "currency": {"const":"USD"},
+                                    "amountMicros": {"type":"integer","minimum":0,"maximum":9007199254740991},
+                                    "pricingId": {"$ref":"#/$defs/id"},
+                                    "pricingVersion": {"type":"integer","minimum":1,"maximum":9007199254740991},
+                                    "receiptId": {"$ref":"#/$defs/id"},
+                                    "source": {"enum":["proxy-receipt","control-plane-receipt"]}
+                                }
+                            },
+                            "extensions": {"maxProperties":0}
+                        }
+                    }
+                }
+            ]
+        }
+    },
+    "x-blazn-core-resource-model": [
+        "Workspace",
+        "Project",
+        "Agent",
+        "AgentVersion",
+        "Run",
+        "Operation",
+        "Sandbox",
+        "Artifact",
+        "Session",
+        "Message",
+        "Event"
+    ],
+    "x-blazn-authority": "Blazn Run state is authoritative; adapters cannot author cost, security, approval, cancellation, or success facts without platform corroboration"
+}

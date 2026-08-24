@@ -1,0 +1,131 @@
+{
+    "schemaVersion": "blazn.dev/harness-conformance/v1alpha1",
+    "adapterKind": "hermes",
+    "workspaceId": "40000000-0000-4000-8000-000000000001",
+    "harnessVersionId": "20000000-0000-4000-8000-000000000001",
+    "profileId": "21000000-0000-4000-8000-000000000001",
+    "platform": "linux/amd64",
+    "resolvedHarness": {
+        "definition": {"id":"19000000-0000-4000-8000-000000000001","kind":"hermes","resourceVersion":1},
+        "version": {"id":"20000000-0000-4000-8000-000000000001","digest":"sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7"},
+        "profile": {"id":"21000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","digest":"sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74"}
+    },
+    "cases": [
+        "discover-capabilities",
+        "reject-capability-mismatch-before-sandbox",
+        "prepare-no-raw-credentials",
+        "one-shot",
+        "follow-up",
+        "resume",
+        "tool-and-approval-events",
+        "graceful-cancel-process-tree",
+        "terminal-result-artifacts",
+        "cleanup-no-secrets"
+    ],
+    "portableEvaluation": {
+        "id": "90000000-0000-4000-8000-000000000001",
+        "version": 1,
+        "agentVersionId": "11000000-0000-4000-8000-000000000001",
+        "agentVersionDigest": "sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28",
+        "sourceRepository": "https://github.com/blazncloud/blazn.git",
+        "sourceCommit": "1111111111111111111111111111111111111111",
+        "templateVersionId": "60000000-0000-4000-8000-000000000001",
+        "templateDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "taskDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "assertions": [
+            "no-push",
+            "patch-produced",
+            "summary-produced",
+            "exact-source",
+            "no-secret-output",
+            "cleanup-complete",
+            "normalized-events",
+            "same-core-resources"
+        ],
+        "maxDurationSeconds": 1800,
+        "maxModelRequests": 20
+    },
+    "result": {
+        "passed": true,
+        "caseResults": [
+            {
+                "case": "discover-capabilities",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000001"
+            },
+            {
+                "case": "reject-capability-mismatch-before-sandbox",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000002"
+            },
+            {
+                "case": "prepare-no-raw-credentials",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000003"
+            },
+            {
+                "case": "one-shot",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000004"
+            },
+            {
+                "case": "follow-up",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000005"
+            },
+            {
+                "case": "resume",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000006"
+            },
+            {
+                "case": "tool-and-approval-events",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000007"
+            },
+            {
+                "case": "graceful-cancel-process-tree",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000008"
+            },
+            {
+                "case": "terminal-result-artifacts",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000009"
+            },
+            {
+                "case": "cleanup-no-secrets",
+                "passed": true,
+                "evidenceArtifactId": "91000000-0000-4000-8000-000000000010"
+            }
+        ],
+        "artifactIds": [
+            "91000000-0000-4000-8000-000000000001",
+            "91000000-0000-4000-8000-000000000002",
+            "91000000-0000-4000-8000-000000000003",
+            "91000000-0000-4000-8000-000000000004",
+            "91000000-0000-4000-8000-000000000005",
+            "91000000-0000-4000-8000-000000000006",
+            "91000000-0000-4000-8000-000000000007",
+            "91000000-0000-4000-8000-000000000008",
+            "91000000-0000-4000-8000-000000000009",
+            "91000000-0000-4000-8000-000000000010"
+        ],
+        "evidenceArtifacts": [
+            {"id":"91000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","role":"discover-capabilities","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0101010101010101010101010101010101010101010101010101010101010101"},
+            {"id":"91000000-0000-4000-8000-000000000002","workspaceId":"40000000-0000-4000-8000-000000000001","role":"reject-capability-mismatch-before-sandbox","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0202020202020202020202020202020202020202020202020202020202020202"},
+            {"id":"91000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000001","role":"prepare-no-raw-credentials","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0303030303030303030303030303030303030303030303030303030303030303"},
+            {"id":"91000000-0000-4000-8000-000000000004","workspaceId":"40000000-0000-4000-8000-000000000001","role":"one-shot","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0404040404040404040404040404040404040404040404040404040404040404"},
+            {"id":"91000000-0000-4000-8000-000000000005","workspaceId":"40000000-0000-4000-8000-000000000001","role":"follow-up","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0505050505050505050505050505050505050505050505050505050505050505"},
+            {"id":"91000000-0000-4000-8000-000000000006","workspaceId":"40000000-0000-4000-8000-000000000001","role":"resume","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0606060606060606060606060606060606060606060606060606060606060606"},
+            {"id":"91000000-0000-4000-8000-000000000007","workspaceId":"40000000-0000-4000-8000-000000000001","role":"tool-and-approval-events","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0707070707070707070707070707070707070707070707070707070707070707"},
+            {"id":"91000000-0000-4000-8000-000000000008","workspaceId":"40000000-0000-4000-8000-000000000001","role":"graceful-cancel-process-tree","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0808080808080808080808080808080808080808080808080808080808080808"},
+            {"id":"91000000-0000-4000-8000-000000000009","workspaceId":"40000000-0000-4000-8000-000000000001","role":"terminal-result-artifacts","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:0909090909090909090909090909090909090909090909090909090909090909"},
+            {"id":"91000000-0000-4000-8000-000000000010","workspaceId":"40000000-0000-4000-8000-000000000001","role":"cleanup-no-secrets","kind":"harness.conformance","mediaType":"application/vnd.blazn.harness-conformance+json","contentDigest":"sha256:1010101010101010101010101010101010101010101010101010101010101010"}
+        ],
+        "runId": "30000000-0000-4000-8000-000000000001",
+        "receiptDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "parityGroupId": "92000000-0000-4000-8000-000000000001",
+        "runReceipt": {"runId":"30000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","receiptDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","agentVersionId":"11000000-0000-4000-8000-000000000001","agentVersionDigest":"sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28","harnessVersionId":"20000000-0000-4000-8000-000000000001","harnessVersionDigest":"sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7","profileId":"21000000-0000-4000-8000-000000000001","profileDigest":"sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74","sourceRepository":"https://github.com/blazncloud/blazn.git","sourceCommit":"1111111111111111111111111111111111111111","templateVersionId":"60000000-0000-4000-8000-000000000001","templateDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","taskDigest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","resultDigest":"sha256:12ab548bf72ee788159fc53478f13a1edc7644c9dad6df12668daea92c1c11be"}
+    }
+}
