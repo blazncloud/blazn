@@ -13,17 +13,23 @@ for command_name in curl jq stat mktemp grep wc; do command -v "$command_name" >
 [ "$API_ORIGIN" = http://127.0.0.1:58081 ] || die "branding API origin differs from the reviewed loopback endpoint"
 [ "$DOMAIN" = auth.blazn.benpelo.com ] || die "branding domain differs from the reviewed identity hostname"
 case $TOKEN_FILE in /*) ;; *) die "token file path must be absolute" ;; esac
-[ ! -L "$TOKEN_FILE" ] && [ -f "$TOKEN_FILE" ] || die "token file is unavailable or symlinked"
+if [ -L "$TOKEN_FILE" ] || [ ! -f "$TOKEN_FILE" ]; then
+  die "token file is unavailable or symlinked"
+fi
 [ "$(stat -c '%u:%a:%h' -- "$TOKEN_FILE")" = 0:600:1 ] || die "token file must be root-owned mode 0600 with one link"
 token=$(cat "$TOKEN_FILE")
 printf '%s\n' "$token" | LC_ALL=C grep -Eq '^[A-Za-z0-9._~-]{32,4096}$' || die "token format is invalid"
 
 for asset in branding.json logo-light.svg logo-dark.svg icon-light.svg icon-dark.svg; do
   path=$BRANDING_DIR/$asset
-  [ ! -L "$path" ] && [ -f "$path" ] || die "branding asset is missing or symlinked: $asset"
+  if [ -L "$path" ] || [ ! -f "$path" ]; then
+    die "branding asset is missing or symlinked: $asset"
+  fi
   size=$(wc -c <"$path" | tr -d ' ')
   case $size in ''|*[!0-9]*) die "branding asset size is invalid: $asset" ;; esac
-  [ "$size" -gt 0 ] && [ "$size" -le 262144 ] || die "branding asset size is invalid: $asset"
+  if [ "$size" -le 0 ] || [ "$size" -gt 262144 ]; then
+    die "branding asset size is invalid: $asset"
+  fi
 done
 jq -e 'type == "object" and .primaryColor == "#f97316" and .primaryColorDark == "#fb923c" and .backgroundColor == "#fff7ed" and .backgroundColorDark == "#090a0f" and .disableWatermark == true and .themeMode == "THEME_MODE_AUTO"' "$BRANDING_DIR/branding.json" >/dev/null || die "branding policy differs from the reviewed palette"
 
