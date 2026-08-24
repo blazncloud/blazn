@@ -470,6 +470,52 @@ func awaitError(t *testing.T, channel <-chan error, label string) error {
 	}
 }
 
+func TestValidateWorkItemRejectsNoncanonicalAndDuplicateSources(t *testing.T) {
+	item, _ := createFixture(t)
+	valid := Source{Name: "source", URL: "https://github.com/blazncloud/blazn.git", Destination: "/workspace/src/source", Commit: strings.Repeat("a", 40)}
+	item.Sources = []Source{valid}
+	if err := validateWorkItem(item); err != nil {
+		t.Fatalf("canonical source rejected: %v", err)
+	}
+	for label, mutate := range map[string]func(*Source){
+		"userinfo":           func(value *Source) { value.URL = "https://user@example.test/repo.git" },
+		"query":              func(value *Source) { value.URL += "?token=forbidden" },
+		"fragment":           func(value *Source) { value.URL += "#main" },
+		"uppercase host":     func(value *Source) { value.URL = "https://GitHub.com/blazncloud/blazn.git" },
+		"empty host label":   func(value *Source) { value.URL = "https://example..test/repo.git" },
+		"invalid host label": func(value *Source) { value.URL = "https://-example.test/repo.git" },
+		"noncanonical ipv4":  func(value *Source) { value.URL = "https://010.0.0.1/repo.git" },
+		"named port":         func(value *Source) { value.URL = "https://example.test:https/repo.git" },
+		"encoded path":       func(value *Source) { value.URL = "https://example.test/repo%2egit" },
+		"path traversal":     func(value *Source) { value.Destination = "/workspace/src/../escape" },
+		"wrong root":         func(value *Source) { value.Destination = "/workspace/other/source" },
+		"mutable commit":     func(value *Source) { value.Commit = "main" },
+		"noncanonical name":  func(value *Source) { value.Name = "Source" },
+	} {
+		t.Run(label, func(t *testing.T) {
+			candidate := item
+			source := valid
+			mutate(&source)
+			candidate.Sources = []Source{source}
+			if err := validateWorkItem(candidate); err == nil {
+				t.Fatalf("unsafe source accepted: %#v", source)
+			}
+		})
+	}
+	for label, source := range map[string]Source{
+		"duplicate name":        {Name: valid.Name, URL: "https://example.test/other.git", Destination: "/workspace/src/other", Commit: strings.Repeat("b", 40)},
+		"duplicate destination": {Name: "other", URL: "https://example.test/other.git", Destination: valid.Destination, Commit: strings.Repeat("b", 40)},
+	} {
+		t.Run(label, func(t *testing.T) {
+			candidate := item
+			candidate.Sources = []Source{valid, source}
+			if err := validateWorkItem(candidate); err == nil {
+				t.Fatal("duplicate source identity accepted")
+			}
+		})
+	}
+}
+
 func createFixture(t *testing.T) (WorkItem, BackendState) {
 	t.Helper()
 	record := sandboxcontrol.SandboxRecord{Name: "sandbox-1", Namespace: sandboxcontrol.Namespace,

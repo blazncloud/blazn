@@ -6,8 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"path"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +22,7 @@ var workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 var quantityPattern = regexp.MustCompile(`^[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?$`)
 var commitPattern = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 var immutableImagePattern = regexp.MustCompile(`^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$`)
+var sourceNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 const defaultLeaseSafetyMargin = time.Second
 
@@ -360,10 +365,12 @@ func validateWorkItem(item WorkItem) error {
 			return fmt.Errorf("resource quantity is invalid")
 		}
 	}
+	seenSourceNames, seenSourceDestinations := map[string]bool{}, map[string]bool{}
 	for _, source := range item.Sources {
-		if source.Name == "" || source.URL == "" || source.Destination == "" || !commitPattern.MatchString(source.Commit) {
+		if !validControllerSource(source) || seenSourceNames[source.Name] || seenSourceDestinations[source.Destination] {
 			return fmt.Errorf("source identity is invalid")
 		}
+		seenSourceNames[source.Name], seenSourceDestinations[source.Destination] = true, true
 	}
 	for _, artifact := range item.Artifacts {
 		if artifact.Name == "" || artifact.Path == "" || artifact.MediaType == "" {
@@ -396,6 +403,56 @@ func validateWorkItem(item WorkItem) error {
 		return fmt.Errorf("persisted admission identity is inconsistent")
 	}
 	return nil
+}
+
+func validControllerSource(source Source) bool {
+	if !sourceNamePattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) ||
+		len(source.URL) > 2048 || strings.ContainsAny(source.URL, "\\\x00\r\n\t") ||
+		len(source.Destination) > 512 || !strings.HasPrefix(source.Destination, "/workspace/src/") ||
+		path.Clean(source.Destination) != source.Destination || strings.Contains(source.Destination, "//") || strings.Contains(source.Destination, `\`) {
+		return false
+	}
+	parsed, err := url.Parse(source.URL)
+	if err != nil || parsed.Scheme != "https" || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" || parsed.Host == "" || parsed.Path == "" || path.Clean(parsed.Path) != parsed.Path || strings.ContainsAny(parsed.Path, "\\\x00\r\n\t") {
+		return false
+	}
+	hostname := parsed.Hostname()
+	if hostname == "" || hostname != strings.ToLower(hostname) || strings.HasSuffix(hostname, ".") || !validSourceHostname(hostname) {
+		return false
+	}
+	port := parsed.Port()
+	if port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return false
+		}
+	}
+	authority := hostname
+	if strings.Contains(hostname, ":") {
+		authority = "[" + hostname + "]"
+	}
+	if port != "" {
+		authority += ":" + port
+	}
+	return parsed.Host == authority && parsed.String() == source.URL
+}
+
+func validSourceHostname(hostname string) bool {
+	if ip := net.ParseIP(hostname); ip != nil {
+		return ip.String() == hostname
+	}
+	if strings.Trim(hostname, "0123456789.") == "" {
+		return false
+	}
+	if len(hostname) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(hostname, ".") {
+		if !sourceNamePattern.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
 func validateCreated(item WorkItem, state BackendState) error {
 	if !state.Exists || state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace || state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy || state.Record.UID == "" || state.Record.ResourceVersion == "" || state.AdmissionObservation == nil {
