@@ -346,8 +346,12 @@ func canonicalCIDRs(values []string) ([]string, error) {
 	set := map[string]bool{}
 	for _, value := range values {
 		ip, network, err := net.ParseCIDR(value)
-		if err != nil || network.String() != value || !ip.Equal(network.IP) {
+		if err != nil || network.String() != value || !ip.Equal(network.IP) || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() {
 			return nil, errors.New("CIDR is noncanonical")
+		}
+		ones, bits := network.Mask.Size()
+		if ones != bits || bits != 32 && bits != 128 {
+			return nil, errors.New("CIDR must identify one exact host")
 		}
 		set[value] = true
 	}

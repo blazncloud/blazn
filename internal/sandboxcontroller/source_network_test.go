@@ -88,7 +88,7 @@ func TestKubernetesSourceNetworkTransitionsFromBoundedBootstrapToDefaultDeny(t *
 	server := httptest.NewTLSServer(http.HandlerFunc(api.serve))
 	defer server.Close()
 	network, err := NewKubernetesSourceNetwork(KubernetesSourceNetworkConfig{BaseURL: server.URL, HTTPClient: server.Client(),
-		DNSCIDRs: []string{"10.152.183.10/32"}, SourceCIDRs: map[string][]string{"example.test": {"203.0.113.0/24"}}})
+		DNSCIDRs: []string{"10.152.183.10/32"}, SourceCIDRs: map[string][]string{"example.test": {"203.0.113.4/32"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +124,9 @@ func TestKubernetesSourceNetworkTransitionsFromBoundedBootstrapToDefaultDeny(t *
 func TestKubernetesSourceNetworkRejectsUnapprovedHostsCIDRsAndUnknownOwnedPolicy(t *testing.T) {
 	for _, config := range []KubernetesSourceNetworkConfig{
 		{BaseURL: "https://kubernetes.test", HTTPClient: http.DefaultClient, DNSCIDRs: []string{"10.0.0.1/24"}, SourceCIDRs: map[string][]string{"example.test": {"203.0.113.0/24"}}},
+		{BaseURL: "https://kubernetes.test", HTTPClient: http.DefaultClient, DNSCIDRs: []string{"10.0.0.0/24"}, SourceCIDRs: map[string][]string{"example.test": {"203.0.113.4/32"}}},
+		{BaseURL: "https://kubernetes.test", HTTPClient: http.DefaultClient, DNSCIDRs: []string{"10.0.0.1/32"}, SourceCIDRs: map[string][]string{"example.test": {"0.0.0.0/0"}}},
+		{BaseURL: "https://kubernetes.test", HTTPClient: http.DefaultClient, DNSCIDRs: []string{"::1/128"}, SourceCIDRs: map[string][]string{"example.test": {"2001:db8::1/128"}}},
 		{BaseURL: "https://kubernetes.test", HTTPClient: http.DefaultClient, DNSCIDRs: []string{"10.0.0.1/32"}, SourceCIDRs: map[string][]string{"Example.test": {"203.0.113.0/24"}}},
 	} {
 		if _, err := NewKubernetesSourceNetwork(config); err == nil {
@@ -137,7 +140,7 @@ func TestKubernetesSourceNetworkRejectsUnapprovedHostsCIDRsAndUnknownOwnedPolicy
 	server := httptest.NewTLSServer(http.HandlerFunc(api.serve))
 	defer server.Close()
 	network, err := NewKubernetesSourceNetwork(KubernetesSourceNetworkConfig{BaseURL: server.URL, HTTPClient: server.Client(),
-		DNSCIDRs: []string{"10.152.183.10/32"}, SourceCIDRs: map[string][]string{"example.test": {"203.0.113.0/24"}}})
+		DNSCIDRs: []string{"10.152.183.10/32"}, SourceCIDRs: map[string][]string{"example.test": {"203.0.113.4/32"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
