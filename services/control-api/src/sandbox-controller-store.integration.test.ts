@@ -225,12 +225,15 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.match(artifactId??"",/^[0-9a-f-]{36}$/);
     assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifact),artifactId);
     assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,{...artifact,digest:`sha256:${"e".repeat(64)}`}),undefined);
-    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,[]),true);
-    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,[]),true,"artifact phase replay failed");
+    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,[]),false,
+      "unaccounted optional artifact completed the phase");
+    const artifactWarnings=["optional_artifact_missing:logs"];
+    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifactWarnings),true);
+    assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifactWarnings),true,"artifact phase replay failed");
     const stopCompletion = { status: "succeeded" as const, expectedBackendUid: "backend-stop", expectedBackendResourceVersion: "resource-stop",
       expectedWorkloadDigest: stop!.admissionObservation!.workload.digest,
       expectedObservationDigest: stop!.admissionObservation!.digest, cleanupComplete: true, artifactExportComplete: true, grantsRevoked: true,
-      backendDestroyed: true, artifactIds: [artifactId!], warningCodes: [], error: null };
+      backendDestroyed: true, artifactIds: [artifactId!], warningCodes: artifactWarnings, error: null };
     assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken,
       { ...stopCompletion, expectedObservationDigest: `sha256:${"0".repeat(64)}` }), false);
     assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken, stopCompletion), true);
