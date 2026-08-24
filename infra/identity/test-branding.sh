@@ -37,6 +37,9 @@ for required in \
   '--retry-max-time 30' \
   '--connect-timeout 3' \
   '--max-time 15' \
+  'token_size=' \
+  'token_size" -gt 4096' \
+  "grep -Eq '^[A-Za-z0-9._~-]+" \
   'stat -c '\''%u:%a:%h'\'''; do
   grep -F -- "$required" "$installer" >/dev/null
 done
