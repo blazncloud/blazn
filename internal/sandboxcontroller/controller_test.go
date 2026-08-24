@@ -599,6 +599,15 @@ func TestValidateWorkItemRejectsNoncanonicalAndDuplicateSources(t *testing.T) {
 	if err := validateWorkItem(reversed); err == nil {
 		t.Fatal("reverse-ordered nested destination was accepted")
 	}
+	intervening := item
+	intervening.Sources = []Source{
+		{Name: "parent", URL: "https://example.test/parent.git", Destination: "/workspace/src/a", Commit: strings.Repeat("a", 40)},
+		{Name: "sibling", URL: "https://example.test/sibling.git", Destination: "/workspace/src/a-foo", Commit: strings.Repeat("b", 40)},
+		{Name: "child", URL: "https://example.test/child.git", Destination: "/workspace/src/a/x", Commit: strings.Repeat("c", 40)},
+	}
+	if err := validateWorkItem(intervening); err == nil {
+		t.Fatal("lexically intervening nested destination was accepted")
+	}
 }
 
 func createFixture(t *testing.T) (WorkItem, BackendState) {

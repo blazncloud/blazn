@@ -516,6 +516,13 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 		{Name: "child", URL: "https://example.test/child", Destination: "/workspace/src/repo/vendor", Commit: strings.Repeat("b", 40)},
 	}
 	assertCode(t, ValidateCreate(nested, trustedRuntimes()), ErrInvalidRequest)
+	intervening := testCreate()
+	intervening.Sources = []SourceMount{
+		{Name: "parent", URL: "https://example.test/parent", Destination: "/workspace/src/a", Commit: strings.Repeat("a", 40)},
+		{Name: "sibling", URL: "https://example.test/sibling", Destination: "/workspace/src/a-foo", Commit: strings.Repeat("b", 40)},
+		{Name: "child", URL: "https://example.test/child", Destination: "/workspace/src/a/x", Commit: strings.Repeat("c", 40)},
+	}
+	assertCode(t, ValidateCreate(intervening, trustedRuntimes()), ErrInvalidRequest)
 	withoutIO := testCreate()
 	withoutIO.Artifacts, withoutIO.HelperImage = nil, ""
 	if err := ValidateCreate(withoutIO, trustedRuntimes()); err != nil {

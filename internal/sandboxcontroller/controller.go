@@ -458,9 +458,11 @@ func validateWorkItem(item WorkItem) error {
 		sourceDestinations = append(sourceDestinations, source.Destination)
 	}
 	sort.Strings(sourceDestinations)
-	for index := 1; index < len(sourceDestinations); index++ {
-		if strings.HasPrefix(sourceDestinations[index], sourceDestinations[index-1]+"/") {
-			return fmt.Errorf("source destinations overlap")
+	for parent := 0; parent < len(sourceDestinations); parent++ {
+		for child := parent + 1; child < len(sourceDestinations); child++ {
+			if strings.HasPrefix(sourceDestinations[child], sourceDestinations[parent]+"/") {
+				return fmt.Errorf("source destinations overlap")
+			}
 		}
 	}
 	for _, artifact := range item.Artifacts {

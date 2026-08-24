@@ -198,9 +198,11 @@ func ValidateSourceManifest(body []byte) (SourceManifest, []byte, error) {
 		destinations[index] = source.Destination
 	}
 	sort.Strings(destinations)
-	for index := 1; index < len(destinations); index++ {
-		if strings.HasPrefix(destinations[index], destinations[index-1]+"/") {
-			return SourceManifest{}, nil, protocolError("source_manifest_invalid", nil)
+	for parent := 0; parent < len(destinations); parent++ {
+		for child := parent + 1; child < len(destinations); child++ {
+			if strings.HasPrefix(destinations[child], destinations[parent]+"/") {
+				return SourceManifest{}, nil, protocolError("source_manifest_invalid", nil)
+			}
 		}
 	}
 	canonical, err := json.Marshal(manifest)

@@ -49,7 +49,7 @@ for boundary in \
   'Depth: 1' \
   'Tags: git.NoTags' \
   'LargeObjectThreshold: 1 << 20' \
-  'cache.NewObjectLRU(4 * cache.MiByte)' \
+  'cache.NewObjectLRU(4*cache.MiByte)' \
   'Auth:'; do
   if [ "$boundary" = 'Auth:' ]; then
     if grep -F "$boundary" "$source" >/dev/null; then
