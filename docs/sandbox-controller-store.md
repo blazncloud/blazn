@@ -81,3 +81,20 @@ retry/recovery, exact backend/admission completion, partial uniqueness,
 concurrent expiry enqueue, monotonic events, and denial of direct controller
 table reads and writes. It uses a disposable Docker network and database only;
 it performs no live-cluster mutation.
+
+## Controller secret mounting
+
+`BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE` intentionally retains the stricter
+private-file contract reviewed with this authority boundary: a regular file
+owned by the controller UID, mode `0600`, and one hard link. A Kubernetes Secret
+projection is a symlink and is not accepted directly. The eventual deployment
+must use an init container to copy the database URL from its read-only Secret
+projection into a controller-owned `emptyDir`, set the final owner and `0600`
+mode, and mount only that copied file into the controller container. Runtime
+code must not weaken this check to accommodate projection symlinks.
+
+The in-cluster Kubernetes token has a different lifecycle and is read fresh
+from its bounded projected volume for every API request so rotation works. The
+Kubernetes CA must be presented as a stable regular file (the deployment may
+use the same init-copy pattern). No deployment, ServiceAccount, Role, or
+RoleBinding is added by the client-wiring slice itself.

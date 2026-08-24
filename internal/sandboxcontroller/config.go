@@ -4,7 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -13,9 +17,24 @@ import (
 
 const maxDatabaseURLBytes = 16 * 1024
 
+const (
+	defaultServiceAccountDirectory = "/var/run/secrets/kubernetes.io/serviceaccount"
+	defaultKubernetesCAFile        = defaultServiceAccountDirectory + "/ca.crt"
+	defaultKubernetesTokenFile     = defaultServiceAccountDirectory + "/token"
+)
+
+var kubernetesDNSNamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`)
+
+type KubernetesConfig struct {
+	BaseURL   string
+	CAFile    string
+	TokenFile string
+}
+
 type RuntimeConfig struct {
 	Controller  Config
 	DatabaseURL string
+	Kubernetes  KubernetesConfig
 }
 
 type secretFileOps struct {
@@ -74,7 +93,66 @@ func ConfigFromEnv(getenv func(string) string) (RuntimeConfig, error) {
 	if err := validateConfig(config); err != nil {
 		return RuntimeConfig{}, err
 	}
-	return RuntimeConfig{Controller: config, DatabaseURL: databaseURL}, nil
+	kubernetes, err := kubernetesConfigFromEnv(getenv)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	return RuntimeConfig{Controller: config, DatabaseURL: databaseURL, Kubernetes: kubernetes}, nil
+}
+
+func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, error) {
+	host := getenv("BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST")
+	if host == "" {
+		host = getenv("KUBERNETES_SERVICE_HOST")
+	}
+	port := getenv("BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT")
+	if port == "" {
+		port = getenv("KUBERNETES_SERVICE_PORT_HTTPS")
+	}
+	if host == "" || port == "" || !validKubernetesHost(host) || !validKubernetesPort(port) {
+		return KubernetesConfig{}, errors.New("sandbox controller Kubernetes API endpoint is invalid")
+	}
+	caFile := getenv("BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE")
+	if caFile == "" {
+		caFile = defaultKubernetesCAFile
+	}
+	tokenFile := getenv("BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE")
+	if tokenFile == "" {
+		tokenFile = defaultKubernetesTokenFile
+	}
+	if !validAbsoluteFilePath(caFile) || !validAbsoluteFilePath(tokenFile) || caFile == tokenFile {
+		return KubernetesConfig{}, errors.New("sandbox controller Kubernetes credential paths are invalid")
+	}
+	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
+	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile}, nil
+}
+
+func validKubernetesHost(value string) bool {
+	if value == "" || value != strings.ToLower(value) || strings.TrimSpace(value) != value ||
+		strings.ContainsAny(value, "[]/%\x00") || len(value) > 253 {
+		return false
+	}
+	if parsed := net.ParseIP(value); parsed != nil {
+		return parsed.String() == value && !parsed.IsUnspecified() && !parsed.IsMulticast()
+	}
+	return !strings.ContainsRune(value, ':') && kubernetesDNSNamePattern.MatchString(value) && value != "localhost"
+}
+
+func validKubernetesPort(value string) bool {
+	if value == "" || value[0] == '0' {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	parsed, err := strconv.ParseUint(value, 10, 16)
+	return err == nil && parsed > 0
+}
+
+func validAbsoluteFilePath(value string) bool {
+	return filepath.IsAbs(value) && filepath.Clean(value) == value && !strings.ContainsRune(value, '\x00')
 }
 
 func readSecretFile(path string) (string, error) {
