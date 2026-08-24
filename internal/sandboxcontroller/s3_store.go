@@ -133,6 +133,44 @@ func (s *S3ArtifactStore) Put(ctx context.Context, spec ArtifactObjectSpec, body
 	}
 }
 
+func (s *S3ArtifactStore) Get(ctx context.Context, spec ArtifactObjectSpec) ([]byte, bool, error) {
+	if err := validateArtifactObjectSpec(spec); err != nil {
+		return nil, false, err
+	}
+	request, err := s.request(ctx, http.MethodGet, spec, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	response, err := s.client.Do(request)
+	if err != nil {
+		return nil, false, errors.New("artifact object GET failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		if err := drainS3Response(response); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	if response.StatusCode != http.StatusOK {
+		if err := drainS3Response(response); err != nil {
+			return nil, false, err
+		}
+		return nil, false, fmt.Errorf("artifact object GET returned HTTP %d", response.StatusCode)
+	}
+	if response.ContentLength > maxArtifactBytes {
+		return nil, false, errors.New("artifact object GET size exceeds the configured limit")
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxArtifactBytes+1))
+	if err != nil || len(body) > maxArtifactBytes {
+		return nil, false, errors.New("artifact object GET response is invalid")
+	}
+	if int64(len(body)) != spec.Size {
+		return nil, false, errors.New("artifact object GET size differs")
+	}
+	return body, true, nil
+}
+
 func (s *S3ArtifactStore) Head(ctx context.Context, spec ArtifactObjectSpec) (ArtifactObjectHead, bool, error) {
 	if err := validateArtifactObjectSpec(spec); err != nil {
 		return ArtifactObjectHead{}, false, err

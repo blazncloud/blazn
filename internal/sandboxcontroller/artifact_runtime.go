@@ -2,6 +2,8 @@ package sandboxcontroller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sort"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 type ArtifactObjectStore interface {
 	Put(context.Context, ArtifactObjectSpec, []byte) (bool, error)
+	Get(context.Context, ArtifactObjectSpec) ([]byte, bool, error)
 	Head(context.Context, ArtifactObjectSpec) (ArtifactObjectHead, bool, error)
 }
 
@@ -81,8 +84,16 @@ func (r *KubernetesArtifactRuntime) Export(ctx context.Context, item WorkItem, o
 		persisted := PersistedArtifact{Name: contract.Name, Path: contract.Path, MediaType: contract.MediaType,
 			Digest: artifact.SHA256, Size: artifact.Size, ObjectKey: key}
 		spec := artifactObjectSpec(item, persisted)
-		if _, err := r.objects.Put(ctx, spec, artifact.Body); err != nil {
+		created, err := r.objects.Put(ctx, spec, artifact.Body)
+		if err != nil {
 			return ArtifactExportResult{}, backendFailure("artifact_object_write_failed", "artifact object cannot be stored", true, false, err)
+		}
+		if !created {
+			body, found, err := r.objects.Get(ctx, spec)
+			digest := sha256.Sum256(body)
+			if err != nil || !found || int64(len(body)) != spec.Size || "sha256:"+hex.EncodeToString(digest[:]) != spec.Digest {
+				return ArtifactExportResult{}, backendFailure("artifact_object_mismatch", "existing artifact object verification failed", true, !found, err)
+			}
 		}
 		head, found, err := r.objects.Head(ctx, spec)
 		if err != nil || !found || !sameArtifactHead(spec, head) {

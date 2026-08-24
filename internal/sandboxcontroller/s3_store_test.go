@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +66,12 @@ func TestS3ArtifactStoreConditionallyCreatesAndVerifiesExactObject(t *testing.T)
 			response.Header().Set("X-Amz-Meta-Blazn-Workspace", spec.WorkspaceID)
 			response.Header().Set("X-Amz-Meta-Blazn-Sandbox", spec.SandboxID)
 			response.Header().Set("X-Amz-Meta-Blazn-Artifact", spec.Name)
+		case http.MethodGet:
+			if !created {
+				response.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = response.Write(body)
 		default:
 			response.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -80,6 +87,10 @@ func TestS3ArtifactStoreConditionallyCreatesAndVerifiesExactObject(t *testing.T)
 	}
 	if value, err := store.Put(context.Background(), spec, body); err != nil || value {
 		t.Fatalf("replay PUT created=%v err=%v", value, err)
+	}
+	contents, found, err := store.Get(context.Background(), spec)
+	if err != nil || !found || !bytes.Equal(contents, body) {
+		t.Fatalf("GET=%q found=%v err=%v", contents, found, err)
 	}
 	head, found, err := store.Head(context.Background(), spec)
 	if err != nil || !found || head.Size != spec.Size || head.Digest != spec.Digest || head.MediaType != spec.MediaType ||
@@ -106,5 +117,52 @@ func TestS3ArtifactStoreRejectsUnsafeIdentityCredentialsAndEndpoints(t *testing.
 	if _, err := NewS3ArtifactStore(S3ArtifactStoreConfig{Endpoint: "http://s3.example.test:443", Region: "us-test-1", Bucket: "artifacts",
 		AccessKeyFile: access, SecretKeyFile: secret}); err == nil {
 		t.Fatal("insecure object endpoint accepted")
+	}
+}
+
+func TestS3ArtifactStoreGetFailsClosedOnInvalidResponses(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		length int64
+		body   []byte
+	}{
+		{name: "truncated", status: http.StatusOK, length: 7, body: []byte("short")},
+		{name: "declared oversized", status: http.StatusOK, length: maxArtifactBytes + 1},
+		{name: "streamed oversized", status: http.StatusOK, length: -1, body: make([]byte, maxArtifactBytes+1)},
+		{name: "store error", status: http.StatusServiceUnavailable, length: -1, body: []byte("unavailable")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			accessPath, secretPath := filepath.Join(directory, "access"), filepath.Join(directory, "secret")
+			if err := os.WriteFile(accessPath, []byte("ACCESSKEY123456\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(secretPath, []byte("secret-key-material-1234567890\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodGet {
+					t.Errorf("method=%s", request.Method)
+				}
+				if test.length >= 0 {
+					response.Header().Set("Content-Length", fmt.Sprint(test.length))
+				}
+				response.WriteHeader(test.status)
+				_, _ = response.Write(test.body)
+			}))
+			defer server.Close()
+			endpoint, _ := url.Parse(server.URL)
+			store := &S3ArtifactStore{endpoint: endpoint, region: "us-test-1", bucket: "artifacts", accessKeyFile: accessPath,
+				secretKeyFile: secretPath, client: server.Client(), now: time.Now}
+			body := []byte("artifact body\n")
+			digest := sha256.Sum256(body)
+			spec := ArtifactObjectSpec{WorkspaceID: "40000000-0000-4000-8000-000000000001", SandboxID: "30000000-0000-4000-8000-000000000001",
+				Name: "result", MediaType: "text/plain", Digest: "sha256:" + hex.EncodeToString(digest[:]), Size: int64(len(body))}
+			spec.Key, _ = ArtifactObjectKey(spec.WorkspaceID, spec.SandboxID, spec.Name)
+			if contents, found, err := store.Get(context.Background(), spec); err == nil || found || contents != nil {
+				t.Fatalf("GET=%q found=%v err=%v", contents, found, err)
+			}
+		})
 	}
 }
