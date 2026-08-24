@@ -30,8 +30,20 @@ valid_image_component() {
   printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*$'
 }
 
+valid_registry_host() {
+  host=$1
+  [ "${#host}" -le 253 ] || return 1
+  while :; do
+    label=${host%%.*}
+    valid_dns_label "$label" || return 1
+    [ "$label" = "$host" ] && break
+    host=${host#*.}
+  done
+}
+
 valid_image_repository() {
   repository=$1
+  [ -n "$repository" ] && [ "${#repository}" -le 255 ] || return 1
   case "$repository" in ''|/*|*/|*//*) return 1 ;; esac
   first=1
   while :; do
@@ -39,7 +51,7 @@ valid_image_repository() {
     if [ "$first" -eq 1 ] && [ "${component#*:}" != "$component" ]; then
       host=${component%:*}
       port=${component##*:}
-      printf '%s\n' "$host" | LC_ALL=C grep -Eq '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' || return 1
+      valid_registry_host "$host" || return 1
       valid_port "$port" || return 1
     else
       valid_image_component "$component" || return 1
