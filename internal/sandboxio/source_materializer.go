@@ -321,6 +321,7 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 		if err != nil {
 			return err
 		}
+		sort.Slice(items, func(i, j int) bool { return items[i].Name() < items[j].Name() })
 		for _, item := range items {
 			name := path.Join(directory, item.Name())
 			if directory == "." {
