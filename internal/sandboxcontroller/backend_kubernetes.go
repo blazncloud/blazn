@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 // SandboxControlAdapter is the deliberately narrow Kubernetes mutation seam.
@@ -27,6 +28,7 @@ type KubernetesBackendConfig struct {
 	Health                  func(context.Context) error
 	ArtifactExportSupported bool
 	HelperImage             string
+	SourceRuntime           *KubernetesSourceRuntime
 	AbsencePollInterval     time.Duration
 }
 
@@ -35,6 +37,7 @@ type KubernetesBackend struct {
 	health                  func(context.Context) error
 	artifactExportSupported bool
 	helperImage             string
+	sourceRuntime           *KubernetesSourceRuntime
 	absencePollInterval     time.Duration
 	createLocksMu           sync.Mutex
 	createLocks             map[string]*kubernetesCreateLock
@@ -64,9 +67,38 @@ func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, e
 	return &KubernetesBackend{adapter: config.Adapter, health: config.Health,
 		artifactExportSupported: config.ArtifactExportSupported,
 		helperImage:             config.HelperImage,
+		sourceRuntime:           config.SourceRuntime,
 		absencePollInterval:     config.AbsencePollInterval,
 		createLocks:             make(map[string]*kubernetesCreateLock),
 		evidence:                make(map[string]kubernetesBackendEvidence)}, nil
+}
+
+func (b *KubernetesBackend) PrepareSourceBootstrap(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation) error {
+	if b.sourceRuntime == nil {
+		return backendFailure("sources_unsupported", "source materialization runtime is unavailable", false, true, nil)
+	}
+	return b.sourceRuntime.Prepare(ctx, item, observation)
+}
+
+func (b *KubernetesBackend) MaterializeSources(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation) (sandboxio.SourceMaterializationReceipt, error) {
+	if b.sourceRuntime == nil {
+		return sandboxio.SourceMaterializationReceipt{}, backendFailure("sources_unsupported", "source materialization runtime is unavailable", false, true, nil)
+	}
+	return b.sourceRuntime.Materialize(ctx, item, observation)
+}
+
+func (b *KubernetesBackend) RestrictSourceRuntime(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation, receipt sandboxio.SourceMaterializationReceipt) error {
+	if b.sourceRuntime == nil {
+		return backendFailure("sources_unsupported", "source materialization runtime is unavailable", false, true, nil)
+	}
+	return b.sourceRuntime.Restrict(ctx, item, observation, receipt)
+}
+
+func (b *KubernetesBackend) ReleaseSources(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation, receipt sandboxio.SourceMaterializationReceipt) error {
+	if b.sourceRuntime == nil {
+		return backendFailure("sources_unsupported", "source materialization runtime is unavailable", false, true, nil)
+	}
+	return b.sourceRuntime.Release(ctx, item, observation, receipt)
 }
 
 func (b *KubernetesBackend) Health(ctx context.Context) error {
@@ -350,7 +382,7 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 	if err := validateWorkItem(item); err != nil {
 		return sandboxcontrol.CreateRequest{}, backendFailure("invalid_work_item", "controller work item is invalid", false, true, err)
 	}
-	if len(item.Sources) != 0 {
+	if len(item.Sources) != 0 && b.sourceRuntime == nil {
 		return sandboxcontrol.CreateRequest{}, backendFailure("sources_unsupported", "source materialization is not supported by the Kubernetes backend", false, false, nil)
 	}
 	if !b.artifactExportSupported {
@@ -365,6 +397,11 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 		artifacts[index] = sandboxcontrol.ArtifactExport{Name: artifact.Name, Path: artifact.Path,
 			MediaType: artifact.MediaType, Required: artifact.Required}
 	}
+	sources := make([]sandboxcontrol.SourceMount, len(item.Sources))
+	for index, source := range item.Sources {
+		sources[index] = sandboxcontrol.SourceMount{Name: source.Name, URL: source.URL, Destination: source.Destination,
+			Commit: source.Commit, Writable: source.Writable}
+	}
 	helperImage := ""
 	if len(item.Sources) != 0 || len(artifacts) != 0 {
 		helperImage = b.helperImage
@@ -377,7 +414,7 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 		CPURequest: item.Resources.CPURequest, MemoryRequest: item.Resources.MemoryRequest,
 		EphemeralStorageRequest: item.Resources.EphemeralRequest, CPULimit: item.Resources.CPULimit,
 		MemoryLimit: item.Resources.MemoryLimit, EphemeralStorageLimit: item.Resources.EphemeralLimit,
-		ExpiresAt: item.ExpiresAt, Artifacts: artifacts}, nil
+		ExpiresAt: item.ExpiresAt, Sources: sources, Artifacts: artifacts}, nil
 }
 
 func stateFromRecord(record sandboxcontrol.SandboxRecord) BackendState {

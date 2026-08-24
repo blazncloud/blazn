@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type noIOExporter struct{}
@@ -233,6 +234,34 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	if observed.Record.ResourceVersion != ready.ResourceVersion || observed.Record.ArtifactContractDigest != record.ArtifactContractDigest ||
 		!reflect.DeepEqual(fake.snapshotCalls(), []string{"ensure", "get", "get", "observe"}) {
 		t.Fatalf("create evidence was not retained exactly: state=%#v calls=%v", observed, fake.snapshotCalls())
+	}
+}
+
+func TestKubernetesBackendMapsSourcesOnlyWithConfiguredRuntime(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	item.Artifacts = nil
+	item.Sources = []Source{{Name: "repo", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)}}
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	network, transport, owners := &fakeSourceNetwork{}, &sourceProtocolTransport{}, &sourceOwnerChecks{}
+	ioController, err := sandboxio.NewController(sandboxio.ControllerConfig{Transport: transport, Owners: owners, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewKubernetesSourceRuntime(KubernetesSourceRuntimeConfig{Network: network, IO: ioController})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewKubernetesBackend(KubernetesBackendConfig{Adapter: fake, Health: func(context.Context) error { return nil },
+		ArtifactExportSupported: true, HelperImage: testSandboxIOImage, SourceRuntime: runtime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	want := []sandboxcontrol.SourceMount{{Name: "repo", URL: item.Sources[0].URL, Destination: item.Sources[0].Destination, Commit: item.Sources[0].Commit}}
+	if !reflect.DeepEqual(fake.request.Sources, want) || fake.request.HelperImage != testSandboxIOImage {
+		t.Fatalf("source request=%#v", fake.request)
 	}
 }
 
