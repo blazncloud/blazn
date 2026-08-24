@@ -1,6 +1,19 @@
 #!/bin/sh
 set -eu
 
+# These assertions intentionally match literal shell and jq variables.
+# shellcheck disable=SC2016
+for required in \
+  'BLAZN_CONTROL_API_BUILD_MODE:-local' \
+  'prebuilt) validate_control_api_build "$ROOT_DIR"' \
+  'actual_archive=sha256:' \
+  'RepoTags == [$image]' \
+  'archive_image_id=$(jq' \
+  '.config.digest == $configDigest' \
+  'buildMode:"prebuilt"'; do
+  grep -F -- "$required" "$(dirname -- "$0")/../scripts/start-control-plane.sh" "$(dirname -- "$0")/../scripts/import-control-api-image.sh" >/dev/null
+done
+
 TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(CDPATH='' cd -- "$TEST_DIR/.." && pwd)
 compose=$ROOT_DIR/compose.yaml
