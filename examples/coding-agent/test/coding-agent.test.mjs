@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { createPatch, digest, solveTask, writePatchArtifact } from "../src/coding-agent.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repo = path.resolve(root, "../..");
+const execFileAsync = promisify(execFile);
 
 test("the immutable minimal coding task produces one deterministic edit", async () => {
   const task = JSON.parse(await readFile(path.join(root, "fixtures/task.json"), "utf8"));
@@ -36,6 +39,29 @@ test("the runtime writes the exact bounded Phase 5 patch artifact", async () => 
     assert.equal((await stat(output)).mode & 0o777, 0o600);
     await assert.rejects(writePatchArtifact(path.join(root, "fixtures/task.json"), sourceRoot, output), /EEXIST/);
   } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("patch artifacts preserve exact EOF bytes and pass git apply --check", async () => {
+  const cases = [
+    { name: "no-final-newline", source: "value = old", expected: "value = new" },
+    { name: "trailing-whitespace", source: "value = old  \n", expected: "value = new  \n" },
+    { name: "trailing-blank-lines", source: "value = old\n\n\n", expected: "value = new\n\n\n" },
+  ];
+  for (const fixture of cases) {
+    const temporary = await mkdtemp(path.join(os.tmpdir(), `blazn-coding-agent-${fixture.name}-`));
+    try {
+      const sourcePath = "fixtures/exact.txt", patchPath = path.join(temporary, "change.patch");
+      const task = { schemaVersion: "blazn.dev/coding-task/v1alpha1", sourcePath, sourceDigest: digest(fixture.source), find: "old", replace: "new" };
+      const patch = createPatch(task, fixture.source);
+      await mkdir(path.join(temporary, "fixtures"));
+      await writeFile(path.join(temporary, sourcePath), fixture.source);
+      await writeFile(patchPath, patch);
+      await execFileAsync("git", ["apply", "--check", patchPath], { cwd: temporary });
+      await execFileAsync("git", ["apply", patchPath], { cwd: temporary });
+      assert.equal(await readFile(path.join(temporary, sourcePath), "utf8"), fixture.expected);
+      if (fixture.name === "no-final-newline") assert.match(patch, /\\ No newline at end of file/);
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  }
 });
 
 test("changed source cannot be substituted into the task", async () => {

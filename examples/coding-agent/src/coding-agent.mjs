@@ -25,16 +25,40 @@ export function solveTask(task, source) {
 export function createPatch(task, source) {
   validateTask(task);
   const modified = solveTask(task, source);
-  const before = source.trimEnd().split("\n"), after = modified.trimEnd().split("\n");
+  const before = splitLines(source), after = splitLines(modified);
   if (before.length !== after.length) throw new Error("task replacement must preserve line topology");
   const lines = [`--- a/${task.sourcePath}`, `+++ b/${task.sourcePath}`, `@@ -1,${before.length} +1,${after.length} @@`];
   for (let index = 0; index < before.length; index++) {
-    if (before[index] === after[index]) lines.push(` ${before[index]}`);
-    else lines.push(`-${before[index]}`, `+${after[index]}`);
+    if (before[index].content === after[index].content && before[index].newline === after[index].newline) {
+      appendPatchLine(lines, " ", before[index]);
+    } else {
+      appendPatchLine(lines, "-", before[index]);
+      appendPatchLine(lines, "+", after[index]);
+    }
   }
   const patch = `${lines.join("\n")}\n`;
   if (Buffer.byteLength(patch) > maxArtifactBytes) throw new Error("patch artifact exceeds the Phase 5 bound");
   return patch;
+}
+
+function splitLines(value) {
+  const lines = [];
+  let start = 0;
+  while (start < value.length) {
+    const end = value.indexOf("\n", start);
+    if (end < 0) {
+      lines.push({ content: value.slice(start), newline: false });
+      break;
+    }
+    lines.push({ content: value.slice(start, end), newline: true });
+    start = end + 1;
+  }
+  return lines;
+}
+
+function appendPatchLine(patch, prefix, line) {
+  patch.push(`${prefix}${line.content}`);
+  if (!line.newline) patch.push("\\ No newline at end of file");
 }
 
 export async function writePatchArtifact(taskPath, sourceRoot, outputPath) {
