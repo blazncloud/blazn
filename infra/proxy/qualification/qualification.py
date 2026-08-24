@@ -32,14 +32,7 @@ DIGEST = evidence.DIGEST
 CORRELATION = evidence.CORRELATION
 EXACT_ENVIRONMENT = evidence.EXACT_ENVIRONMENT
 CLIENT_PATHS = ("codex", "claude", "hermes")
-MATRIX = {
-    1: "normal-stop", 2: "normal-stop", 3: "normal-stop", 4: "normal-stop",
-    5: "abrupt-kill", 6: "abrupt-kill", 7: "host-reboot", 8: "host-reboot",
-    9: "journal-corruption", 10: "journal-corruption", 11: "manager-outage",
-    12: "partial-publication", 13: "ambiguous-recovery", 14: "repeated-on",
-    15: "repeated-off", 16: "receipt-corruption", 17: "both-records-corrupt",
-    18: "stale-pid-reuse", 19: "missing-ca", 20: "management-api-outage",
-}
+MATRIX = evidence.MATRIX
 MUTATING_ACTIONS = {"capture-before", "cycle", "recovery", "route-proof", "cleanup"}
 
 
@@ -370,9 +363,11 @@ def validate_fake_state(value: Any, profile: dict[str, Any]) -> dict[str, Any]:
     trees = state_value["configTrees"]
     if not isinstance(trees, dict) or set(trees) != set(CLIENT_PATHS) or any(not DIGEST.fullmatch(str(value)) for value in trees.values()):
         raise QualificationError("fake adapter config tree sentinels are invalid")
-    direct = strict_keys(state_value["directConnectivity"], {"reachable", "proofDigest"}, "fake direct connectivity")
-    if not isinstance(direct["reachable"], bool) or not DIGEST.fullmatch(str(direct["proofDigest"])):
-        raise QualificationError("fake direct connectivity proof is invalid")
+    direct = state_value["directConnectivity"]
+    try:
+        evidence.validate_direct_connectivity(direct, "fake direct connectivity")
+    except evidence.EvidenceError as exc:
+        raise QualificationError(str(exc)) from exc
     proxy = strict_keys(
         state_value["proxy"],
         {"activationId", "sessionId", "stateRoot", "active", "listenerObservation", "ownedStateObservation", "cas"},
@@ -475,6 +470,23 @@ def unchanged(state_value: dict[str, Any], baseline: dict[str, Any]) -> tuple[bo
     return tree_ok, env_ok
 
 
+def direct_restoration(state_value: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    current = state_value["directConnectivity"]
+    evidence.validate_direct_connectivity(current, "direct connectivity")
+    expected = baseline["directConnectivity"]
+    if current["authority"] != expected["authority"]:
+        raise QualificationError("direct-connectivity authority differs from the captured baseline")
+    return dict(current)
+
+
+def compare_and_set_result(state_value: dict[str, Any], ambiguous: bool) -> list[dict[str, str]]:
+    result = [{"name": name, "outcome": state_value["proxy"]["cas"][name]} for name in EXACT_ENVIRONMENT]
+    allowed = {"unchanged"} if ambiguous else {"restored", "unchanged"}
+    if any(item["outcome"] not in allowed for item in result):
+        raise QualificationError("compare-and-set restoration conflicted or changed ambiguous owner state")
+    return result
+
+
 def validate_route_proof(value: Any, profile: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     required = {"client", "version", "decision", "protocol", "authenticated", "requestId", "proofDigest", "policyDigest", "hostId", "userId", "sessionId", "reason"}
     proof = strict_keys(value, required, "route proof")
@@ -528,16 +540,20 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
             raise QualificationError("cycle number/case must match the frozen twenty-cycle matrix")
         baseline = load_baseline(args.evidence)
         trees_ok, env_ok = unchanged(state_value, baseline)
-        if not trees_ok or not env_ok or not state_value["directConnectivity"]["reachable"]:
+        if not trees_ok or not env_ok:
             raise QualificationError("cycle post-state differs from the direct baseline")
+        direct = direct_restoration(state_value, baseline)
         residue = zero_residue_result(state_value)
         ambiguous = args.case == "ambiguous-recovery"
+        cas = compare_and_set_result(state_value, ambiguous)
         result = {
             "cycle": args.cycle,
             "case": args.case,
             "configTreesUnchanged": trees_ok,
             "exactFiveRestored": env_ok,
-            "directConnectivityRestored": state_value["directConnectivity"]["reachable"],
+            "compareAndSet": cas,
+            "directConnectivityRestored": direct["reachable"],
+            "directConnectivity": direct,
             "listenerResidue": residue["listenerResidue"],
             "ownedStateResidue": residue["ownedStateResidue"],
             "residueObservation": residue,
@@ -550,14 +566,22 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
         baseline = load_baseline(args.evidence)
         trees_ok, env_ok = unchanged(state_value, baseline)
         ambiguous = args.case == "ambiguous-recovery"
-        if not trees_ok or not env_ok or not state_value["directConnectivity"]["reachable"]:
+        if not trees_ok or not env_ok:
             raise QualificationError("recovery post-state differs from the direct baseline")
+        direct = direct_restoration(state_value, baseline)
+        cas = compare_and_set_result(state_value, ambiguous)
+        residue = zero_residue_result(state_value)
         result = {
             "case": args.case,
             "daemonIndependent": True,
-            "compareAndSet": [{"name": name, "outcome": state_value["proxy"]["cas"][name]} for name in EXACT_ENVIRONMENT],
-            "directConnectivityRestored": True,
-            "configTreesUnchanged": True,
+            "compareAndSet": cas,
+            "directConnectivityRestored": direct["reachable"],
+            "directConnectivity": direct,
+            "configTreesUnchanged": trees_ok,
+            "exactFiveRestored": env_ok,
+            "listenerResidue": residue["listenerResidue"],
+            "ownedStateResidue": residue["ownedStateResidue"],
+            "residueObservation": residue,
             "userStateChanged": False,
         }
         receipt = make_receipt("recovery", "recovery_required" if ambiguous else "passed", identity_value, profile_digest, result)
@@ -567,14 +591,17 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
     elif args.action == "cleanup":
         baseline = load_baseline(args.evidence)
         trees_ok, env_ok = unchanged(state_value, baseline)
-        cas = [{"name": name, "outcome": state_value["proxy"]["cas"][name]} for name in EXACT_ENVIRONMENT]
+        cas = compare_and_set_result(state_value, False)
+        direct = direct_restoration(state_value, baseline)
         residue = zero_residue_result(state_value)
-        if not trees_ok or not env_ok or not state_value["directConnectivity"]["reachable"] or any(item["outcome"] not in {"restored", "unchanged"} for item in cas):
+        if not trees_ok or not env_ok:
             raise QualificationError("cleanup found config drift, CAS conflict, lost direct connectivity, or Blazn residue")
         result = {
             "compareAndSet": cas,
-            "directConnectivityRestored": True,
-            "configTreesUnchanged": True,
+            "directConnectivityRestored": direct["reachable"],
+            "directConnectivity": direct,
+            "configTreesUnchanged": trees_ok,
+            "exactFiveRestored": env_ok,
             "listenerResidue": residue["listenerResidue"],
             "ownedStateResidue": residue["ownedStateResidue"],
             "residueObservation": residue,

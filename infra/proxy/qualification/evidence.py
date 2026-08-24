@@ -18,6 +18,7 @@ SCHEMA_VERSION = "proxy-qualification/v1"
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 CORRELATION = re.compile(r"^proxyqual-[a-z0-9][a-z0-9-]{7,55}$")
+AUTHORITY = re.compile(r"^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|\[[0-9a-f:]+\])(?::[1-9][0-9]{0,4})?$")
 EXACT_ENVIRONMENT = (
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
@@ -28,6 +29,14 @@ EXACT_ENVIRONMENT = (
 REQUIRED_RECOVERY = {
     "normal-stop", "abrupt-kill", "host-reboot", "journal-corruption",
     "manager-outage", "partial-publication", "ambiguous-recovery",
+}
+MATRIX = {
+    1: "normal-stop", 2: "normal-stop", 3: "normal-stop", 4: "normal-stop",
+    5: "abrupt-kill", 6: "abrupt-kill", 7: "host-reboot", 8: "host-reboot",
+    9: "journal-corruption", 10: "journal-corruption", 11: "manager-outage",
+    12: "partial-publication", 13: "ambiguous-recovery", 14: "repeated-on",
+    15: "repeated-off", 16: "receipt-corruption", 17: "both-records-corrupt",
+    18: "stale-pid-reuse", 19: "missing-ca", 20: "management-api-outage",
 }
 REQUIRED_CLIENTS = {
     "hermes": "0.19.0",
@@ -65,6 +74,30 @@ def digest_bytes(value: bytes) -> str:
 
 def digest_file(path: pathlib.Path) -> str:
     return digest_bytes(path.read_bytes())
+
+
+def canonical_uuid(value: Any, label: str) -> str:
+    try:
+        parsed = str(uuid.UUID(str(value)))
+    except (ValueError, AttributeError) as exc:
+        raise EvidenceError(f"{label} must be a canonical UUID") from exc
+    if parsed != value:
+        raise EvidenceError(f"{label} must be a canonical UUID")
+    return parsed
+
+
+def validate_direct_connectivity(value: Any, label: str) -> dict[str, Any]:
+    required = {"reachable", "authenticated", "requestId", "authority", "proofDigest"}
+    if not isinstance(value, dict) or set(value) != required:
+        raise EvidenceError(f"{label} must contain exact authenticated request/authority evidence")
+    if value["reachable"] is not True or value["authenticated"] is not True:
+        raise EvidenceError(f"{label} must be reachable and authenticated")
+    canonical_uuid(value["requestId"], f"{label} requestId")
+    if not isinstance(value["authority"], str) or not AUTHORITY.fullmatch(value["authority"]):
+        raise EvidenceError(f"{label} authority is invalid")
+    if not DIGEST.fullmatch(str(value["proofDigest"])):
+        raise EvidenceError(f"{label} proof digest is invalid")
+    return value
 
 
 def checksum(value: dict[str, Any]) -> str:
@@ -143,13 +176,197 @@ def validate_identity(identity: Any) -> None:
             raise EvidenceError(f"invalid {name}")
 
 
+def strict_result(value: Any, required: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != required:
+        raise EvidenceError(f"{label} result has unknown or missing fields")
+    return value
+
+
+def validate_state_root(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise EvidenceError(f"{label} is invalid")
+    path = pathlib.Path(value)
+    if not path.is_absolute() or pathlib.Path(os.path.normpath(value)) != path or path == pathlib.Path("/") or "\x00" in value:
+        raise EvidenceError(f"{label} is invalid")
+    return value
+
+
+def validate_residue_observation(result: dict[str, Any], identity: dict[str, Any], expected_root: str | None = None) -> None:
+    observation = strict_result(
+        result.get("residueObservation"),
+        {
+            "activationId", "sessionId", "stateRoot", "listenerObserved",
+            "listenerResidue", "ownedStateObserved", "ownedStateResidue",
+        },
+        "residue observation",
+    )
+    canonical_uuid(observation["activationId"], "residue observation activationId")
+    root = validate_state_root(observation["stateRoot"], "residue observation stateRoot")
+    if (
+        observation["sessionId"] != identity["sessionId"]
+        or (expected_root is not None and root != expected_root)
+        or observation["listenerObserved"] is not True
+        or observation["ownedStateObserved"] is not True
+        or observation["listenerResidue"] is not False
+        or observation["ownedStateResidue"] is not False
+        or result.get("listenerResidue") is not observation["listenerResidue"]
+        or result.get("ownedStateResidue") is not observation["ownedStateResidue"]
+    ):
+        raise EvidenceError("receipt lacks exact activation/session/state-root zero-residue evidence")
+
+
+def validate_compare_and_set(value: Any, ambiguous: bool, label: str) -> None:
+    if not isinstance(value, list) or len(value) != len(EXACT_ENVIRONMENT):
+        raise EvidenceError(f"{label} compare-and-set evidence is incomplete")
+    if any(not isinstance(item, dict) or set(item) != {"name", "outcome"} for item in value):
+        raise EvidenceError(f"{label} compare-and-set entry is invalid")
+    if [item["name"] for item in value] != list(EXACT_ENVIRONMENT):
+        raise EvidenceError(f"{label} compare-and-set names are not exact-five ordered")
+    allowed = {"unchanged"} if ambiguous else {"restored", "unchanged"}
+    if any(item["outcome"] not in allowed for item in value):
+        raise EvidenceError(f"{label} compare-and-set conflicted or changed ambiguous owner state")
+
+
+def validate_capture_result(result: Any, identity: dict[str, Any]) -> None:
+    value = strict_result(result, {"environment", "configTrees", "directConnectivity", "owner"}, "capture-before")
+    environment = value["environment"]
+    if not isinstance(environment, list) or len(environment) != len(EXACT_ENVIRONMENT):
+        raise EvidenceError("baseline environment is incomplete")
+    if any(not isinstance(item, dict) or set(item) != {"name", "present", "valueDigest"} for item in environment):
+        raise EvidenceError("baseline environment entry is invalid")
+    if [item["name"] for item in environment] != list(EXACT_ENVIRONMENT) or any(not isinstance(item["present"], bool) or not DIGEST.fullmatch(str(item["valueDigest"])) for item in environment):
+        raise EvidenceError("baseline must snapshot exactly the five frozen environment variables in order")
+    trees = value["configTrees"]
+    if not isinstance(trees, list) or len(trees) != 3 or any(not isinstance(item, dict) or set(item) != {"client", "treeDigest"} for item in trees):
+        raise EvidenceError("baseline config tree sentinels are invalid")
+    if [item["client"] for item in trees] != ["codex", "claude", "hermes"] or any(not DIGEST.fullmatch(str(item["treeDigest"])) for item in trees):
+        raise EvidenceError("baseline must contain ordered Codex, Claude, and Hermes tree digests")
+    validate_direct_connectivity(value["directConnectivity"], "baseline direct connectivity")
+    owner = strict_result(value["owner"], {"hostId", "userId", "sessionId", "stateDigest", "stateRoot"}, "baseline owner")
+    if any(owner[name] != identity[name] for name in ("hostId", "userId", "sessionId")) or not DIGEST.fullmatch(str(owner["stateDigest"])):
+        raise EvidenceError("owner baseline differs from run identity")
+    validate_state_root(owner["stateRoot"], "owner baseline stateRoot")
+
+
+def validate_cycle_result(result: Any, identity: dict[str, Any], status: str) -> None:
+    value = strict_result(
+        result,
+        {
+            "cycle", "case", "configTreesUnchanged", "exactFiveRestored", "compareAndSet",
+            "directConnectivityRestored", "directConnectivity", "listenerResidue",
+            "ownedStateResidue", "residueObservation", "userStateChanged",
+        },
+        "cycle",
+    )
+    number = value["cycle"]
+    if isinstance(number, bool) or number not in MATRIX or value["case"] != MATRIX[number]:
+        raise EvidenceError("cycle number/case differs from the exact frozen matrix")
+    ambiguous = value["case"] == "ambiguous-recovery"
+    expected_status = "recovery_required" if ambiguous else "passed"
+    if status != expected_status or value["userStateChanged"] is not (False if ambiguous else None):
+        raise EvidenceError("cycle status or user-state result is invalid")
+    if value["configTreesUnchanged"] is not True or value["exactFiveRestored"] is not True or value["directConnectivityRestored"] is not True:
+        raise EvidenceError("cycle did not prove config/CAS/direct restoration")
+    validate_compare_and_set(value["compareAndSet"], ambiguous, "cycle")
+    validate_direct_connectivity(value["directConnectivity"], "cycle direct connectivity")
+    validate_residue_observation(value, identity)
+
+
+def validate_recovery_result(result: Any, identity: dict[str, Any], status: str) -> None:
+    value = strict_result(
+        result,
+        {
+            "case", "daemonIndependent", "compareAndSet", "directConnectivityRestored",
+            "directConnectivity", "configTreesUnchanged", "exactFiveRestored", "listenerResidue",
+            "ownedStateResidue", "residueObservation", "userStateChanged",
+        },
+        "recovery",
+    )
+    if value["case"] not in REQUIRED_RECOVERY:
+        raise EvidenceError("recovery case is outside the frozen matrix")
+    ambiguous = value["case"] == "ambiguous-recovery"
+    if status != ("recovery_required" if ambiguous else "passed"):
+        raise EvidenceError("recovery status is invalid")
+    if any(value[name] is not True for name in ("daemonIndependent", "directConnectivityRestored", "configTreesUnchanged", "exactFiveRestored")) or value["userStateChanged"] is not False:
+        raise EvidenceError("recovery did not prove daemon-independent direct restoration")
+    validate_compare_and_set(value["compareAndSet"], ambiguous, "recovery")
+    validate_direct_connectivity(value["directConnectivity"], "recovery direct connectivity")
+    validate_residue_observation(value, identity)
+
+
+def validate_route_result(result: Any, identity: dict[str, Any], status: str) -> None:
+    value = strict_result(
+        result,
+        {"client", "version", "decision", "protocol", "authenticated", "requestId", "proofDigest", "policyDigest", "hostId", "userId", "sessionId", "reason"},
+        "route-proof",
+    )
+    versions = {**REQUIRED_CLIENTS, "claude": "2.1.212"}
+    if value["client"] not in versions or value["version"] != versions[value["client"]]:
+        raise EvidenceError("route proof client/version is not frozen")
+    if value["authenticated"] is not True:
+        raise EvidenceError("route proof is not authenticated")
+    canonical_uuid(value["requestId"], "route proof requestId")
+    if not DIGEST.fullmatch(str(value["proofDigest"])) or value["policyDigest"] != identity["policyDigest"]:
+        raise EvidenceError("route proof digest or policy binding is invalid")
+    if any(value[name] != identity[name] for name in ("hostId", "userId", "sessionId")):
+        raise EvidenceError("route proof owner/session differs from run identity")
+    if value["client"] == "claude":
+        if status != "unsupported" or value["decision"] != "UNSUPPORTED" or value["protocol"] != "anthropic-native" or value["reason"] != "native_protocol_unsupported":
+            raise EvidenceError("Claude native protocol must be reported honestly as unsupported")
+    elif (
+        status != "passed"
+        or value["decision"] not in {"ROUTED", "DIRECT", "BYPASS"}
+        or value["protocol"] not in {"openai-chat", "openai-responses"}
+        or not isinstance(value["reason"], str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{1,63}", value["reason"])
+    ):
+        raise EvidenceError("route proof decision/protocol/reason is invalid")
+
+
+def validate_cleanup_result(result: Any, identity: dict[str, Any], status: str) -> None:
+    value = strict_result(
+        result,
+        {
+            "compareAndSet", "directConnectivityRestored", "directConnectivity",
+            "configTreesUnchanged", "exactFiveRestored", "listenerResidue",
+            "ownedStateResidue", "residueObservation",
+        },
+        "cleanup",
+    )
+    if status != "passed" or any(value[name] is not True for name in ("directConnectivityRestored", "configTreesUnchanged", "exactFiveRestored")):
+        raise EvidenceError("cleanup did not prove config/CAS/direct restoration")
+    validate_compare_and_set(value["compareAndSet"], False, "cleanup")
+    validate_direct_connectivity(value["directConnectivity"], "cleanup direct connectivity")
+    validate_residue_observation(value, identity)
+
+
+def validate_result(receipt: dict[str, Any]) -> None:
+    validators = {
+        "capture-before": validate_capture_result,
+        "cycle": validate_cycle_result,
+        "recovery": validate_recovery_result,
+        "route-proof": validate_route_result,
+        "cleanup": validate_cleanup_result,
+    }
+    action = receipt["action"]
+    if action not in validators:
+        raise EvidenceError("receipt action is invalid")
+    validator = validators[action]
+    if action == "capture-before":
+        if receipt["status"] != "passed":
+            raise EvidenceError("capture-before receipt must pass")
+        validator(receipt["result"], receipt["identity"])
+    else:
+        validator(receipt["result"], receipt["identity"], receipt["status"])
+
+
 def validate_receipt(receipt: Any, identity: dict[str, Any] | None = None) -> None:
     required = {"schemaVersion", "receiptId", "action", "observedAt", "identity", "profileDigest", "status", "result", "checksum"}
     if not isinstance(receipt, dict) or set(receipt) != required:
         raise EvidenceError("receipt has unknown or missing fields")
     if receipt["schemaVersion"] != SCHEMA_VERSION or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f-]{27,35}", str(receipt["receiptId"])):
         raise EvidenceError("receipt identity is invalid")
-    if receipt["action"] not in {"preflight", "capture-before", "cycle", "recovery", "route-proof", "cleanup"}:
+    if receipt["action"] not in {"capture-before", "cycle", "recovery", "route-proof", "cleanup"}:
         raise EvidenceError("receipt action is invalid")
     if receipt["status"] not in {"passed", "failed", "recovery_required", "unsupported"}:
         raise EvidenceError("receipt status is invalid")
@@ -160,6 +377,7 @@ def validate_receipt(receipt: Any, identity: dict[str, Any] | None = None) -> No
         raise EvidenceError("receipt identity differs from run identity")
     if receipt["checksum"] != checksum(receipt):
         raise EvidenceError("receipt checksum is invalid")
+    validate_result(receipt)
     assert_redacted(receipt)
 
 
@@ -245,92 +463,56 @@ def receipt_values(root: pathlib.Path, manifest: dict[str, Any]) -> list[dict[st
 
 
 def check_completion(values: list[dict[str, Any]]) -> None:
-    captures = [item for item in values if item["action"] == "capture-before" and item["status"] == "passed"]
-    if len(captures) != 1:
+    captures = [item for item in values if item["action"] == "capture-before"]
+    if len(captures) != 1 or captures[0]["status"] != "passed":
         raise EvidenceError("exactly one passed capture-before receipt is required")
     baseline = captures[0]["result"]
-    environment = baseline.get("environment", [])
-    if [item.get("name") for item in environment] != list(EXACT_ENVIRONMENT):
-        raise EvidenceError("baseline must snapshot exactly the five frozen environment variables in order")
-    if any(set(item) != {"name", "present", "valueDigest"} or not DIGEST.fullmatch(str(item.get("valueDigest", ""))) for item in environment):
-        raise EvidenceError("baseline environment entry is invalid")
-    trees = baseline.get("configTrees")
-    if not isinstance(trees, list) or {item.get("client") for item in trees} != {"codex", "claude", "hermes"}:
-        raise EvidenceError("baseline must contain Codex, Claude, and Hermes config tree sentinels")
-    if any(set(item) != {"client", "treeDigest"} or not DIGEST.fullmatch(str(item.get("treeDigest", ""))) for item in trees):
-        raise EvidenceError("config tree sentinel is invalid")
-    if baseline.get("directConnectivity", {}).get("reachable") is not True or not DIGEST.fullmatch(str(baseline.get("directConnectivity", {}).get("proofDigest", ""))):
-        raise EvidenceError("authenticated direct-connectivity baseline is required")
-    if set(baseline.get("owner", {})) != {"hostId", "userId", "sessionId", "stateDigest", "stateRoot"} or not DIGEST.fullmatch(str(baseline["owner"].get("stateDigest", ""))):
-        raise EvidenceError("owner baseline is invalid")
-    state_root = baseline["owner"].get("stateRoot")
-    if not isinstance(state_root, str) or not pathlib.Path(state_root).is_absolute() or pathlib.Path(os.path.normpath(state_root)) != pathlib.Path(state_root) or state_root == "/":
-        raise EvidenceError("owner baseline state root is invalid")
+    state_root = baseline["owner"]["stateRoot"]
+    authority = baseline["directConnectivity"]["authority"]
 
-    def require_zero_residue(item: dict[str, Any], label: str) -> None:
-        result = item["result"]
-        observation = result.get("residueObservation")
-        required = {
-            "activationId", "sessionId", "stateRoot", "listenerObserved",
-            "listenerResidue", "ownedStateObserved", "ownedStateResidue",
-        }
-        try:
-            activation_id = str(uuid.UUID(str(observation.get("activationId"))))
-        except (AttributeError, ValueError) as exc:
-            raise EvidenceError(f"{label} residue observation activation is invalid") from exc
-        if (
-            not isinstance(observation, dict)
-            or set(observation) != required
-            or activation_id != observation["activationId"]
-            or observation["sessionId"] != item["identity"]["sessionId"]
-            or observation["stateRoot"] != state_root
-            or observation["listenerObserved"] is not True
-            or observation["ownedStateObserved"] is not True
-            or observation["listenerResidue"] is not False
-            or observation["ownedStateResidue"] is not False
-            or result.get("listenerResidue") is not observation["listenerResidue"]
-            or result.get("ownedStateResidue") is not observation["ownedStateResidue"]
-        ):
-            raise EvidenceError(f"{label} lacks exact activation/session/state-root zero-residue evidence")
-
-    cycles = [item for item in values if item["action"] == "cycle" and item["status"] in {"passed", "recovery_required"}]
-    numbers = [item["result"].get("cycle") for item in cycles]
-    if sorted(numbers) != list(range(1, 21)) or len(set(numbers)) != 20:
+    cycles = [item for item in values if item["action"] == "cycle"]
+    numbers = [item["result"]["cycle"] for item in cycles]
+    if len(cycles) != len(MATRIX) or sorted(numbers) != list(MATRIX) or len(set(numbers)) != len(MATRIX):
         raise EvidenceError("the exact twenty-cycle matrix is incomplete")
-    if any(item["result"].get("configTreesUnchanged") is not True or item["result"].get("exactFiveRestored") is not True or item["result"].get("directConnectivityRestored") is not True for item in cycles):
-        raise EvidenceError("a cycle did not prove config/CAS/direct restoration")
     for item in cycles:
-        require_zero_residue(item, "cycle")
-    cases = {item["result"].get("case") for item in cycles}
-    if not REQUIRED_RECOVERY.issubset(cases):
-        raise EvidenceError("the required recovery/failure cycle cases are incomplete")
-    ambiguous = [item for item in cycles if item["result"].get("case") == "ambiguous-recovery"]
-    if len(ambiguous) != 1 or ambiguous[0]["status"] != "recovery_required" or ambiguous[0]["result"].get("userStateChanged") is not False:
-        raise EvidenceError("ambiguous ownership must be RECOVERY_REQUIRED without user-state mutation")
+        if item["result"]["case"] != MATRIX[item["result"]["cycle"]]:
+            raise EvidenceError("cycle number/case differs from the exact frozen matrix")
+        if item["result"]["directConnectivity"]["authority"] != authority:
+            raise EvidenceError("cycle direct-connectivity authority differs from baseline")
+        validate_residue_observation(item["result"], item["identity"], state_root)
 
-    recovery = {item["result"].get("case") for item in values if item["action"] == "recovery" and item["status"] in {"passed", "recovery_required"}}
-    if not REQUIRED_RECOVERY.issubset(recovery):
+    recoveries = [item for item in values if item["action"] == "recovery"]
+    recovery_cases = [item["result"]["case"] for item in recoveries]
+    if len(recoveries) != len(REQUIRED_RECOVERY) or set(recovery_cases) != REQUIRED_RECOVERY or len(set(recovery_cases)) != len(recovery_cases):
         raise EvidenceError("standalone recovery evidence is incomplete")
+    for item in recoveries:
+        if item["result"]["directConnectivity"]["authority"] != authority:
+            raise EvidenceError("recovery direct-connectivity authority differs from baseline")
+        validate_residue_observation(item["result"], item["identity"], state_root)
 
     proofs = [item for item in values if item["action"] == "route-proof"]
+    expected_proofs = {(client, version, decision) for client, version in REQUIRED_CLIENTS.items() for decision in ("ROUTED", "DIRECT", "BYPASS")}
+    actual_proofs = {(item["result"]["client"], item["result"]["version"], item["result"]["decision"]) for item in proofs if item["result"]["client"] != "claude"}
+    if actual_proofs != expected_proofs or len([item for item in proofs if item["result"]["client"] != "claude"]) != len(expected_proofs):
+        raise EvidenceError("authenticated route-proof matrix is incomplete or duplicated")
     for client, version in REQUIRED_CLIENTS.items():
-        decisions = {item["result"].get("decision") for item in proofs if item["result"].get("client") == client and item["result"].get("version") == version and item["result"].get("authenticated") is True}
+        decisions = {item["result"]["decision"] for item in proofs if item["result"]["client"] == client and item["result"]["version"] == version}
         if decisions != {"ROUTED", "DIRECT", "BYPASS"}:
             raise EvidenceError(f"authenticated ROUTED/DIRECT/BYPASS proof is incomplete for {client}")
-    claude = [item for item in proofs if item["result"].get("client") == "claude" and item["result"].get("version") == "2.1.212"]
-    if len(claude) != 1 or claude[0]["status"] != "unsupported" or claude[0]["result"].get("decision") != "UNSUPPORTED" or claude[0]["result"].get("protocol") != "anthropic-native":
+    claude = [item for item in proofs if item["result"]["client"] == "claude"]
+    if len(claude) != 1:
         raise EvidenceError("Claude native protocol must be recorded honestly as unsupported")
 
-    cleanup = [item for item in values if item["action"] == "cleanup" and item["status"] == "passed"]
-    if len(cleanup) != 1:
+    cleanup = [item for item in values if item["action"] == "cleanup"]
+    if len(cleanup) != 1 or cleanup[0]["status"] != "passed":
         raise EvidenceError("exactly one passed cleanup receipt is required")
     result = cleanup[0]["result"]
-    if result.get("directConnectivityRestored") is not True or result.get("configTreesUnchanged") is not True or result.get("listenerResidue") is not False or result.get("ownedStateResidue") is not False:
-        raise EvidenceError("cleanup did not prove direct restoration and zero residue")
-    require_zero_residue(cleanup[0], "cleanup")
-    cas = result.get("compareAndSet")
-    if not isinstance(cas, list) or [item.get("name") for item in cas] != list(EXACT_ENVIRONMENT) or any(item.get("outcome") not in {"restored", "unchanged"} for item in cas):
-        raise EvidenceError("cleanup lacks exact-five compare-and-set restoration evidence")
+    if result["directConnectivity"]["authority"] != authority:
+        raise EvidenceError("cleanup direct-connectivity authority differs from baseline")
+    validate_residue_observation(result, cleanup[0]["identity"], state_root)
+
+    if len(values) != 1 + len(MATRIX) + len(REQUIRED_RECOVERY) + len(expected_proofs) + 1 + 1:
+        raise EvidenceError("evidence contains duplicate or unexpected receipts")
 
 
 def verify_run(output: str, require_complete: bool = True) -> dict[str, Any]:

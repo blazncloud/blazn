@@ -103,7 +103,11 @@ class StaticQualificationTest(unittest.TestCase):
                 "ANTHROPIC_AUTH_TOKEN": "prior-anthropic",
             },
             "configTrees": {"codex": sha(b"codex-tree"), "claude": sha(b"claude-tree"), "hermes": sha(b"hermes-tree")},
-            "directConnectivity": {"reachable": True, "proofDigest": sha(b"authenticated-direct-proof")},
+            "directConnectivity": {
+                "reachable": True, "authenticated": True,
+                "requestId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                "authority": "api.openai.com:443", "proofDigest": sha(b"authenticated-direct-proof"),
+            },
             "proxy": {
                 "activationId": self.activation, "sessionId": self.session, "stateRoot": str(self.state_root),
                 "active": False,
@@ -129,6 +133,25 @@ class StaticQualificationTest(unittest.TestCase):
     @staticmethod
     def write_json(path: pathlib.Path, value) -> None:
         path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+
+    def rehash_finalized_receipt(self, receipt: pathlib.Path, value, *, receipt_checksum: bool = True) -> None:
+        if receipt_checksum:
+            value["checksum"] = evidence.checksum(value)
+        self.write_json(receipt, value)
+        manifest = json.loads((self.output / "run.json").read_text())
+        descriptor = next(item for item in manifest["receipts"] if item["path"] == f"receipts/{receipt.name}")
+        descriptor["digest"] = evidence.digest_file(receipt)
+        descriptor["bytes"] = receipt.stat().st_size
+        manifest["manifestDigest"] = evidence.digest_bytes(evidence.canonical({key: item for key, item in manifest.items() if key != "manifestDigest"}))
+        self.write_json(self.output / "run.json", manifest)
+        paths = sorted(
+            [self.output / "run.json", *(self.output / "receipts").glob("*.json")],
+            key=lambda item: item.relative_to(self.output).as_posix(),
+        )
+        (self.output / "SHA256SUMS").write_text("".join(
+            f"{evidence.digest_file(path).removeprefix('sha256:')}  {path.relative_to(self.output).as_posix()}\n"
+            for path in paths
+        ))
 
     def command(self, action: str, *extra: str, approve: bool = True, profile_path: pathlib.Path | None = None, state_path: pathlib.Path | None = None) -> subprocess.CompletedProcess[str]:
         profile_path = profile_path or self.profile_path
@@ -248,9 +271,13 @@ class StaticQualificationTest(unittest.TestCase):
                 qualification.digest(qualification.canonical(profile)), {"prompt": "must never appear"},
             )
 
-    def test_cycle_and_cleanup_require_bound_available_zero_residue_observations(self) -> None:
+    def test_cycle_recovery_and_cleanup_require_bound_available_zero_residue_observations(self) -> None:
         self.assertEqual(self.command("capture-before").returncode, 0)
-        for action, extra in (("cycle", ("--cycle", "1", "--case", "normal-stop")), ("cleanup", ())):
+        for action, extra in (
+            ("cycle", ("--cycle", "1", "--case", "normal-stop")),
+            ("recovery", ("--case", "normal-stop")),
+            ("cleanup", ()),
+        ):
             for observation in ("listenerObservation", "ownedStateObservation"):
                 residue = copy.deepcopy(self.state)
                 residue["proxy"][observation]["residue"] = True
@@ -280,6 +307,22 @@ class StaticQualificationTest(unittest.TestCase):
         result = self.command("cycle", "--cycle", "1", "--case", "normal-stop", state_path=unbound_path)
         self.assert_failed(result, "exact activation/session/state root")
 
+        conflict = copy.deepcopy(self.state)
+        conflict["proxy"]["cas"]["OPENAI_BASE_URL"] = "conflict"
+        conflict_path = self.root / "recovery-cas-conflict.json"
+        self.write_json(conflict_path, conflict)
+        result = self.command("recovery", "--case", "normal-stop", state_path=conflict_path)
+        self.assert_failed(result, "compare-and-set")
+
+    def test_direct_connectivity_requires_authenticated_request_and_authority(self) -> None:
+        for field, value in (("authenticated", False), ("requestId", "not-a-request"), ("authority", "https://api.openai.com/path")):
+            changed = copy.deepcopy(self.state)
+            changed["directConnectivity"][field] = value
+            changed_path = self.root / f"bad-direct-{field}.json"
+            self.write_json(changed_path, changed)
+            result = self.command("capture-before", state_path=changed_path)
+            self.assert_failed(result, "direct")
+
     def proof(self, client: str, version: str, decision: str) -> pathlib.Path:
         protocol = "anthropic-native" if client == "claude" else ("openai-responses" if client == "codex" else "openai-chat")
         reason = "native_protocol_unsupported" if client == "claude" else f"verified_{decision.lower()}"
@@ -297,10 +340,22 @@ class StaticQualificationTest(unittest.TestCase):
         result = self.command("capture-before")
         self.assertEqual(result.returncode, 0, result.stderr)
         for number, case in qualification.MATRIX.items():
-            result = self.command("cycle", "--cycle", str(number), "--case", case)
+            state_path = self.state_path
+            if case == "ambiguous-recovery":
+                ambiguous = copy.deepcopy(self.state)
+                ambiguous["proxy"]["cas"] = {name: "unchanged" for name in qualification.EXACT_ENVIRONMENT}
+                state_path = self.root / f"cycle-{number}-ambiguous.json"
+                self.write_json(state_path, ambiguous)
+            result = self.command("cycle", "--cycle", str(number), "--case", case, state_path=state_path)
             self.assertEqual(result.returncode, 0, result.stderr)
         for case in sorted(evidence.REQUIRED_RECOVERY):
-            result = self.command("recovery", "--case", case)
+            state_path = self.state_path
+            if case == "ambiguous-recovery":
+                ambiguous = copy.deepcopy(self.state)
+                ambiguous["proxy"]["cas"] = {name: "unchanged" for name in qualification.EXACT_ENVIRONMENT}
+                state_path = self.root / "recovery-ambiguous.json"
+                self.write_json(state_path, ambiguous)
+            result = self.command("recovery", "--case", case, state_path=state_path)
             self.assertEqual(result.returncode, 0, result.stderr)
         versions = {"hermes": "0.19.0", "codex": "0.147.0", "generic": "proxy-fixture/v1"}
         for client, version in versions.items():
@@ -322,33 +377,26 @@ class StaticQualificationTest(unittest.TestCase):
 
         receipt = next((self.output / "receipts").glob("*cycle*.json"))
         value = json.loads(receipt.read_text())
+        original = copy.deepcopy(value)
         value["result"]["residueObservation"]["listenerResidue"] = True
-        self.write_json(receipt, value)
-        manifest = json.loads((self.output / "run.json").read_text())
-        descriptor = next(item for item in manifest["receipts"] if item["path"] == f"receipts/{receipt.name}")
-        descriptor["digest"] = evidence.digest_file(receipt)
-        descriptor["bytes"] = receipt.stat().st_size
-        manifest["manifestDigest"] = evidence.digest_bytes(evidence.canonical({key: item for key, item in manifest.items() if key != "manifestDigest"}))
-        self.write_json(self.output / "run.json", manifest)
+        self.rehash_finalized_receipt(receipt, value, receipt_checksum=False)
         result = self.command("verify", approve=False)
         self.assert_failed(result, "receipt checksum")
 
-        value["checksum"] = evidence.checksum(value)
-        self.write_json(receipt, value)
-        descriptor["digest"] = evidence.digest_file(receipt)
-        descriptor["bytes"] = receipt.stat().st_size
-        manifest["manifestDigest"] = evidence.digest_bytes(evidence.canonical({key: item for key, item in manifest.items() if key != "manifestDigest"}))
-        self.write_json(self.output / "run.json", manifest)
-        paths = sorted(
-            [self.output / "run.json", *(self.output / "receipts").glob("*.json")],
-            key=lambda item: item.relative_to(self.output).as_posix(),
-        )
-        (self.output / "SHA256SUMS").write_text("".join(
-            f"{evidence.digest_file(path).removeprefix('sha256:')}  {path.relative_to(self.output).as_posix()}\n"
-            for path in paths
-        ))
+        self.rehash_finalized_receipt(receipt, copy.deepcopy(original))
+        self.assertEqual(self.command("verify", approve=False).returncode, 0)
+
+        swapped = copy.deepcopy(original)
+        swapped["result"]["case"] = "abrupt-kill"
+        self.rehash_finalized_receipt(receipt, swapped)
         result = self.command("verify", approve=False)
-        self.assert_failed(result, "zero-residue evidence")
+        self.assert_failed(result, "exact frozen matrix")
+
+        self.rehash_finalized_receipt(receipt, copy.deepcopy(original))
+        value["checksum"] = evidence.checksum(value)
+        self.rehash_finalized_receipt(receipt, value)
+        result = self.command("verify", approve=False)
+        self.assert_failed(result, "zero-residue")
 
 
 if __name__ == "__main__":
