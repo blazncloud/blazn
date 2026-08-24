@@ -315,7 +315,7 @@ function digest(value: unknown): value is string { return typeof value === "stri
 function artifactName(value: unknown): value is string { return typeof value === "string" && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value); }
 function validateArtifactWarnings(warnings: string[]): void {
   if (warnings.length > 32 || warnings.some((warning, index) =>
-    !/^optional_artifact_missing:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(warning) || index > 0 && warnings[index - 1]! >= warning)) {
+    !/^optional_artifact_missing_[a-z0-9](?:[a-z0-9_]{0,61}[a-z0-9])?$/.test(warning) || index > 0 && warnings[index - 1]! >= warning)) {
     throw new Error("sandbox artifact export warnings are invalid");
   }
 }

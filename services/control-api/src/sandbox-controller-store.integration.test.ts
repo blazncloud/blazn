@@ -227,7 +227,7 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.equal(await first.recordArtifact(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,{...artifact,digest:`sha256:${"e".repeat(64)}`}),undefined);
     assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,[]),false,
       "unaccounted optional artifact completed the phase");
-    const artifactWarnings=["optional_artifact_missing:logs"];
+    const artifactWarnings=["optional_artifact_missing_logs"];
     assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifactWarnings),true);
     assert.equal(await first.completeArtifactExport(stopOperationId,"controller-stop",stop!.leaseToken,stop!.admissionObservation!,artifactWarnings),true,"artifact phase replay failed");
     const stopCompletion = { status: "succeeded" as const, expectedBackendUid: "backend-stop", expectedBackendResourceVersion: "resource-stop",

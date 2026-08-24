@@ -540,9 +540,14 @@ func validateWorkItem(item WorkItem) error {
 	}
 	seenWarnings := map[string]bool{}
 	for index, warning := range item.ArtifactWarningCodes {
-		name := strings.TrimPrefix(warning, "optional_artifact_missing:")
-		contract, ok := artifactContracts[name]
-		if warning != "optional_artifact_missing:"+name || !ok || contract.Required || seenPersistedArtifacts[name] ||
+		name := ""
+		for candidate, contract := range artifactContracts {
+			if artifactMissingWarning(candidate) == warning && !contract.Required {
+				name = candidate
+				break
+			}
+		}
+		if name == "" || seenPersistedArtifacts[name] ||
 			index > 0 && item.ArtifactWarningCodes[index-1] >= warning {
 			return fmt.Errorf("artifact export warning is invalid")
 		}

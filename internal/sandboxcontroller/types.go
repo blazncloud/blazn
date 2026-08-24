@@ -3,11 +3,16 @@ package sandboxcontroller
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 	"github.com/blazncloud/blazn/internal/sandboxio"
 )
+
+func artifactMissingWarning(name string) string {
+	return "optional_artifact_missing_" + strings.ReplaceAll(name, "-", "_")
+}
 
 type Source struct {
 	Name, URL, Destination, Commit string

@@ -350,7 +350,7 @@ func TestCleanupRestartAdoptsCompletedArtifactPhase(t *testing.T) {
 	item.OperationType, item.DesiredState = "delete", "deleted"
 	bindWorkItem(&item, state)
 	item.ArtifactExportComplete = true
-	item.ArtifactWarningCodes = []string{"optional_artifact_missing:logs"}
+	item.ArtifactWarningCodes = []string{"optional_artifact_missing_logs"}
 	item.Artifacts = []Artifact{{Name: "logs", Path: "/workspace/artifacts/logs", MediaType: "text/plain", Required: false}}
 	state.Record.Artifacts = []sandboxcontrol.ArtifactExport{{Name: "logs", Path: "/workspace/artifacts/logs", MediaType: "text/plain", Required: false}}
 	_, state.Record.ArtifactContractDigest, _ = sandboxcontrol.CanonicalArtifactContract(state.Record.Artifacts)

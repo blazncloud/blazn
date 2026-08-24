@@ -69,7 +69,7 @@ func (r *KubernetesArtifactRuntime) Export(ctx context.Context, item WorkItem, o
 		artifact, err := r.io.ReadArtifact(ctx, target, contract.Path)
 		if err != nil {
 			if sandboxio.IsProtocolError(err, "artifact_not_found") && !contract.Required {
-				result.WarningCodes = append(result.WarningCodes, "optional_artifact_missing:"+contract.Name)
+				result.WarningCodes = append(result.WarningCodes, artifactMissingWarning(contract.Name))
 				continue
 			}
 			return ArtifactExportResult{}, backendFailure("artifact_read_failed", "Sandbox artifact cannot be read safely", true, false, err)

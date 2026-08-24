@@ -82,11 +82,11 @@ BEGIN
   IF NOT FOUND OR p_expected_observation_digest IS NULL OR target.observation_digest<>p_expected_observation_digest OR
      p_warning_codes IS NULL OR cardinality(p_warning_codes)>32 THEN RETURN false; END IF;
   FOREACH warning IN ARRAY p_warning_codes LOOP
-    IF warning !~ '^optional_artifact_missing:[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' OR
+    IF warning !~ '^optional_artifact_missing_[a-z0-9]([a-z0-9_]{0,61}[a-z0-9])?$' OR
        previous IS NOT NULL AND previous>=warning OR NOT EXISTS(
          SELECT 1 FROM public.sandbox_artifact_contract_entries contract
          WHERE contract.sandbox_id=target.sandbox_id AND NOT contract.required AND
-           warning='optional_artifact_missing:'||contract.name AND
+           warning='optional_artifact_missing_'||replace(contract.name,'-','_') AND
            NOT EXISTS(SELECT 1 FROM public.sandbox_artifacts artifact
              WHERE artifact.sandbox_id=contract.sandbox_id AND artifact.name=contract.name))
     THEN RETURN false; END IF;
@@ -97,7 +97,7 @@ BEGIN
     WHERE contract.sandbox_id=target.sandbox_id AND
       NOT EXISTS(SELECT 1 FROM public.sandbox_artifacts artifact
         WHERE artifact.sandbox_id=contract.sandbox_id AND artifact.name=contract.name) AND
-      (contract.required OR NOT ('optional_artifact_missing:'||contract.name=ANY(p_warning_codes)))) THEN RETURN false; END IF;
+      (contract.required OR NOT ('optional_artifact_missing_'||replace(contract.name,'-','_')=ANY(p_warning_codes)))) THEN RETURN false; END IF;
   INSERT INTO public.sandbox_artifact_export_receipts(
     sandbox_id,workspace_id,operation_id,operation_type,observation_digest,warning_codes)
   VALUES(target.sandbox_id,target.workspace_id,p_operation_id,target.type,p_expected_observation_digest,p_warning_codes)

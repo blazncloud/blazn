@@ -29,6 +29,7 @@ const (
 )
 
 var sha256Pattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+var artifactWarningPattern = regexp.MustCompile(`^optional_artifact_missing_[a-z0-9](?:[a-z0-9_]{0,61}[a-z0-9])?$`)
 
 type sqlRow interface {
 	Scan(...any) error
@@ -218,7 +219,7 @@ func (s *PgStore) CompleteArtifactExport(ctx context.Context, operationID, worke
 		return false, errors.New("artifact export warnings are invalid")
 	}
 	for index, warning := range warnings {
-		if !strings.HasPrefix(warning, "optional_artifact_missing:") || index > 0 && warnings[index-1] >= warning {
+		if !artifactWarningPattern.MatchString(warning) || index > 0 && warnings[index-1] >= warning {
 			return false, errors.New("artifact export warnings are invalid")
 		}
 	}
@@ -432,7 +433,7 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 		return nil, errors.New("incomplete artifact export carries warnings")
 	}
 	for index, warning := range row.ArtifactExportWarningCodes {
-		if !strings.HasPrefix(warning, "optional_artifact_missing:") || index > 0 && row.ArtifactExportWarningCodes[index-1] >= warning {
+		if !artifactWarningPattern.MatchString(warning) || index > 0 && row.ArtifactExportWarningCodes[index-1] >= warning {
 			return nil, errors.New("artifact export warnings are invalid")
 		}
 	}

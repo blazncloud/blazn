@@ -71,7 +71,7 @@ func TestKubernetesArtifactRuntimeExportsBeforeCleanupAndAdoptsPersistedRows(t *
 	}
 	result, err := runtime.Export(context.Background(), item, observation)
 	if err != nil || len(result.Artifacts) != 1 || result.Artifacts[0].Name != "result" || result.Artifacts[0].ID != "" ||
-		!reflect.DeepEqual(result.WarningCodes, []string{"optional_artifact_missing:optional"}) || objects.puts != 1 || transport.calls != 2 {
+		!reflect.DeepEqual(result.WarningCodes, []string{"optional_artifact_missing_optional"}) || objects.puts != 1 || transport.calls != 2 {
 		t.Fatalf("result=%#v puts=%d reads=%d err=%v", result, objects.puts, transport.calls, err)
 	}
 	persisted := result.Artifacts[0]
