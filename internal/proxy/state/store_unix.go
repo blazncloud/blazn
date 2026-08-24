@@ -148,6 +148,15 @@ func (s *Store) WithReservation(ctx context.Context, reservation Reservation, op
 }
 
 func (s *Store) withReservation(ctx context.Context, reservation Reservation, operation func(*lockedStore) error) error {
+	return s.withOwnedReservation(ctx, reservation, func(locked *lockedStore) error {
+		if err := operation(locked); err != nil {
+			return err
+		}
+		return removeSecureFile(s.paths.Reservation, s.uid, s.faults)
+	})
+}
+
+func (s *Store) withOwnedReservation(ctx context.Context, reservation Reservation, operation func(*lockedStore) error) error {
 	return s.withLifecycleLock(ctx, func(locked *lockedStore) error {
 		current, err := locked.readReservation()
 		if err != nil {
@@ -157,10 +166,19 @@ func (s *Store) withReservation(ctx context.Context, reservation Reservation, op
 			current.Checksum != reservation.Checksum || !current.ExpiresAt.Equal(reservation.ExpiresAt) || !current.ExpiresAt.After(s.now()) {
 			return fmt.Errorf("%w: reservation changed or expired", ErrLifecycleConflict)
 		}
-		if err := operation(locked); err != nil {
-			return err
-		}
-		return removeSecureFile(s.paths.Reservation, s.uid, s.faults)
+		return operation(locked)
+	})
+}
+
+// withFinalReservation retains an exact caller-owned reservation throughout
+// an operation and releases it before dropping the lifecycle lock, even when
+// the operation reports a recoverable failure.
+func (s *Store) withFinalReservation(ctx context.Context, reservation Reservation, operation func(*lockedStore) error) error {
+	return s.withOwnedReservation(ctx, reservation, func(locked *lockedStore) (err error) {
+		defer func() {
+			err = errors.Join(err, removeSecureFile(s.paths.Reservation, s.uid, s.faults))
+		}()
+		return operation(locked)
 	})
 }
 
@@ -178,6 +196,25 @@ func (s *Store) CancelReservation(ctx context.Context, reservation Reservation) 
 		}
 		return removeSecureFile(s.paths.Reservation, s.uid, s.faults)
 	})
+}
+
+func (s *Store) RenewReservation(ctx context.Context, reservation Reservation, ttl time.Duration) (Reservation, error) {
+	if ttl <= 0 || ttl > 5*time.Minute {
+		return Reservation{}, ErrInvalidState
+	}
+	next := reservation
+	err := s.withLifecycleLock(ctx, func(locked *lockedStore) error {
+		current, err := locked.readReservation()
+		if err != nil {
+			return err
+		}
+		if current.Nonce != reservation.Nonce || current.OwnerUID != s.uid || current.Checksum != reservation.Checksum || !current.ExpiresAt.Equal(reservation.ExpiresAt) || !current.ExpiresAt.After(s.now()) {
+			return ErrLifecycleConflict
+		}
+		next.ExpiresAt = s.now().UTC().Add(ttl)
+		return locked.writeReservation(&next)
+	})
+	return next, err
 }
 
 func (locked *lockedStore) writeJournal(journal *Journal) error {
@@ -389,6 +426,9 @@ type Reconciliation struct {
 	ActivationID    string
 	Generation      int64
 	LifecycleState  string
+	PolicyDigest    string
+	Mode            string
+	ListenerProof   *LiveListenerProof
 	ReceiptRepaired bool
 }
 
@@ -399,44 +439,61 @@ type Reconciliation struct {
 func (s *Store) Reconcile(ctx context.Context) (result Reconciliation, err error) {
 	var semanticErr error
 	err = s.withInternalReservation(ctx, func(locked *lockedStore) error {
-		journal, journalErr := locked.readJournal()
-		receipt, receiptErr := locked.readReceipt()
-		if ownershipError(journalErr) || ownershipError(receiptErr) {
-			return ErrOwnershipAmbiguous
-		}
-		if journalErr == nil && receiptErr == nil {
-			if err := ValidateBinding(journal, receipt); err != nil {
-				return err
-			}
-			result = reconciliationFromJournal(journal, false)
-			return nil
-		}
-		if journalErr == nil {
-			repaired, err := receiptFromJournal(journal, publicationMechanism(journal))
-			if err != nil {
-				return err
-			}
-			if journal.State != "active" {
-				repaired.State = "recovery_required"
-			}
-			if err := locked.writeReceipt(repaired); err != nil {
-				return err
-			}
-			result = reconciliationFromJournal(journal, true)
-			return nil
-		}
-		if receiptErr == nil {
-			result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required"}
-			semanticErr = ErrRecoveryRequired
-			return nil
-		}
-		if errors.Is(journalErr, ErrNotFound) && errors.Is(receiptErr, ErrNotFound) {
-			result.State = ReconciliationInactive
-			return nil
-		}
-		return ErrOwnershipAmbiguous
+		return reconcileLocked(locked, &result, &semanticErr)
 	})
 	return result, errors.Join(err, semanticErr)
+}
+
+// ReconcileReserved validates the redundant records while retaining an exact
+// caller-owned lifecycle reservation. It lets a scoped operation prove which
+// activation it fenced without opening a handoff window or acquiring a second
+// reservation nonce.
+func (s *Store) ReconcileReserved(ctx context.Context, reservation Reservation) (result Reconciliation, err error) {
+	var semanticErr error
+	err = s.withOwnedReservation(ctx, reservation, func(locked *lockedStore) error {
+		return reconcileLocked(locked, &result, &semanticErr)
+	})
+	return result, errors.Join(err, semanticErr)
+}
+
+func reconcileLocked(locked *lockedStore, result *Reconciliation, semanticErr *error) error {
+	journal, journalErr := locked.readJournal()
+	receipt, receiptErr := locked.readReceipt()
+	if ownershipError(journalErr) || ownershipError(receiptErr) {
+		return ErrOwnershipAmbiguous
+	}
+	if journalErr == nil && receiptErr == nil {
+		if err := ValidateBinding(journal, receipt); err != nil {
+			return err
+		}
+		*result = reconciliationFromJournal(journal, false)
+		return nil
+	}
+	if journalErr == nil {
+		repaired, err := receiptFromJournal(journal, publicationMechanism(journal))
+		if err != nil {
+			return err
+		}
+		if journal.State != "active" {
+			repaired.State = "recovery_required"
+		}
+		if err := locked.writeReceipt(repaired); err != nil {
+			return err
+		}
+		*result = reconciliationFromJournal(journal, true)
+		return nil
+	}
+	if receiptErr == nil {
+		proof := proofFromReceipt(receipt)
+		*result = Reconciliation{State: ReconciliationRecoveryRequired, ActivationID: receipt.ActivationID, Generation: receipt.Generation, LifecycleState: "recovery_required", PolicyDigest: receipt.PolicyDigest, Mode: receipt.Mode, ListenerProof: &proof}
+		*semanticErr = ErrRecoveryRequired
+		return nil
+	}
+	if errors.Is(journalErr, ErrNotFound) && errors.Is(receiptErr, ErrNotFound) {
+		result.State = ReconciliationInactive
+		return nil
+	}
+	return ErrOwnershipAmbiguous
 }
 
 func reconciliationFromJournal(journal *Journal, repaired bool) Reconciliation {
@@ -444,9 +501,10 @@ func reconciliationFromJournal(journal *Journal, repaired bool) Reconciliation {
 	if journal.State != "active" {
 		state = ReconciliationRecoveryRequired
 	}
+	proof := proofFromJournal(journal)
 	return Reconciliation{
 		State: state, ActivationID: journal.ActivationID, Generation: journal.Generation,
-		LifecycleState: journal.State, ReceiptRepaired: repaired,
+		LifecycleState: journal.State, PolicyDigest: journal.Policy.Digest, Mode: journal.Mode, ListenerProof: &proof, ReceiptRepaired: repaired,
 	}
 }
 

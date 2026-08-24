@@ -36,6 +36,7 @@ var rootCommands = []helpCommand{
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
 	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
 	{Name: "project", Summary: "Create, select, and manage Workspace Projects"},
+	{Name: "proxy", Summary: "Activate, inspect, and recover local model routing"},
 	{Name: "sandbox", Summary: "Create and operate isolated agent sandboxes"},
 	{Name: "social", Summary: "Search public entities and manage social content (plugin)"},
 	{Name: "template", Summary: "Validate and publish sandbox templates"},
@@ -104,6 +105,8 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 		output = helpOutput{Command: "template", Usage: "blazn template validate|publish -f FILE [options]", Summary: "Validate templates offline or publish them to a workspace.", Commands: []helpCommand{{Name: "validate", Summary: "Validate and digest a local template without authentication"}, {Name: "publish", Summary: "Publish a valid template to a workspace"}}}
 	case "sandbox":
 		output = helpOutput{Command: "sandbox", Usage: "blazn sandbox create|list|get|watch|exec|upload|download|stop|delete [options]", Summary: "Create and operate isolated agent sandboxes.", Commands: []helpCommand{{Name: "create", Summary: "Request a sandbox from a published template"}, {Name: "list", Summary: "List sandboxes in a workspace"}, {Name: "get", Summary: "Get one sandbox"}, {Name: "watch", Summary: "Stream sandbox events as JSON Lines"}, {Name: "exec", Summary: "Run a command with a one-time access grant"}, {Name: "upload", Summary: "Upload a file with a one-time access grant"}, {Name: "download", Summary: "Download a file with a one-time access grant"}, {Name: "stop", Summary: "Request sandbox shutdown"}, {Name: "delete", Summary: "Request sandbox deletion"}}}
+	case "proxy":
+		output = helpOutput{Command: "proxy", Usage: "blazn proxy on|off|status|doctor|routes|tail|run|reset [options]", Summary: "Activate and recover authenticated loopback model routing.", Commands: []helpCommand{{Name: "on", Summary: "Prepare and activate a journaled session listener"}, {Name: "off", Summary: "Restore exact prior state without network access"}, {Name: "status", Summary: "Reconcile protected activation records"}, {Name: "doctor", Summary: "Validate policy, routes, credentials, and listener readiness"}, {Name: "routes", Summary: "List redacted policy routes"}, {Name: "tail", Summary: "Read redacted operational events"}, {Name: "run", Summary: "Run exact argv with a scoped listener"}, {Name: "reset", Summary: "Recover receipt-owned state after confirmation"}}}
 	case "plugins":
 		output = helpOutput{Command: "plugins", Usage: "blazn plugins list|doctor|install|rollback|remove [NAME] [--yes]", Summary: "Install and manage signed allowlisted Blazn plugins.", Commands: []helpCommand{{Name: "list", Summary: "List allowlisted plugins"}, {Name: "doctor", Summary: "Validate installed plugin receipts"}, {Name: "install", Summary: "Install a signed plugin release"}, {Name: "rollback", Summary: "Activate the previous installed version"}, {Name: "remove", Summary: "Remove a receipt-owned plugin"}}}
 	default:
