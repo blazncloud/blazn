@@ -49,6 +49,7 @@ test("actual Draft 2020-12 validation accepts good template and rejects isolated
     `registry.example.test:0/blazn/sandbox@sha256:${"a".repeat(64)}`,
     `registry.example.test:65536/blazn/sandbox@sha256:${"a".repeat(64)}`,
     `registry.example.test:080/blazn/sandbox@sha256:${"a".repeat(64)}`,
+    `registry.example.test/${"a".repeat(256)}@sha256:${"a".repeat(64)}`,
     `bad-.example.test/blazn/sandbox@sha256:${"a".repeat(64)}`,
     `registry.example.test/blazn//sandbox@sha256:${"a".repeat(64)}`,
     `registry.example.test/blazn/sandbox@sha256:${"A".repeat(64)}`,
@@ -61,6 +62,7 @@ test("actual Draft 2020-12 validation accepts good template and rejects isolated
     `registry.example.test:80/blazn/sandbox@sha256:${"a".repeat(64)}`,
     `registry.example.test:443/blazn/sandbox__image@sha256:${"a".repeat(64)}`,
     `registry.example.test/blazn/sandbox--image@sha256:${"a".repeat(64)}`,
+    `registry.example.test/${"a".repeat(255)}@sha256:${"a".repeat(64)}`,
   ]) {
     const candidate = structuredClone(good) as { spec: { variants: Array<Record<string, unknown>> } };
     candidate.spec.variants[0]!.imageDigest = value;
@@ -73,10 +75,10 @@ test("OpenAPI immutable OCI reference agrees with the template boundary", async 
   const validate = new Ajv2020({ allErrors: true, strict: false }).compile(openapi.components.schemas.ImmutableOCIReference);
   const digest = `sha256:${"a".repeat(64)}`;
   assert.equal(validate(`registry.example.test/blazn/sandbox@${digest}`), true, JSON.stringify(validate.errors));
-  for (const value of [`registry.example.test:80/blazn/sandbox@${digest}`, `registry.example.test:443/blazn/sandbox__image@${digest}`, `registry.example.test/blazn/sandbox--image@${digest}`]) {
+  for (const value of [`registry.example.test:80/blazn/sandbox@${digest}`, `registry.example.test:443/blazn/sandbox__image@${digest}`, `registry.example.test/blazn/sandbox--image@${digest}`, `registry.example.test/${"a".repeat(255)}@${digest}`]) {
     assert.equal(validate(value), true, `OpenAPI rejected ${value}`);
   }
-  for (const value of [`blazn/sandbox@${digest}`, `registry.example.test:0/blazn/sandbox@${digest}`, `registry.example.test:080/blazn/sandbox@${digest}`, `registry.example.test/blazn//sandbox@${digest}`]) {
+  for (const value of [`blazn/sandbox@${digest}`, `registry.example.test:0/blazn/sandbox@${digest}`, `registry.example.test:080/blazn/sandbox@${digest}`, `registry.example.test/blazn//sandbox@${digest}`, `registry.example.test/${"a".repeat(256)}@${digest}`]) {
     assert.equal(validate(value), false, `OpenAPI accepted ${value}`);
   }
 });

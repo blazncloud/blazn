@@ -1,6 +1,6 @@
 // Code generated from the Blazn sandbox contracts; DO NOT EDIT.
-// Sandbox OpenAPI SHA256: c6170596484d7e01ec45faf9d185460b3f8aa90f79d09b67c8ae2f902e0cba02
-// SandboxTemplate SHA256: 976016e40e20203be6309a09356d7fdf1d21c16a3ec676e478e6f8e5a758ebb6
+// Sandbox OpenAPI SHA256: 8586de72bf6fef822191842fe68c411c644b583d322cfd758ec2f3a921a7d0d2
+// SandboxTemplate SHA256: 46bc1cb68cfacb032d24b5b7f80167fc892157fdbb455594f8e9c0cc9b9770ca
 // Sandbox CLI contract SHA256: e40063e5f7b1edc107282a637e3d67f1d477467c8e9243d1ae082c0a44c3da83
 
 package client
