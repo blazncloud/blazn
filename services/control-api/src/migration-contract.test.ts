@@ -262,6 +262,7 @@ test("Development runtime migration freezes tenant, version, bearer proof, and c
   assert.match(sql, /d\.version=p_expected_project_version AND d\.manifest_digest=p_expected_manifest_digest/);
   assert.match(sql, /FOR SHARE OF builder,network,resource,publication/);
   assert.match(sql, /s\.status='published' FOR SHARE OF v,s/);
+  assert.match(sql, /v\.id=project\.template_version_id[\s\S]*s\.status='published' FOR SHARE OF v,s/);
   assert.match(sql, /REVOKE ALL ON TABLE development_policy_profiles,development_registry_repositories,development_projects,[\s\S]*development_reproducibility_baselines[\s\S]*blazn_runtime/);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION development_runtime_access[\s\S]*development_runtime_get_project[\s\S]*development_runtime_list_builds[\s\S]*TO blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*development_(?:projects|builds|registry_repositories|reproducibility_baselines)/);

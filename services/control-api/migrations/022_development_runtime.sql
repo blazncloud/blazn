@@ -231,6 +231,11 @@ BEGIN
     publication.kind='publication' AND publication.name=project.manifest#>>'{policy,publicationPolicy}' AND publication.active
   FOR SHARE OF builder,network,resource,publication;
   IF registry_authority IS DISTINCT FROM project.registry_authorization OR policy_authority IS DISTINCT FROM project.policy_snapshot THEN RETURN; END IF;
+  PERFORM 1 FROM public.sandbox_template_versions v JOIN public.sandbox_template_version_status s ON s.version_id=v.id
+  WHERE v.id=project.template_version_id AND v.workspace_id=project.workspace_id AND
+    v.template_id=project.publication_template_id AND v.version=project.template_version AND
+    v.content_digest=project.template_digest AND s.status='published' FOR SHARE OF v,s;
+  IF NOT FOUND THEN RETURN; END IF;
   SELECT * INTO target FROM public.sandbox_templates WHERE id=project.publication_template_id AND workspace_id=project.workspace_id FOR UPDATE;
   IF NOT FOUND THEN RETURN; END IF;
   INSERT INTO public.runs(id,workspace_id,project_id,kind,proof_class,plan_digest,requested_by)
