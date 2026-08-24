@@ -195,8 +195,11 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 	defer root.Close()
 	if len(entries) != 0 {
 		result, err := adoptMaterialization(ctx, root, source)
-		if err != nil || !stableRootPath(root, destination) {
-			return SourceMaterialization{}, protocolError("source_destination_unsafe", err)
+		if err != nil {
+			return SourceMaterialization{}, err
+		}
+		if !stableRootPath(root, destination) {
+			return SourceMaterialization{}, protocolError("source_destination_unsafe", nil)
 		}
 		return result, nil
 	}
