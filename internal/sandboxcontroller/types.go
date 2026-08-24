@@ -46,6 +46,7 @@ type WorkItem struct {
 	PersistedWorkloadDigest                                                       *string
 	AdmissionObservation                                                          *sandboxcontrol.AdmissionObservation
 	SourceMaterialization                                                         *sandboxio.SourceMaterializationReceipt
+	SourceBootstrapObservation                                                    *sandboxcontrol.AdmissionObservation
 }
 
 type LeaseWindow struct {

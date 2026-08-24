@@ -237,10 +237,14 @@ func (c *Controller) execute(ctx context.Context, item WorkItem) error {
 func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	var state BackendState
 	var err error
-	if item.BackendUID == nil {
+	expectedObservation := item.AdmissionObservation
+	if item.BackendUID == nil && item.SourceMaterialization != nil {
+		expectedObservation = item.SourceBootstrapObservation
+	}
+	if item.BackendUID == nil && item.SourceMaterialization == nil {
 		state, err = c.backend.EnsureCreated(ctx, item)
 	} else {
-		state, err = c.backend.Observe(ctx, item, item.AdmissionObservation)
+		state, err = c.backend.Observe(ctx, item, expectedObservation)
 	}
 	if err != nil {
 		return err
@@ -257,7 +261,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	if err := validateObserved(item, state); err != nil {
 		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match work item", Ambiguous: true, Cause: err}
 	}
-	if item.BackendUID == nil {
+	if len(item.Sources) == 0 && item.BackendUID == nil {
 		ok, err := c.store.BindBackend(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, *state.AdmissionObservation)
 		if err != nil {
 			return err
@@ -265,8 +269,14 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 		if !ok {
 			return nil
 		}
-	} else if err := validateExisting(item, state); err != nil {
-		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match persisted identity", Ambiguous: true, Cause: err}
+	} else if len(item.Sources) == 0 && item.BackendUID != nil {
+		if err := validateExisting(item, state); err != nil {
+			return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match persisted identity", Ambiguous: true, Cause: err}
+		}
+	} else if item.BackendUID != nil {
+		if err := validateExisting(item, state); err != nil {
+			return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match persisted identity", Ambiguous: true, Cause: err}
+		}
 	}
 	if len(item.Sources) != 0 {
 		sourceBackend, ok := c.backend.(SourceBackend)
@@ -293,6 +303,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 				return nil
 			}
 			receipt = &materialized
+			item.SourceBootstrapObservation = state.AdmissionObservation
 		}
 		if err := sourceBackend.RestrictSourceRuntime(ctx, item, *state.AdmissionObservation, *receipt); err != nil {
 			return err
@@ -306,7 +317,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 			if !wait(ctx, c.config.PollEvery) {
 				return ctx.Err()
 			}
-			state, err = c.backend.Observe(ctx, item, state.AdmissionObservation)
+			state, err = c.backend.Observe(ctx, item, item.SourceBootstrapObservation)
 			if err != nil {
 				return err
 			}
@@ -314,6 +325,15 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	}
 	if err := validateCreated(item, state); err != nil {
 		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "ready backend identity does not match work item", Ambiguous: true, Cause: err}
+	}
+	if len(item.Sources) != 0 && item.BackendUID == nil {
+		ok, err := c.store.BindBackend(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, *state.AdmissionObservation)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
 	}
 	workloadDigest := state.AdmissionObservation.Workload.Digest
 	observationDigest := state.AdmissionObservation.Digest
@@ -466,8 +486,15 @@ func validateWorkItem(item WorkItem) error {
 	}
 	if item.SourceMaterialization != nil {
 		manifest := sourceManifest(item.Sources)
-		if len(item.Sources) == 0 || item.AdmissionObservation == nil || sandboxio.ValidateSourceMaterializationReceipt(*item.SourceMaterialization, &manifest) != nil {
+		if len(item.Sources) == 0 || sandboxio.ValidateSourceMaterializationReceipt(*item.SourceMaterialization, &manifest) != nil ||
+			item.BackendUID == nil && item.SourceBootstrapObservation == nil {
 			return fmt.Errorf("persisted source materialization is inconsistent")
+		}
+	}
+	if item.SourceBootstrapObservation != nil {
+		if item.SourceMaterialization == nil || sandboxcontrol.ValidateAdmissionObservation(*item.SourceBootstrapObservation) != nil ||
+			item.SourceBootstrapObservation.Sandbox.Name != item.SandboxID || item.SourceBootstrapObservation.Workload.WorkspaceID != item.WorkspaceID {
+			return fmt.Errorf("persisted source bootstrap observation is inconsistent")
 		}
 	}
 	return nil

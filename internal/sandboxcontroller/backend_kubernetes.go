@@ -146,7 +146,7 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 		return BackendState{}, err
 	}
 	trusted, retained := b.retainedRecord(item)
-	if item.BackendUID == nil && !retained {
+	if item.BackendUID == nil && !retained && expected == nil {
 		return BackendState{}, backendFailure("backend_identity_unavailable", "sandbox create identity is unavailable after restart", false, true, nil)
 	}
 	record, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
@@ -161,7 +161,11 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 			return stateFromRecord(record), nil
 		}
 	}
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, expected)
+	adapterExpected := expected
+	if item.BackendUID == nil {
+		adapterExpected = nil
+	}
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, adapterExpected)
 	if err != nil {
 		var adapterErr *sandboxcontrol.AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrAdmissionPending {
@@ -172,11 +176,20 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 	if err := verifyObservation(item, observation); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend admission identity changed", false, true, err)
 	}
+	if item.BackendUID == nil && expected != nil && !sameSourceBootstrapObservation(*expected, observation) {
+		return BackendState{}, backendFailure("backend_identity_mismatch", "source bootstrap Pod or Workload identity changed", false, true, nil)
+	}
 	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend admission record changed", false, true, nil)
 	}
 	return BackendState{Record: record, AdmissionObservation: &observation,
 		Exists: true, Ready: record.State == sandboxcontrol.StateReady}, nil
+}
+
+func sameSourceBootstrapObservation(expected, current sandboxcontrol.AdmissionObservation) bool {
+	expected.Sandbox.ResourceVersion, current.Sandbox.ResourceVersion = "", ""
+	expected.Digest, current.Digest = "", ""
+	return reflect.DeepEqual(expected, current)
 }
 
 func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expected *sandboxcontrol.AdmissionObservation) (BackendState, error) {

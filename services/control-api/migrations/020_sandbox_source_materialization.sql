@@ -49,27 +49,23 @@ EXCEPTION WHEN null_value_not_allowed THEN RETURN NULL;
 END
 $$;
 
--- Required to make the composite receipt foreign key prove the exact bound
--- backend tuple rather than merely the Sandbox primary key.
-ALTER TABLE sandbox_workload_admissions
-  ADD CONSTRAINT sandbox_workload_admission_operation_backend_unique
-  UNIQUE (operation_id,workspace_id,sandbox_id,backend_uid,backend_resource_version);
-
 CREATE TABLE sandbox_source_materialization_receipts (
   sandbox_id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL,
   operation_id uuid NOT NULL UNIQUE,
+  operation_type text NOT NULL DEFAULT 'create' CHECK (operation_type='create'),
   backend_uid text NOT NULL,
   backend_resource_version text NOT NULL,
   observation_digest char(64) NOT NULL CHECK (observation_digest ~ '^[0-9a-f]{64}$'),
   manifest_digest char(64) NOT NULL CHECK (manifest_digest ~ '^[0-9a-f]{64}$'),
   receipt_digest char(64) NOT NULL CHECK (receipt_digest ~ '^[0-9a-f]{64}$'),
   receipt jsonb NOT NULL CHECK (jsonb_typeof(receipt)='object' AND NOT workspace_json_contains_secret_key(receipt)),
+  bootstrap_observation jsonb NOT NULL CHECK (jsonb_typeof(bootstrap_observation)='object' AND NOT workspace_json_contains_secret_key(bootstrap_observation)),
   recorded_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   UNIQUE (sandbox_id,receipt_digest),
   FOREIGN KEY (sandbox_id,workspace_id) REFERENCES sandboxes(id,workspace_id) ON DELETE RESTRICT,
-  FOREIGN KEY (operation_id,workspace_id,sandbox_id,backend_uid,backend_resource_version)
-    REFERENCES sandbox_workload_admissions(operation_id,workspace_id,sandbox_id,backend_uid,backend_resource_version) ON DELETE RESTRICT
+  FOREIGN KEY (operation_id,workspace_id,sandbox_id,operation_type)
+    REFERENCES sandbox_operations(id,workspace_id,sandbox_id,type) ON DELETE RESTRICT
 );
 
 CREATE FUNCTION sandbox_source_receipts_immutable()
@@ -84,26 +80,86 @@ CREATE FUNCTION sandbox_controller_record_source_materialization_v1(
   p_operation_id uuid, p_worker_id text, p_lease_token uuid,
   p_expected_backend_uid text, p_expected_backend_resource_version text,
   p_expected_observation_digest text, p_manifest_digest text,
-  p_receipt_digest text, p_receipt jsonb)
+  p_receipt_digest text, p_receipt jsonb, p_bootstrap_observation jsonb)
 RETURNS boolean
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
 DECLARE target record; expected_manifest text; item record; previous_name text := NULL;
 BEGIN
-  SELECT o.workspace_id,o.sandbox_id,o.type,
-    a.backend_uid,a.backend_resource_version,a.observation_digest::text
+  SELECT o.workspace_id,o.sandbox_id,o.type
   INTO target
   FROM public.sandbox_operations o
   JOIN public.sandbox_reconcile_jobs j ON j.operation_id=o.id
-  JOIN public.sandbox_workload_admissions a
-    ON a.sandbox_id=o.sandbox_id AND a.workspace_id=o.workspace_id AND a.operation_id=o.id
+  JOIN public.sandboxes s ON s.id=o.sandbox_id AND s.workspace_id=o.workspace_id
   WHERE o.id=p_operation_id AND o.status='running' AND o.type='create' AND j.completed_at IS NULL
     AND j.lease_owner=p_worker_id AND j.lease_token=p_lease_token AND j.lease_expires_at>clock_timestamp()
-  FOR UPDATE OF o,j,a;
-  IF NOT FOUND OR target.backend_uid<>p_expected_backend_uid OR
-     target.backend_resource_version<>p_expected_backend_resource_version OR
-     target.observation_digest IS NULL OR target.observation_digest<>p_expected_observation_digest OR
+  FOR UPDATE OF o,j,s;
+  IF NOT FOUND OR
      p_manifest_digest !~ '^[0-9a-f]{64}$' OR p_receipt_digest !~ '^[0-9a-f]{64}$' THEN RETURN false; END IF;
+
+  IF jsonb_typeof(p_bootstrap_observation)<>'object' OR jsonb_strip_nulls(p_bootstrap_observation)<>p_bootstrap_observation OR
+     jsonb_typeof(p_bootstrap_observation->'sandbox')<>'object' OR jsonb_typeof(p_bootstrap_observation->'pod')<>'object' OR
+     jsonb_typeof(p_bootstrap_observation->'workload')<>'object' OR jsonb_typeof(p_bootstrap_observation#>'{workload,owner}')<>'object' OR
+     jsonb_typeof(p_bootstrap_observation#>'{workload,condition}')<>'object' THEN RETURN false; END IF;
+  IF
+     (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation) key)<>
+       ARRAY['digest','pod','sandbox','workload']::text[] OR
+     (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation->'sandbox') key)<>
+       ARRAY['apiVersion','kind','name','namespace','resourceVersion','uid']::text[] OR
+     (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation->'pod') key)<>
+       ARRAY['apiVersion','kind','name','namespace','resourceVersion','uid']::text[] OR
+     (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation->'workload') key)<>
+       ARRAY['admitted','apiVersion','clusterQueue','condition','digest','name','namespace','owner','resourceVersion','sandboxId','uid','workspaceId']::text[] OR
+     (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation#>'{workload,owner}') key)<>
+       ARRAY['apiVersion','controller','kind','name','uid']::text[] OR
+     (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(p_bootstrap_observation#>'{workload,condition}') key)<>
+       ARRAY['status','type']::text[] OR
+     p_bootstrap_observation#>>'{sandbox,apiVersion}'<>'agents.x-k8s.io/v1beta1' OR
+     p_bootstrap_observation#>>'{sandbox,kind}'<>'Sandbox' OR
+     p_bootstrap_observation#>>'{sandbox,namespace}'<>'blazn-poc-sandboxes' OR
+     p_bootstrap_observation#>>'{sandbox,name}'<>target.sandbox_id::text OR
+     p_bootstrap_observation#>>'{sandbox,uid}'<>p_expected_backend_uid OR
+     p_bootstrap_observation#>>'{sandbox,resourceVersion}'<>p_expected_backend_resource_version OR
+     p_bootstrap_observation#>>'{pod,apiVersion}'<>'v1' OR p_bootstrap_observation#>>'{pod,kind}'<>'Pod' OR
+     p_bootstrap_observation#>>'{pod,namespace}'<>'blazn-poc-sandboxes' OR
+     p_bootstrap_observation#>>'{workload,apiVersion}'<>'kueue.x-k8s.io/v1beta1' OR
+     p_bootstrap_observation#>>'{workload,namespace}'<>'blazn-poc-sandboxes' OR
+     p_bootstrap_observation#>>'{workload,owner,apiVersion}'<>'agents.x-k8s.io/v1beta1' OR
+     p_bootstrap_observation#>>'{workload,owner,kind}'<>'Sandbox' OR
+     p_bootstrap_observation#>>'{workload,owner,name}'<>target.sandbox_id::text OR
+     p_bootstrap_observation#>>'{workload,owner,uid}'<>p_expected_backend_uid OR
+     (p_bootstrap_observation#>>'{workload,owner,controller}')::boolean IS NOT TRUE OR
+     p_bootstrap_observation#>>'{workload,workspaceId}'<>target.workspace_id::text OR
+     p_bootstrap_observation#>>'{workload,sandboxId}'<>target.sandbox_id::text OR
+     (p_bootstrap_observation#>>'{workload,admitted}')::boolean IS NOT TRUE OR
+     p_bootstrap_observation#>>'{workload,condition,type}'<>'Admitted' OR
+     p_bootstrap_observation#>>'{workload,condition,status}'<>'True' OR
+     p_bootstrap_observation#>>'{workload,digest}' !~ '^sha256:[0-9a-f]{64}$' OR
+     substring(p_bootstrap_observation#>>'{workload,digest}' from 8)<>public.sandbox_workload_admission_digest(
+       p_bootstrap_observation#>>'{workload,apiVersion}',p_bootstrap_observation#>>'{workload,namespace}',
+       p_bootstrap_observation#>>'{workload,name}',p_bootstrap_observation#>>'{workload,uid}',
+       p_bootstrap_observation#>>'{workload,resourceVersion}',p_bootstrap_observation#>>'{workload,clusterQueue}',
+       p_bootstrap_observation#>>'{workload,owner,apiVersion}',p_bootstrap_observation#>>'{workload,owner,kind}',
+       p_bootstrap_observation#>>'{workload,owner,name}',p_bootstrap_observation#>>'{workload,owner,uid}',
+       (p_bootstrap_observation#>>'{workload,owner,controller}')::boolean,
+       p_bootstrap_observation#>>'{workload,workspaceId}',p_bootstrap_observation#>>'{workload,sandboxId}',
+       (p_bootstrap_observation#>>'{workload,admitted}')::boolean,p_bootstrap_observation#>>'{workload,condition,type}',
+       p_bootstrap_observation#>>'{workload,condition,status}') OR
+     p_bootstrap_observation->>'digest'<>'sha256:'||p_expected_observation_digest OR
+     p_expected_observation_digest<>public.sandbox_admission_observation_digest(
+       p_expected_backend_uid,p_expected_backend_resource_version,p_bootstrap_observation#>>'{pod,apiVersion}',
+       p_bootstrap_observation#>>'{pod,kind}',p_bootstrap_observation#>>'{pod,namespace}',
+       p_bootstrap_observation#>>'{pod,name}',p_bootstrap_observation#>>'{pod,uid}',
+       p_bootstrap_observation#>>'{pod,resourceVersion}',p_bootstrap_observation#>>'{workload,apiVersion}',
+       p_bootstrap_observation#>>'{workload,namespace}',p_bootstrap_observation#>>'{workload,name}',
+       p_bootstrap_observation#>>'{workload,uid}',p_bootstrap_observation#>>'{workload,resourceVersion}',
+       p_bootstrap_observation#>>'{workload,clusterQueue}',p_bootstrap_observation#>>'{workload,owner,apiVersion}',
+       p_bootstrap_observation#>>'{workload,owner,kind}',p_bootstrap_observation#>>'{workload,owner,name}',
+       p_bootstrap_observation#>>'{workload,owner,uid}',(p_bootstrap_observation#>>'{workload,owner,controller}')::boolean,
+       p_bootstrap_observation#>>'{workload,workspaceId}',p_bootstrap_observation#>>'{workload,sandboxId}',
+       (p_bootstrap_observation#>>'{workload,admitted}')::boolean,p_bootstrap_observation#>>'{workload,condition,type}',
+       p_bootstrap_observation#>>'{workload,condition,status}',substring(p_bootstrap_observation#>>'{workload,digest}' from 8))
+  THEN RETURN false; END IF;
 
   SELECT public.sandbox_source_manifest_digest(
     coalesce(array_agg(r.name ORDER BY r.name),'{}'::text[]),
@@ -151,15 +207,67 @@ BEGIN
 
   INSERT INTO public.sandbox_source_materialization_receipts(
     sandbox_id,workspace_id,operation_id,backend_uid,backend_resource_version,
-    observation_digest,manifest_digest,receipt_digest,receipt)
+    observation_digest,manifest_digest,receipt_digest,receipt,bootstrap_observation)
   VALUES(target.sandbox_id,target.workspace_id,p_operation_id,p_expected_backend_uid,
-    p_expected_backend_resource_version,p_expected_observation_digest,p_manifest_digest,p_receipt_digest,p_receipt)
+    p_expected_backend_resource_version,p_expected_observation_digest,p_manifest_digest,p_receipt_digest,p_receipt,p_bootstrap_observation)
   ON CONFLICT (sandbox_id) DO NOTHING;
   RETURN EXISTS(SELECT 1 FROM public.sandbox_source_materialization_receipts r
     WHERE r.sandbox_id=target.sandbox_id AND r.workspace_id=target.workspace_id AND r.operation_id=p_operation_id AND
       r.backend_uid=p_expected_backend_uid AND r.backend_resource_version=p_expected_backend_resource_version AND
       r.observation_digest=p_expected_observation_digest AND r.manifest_digest=p_manifest_digest AND
-      r.receipt_digest=p_receipt_digest AND r.receipt=p_receipt);
+      r.receipt_digest=p_receipt_digest AND r.receipt=p_receipt AND r.bootstrap_observation=p_bootstrap_observation);
+END
+$$;
+
+CREATE FUNCTION sandbox_controller_bind_backend_v4(
+  p_operation_id uuid, p_worker_id text, p_lease_token uuid,
+  p_backend_uid text, p_backend_resource_version text,
+  p_sandbox_api_version text, p_sandbox_kind text, p_sandbox_namespace text,
+  p_sandbox_name text, p_sandbox_uid text, p_sandbox_resource_version text,
+  p_pod_api_version text, p_pod_kind text, p_pod_namespace text,
+  p_pod_name text, p_pod_uid text, p_pod_resource_version text,
+  p_workload_api_version text, p_workload_namespace text, p_workload_name text,
+  p_workload_uid text, p_workload_resource_version text, p_admitted_cluster_queue text,
+  p_owner_api_version text, p_owner_kind text, p_owner_name text, p_owner_uid text,
+  p_owner_controller boolean, p_workspace_label text, p_sandbox_label text,
+  p_admitted boolean, p_condition_type text, p_condition_status text,
+  p_workload_digest text, p_observation_digest text)
+RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
+AS $$
+DECLARE source_count integer; bootstrap jsonb;
+BEGIN
+  SELECT count(*) INTO source_count FROM public.sandbox_sources s
+    JOIN public.sandbox_operations o ON o.sandbox_id=s.sandbox_id AND o.workspace_id=s.workspace_id
+    WHERE o.id=p_operation_id;
+  IF source_count>0 THEN
+    SELECT r.bootstrap_observation INTO bootstrap FROM public.sandbox_source_materialization_receipts r
+      WHERE r.operation_id=p_operation_id AND r.sandbox_id=p_sandbox_name::uuid AND
+        r.workspace_id=p_workspace_label::uuid AND r.backend_uid=p_backend_uid;
+    IF bootstrap IS NULL OR
+       bootstrap#>>'{sandbox,uid}'<>p_backend_uid OR
+       bootstrap#>>'{pod,apiVersion}'<>p_pod_api_version OR bootstrap#>>'{pod,kind}'<>p_pod_kind OR
+       bootstrap#>>'{pod,namespace}'<>p_pod_namespace OR bootstrap#>>'{pod,name}'<>p_pod_name OR
+       bootstrap#>>'{pod,uid}'<>p_pod_uid OR bootstrap#>>'{pod,resourceVersion}'<>p_pod_resource_version OR
+       bootstrap#>>'{workload,apiVersion}'<>p_workload_api_version OR bootstrap#>>'{workload,namespace}'<>p_workload_namespace OR
+       bootstrap#>>'{workload,name}'<>p_workload_name OR bootstrap#>>'{workload,uid}'<>p_workload_uid OR
+       bootstrap#>>'{workload,resourceVersion}'<>p_workload_resource_version OR
+       bootstrap#>>'{workload,clusterQueue}'<>p_admitted_cluster_queue OR
+       bootstrap#>>'{workload,owner,apiVersion}'<>p_owner_api_version OR bootstrap#>>'{workload,owner,kind}'<>p_owner_kind OR
+       bootstrap#>>'{workload,owner,name}'<>p_owner_name OR bootstrap#>>'{workload,owner,uid}'<>p_owner_uid OR
+       (bootstrap#>>'{workload,owner,controller}')::boolean<>p_owner_controller OR
+       bootstrap#>>'{workload,workspaceId}'<>p_workspace_label OR bootstrap#>>'{workload,sandboxId}'<>p_sandbox_label OR
+       (bootstrap#>>'{workload,admitted}')::boolean<>p_admitted OR
+       bootstrap#>>'{workload,condition,type}'<>p_condition_type OR bootstrap#>>'{workload,condition,status}'<>p_condition_status OR
+       substring(bootstrap#>>'{workload,digest}' from 8)<>p_workload_digest THEN RETURN false; END IF;
+  END IF;
+  RETURN public.sandbox_controller_bind_backend_v3(
+    p_operation_id,p_worker_id,p_lease_token,p_backend_uid,p_backend_resource_version,
+    p_sandbox_api_version,p_sandbox_kind,p_sandbox_namespace,p_sandbox_name,p_sandbox_uid,p_sandbox_resource_version,
+    p_pod_api_version,p_pod_kind,p_pod_namespace,p_pod_name,p_pod_uid,p_pod_resource_version,
+    p_workload_api_version,p_workload_namespace,p_workload_name,p_workload_uid,p_workload_resource_version,
+    p_admitted_cluster_queue,p_owner_api_version,p_owner_kind,p_owner_name,p_owner_uid,p_owner_controller,
+    p_workspace_label,p_sandbox_label,p_admitted,p_condition_type,p_condition_status,p_workload_digest,p_observation_digest);
 END
 $$;
 
@@ -179,16 +287,15 @@ RETURNS TABLE(
   owner_api_version text, owner_kind text, owner_name text, owner_uid text, owner_controller boolean,
   workspace_label text, sandbox_label text, admitted boolean, condition_type text, condition_status text,
   pod_api_version text, pod_kind text, pod_namespace text, pod_name text, pod_uid text,
-  pod_resource_version text, observation_digest text, source_materialization_receipt jsonb)
+  pod_resource_version text, observation_digest text, source_materialization_receipt jsonb,
+  source_bootstrap_observation jsonb)
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
-  SELECT claimed.*,receipt.receipt
+  SELECT claimed.*,receipt.receipt,receipt.bootstrap_observation
   FROM public.sandbox_controller_claim_v3(p_worker_id,p_lease_seconds) claimed
   LEFT JOIN public.sandbox_source_materialization_receipts receipt
     ON receipt.sandbox_id=claimed.sandbox_id AND receipt.workspace_id=claimed.workspace_id AND
-       receipt.operation_id=claimed.operation_id AND receipt.backend_uid=claimed.backend_uid AND
-       receipt.backend_resource_version=claimed.backend_resource_version AND
-       receipt.observation_digest=claimed.observation_digest
+       receipt.operation_id=claimed.operation_id
 $$;
 
 CREATE FUNCTION sandbox_controller_complete_v4(
@@ -206,7 +313,7 @@ BEGIN
   SELECT o.type,o.sandbox_id,
     (SELECT count(*) FROM public.sandbox_sources s WHERE s.sandbox_id=o.sandbox_id) source_count,
     EXISTS(SELECT 1 FROM public.sandbox_source_materialization_receipts r
-      WHERE r.sandbox_id=o.sandbox_id AND r.operation_id=o.id AND r.observation_digest=p_expected_observation_digest) source_receipt
+      WHERE r.sandbox_id=o.sandbox_id AND r.operation_id=o.id) source_receipt
   INTO target
   FROM public.sandbox_operations o JOIN public.sandbox_reconcile_jobs j ON j.operation_id=o.id
   WHERE o.id=p_operation_id AND o.status='running' AND j.completed_at IS NULL
@@ -226,16 +333,19 @@ REVOKE ALL ON TABLE sandbox_source_materialization_receipts
 REVOKE ALL ON FUNCTION
   sandbox_source_digest_field(text),sandbox_source_manifest_digest(text[],text[],text[],text[],boolean[]),
   sandbox_source_receipt_digest(text,jsonb),sandbox_source_receipts_immutable(),
-  sandbox_controller_record_source_materialization_v1(uuid,text,uuid,text,text,text,text,text,jsonb),
+  sandbox_controller_record_source_materialization_v1(uuid,text,uuid,text,text,text,text,text,jsonb,jsonb),
+  sandbox_controller_bind_backend_v4(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text,text),
   sandbox_controller_claim_v4(text,integer),
   sandbox_controller_complete_v4(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker, blazn_sandbox_controller;
 REVOKE ALL ON FUNCTION
   sandbox_controller_claim_v3(text,integer),
+  sandbox_controller_bind_backend_v3(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text,text),
   sandbox_controller_complete_v3(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)
   FROM blazn_sandbox_controller;
 GRANT EXECUTE ON FUNCTION
-  sandbox_controller_record_source_materialization_v1(uuid,text,uuid,text,text,text,text,text,jsonb),
+  sandbox_controller_record_source_materialization_v1(uuid,text,uuid,text,text,text,text,text,jsonb,jsonb),
+  sandbox_controller_bind_backend_v4(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text,text),
   sandbox_controller_claim_v4(text,integer),
   sandbox_controller_complete_v4(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)
   TO blazn_sandbox_controller;
