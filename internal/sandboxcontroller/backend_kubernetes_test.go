@@ -241,6 +241,11 @@ func TestKubernetesBackendMapsSourcesOnlyWithConfiguredRuntime(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	item.Artifacts = nil
 	item.Sources = []Source{{Name: "repo", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)}}
+	emptyArtifacts, emptyDigest, err := sandboxcontrol.CanonicalArtifactContract(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Artifacts, record.ArtifactContractDigest = emptyArtifacts, emptyDigest
 	fake := &fakeSandboxAdapter{record: record, observation: observation}
 	network, transport, owners := &fakeSourceNetwork{}, &sourceProtocolTransport{}, &sourceOwnerChecks{}
 	ioController, err := sandboxio.NewController(sandboxio.ControllerConfig{Transport: transport, Owners: owners, Timeout: time.Second})

@@ -397,10 +397,13 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 		artifacts[index] = sandboxcontrol.ArtifactExport{Name: artifact.Name, Path: artifact.Path,
 			MediaType: artifact.MediaType, Required: artifact.Required}
 	}
-	sources := make([]sandboxcontrol.SourceMount, len(item.Sources))
-	for index, source := range item.Sources {
-		sources[index] = sandboxcontrol.SourceMount{Name: source.Name, URL: source.URL, Destination: source.Destination,
-			Commit: source.Commit, Writable: source.Writable}
+	var sources []sandboxcontrol.SourceMount
+	if len(item.Sources) != 0 {
+		sources = make([]sandboxcontrol.SourceMount, len(item.Sources))
+		for index, source := range item.Sources {
+			sources[index] = sandboxcontrol.SourceMount{Name: source.Name, URL: source.URL, Destination: source.Destination,
+				Commit: source.Commit, Writable: source.Writable}
+		}
 	}
 	helperImage := ""
 	if len(item.Sources) != 0 || len(artifacts) != 0 {

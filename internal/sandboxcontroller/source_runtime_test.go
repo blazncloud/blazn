@@ -97,6 +97,9 @@ func TestKubernetesSourceRuntimePinsObservationReceiptNetworkAndRelease(t *testi
 	}
 	receipt, err := runtime.Materialize(context.Background(), item, observation)
 	if err != nil {
+		if failure, ok := BackendFailure(err); ok {
+			t.Fatalf("%v: %v", err, failure.Cause)
+		}
 		t.Fatal(err)
 	}
 	if err := runtime.Restrict(context.Background(), item, observation, receipt); err != nil {
