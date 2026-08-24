@@ -10,8 +10,9 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "migrate": "node dist/migrate.js",
+    "rotate-bootstrap-password": "node dist/rotate-bootstrap-password.js",
     "start": "node dist/server.js",
-    "test": "node --test dist/**/*.test.js"
+    "test": "node --test dist/*.test.js dist/**/*.test.js"
   },
   "dependencies": {
     "pg": "8.16.3"
