@@ -47,6 +47,7 @@ request() {
   path=$2
   shift 2
   curl --config "$auth_config" --fail-with-body --silent --show-error --retry 2 \
+    --retry-max-time 30 --connect-timeout 3 --max-time 15 \
     --request "$method" --header "Host: $DOMAIN" --header 'X-Forwarded-Proto: https' \
     "$@" "$API_ORIGIN$path"
 }
