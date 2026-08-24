@@ -19,11 +19,17 @@ var (
 	dnsNamePattern    = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	versionPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	imagePattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$`)
+	imagePattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$`)
 	quantityPattern   = regexp.MustCompile(`^(?:[1-9][0-9]*(?:m|Ki|Mi|Gi|Ti)?|0\.[0-9]+)$`)
 	mediaPattern      = regexp.MustCompile(`^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$`)
 	repositoryPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(?::[0-9]{1,5})?/[A-Za-z0-9._~!$&'()*+,;=:@%/-]+(?:\.git)?$`)
 )
+
+// IsImmutableOCIReference reports whether value is the canonical immutable
+// image reference accepted by the Sandbox contract.
+func IsImmutableOCIReference(value string) bool {
+	return len(value) <= 512 && imagePattern.MatchString(value)
+}
 
 type manifestDocument struct {
 	APIVersion string       `json:"apiVersion"`
@@ -139,8 +145,8 @@ func validateDocument(d manifestDocument, failures *[]string) {
 		require(variant.Architecture == "amd64" || variant.Architecture == "arm64", prefix+".architecture must be amd64 or arm64", failures)
 		require(!architectures[variant.Architecture], prefix+".architecture must be unique", failures)
 		architectures[variant.Architecture] = true
-		validBoundedPattern(variant.ImageIndex, imagePattern, 512, prefix+".imageIndex", failures)
-		validBoundedPattern(variant.ImageDigest, imagePattern, 512, prefix+".imageDigest", failures)
+		require(IsImmutableOCIReference(variant.ImageIndex), prefix+".imageIndex is invalid", failures)
+		require(IsImmutableOCIReference(variant.ImageDigest), prefix+".imageDigest is invalid", failures)
 		require(len(variant.Command) >= 1 && len(variant.Command) <= 32, prefix+".command must contain 1 to 32 entries", failures)
 		for j, item := range variant.Command {
 			require(codePointLength(item, 1, 1024), fmt.Sprintf("%s.command[%d] must contain 1 to 1024 characters", prefix, j), failures)
