@@ -15,7 +15,12 @@ assert_regular_file_owned_mode "$ENV_FILE" 0 600
 broker_mode=$(sed -n 's/^BLAZN_NODE_BROKER_LOOPBACK=//p' "$ENV_FILE"); [ -n "$broker_mode" ] || broker_mode=disabled; case "$broker_mode" in enabled|disabled) ;; *) die "Node broker loopback binding must be enabled or disabled without duplicates" ;; esac
 compose(){ if [ "$broker_mode" = enabled ]; then control_plane_compose "$ROOT_DIR" "$ENV_FILE" --profile node-broker "$@"; else control_plane_compose "$ROOT_DIR" "$ENV_FILE" "$@"; fi; }
 
-"$SCRIPT_DIR/build-control-api.sh"
+build_mode=${BLAZN_CONTROL_API_BUILD_MODE:-local}
+case $build_mode in
+  local) "$SCRIPT_DIR/build-control-api.sh" ;;
+  prebuilt) validate_control_api_build "$ROOT_DIR" ;;
+  *) die "BLAZN_CONTROL_API_BUILD_MODE must be local or prebuilt" ;;
+esac
 load_control_api_image "$ROOT_DIR"
 "$SCRIPT_DIR/preflight.sh" --deploy
 compose up --detach --wait --remove-orphans
