@@ -29,6 +29,9 @@ func (*factoryStore) RecordSources(context.Context, string, string, string, sand
 func (*factoryStore) RecordArtifact(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxcontroller.PersistedArtifact) (sandboxcontroller.PersistedArtifact, bool, error) {
 	return sandboxcontroller.PersistedArtifact{}, false, nil
 }
+func (*factoryStore) CompleteArtifactExport(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, []string) (bool, error) {
+	return false, nil
+}
 func (*factoryStore) Retry(context.Context, string, string, string, int, sandboxcontroller.SafeError) (sandboxcontroller.RetryOutcome, error) {
 	return sandboxcontroller.Fenced, nil
 }
