@@ -9,6 +9,7 @@ LOCK=$ROOT_DIR/scripts/with-control-plane-lock.sh
 top=${TMPDIR:-/tmp}/blazn-password-recovery-test-$$
 mkdir -p "$top/bin"
 cleanup() {
+  find "$top" -xdev -type l -delete
   find "$top" -xdev -type f -delete
   find "$top" -xdev -depth -type d -empty -delete
 }

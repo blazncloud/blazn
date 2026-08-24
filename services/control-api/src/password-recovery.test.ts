@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Database } from "./db.js";
-import { rotateBootstrapPassword } from "./password-recovery.js";
+import { PasswordRecoveryCommitUnknownError, rotateBootstrapPassword, rotateBootstrapPasswordAndClose } from "./password-recovery.js";
 import { verifyPassword } from "./security.js";
 
 interface Call { sql: string; values?: unknown[] }
@@ -64,6 +64,54 @@ test("reports an unknown outcome without rollback when commit acknowledgement fa
   await assert.rejects(rotateBootstrapPassword(database, "owner@example.test", "replacement-password"), /outcome is unknown/);
   assert.equal(calls.at(-1)?.sql, "COMMIT");
   assert.equal(calls.some(({ sql }) => sql === "ROLLBACK"), false);
+});
+
+function closeableDatabase(failOn?: string, closeFails = false): { database: Database; calls: Call[]; closeCalls: number[] } {
+  const { database, calls } = fakeDatabase([{ id: "bootstrap-user" }], failOn);
+  const closeCalls: number[] = [];
+  return {
+    database: {
+      ...database,
+      async end() {
+        closeCalls.push(1);
+        if (closeFails) throw new Error("injected close failure");
+      },
+    } as Database,
+    calls,
+    closeCalls,
+  };
+}
+
+test("rotate-and-close succeeds only after rotation and close both succeed", async () => {
+  const { database, calls, closeCalls } = closeableDatabase();
+  await rotateBootstrapPasswordAndClose(database, "owner@example.test", "replacement-password");
+  assert.equal(calls.at(-1)?.sql, "COMMIT");
+  assert.equal(closeCalls.length, 1);
+});
+
+test("known pre-commit rotation failure remains known across close outcomes", async () => {
+  for (const closeFails of [false, true]) {
+    const { database, closeCalls } = closeableDatabase("SELECT public.rotate_bootstrap_password", closeFails);
+    await assert.rejects(
+      rotateBootstrapPasswordAndClose(database, "owner@example.test", "replacement-password"),
+      (error: unknown) => error instanceof Error && !(error instanceof PasswordRecoveryCommitUnknownError) && error.message === "injected database failure",
+    );
+    assert.equal(closeCalls.length, 1);
+  }
+});
+
+test("close failure after successful commit becomes commit-unknown", async () => {
+  const { database, closeCalls } = closeableDatabase(undefined, true);
+  await assert.rejects(rotateBootstrapPasswordAndClose(database, "owner@example.test", "replacement-password"), PasswordRecoveryCommitUnknownError);
+  assert.equal(closeCalls.length, 1);
+});
+
+test("commit-unknown rotation remains commit-unknown across close outcomes", async () => {
+  for (const closeFails of [false, true]) {
+    const { database, closeCalls } = closeableDatabase("COMMIT", closeFails);
+    await assert.rejects(rotateBootstrapPasswordAndClose(database, "owner@example.test", "replacement-password"), PasswordRecoveryCommitUnknownError);
+    assert.equal(closeCalls.length, 1);
+  }
 });
 
 test("recovery command discloses no configured identity or secret values", async () => {

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createDatabase } from "./db.js";
-import { PasswordRecoveryCommitUnknownError, rotateBootstrapPassword } from "./password-recovery.js";
+import { PasswordRecoveryCommitUnknownError, rotateBootstrapPasswordAndClose } from "./password-recovery.js";
 
 async function main(): Promise<void> {
   const databaseUrlFile = process.env.BOOTSTRAP_DATABASE_URL_FILE;
@@ -8,13 +8,10 @@ async function main(): Promise<void> {
   const login = process.env.BLAZN_INITIAL_LOGIN?.trim().toLowerCase();
   if (!databaseUrlFile || !passwordFile || !login) throw new Error("recovery configuration is incomplete");
 
-  const database = createDatabase((await readFile(databaseUrlFile, "utf8")).trim());
-  try {
-    const password = (await readFile(passwordFile, "utf8")).trimEnd();
-    await rotateBootstrapPassword(database, login, password);
-  } finally {
-    await database.end();
-  }
+  const databaseUrl = (await readFile(databaseUrlFile, "utf8")).trim();
+  const password = (await readFile(passwordFile, "utf8")).trimEnd();
+  const database = createDatabase(databaseUrl);
+  await rotateBootstrapPasswordAndClose(database, login, password);
 }
 
 try {
