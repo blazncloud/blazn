@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/proxy-qualification-receipt-v1.json",
+  "title": "Blazn proxy qualification receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "receiptId", "action", "observedAt", "identity", "profileDigest", "status", "result", "checksum"],
+  "properties": {
+    "schemaVersion": {"const": "proxy-qualification/v1"},
+    "receiptId": {"type": "string", "format": "uuid"},
+    "action": {"enum": ["preflight", "capture-before", "cycle", "recovery", "route-proof", "cleanup"]},
+    "observedAt": {"type": "string", "format": "date-time"},
+    "identity": {"$ref": "#/$defs/identity"},
+    "profileDigest": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["passed", "failed", "recovery_required", "unsupported"]},
+    "result": {"type": "object"},
+    "checksum": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correlationId", "sourceHead", "sourceTree", "binaryDigest", "policyDigest", "hostId", "userId", "sessionId"],
+      "properties": {
+        "correlationId": {"type": "string", "pattern": "^proxyqual-[a-z0-9][a-z0-9-]{7,55}$"},
+        "sourceHead": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "binaryDigest": {"$ref": "#/$defs/digest"},
+        "policyDigest": {"$ref": "#/$defs/digest"},
+        "hostId": {"$ref": "#/$defs/identifier"},
+        "userId": {"$ref": "#/$defs/identifier"},
+        "sessionId": {"$ref": "#/$defs/identifier"}
+      }
+    }
+  }
+}

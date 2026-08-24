@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/proxy-qualification-run-v1.json",
+  "title": "Blazn proxy qualification evidence run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "identity", "profileDigest", "platform", "publicationMechanism", "startedAt", "completedAt", "status", "receipts", "manifestDigest"],
+  "properties": {
+    "schemaVersion": {"const": "proxy-qualification/v1"},
+    "identity": {"$ref": "receipt.schema.json#/$defs/identity"},
+    "profileDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "platform": {"enum": ["linux", "darwin"]},
+    "publicationMechanism": {"enum": ["systemd_user_environment", "launchd_user_environment"]},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "completedAt": {"type": ["string", "null"], "format": "date-time"},
+    "status": {"enum": ["running", "passed", "failed"]},
+    "receipts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest", "bytes"],
+        "properties": {
+          "path": {"type": "string", "pattern": "^receipts/[0-9]{3}-[a-z-]+-[0-9a-f-]+\\.json$"},
+          "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "bytes": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "manifestDigest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {"if": {"properties": {"platform": {"const": "linux"}}, "required": ["platform"]}, "then": {"properties": {"publicationMechanism": {"const": "systemd_user_environment"}}}},
+    {"if": {"properties": {"platform": {"const": "darwin"}}, "required": ["platform"]}, "then": {"properties": {"publicationMechanism": {"const": "launchd_user_environment"}}}},
+    {"if": {"properties": {"status": {"const": "passed"}}, "required": ["status"]}, "then": {"properties": {"completedAt": {"type": "string"}, "manifestDigest": {"type": "string"}}}}
+  ]
+}

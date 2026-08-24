@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/proxy-qualification-profile-v1.json",
+  "title": "Blazn serialized per-user proxy qualification profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profileId", "platform", "publicationMechanism", "supportStatus", "mutationEnabled", "source", "binary", "policy", "owner", "configTrees", "locks", "nativeApproval"],
+  "properties": {
+    "schemaVersion": {"const": "proxy-qualification/v1"},
+    "profileId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"},
+    "platform": {"enum": ["linux", "darwin"]},
+    "publicationMechanism": {"enum": ["systemd_user_environment", "launchd_user_environment"]},
+    "supportStatus": {"enum": ["pending_native_qualification", "unsupported_until_launchd", "approved_candidate"]},
+    "mutationEnabled": {"type": "boolean"},
+    "source": {"$ref": "#/$defs/source"},
+    "binary": {"$ref": "#/$defs/artifact"},
+    "policy": {"$ref": "#/$defs/artifact"},
+    "owner": {"$ref": "#/$defs/owner"},
+    "configTrees": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["client", "path"],
+        "properties": {
+          "client": {"enum": ["codex", "claude", "hermes"]},
+          "path": {"type": "string", "pattern": "^/[^\\u0000]+$"}
+        }
+      }
+    },
+    "locks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coordinator", "session"],
+      "properties": {
+        "coordinator": {"type": "string", "pattern": "^/.*/proxy-coordinator-[0-9a-f]{24}\\.lock$"},
+        "session": {"type": "string", "pattern": "^/.*/proxy-session-[0-9a-f]{24}\\.lock$"}
+      }
+    },
+    "nativeApproval": {"$ref": "#/$defs/nativeApproval"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote", "head", "tree"],
+      "properties": {
+        "remote": {"const": "https://github.com/blazncloud/blazn.git"},
+        "head": {"$ref": "#/$defs/sha"},
+        "tree": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "digest"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+        "digest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostId", "userId", "sessionId", "home"],
+      "properties": {
+        "hostId": {"$ref": "#/$defs/identifier"},
+        "userId": {"$ref": "#/$defs/identifier"},
+        "sessionId": {"$ref": "#/$defs/identifier"},
+        "home": {"type": "string", "pattern": "^/[^\\u0000]+$"}
+      }
+    },
+    "nativeApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ticket", "approvedAt", "expiresAt", "approvedBy", "scope", "sourceHead", "binaryDigest", "policyDigest", "hostId", "userId", "sessionId"],
+      "properties": {
+        "ticket": {"type": "string"},
+        "approvedAt": {"type": "string"},
+        "expiresAt": {"type": "string"},
+        "approvedBy": {"type": "string"},
+        "scope": {"type": "string"},
+        "sourceHead": {"type": "string"},
+        "binaryDigest": {"type": "string"},
+        "policyDigest": {"type": "string"},
+        "hostId": {"type": "string"},
+        "userId": {"type": "string"},
+        "sessionId": {"type": "string"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"platform": {"const": "linux"}}, "required": ["platform"]},
+      "then": {"properties": {"publicationMechanism": {"const": "systemd_user_environment"}}}
+    },
+    {
+      "if": {"properties": {"platform": {"const": "darwin"}}, "required": ["platform"]},
+      "then": {"properties": {"publicationMechanism": {"const": "launchd_user_environment"}, "supportStatus": {"const": "unsupported_until_launchd"}, "mutationEnabled": {"const": false}}}
+    },
+    {
+      "if": {"properties": {"mutationEnabled": {"const": true}}, "required": ["mutationEnabled"]},
+      "then": {"properties": {"platform": {"const": "linux"}, "supportStatus": {"const": "approved_candidate"}}}
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "proxy-qualification/v1",
+  "profileId": "linux-systemd-user-template",
+  "platform": "linux",
+  "publicationMechanism": "systemd_user_environment",
+  "supportStatus": "pending_native_qualification",
+  "mutationEnabled": false,
+  "source": {
+    "remote": "https://github.com/blazncloud/blazn.git",
+    "head": "0000000000000000000000000000000000000000",
+    "tree": "0000000000000000000000000000000000000000"
+  },
+  "binary": {"path": "/opt/blazn-qualification/blazn", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "policy": {"path": "/opt/blazn-qualification/poc-policy.json", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "owner": {"hostId": "sacrificial-linux.invalid", "userId": "uid-1000", "sessionId": "systemd-user-session", "home": "/home/qualification"},
+  "configTrees": [
+    {"client": "codex", "path": "/home/qualification/.codex"},
+    {"client": "claude", "path": "/home/qualification/.claude"},
+    {"client": "hermes", "path": "/home/qualification/.hermes"}
+  ],
+  "locks": {
+    "coordinator": "/var/lock/blazn-proxy-qualification/proxy-coordinator-a975551aff7a6bb90803e5ef.lock",
+    "session": "/run/user/1000/blazn-proxy-qualification/proxy-session-a975551aff7a6bb90803e5ef.lock"
+  },
+  "nativeApproval": {"ticket": "", "approvedAt": "", "expiresAt": "", "approvedBy": "", "scope": "", "sourceHead": "", "binaryDigest": "", "policyDigest": "", "hostId": "", "userId": "", "sessionId": ""}
+}

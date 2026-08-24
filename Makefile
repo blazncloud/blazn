@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-sandbox-contract test-project-contract test-run-contract test-development-contract test-project-postgres test-run-postgres test-sandbox-postgres test-sandbox-controller-postgres release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-proxy-qualification-static test-sandbox-contract test-project-contract test-run-contract test-development-contract test-project-postgres test-run-postgres test-sandbox-postgres test-sandbox-controller-postgres release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -91,6 +91,10 @@ test-infra:
 	./infra/agent-sandbox/test-adapter-static.sh
 	shellcheck infra/agent-sandbox/*.sh
 
+test-proxy-qualification-static:
+	./infra/proxy/qualification/tests/test-static.sh
+	shellcheck -x infra/proxy/qualification/*.sh infra/proxy/qualification/lib/*.sh infra/proxy/qualification/tests/*.sh
+
 test-sandbox-contract:
 	./scripts/test-sandbox-contract.sh
 
@@ -124,4 +128,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-node-generated check-sandbox-generated test test-identity test-sandbox-contract test-project-contract test-run-contract test-development-contract test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-node-generated check-sandbox-generated test test-identity test-proxy-qualification-static test-sandbox-contract test-project-contract test-run-contract test-development-contract test-release test-install

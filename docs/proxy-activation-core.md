@@ -114,6 +114,12 @@ injected fake adapters exercise journal crash
 points, stale state, API independence, abrupt listener loss, idempotency, exact
 argv, compare-and-set restoration, and application-config non-mutation.
 
+The serialized, fail-closed evidence coordinator for the later native gate is
+documented in [Proxy qualification](proxy-qualification.md). Its checked-in
+profiles are planning templates only. The static harness does not invoke D-Bus,
+launchd, a proxy lifecycle command, a credential store, a CA operation, or a
+host reboot.
+
 ## Destination credential resolver core
 
 `internal/proxy/credential` defines the platform-neutral boundary for the next

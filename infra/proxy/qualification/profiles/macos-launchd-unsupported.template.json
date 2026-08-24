@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "proxy-qualification/v1",
+  "profileId": "macos-launchd-unsupported-template",
+  "platform": "darwin",
+  "publicationMechanism": "launchd_user_environment",
+  "supportStatus": "unsupported_until_launchd",
+  "mutationEnabled": false,
+  "source": {
+    "remote": "https://github.com/blazncloud/blazn.git",
+    "head": "0000000000000000000000000000000000000000",
+    "tree": "0000000000000000000000000000000000000000"
+  },
+  "binary": {"path": "/opt/blazn-qualification/blazn", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "policy": {"path": "/opt/blazn-qualification/poc-policy.json", "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "owner": {"hostId": "sacrificial-mac.invalid", "userId": "uid-501", "sessionId": "aqua-user-session", "home": "/Users/qualification"},
+  "configTrees": [
+    {"client": "codex", "path": "/Users/qualification/.codex"},
+    {"client": "claude", "path": "/Users/qualification/.claude"},
+    {"client": "hermes", "path": "/Users/qualification/.hermes"}
+  ],
+  "locks": {
+    "coordinator": "/var/lock/blazn-proxy-qualification/proxy-coordinator-aecb24d19a871c1831526df3.lock",
+    "session": "/var/run/user/501/blazn-proxy-qualification/proxy-session-aecb24d19a871c1831526df3.lock"
+  },
+  "nativeApproval": {"ticket": "", "approvedAt": "", "expiresAt": "", "approvedBy": "", "scope": "", "sourceHead": "", "binaryDigest": "", "policyDigest": "", "hostId": "", "userId": "", "sessionId": ""}
+}
