@@ -41,6 +41,19 @@ function exampleSemanticErrors(project) {
   };
   if (canonical(project.policy) !== canonical(expectedPolicy)) errors.push("example policy is not approved");
   if (canonical(project.platforms) !== canonical(["linux/amd64", "linux/arm64"])) errors.push("example platform order is not frozen");
+  if (project.build?.context !== "examples/coding-agent") errors.push("example build context is not frozen");
+  if (project.build?.dockerfile !== "examples/coding-agent/Dockerfile") errors.push("example Dockerfile is not frozen");
+  return errors;
+}
+
+function crossResourceErrors(project, template, agent) {
+  const errors=[];
+  if (template.metadata?.name!=="coding-agent" || agent.metadata?.name!==template.metadata?.name) errors.push("Agent/template name mismatch");
+  if (template.spec?.repositories?.length!==1 || template.spec.repositories[0]?.url!==project.repository?.url) errors.push("Project/template repository mismatch");
+  if (agent.spec?.repository?.url!==project.repository?.url) errors.push("Project/Agent repository mismatch");
+  if (agent.spec?.resourceProfile!==project.policy?.resourceProfile) errors.push("Project/Agent resource profile mismatch");
+  if (canonical(template.spec?.artifacts)!==canonical([{name:"patch",path:"/workspace/artifacts/change.patch",mediaType:"text/plain",required:true}])) errors.push("patch Artifact contract mismatch");
+  if (agent.spec?.instructions!=="Apply one deterministic source edit and return the resulting patch as an Artifact.") errors.push("Agent patch intent mismatch");
   return errors;
 }
 
@@ -63,6 +76,13 @@ const agent=await json("agent.yaml"),agentKeys=["allowedHarnessProfiles","defaul
 assert.deepEqual(Object.keys(agent).sort(),["apiVersion","kind","metadata","spec"]);
 assert.equal(agent.apiVersion,"blazn.dev/v1alpha1");assert.equal(agent.kind,"Agent");assert.deepEqual(Object.keys(agent.metadata).sort(),["id","name"]);assert.match(agent.metadata.id,/^[0-9a-f-]{36}$/);assert.equal(agent.metadata.name,"coding-agent");assert.deepEqual(Object.keys(agent.spec).sort(),agentKeys.sort());
 assert.equal(agent.spec.projectId,manifest.projectId);assert.deepEqual(agent.spec.repository,manifest.repository);assert.deepEqual(agent.spec.sandboxTemplate,manifest.template);assert.deepEqual(agent.spec.allowedHarnessProfiles,["hermes","codex-cli","claude-code"]);assert.ok(agent.spec.allowedHarnessProfiles.includes(agent.spec.defaultHarnessProfile));assert.deepEqual(agent.spec.tools,[]);
+assert.deepEqual(crossResourceErrors(manifest,template,agent),[]);
+for(const mutate of [
+  (p,t,a)=>{p.repository.url="https://example.test/substituted.git";},
+  (p,t,a)=>{t.metadata.name="substituted";},
+  (p,t,a)=>{a.spec.resourceProfile="substituted-profile";},
+  (p,t,a)=>{t.spec.artifacts[0].path="/workspace/artifacts/substituted.patch";}
+]){const p=structuredClone(manifest),t=structuredClone(template),a=structuredClone(agent);mutate(p,t,a);assert.notDeepEqual(crossResourceErrors(p,t,a),[]);}
 const identities=await json("fixtures/identities.json"),agentDigest=developmentDigest(agent.spec);
 assert.deepEqual({projectId:identities.projectId,templateId:identities.templateId,templateVersionId:identities.templateVersionId,templateDigest:identities.templateDigest,agentId:identities.agentId,agentVersionId:identities.agentVersionId,agentDigest:identities.agentDigest},{projectId:manifest.projectId,templateId:manifest.publicationTarget.templateId,templateVersionId:manifest.template.versionId,templateDigest,agentId:agent.metadata.id,agentVersionId:"71000000-0000-4000-8000-000000000006",agentDigest});
 
@@ -87,6 +107,7 @@ for (const line of from) {
   assert.equal(line.split(" ")[1], identities.baseImageDigest);
 }
 assert.doesNotMatch(dockerfile, /(?::latest|--mount=type=secret|https?:\/\/[^/\s]+@)/i);
+assert.match(dockerfile, /CMD \["--task", "\/workspace\/src\/blazn\/examples\/coding-agent\/fixtures\/task\.json", "--source-root", "\/workspace\/src\/blazn", "--output", "\/workspace\/artifacts\/change\.patch"\]/);
 
 const forbiddenKeys = new Set(["token", "password", "secret", "credential", "authorization", "apikey", "privatekey", "kubeconfig"]);
 const scan = (value) => {

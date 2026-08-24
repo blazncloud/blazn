@@ -16,4 +16,4 @@ ENV NODE_ENV=production
 COPY --from=verify --chown=1000:1000 /workspace /workspace
 USER 1000:1000
 ENTRYPOINT ["node", "src/coding-agent.mjs"]
-CMD ["--task", "fixtures/task.json", "--source", "fixtures/source/calculator.mjs"]
+CMD ["--task", "/workspace/src/blazn/examples/coding-agent/fixtures/task.json", "--source-root", "/workspace/src/blazn", "--output", "/workspace/artifacts/change.patch"]

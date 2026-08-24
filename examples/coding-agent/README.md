@@ -19,19 +19,21 @@ The first command builds the merged TypeScript contract verifier and may run
 installed. After that prerequisite exists, `test-offline.sh` is strictly
 offline: it refuses a missing, stale, or substituted verifier before rebuilding
 it from the bound source with already-installed dependencies.
+It also refuses any toolchain other than exact Node `22.19.0` and npm `10.9.3`.
 It validates `blazn.yaml` against the merged schema and semantic argv
 rules, validates the template schema and all Project/Agent/template identity
 cross-references, executes every negative fixture, runs the committed direct-argv
 tests, and recomputes the dependency-lock and closed build-context identities.
 
-The bootstrap template is immediately resolvable from the deterministic IDs in
-`fixtures/identities.json` and the pinned Node index/children. It runs only
-`node --version`; the later Gate 6 build replaces that bootstrap image identity
-with the separately qualified coding-agent output before publication. The Agent
-draft binds this exact bootstrap template and contains no credential material.
+The IDs in `fixtures/identities.json` are deterministic offline placeholders;
+they are not seeded resource IDs. A later authorized import must create the real
+Project/template/version resources and regenerate every dependent identity
+before API submission. The bootstrap declaration runs only `node --version`;
+the later Gate 6 build replaces that image identity with the separately
+qualified coding-agent output before publication.
 
-The Dockerfile base is the OCI index digest for the official Node 22.19.0
-Alpine image. The pinned index contains both `linux/amd64` and `linux/arm64`.
-This slice intentionally does not build or publish the image. Gate 6 build,
-registry, Sandbox lifecycle, evidence, and publication steps remain separately
-approval-gated.
+`fixtures/base-image.json` is an unqualified offline declaration, not trusted
+registry evidence: this slice does not include raw OCI index bytes or a signed
+inspection receipt and therefore does not prove its child-platform mapping.
+Gate 6 must re-resolve and verify the index plus exact AMD64/ARM64 descriptors
+through the approved registry boundary before any build or template promotion.

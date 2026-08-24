@@ -6,6 +6,9 @@ example_dir=$(CDPATH='' cd -- "${script_dir}/.." && pwd)
 repo_root=$(CDPATH='' cd -- "${example_dir}/../.." && pwd)
 validator="${repo_root}/services/control-api/dist/development-contract.js"
 
+[ "$(node --version)" = "v22.19.0" ] || { echo "exact Node v22.19.0 is required" >&2; exit 2; }
+[ "$(npm --version)" = "10.9.3" ] || { echo "exact npm 10.9.3 is required" >&2; exit 2; }
+
 if [ ! -f "$validator" ] || [ ! -d "${repo_root}/services/control-api/node_modules/ajv" ]; then
   echo "offline validator prerequisite missing; run 'make test-development-contract' first" >&2
   exit 2

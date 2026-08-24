@@ -27,3 +27,15 @@ test("context identity refuses symlinks, hard-link aliases, and executable mode 
   try { await chmod(path.join(target,"Dockerfile"),0o755);await assert.rejects(()=>buildContextIdentity(target),/unsafe context file/); }
   finally { await rm(target,{recursive:true,force:true}); }
 });
+
+test("context identity refuses symlinked parent directories", async () => {
+  for (const directory of ["fixtures", "scripts", "test"]) {
+    const target=await copyContext(), external=await mkdtemp(path.join(os.tmpdir(),"blazn-context-external-"));
+    try {
+      await cp(path.join(target,directory),external,{recursive:true});
+      await rm(path.join(target,directory),{recursive:true,force:true});
+      await symlink(external,path.join(target,directory));
+      await assert.rejects(()=>buildContextIdentity(target),/unsafe context directory/);
+    } finally { await rm(target,{recursive:true,force:true});await rm(external,{recursive:true,force:true}); }
+  }
+});
