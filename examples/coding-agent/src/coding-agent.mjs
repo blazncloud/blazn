@@ -1,17 +1,19 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const artifactPath = "/workspace/artifacts/change.patch";
 const maxArtifactBytes = 8 * 1024 * 1024;
+const maxTaskBytes = 64 * 1024;
+const maxSourceBytes = 4 * 1024 * 1024;
 
 export function digest(value) {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
 export function solveTask(task, source) {
-  if (task.schemaVersion !== "blazn.dev/coding-task/v1alpha1") throw new Error("unsupported coding task contract");
+  validateTask(task);
   if (digest(source) !== task.sourceDigest) throw new Error("source digest does not match the immutable task");
   const first = source.indexOf(task.find);
   if (first < 0 || source.indexOf(task.find, first + task.find.length) >= 0) {
@@ -21,10 +23,7 @@ export function solveTask(task, source) {
 }
 
 export function createPatch(task, source) {
-  if (typeof task.sourcePath !== "string" || task.sourcePath.length > 4096 || path.posix.isAbsolute(task.sourcePath) ||
-      task.sourcePath.split("/").some((part) => !part || part === "." || part === ".." || !/^[A-Za-z0-9._-]+$/.test(part))) {
-    throw new Error("task source path is invalid");
-  }
+  validateTask(task);
   const modified = solveTask(task, source);
   const before = source.trimEnd().split("\n"), after = modified.trimEnd().split("\n");
   if (before.length !== after.length) throw new Error("task replacement must preserve line topology");
@@ -39,11 +38,33 @@ export function createPatch(task, source) {
 }
 
 export async function writePatchArtifact(taskPath, sourceRoot, outputPath) {
-  const task = JSON.parse(await readFile(taskPath, "utf8"));
-  const source = await readFile(path.join(sourceRoot, task.sourcePath), "utf8");
+  const task = JSON.parse((await readStableFile(taskPath, maxTaskBytes, "task")).toString("utf8"));
+  validateTask(task);
+  const rootInfo=await lstat(sourceRoot);
+  if(!rootInfo.isDirectory()||rootInfo.isSymbolicLink())throw new Error("source root is invalid");
+  const canonicalRoot=await realpath(sourceRoot),parts=task.sourcePath.split("/");
+  let cursor=canonicalRoot;
+  for(const part of parts.slice(0,-1)){cursor=path.join(cursor,part);const info=await lstat(cursor);if(!info.isDirectory()||info.isSymbolicLink())throw new Error("source path component is invalid");}
+  const candidate=path.resolve(canonicalRoot,...parts);
+  if(!candidate.startsWith(`${canonicalRoot}${path.sep}`))throw new Error("source path escapes its root");
+  const source=(await readStableFile(candidate,maxSourceBytes,"source")).toString("utf8");
   const patch = createPatch(task, source);
   await writeFile(outputPath, patch, { flag: "wx", mode: 0o600 });
   return patch;
+}
+
+function validateTask(task){
+  if(!task||typeof task!=="object"||task.schemaVersion!=="blazn.dev/coding-task/v1alpha1")throw new Error("unsupported coding task contract");
+  if(typeof task.sourcePath!=="string"||task.sourcePath.length>4096||path.posix.isAbsolute(task.sourcePath)||task.sourcePath.split("/").some((part)=>!part||part==="."||part===".."||!/^[A-Za-z0-9._-]+$/.test(part)))throw new Error("task source path is invalid");
+  for(const value of [task.find,task.replace])if(typeof value!=="string"||!value||Buffer.byteLength(value)>64*1024||value.includes("\0"))throw new Error("task replacement is invalid");
+  if(typeof task.sourceDigest!=="string"||!/^sha256:[0-9a-f]{64}$/.test(task.sourceDigest))throw new Error("task source digest is invalid");
+}
+
+async function readStableFile(file,maxBytes,label){
+  const before=await lstat(file);if(!before.isFile()||before.isSymbolicLink()||before.nlink!==1||before.size>maxBytes)throw new Error(`${label} file is unsafe`);
+  const content=await readFile(file),after=await lstat(file);
+  if(!after.isFile()||after.isSymbolicLink()||after.nlink!==1||after.dev!==before.dev||after.ino!==before.ino||after.size!==before.size||after.mtimeMs!==before.mtimeMs||after.ctimeMs!==before.ctimeMs)throw new Error(`${label} file changed while reading`);
+  return content;
 }
 
 async function main(argv) {
