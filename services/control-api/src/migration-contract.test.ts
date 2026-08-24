@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readMigrationInventory } from "./migration-inventory.js";
 
 test("auth migration grants only the reviewed bootstrap and runtime operations", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -172,19 +173,14 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
 
-test("migration sequence contains exactly twenty-one collision-free revisions", async () => {
+test("migration sequence derives one ordered collision-free inventory", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
-  const migrations = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
-  assert.equal(migrations.length, 21);
-  assert.deepEqual(
-    migrations.map((name) => name.slice(0, 3)),
-    Array.from({ length: 21 }, (_, index) => String(index + 1).padStart(3, "0")),
-  );
+  const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-3), [
-    "019_sandbox_admission_observation.sql",
     "020_sandbox_source_materialization.sql",
     "021_sandbox_artifact_export.sql",
+    "022_development_runtime.sql",
   ]);
 });
 
@@ -245,4 +241,27 @@ test("sandbox controller observation migration requires complete restart-safe Po
   assert.match(sql, /REVOKE ALL ON FUNCTION[\s\S]*sandbox_controller_claim_v2/);
   assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
+});
+
+test("Development runtime migration freezes tenant, version, bearer proof, and closed finalization authority", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/022_development_runtime.sql"), "utf8");
+  assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\) REFERENCES projects\(id, workspace_id\)/);
+  assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, project_id\) REFERENCES runs\(id, workspace_id, project_id\)/);
+  assert.match(sql, /FOREIGN KEY \(template_version_id, workspace_id, publication_template_id, template_version, template_digest\)/);
+  assert.match(sql, /manifest#>>'\{template,digest\}' = 'sha256:'\|\|trim\(template_digest\)/);
+  assert.match(sql, /CREATE FUNCTION development_controller_finalize/);
+  assert.match(sql, /Reserved fail-closed stub[\s\S]*RETURN false/);
+  assert.match(sql, /s\.token_hash=encode\(public\.digest\(p_access_token,'sha256'\),'hex'\)/);
+  assert.doesNotMatch(sql, /current_setting\('blazn\.development_user_id'/);
+  assert.doesNotMatch(sql, /p_(?:created_by|requested_by)/);
+  assert.match(sql, /d\.version=p_expected_project_version AND d\.manifest_digest=p_expected_manifest_digest/);
+  assert.match(sql, /FOR SHARE OF builder,network,resource,publication/);
+  assert.match(sql, /s\.status='published' FOR SHARE OF v,s/);
+  assert.match(sql, /v\.id=project\.template_version_id[\s\S]*s\.status='published' FOR SHARE OF v,s/);
+  assert.match(sql, /REVOKE ALL ON TABLE development_policy_profiles,development_registry_repositories,development_projects,[\s\S]*development_reproducibility_baselines[\s\S]*blazn_runtime/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION development_runtime_access[\s\S]*development_runtime_get_project[\s\S]*development_runtime_list_builds[\s\S]*TO blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*development_(?:projects|builds|registry_repositories|reproducibility_baselines)/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION development_controller_finalize[\s\S]*blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT EXECUTE ON FUNCTION development_controller_finalize/);
 });

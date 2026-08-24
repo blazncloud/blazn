@@ -1,0 +1,24 @@
+import type {IncomingMessage,ServerResponse} from "node:http";
+import {jsonBody,sendJson} from "./http.js";
+import type {DevelopmentService} from "./development-service.js";
+import {DevelopmentHttpError,type DevelopmentBuildStatus,type DevelopmentPrincipal} from "./development-types.js";
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export class DevelopmentHttpRouter {
+  constructor(private readonly service:DevelopmentService){}
+  matches(path:string){return /^\/v1\/workspaces\/[^/]+\/projects\/[^/]+\/(?:development-project|development-builds)(?:\/[^/]+)?$/.test(path);}
+  async handle(request:IncomingMessage,response:ServerResponse,url:URL,principal:DevelopmentPrincipal){
+    const base=url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)\/(development-project|development-builds)$/);
+    if(base){const resource=base[3]!,allowed=resource==="development-project"?["GET","PUT"]:["GET","POST"];if(!allowed.includes(request.method??""))throw methodNotAllowed();const w=uuid(base[1]!,"workspaceId"),p=uuid(base[2]!,"projectId");if(resource==="development-project"){query(url,[]);if(request.method==="GET")return sendJson(response,200,await this.service.getProject(principal,w,p));const body=await jsonBody(request);exact(body,["expectedVersion","manifest"]);return sendJson(response,Number(body.expectedVersion)===0?201:200,await this.service.putProject(principal,w,p,idempotency(request),integer(body.expectedVersion,"expectedVersion"),object(body.manifest,"manifest")));}if(request.method==="GET"){query(url,["status","cursor"]);return sendJson(response,200,await this.service.listBuilds(principal,w,p,status(url),cursor(url)));}query(url,[]);const body=await jsonBody(request);exact(body,["commit"]);return sendJson(response,202,await this.service.requestBuild(principal,w,p,idempotency(request),string(body.commit,"commit",64)));}
+    const item=url.pathname.match(/^\/v1\/workspaces\/([^/]+)\/projects\/([^/]+)\/development-builds\/([^/]+)$/);if(!item)throw new DevelopmentHttpError("development_build_not_found","Development route was not found");if(request.method!=="GET")throw methodNotAllowed();query(url,[]);return sendJson(response,200,await this.service.getBuild(principal,uuid(item[1]!,"workspaceId"),uuid(item[2]!,"projectId"),uuid(item[3]!,"buildId")));
+  }
+}
+function query(url:URL,allowed:string[]){for(const key of url.searchParams.keys())if(!allowed.includes(key))throw new DevelopmentHttpError("invalid_request","query parameter is not allowed");}
+function uuid(value:string,field:string){if(!UUID.test(value))throw new DevelopmentHttpError("invalid_request",`${field} must be a UUID`);return value;}
+function idempotency(request:IncomingMessage){const values=request.headersDistinct["idempotency-key"]??[];if(values.length!==1||values[0]!.length<8||values[0]!.length>128)throw new DevelopmentHttpError("invalid_request","Idempotency-Key is required and must be unique");return values[0]!;}
+function status(url:URL){const values=url.searchParams.getAll("status");if(values.length>1)throw new DevelopmentHttpError("invalid_request","status must not be repeated");const value=values[0]??"all";if(!["queued","building","testing","succeeded","failed","cancelled","all"].includes(value))throw new DevelopmentHttpError("invalid_request","status is invalid");return value as DevelopmentBuildStatus|"all";}
+function cursor(url:URL){const values=url.searchParams.getAll("cursor");if(values.length>1)throw new DevelopmentHttpError("invalid_request","cursor is invalid");const value=values[0]??"";if(value&&!UUID.test(value))throw new DevelopmentHttpError("invalid_request","cursor must be a UUID");return value;}
+function exact(body:Record<string,unknown>,keys:string[]){if(keys.some(k=>!(k in body))||Object.keys(body).some(k=>!keys.includes(k)))throw new DevelopmentHttpError("invalid_request","request body fields are invalid");}
+function object(value:unknown,field:string){if(!value||typeof value!=="object"||Array.isArray(value))throw new DevelopmentHttpError("invalid_request",`${field} is invalid`);return value as Record<string,unknown>;}
+function string(value:unknown,field:string,max:number){if(typeof value!=="string"||!value||value.length>max)throw new DevelopmentHttpError("invalid_request",`${field} is invalid`);return value;}
+function integer(value:unknown,field:string){if(!Number.isSafeInteger(value))throw new DevelopmentHttpError("invalid_request",`${field} is invalid`);return value as number;}
+function methodNotAllowed(){return new DevelopmentHttpError("method_not_allowed","method is not allowed for this route");}
