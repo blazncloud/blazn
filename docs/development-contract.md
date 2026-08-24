@@ -117,10 +117,7 @@ atomic canonical Run/Build terminal transition before receiving EXECUTE.
 ```text
 blazn dev validate [-f blazn.yaml]
 blazn dev build --ref COMMIT --request-id ID
-blazn dev test BUILD --suite poc --request-id ID
 blazn dev status BUILD
-blazn dev evidence BUILD --output-dir DIRECTORY
-blazn dev publish BUILD --expected-version N --request-id ID
 ```
 
 `dev validate` is offline and non-mutating. The other commands use the selected
