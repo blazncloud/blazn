@@ -85,9 +85,11 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE":    "/run/blazn/kubernetes-ca.crt",
 		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE": "/var/run/secrets/kubernetes.io/serviceaccount/token",
 		"BLAZN_SANDBOX_IO_IMAGE":                         testSandboxIOImage,
+		"BLAZN_SANDBOX_SOURCE_DNS_CIDRS":                 "10.152.183.10/32",
+		"BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON":           `{"github.com":["140.82.112.4/32"]}`,
 	}
 	config, err := kubernetesConfigFromEnv(func(key string) string { return valid[key] })
-	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" {
+	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" || len(config.SourceDNSCIDRs) != 1 || len(config.SourceHostCIDRs["github.com"]) != 1 {
 		t.Fatalf("valid endpoint rejected: config=%#v err=%v", config, err)
 	}
 	valid["BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST"] = "fd00::1"
@@ -117,6 +119,23 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 				t.Fatal("invalid Kubernetes configuration was accepted")
 			}
 		})
+	}
+	for _, mutate := range []func(map[string]string){
+		func(values map[string]string) { values["BLAZN_SANDBOX_SOURCE_DNS_CIDRS"] = "" },
+		func(values map[string]string) { values["BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON"] = "" },
+		func(values map[string]string) { values["BLAZN_SANDBOX_SOURCE_DNS_CIDRS"] = "10.0.0.1/32, 10.0.0.2/32" },
+		func(values map[string]string) {
+			values["BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON"] = `{"github.com":["140.82.112.4/32"]} trailing`
+		},
+	} {
+		values := make(map[string]string, len(valid))
+		for key, value := range valid {
+			values[key] = value
+		}
+		mutate(values)
+		if _, err := kubernetesConfigFromEnv(func(key string) string { return values[key] }); err == nil {
+			t.Fatal("invalid source egress configuration was accepted")
+		}
 	}
 }
 

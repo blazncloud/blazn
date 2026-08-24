@@ -22,10 +22,16 @@ rules:
   verbs: ["create", "delete", "get", "list", "patch"]
 - apiGroups: [""]
   resources: ["pods"]
-  verbs: ["list"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
 - apiGroups: ["kueue.x-k8s.io"]
   resources: ["workloads"]
   verbs: ["list"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["create", "delete", "get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -141,6 +147,10 @@ spec:
           value: /var/run/blazn-api-token/token
         - name: BLAZN_SANDBOX_IO_IMAGE
           value: "BLAZN_SANDBOX_IO_IMAGE"
+        - name: BLAZN_SANDBOX_SOURCE_DNS_CIDRS
+          value: "BLAZN_SOURCE_DNS_CIDR"
+        - name: BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON
+          value: '{"BLAZN_SOURCE_HOST":["BLAZN_SOURCE_CIDR"]}'
         resources:
           requests:
             cpu: 50m

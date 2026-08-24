@@ -35,6 +35,9 @@ BLAZN_KUBERNETES_API_PORT='16443' \
 BLAZN_KUBERNETES_API_AUDIENCE='https://kubernetes.default.svc' \
 BLAZN_BEN1_POSTGRES_CIDR='10.0.0.11/32' \
 BLAZN_BEN1_POSTGRES_PORT='5432' \
+BLAZN_SOURCE_HOST='github.com' \
+BLAZN_SOURCE_CIDR='140.82.112.4/32' \
+BLAZN_SOURCE_DNS_CIDR='10.0.0.53/32' \
 ./infra/agent-sandbox/phase5-controller/render-install.sh ./controller-install.yaml
 ```
 
@@ -56,7 +59,12 @@ The output assumes the separately owned namespaces `blazn-poc-system` and
 `blazn-poc-sandboxes` already exist. It creates a tokenless ServiceAccount and
 uses only a 600-second projected API token with an explicit audience. Its Role
 can create/delete/patch and read Sandboxes only in `blazn-poc-sandboxes`; Pod
-and Kueue Workload access is list-only there. It has no separate Sandbox status
+access is get/list, Kueue Workload access is list-only, `pods/exec` is create-only,
+and NetworkPolicy access is create/delete/get/list there. The controller accepts
+only its pinned helper command, verifies the exact Pod and Sandbox UIDs before
+and after each WebSocket v5 exchange, creates an exact temporary DNS/HTTPS
+source policy, and deletes it with UID/resource-version preconditions before
+releasing the init gate. It has no separate Sandbox status
 subresource grant, ClusterRole, or other cluster-scoped authority and no Secret,
 Node, RuntimeClass, CRD, webhook, namespace, or wildcard authority. RuntimeClass
 access may be added only in a separate PR that wires and qualifies an exact

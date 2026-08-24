@@ -27,6 +27,9 @@ render() {
     BLAZN_KUBERNETES_API_AUDIENCE=https://kubernetes.default.svc \
     BLAZN_BEN1_POSTGRES_CIDR=10.20.30.41/32 \
     BLAZN_BEN1_POSTGRES_PORT=5432 \
+    BLAZN_SOURCE_HOST=github.com \
+    BLAZN_SOURCE_CIDR=140.82.112.4/32 \
+    BLAZN_SOURCE_DNS_CIDR=10.20.30.53/32 \
     BLAZN_DNS_CIDR= \
     "$@" "$RENDER" "$output"
 }
@@ -67,8 +70,10 @@ grep -F 'type: RuntimeDefault' "$tmp/ip.yaml" >/dev/null
 grep -F 'cidr: 10.20.30.40/32' "$tmp/ip.yaml" >/dev/null
 grep -F 'cidr: 10.20.30.41/32' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
+grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
+grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 2 ]
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR'
 if grep -E "$placeholder_pattern" "$tmp/ip.yaml" >/dev/null; then
   printf 'render left an unresolved placeholder\n' >&2
   exit 1
@@ -144,6 +149,10 @@ expect_fail hostname-without-dns BLAZN_DATABASE_ENDPOINT_KIND=hostname
 expect_fail broad-dns BLAZN_DATABASE_ENDPOINT_KIND=hostname BLAZN_DNS_CIDR=10.20.30.0/24
 expect_fail dns-in-ip-mode BLAZN_DNS_CIDR=10.20.30.53/32
 expect_fail bad-secret-name BLAZN_DATABASE_URL_SECRET_NAME=Bad_Name
+expect_fail missing-source-host BLAZN_SOURCE_HOST=
+expect_fail uppercase-source-host BLAZN_SOURCE_HOST=GitHub.com
+expect_fail broad-source-cidr BLAZN_SOURCE_CIDR=140.82.112.0/24
+expect_fail broad-source-dns BLAZN_SOURCE_DNS_CIDR=10.20.30.0/24
 
 touch "$tmp/existing.yaml"
 if render "$tmp/existing.yaml" >/dev/null 2>&1; then
@@ -182,11 +191,16 @@ fi
 grep -F 'resources: ["sandboxes"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'verbs: ["create", "delete", "get", "list", "patch"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'resources: ["pods"]' "$ROOT/controller.yaml.in" >/dev/null
+grep -F 'resources: ["pods/exec"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'resources: ["workloads"]' "$ROOT/controller.yaml.in" >/dev/null
+grep -F 'resources: ["networkpolicies"]' "$ROOT/controller.yaml.in" >/dev/null
 [ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list", "patch"]' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -Fxc '  verbs: ["list"]' "$ROOT/controller.yaml.in")" -eq 2 ]
-[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 3 ]
-[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 3 ]
+[ "$(grep -Fxc '  verbs: ["get", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -Fxc '  verbs: ["create"]' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -Fxc '  verbs: ["list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 5 ]
+[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 5 ]
 [ "$(grep -c '^kind: Role$' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -c '^kind: RoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
 if grep -E '^kind: ClusterRole(Binding)?$' "$ROOT/controller.yaml.in" >/dev/null; then
