@@ -133,6 +133,16 @@ func (f *fakeSandboxAdapter) Delete(_ context.Context, requestID, workspaceID, o
 }
 
 func (f *fakeSandboxAdapter) Finalize(_ context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string, artifacts []sandboxcontrol.ArtifactExport, digest string) (sandboxcontrol.OperationReceipt, error) {
+	return f.finalizeWithReceipts(requestID, workspaceID, ownerID, name, uid, resourceVersion, artifacts, artifactReceipts(f.record, artifacts), digest)
+}
+
+func (f *fakeSandboxAdapter) FinalizePreExported(_ context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string,
+	artifacts []sandboxcontrol.ArtifactExport, receipts []sandboxcontrol.ArtifactReceipt, digest string) (sandboxcontrol.OperationReceipt, error) {
+	return f.finalizeWithReceipts(requestID, workspaceID, ownerID, name, uid, resourceVersion, artifacts, receipts, digest)
+}
+
+func (f *fakeSandboxAdapter) finalizeWithReceipts(requestID, workspaceID, ownerID, name, uid, resourceVersion string,
+	artifacts []sandboxcontrol.ArtifactExport, receipts []sandboxcontrol.ArtifactReceipt, digest string) (sandboxcontrol.OperationReceipt, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "finalize")
 	if f.finalizeErr != nil {
@@ -148,7 +158,7 @@ func (f *fakeSandboxAdapter) Finalize(_ context.Context, requestID, workspaceID,
 	}
 	f.record.ResourceVersion = "resource-version-finalize"
 	f.record.Finalizers = nil
-	receipt := operationReceipt(requestID, sandboxcontrol.OperationFinalize, f.record, artifactReceipts(f.record, artifacts))
+	receipt := operationReceipt(requestID, sandboxcontrol.OperationFinalize, f.record, receipts)
 	afterFinalize := f.afterFinalize
 	f.mu.Unlock()
 	if afterFinalize != nil {

@@ -3,6 +3,7 @@ package sandboxcontroller
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type fakeStore struct {
 	renewStarted    chan struct{}
 	retryCalls      int
 	completionCalls int
+	artifactRecords int
 }
 
 type renewResponse struct {
@@ -65,8 +67,11 @@ func (s *fakeStore) RecordSources(_ context.Context, _, _, _ string, _ sandboxco
 	s.sourceReceipt = &receipt
 	return true, nil
 }
-func (*fakeStore) RecordArtifact(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, artifact PersistedArtifact) (string, bool, error) {
-	return artifact.ID, true, nil
+func (s *fakeStore) RecordArtifact(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, artifact PersistedArtifact) (PersistedArtifact, bool, error) {
+	s.artifactRecords++
+	artifact.ID = "80000000-0000-4000-8000-000000000001"
+	artifact.ExportedAt = "2026-08-24T12:00:00Z"
+	return artifact, true, nil
 }
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
 	s.retryCalls++
@@ -91,6 +96,9 @@ type fakeBackend struct {
 	err                                          error
 	calls                                        int
 	prepared, materialized, restricted, released int
+	artifactExports                              int
+	artifactResult                               ArtifactExportResult
+	order                                        []string
 }
 
 type blockingBackend struct {
@@ -124,10 +132,12 @@ func (b *fakeBackend) Health(context.Context) error { return b.err }
 
 func (b *fakeBackend) EnsureCreated(context.Context, WorkItem) (BackendState, error) {
 	b.calls++
+	b.order = append(b.order, "create")
 	return b.created, b.err
 }
 func (b *fakeBackend) Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	b.calls++
+	b.order = append(b.order, "observe")
 	if len(b.observedStates) != 0 {
 		state := b.observedStates[0]
 		b.observedStates = b.observedStates[1:]
@@ -137,10 +147,12 @@ func (b *fakeBackend) Observe(context.Context, WorkItem, *sandboxcontrol.Admissi
 }
 func (b *fakeBackend) BeginDelete(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	b.calls++
+	b.order = append(b.order, "delete")
 	return b.deleting, b.err
 }
 func (b *fakeBackend) Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
 	b.calls++
+	b.order = append(b.order, "finalize")
 	return b.finalized, b.err
 }
 func (b *fakeBackend) PrepareSourceBootstrap(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) error {
@@ -165,6 +177,11 @@ func (b *fakeBackend) RestrictSourceRuntime(context.Context, WorkItem, sandboxco
 func (b *fakeBackend) ReleaseSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error {
 	b.released++
 	return b.err
+}
+func (b *fakeBackend) ExportArtifacts(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) (ArtifactExportResult, error) {
+	b.artifactExports++
+	b.order = append(b.order, "export")
+	return b.artifactResult, b.err
 }
 
 func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
@@ -286,6 +303,39 @@ func TestCleanupRequiresBackendGrantRevocationProof(t *testing.T) {
 	}
 	if store.completion == nil || store.completion.Status != "succeeded" || !store.completion.GrantsRevoked {
 		t.Fatalf("complete cleanup proof was rejected: %#v", store.completion)
+	}
+}
+
+func TestCleanupExportsAndPersistsArtifactsBeforeBackendDelete(t *testing.T) {
+	item, state := createFixture(t)
+	artifactItem, observation := artifactRuntimeFixture(t)
+	item.WorkspaceID, item.SandboxID = artifactItem.WorkspaceID, artifactItem.SandboxID
+	item.OperationType, item.DesiredState = "stop", "stopped"
+	item.BackendUID, item.BackendResourceVersion = artifactItem.BackendUID, artifactItem.BackendResourceVersion
+	item.AdmissionID = pointer(observation.Workload.UID)
+	item.PersistedWorkloadDigest = pointer(observation.Workload.Digest)
+	item.AdmissionObservation = &observation
+	item.Artifacts = []Artifact{{Name: "result", Path: "/workspace/artifacts/result", MediaType: "text/plain", Required: true}}
+	state.Record.Name, state.Record.WorkspaceID = item.SandboxID, item.WorkspaceID
+	state.Record.UID, state.Record.ResourceVersion = observation.Sandbox.UID, observation.Sandbox.ResourceVersion
+	state.Record.State, state.Record.Deleting = sandboxcontrol.StateStopping, true
+	state.Record.Finalizers = []string{sandboxcontrol.CleanupFinalizer}
+	state.Record.Artifacts = []sandboxcontrol.ArtifactExport{{Name: "result", Path: item.Artifacts[0].Path, MediaType: "text/plain", Required: true}}
+	_, state.Record.ArtifactContractDigest, _ = sandboxcontrol.CanonicalArtifactContract(state.Record.Artifacts)
+	state.AdmissionObservation, state.Exists, state.Ready, state.Deleting, state.CleanupFinalizerPresent = &observation, true, false, true, true
+	key, _ := ArtifactObjectKey(item.WorkspaceID, item.SandboxID, "result")
+	exported := PersistedArtifact{Name: "result", Path: item.Artifacts[0].Path, MediaType: "text/plain",
+		Digest: "sha256:" + strings.Repeat("d", 64), Size: 6, ObjectKey: key}
+	store := &fakeStore{}
+	backend := &fakeBackend{deleting: state, artifactResult: ArtifactExportResult{Artifacts: []PersistedArtifact{exported}, WarningCodes: []string{}},
+		finalized: CleanupResult{ArtifactIDs: []string{"80000000-0000-4000-8000-000000000001"}, WarningCodes: []string{},
+			CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 ||
+		store.completion == nil || !reflect.DeepEqual(store.completion.ArtifactIDs, []string{"80000000-0000-4000-8000-000000000001"}) {
+		t.Fatalf("order=%v records=%d completion=%#v", backend.order, store.artifactRecords, store.completion)
 	}
 }
 

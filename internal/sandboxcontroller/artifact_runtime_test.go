@@ -76,6 +76,7 @@ func TestKubernetesArtifactRuntimeExportsBeforeCleanupAndAdoptsPersistedRows(t *
 	}
 	persisted := result.Artifacts[0]
 	persisted.ID = "80000000-0000-4000-8000-000000000001"
+	persisted.ExportedAt = "2026-08-24T12:00:00Z"
 	item.PersistedArtifacts = []PersistedArtifact{persisted}
 	second, err := runtime.Export(context.Background(), item, observation)
 	if err != nil || len(second.Artifacts) != 1 || second.Artifacts[0].ID != persisted.ID || objects.puts != 1 || transport.calls != 3 {

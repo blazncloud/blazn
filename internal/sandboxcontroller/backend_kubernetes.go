@@ -20,6 +20,7 @@ type SandboxControlAdapter interface {
 	ObserveAdmission(context.Context, sandboxcontrol.CreateRequest, sandboxcontrol.SandboxRecord, *sandboxcontrol.AdmissionObservation) (sandboxcontrol.AdmissionObservation, error)
 	Delete(context.Context, string, string, string, string, string, string, string) (sandboxcontrol.OperationReceipt, error)
 	Finalize(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, string) (sandboxcontrol.OperationReceipt, error)
+	FinalizePreExported(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, []sandboxcontrol.ArtifactReceipt, string) (sandboxcontrol.OperationReceipt, error)
 	ObserveAbsence(context.Context, sandboxcontrol.AdmissionObservation) error
 }
 
@@ -29,6 +30,7 @@ type KubernetesBackendConfig struct {
 	ArtifactExportSupported bool
 	HelperImage             string
 	SourceRuntime           *KubernetesSourceRuntime
+	ArtifactRuntime         *KubernetesArtifactRuntime
 	AbsencePollInterval     time.Duration
 }
 
@@ -38,6 +40,7 @@ type KubernetesBackend struct {
 	artifactExportSupported bool
 	helperImage             string
 	sourceRuntime           *KubernetesSourceRuntime
+	artifactRuntime         *KubernetesArtifactRuntime
 	absencePollInterval     time.Duration
 	createLocksMu           sync.Mutex
 	createLocks             map[string]*kubernetesCreateLock
@@ -68,6 +71,7 @@ func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, e
 		artifactExportSupported: config.ArtifactExportSupported,
 		helperImage:             config.HelperImage,
 		sourceRuntime:           config.SourceRuntime,
+		artifactRuntime:         config.ArtifactRuntime,
 		absencePollInterval:     config.AbsencePollInterval,
 		createLocks:             make(map[string]*kubernetesCreateLock),
 		evidence:                make(map[string]kubernetesBackendEvidence)}, nil
@@ -99,6 +103,13 @@ func (b *KubernetesBackend) ReleaseSources(ctx context.Context, item WorkItem, o
 		return backendFailure("sources_unsupported", "source materialization runtime is unavailable", false, true, nil)
 	}
 	return b.sourceRuntime.Release(ctx, item, observation, receipt)
+}
+
+func (b *KubernetesBackend) ExportArtifacts(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation) (ArtifactExportResult, error) {
+	if b.artifactRuntime == nil {
+		return ArtifactExportResult{}, backendFailure("artifact_export_unsupported", "artifact export runtime is unavailable", false, true, nil)
+	}
+	return b.artifactRuntime.Export(ctx, item, observation)
 }
 
 func (b *KubernetesBackend) Health(ctx context.Context) error {
@@ -277,20 +288,22 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 	if err != nil {
 		return CleanupResult{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
 	}
-	if !state.Exists || !state.Deleting || !state.CleanupFinalizerPresent {
-		return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup completion receipt is unavailable after restart", true, true, nil)
-	}
-	receipt, err := b.adapter.Finalize(ctx, "controller-"+item.OperationID, item.WorkspaceID,
-		item.RequestedBy, item.SandboxID, *item.BackendUID, state.Record.ResourceVersion, artifacts, digest)
+	exported, ids, err := persistedArtifactReceipts(item, artifacts)
 	if err != nil {
-		return CleanupResult{}, classifyAdapter("cleanup", err)
+		return CleanupResult{}, backendFailure("artifact_export_incomplete", "persisted artifact evidence is incomplete", true, false, err)
 	}
-	if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
-		return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
-	}
-	ids := make([]string, 0, len(receipt.Artifacts))
-	for _, artifact := range receipt.Artifacts {
-		ids = append(ids, artifact.ObjectKey)
+	if state.Exists {
+		if !state.Deleting || !state.CleanupFinalizerPresent {
+			return CleanupResult{}, backendFailure("cleanup_evidence_unavailable", "cleanup finalizer state is invalid", true, true, nil)
+		}
+		receipt, err := b.adapter.FinalizePreExported(ctx, "controller-"+item.OperationID, item.WorkspaceID,
+			item.RequestedBy, item.SandboxID, *item.BackendUID, state.Record.ResourceVersion, artifacts, exported, digest)
+		if err != nil {
+			return CleanupResult{}, classifyAdapter("cleanup", err)
+		}
+		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
+			return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
+		}
 	}
 	result := CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
 		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
@@ -307,6 +320,36 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 			return CleanupResult{}, ctx.Err()
 		}
 	}
+}
+
+func persistedArtifactReceipts(item WorkItem, contracts []sandboxcontrol.ArtifactExport) ([]sandboxcontrol.ArtifactReceipt, []string, error) {
+	byName := make(map[string]PersistedArtifact, len(item.PersistedArtifacts))
+	for _, artifact := range item.PersistedArtifacts {
+		if _, duplicate := byName[artifact.Name]; duplicate {
+			return nil, nil, errors.New("persisted artifact is duplicated")
+		}
+		byName[artifact.Name] = artifact
+	}
+	receipts, ids := make([]sandboxcontrol.ArtifactReceipt, 0, len(byName)), make([]string, 0, len(byName))
+	for _, contract := range contracts {
+		artifact, ok := byName[contract.Name]
+		if !ok {
+			if contract.Required {
+				return nil, nil, errors.New("required artifact is not persisted")
+			}
+			continue
+		}
+		if err := validatePersistedArtifact(item, Artifact{Name: contract.Name, Path: contract.Path, MediaType: contract.MediaType, Required: contract.Required}, artifact); err != nil {
+			return nil, nil, err
+		}
+		receipts = append(receipts, sandboxcontrol.ArtifactReceipt{Name: artifact.Name, ObjectKey: artifact.ObjectKey,
+			SchemaVersion: sandboxcontrol.ArtifactSchema, SHA256: artifact.Digest, Size: artifact.Size, ExportedAt: artifact.ExportedAt})
+		ids = append(ids, artifact.ID)
+	}
+	if len(byName) != len(receipts) {
+		return nil, nil, errors.New("persisted artifact is outside the contract")
+	}
+	return receipts, ids, nil
 }
 
 func verifyLiveRecord(item WorkItem, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord,

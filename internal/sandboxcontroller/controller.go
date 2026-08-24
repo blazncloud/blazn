@@ -367,6 +367,43 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.AdmissionObservation == nil {
 		return &Failure{Code: "missing_backend_identity", SafeMessage: "cleanup lacks exact backend identity", Ambiguous: true}
 	}
+	warningCodes := []string{}
+	if len(item.Artifacts) != 0 {
+		artifactBackend, ok := c.backend.(ArtifactBackend)
+		if !ok {
+			return &Failure{Code: "artifact_export_unsupported", SafeMessage: "artifact export runtime is unavailable", Ambiguous: true}
+		}
+		exported, err := artifactBackend.ExportArtifacts(ctx, item, *item.AdmissionObservation)
+		if err != nil {
+			return err
+		}
+		contracts := make(map[string]Artifact, len(item.Artifacts))
+		for _, contract := range item.Artifacts {
+			contracts[contract.Name] = contract
+		}
+		for index := range exported.Artifacts {
+			artifact := exported.Artifacts[index]
+			if artifact.ID != "" {
+				if contract, ok := contracts[artifact.Name]; !ok || validatePersistedArtifact(item, contract, artifact) != nil {
+					return &Failure{Code: "artifact_identity_mismatch", SafeMessage: "persisted artifact differs from its contract", Ambiguous: true}
+				}
+				continue
+			}
+			persisted, recorded, err := c.store.RecordArtifact(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, *item.AdmissionObservation, artifact)
+			if err != nil {
+				return err
+			}
+			if !recorded {
+				return nil
+			}
+			if contract, ok := contracts[persisted.Name]; !ok || validatePersistedArtifact(item, contract, persisted) != nil {
+				return &Failure{Code: "artifact_identity_mismatch", SafeMessage: "recorded artifact differs from its contract", Ambiguous: true}
+			}
+			exported.Artifacts[index] = persisted
+		}
+		item.PersistedArtifacts = exported.Artifacts
+		warningCodes = append(warningCodes, exported.WarningCodes...)
+	}
 	state, err := c.backend.BeginDelete(ctx, item, item.AdmissionObservation)
 	if err != nil {
 		return err
@@ -385,7 +422,8 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	}
 	uid, rv := *item.BackendUID, *item.BackendResourceVersion
 	workloadDigest, observationDigest := item.AdmissionObservation.Workload.Digest, item.AdmissionObservation.Digest
-	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: append([]string(nil), result.WarningCodes...)})
+	warningCodes = append(warningCodes, result.WarningCodes...)
+	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: warningCodes})
 	if err != nil {
 		return err
 	}
@@ -469,6 +507,18 @@ func validateWorkItem(item WorkItem) error {
 		if artifact.Name == "" || artifact.Path == "" || artifact.MediaType == "" {
 			return fmt.Errorf("artifact contract is invalid")
 		}
+	}
+	artifactContracts := make(map[string]Artifact, len(item.Artifacts))
+	for _, artifact := range item.Artifacts {
+		artifactContracts[artifact.Name] = artifact
+	}
+	seenPersistedArtifacts := map[string]bool{}
+	for _, artifact := range item.PersistedArtifacts {
+		contract, ok := artifactContracts[artifact.Name]
+		if !ok || seenPersistedArtifacts[artifact.Name] || item.OperationType == "create" || validatePersistedArtifact(item, contract, artifact) != nil {
+			return fmt.Errorf("persisted artifact identity is invalid")
+		}
+		seenPersistedArtifacts[artifact.Name] = true
 	}
 	if item.OperationType == "create" && item.DesiredState != "ready" || item.OperationType == "stop" && item.DesiredState != "stopped" || item.OperationType == "delete" && item.DesiredState != "deleted" {
 		return fmt.Errorf("operation desired state mismatch")

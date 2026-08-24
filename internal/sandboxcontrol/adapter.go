@@ -604,6 +604,16 @@ func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, n
 }
 
 func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string, expectedArtifacts []ArtifactExport, artifactContractDigest string) (OperationReceipt, error) {
+	return a.finalize(ctx, requestID, workspaceID, ownerID, name, uid, resourceVersion, expectedArtifacts, nil, false, artifactContractDigest)
+}
+
+func (a *Adapter) FinalizePreExported(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string,
+	expectedArtifacts []ArtifactExport, exported []ArtifactReceipt, artifactContractDigest string) (OperationReceipt, error) {
+	return a.finalize(ctx, requestID, workspaceID, ownerID, name, uid, resourceVersion, expectedArtifacts, exported, true, artifactContractDigest)
+}
+
+func (a *Adapter) finalize(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string,
+	expectedArtifacts []ArtifactExport, artifacts []ArtifactReceipt, preExported bool, artifactContractDigest string) (OperationReceipt, error) {
 	if !requestPattern.MatchString(requestID) {
 		return OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "finalize request ID is invalid", nil)
 	}
@@ -621,9 +631,13 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	if record.ArtifactContractDigest != artifactContractDigest || !sameArtifactExports(record.Artifacts, canonicalExpected) {
 		return OperationReceipt{}, adapterError(ErrConflict, 409, "persisted artifact contract differs from trusted precondition", nil)
 	}
-	artifacts, err := a.exporter.Export(ctx, record, record.Artifacts)
-	if err != nil {
-		return OperationReceipt{}, adapterError(ErrArtifactExport, 502, "artifact export did not complete", err)
+	if preExported {
+		artifacts = append([]ArtifactReceipt(nil), artifacts...)
+	} else {
+		artifacts, err = a.exporter.Export(ctx, record, record.Artifacts)
+		if err != nil {
+			return OperationReceipt{}, adapterError(ErrArtifactExport, 502, "artifact export did not complete", err)
+		}
 	}
 	if err := validateArtifactCompletion(record, artifacts); err != nil {
 		return OperationReceipt{}, err

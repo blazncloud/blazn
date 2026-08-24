@@ -175,35 +175,37 @@ func (s *PgStore) RecordSources(ctx context.Context, operationID, workerID, leas
 	return recorded, err
 }
 
-func (s *PgStore) RecordArtifact(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation, artifact PersistedArtifact) (string, bool, error) {
-	if artifact.ID != "" || !artifactNamePattern.MatchString(artifact.Name) || !validWorkspaceArtifactPath(artifact.Path) ||
+func (s *PgStore) RecordArtifact(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation, artifact PersistedArtifact) (PersistedArtifact, bool, error) {
+	if artifact.ID != "" || artifact.ExportedAt != "" || !artifactNamePattern.MatchString(artifact.Name) || !validWorkspaceArtifactPath(artifact.Path) ||
 		!mediaTypePattern.MatchString(artifact.MediaType) || !sha256Pattern.MatchString(artifact.Digest) || artifact.Size < 0 || artifact.Size > maxArtifactBytes {
-		return "", false, errors.New("sandbox artifact persistence input is invalid")
+		return PersistedArtifact{}, false, errors.New("sandbox artifact persistence input is invalid")
 	}
 	wantedKey, err := ArtifactObjectKey(observation.Workload.WorkspaceID, observation.Sandbox.Name, artifact.Name)
 	if err != nil || artifact.ObjectKey != wantedKey {
-		return "", false, errors.New("sandbox artifact object key is invalid")
+		return PersistedArtifact{}, false, errors.New("sandbox artifact object key is invalid")
 	}
 	workloadDigest, err := rawDigest(observation.Workload.Digest)
 	if err != nil {
-		return "", false, err
+		return PersistedArtifact{}, false, err
 	}
 	observationDigest, err := rawDigest(observation.Digest)
 	if err != nil {
-		return "", false, err
+		return PersistedArtifact{}, false, err
 	}
 	contentDigest, err := rawDigest(artifact.Digest)
 	if err != nil {
-		return "", false, err
+		return PersistedArtifact{}, false, err
 	}
 	var id sql.NullString
+	var exported sql.NullTime
 	err = s.executor.QueryRow(ctx, recordArtifactSQL, operationID, workerID, leaseToken,
 		observation.Sandbox.UID, observation.Sandbox.ResourceVersion, workloadDigest, observationDigest,
-		artifact.Name, artifact.Path, artifact.MediaType, contentDigest, artifact.Size, artifact.ObjectKey).Scan(&id)
-	if err != nil || !id.Valid {
-		return "", false, err
+		artifact.Name, artifact.Path, artifact.MediaType, contentDigest, artifact.Size, artifact.ObjectKey).Scan(&id, &exported)
+	if err != nil || !id.Valid || !exported.Valid {
+		return PersistedArtifact{}, false, err
 	}
-	return id.String, true, nil
+	artifact.ID, artifact.ExportedAt = id.String, exported.Time.UTC().Format(time.RFC3339Nano)
+	return artifact, true, nil
 }
 
 func (s *PgStore) Retry(ctx context.Context, operationID, workerID, leaseToken string, delaySeconds int, safe SafeError) (RetryOutcome, error) {
@@ -330,6 +332,7 @@ type workItemRow struct {
 	ExportedArtifactDigests    []string        `json:"exported_artifact_digests"`
 	ExportedArtifactSizes      []int64         `json:"exported_artifact_sizes"`
 	ExportedArtifactKeys       []string        `json:"exported_artifact_keys"`
+	ExportedArtifactTimes      []time.Time     `json:"exported_artifact_times"`
 }
 
 func decodeWorkItem(payload []byte) (*WorkItem, error) {
@@ -382,7 +385,7 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 	exportedCount := len(row.ExportedArtifactIDs)
 	if len(row.ExportedArtifactNames) != exportedCount || len(row.ExportedArtifactPaths) != exportedCount ||
 		len(row.ExportedArtifactMediaTypes) != exportedCount || len(row.ExportedArtifactDigests) != exportedCount ||
-		len(row.ExportedArtifactSizes) != exportedCount || len(row.ExportedArtifactKeys) != exportedCount {
+		len(row.ExportedArtifactSizes) != exportedCount || len(row.ExportedArtifactKeys) != exportedCount || len(row.ExportedArtifactTimes) != exportedCount {
 		return nil, errors.New("sandbox controller exported artifact columns are inconsistent")
 	}
 	contracts := make(map[string]Artifact, len(item.Artifacts))
@@ -397,11 +400,12 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 		if !ok || !canonicalUUID(id) || index > 0 && row.ExportedArtifactNames[index-1] >= name ||
 			row.ExportedArtifactPaths[index] != contract.Path || row.ExportedArtifactMediaTypes[index] != contract.MediaType ||
 			!sha256Pattern.MatchString(digest) || row.ExportedArtifactSizes[index] < 0 || row.ExportedArtifactSizes[index] > maxArtifactBytes ||
-			keyErr != nil || row.ExportedArtifactKeys[index] != wantedKey {
+			keyErr != nil || row.ExportedArtifactKeys[index] != wantedKey || row.ExportedArtifactTimes[index].IsZero() {
 			return nil, errors.New("sandbox controller exported artifact identity is inconsistent")
 		}
 		item.PersistedArtifacts = append(item.PersistedArtifacts, PersistedArtifact{ID: id, Name: name, Path: contract.Path,
-			MediaType: contract.MediaType, Digest: digest, Size: row.ExportedArtifactSizes[index], ObjectKey: wantedKey})
+			MediaType: contract.MediaType, Digest: digest, Size: row.ExportedArtifactSizes[index], ObjectKey: wantedKey,
+			ExportedAt: row.ExportedArtifactTimes[index].UTC().Format(time.RFC3339Nano)})
 	}
 	observation, workloadDigest, err := decodeObservation(row)
 	if err != nil {

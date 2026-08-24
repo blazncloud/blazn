@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 	"github.com/blazncloud/blazn/internal/sandboxio"
@@ -106,10 +107,15 @@ func validatePersistedArtifact(item WorkItem, contract Artifact, artifact Persis
 	key, err := ArtifactObjectKey(item.WorkspaceID, item.SandboxID, contract.Name)
 	if err != nil || !canonicalUUID(artifact.ID) || artifact.Name != contract.Name || artifact.Path != contract.Path ||
 		artifact.MediaType != contract.MediaType || !sha256Pattern.MatchString(artifact.Digest) || artifact.Size < 0 ||
-		artifact.Size > maxArtifactBytes || artifact.ObjectKey != key {
+		artifact.Size > maxArtifactBytes || artifact.ObjectKey != key || !validExportedAt(artifact.ExportedAt) {
 		return errors.New("persisted artifact identity is invalid")
 	}
 	return nil
+}
+
+func validExportedAt(value string) bool {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	return err == nil && parsed.UTC().Format(time.RFC3339Nano) == value
 }
 
 func artifactObjectSpec(item WorkItem, artifact PersistedArtifact) ArtifactObjectSpec {

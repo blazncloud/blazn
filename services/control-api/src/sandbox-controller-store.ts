@@ -62,7 +62,7 @@ export interface SandboxControllerSourceReceipt {
 }
 
 export interface SandboxControllerPersistedArtifact {
-  id: string; name: string; path: string; mediaType: string; digest: string; size: number; objectKey: string;
+  id: string; name: string; path: string; mediaType: string; digest: string; size: number; objectKey: string; exportedAt: string;
 }
 
 export interface SandboxControllerWorkItem {
@@ -173,13 +173,13 @@ export class PgSandboxControllerStore {
   }
 
   async recordArtifact(operationId: string, workerId: string, leaseToken: string,
-    observation: SandboxControllerAdmissionObservation, artifact: Omit<SandboxControllerPersistedArtifact, "id">): Promise<string | undefined> {
+    observation: SandboxControllerAdmissionObservation, artifact: Omit<SandboxControllerPersistedArtifact, "id" | "exportedAt">): Promise<string | undefined> {
     validateObservation(observation);
     if (!artifactName(artifact.name) || !artifact.path.startsWith("/workspace/artifacts/") ||
       !/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(artifact.mediaType) || !digest(artifact.digest) ||
       !Number.isSafeInteger(artifact.size) || artifact.size < 0 || artifact.size > 8 * 1024 * 1024) throw new Error("sandbox artifact record is invalid");
-    const result = await this.database.query<{ artifact_id: string | null }>(
-      "SELECT sandbox_controller_record_artifact_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) AS artifact_id",
+    const result = await this.database.query<{ artifact_id: string; exported_at: Date | string }>(
+      "SELECT artifact_id,exported_at FROM sandbox_controller_record_artifact_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
       [operationId, workerId, leaseToken, observation.sandbox.uid, observation.sandbox.resourceVersion,
         rawDigest(observation.workload.digest), rawDigest(observation.digest), artifact.name, artifact.path,
         artifact.mediaType, rawDigest(artifact.digest), artifact.size, artifact.objectKey],
@@ -256,14 +256,14 @@ function persistedArtifactRows(row: QueryResultRow): SandboxControllerPersistedA
   const ids=requiredStringArray(row.exported_artifact_ids),names=requiredStringArray(row.exported_artifact_names),
     paths=requiredStringArray(row.exported_artifact_paths),media=requiredStringArray(row.exported_artifact_media_types),
     digests=requiredStringArray(row.exported_artifact_digests),sizes=requiredNumberArray(row.exported_artifact_sizes),
-    keys=requiredStringArray(row.exported_artifact_keys);
-  if(![names.length,paths.length,media.length,digests.length,sizes.length,keys.length].every(length=>length===ids.length))throw new Error("sandbox exported artifact columns are inconsistent");
-  return ids.map((id,index)=>{const name=names[index]!,path=paths[index]!,mediaType=media[index]!,digestValue=`sha256:${digests[index]!.trim()}`,size=sizes[index]!,objectKey=keys[index]!;
+    keys=requiredStringArray(row.exported_artifact_keys),times=requiredTimestampArray(row.exported_artifact_times);
+  if(![names.length,paths.length,media.length,digests.length,sizes.length,keys.length,times.length].every(length=>length===ids.length))throw new Error("sandbox exported artifact columns are inconsistent");
+  return ids.map((id,index)=>{const name=names[index]!,path=paths[index]!,mediaType=media[index]!,digestValue=`sha256:${digests[index]!.trim()}`,size=sizes[index]!,objectKey=keys[index]!,exportedAt=times[index]!;
     if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)||!artifactName(name)||
       index>0&&names[index-1]!>=name||!path.startsWith("/workspace/artifacts/")||!/^[a-z0-9][a-z0-9.+-]*\/[a-z0-9][a-z0-9.+-]*$/.test(mediaType)||
       !digest(digestValue)||size<0||size>8*1024*1024||objectKey!==`workspaces/${row.workspace_id}/sandboxes/${row.sandbox_id}/artifacts/${name}`)
       throw new Error("sandbox exported artifact identity is inconsistent");
-    return{id,name,path,mediaType,digest:digestValue,size,objectKey};});
+    return{id,name,path,mediaType,digest:digestValue,size,objectKey,exportedAt};});
 }
 
 function sourceReceiptRow(row: QueryResultRow): Pick<SandboxControllerWorkItem, "sourceMaterialization" | "sourceBootstrapObservation"> {
@@ -385,6 +385,10 @@ function requiredBooleanArray(value: unknown): boolean[] {
 function requiredNumberArray(value: unknown): number[] {
   if (!Array.isArray(value) || !value.every((entry) => Number.isSafeInteger(Number(entry)))) throw new Error("sandbox controller number array is invalid");
   return value.map(Number);
+}
+function requiredTimestampArray(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error("sandbox controller timestamp array is invalid");
+  return value.map((entry) => timestamp(entry as Date | string));
 }
 function timestamp(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();

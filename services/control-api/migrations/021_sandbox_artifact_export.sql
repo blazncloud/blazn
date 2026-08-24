@@ -7,10 +7,10 @@ CREATE FUNCTION sandbox_controller_record_artifact_v1(
   p_expected_workload_digest text, p_expected_observation_digest text,
   p_name text, p_path text, p_media_type text, p_content_digest text,
   p_size_bytes bigint, p_object_key text)
-RETURNS uuid
+RETURNS TABLE(artifact_id uuid, exported_at timestamptz)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
-DECLARE target record; artifact_id uuid;
+DECLARE target record;
 BEGIN
   SELECT o.workspace_id,o.sandbox_id,o.type,a.backend_uid,a.backend_resource_version,
     a.admission_digest::text workload_digest,a.observation_digest::text observation_digest
@@ -36,17 +36,16 @@ BEGIN
      NOT EXISTS(SELECT 1 FROM public.sandbox_artifact_contract_entries contract
        WHERE contract.sandbox_id=target.sandbox_id AND contract.workspace_id=target.workspace_id AND
          contract.name=p_name AND contract.path=p_path AND contract.media_type=p_media_type)
-  THEN RETURN NULL; END IF;
+  THEN RETURN; END IF;
 
   INSERT INTO public.sandbox_artifacts(id,workspace_id,sandbox_id,name,path,object_key,media_type,content_digest,size_bytes,exported_at)
   VALUES(gen_random_uuid(),target.workspace_id,target.sandbox_id,p_name,p_path,p_object_key,p_media_type,
     p_content_digest,p_size_bytes,clock_timestamp())
   ON CONFLICT (sandbox_id,name) DO NOTHING;
-  SELECT artifact.id INTO artifact_id FROM public.sandbox_artifacts artifact
+  RETURN QUERY SELECT artifact.id,artifact.exported_at FROM public.sandbox_artifacts artifact
     WHERE artifact.sandbox_id=target.sandbox_id AND artifact.workspace_id=target.workspace_id AND
       artifact.name=p_name AND artifact.path=p_path AND artifact.object_key=p_object_key AND
       artifact.media_type=p_media_type AND artifact.content_digest=p_content_digest AND artifact.size_bytes=p_size_bytes;
-  RETURN artifact_id;
 END
 $$;
 
@@ -69,20 +68,20 @@ RETURNS TABLE(
   pod_resource_version text, observation_digest text, source_materialization_receipt jsonb,
   source_bootstrap_observation jsonb, exported_artifact_ids uuid[], exported_artifact_names text[],
   exported_artifact_paths text[], exported_artifact_media_types text[], exported_artifact_digests text[],
-  exported_artifact_sizes bigint[], exported_artifact_keys text[])
+  exported_artifact_sizes bigint[], exported_artifact_keys text[], exported_artifact_times timestamptz[])
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, public
 AS $$
   SELECT claimed.*,
     coalesce(exported.ids,'{}'::uuid[]),coalesce(exported.names,'{}'::text[]),
     coalesce(exported.paths,'{}'::text[]),coalesce(exported.media_types,'{}'::text[]),
     coalesce(exported.digests,'{}'::text[]),coalesce(exported.sizes,'{}'::bigint[]),
-    coalesce(exported.keys,'{}'::text[])
+    coalesce(exported.keys,'{}'::text[]),coalesce(exported.times,'{}'::timestamptz[])
   FROM public.sandbox_controller_claim_v4(p_worker_id,p_lease_seconds) claimed
   LEFT JOIN LATERAL (
     SELECT array_agg(a.id ORDER BY a.name) ids,array_agg(a.name ORDER BY a.name) names,
       array_agg(a.path ORDER BY a.name) paths,array_agg(a.media_type ORDER BY a.name) media_types,
       array_agg(a.content_digest::text ORDER BY a.name) digests,array_agg(a.size_bytes ORDER BY a.name) sizes,
-      array_agg(a.object_key ORDER BY a.name) keys
+      array_agg(a.object_key ORDER BY a.name) keys,array_agg(a.exported_at ORDER BY a.name) times
     FROM public.sandbox_artifacts a WHERE a.sandbox_id=claimed.sandbox_id AND a.workspace_id=claimed.workspace_id
   ) exported ON true
 $$;

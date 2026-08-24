@@ -20,8 +20,8 @@ type Artifact struct {
 }
 
 type PersistedArtifact struct {
-	ID, Name, Path, MediaType, Digest, ObjectKey string
-	Size                                         int64
+	ID, Name, Path, MediaType, Digest, ObjectKey, ExportedAt string
+	Size                                                     int64
 }
 
 type Resources struct {
@@ -84,7 +84,7 @@ type Store interface {
 	Renew(context.Context, string, string, string, int) (LeaseWindow, bool, error)
 	BindBackend(context.Context, string, string, string, sandboxcontrol.AdmissionObservation) (bool, error)
 	RecordSources(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) (bool, error)
-	RecordArtifact(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, PersistedArtifact) (string, bool, error)
+	RecordArtifact(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, PersistedArtifact) (PersistedArtifact, bool, error)
 	Retry(context.Context, string, string, string, int, SafeError) (RetryOutcome, error)
 	Complete(context.Context, string, string, string, Completion) (bool, error)
 	EnqueueExpired(context.Context, int) (int, error)
@@ -115,6 +115,10 @@ type SourceBackend interface {
 	MaterializeSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) (sandboxio.SourceMaterializationReceipt, error)
 	RestrictSourceRuntime(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error
 	ReleaseSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error
+}
+
+type ArtifactBackend interface {
+	ExportArtifacts(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) (ArtifactExportResult, error)
 }
 
 type Failure struct {

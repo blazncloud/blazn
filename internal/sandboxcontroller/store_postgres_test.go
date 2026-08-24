@@ -58,7 +58,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	executor := &fakeExecutor{rows: []sqlRow{
 		resultRow{values: []any{true}},
 		resultRow{values: []any{true}},
-		resultRow{values: []any{sql.NullString{String: "80000000-0000-4000-8000-000000000001", Valid: true}}},
+		resultRow{values: []any{sql.NullString{String: "80000000-0000-4000-8000-000000000001", Valid: true}, sql.NullTime{Time: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC), Valid: true}}},
 		resultRow{values: []any{string(RetryScheduled)}},
 		resultRow{values: []any{true}},
 		resultRow{values: []any{3}},
@@ -85,8 +85,8 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	artifact := PersistedArtifact{Name: "result", Path: "/workspace/artifacts/result", MediaType: "text/plain",
 		Digest: "sha256:" + strings.Repeat("d", 64), Size: 6}
 	artifact.ObjectKey, _ = ArtifactObjectKey(artifactObservation.Workload.WorkspaceID, artifactObservation.Sandbox.Name, artifact.Name)
-	if id, recorded, err := store.RecordArtifact(context.Background(), "operation", "worker", "lease", artifactObservation, artifact); err != nil || !recorded || id != "80000000-0000-4000-8000-000000000001" {
-		t.Fatalf("record artifact: id=%q recorded=%v err=%v", id, recorded, err)
+	if persisted, recorded, err := store.RecordArtifact(context.Background(), "operation", "worker", "lease", artifactObservation, artifact); err != nil || !recorded || persisted.ID != "80000000-0000-4000-8000-000000000001" || persisted.ExportedAt != "2026-08-24T12:00:00Z" {
+		t.Fatalf("record artifact: persisted=%#v recorded=%v err=%v", persisted, recorded, err)
 	}
 	if outcome, err := store.Retry(context.Background(), "operation", "worker", "lease", 10,
 		SafeError{Code: "backend_failure", Message: "safe", RequestID: "request-123"}); err != nil || outcome != RetryScheduled {
