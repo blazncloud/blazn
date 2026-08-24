@@ -31,7 +31,7 @@ func TestDisposableKindLifecycle(t *testing.T) {
 	request := CreateRequest{
 		RequestID: "kind-create-" + name, Name: name, WorkspaceID: "workspace-kind", OwnerID: "owner-kind", Image: image,
 		Command: []string{"sh", "-c", "trap : TERM INT; sleep 3600 & wait"}, Architecture: "amd64",
-		TrustLevel: TrustApprovedPOC, NonSensitive: true, CPURequest: "100m", MemoryRequest: "64Mi", CPULimit: "200m", MemoryLimit: "128Mi", ExpiresAt: time.Now().Add(time.Hour),
+		TrustLevel: TrustApprovedPOC, NonSensitive: true, CPURequest: "100m", MemoryRequest: "64Mi", EphemeralStorageRequest: "1Gi", CPULimit: "200m", MemoryLimit: "128Mi", EphemeralStorageLimit: "6Gi", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	record, receipt, err := adapter.Create(ctx, request)
 	if err != nil {

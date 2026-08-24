@@ -15,6 +15,11 @@ Passing Phase 4A proves orchestration compatibility, not hardened isolation.
 Real untrusted or cross-tenant work remains blocked until a gVisor or Kata
 RuntimeClass is separately installed and qualified.
 
+The non-mutating Phase 5 controller image, suspended Deployment, narrow RBAC,
+and exact egress preparation live in `phase5-controller/`. That bundle does not
+replace or broaden Phase 4C and cannot be scaled against Phase 4C's synthetic,
+single-name admission policy.
+
 ## Upstream inventory and licenses
 
 - Kubernetes SIG Apps Agent Sandbox v0.5.6: Apache-2.0.

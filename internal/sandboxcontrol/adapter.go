@@ -11,9 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type ArtifactExporter interface {
@@ -48,6 +51,27 @@ type kubeSandbox struct {
 	Metadata   kubeMetadata    `json:"metadata"`
 	Spec       kubeSandboxSpec `json:"spec"`
 	Status     kubeStatus      `json:"status,omitempty"`
+	RawSpec    json.RawMessage `json:"-"`
+}
+
+func (object *kubeSandbox) UnmarshalJSON(data []byte) error {
+	type alias kubeSandbox
+	decoded := struct {
+		*alias
+		Spec json.RawMessage `json:"spec"`
+	}{alias: (*alias)(object)}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	if len(decoded.Spec) == 0 {
+		object.RawSpec = nil
+		return nil
+	}
+	if json.Unmarshal(decoded.Spec, &object.Spec) != nil {
+		return fmt.Errorf("Sandbox spec is invalid")
+	}
+	object.RawSpec = append(object.RawSpec[:0], decoded.Spec...)
+	return nil
 }
 
 type kubeMetadata struct {
@@ -84,16 +108,24 @@ type kubePodSpec struct {
 	NodeSelector                 map[string]string `json:"nodeSelector"`
 	SecurityContext              map[string]any    `json:"securityContext"`
 	Containers                   []kubeContainer   `json:"containers"`
-	Volumes                      []kubeVolume      `json:"volumes"`
+	InitContainers               []kubeContainer   `json:"initContainers,omitempty"`
+	Volumes                      []kubeVolume      `json:"volumes,omitempty"`
 }
 
 type kubeContainer struct {
 	Name            string                       `json:"name"`
 	Image           string                       `json:"image"`
 	Command         []string                     `json:"command"`
+	RestartPolicy   string                       `json:"restartPolicy,omitempty"`
 	SecurityContext map[string]any               `json:"securityContext"`
 	Resources       map[string]map[string]string `json:"resources"`
-	VolumeMounts    []map[string]any             `json:"volumeMounts"`
+	VolumeMounts    []kubeVolumeMount            `json:"volumeMounts,omitempty"`
+}
+
+type kubeVolumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
 }
 
 type kubeVolume struct {
@@ -180,6 +212,14 @@ func New(config Config) (*Adapter, error) {
 }
 
 func (a *Adapter) Create(ctx context.Context, request CreateRequest) (SandboxRecord, OperationReceipt, error) {
+	return a.EnsureCreated(ctx, request, "")
+}
+
+// EnsureCreated creates a Sandbox once or adopts only the exact UID requested
+// by a recovering caller. A response-lost POST may be recovered without a
+// prior UID, but only after a preflight NotFound and exact spec/intent checks.
+// An object that existed before the POST is never adopted by name or labels.
+func (a *Adapter) EnsureCreated(ctx context.Context, request CreateRequest, expectedUID string) (SandboxRecord, OperationReceipt, error) {
 	if err := ValidateCreate(request, a.runtimes); err != nil {
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
@@ -191,49 +231,193 @@ func (a *Adapter) Create(ctx context.Context, request CreateRequest) (SandboxRec
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
 	request.Artifacts = canonicalArtifacts
-	manifest := render(request, artifactDigest)
-	var created kubeSandbox
-	if err := a.call(ctx, http.MethodPost, a.collectionPath(), nil, manifest, &created, "application/json"); err != nil {
-		return SandboxRecord{}, OperationReceipt{}, err
-	}
-	record, err := a.record(created)
+	canonicalSourceMounts, err := canonicalSources(request.Sources)
 	if err != nil {
 		return SandboxRecord{}, OperationReceipt{}, err
 	}
+	request.Sources = canonicalSourceMounts
+	intentDigest, err := createIntentDigest(request)
+	if err != nil {
+		return SandboxRecord{}, OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "create intent cannot be canonicalized", err)
+	}
+	manifest := render(request, artifactDigest, intentDigest)
+	var existing kubeSandbox
+	preflightErr := a.call(ctx, http.MethodGet, a.resourcePath(request.Name), nil, nil, &existing, "")
+	if preflightErr == nil {
+		if expectedUID == "" {
+			return SandboxRecord{}, OperationReceipt{}, adapterError(ErrConflict, 409, "Sandbox name is already occupied without an exact UID precondition", nil)
+		}
+		return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, expectedUID, manifest, existing, false)
+	}
+	var preflightAdapterErr *AdapterError
+	if !errors.As(preflightErr, &preflightAdapterErr) || preflightAdapterErr.Code != ErrNotFound {
+		return SandboxRecord{}, OperationReceipt{}, preflightErr
+	}
+	if expectedUID != "" {
+		return SandboxRecord{}, OperationReceipt{}, adapterError(ErrConflict, 409, "expected Sandbox UID is absent; refusing replacement creation", nil)
+	}
+	var created kubeSandbox
+	postErr := a.call(ctx, http.MethodPost, a.collectionPath(), nil, manifest, &created, "application/json")
+	if postErr != nil {
+		if !ambiguousCreateError(postErr) {
+			return SandboxRecord{}, OperationReceipt{}, postErr
+		}
+		// POST failures can be ambiguous (transport loss, timeout, apiserver
+		// retryable failure after accepting the object). Resolve once by exact
+		// persisted UID/spec/intent, never after an authoritative rejection or
+		// conflict and never by the deterministic name or labels alone.
+		if err := a.call(ctx, http.MethodGet, a.resourcePath(request.Name), nil, nil, &created, ""); err != nil {
+			return SandboxRecord{}, OperationReceipt{}, postErr
+		}
+		return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, "", manifest, created, false)
+	}
+	return a.finishEnsureCreated(ctx, request, artifactDigest, intentDigest, "", manifest, created, true)
+}
+
+type kubeHTTPStatusError struct {
+	statusCode int
+}
+
+func (e *kubeHTTPStatusError) Error() string {
+	return fmt.Sprintf("Kubernetes API returned HTTP %d", e.statusCode)
+}
+
+func ambiguousCreateError(err error) bool {
+	var adapterErr *AdapterError
+	if !errors.As(err, &adapterErr) || adapterErr.Code != ErrBackend || adapterErr.Cause == nil {
+		return false
+	}
+	var statusErr *kubeHTTPStatusError
+	if !errors.As(adapterErr.Cause, &statusErr) {
+		// A client/transport error does not prove whether the apiserver committed
+		// the request.
+		return true
+	}
+	switch statusErr.statusCode {
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Adapter) finishEnsureCreated(ctx context.Context, request CreateRequest, artifactDigest, intentDigest, expectedUID string, manifest, created kubeSandbox, cleanup bool) (SandboxRecord, OperationReceipt, error) {
+	record, err := a.record(created)
+	if err != nil {
+		if cleanup {
+			return SandboxRecord{}, OperationReceipt{}, a.rejectCreatedMetadata(ctx, request.Name, created.Metadata, err)
+		}
+		return SandboxRecord{}, OperationReceipt{}, err
+	}
+	reject := func(err error) error {
+		if cleanup {
+			return a.rejectCreated(ctx, record, err)
+		}
+		return err
+	}
+	if expectedUID != "" && record.UID != expectedUID {
+		return SandboxRecord{}, OperationReceipt{}, reject(adapterError(ErrConflict, 409, "persisted Sandbox UID differs from the exact adoption precondition", nil))
+	}
 	if err := verifyManaged(record, request.WorkspaceID, request.OwnerID); err != nil {
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
 	if record.QueueName != QueueName {
 		err := adapterError(ErrQueueRequired, 502, "backend did not preserve mandatory queue label", nil)
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
 	if record.RuntimeClassName != request.RuntimeClassName || !contains(record.Finalizers, CleanupFinalizer) {
 		err := adapterError(ErrBackend, 502, "backend did not preserve runtime or cleanup boundary", nil)
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
-	if record.ArtifactContractDigest != artifactDigest || !sameArtifactExports(record.Artifacts, canonicalArtifacts) {
+	if record.ArtifactContractDigest != artifactDigest || !sameArtifactExports(record.Artifacts, request.Artifacts) {
 		err := adapterError(ErrBackend, 502, "backend did not preserve artifact contract", nil)
-		return SandboxRecord{}, OperationReceipt{}, a.rejectCreated(ctx, record, err)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
+	}
+	if created.Metadata.Annotations[CreateIntentAnnotation] != intentDigest || !sameCreateSpec(created, manifest) {
+		err := adapterError(ErrConflict, 409, "persisted Sandbox differs from the exact create intent", nil)
+		return SandboxRecord{}, OperationReceipt{}, reject(err)
 	}
 	receipt, err := NewReceipt(request.RequestID, OperationCreate, record, nil, a.now())
 	return record, receipt, err
 }
 
+func sameCreateSpec(observed, expected kubeSandbox) bool {
+	if observed.APIVersion != expected.APIVersion || observed.Kind != expected.Kind ||
+		observed.Metadata.Name != expected.Metadata.Name || observed.Metadata.Namespace != expected.Metadata.Namespace ||
+		!objectIDPattern.MatchString(observed.Metadata.UID) || !objectIDPattern.MatchString(observed.Metadata.ResourceVersion) ||
+		!sameMaterialSpec(observed.RawSpec, expected.Spec) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
+		return false
+	}
+	for key, value := range expected.Metadata.Labels {
+		if observed.Metadata.Labels[key] != value {
+			return false
+		}
+	}
+	for key, value := range expected.Metadata.Annotations {
+		if observed.Metadata.Annotations[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func sameJSON(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
+func sameMaterialSpec(observed json.RawMessage, expected any) bool {
+	if len(observed) == 0 {
+		return false
+	}
+	expectedJSON, err := json.Marshal(expected)
+	if err != nil {
+		return false
+	}
+	left, leftOK := decodeMaterialJSON(observed)
+	right, rightOK := decodeMaterialJSON(expectedJSON)
+	if !leftOK || !rightOK {
+		return false
+	}
+	return reflect.DeepEqual(left, right)
+}
+
+func decodeMaterialJSON(data []byte) (any, bool) {
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if decoder.Decode(&decoded) != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
 func (a *Adapter) rejectCreated(ctx context.Context, record SandboxRecord, original error) error {
-	if record.Namespace != Namespace || !dnsLabelPattern.MatchString(record.Name) || record.UID == "" || record.ResourceVersion == "" {
+	metadata := kubeMetadata{Name: record.Name, Namespace: record.Namespace, UID: record.UID, ResourceVersion: record.ResourceVersion}
+	return a.rejectCreatedMetadata(ctx, record.Name, metadata, original)
+}
+
+func (a *Adapter) rejectCreatedMetadata(ctx context.Context, expectedName string, metadata kubeMetadata, original error) error {
+	if metadata.Namespace != Namespace || metadata.Name != expectedName || !dnsLabelPattern.MatchString(metadata.Name) ||
+		!objectIDPattern.MatchString(metadata.UID) || !objectIDPattern.MatchString(metadata.ResourceVersion) {
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox identity cannot be cleaned safely", original)
 	}
-	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": record.UID, "resourceVersion": record.ResourceVersion}}
-	if err := a.call(ctx, http.MethodDelete, a.resourcePath(record.Name), nil, options, nil, "application/json"); err != nil {
+	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": metadata.UID, "resourceVersion": metadata.ResourceVersion}}
+	if err := a.call(ctx, http.MethodDelete, a.resourcePath(metadata.Name), nil, options, nil, "application/json"); err != nil {
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox deletion failed", err)
 	}
 	var deleting kubeSandbox
-	if err := a.call(ctx, http.MethodGet, a.resourcePath(record.Name), nil, nil, &deleting, ""); err != nil {
+	if err := a.call(ctx, http.MethodGet, a.resourcePath(metadata.Name), nil, nil, &deleting, ""); err != nil {
 		var adapterErr *AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Code == ErrNotFound {
 			return original
 		}
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox cleanup state is unavailable", err)
+	}
+	if deleting.Metadata.Namespace != Namespace || deleting.Metadata.Name != metadata.Name || deleting.Metadata.UID != metadata.UID ||
+		!objectIDPattern.MatchString(deleting.Metadata.ResourceVersion) || deleting.Metadata.DeletionTimestamp == "" {
+		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox cleanup identity drifted", original)
 	}
 	finalizers := make([]string, 0, len(deleting.Metadata.Finalizers))
 	for _, finalizer := range deleting.Metadata.Finalizers {
@@ -243,7 +427,7 @@ func (a *Adapter) rejectCreated(ctx context.Context, record SandboxRecord, origi
 	}
 	if contains(deleting.Metadata.Finalizers, CleanupFinalizer) {
 		patch := map[string]any{"metadata": map[string]any{"resourceVersion": deleting.Metadata.ResourceVersion, "finalizers": finalizers}}
-		if err := a.call(ctx, http.MethodPatch, a.resourcePath(record.Name), nil, patch, nil, "application/merge-patch+json"); err != nil {
+		if err := a.call(ctx, http.MethodPatch, a.resourcePath(metadata.Name), nil, patch, nil, "application/merge-patch+json"); err != nil {
 			return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox finalizer cleanup failed", err)
 		}
 	}
@@ -420,6 +604,16 @@ func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, n
 }
 
 func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string, expectedArtifacts []ArtifactExport, artifactContractDigest string) (OperationReceipt, error) {
+	return a.finalize(ctx, requestID, workspaceID, ownerID, name, uid, resourceVersion, expectedArtifacts, nil, false, artifactContractDigest)
+}
+
+func (a *Adapter) FinalizePreExported(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string,
+	expectedArtifacts []ArtifactExport, exported []ArtifactReceipt, artifactContractDigest string) (OperationReceipt, error) {
+	return a.finalize(ctx, requestID, workspaceID, ownerID, name, uid, resourceVersion, expectedArtifacts, exported, true, artifactContractDigest)
+}
+
+func (a *Adapter) finalize(ctx context.Context, requestID, workspaceID, ownerID, name, uid, resourceVersion string,
+	expectedArtifacts []ArtifactExport, artifacts []ArtifactReceipt, preExported bool, artifactContractDigest string) (OperationReceipt, error) {
 	if !requestPattern.MatchString(requestID) {
 		return OperationReceipt{}, adapterError(ErrInvalidRequest, 400, "finalize request ID is invalid", nil)
 	}
@@ -437,9 +631,13 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	if record.ArtifactContractDigest != artifactContractDigest || !sameArtifactExports(record.Artifacts, canonicalExpected) {
 		return OperationReceipt{}, adapterError(ErrConflict, 409, "persisted artifact contract differs from trusted precondition", nil)
 	}
-	artifacts, err := a.exporter.Export(ctx, record, record.Artifacts)
-	if err != nil {
-		return OperationReceipt{}, adapterError(ErrArtifactExport, 502, "artifact export did not complete", err)
+	if preExported {
+		artifacts = append([]ArtifactReceipt(nil), artifacts...)
+	} else {
+		artifacts, err = a.exporter.Export(ctx, record, record.Artifacts)
+		if err != nil {
+			return OperationReceipt{}, adapterError(ErrArtifactExport, 502, "artifact export did not complete", err)
+		}
 	}
 	if err := validateArtifactCompletion(record, artifacts); err != nil {
 		return OperationReceipt{}, err
@@ -469,7 +667,7 @@ func (a *Adapter) Finalize(ctx context.Context, requestID, workspaceID, ownerID,
 	return NewReceipt(requestID, OperationFinalize, updatedRecord, artifacts, a.now())
 }
 
-func render(request CreateRequest, artifactContractDigest string) kubeSandbox {
+func render(request CreateRequest, artifactContractDigest, createIntentDigest string) kubeSandbox {
 	labels := map[string]string{ManagedLabel: "true", WorkspaceLabel: request.WorkspaceID, OwnerLabel: request.OwnerID, SandboxIDLabel: request.Name}
 	podLabels := cloneMap(labels)
 	podLabels[QueueLabel] = QueueName
@@ -478,27 +676,75 @@ func render(request CreateRequest, artifactContractDigest string) kubeSandbox {
 		annotations["sandboxes.blazn.dev/artifact-exports"] = string(encoded)
 	}
 	annotations["sandboxes.blazn.dev/artifact-contract-digest"] = artifactContractDigest
+	annotations[CreateIntentAnnotation] = createIntentDigest
 	return kubeSandbox{
 		APIVersion: APIVersion, Kind: Kind,
 		Metadata: kubeMetadata{Name: request.Name, Namespace: Namespace, Labels: labels, Annotations: annotations, Finalizers: []string{CleanupFinalizer}},
-		Spec: kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: kubePodSpec{
-			RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
-			RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
-			SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
-			Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
-				SecurityContext: map[string]any{"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}},
-				Resources:       map[string]map[string]string{"requests": {"cpu": request.CPURequest, "memory": request.MemoryRequest}, "limits": {"cpu": request.CPULimit, "memory": request.MemoryLimit}},
-				VolumeMounts:    []map[string]any{{"name": "workspace", "mountPath": "/workspace"}}}},
-			Volumes: []kubeVolume{{Name: "workspace", EmptyDir: map[string]any{"sizeLimit": "6Gi"}}},
-		}}},
+		Spec:     kubeSandboxSpec{ShutdownPolicy: "Delete", PodTemplate: kubePodTemplate{Metadata: kubePodMetadata{Labels: podLabels}, Spec: renderPodSpec(request)}},
 	}
 }
 
+func renderPodSpec(request CreateRequest) kubePodSpec {
+	mainMounts := make([]kubeVolumeMount, 0, len(request.Sources)+1)
+	volumes := make([]kubeVolume, 0, len(request.Sources)+2)
+	initContainers := []kubeContainer{}
+	if len(request.Sources) > 0 {
+		bootstrapMounts := make([]kubeVolumeMount, 0, len(request.Sources)+1)
+		for index, source := range request.Sources {
+			name := fmt.Sprintf("source-%02d", index)
+			volumes = append(volumes, kubeVolume{Name: name, EmptyDir: map[string]any{"sizeLimit": request.EphemeralStorageLimit}})
+			bootstrapMounts = append(bootstrapMounts, kubeVolumeMount{Name: name, MountPath: source.Destination})
+			mainMounts = append(mainMounts, kubeVolumeMount{Name: name, MountPath: source.Destination, ReadOnly: !source.Writable})
+		}
+		volumes = append(volumes, kubeVolume{Name: "bootstrap-state", EmptyDir: map[string]any{"medium": "Memory", "sizeLimit": "1Mi"}})
+		bootstrapMounts = append(bootstrapMounts, kubeVolumeMount{Name: "bootstrap-state", MountPath: "/run/blazn-bootstrap"})
+		initContainers = append(initContainers, helperContainer(sandboxio.BootstrapContainer, request.HelperImage,
+			[]string{sandboxio.HelperBinary, "wait-bootstrap"}, "", bootstrapMounts))
+	}
+	if len(request.Artifacts) > 0 {
+		volumes = append(volumes, kubeVolume{Name: "artifacts", EmptyDir: map[string]any{"sizeLimit": request.EphemeralStorageLimit}})
+		mainMounts = append(mainMounts, kubeVolumeMount{Name: "artifacts", MountPath: "/workspace/artifacts"})
+		initContainers = append(initContainers, helperContainer(sandboxio.ArtifactContainer, request.HelperImage,
+			[]string{sandboxio.HelperBinary, "wait-artifact"}, "Always",
+			[]kubeVolumeMount{{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}}))
+	}
+	return kubePodSpec{
+		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
+		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
+		SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
+		Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
+			SecurityContext: restrictedContainerSecurity(),
+			Resources: map[string]map[string]string{
+				"requests": {"cpu": request.CPURequest, "memory": request.MemoryRequest, "ephemeral-storage": request.EphemeralStorageRequest},
+				"limits":   {"cpu": request.CPULimit, "memory": request.MemoryLimit, "ephemeral-storage": request.EphemeralStorageLimit},
+			}, VolumeMounts: mainMounts}},
+		InitContainers: initContainers, Volumes: volumes,
+	}
+}
+
+func helperContainer(name, image string, command []string, restartPolicy string, mounts []kubeVolumeMount) kubeContainer {
+	return kubeContainer{Name: name, Image: image, Command: command, RestartPolicy: restartPolicy,
+		SecurityContext: restrictedContainerSecurity(),
+		Resources: map[string]map[string]string{
+			"requests": {"cpu": "10m", "memory": "16Mi", "ephemeral-storage": "16Mi"},
+			"limits":   {"cpu": "100m", "memory": "64Mi", "ephemeral-storage": "64Mi"},
+		}, VolumeMounts: mounts}
+}
+
+func restrictedContainerSecurity() map[string]any {
+	return map[string]any{"allowPrivilegeEscalation": false, "privileged": false, "readOnlyRootFilesystem": true, "capabilities": map[string][]string{"drop": {"ALL"}}}
+}
+
 func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
-	if object.APIVersion != APIVersion || object.Kind != Kind || object.Metadata.Namespace != Namespace || !dnsLabelPattern.MatchString(object.Metadata.Name) || object.Metadata.UID == "" || object.Metadata.ResourceVersion == "" {
+	if object.APIVersion != APIVersion || object.Kind != Kind || object.Metadata.Namespace != Namespace || !dnsLabelPattern.MatchString(object.Metadata.Name) ||
+		!objectIDPattern.MatchString(object.Metadata.UID) || !objectIDPattern.MatchString(object.Metadata.ResourceVersion) {
 		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend Sandbox identity is invalid", nil)
 	}
 	artifactValue, artifactDigest := object.Metadata.Annotations["sandboxes.blazn.dev/artifact-exports"], object.Metadata.Annotations["sandboxes.blazn.dev/artifact-contract-digest"]
+	createIntent := object.Metadata.Annotations[CreateIntentAnnotation]
+	if !digestPattern.MatchString(createIntent) {
+		return SandboxRecord{}, adapterError(ErrBackend, 502, "backend create intent digest is invalid", nil)
+	}
 	trimmedArtifacts := strings.TrimSpace(artifactValue)
 	artifacts := []ArtifactExport{}
 	if len(trimmedArtifacts) < 2 || trimmedArtifacts[0] != '[' || trimmedArtifacts[len(trimmedArtifacts)-1] != ']' || len(artifactValue) > 32768 || json.Unmarshal([]byte(artifactValue), &artifacts) != nil {
@@ -521,7 +767,7 @@ func (a *Adapter) record(object kubeSandbox) (SandboxRecord, error) {
 		Generation: object.Metadata.Generation, WorkspaceID: object.Metadata.Labels[WorkspaceLabel], OwnerID: object.Metadata.Labels[OwnerLabel],
 		QueueName: object.Spec.PodTemplate.Metadata.Labels[QueueLabel], RuntimeClassName: object.Spec.PodTemplate.Spec.RuntimeClassName,
 		TrustLevel: trustLevel, State: state,
-		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: canonicalArtifacts, ArtifactContractDigest: artifactDigest, Labels: cloneMap(object.Metadata.Labels),
+		Deleting: object.Metadata.DeletionTimestamp != "", Finalizers: append([]string(nil), object.Metadata.Finalizers...), Artifacts: canonicalArtifacts, ArtifactContractDigest: artifactDigest, CreateIntentDigest: createIntent, Labels: cloneMap(object.Metadata.Labels),
 	}, nil
 }
 
@@ -570,9 +816,12 @@ func (a *Adapter) call(ctx context.Context, method, path string, query url.Value
 	if output == nil || response.StatusCode == http.StatusNoContent {
 		return nil
 	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, a.maxBytes))
+	decoder := json.NewDecoder(io.LimitReader(response.Body, a.maxBytes+1))
 	if err := decoder.Decode(output); err != nil {
 		return adapterError(ErrBackend, 502, "Kubernetes API response is invalid", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return adapterError(ErrBackend, 502, "Kubernetes API response is invalid", errors.New("response contains trailing or oversized data"))
 	}
 	return nil
 }
@@ -624,7 +873,7 @@ func decodeStatus(response *http.Response) error {
 	if detail == "" {
 		detail = http.StatusText(response.StatusCode)
 	}
-	return adapterError(code, httpStatus, detail, nil)
+	return adapterError(code, httpStatus, detail, &kubeHTTPStatusError{statusCode: response.StatusCode})
 }
 
 func verifyManaged(record SandboxRecord, workspaceID, ownerID string) error {

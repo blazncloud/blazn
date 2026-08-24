@@ -34,6 +34,16 @@ test("restricted runtime implements template publish, bound create, hiding, idem
       await admin.query("UPDATE sandbox_operations SET status='succeeded',terminal_receipt_id=$1,completed_at=clock_timestamp() WHERE id=$2",[receiptId,mutation.operation.id]);
       await admin.query("COMMIT");
     } catch(error) { await admin.query("ROLLBACK"); throw error; }
+    const artifactId="80000000-0000-4000-8000-000000000099";
+    await admin.query(`INSERT INTO sandbox_artifacts(id,workspace_id,sandbox_id,name,path,object_key,media_type,content_digest,size_bytes,exported_at)
+      VALUES($1,$2,$3,'patch','/workspace/artifacts/change.patch',$4,'text/plain',$5,6,clock_timestamp())`,
+      [artifactId,workspaceId,mutation.sandbox.id,`workspaces/${workspaceId}/sandboxes/${mutation.sandbox.id}/artifacts/patch`,"d".repeat(64)]);
+    assert.equal((await service.getArtifact(other,artifactId)).id,artifactId);
+    assert.deepEqual((await service.listArtifacts(other,mutation.sandbox.id)).items.map(item=>item.id),[artifactId]);
+    await assert.rejects(runtime.query(`INSERT INTO sandbox_artifacts(id,workspace_id,sandbox_id,name,path,object_key,media_type,content_digest,size_bytes,exported_at)
+      VALUES($1,$2,$3,'patch','/workspace/artifacts/change.patch',$4,'text/plain',$5,6,clock_timestamp())`,
+      ["80000000-0000-4000-8000-000000000098",workspaceId,mutation.sandbox.id,`workspaces/${workspaceId}/sandboxes/${mutation.sandbox.id}/artifacts/patch`,"d".repeat(64)]),pgCode("42501"));
     const grant=await service.createAccessGrant(other,mutation.sandbox.id,{kind:"exec",expiresInSeconds:30});assert.match(grant.accessToken,/^[A-Za-z0-9_-]{43}$/);const stored=await admin.query("SELECT token_hash FROM sandbox_access_grants WHERE id=$1",[grant.grant.id]);assert.notEqual(stored.rows[0].token_hash,grant.accessToken);const stop=await service.createOperation(other,mutation.sandbox.id,"sandbox-stop-1",{type:"stop",expectedVersion:1});assert.equal(stop.sandbox.version,2);assert.equal(stop.operation.expectedSandboxVersion,1);
   }finally{await runtime.end();await admin.end();}});
 function principal(last:string):SandboxPrincipal&{deviceId:string}{return{userId:`10000000-0000-4000-8000-00000000000${last}`,deviceId:`20000000-0000-4000-8000-00000000000${last}`,sessionId:`30000000-0000-4000-8000-00000000000${last}`,email:`user${last}@example.test`,displayName:`User ${last}`};}const workspaceId="40000000-0000-4000-8000-000000000001";function isCode(code:string){return(e:unknown)=>e instanceof SandboxHttpError&&e.code===code;}
+function pgCode(code:string){return(error:unknown)=>typeof error==="object"&&error!==null&&"code" in error&&(error as {code:unknown}).code===code;}

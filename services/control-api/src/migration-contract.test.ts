@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readMigrationInventory } from "./migration-inventory.js";
 
 test("auth migration grants only the reviewed bootstrap and runtime operations", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -170,4 +171,97 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.match(sql, /sandbox_controller_complete_v2/);
   assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
+});
+
+test("migration sequence derives one ordered collision-free inventory", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const directory = path.resolve(here, "../migrations");
+  const migrations = await readMigrationInventory(directory);
+  assert.deepEqual(migrations.slice(-3), [
+    "020_sandbox_source_materialization.sql",
+    "021_sandbox_artifact_export.sql",
+    "022_development_runtime.sql",
+  ]);
+});
+
+test("artifact export migration fences immutable object evidence and UUID replay", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/021_sandbox_artifact_export.sql"), "utf8");
+  assert.match(sql, /sandbox_controller_record_artifact_v1/);
+  assert.match(sql, /j\.lease_expires_at>clock_timestamp\(\)/);
+  assert.match(sql, /p_size_bytes>8388608/);
+  assert.match(sql, /ON CONFLICT \(sandbox_id,name\) DO NOTHING/);
+  assert.match(sql, /sandbox_controller_claim_v5/);
+  assert.match(sql, /CREATE TABLE sandbox_artifact_export_receipts/);
+  assert.match(sql, /sandbox_controller_complete_artifact_export_v1/);
+  assert.match(sql, /sandbox_controller_complete_v5/);
+  assert.match(sql, /target\.warning_codes<>p_warning_codes/);
+  assert.match(sql, /array_agg\(a\.id ORDER BY a\.name\)/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_artifacts,sandbox_artifact_export_receipts[\s\S]*blazn_sandbox_controller/);
+  assert.match(sql, /GRANT SELECT ON TABLE sandbox_artifacts TO blazn_runtime/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION[\s\S]*sandbox_controller_complete_v4[\s\S]*FROM blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_(?:artifacts|artifact_export_receipts)/);
+});
+
+test("source materialization migration fences exact receipts before create completion", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/020_sandbox_source_materialization.sql"), "utf8");
+  assert.match(sql, /CREATE TABLE sandbox_source_materialization_receipts/);
+  assert.match(sql, /sandbox_repository_destinations_nonoverlapping/);
+  assert.match(sql, /sandbox_source_manifest_digest/);
+  assert.match(sql, /sandbox_source_receipt_digest/);
+  assert.match(sql, /sandbox_controller_record_source_materialization_v1/);
+  assert.match(sql, /sandbox_controller_bind_backend_v4/);
+  assert.match(sql, /j\.lease_expires_at>clock_timestamp\(\)/);
+  assert.match(sql, /p_bootstrap_observation->>'digest'<>'sha256:'\|\|p_expected_observation_digest/);
+  assert.match(sql, /ON CONFLICT \(sandbox_id\) DO NOTHING/);
+  assert.match(sql, /sandbox_controller_claim_v4/);
+  assert.match(sql, /sandbox_controller_complete_v4/);
+  assert.match(sql, /target\.source_count>0 AND NOT target\.source_receipt/);
+  assert.match(sql, /bootstrap#>>'\{pod,uid\}'<>p_pod_uid/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_source_materialization_receipts[\s\S]*blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_source_materialization_receipts/);
+});
+
+test("sandbox controller observation migration requires complete restart-safe Pod evidence", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/019_sandbox_admission_observation.sql"), "utf8");
+  assert.match(sql, /ADD COLUMN pod_api_version text/);
+  assert.match(sql, /ADD COLUMN observation_digest char\(64\)/);
+  assert.match(sql, /sandbox_admission_observation_all_or_none/);
+  assert.match(sql, /sandbox-admission-observation-v1/);
+  assert.match(sql, /'sha256:'\|\|p_workload_digest/);
+  assert.match(sql, /sandbox_controller_claim_v3/);
+  assert.match(sql, /sandbox_controller_bind_backend_v3/);
+  assert.match(sql, /sandbox_controller_complete_v3/);
+  assert.match(sql, /A Workload-only legacy row cannot authorize success/);
+  assert.match(sql, /p_status<>'recovery_required'/);
+  assert.match(sql, /ON CONFLICT \(sandbox_id\) DO NOTHING/);
+  assert.doesNotMatch(sql, /UPDATE public\.sandbox_workload_admissions[\s\S]*pod_/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION[\s\S]*sandbox_controller_claim_v2/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_workload_admissions[\s\S]*blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
+});
+
+test("Development runtime migration freezes tenant, version, bearer proof, and closed finalization authority", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/022_development_runtime.sql"), "utf8");
+  assert.match(sql, /FOREIGN KEY \(project_id, workspace_id\) REFERENCES projects\(id, workspace_id\)/);
+  assert.match(sql, /FOREIGN KEY \(run_id, workspace_id, project_id\) REFERENCES runs\(id, workspace_id, project_id\)/);
+  assert.match(sql, /FOREIGN KEY \(template_version_id, workspace_id, publication_template_id, template_version, template_digest\)/);
+  assert.match(sql, /manifest#>>'\{template,digest\}' = 'sha256:'\|\|trim\(template_digest\)/);
+  assert.match(sql, /CREATE FUNCTION development_controller_finalize/);
+  assert.match(sql, /Reserved fail-closed stub[\s\S]*RETURN false/);
+  assert.match(sql, /s\.token_hash=encode\(public\.digest\(p_access_token,'sha256'\),'hex'\)/);
+  assert.doesNotMatch(sql, /current_setting\('blazn\.development_user_id'/);
+  assert.doesNotMatch(sql, /p_(?:created_by|requested_by)/);
+  assert.match(sql, /d\.version=p_expected_project_version AND d\.manifest_digest=p_expected_manifest_digest/);
+  assert.match(sql, /FOR SHARE OF builder,network,resource,publication/);
+  assert.match(sql, /s\.status='published' FOR SHARE OF v,s/);
+  assert.match(sql, /v\.id=project\.template_version_id[\s\S]*s\.status='published' FOR SHARE OF v,s/);
+  assert.match(sql, /REVOKE ALL ON TABLE development_policy_profiles,development_registry_repositories,development_projects,[\s\S]*development_reproducibility_baselines[\s\S]*blazn_runtime/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION development_runtime_access[\s\S]*development_runtime_get_project[\s\S]*development_runtime_list_builds[\s\S]*TO blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*development_(?:projects|builds|registry_repositories|reproducibility_baselines)/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION development_controller_finalize[\s\S]*blazn_runtime/);
+  assert.doesNotMatch(sql, /GRANT EXECUTE ON FUNCTION development_controller_finalize/);
 });
