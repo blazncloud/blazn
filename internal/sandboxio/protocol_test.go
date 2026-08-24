@@ -52,7 +52,8 @@ func (s *memoryBootstrapState) Release(_ context.Context, digest string) (Releas
 }
 
 func TestBootstrapProtocolIsClosedBoundedAndCanonical(t *testing.T) {
-	body, err := MarshalSourceManifest(testManifest())
+	manifest := testManifest()
+	body, err := MarshalSourceManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
