@@ -13,6 +13,7 @@ import (
 
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
+	developmentpkg "github.com/blazncloud/blazn/internal/development"
 	nodepkg "github.com/blazncloud/blazn/internal/node"
 	pluginpkg "github.com/blazncloud/blazn/internal/plugin"
 	projectpkg "github.com/blazncloud/blazn/internal/project"
@@ -63,6 +64,7 @@ type App struct {
 	pluginContext func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
 	project       func() (projectCommands, error)
 	proxy         func() (proxyCommands, error)
+	development   func() (developmentCommands, error)
 }
 
 type pluginCommands interface {
@@ -116,6 +118,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
 		project:     func() (projectCommands, error) { return projectpkg.NewDefaultService() },
 		proxy:       defaultProxyCommandFactory,
+		development: func() (developmentCommands, error) { return developmentpkg.NewDefaultService() },
 		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
 		sandbox:     func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
 		stdin:       os.Stdin,
@@ -248,6 +251,8 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(format, rest)
 	case "project":
 		return a.runProject(format, rest)
+	case "dev":
+		return a.runDevelopment(format, rest)
 	case "node":
 		return a.runNode(format, rest)
 	case "template":
