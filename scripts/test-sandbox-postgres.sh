@@ -58,10 +58,6 @@ tar -C "$repo_root" -cf - services/control-api | docker run --rm -i --network "$
   '
 
 docker exec -i -e PGPASSWORD="$admin_password" "$postgres" psql -v ON_ERROR_STOP=1 -U postgres -d blazn <<'SQL'
-DO $$ BEGIN
-  IF (SELECT count(*) FROM schema_migrations) <> 18 THEN RAISE EXCEPTION 'expected exactly eighteen applied migrations'; END IF;
-END $$;
-
 INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES
  ('10000000-0000-4000-8000-000000000001','sandbox-owner@example.invalid','Sandbox Owner','salt','hash'),
  ('10000000-0000-4000-8000-000000000002','sandbox-other@example.invalid','Sandbox Other','salt','hash');

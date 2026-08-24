@@ -1,0 +1,286 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: blazn-sandbox-controller
+  namespace: blazn-poc-system
+  labels:
+    app.kubernetes.io/name: blazn-sandbox-controller
+    app.kubernetes.io/part-of: blazn-poc
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-sandbox-controller
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/name: blazn-sandbox-controller
+    app.kubernetes.io/part-of: blazn-poc
+rules:
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["create", "delete", "get", "list", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
+- apiGroups: ["kueue.x-k8s.io"]
+  resources: ["workloads"]
+  verbs: ["list"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["create", "delete", "get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-sandbox-controller
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/name: blazn-sandbox-controller
+    app.kubernetes.io/part-of: blazn-poc
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-sandbox-controller
+subjects:
+- kind: ServiceAccount
+  name: blazn-sandbox-controller
+  namespace: blazn-poc-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blazn-sandbox-controller
+  namespace: blazn-poc-system
+  labels:
+    app.kubernetes.io/name: blazn-sandbox-controller
+    app.kubernetes.io/part-of: blazn-poc
+spec:
+  replicas: 0
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: blazn-sandbox-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: blazn-sandbox-controller
+        app.kubernetes.io/part-of: blazn-poc
+    spec:
+      serviceAccountName: blazn-sandbox-controller
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: initialize-database-url
+        image: BLAZN_CONTROLLER_IMAGE
+        imagePullPolicy: IfNotPresent
+        command: ["/blazn-sandbox-controller-secret-init"]
+        args:
+        - /var/run/blazn-db-projection/BLAZN_DATABASE_URL_SECRET_KEY
+        - /var/run/blazn-private/database-url
+        - /var/run/blazn-api-ca/ca.crt
+        - /var/run/blazn-private/kubernetes-ca.crt
+        - /var/run/blazn-object-projection/BLAZN_OBJECT_ACCESS_KEY
+        - /var/run/blazn-private/object-access
+        - /var/run/blazn-object-projection/BLAZN_OBJECT_SECRET_KEY
+        - /var/run/blazn-private/object-secret
+        resources:
+          requests:
+            cpu: 5m
+            memory: 8Mi
+          limits:
+            cpu: 50m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: database-url-projection
+          mountPath: /var/run/blazn-db-projection
+          readOnly: true
+        - name: database-url-private
+          mountPath: /var/run/blazn-private
+        - name: api-ca
+          mountPath: /var/run/blazn-api-ca
+          readOnly: true
+        - name: object-credentials-projection
+          mountPath: /var/run/blazn-object-projection
+          readOnly: true
+      containers:
+      - name: controller
+        image: BLAZN_CONTROLLER_IMAGE
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: BLAZN_SANDBOX_CONTROLLER_WORKER_ID
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE
+          value: /var/run/blazn-private/database-url
+        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST
+          value: "BLAZN_KUBERNETES_API_HOST"
+        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_PORT
+          value: "BLAZN_KUBERNETES_API_PORT"
+        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CA_FILE
+          value: /var/run/blazn-private/kubernetes-ca.crt
+        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE
+          value: /var/run/blazn-api-token/token
+        - name: BLAZN_SANDBOX_IO_IMAGE
+          value: "BLAZN_SANDBOX_IO_IMAGE"
+        - name: BLAZN_SANDBOX_SOURCE_DNS_CIDRS
+          value: "BLAZN_SOURCE_DNS_CIDR"
+        - name: BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON
+          value: '{"BLAZN_SOURCE_HOST":["BLAZN_SOURCE_CIDR"]}'
+        - name: BLAZN_SANDBOX_ARTIFACT_ENDPOINT
+          value: "https://BLAZN_OBJECT_ENDPOINT_HOST:BLAZN_OBJECT_ENDPOINT_PORT"
+        - name: BLAZN_SANDBOX_ARTIFACT_REGION
+          value: "BLAZN_OBJECT_REGION"
+        - name: BLAZN_SANDBOX_ARTIFACT_BUCKET
+          value: "BLAZN_OBJECT_BUCKET"
+        - name: BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE
+          value: /var/run/blazn-private/object-access
+        - name: BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE
+          value: /var/run/blazn-private/object-secret
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: database-url-private
+          mountPath: /var/run/blazn-private
+          readOnly: true
+        - name: api-token
+          mountPath: /var/run/blazn-api-token
+          readOnly: true
+      volumes:
+      - name: database-url-projection
+        projected:
+          defaultMode: 0440
+          sources:
+          - secret:
+              name: BLAZN_DATABASE_URL_SECRET_NAME
+              items:
+              - key: BLAZN_DATABASE_URL_SECRET_KEY
+                path: BLAZN_DATABASE_URL_SECRET_KEY
+                mode: 0440
+      - name: database-url-private
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Mi
+      - name: api-token
+        projected:
+          defaultMode: 0440
+          sources:
+          - serviceAccountToken:
+              audience: BLAZN_KUBERNETES_API_AUDIENCE
+              expirationSeconds: 600
+              path: token
+      - name: object-credentials-projection
+        projected:
+          defaultMode: 0440
+          sources:
+          - secret:
+              name: BLAZN_OBJECT_SECRET_NAME
+              items:
+              - key: BLAZN_OBJECT_ACCESS_KEY
+                path: BLAZN_OBJECT_ACCESS_KEY
+                mode: 0440
+              - key: BLAZN_OBJECT_SECRET_KEY
+                path: BLAZN_OBJECT_SECRET_KEY
+                mode: 0440
+      - name: api-ca
+        configMap:
+          name: kube-root-ca.crt
+          defaultMode: 0440
+          items:
+          - key: ca.crt
+            path: ca.crt
+            mode: 0440
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: blazn-sandbox-controller-default-deny
+  namespace: blazn-poc-system
+  labels:
+    app.kubernetes.io/name: blazn-sandbox-controller
+    app.kubernetes.io/part-of: blazn-poc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: blazn-sandbox-controller
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: blazn-sandbox-controller-egress
+  namespace: blazn-poc-system
+  labels:
+    app.kubernetes.io/name: blazn-sandbox-controller
+    app.kubernetes.io/part-of: blazn-poc
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: blazn-sandbox-controller
+  policyTypes: ["Egress"]
+  egress:
+  - to:
+    - ipBlock:
+        cidr: BLAZN_KUBERNETES_API_CIDR
+    ports:
+    - protocol: TCP
+      port: BLAZN_KUBERNETES_API_PORT
+  - to:
+    - ipBlock:
+        cidr: BLAZN_BEN1_POSTGRES_CIDR
+    ports:
+    - protocol: TCP
+      port: BLAZN_BEN1_POSTGRES_PORT
+  - to:
+    - ipBlock:
+        cidr: BLAZN_OBJECT_ENDPOINT_CIDR
+    ports:
+    - protocol: TCP
+      port: BLAZN_OBJECT_ENDPOINT_PORT

@@ -5,29 +5,33 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 const (
-	APIVersion          = "agents.x-k8s.io/v1beta1"
-	Kind                = "Sandbox"
-	Namespace           = "blazn-poc-sandboxes"
-	QueueName           = "blazn-poc"
-	QueueLabel          = "kueue.x-k8s.io/queue-name"
-	ManagedLabel        = "blazn.dev/managed"
-	WorkspaceLabel      = "blazn.dev/workspace"
-	OwnerLabel          = "blazn.dev/owner"
-	SandboxIDLabel      = "blazn.dev/sandbox-id"
-	CleanupFinalizer    = "sandboxes.blazn.dev/artifact-cleanup"
-	ServiceAccountName  = "blazn-sandbox-runner"
-	ReceiptSchema       = "blazn.dev/sandbox-adapter-receipt/v1"
-	AdmissionAPIVersion = "kueue.x-k8s.io/v1beta1"
-	ArtifactSchema      = "blazn.dev/sandbox-artifact/v1"
-	OrchestrationNotice = "orchestration isolation only; approved non-sensitive POC workloads"
+	APIVersion             = "agents.x-k8s.io/v1beta1"
+	Kind                   = "Sandbox"
+	Namespace              = "blazn-poc-sandboxes"
+	QueueName              = "blazn-poc"
+	QueueLabel             = "kueue.x-k8s.io/queue-name"
+	ManagedLabel           = "blazn.dev/managed"
+	WorkspaceLabel         = "blazn.dev/workspace"
+	OwnerLabel             = "blazn.dev/owner"
+	SandboxIDLabel         = "blazn.dev/sandbox-id"
+	CleanupFinalizer       = "sandboxes.blazn.dev/artifact-cleanup"
+	ServiceAccountName     = "blazn-sandbox-runner"
+	ReceiptSchema          = "blazn.dev/sandbox-adapter-receipt/v1"
+	AdmissionAPIVersion    = "kueue.x-k8s.io/v1beta1"
+	CreateIntentAnnotation = "sandboxes.blazn.dev/create-intent-digest"
+	ArtifactSchema         = "blazn.dev/sandbox-artifact/v1"
+	OrchestrationNotice    = "orchestration isolation only; approved non-sensitive POC workloads"
 )
 
 type ErrorCode string
@@ -43,6 +47,7 @@ const (
 	ErrArtifactExport       ErrorCode = "sandbox_artifact_export_failed"
 	ErrCleanupIncomplete    ErrorCode = "sandbox_cleanup_incomplete"
 	ErrResourceVersionStale ErrorCode = "sandbox_resource_version_stale"
+	ErrAdmissionPending     ErrorCode = "sandbox_admission_pending"
 )
 
 type AdapterError struct {
@@ -95,6 +100,14 @@ type ArtifactExport struct {
 	Required  bool   `json:"required"`
 }
 
+type SourceMount struct {
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Destination string `json:"destination"`
+	Commit      string `json:"commit"`
+	Writable    bool   `json:"writable"`
+}
+
 type ArtifactReceipt struct {
 	SchemaVersion string `json:"schemaVersion"`
 	Name          string `json:"name"`
@@ -105,22 +118,26 @@ type ArtifactReceipt struct {
 }
 
 type CreateRequest struct {
-	RequestID        string
-	Name             string
-	WorkspaceID      string
-	OwnerID          string
-	Image            string
-	Command          []string
-	Architecture     string
-	RuntimeClassName string
-	TrustLevel       TrustLevel
-	NonSensitive     bool
-	CPURequest       string
-	MemoryRequest    string
-	CPULimit         string
-	MemoryLimit      string
-	ExpiresAt        time.Time
-	Artifacts        []ArtifactExport
+	RequestID               string
+	Name                    string
+	WorkspaceID             string
+	OwnerID                 string
+	Image                   string
+	HelperImage             string
+	Command                 []string
+	Architecture            string
+	RuntimeClassName        string
+	TrustLevel              TrustLevel
+	NonSensitive            bool
+	CPURequest              string
+	MemoryRequest           string
+	EphemeralStorageRequest string
+	CPULimit                string
+	MemoryLimit             string
+	EphemeralStorageLimit   string
+	ExpiresAt               time.Time
+	Sources                 []SourceMount
+	Artifacts               []ArtifactExport
 }
 
 type SandboxStatus struct {
@@ -149,6 +166,7 @@ type SandboxRecord struct {
 	Finalizers             []string          `json:"finalizers"`
 	Artifacts              []ArtifactExport  `json:"artifacts"`
 	ArtifactContractDigest string            `json:"artifactContractDigest"`
+	CreateIntentDigest     string            `json:"createIntentDigest"`
 	Labels                 map[string]string `json:"labels"`
 }
 
@@ -238,6 +256,13 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	if !imagePattern.MatchString(request.Image) || len(request.Command) == 0 || len(request.Command) > 32 {
 		return adapterError(ErrInvalidRequest, 400, "image or command is invalid", nil)
 	}
+	if len(request.Sources) > 0 || len(request.Artifacts) > 0 {
+		if !imagePattern.MatchString(request.HelperImage) || request.HelperImage == request.Image {
+			return adapterError(ErrInvalidRequest, 400, "sandbox I/O helper image is invalid", nil)
+		}
+	} else if request.HelperImage != "" {
+		return adapterError(ErrInvalidRequest, 400, "unused sandbox I/O helper image is invalid", nil)
+	}
 	for _, argument := range request.Command {
 		if argument == "" || len(argument) > 1024 || strings.ContainsRune(argument, '\x00') {
 			return adapterError(ErrInvalidRequest, 400, "command argument is invalid", nil)
@@ -246,13 +271,16 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 	if request.Architecture != "amd64" && request.Architecture != "arm64" {
 		return adapterError(ErrInvalidRequest, 400, "architecture is invalid", nil)
 	}
-	for _, quantity := range []string{request.CPURequest, request.MemoryRequest, request.CPULimit, request.MemoryLimit} {
+	for _, quantity := range []string{request.CPURequest, request.MemoryRequest, request.EphemeralStorageRequest, request.CPULimit, request.MemoryLimit, request.EphemeralStorageLimit} {
 		if !quantityPattern.MatchString(quantity) {
 			return adapterError(ErrInvalidRequest, 400, "resource quantity is invalid", nil)
 		}
 	}
 	if request.ExpiresAt.IsZero() || !request.ExpiresAt.After(time.Now().Add(-time.Minute)) {
 		return adapterError(ErrInvalidRequest, 400, "expiry is invalid", nil)
+	}
+	if err := validateSources(request.Sources); err != nil {
+		return err
 	}
 	if err := validateArtifactExports(request.Artifacts); err != nil {
 		return err
@@ -275,6 +303,112 @@ func ValidateCreate(request CreateRequest, runtimes map[string]RuntimeCapability
 		return adapterError(ErrRuntimeUntrusted, 403, "trust level is invalid", nil)
 	}
 	return nil
+}
+
+// createIntentDigest is the adapter's internal idempotency boundary. It binds
+// every CreateRequest field after set-like values have been canonicalized.
+func createIntentDigest(request CreateRequest) (string, error) {
+	canonicalSources, err := canonicalSources(request.Sources)
+	if err != nil {
+		return "", err
+	}
+	canonicalArtifacts, _, err := CanonicalArtifactContract(request.Artifacts)
+	if err != nil {
+		return "", err
+	}
+	request.Artifacts = canonicalArtifacts
+	request.Sources = canonicalSources
+	type canonicalCreateIntent struct {
+		Schema                  string           `json:"schema"`
+		RequestID               string           `json:"requestId"`
+		Name                    string           `json:"name"`
+		WorkspaceID             string           `json:"workspaceId"`
+		OwnerID                 string           `json:"ownerId"`
+		Image                   string           `json:"image"`
+		HelperImage             string           `json:"helperImage"`
+		Command                 []string         `json:"command"`
+		Architecture            string           `json:"architecture"`
+		RuntimeClassName        string           `json:"runtimeClassName"`
+		TrustLevel              TrustLevel       `json:"trustLevel"`
+		NonSensitive            bool             `json:"nonSensitive"`
+		CPURequest              string           `json:"cpuRequest"`
+		MemoryRequest           string           `json:"memoryRequest"`
+		EphemeralStorageRequest string           `json:"ephemeralStorageRequest"`
+		CPULimit                string           `json:"cpuLimit"`
+		MemoryLimit             string           `json:"memoryLimit"`
+		EphemeralStorageLimit   string           `json:"ephemeralStorageLimit"`
+		ExpiresAt               string           `json:"expiresAt"`
+		Sources                 []SourceMount    `json:"sources"`
+		Artifacts               []ArtifactExport `json:"artifacts"`
+		PodSpec                 kubePodSpec      `json:"podSpec"`
+	}
+	encoded, err := json.Marshal(canonicalCreateIntent{
+		Schema: "blazn.dev/sandbox-create-intent/v2", RequestID: request.RequestID,
+		Name: request.Name, WorkspaceID: request.WorkspaceID, OwnerID: request.OwnerID,
+		Image: request.Image, HelperImage: request.HelperImage, Command: append([]string(nil), request.Command...),
+		Architecture: request.Architecture, RuntimeClassName: request.RuntimeClassName,
+		TrustLevel: request.TrustLevel, NonSensitive: request.NonSensitive,
+		CPURequest: request.CPURequest, MemoryRequest: request.MemoryRequest,
+		EphemeralStorageRequest: request.EphemeralStorageRequest, CPULimit: request.CPULimit,
+		MemoryLimit: request.MemoryLimit, EphemeralStorageLimit: request.EphemeralStorageLimit,
+		ExpiresAt: request.ExpiresAt.UTC().Format(time.RFC3339Nano), Sources: canonicalSources,
+		Artifacts: canonicalArtifacts, PodSpec: renderPodSpec(request),
+	})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+func validateSources(sources []SourceMount) error {
+	if len(sources) > 32 {
+		return adapterError(ErrInvalidRequest, 400, "source mount limit exceeded", nil)
+	}
+	seenNames, seenDestinations := map[string]bool{}, map[string]bool{}
+	destinations := make([]string, 0, len(sources))
+	commitPattern := regexp.MustCompile(`^[0-9a-f]{40}$`)
+	for _, source := range sources {
+		parsed, err := url.Parse(source.URL)
+		if err != nil || !dnsLabelPattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) ||
+			parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			parsed.Port() != "" && parsed.Port() != "443" ||
+			!strings.HasPrefix(source.Destination, "/workspace/src/") || path.Clean(source.Destination) != source.Destination ||
+			strings.Contains(source.Destination, "..") || strings.Contains(source.Destination, `\`) || len(source.Destination) > 512 ||
+			seenNames[source.Name] || seenDestinations[source.Destination] {
+			return adapterError(ErrInvalidRequest, 400, "source mount is invalid", err)
+		}
+		seenNames[source.Name], seenDestinations[source.Destination] = true, true
+		destinations = append(destinations, source.Destination)
+	}
+	sort.Strings(destinations)
+	for parent := 0; parent < len(destinations); parent++ {
+		for child := parent + 1; child < len(destinations); child++ {
+			if strings.HasPrefix(destinations[child], destinations[parent]+"/") {
+				return adapterError(ErrInvalidRequest, 400, "source mount destinations overlap", nil)
+			}
+		}
+	}
+	manifest := sandboxio.SourceManifest{SchemaVersion: sandboxio.SourceManifestVersion, Sources: make([]sandboxio.Source, len(sources))}
+	for index, source := range sources {
+		manifest.Sources[index] = sandboxio.Source{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit, Writable: source.Writable}
+	}
+	if _, err := sandboxio.MarshalSourceManifest(manifest); err != nil {
+		return adapterError(ErrInvalidRequest, 400, "source mount violates the helper protocol", err)
+	}
+	return nil
+}
+
+func canonicalSources(sources []SourceMount) ([]SourceMount, error) {
+	if err := validateSources(sources); err != nil {
+		return nil, err
+	}
+	canonical := append([]SourceMount(nil), sources...)
+	sort.Slice(canonical, func(i, j int) bool { return canonical[i].Name < canonical[j].Name })
+	if canonical == nil {
+		canonical = []SourceMount{}
+	}
+	return canonical, nil
 }
 
 func validateArtifactExports(artifacts []ArtifactExport) error {
@@ -305,7 +439,7 @@ func validateRuntime(request CreateRequest, runtimes map[string]RuntimeCapabilit
 }
 
 func ValidateReceipt(receipt OperationReceipt) error {
-	if receipt.SchemaVersion != ReceiptSchema || !requestPattern.MatchString(receipt.RequestID) || receipt.ReceiptID != receipt.RequestID+":"+string(receipt.Operation) || !dnsLabelPattern.MatchString(receipt.Name) || receipt.Namespace != Namespace || receipt.UID == "" || receipt.ResourceVersion == "" || !dnsLabelPattern.MatchString(receipt.WorkspaceID) || !dnsLabelPattern.MatchString(receipt.OwnerID) || receipt.QueueName != QueueName || !digestPattern.MatchString(receipt.ArtifactContractDigest) || !digestPattern.MatchString(receipt.Digest) {
+	if receipt.SchemaVersion != ReceiptSchema || !requestPattern.MatchString(receipt.RequestID) || receipt.ReceiptID != receipt.RequestID+":"+string(receipt.Operation) || !dnsLabelPattern.MatchString(receipt.Name) || receipt.Namespace != Namespace || !objectIDPattern.MatchString(receipt.UID) || !objectIDPattern.MatchString(receipt.ResourceVersion) || !dnsLabelPattern.MatchString(receipt.WorkspaceID) || !dnsLabelPattern.MatchString(receipt.OwnerID) || receipt.QueueName != QueueName || !digestPattern.MatchString(receipt.ArtifactContractDigest) || !digestPattern.MatchString(receipt.Digest) {
 		return fmt.Errorf("sandbox adapter receipt identity is invalid")
 	}
 	if receipt.Operation != OperationCreate && receipt.Operation != OperationDelete && receipt.Operation != OperationFinalize {
@@ -402,6 +536,26 @@ func workloadIdentityDigest(identity WorkloadIdentity) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+func admissionObservationDigest(observation AdmissionObservation) string {
+	canonical := strings.Join([]string{
+		"sandbox-admission-observation-v1",
+		observation.Sandbox.APIVersion, observation.Sandbox.Kind, observation.Sandbox.Namespace,
+		observation.Sandbox.Name, observation.Sandbox.UID, observation.Sandbox.ResourceVersion,
+		observation.Pod.APIVersion, observation.Pod.Kind, observation.Pod.Namespace,
+		observation.Pod.Name, observation.Pod.UID, observation.Pod.ResourceVersion,
+		observation.Workload.APIVersion, observation.Workload.Namespace, observation.Workload.Name,
+		observation.Workload.UID, observation.Workload.ResourceVersion, observation.Workload.ClusterQueue,
+		observation.Workload.Owner.APIVersion, observation.Workload.Owner.Kind,
+		observation.Workload.Owner.Name, observation.Workload.Owner.UID,
+		fmt.Sprintf("%t", observation.Workload.Owner.Controller), observation.Workload.WorkspaceID,
+		observation.Workload.SandboxID, fmt.Sprintf("%t", observation.Workload.Admitted),
+		observation.Workload.Condition.Type, observation.Workload.Condition.Status,
+		observation.Workload.Digest,
+	}, "\n")
+	digest := sha256.Sum256([]byte(canonical))
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 func NewReceipt(requestID string, operation Operation, sandbox SandboxRecord, artifacts []ArtifactReceipt, now time.Time) (OperationReceipt, error) {
 	receipt := OperationReceipt{
 		SchemaVersion: ReceiptSchema, ReceiptID: requestID + ":" + string(operation), RequestID: requestID,
@@ -458,7 +612,7 @@ func errorStatus(code ErrorCode) int {
 		return 404
 	case ErrRuntimeUntrusted:
 		return 403
-	case ErrConflict, ErrCleanupIncomplete, ErrResourceVersionStale:
+	case ErrConflict, ErrCleanupIncomplete, ErrResourceVersionStale, ErrAdmissionPending:
 		return 409
 	case ErrQueueRequired, ErrBackend, ErrArtifactExport:
 		return 502

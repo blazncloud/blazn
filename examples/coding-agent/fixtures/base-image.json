@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "blazn.dev/example-base-image/v1alpha1",
+  "repository": "docker.io/library/node",
+  "indexDigest": "sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9",
+  "manifests": [
+    {
+      "platform": "linux/amd64",
+      "digest": "sha256:704b199e36b5c1bc505da773f742299dc1ee5a4c70b86d1eb406c334f63253c6"
+    },
+    {
+      "platform": "linux/arm64",
+      "digest": "sha256:e6c1046051434cd96938528fae1d2faa0ec25dd543e313bb178d7368349e8d9e"
+    }
+  ]
+}

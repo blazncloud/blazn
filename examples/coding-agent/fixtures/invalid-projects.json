@@ -1,0 +1,47 @@
+[
+  {
+    "name": "unknown field",
+    "layer": "schema",
+    "set": {"unexpected": true}
+  },
+  {
+    "name": "raw credential field",
+    "layer": "schema",
+    "set": {"tests.poc.env": {"TOKEN": "fixture-only-forbidden"}}
+  },
+  {
+    "name": "unsafe context path",
+    "layer": "schema",
+    "set": {"build.context": "../outside"}
+  },
+  {
+    "name": "mutable lock identity",
+    "layer": "schema",
+    "set": {"dependencyLocks": {"examples/coding-agent/package-lock.json": "latest"}}
+  },
+  {
+    "name": "missing dependency lock",
+    "layer": "schema",
+    "set": {"dependencyLocks": {}}
+  },
+  {
+    "name": "mutable registry output",
+    "layer": "schema",
+    "set": {"build.registryRepository": "ghcr.io/blazncloud/coding-agent:latest"}
+  },
+  {
+    "name": "missing architecture",
+    "layer": "schema",
+    "set": {"platforms": ["linux/amd64"]}
+  },
+  {
+    "name": "unapproved builder policy",
+    "layer": "semantic",
+    "set": {"policy.builderProfile": "unapproved-builder"}
+  },
+  {
+    "name": "secret-bearing argv",
+    "layer": "semantic",
+    "set": {"tests.poc.argv": ["node", "--test", "--api-key=fixture-only-forbidden"]}
+  }
+]

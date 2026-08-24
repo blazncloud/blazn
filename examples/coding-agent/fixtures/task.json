@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "blazn.dev/coding-task/v1alpha1",
+  "id": "fix-calculator-addition",
+  "sourcePath": "examples/coding-agent/fixtures/source/calculator.mjs",
+  "sourceDigest": "sha256:3e1997e1dd72b7bc9e7bcbdf91506a993bef58cb7e0a4afc1399a49312d2a80d",
+  "find": "return left - right;",
+  "replace": "return left + right;"
+}

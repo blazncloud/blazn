@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "blazn.dev/example-identities/v1alpha1",
+  "projectId": "20000000-0000-4000-8000-000000000006",
+  "templateId": "50000000-0000-4000-8000-000000000006",
+  "templateVersionId": "60000000-0000-4000-8000-000000000006",
+  "templateDigest": "sha256:d40e4251c30f09bf3bb88e6554a010a1abc1cfe911a872c6804f2c3cc8bf820b",
+  "agentId": "70000000-0000-4000-8000-000000000006",
+  "agentVersionId": "71000000-0000-4000-8000-000000000006",
+  "agentDigest": "sha256:ae26cfbe9a26de8c0cff7d35f978e04e202e366640f6673d5b02625f6eebe241",
+  "baseImageDigest": "docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9",
+  "dependencyLockDigest": "sha256:6fb5b20eeaea986be5c70f41a45840f51531fdddbf6120d81be94207784a978a",
+  "buildContextDigest": "sha256:990a1e4e54afad3f0e3712d613754ce47e6fd2d2f77fb95681edf7365e0e7254"
+}

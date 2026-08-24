@@ -1,0 +1,16 @@
+*
+!.dockerignore
+!Dockerfile
+!package.json
+!package-lock.json
+!src/
+!src/coding-agent.mjs
+!test/
+!test/coding-agent.test.mjs
+!test/context-identity.test.mjs
+!fixtures/
+!fixtures/task.json
+!fixtures/source/
+!fixtures/source/calculator.mjs
+!scripts/
+!scripts/context-identity.mjs

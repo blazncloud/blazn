@@ -25,6 +25,67 @@ administrator kubeconfig on behalf of callers, or fall back to unmanaged Pods.
 - Delete uses exact UID and resourceVersion preconditions with foreground
   propagation. Finalizer removal uses the latest resourceVersion.
 
+## Phase 5 backend admission slice
+
+The first Phase 5 backend slice remains inside the adapter and is not a
+controller deployment. Every material create input, including request and
+tenant identity, pinned image, ordered command, architecture, RuntimeClass,
+trust acknowledgement, CPU/memory/ephemeral-storage requests and limits,
+expiry, and canonical artifact set, is bound into the internal
+`sandboxes.blazn.dev/create-intent-digest` annotation. The persisted Sandbox
+must preserve that digest and the exact rendered spec.
+
+`EnsureCreated` performs a NotFound preflight and never adopts a pre-existing
+same-name object without an exact UID precondition. It may resolve an ambiguous
+POST once by reading the persisted object, but accepts it only when the object
+has a concrete UID and resourceVersion and its full material spec and intent
+digest match. A retry with a known UID refuses to create a replacement if that
+UID is absent.
+
+Sandbox UID and resourceVersion evidence must match the receipt's frozen
+object-identity grammar, not merely be non-empty. If an authoritative create
+response carries malformed identity, the adapter refuses both the receipt and
+an unsafe compensating delete; exact valid UID/resourceVersion evidence is
+required before cleanup can begin.
+
+Admission observation requires exactly one admitted Kueue Workload and one Pod.
+It verifies API versions, non-empty UIDs and resourceVersions, the Workload's
+single controller owner as that exact Pod, the Pod's single controller owner as
+that exact Sandbox UID, the complete tokenless Pod spec, fixed queue, and
+workspace/owner/sandbox identity. Re-observation can be fenced by the complete
+prior observation and rejects UID, resourceVersion, or API drift. Cleanup
+absence scans namespace Pod and Workload collections without trusting mutable
+labels and rejects the frozen identities or exact controller-owner orphans.
+The observation's canonical digest covers every Sandbox, Pod, and Workload
+identity field plus the admitted condition and cluster queue, so a
+syntactically valid substitution cannot rewrite cleanup evidence independently
+of the terminal create receipt's own admission digest.
+
+## Phase 5 in-cluster controller client
+
+The stacked controller executable constructs the narrow adapter only after its
+complete database and Kubernetes configuration has validated. The Kubernetes
+endpoint is always an exact `https://host:port` assembled from strictly parsed
+controller settings (or the standard in-cluster service host and HTTPS port).
+It trusts only the configured, real CA file, disables environment proxies and
+redirect following, and bounds dialing, TLS negotiation, response headers,
+response bodies, idle connections, and the whole request. Its read-only
+collection health check must succeed before the controller's first queue claim.
+
+The projected ServiceAccount token is not a configuration value and is never
+passed to or cached by the adapter. The authorization transport opens it afresh
+for every request. Kubernetes' atomic projection symlink layout is accepted
+only while its resolved target remains inside the mounted volume; owner, mode,
+size, link count, inode, and the symlink resolution are rechecked around each
+read. Rotation therefore takes effect on the next request without putting a
+token in logs or error details. The CA deliberately has a stricter contract: it
+must be a stable, owner-safe regular file rather than a projected symlink.
+
+This slice does not install or change a ServiceAccount, Role, RoleBinding, CRD,
+deployment, image, namespace, queue, or other Kubernetes resource. Artifact
+export transport is also still unavailable, so required exports fail closed.
+Those installation and live-qualification steps remain subsequent work.
+
 ## Runtime trust
 
 An untrusted workload requires a named RuntimeClass whose local capability is

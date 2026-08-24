@@ -12,8 +12,8 @@
     "operation": {"enum": ["create", "delete", "finalize"]},
     "namespace": {"const": "blazn-poc-sandboxes"},
     "name": {"$ref": "#/$defs/dnsLabel"},
-    "uid": {"type": "string", "minLength": 1, "maxLength": 128},
-    "resourceVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+    "uid": {"$ref": "#/$defs/objectId"},
+    "resourceVersion": {"$ref": "#/$defs/objectId"},
     "workspaceId": {"$ref": "#/$defs/dnsLabel"},
     "ownerId": {"$ref": "#/$defs/dnsLabel"},
     "queueName": {"const": "blazn-poc"},
@@ -31,6 +31,7 @@
   ],
   "$defs": {
     "dnsLabel": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"},
+    "objectId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
     "artifact": {
       "type": "object",
       "additionalProperties": false,
