@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readMigrationInventory } from "./migration-inventory.js";
 
 test("auth migration grants only the reviewed bootstrap and runtime operations", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -172,15 +173,10 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
 
-test("migration sequence contains exactly twenty-two collision-free revisions", async () => {
+test("migration sequence derives one ordered collision-free inventory", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
-  const migrations = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
-  assert.equal(migrations.length, 22);
-  assert.deepEqual(
-    migrations.map((name) => name.slice(0, 3)),
-    Array.from({ length: 22 }, (_, index) => String(index + 1).padStart(3, "0")),
-  );
+  const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-3), [
     "020_sandbox_source_materialization.sql",
     "021_sandbox_artifact_export.sql",
