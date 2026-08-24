@@ -88,8 +88,7 @@ func (m GitMaterializer) Materialize(ctx context.Context, manifest SourceManifes
 		return SourceMaterializationReceipt{}, protocolError("source_manifest_invalid", err)
 	}
 	manifest = validated
-	manifestHash := sha256.Sum256(canonical)
-	receipt := SourceMaterializationReceipt{SchemaVersion: SourceReceiptVersion, ManifestDigest: "sha256:" + hex.EncodeToString(manifestHash[:]), Sources: make([]SourceMaterialization, 0, len(manifest.Sources))}
+	receipt := SourceMaterializationReceipt{SchemaVersion: SourceReceiptVersion, ManifestDigest: sourceManifestDigest(manifest), Sources: make([]SourceMaterialization, 0, len(manifest.Sources))}
 	for _, source := range manifest.Sources {
 		materialized, err := m.materializeSource(ctx, source)
 		if err != nil {
@@ -113,6 +112,26 @@ func MarshalSourceMaterializationReceipt(receipt SourceMaterializationReceipt) (
 		return nil, protocolError("source_receipt_invalid", err)
 	}
 	return encoded, nil
+}
+
+func NewSourceMaterializationReceipt(manifest SourceManifest, sources []SourceMaterialization) (SourceMaterializationReceipt, error) {
+	canonical, err := MarshalSourceManifest(manifest)
+	if err != nil {
+		return SourceMaterializationReceipt{}, err
+	}
+	normalized, _, err := ValidateSourceManifest(canonical)
+	if err != nil {
+		return SourceMaterializationReceipt{}, err
+	}
+	receipt := SourceMaterializationReceipt{SchemaVersion: SourceReceiptVersion, ManifestDigest: sourceManifestDigest(normalized), Sources: append([]SourceMaterialization(nil), sources...)}
+	receipt.Digest, err = sourceReceiptDigest(receipt)
+	if err != nil {
+		return SourceMaterializationReceipt{}, err
+	}
+	if err := ValidateSourceMaterializationReceipt(receipt, &normalized); err != nil {
+		return SourceMaterializationReceipt{}, err
+	}
+	return receipt, nil
 }
 
 func DecodeSourceMaterializationReceipt(body []byte, manifest *SourceManifest) (SourceMaterializationReceipt, error) {
@@ -151,8 +170,7 @@ func ValidateSourceMaterializationReceipt(receipt SourceMaterializationReceipt, 
 		if err != nil {
 			return protocolError("source_receipt_invalid", err)
 		}
-		digest := sha256.Sum256(canonical)
-		if receipt.ManifestDigest != "sha256:"+hex.EncodeToString(digest[:]) || len(receipt.Sources) != len(normalized.Sources) {
+		if receipt.ManifestDigest != sourceManifestDigest(normalized) || len(receipt.Sources) != len(normalized.Sources) {
 			return protocolError("source_receipt_mismatch", nil)
 		}
 		for index, source := range normalized.Sources {
@@ -449,13 +467,27 @@ func readRootDir(root *os.Root, name string) ([]os.DirEntry, error) {
 }
 
 func sourceReceiptDigest(receipt SourceMaterializationReceipt) (string, error) {
-	receipt.Digest = ""
-	encoded, err := json.Marshal(receipt)
-	if err != nil {
-		return "", err
+	hash := sha256.New()
+	writeDigestField(hash, receipt.SchemaVersion)
+	writeDigestField(hash, receipt.ManifestDigest)
+	for _, source := range receipt.Sources {
+		for _, field := range []string{source.Name, source.URL, source.Destination, source.Commit, source.Tree,
+			source.ContentDigest, fmt.Sprintf("%d", source.FileCount), fmt.Sprintf("%d", source.TotalBytes), fmt.Sprintf("%t", source.Writable)} {
+			writeDigestField(hash, field)
+		}
 	}
-	digest := sha256.Sum256(encoded)
-	return "sha256:" + hex.EncodeToString(digest[:]), nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func sourceManifestDigest(manifest SourceManifest) string {
+	hash := sha256.New()
+	writeDigestField(hash, manifest.SchemaVersion)
+	for _, source := range manifest.Sources {
+		for _, field := range []string{source.Name, source.URL, source.Destination, source.Commit, fmt.Sprintf("%t", source.Writable)} {
+			writeDigestField(hash, field)
+		}
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil))
 }
 
 func writeDigestField(writer io.Writer, value string) {

@@ -3,9 +3,7 @@ package sandboxio
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,8 +23,7 @@ func testManifest() SourceManifest {
 type testMaterializer struct{}
 
 func (testMaterializer) Materialize(_ context.Context, manifest SourceManifest, canonical []byte) (SourceMaterializationReceipt, error) {
-	manifestHash := sha256.Sum256(canonical)
-	receipt := SourceMaterializationReceipt{SchemaVersion: SourceReceiptVersion, ManifestDigest: "sha256:" + hex.EncodeToString(manifestHash[:]), Sources: make([]SourceMaterialization, len(manifest.Sources))}
+	receipt := SourceMaterializationReceipt{SchemaVersion: SourceReceiptVersion, ManifestDigest: sourceManifestDigest(manifest), Sources: make([]SourceMaterialization, len(manifest.Sources))}
 	for index, source := range manifest.Sources {
 		receipt.Sources[index] = SourceMaterialization{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit,
 			Tree: source.Commit, ContentDigest: "sha256:" + strings.Repeat("b", 64), Writable: source.Writable}

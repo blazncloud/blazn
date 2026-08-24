@@ -9,6 +9,7 @@ import (
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 	"github.com/blazncloud/blazn/internal/sandboxcontroller"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type factoryStore struct{ closed bool }
@@ -20,6 +21,9 @@ func (*factoryStore) Renew(context.Context, string, string, string, int) (sandbo
 	return sandboxcontroller.LeaseWindow{}, false, nil
 }
 func (*factoryStore) BindBackend(context.Context, string, string, string, sandboxcontrol.AdmissionObservation) (bool, error) {
+	return false, nil
+}
+func (*factoryStore) RecordSources(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) (bool, error) {
 	return false, nil
 }
 func (*factoryStore) Retry(context.Context, string, string, string, int, sandboxcontroller.SafeError) (sandboxcontroller.RetryOutcome, error) {

@@ -172,20 +172,37 @@ test("sandbox controller admission migration persists only digest-bound admitted
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_workload_admissions/);
 });
 
-test("migration sequence contains exactly nineteen collision-free revisions", async () => {
+test("migration sequence contains exactly twenty collision-free revisions", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = (await readdir(directory)).filter((name) => name.endsWith(".sql")).sort();
-  assert.equal(migrations.length, 19);
+  assert.equal(migrations.length, 20);
   assert.deepEqual(
     migrations.map((name) => name.slice(0, 3)),
-    Array.from({ length: 19 }, (_, index) => String(index + 1).padStart(3, "0")),
+    Array.from({ length: 20 }, (_, index) => String(index + 1).padStart(3, "0")),
   );
   assert.deepEqual(migrations.slice(-3), [
-    "017_run_synthetic_execution.sql",
     "018_project_profiles.sql",
     "019_sandbox_admission_observation.sql",
+    "020_sandbox_source_materialization.sql",
   ]);
+});
+
+test("source materialization migration fences exact receipts before create completion", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/020_sandbox_source_materialization.sql"), "utf8");
+  assert.match(sql, /CREATE TABLE sandbox_source_materialization_receipts/);
+  assert.match(sql, /sandbox_source_manifest_digest/);
+  assert.match(sql, /sandbox_source_receipt_digest/);
+  assert.match(sql, /sandbox_controller_record_source_materialization_v1/);
+  assert.match(sql, /j\.lease_expires_at>clock_timestamp\(\)/);
+  assert.match(sql, /target\.observation_digest<>p_expected_observation_digest/);
+  assert.match(sql, /ON CONFLICT \(sandbox_id\) DO NOTHING/);
+  assert.match(sql, /sandbox_controller_claim_v4/);
+  assert.match(sql, /sandbox_controller_complete_v4/);
+  assert.match(sql, /target\.source_count>0 AND NOT target\.source_receipt/);
+  assert.match(sql, /REVOKE ALL ON TABLE sandbox_source_materialization_receipts[\s\S]*blazn_sandbox_controller/);
+  assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_source_materialization_receipts/);
 });
 
 test("sandbox controller observation migration requires complete restart-safe Pod evidence", async () => {

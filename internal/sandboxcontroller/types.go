@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type Source struct {
@@ -44,6 +45,7 @@ type WorkItem struct {
 	Artifacts                                                                     []Artifact
 	PersistedWorkloadDigest                                                       *string
 	AdmissionObservation                                                          *sandboxcontrol.AdmissionObservation
+	SourceMaterialization                                                         *sandboxio.SourceMaterializationReceipt
 }
 
 type LeaseWindow struct {
@@ -74,6 +76,7 @@ type Store interface {
 	Claim(context.Context, string, int) (*WorkItem, error)
 	Renew(context.Context, string, string, string, int) (LeaseWindow, bool, error)
 	BindBackend(context.Context, string, string, string, sandboxcontrol.AdmissionObservation) (bool, error)
+	RecordSources(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) (bool, error)
 	Retry(context.Context, string, string, string, int, SafeError) (RetryOutcome, error)
 	Complete(context.Context, string, string, string, Completion) (bool, error)
 	EnqueueExpired(context.Context, int) (int, error)

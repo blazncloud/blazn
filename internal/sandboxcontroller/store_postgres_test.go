@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type queryCall struct {
@@ -56,6 +57,7 @@ func (r resultRow) Scan(destinations ...any) error {
 func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	executor := &fakeExecutor{rows: []sqlRow{
 		resultRow{values: []any{true}},
+		resultRow{values: []any{true}},
 		resultRow{values: []any{string(RetryScheduled)}},
 		resultRow{values: []any{true}},
 		resultRow{values: []any{3}},
@@ -64,6 +66,17 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	observation := storeObservationFixture()
 	if bound, err := store.BindBackend(context.Background(), "operation", "worker", "lease", observation); err != nil || !bound {
 		t.Fatalf("bind: bound=%v err=%v", bound, err)
+	}
+	source := sandboxio.Source{Name: "repo", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)}
+	receipt, err := sandboxio.NewSourceMaterializationReceipt(
+		sandboxio.SourceManifest{SchemaVersion: sandboxio.SourceManifestVersion, Sources: []sandboxio.Source{source}},
+		[]sandboxio.SourceMaterialization{{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit,
+			Tree: strings.Repeat("b", 40), ContentDigest: "sha256:" + strings.Repeat("c", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded, err := store.RecordSources(context.Background(), "operation", "worker", "lease", observation, receipt); err != nil || !recorded {
+		t.Fatalf("record sources: recorded=%v err=%v", recorded, err)
 	}
 	if outcome, err := store.Retry(context.Background(), "operation", "worker", "lease", 10,
 		SafeError{Code: "backend_failure", Message: "safe", RequestID: "request-123"}); err != nil || outcome != RetryScheduled {
@@ -78,7 +91,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	if count, err := store.EnqueueExpired(context.Background(), 4); err != nil || count != 3 {
 		t.Fatalf("expiry: count=%d err=%v", count, err)
 	}
-	queries := []string{bindSQL, retrySQL, completeSQL, expirySQL}
+	queries := []string{bindSQL, recordSourcesSQL, retrySQL, completeSQL, expirySQL}
 	for index, query := range queries {
 		if executor.calls[index].query != query {
 			t.Fatalf("query %d was %q, want %q", index, executor.calls[index].query, query)
@@ -89,6 +102,9 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	}
 	if got := executor.calls[0].args[34]; got != observation.Digest[7:] {
 		t.Fatalf("bind observation digest was not normalized: %v", got)
+	}
+	if got := executor.calls[1].args[5]; got != observation.Digest[7:] {
+		t.Fatalf("source observation digest was not normalized: %v", got)
 	}
 }
 
@@ -148,7 +164,7 @@ func TestPgStoreClaimDecodesImmutableWorkItem(t *testing.T) {
 		t.Fatalf("claim decoded incorrectly: %#v", item)
 	}
 	if executor.calls[0].query != claimSQL {
-		t.Fatalf("claim bypassed claim_v3: %q", executor.calls[0].query)
+		t.Fatalf("claim bypassed claim_v4: %q", executor.calls[0].query)
 	}
 }
 

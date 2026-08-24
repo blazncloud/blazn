@@ -12,15 +12,17 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 const (
-	claimSQL    = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v3($1,$2) claimed"
-	renewSQL    = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
-	bindSQL     = "SELECT public.sandbox_controller_bind_backend_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
-	retrySQL    = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
-	completeSQL = "SELECT public.sandbox_controller_complete_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
-	expirySQL   = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
+	claimSQL         = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v4($1,$2) claimed"
+	renewSQL         = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
+	bindSQL          = "SELECT public.sandbox_controller_bind_backend_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
+	recordSourcesSQL = "SELECT public.sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)"
+	retrySQL         = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
+	completeSQL      = "SELECT public.sandbox_controller_complete_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
+	expirySQL        = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
 )
 
 var sha256Pattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -136,6 +138,37 @@ func (s *PgStore) BindBackend(ctx context.Context, operationID, workerID, leaseT
 	return bound, err
 }
 
+func (s *PgStore) RecordSources(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation, receipt sandboxio.SourceMaterializationReceipt) (bool, error) {
+	manifest := sandboxio.SourceManifest{SchemaVersion: sandboxio.SourceManifestVersion, Sources: make([]sandboxio.Source, len(receipt.Sources))}
+	for index, source := range receipt.Sources {
+		manifest.Sources[index] = sandboxio.Source{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit, Writable: source.Writable}
+	}
+	if err := sandboxio.ValidateSourceMaterializationReceipt(receipt, &manifest); err != nil {
+		return false, err
+	}
+	manifestDigest, err := rawDigest(receipt.ManifestDigest)
+	if err != nil {
+		return false, err
+	}
+	receiptDigest, err := rawDigest(receipt.Digest)
+	if err != nil {
+		return false, err
+	}
+	observationDigest, err := rawDigest(observation.Digest)
+	if err != nil {
+		return false, err
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return false, err
+	}
+	var recorded bool
+	err = s.executor.QueryRow(ctx, recordSourcesSQL, operationID, workerID, leaseToken,
+		observation.Sandbox.UID, observation.Sandbox.ResourceVersion, observationDigest,
+		manifestDigest, receiptDigest, string(encoded)).Scan(&recorded)
+	return recorded, err
+}
+
 func (s *PgStore) Retry(ctx context.Context, operationID, workerID, leaseToken string, delaySeconds int, safe SafeError) (RetryOutcome, error) {
 	var outcome string
 	if err := s.executor.QueryRow(ctx, retrySQL, operationID, workerID, leaseToken, delaySeconds,
@@ -188,69 +221,70 @@ func (s *PgStore) EnqueueExpired(ctx context.Context, limit int) (int, error) {
 func (s *PgStore) Close() error { return s.executor.Close() }
 
 type workItemRow struct {
-	OperationID             string    `json:"operation_id"`
-	WorkspaceID             string    `json:"workspace_id"`
-	SandboxID               string    `json:"sandbox_id"`
-	RequestedBy             string    `json:"requested_by"`
-	OperationType           string    `json:"operation_type"`
-	ExpectedSandboxVersion  int64     `json:"expected_sandbox_version"`
-	LeaseToken              string    `json:"lease_token"`
-	LeaseExpiresAt          time.Time `json:"lease_expires_at"`
-	Attempt                 int       `json:"attempt"`
-	AllocationMode          string    `json:"allocation_mode"`
-	DesiredState            string    `json:"desired_state"`
-	Architecture            string    `json:"architecture"`
-	TemplateVersionID       string    `json:"template_version_id"`
-	TemplateDigest          string    `json:"template_digest"`
-	VariantName             string    `json:"variant_name"`
-	ImageIndexDigest        string    `json:"image_index_digest"`
-	ImageDigest             string    `json:"image_child_digest"`
-	PlacementProfile        string    `json:"placement_profile"`
-	Command                 []string  `json:"command"`
-	RequestCPU              string    `json:"request_cpu"`
-	RequestMemory           string    `json:"request_memory"`
-	RequestEphemeral        string    `json:"request_ephemeral_storage"`
-	LimitCPU                string    `json:"limit_cpu"`
-	LimitMemory             string    `json:"limit_memory"`
-	LimitEphemeral          string    `json:"limit_ephemeral_storage"`
-	QueueName               string    `json:"queue_name"`
-	AdmissionID             *string   `json:"admission_id"`
-	BackendUID              *string   `json:"backend_uid"`
-	BackendResourceVersion  *string   `json:"backend_resource_version"`
-	ExpiresAt               time.Time `json:"expires_at"`
-	SourceNames             []string  `json:"source_names"`
-	SourceURLs              []string  `json:"source_urls"`
-	SourceDestinations      []string  `json:"source_destinations"`
-	SourceWritable          []bool    `json:"source_writable"`
-	SourceCommits           []string  `json:"source_commits"`
-	ArtifactNames           []string  `json:"artifact_names"`
-	ArtifactPaths           []string  `json:"artifact_paths"`
-	ArtifactMediaTypes      []string  `json:"artifact_media_types"`
-	ArtifactRequired        []bool    `json:"artifact_required"`
-	AdmissionDigest         *string   `json:"admission_digest"`
-	WorkloadAPIVersion      *string   `json:"workload_api_version"`
-	WorkloadNamespace       *string   `json:"workload_namespace"`
-	WorkloadName            *string   `json:"workload_name"`
-	WorkloadUID             *string   `json:"workload_uid"`
-	WorkloadResourceVersion *string   `json:"workload_resource_version"`
-	AdmittedClusterQueue    *string   `json:"admitted_cluster_queue"`
-	OwnerAPIVersion         *string   `json:"owner_api_version"`
-	OwnerKind               *string   `json:"owner_kind"`
-	OwnerName               *string   `json:"owner_name"`
-	OwnerUID                *string   `json:"owner_uid"`
-	OwnerController         *bool     `json:"owner_controller"`
-	WorkspaceLabel          *string   `json:"workspace_label"`
-	SandboxLabel            *string   `json:"sandbox_label"`
-	Admitted                *bool     `json:"admitted"`
-	ConditionType           *string   `json:"condition_type"`
-	ConditionStatus         *string   `json:"condition_status"`
-	PodAPIVersion           *string   `json:"pod_api_version"`
-	PodKind                 *string   `json:"pod_kind"`
-	PodNamespace            *string   `json:"pod_namespace"`
-	PodName                 *string   `json:"pod_name"`
-	PodUID                  *string   `json:"pod_uid"`
-	PodResourceVersion      *string   `json:"pod_resource_version"`
-	ObservationDigest       *string   `json:"observation_digest"`
+	OperationID             string          `json:"operation_id"`
+	WorkspaceID             string          `json:"workspace_id"`
+	SandboxID               string          `json:"sandbox_id"`
+	RequestedBy             string          `json:"requested_by"`
+	OperationType           string          `json:"operation_type"`
+	ExpectedSandboxVersion  int64           `json:"expected_sandbox_version"`
+	LeaseToken              string          `json:"lease_token"`
+	LeaseExpiresAt          time.Time       `json:"lease_expires_at"`
+	Attempt                 int             `json:"attempt"`
+	AllocationMode          string          `json:"allocation_mode"`
+	DesiredState            string          `json:"desired_state"`
+	Architecture            string          `json:"architecture"`
+	TemplateVersionID       string          `json:"template_version_id"`
+	TemplateDigest          string          `json:"template_digest"`
+	VariantName             string          `json:"variant_name"`
+	ImageIndexDigest        string          `json:"image_index_digest"`
+	ImageDigest             string          `json:"image_child_digest"`
+	PlacementProfile        string          `json:"placement_profile"`
+	Command                 []string        `json:"command"`
+	RequestCPU              string          `json:"request_cpu"`
+	RequestMemory           string          `json:"request_memory"`
+	RequestEphemeral        string          `json:"request_ephemeral_storage"`
+	LimitCPU                string          `json:"limit_cpu"`
+	LimitMemory             string          `json:"limit_memory"`
+	LimitEphemeral          string          `json:"limit_ephemeral_storage"`
+	QueueName               string          `json:"queue_name"`
+	AdmissionID             *string         `json:"admission_id"`
+	BackendUID              *string         `json:"backend_uid"`
+	BackendResourceVersion  *string         `json:"backend_resource_version"`
+	ExpiresAt               time.Time       `json:"expires_at"`
+	SourceNames             []string        `json:"source_names"`
+	SourceURLs              []string        `json:"source_urls"`
+	SourceDestinations      []string        `json:"source_destinations"`
+	SourceWritable          []bool          `json:"source_writable"`
+	SourceCommits           []string        `json:"source_commits"`
+	ArtifactNames           []string        `json:"artifact_names"`
+	ArtifactPaths           []string        `json:"artifact_paths"`
+	ArtifactMediaTypes      []string        `json:"artifact_media_types"`
+	ArtifactRequired        []bool          `json:"artifact_required"`
+	AdmissionDigest         *string         `json:"admission_digest"`
+	WorkloadAPIVersion      *string         `json:"workload_api_version"`
+	WorkloadNamespace       *string         `json:"workload_namespace"`
+	WorkloadName            *string         `json:"workload_name"`
+	WorkloadUID             *string         `json:"workload_uid"`
+	WorkloadResourceVersion *string         `json:"workload_resource_version"`
+	AdmittedClusterQueue    *string         `json:"admitted_cluster_queue"`
+	OwnerAPIVersion         *string         `json:"owner_api_version"`
+	OwnerKind               *string         `json:"owner_kind"`
+	OwnerName               *string         `json:"owner_name"`
+	OwnerUID                *string         `json:"owner_uid"`
+	OwnerController         *bool           `json:"owner_controller"`
+	WorkspaceLabel          *string         `json:"workspace_label"`
+	SandboxLabel            *string         `json:"sandbox_label"`
+	Admitted                *bool           `json:"admitted"`
+	ConditionType           *string         `json:"condition_type"`
+	ConditionStatus         *string         `json:"condition_status"`
+	PodAPIVersion           *string         `json:"pod_api_version"`
+	PodKind                 *string         `json:"pod_kind"`
+	PodNamespace            *string         `json:"pod_namespace"`
+	PodName                 *string         `json:"pod_name"`
+	PodUID                  *string         `json:"pod_uid"`
+	PodResourceVersion      *string         `json:"pod_resource_version"`
+	ObservationDigest       *string         `json:"observation_digest"`
+	SourceReceipt           json.RawMessage `json:"source_materialization_receipt"`
 }
 
 func decodeWorkItem(payload []byte) (*WorkItem, error) {
@@ -306,7 +340,23 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 	}
 	item.AdmissionObservation = observation
 	item.PersistedWorkloadDigest = workloadDigest
+	if len(row.SourceReceipt) != 0 && string(row.SourceReceipt) != "null" {
+		manifest := sourceManifest(item.Sources)
+		receipt, err := sandboxio.DecodeSourceMaterializationReceipt(row.SourceReceipt, &manifest)
+		if err != nil || observation == nil || len(item.Sources) == 0 {
+			return nil, errors.New("sandbox controller source materialization receipt is inconsistent")
+		}
+		item.SourceMaterialization = &receipt
+	}
 	return item, nil
+}
+
+func sourceManifest(sources []Source) sandboxio.SourceManifest {
+	manifest := sandboxio.SourceManifest{SchemaVersion: sandboxio.SourceManifestVersion, Sources: make([]sandboxio.Source, len(sources))}
+	for index, source := range sources {
+		manifest.Sources[index] = sandboxio.Source{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit, Writable: source.Writable}
+	}
+	return manifest
 }
 
 func decodeObservation(row workItemRow) (*sandboxcontrol.AdmissionObservation, *string, error) {

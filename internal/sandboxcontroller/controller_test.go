@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 type fakeStore struct {
 	bound           bool
 	claims          int
 	bindObservation sandboxcontrol.AdmissionObservation
+	sourceReceipt   *sandboxio.SourceMaterializationReceipt
 	completion      *Completion
 	retry           *SafeError
 	renewResponses  chan renewResponse
@@ -57,6 +59,10 @@ func (s *fakeStore) Renew(ctx context.Context, _ string, _ string, _ string, _ i
 }
 func (s *fakeStore) BindBackend(_ context.Context, _, _, _ string, observation sandboxcontrol.AdmissionObservation) (bool, error) {
 	s.bound, s.bindObservation = true, observation
+	return true, nil
+}
+func (s *fakeStore) RecordSources(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, receipt sandboxio.SourceMaterializationReceipt) (bool, error) {
+	s.sourceReceipt = &receipt
 	return true, nil
 }
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
