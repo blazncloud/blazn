@@ -45,14 +45,23 @@ REQUIRED_CLIENTS = {
 }
 FORBIDDEN_KEYS = {
     "prompt", "prompts", "message", "messages", "tool", "tools", "toolpayload",
-    "tool_payload", "token", "bearertoken", "cookie", "cookies", "privatekey",
-    "private_key", "listenercredential", "listener_token", "credentialvalue",
+    "token", "bearertoken", "accesstoken", "refreshtoken", "authorization",
+    "proxyauthorization", "apikey", "cookie", "cookies", "setcookie", "privatekey",
+    "clientsecret", "secret", "password", "credential", "credentialvalue",
+    "listenercredential", "listenertoken", "requestbody", "responsebody", "inputtext",
+    "outputtext",
 }
 FORBIDDEN_TEXT = (
-    b"authorization: bearer ", b"proxy-authorization:", b"-----begin private key-----",
+    b"authorization: bearer ", b"authorization: basic ", b"proxy-authorization:", b"set-cookie:",
+    b"-----begin private key-----",
     b"-----begin rsa private key-----", b"-----begin ec private key-----",
     b'"prompt"', b'"messages"', b'"tool_payload"', b'"bearerToken"',
-    b'"privateKey"', b'"listenerToken"', b'"credentialValue"',
+    b'"privateKey"', b'"listenerToken"', b'"credentialValue"', b'"apiKey"',
+    b'"accessToken"', b'"refreshToken"', b'"clientSecret"',
+)
+FORBIDDEN_SECRET_TEXT = re.compile(
+    rb"(?:sk-(?:proj|svcacct)-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{12,}|xox[baprs]-[a-z0-9-]{8,}|akia[0-9a-z]{12,})",
+    re.IGNORECASE,
 )
 
 
@@ -141,7 +150,7 @@ def safe_root(raw: str, create: bool = False) -> pathlib.Path:
 def assert_redacted(value: Any, location: str = "receipt") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
-            normalized = re.sub(r"[^a-z0-9_]", "", key.lower())
+            normalized = re.sub(r"[^a-z0-9]", "", key.lower())
             if normalized in FORBIDDEN_KEYS:
                 raise EvidenceError(f"{location} contains forbidden secret/content key {key}")
             assert_redacted(item, f"{location}.{key}")
@@ -150,7 +159,12 @@ def assert_redacted(value: Any, location: str = "receipt") -> None:
             assert_redacted(item, f"{location}[{index}]")
     elif isinstance(value, str):
         lowered = value.lower()
-        if "bearer " in lowered or "-----begin " in lowered or "sk-proj-" in lowered:
+        if (
+            "bearer " in lowered
+            or "basic " in lowered
+            or "-----begin " in lowered
+            or FORBIDDEN_SECRET_TEXT.search(value.encode(errors="ignore"))
+        ):
             raise EvidenceError(f"{location} contains forbidden secret material")
 
 
@@ -159,6 +173,8 @@ def scan_file(path: pathlib.Path) -> None:
     for marker in FORBIDDEN_TEXT:
         if marker.lower() in data:
             raise EvidenceError(f"artifact {path.name} contains forbidden marker")
+    if FORBIDDEN_SECRET_TEXT.search(data):
+        raise EvidenceError(f"artifact {path.name} contains forbidden secret material")
 
 
 def validate_identity(identity: Any) -> None:
@@ -531,7 +547,7 @@ def verify_run(output: str, require_complete: bool = True) -> dict[str, Any]:
             raise EvidenceError("SHA256SUMS is missing")
         expected_lines = []
         for path in sorted([root / "run.json", *(root / "receipts").glob("*.json")], key=lambda item: item.relative_to(root).as_posix()):
-            expected_lines.append(f"{digest_file(path).removeprefix('sha256:')}  {path.relative_to(root).as_posix()}")
+            expected_lines.append(f"{digest_file(path)[len('sha256:'):]}  {path.relative_to(root).as_posix()}")
         if checksum_path.read_text().splitlines() != expected_lines:
             raise EvidenceError("SHA256SUMS differs from evidence artifacts")
     return {"schemaVersion": SCHEMA_VERSION, "status": "passed", "receiptCount": len(values), "manifestDigest": manifest.get("manifestDigest")}
@@ -549,7 +565,7 @@ def finalize_run(output: str) -> dict[str, Any]:
     manifest["manifestDigest"] = digest_bytes(canonical({key: value for key, value in manifest.items() if key != "manifestDigest"}))
     atomic_json(root / "run.json", manifest)
     paths = sorted([root / "run.json", *(root / "receipts").glob("*.json")], key=lambda item: item.relative_to(root).as_posix())
-    lines = "".join(f"{digest_file(path).removeprefix('sha256:')}  {path.relative_to(root).as_posix()}\n" for path in paths)
+    lines = "".join(f"{digest_file(path)[len('sha256:'):]}  {path.relative_to(root).as_posix()}\n" for path in paths)
     checksum_path = root / "SHA256SUMS"
     checksum_path.write_text(lines)
     os.chmod(checksum_path, 0o600)

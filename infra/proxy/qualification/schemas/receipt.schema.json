@@ -8,7 +8,7 @@
   "properties": {
     "schemaVersion": {"const": "proxy-qualification/v1"},
     "receiptId": {"type": "string", "format": "uuid"},
-    "action": {"enum": ["preflight", "capture-before", "cycle", "recovery", "route-proof", "cleanup"]},
+    "action": {"enum": ["capture-before", "cycle", "recovery", "route-proof", "cleanup"]},
     "observedAt": {"type": "string", "format": "date-time"},
     "identity": {"$ref": "#/$defs/identity"},
     "profileDigest": {"$ref": "#/$defs/digest"},
@@ -33,6 +33,144 @@
         "userId": {"$ref": "#/$defs/identifier"},
         "sessionId": {"$ref": "#/$defs/identifier"}
       }
+    },
+    "directConnectivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reachable", "authenticated", "requestId", "authority", "proofDigest"],
+      "properties": {
+        "reachable": {"const": true},
+        "authenticated": {"const": true},
+        "requestId": {"type": "string", "format": "uuid"},
+        "authority": {"type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|\\[[0-9a-f:]+\\])(?::[1-9][0-9]{0,4})?$"},
+        "proofDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "compareAndSet": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "outcome"],
+        "properties": {
+          "name": {"enum": ["OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]},
+          "outcome": {"enum": ["restored", "unchanged"]}
+        }
+      }
+    },
+    "residueObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activationId", "sessionId", "stateRoot", "listenerObserved", "listenerResidue", "ownedStateObserved", "ownedStateResidue"],
+      "properties": {
+        "activationId": {"type": "string", "format": "uuid"},
+        "sessionId": {"$ref": "#/$defs/identifier"},
+        "stateRoot": {"type": "string", "pattern": "^/[^\\u0000]+$"},
+        "listenerObserved": {"const": true},
+        "listenerResidue": {"const": false},
+        "ownedStateObserved": {"const": true},
+        "ownedStateResidue": {"const": false}
+      }
+    },
+    "environmentEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "present", "valueDigest"],
+      "properties": {
+        "name": {"enum": ["OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]},
+        "present": {"type": "boolean"},
+        "valueDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "treeEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client", "treeDigest"],
+      "properties": {
+        "client": {"enum": ["codex", "claude", "hermes"]},
+        "treeDigest": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "captureResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "configTrees", "directConnectivity", "owner"],
+      "properties": {
+        "environment": {"type": "array", "minItems": 5, "maxItems": 5, "items": {"$ref": "#/$defs/environmentEntry"}},
+        "configTrees": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/treeEntry"}},
+        "directConnectivity": {"$ref": "#/$defs/directConnectivity"},
+        "owner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hostId", "userId", "sessionId", "stateDigest", "stateRoot"],
+          "properties": {
+            "hostId": {"$ref": "#/$defs/identifier"}, "userId": {"$ref": "#/$defs/identifier"},
+            "sessionId": {"$ref": "#/$defs/identifier"}, "stateDigest": {"$ref": "#/$defs/digest"},
+            "stateRoot": {"type": "string", "pattern": "^/[^\\u0000]+$"}
+          }
+        }
+      }
+    },
+    "cycleResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cycle", "case", "configTreesUnchanged", "exactFiveRestored", "compareAndSet", "directConnectivityRestored", "directConnectivity", "listenerResidue", "ownedStateResidue", "residueObservation", "userStateChanged"],
+      "properties": {
+        "cycle": {"type": "integer", "minimum": 1, "maximum": 20},
+        "case": {"enum": ["normal-stop", "abrupt-kill", "host-reboot", "journal-corruption", "manager-outage", "partial-publication", "ambiguous-recovery", "repeated-on", "repeated-off", "receipt-corruption", "both-records-corrupt", "stale-pid-reuse", "missing-ca", "management-api-outage"]},
+        "configTreesUnchanged": {"const": true}, "exactFiveRestored": {"const": true},
+        "compareAndSet": {"$ref": "#/$defs/compareAndSet"}, "directConnectivityRestored": {"const": true},
+        "directConnectivity": {"$ref": "#/$defs/directConnectivity"}, "listenerResidue": {"const": false},
+        "ownedStateResidue": {"const": false}, "residueObservation": {"$ref": "#/$defs/residueObservation"},
+        "userStateChanged": {"type": ["boolean", "null"]}
+      }
+    },
+    "recoveryResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case", "daemonIndependent", "compareAndSet", "directConnectivityRestored", "directConnectivity", "configTreesUnchanged", "exactFiveRestored", "listenerResidue", "ownedStateResidue", "residueObservation", "userStateChanged"],
+      "properties": {
+        "case": {"enum": ["normal-stop", "abrupt-kill", "host-reboot", "journal-corruption", "manager-outage", "partial-publication", "ambiguous-recovery"]},
+        "daemonIndependent": {"const": true}, "compareAndSet": {"$ref": "#/$defs/compareAndSet"},
+        "directConnectivityRestored": {"const": true}, "directConnectivity": {"$ref": "#/$defs/directConnectivity"},
+        "configTreesUnchanged": {"const": true}, "exactFiveRestored": {"const": true},
+        "listenerResidue": {"const": false}, "ownedStateResidue": {"const": false},
+        "residueObservation": {"$ref": "#/$defs/residueObservation"}, "userStateChanged": {"const": false}
+      }
+    },
+    "routeResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["client", "version", "decision", "protocol", "authenticated", "requestId", "proofDigest", "policyDigest", "hostId", "userId", "sessionId", "reason"],
+      "properties": {
+        "client": {"enum": ["hermes", "codex", "generic", "claude"]}, "version": {"type": "string"},
+        "decision": {"enum": ["ROUTED", "DIRECT", "BYPASS", "UNSUPPORTED"]},
+        "protocol": {"enum": ["openai-chat", "openai-responses", "anthropic-native"]},
+        "authenticated": {"const": true}, "requestId": {"type": "string", "format": "uuid"},
+        "proofDigest": {"$ref": "#/$defs/digest"}, "policyDigest": {"$ref": "#/$defs/digest"},
+        "hostId": {"$ref": "#/$defs/identifier"}, "userId": {"$ref": "#/$defs/identifier"},
+        "sessionId": {"$ref": "#/$defs/identifier"}, "reason": {"type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$"}
+      }
+    },
+    "cleanupResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["compareAndSet", "directConnectivityRestored", "directConnectivity", "configTreesUnchanged", "exactFiveRestored", "listenerResidue", "ownedStateResidue", "residueObservation"],
+      "properties": {
+        "compareAndSet": {"$ref": "#/$defs/compareAndSet"}, "directConnectivityRestored": {"const": true},
+        "directConnectivity": {"$ref": "#/$defs/directConnectivity"}, "configTreesUnchanged": {"const": true},
+        "exactFiveRestored": {"const": true}, "listenerResidue": {"const": false},
+        "ownedStateResidue": {"const": false}, "residueObservation": {"$ref": "#/$defs/residueObservation"}
+      }
     }
-  }
+  },
+  "allOf": [
+    {"if": {"properties": {"action": {"const": "capture-before"}}, "required": ["action"]}, "then": {"properties": {"status": {"const": "passed"}, "result": {"$ref": "#/$defs/captureResult"}}}},
+    {"if": {"properties": {"action": {"const": "cycle"}}, "required": ["action"]}, "then": {"properties": {"status": {"enum": ["passed", "recovery_required"]}, "result": {"$ref": "#/$defs/cycleResult"}}}},
+    {"if": {"properties": {"action": {"const": "recovery"}}, "required": ["action"]}, "then": {"properties": {"status": {"enum": ["passed", "recovery_required"]}, "result": {"$ref": "#/$defs/recoveryResult"}}}},
+    {"if": {"properties": {"action": {"const": "route-proof"}}, "required": ["action"]}, "then": {"properties": {"status": {"enum": ["passed", "unsupported"]}, "result": {"$ref": "#/$defs/routeResult"}}}},
+    {"if": {"properties": {"action": {"const": "cleanup"}}, "required": ["action"]}, "then": {"properties": {"status": {"const": "passed"}, "result": {"$ref": "#/$defs/cleanupResult"}}}}
+  ]
 }

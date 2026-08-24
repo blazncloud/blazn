@@ -149,7 +149,7 @@ class StaticQualificationTest(unittest.TestCase):
             key=lambda item: item.relative_to(self.output).as_posix(),
         )
         (self.output / "SHA256SUMS").write_text("".join(
-            f"{evidence.digest_file(path).removeprefix('sha256:')}  {path.relative_to(self.output).as_posix()}\n"
+            f"{evidence.digest_file(path)[len('sha256:'):]}  {path.relative_to(self.output).as_posix()}\n"
             for path in paths
         ))
 
@@ -198,6 +198,10 @@ class StaticQualificationTest(unittest.TestCase):
             parsed = json.loads((QUALIFICATION / "schemas" / schema).read_text())
             self.assertFalse(parsed["additionalProperties"])
             self.assertEqual(parsed["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        receipt_schema = json.loads((QUALIFICATION / "schemas" / "receipt.schema.json").read_text())
+        self.assertEqual(len(receipt_schema["allOf"]), 5)
+        for name in ("directConnectivity", "residueObservation", "environmentEntry", "treeEntry", "captureResult", "cycleResult", "recoveryResult", "routeResult", "cleanupResult"):
+            self.assertFalse(receipt_schema["$defs"][name]["additionalProperties"], name)
         linux = qualification.validate_profile(json.loads((QUALIFICATION / "profiles/linux-systemd-user.template.json").read_text()))
         mac = qualification.validate_profile(json.loads((QUALIFICATION / "profiles/macos-launchd-unsupported.template.json").read_text()))
         self.assertFalse(linux["mutationEnabled"])
@@ -248,6 +252,13 @@ class StaticQualificationTest(unittest.TestCase):
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
             stream.close()
 
+        symlink_dir = self.root / "symlink-locks"
+        symlink_dir.mkdir()
+        exact_name_symlink = symlink_dir / self.session_lock.name
+        exact_name_symlink.symlink_to(self.session_lock)
+        with self.assertRaisesRegex(qualification.QualificationError, "without following links"):
+            qualification.open_lock_file(exact_name_symlink, os.getuid())
+
     def test_config_mutation_residue_and_redaction_are_rejected(self) -> None:
         self.assertEqual(self.command("capture-before").returncode, 0)
         changed = copy.deepcopy(self.state)
@@ -266,10 +277,10 @@ class StaticQualificationTest(unittest.TestCase):
 
         profile = qualification.validate_profile(self.profile)
         with self.assertRaisesRegex(evidence.EvidenceError, "forbidden"):
-            qualification.make_receipt(
-                "recovery", "passed", qualification.identity(profile, self.correlation),
-                qualification.digest(qualification.canonical(profile)), {"prompt": "must never appear"},
-            )
+            evidence.assert_redacted({"prompt": "must never appear"})
+        for value in ({"api_key": "opaque"}, {"client-secret": "opaque"}, {"safe": "ghp_abcdefghijklmnop"}):
+            with self.assertRaises(evidence.EvidenceError):
+                evidence.assert_redacted(value)
 
     def test_cycle_recovery_and_cleanup_require_bound_available_zero_residue_observations(self) -> None:
         self.assertEqual(self.command("capture-before").returncode, 0)

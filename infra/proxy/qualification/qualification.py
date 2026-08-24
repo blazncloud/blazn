@@ -240,40 +240,59 @@ def identity(profile: dict[str, Any], correlation: str) -> dict[str, str]:
     }
 
 
-def require_lock_file(raw: str, expected_uid: int | None = None) -> pathlib.Path:
-    path = clean_absolute_path(raw, "lock")
-    try:
-        info = path.lstat()
-    except FileNotFoundError as exc:
-        raise QualificationError("approval-bound lock must be pre-created") from exc
-    if not stat.S_ISREG(info.st_mode) or path.is_symlink() or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}:
+def validate_lock_info(info: os.stat_result, expected_uid: int | None = None) -> None:
+    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}:
         raise QualificationError("approval-bound lock must be a regular non-symlink file with mode 0600, 0640, or 0644")
     if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise QualificationError("approval-bound lock cannot be writable by group or other")
     if expected_uid is not None and info.st_uid not in {0, expected_uid}:
         raise QualificationError("approval-bound lock has an unexpected owner")
-    return path
+
+
+def lock_identity_from_info(info: os.stat_result) -> str:
+    return f"{info.st_dev}:{info.st_ino}:{info.st_uid}:{stat.S_IMODE(info.st_mode):o}"
+
+
+def open_lock_file(raw: str | pathlib.Path, expected_uid: int | None = None):
+    path = clean_absolute_path(str(raw), "lock")
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise QualificationError("approval-bound lock must be pre-created") from exc
+    except OSError as exc:
+        raise QualificationError("approval-bound lock could not be opened without following links") from exc
+    try:
+        info = os.fstat(descriptor)
+        validate_lock_info(info, expected_uid)
+        return os.fdopen(descriptor, "r+"), lock_identity_from_info(info)
+    except Exception:
+        os.close(descriptor)
+        raise
 
 
 def lock_identity(path: pathlib.Path) -> str:
-    info = path.stat()
-    return f"{info.st_dev}:{info.st_ino}:{info.st_uid}:{stat.S_IMODE(info.st_mode):o}"
+    stream, identity_value = open_lock_file(path)
+    stream.close()
+    return identity_value
 
 
 @contextlib.contextmanager
 def exclusive_locks(profile: dict[str, Any]) -> Iterator[dict[str, str]]:
     expected_uid = os.getuid()
-    paths = [require_lock_file(profile["locks"][name], expected_uid) for name in ("coordinator", "session")]
     streams = []
+    identities = []
     try:
-        for path in paths:
-            stream = path.open("r+")
+        for name in ("coordinator", "session"):
+            stream, identity_value = open_lock_file(profile["locks"][name], expected_uid)
             try:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as exc:
+                stream.close()
                 raise QualificationError("host/user proxy qualification is already reserved") from exc
             streams.append(stream)
-        yield {"coordinator": lock_identity(paths[0]), "session": lock_identity(paths[1])}
+            identities.append(identity_value)
+        yield {"coordinator": identities[0], "session": identities[1]}
     finally:
         for stream in reversed(streams):
             fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
