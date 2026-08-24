@@ -36,10 +36,11 @@ type UnixPlatform struct {
 	DialTimeout time.Duration
 	Dial        func(context.Context, string, string) (net.Conn, error)
 	Command     func(context.Context, string, ...string) *exec.Cmd
+	peerUID     func(*net.UnixConn) (int, error)
 }
 
 func NewUnixPlatform() *UnixPlatform {
-	return &UnixPlatform{View: nativeProcessView{}, UID: os.Getuid(), DialTimeout: DefaultControlTTL, Dial: (&net.Dialer{}).DialContext}
+	return &UnixPlatform{View: nativeProcessView{}, UID: os.Getuid(), DialTimeout: DefaultControlTTL, Dial: (&net.Dialer{}).DialContext, peerUID: unixPeerUID}
 }
 
 func (p *UnixPlatform) Spawn(ctx context.Context, request SpawnRequest) (Child, error) {
@@ -48,6 +49,15 @@ func (p *UnixPlatform) Spawn(ctx context.Context, request SpawnRequest) (Child, 
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, safeError(err)
+	}
+	commandFactory := p.Command
+	var commandPath string
+	if commandFactory == nil {
+		var err error
+		commandPath, err = executableFDPath()
+		if err != nil {
+			return nil, err
+		}
 	}
 	executable, executableFile, err := openVerifiedCurrentExecutable(request.Executable)
 	if err != nil {
@@ -70,12 +80,11 @@ func (p *UnixPlatform) Spawn(ctx context.Context, request SpawnRequest) (Child, 
 		_ = handshakeRead.Close()
 		_ = handshakeWrite.Close()
 	}
-	commandFactory := p.Command
 	var command *exec.Cmd
 	if commandFactory == nil {
 		// Start cancellation is bounded by the controller handshake. Once exec
 		// succeeds the detached listener must not inherit the caller's context.
-		command = exec.Command(executableFDPath(), ChildCommand, ProtocolVersion)
+		command = exec.Command(commandPath, ChildCommand, ProtocolVersion)
 	} else {
 		command = commandFactory(ctx, executable, ChildCommand, ProtocolVersion)
 	}
@@ -161,7 +170,11 @@ func (p *UnixPlatform) DialControl(ctx context.Context, _ int, address string) (
 		_ = connection.Close()
 		return nil, ErrUnauthorized
 	}
-	peer, err := unixPeerUID(unixConnection)
+	peerUID := p.peerUID
+	if peerUID == nil {
+		peerUID = unixPeerUID
+	}
+	peer, err := peerUID(unixConnection)
 	after, afterErr := os.Lstat(address)
 	if err != nil || peer != uid || afterErr != nil || !os.SameFile(info, after) || after.Mode()&os.ModeSocket == 0 || after.Mode().Perm() != 0600 || statUID(after) != uid {
 		_ = connection.Close()

@@ -142,6 +142,19 @@ func TestDialControlRequiresOwnerOnlyStableUnixSocketAndHonorsCancellation(t *te
 		_ = peer.Close()
 	}
 
+	platform.peerUID = func(*net.UnixConn) (int, error) { return os.Getuid() + 1, nil }
+	go func() {
+		connection, _ := listener.AcceptUnix()
+		accepted <- connection
+	}()
+	if _, err := platform.DialControl(context.Background(), os.Getpid(), address); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("wrong-uid control peer returned %v", err)
+	}
+	if peer := <-accepted; peer != nil {
+		_ = peer.Close()
+	}
+	platform.peerUID = unixPeerUID
+
 	if err := os.Chmod(address, 0660); err != nil {
 		t.Fatal(err)
 	}

@@ -276,6 +276,80 @@ func TestRestartDiscoveryReauthenticatesPersistedMaterialWithoutPersistence(t *t
 	}
 }
 
+func TestRestartDiscoveredStopWaitsForExactExitAndRetainsAuthorityOnConflict(t *testing.T) {
+	tests := map[string]struct {
+		afterStop func(*Evidence, int) (bool, error)
+		wantErr   error
+		minPolls  int
+	}{
+		"asynchronous exit": {
+			afterStop: func(_ *Evidence, poll int) (bool, error) { return poll < 3, nil },
+			minPolls:  3,
+		},
+		"stalled exit": {
+			afterStop: func(_ *Evidence, _ int) (bool, error) { return true, nil },
+			wantErr:   context.DeadlineExceeded,
+		},
+		"pid reuse": {
+			afterStop: func(evidence *Evidence, _ int) (bool, error) {
+				evidence.ProcessStartIdentity = "epoch:reused"
+				return true, nil
+			},
+			wantErr: ErrUnauthorized,
+		},
+		"executable substitution": {
+			afterStop: func(evidence *Evidence, _ int) (bool, error) {
+				evidence.ExecutableIdentity = "dev:9/inode:9"
+				return true, nil
+			},
+			wantErr: ErrUnauthorized,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			base := newFakePlatform()
+			platform := &restartEvidencePlatform{fakePlatform: base}
+			starter := &Controller{Platform: platform, HandshakeTimeout: time.Second, ControlTimeout: time.Second}
+			managed, err := starter.Start(context.Background(), testStartRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			starter.mu.Lock()
+			known := starter.known[managed.Proof().PID]
+			starter.mu.Unlock()
+			discovery := &Controller{Platform: platform, ControlTimeout: time.Second, StopGrace: 35 * time.Millisecond}
+			persisted := PersistedListener{Proof: managed.Proof(), ControlAddress: known.controlAddress, ExecutablePath: known.executablePath, PublicKey: known.publicKey, ListenerToken: known.listenerToken}
+			if _, live, err := discovery.Discover(context.Background(), persisted); err != nil || !live {
+				t.Fatalf("discover failed: live=%t err=%v", live, err)
+			}
+			platform.afterStop = test.afterStop
+			err = discovery.Stop(context.Background(), managed.Proof())
+			if test.wantErr == nil {
+				if err != nil {
+					t.Fatalf("stop failed: %v", err)
+				}
+			} else if !errors.Is(err, test.wantErr) {
+				t.Fatalf("stop returned %v, want %v", err, test.wantErr)
+			}
+			if platform.polls < test.minPolls {
+				t.Fatalf("exit evidence polls=%d, want at least %d", platform.polls, test.minPolls)
+			}
+			discovery.mu.Lock()
+			_, retained := discovery.known[managed.Proof().PID]
+			discovery.mu.Unlock()
+			if retained != (test.wantErr != nil) {
+				t.Fatalf("authority retained=%t after err=%v", retained, err)
+			}
+			base.child.mu.Lock()
+			terminated, killed := base.child.terminated, base.child.killed
+			base.child.mu.Unlock()
+			if terminated != 0 || killed != 0 {
+				t.Fatalf("restart discovery signaled a process: terminate=%d kill=%d", terminated, killed)
+			}
+		})
+	}
+}
+
 func TestControllerRejectsIncompleteProcessIdentity(t *testing.T) {
 	mutations := map[string]func(*fakePlatform){
 		"zero child pid":               func(p *fakePlatform) { p.child.pid = 0; p.runtime.pid = 0; p.evidence.PID = 0 },
@@ -513,6 +587,30 @@ type fakePlatform struct {
 	environmentTouched bool
 	filesTouched       bool
 	logs               bytes.Buffer
+}
+
+type restartEvidencePlatform struct {
+	*fakePlatform
+	afterStop func(*Evidence, int) (bool, error)
+	polls     int
+}
+
+func (p *restartEvidencePlatform) Evidence(ctx context.Context, pid int) (Evidence, bool, error) {
+	select {
+	case <-p.runtime.stopped:
+		p.polls++
+		evidence := p.evidence
+		if p.afterStop == nil {
+			return Evidence{}, false, nil
+		}
+		live, err := p.afterStop(&evidence, p.polls)
+		if !live || err != nil {
+			return Evidence{}, live, err
+		}
+		return evidence, true, nil
+	default:
+		return p.fakePlatform.Evidence(ctx, pid)
+	}
 }
 
 func newFakePlatform() *fakePlatform {

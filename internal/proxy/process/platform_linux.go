@@ -81,7 +81,7 @@ func (nativeProcessView) Lookup(ctx context.Context, pid int) (ProcessRecord, bo
 
 func detachedProcessAttributes() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }
 
-func executableFDPath() string { return "/proc/self/fd/5" }
+func executableFDPath() (string, error) { return "/proc/self/fd/5", nil }
 
 func unixPeerUID(connection *net.UnixConn) (int, error) {
 	raw, err := connection.SyscallConn()

@@ -86,6 +86,10 @@ CA/trust state, provider/application configuration, or shell configuration.
 Real launchctl and user-systemd publication, a durable listener child and
 authenticated control channel, OS process inspection after a restart, and the
 native twenty-cycle/crash/reboot/config-snapshot matrix remain in later PRs.
+Darwin descriptor-backed child execution also remains deferred: `/dev/fd`
+entries are not executable on macOS, so the native process adapter returns the
+stable `ErrSpawnUnsupported` failure before creating a child rather than
+falling back to a pathname that can be substituted after verification.
 `proxy on`, `off`, `status`, `doctor`, `routes`, `tail`, and `reset` remain
 unavailable (with `on` reporting session unsupported) until those proofs
 exist. `process_environment` is a no-op publication mechanism used

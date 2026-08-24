@@ -254,11 +254,39 @@ func (c *Controller) Stop(ctx context.Context, expected state.LiveListenerProof)
 				return safeError(cleanupErr)
 			}
 		}
+	} else if err := c.waitForDiscoveredExit(ctx, expected, known.executablePath); err != nil {
+		// Keep the authenticated authority registered. Recovery must be able to
+		// retry a stalled exit, while a reused PID must never be signaled.
+		return err
 	}
 	c.mu.Lock()
 	delete(c.known, expected.PID)
 	c.mu.Unlock()
 	return nil
+}
+
+func (c *Controller) waitForDiscoveredExit(ctx context.Context, expected state.LiveListenerProof, executablePath string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, c.stopGrace())
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		evidence, live, err := c.Platform.Evidence(waitCtx, expected.PID)
+		if err != nil {
+			return safeError(err)
+		}
+		if !live {
+			return nil
+		}
+		if evidence.ExecutablePath != executablePath || !evidenceMatchesProof(evidence, expected) {
+			return ErrUnauthorized
+		}
+		select {
+		case <-ticker.C:
+		case <-waitCtx.Done():
+			return safeError(waitCtx.Err())
+		}
+	}
 }
 
 func (c *Controller) verifyHandshake(ctx context.Context, pid int, metadata Metadata, expectedChallenge string, value Handshake) (state.LiveListenerProof, Evidence, error) {

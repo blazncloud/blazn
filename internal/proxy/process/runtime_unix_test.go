@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -111,6 +112,63 @@ func TestResolvedRuntimeFactoryRejectsDirectoryAndEvidenceSubstitution(t *testin
 	cancel()
 	if _, err := (ResolvedRuntimeFactory{Platform: platform, ControlDirectory: directory}).Start(cancelled, bootstrap); err == nil {
 		t.Fatal("cancelled runtime start succeeded")
+	}
+}
+
+func TestResolvedRuntimeRejectsWrongUIDBeforeControlDispatch(t *testing.T) {
+	bootstrap := resolvedRuntimeBootstrap(t)
+	factory := ResolvedRuntimeFactory{Platform: NewUnixPlatform(), ControlDirectory: socketTempDir(t), ControlTimeout: time.Second}
+	started, err := factory.Start(context.Background(), bootstrap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := started.(*resolvedRuntime)
+	runtime.peerUID = func(*net.UnixConn) (int, error) { return bootstrap.Metadata.OwnerUID + 1, nil }
+
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	serveDone := make(chan error, 1)
+	handled := make(chan struct{}, 1)
+	go func() {
+		serveDone <- runtime.ServeControl(serveCtx, func(context.Context, ControlRequest) (ControlResponse, error) {
+			handled <- struct{}{}
+			return ControlResponse{}, nil
+		})
+	}()
+	connection, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: runtime.ControlAddress(), Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.SetDeadline(time.Now().Add(time.Second))
+	challenge, err := freshChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rejection can close the socket before or after the client write races
+	// with peer credential inspection. Either way, no frame may be dispatched.
+	_ = writeFrame(connection, MaxControlBytes, ControlRequest{Version: ProtocolVersion, Kind: "control_request", Action: "inspect", Challenge: challenge})
+	var response ControlResponse
+	if err := readFrame(connection, MaxControlBytes, &response); err == nil {
+		t.Fatal("wrong-uid control peer received a response")
+	}
+	_ = connection.Close()
+	select {
+	case <-handled:
+		t.Fatal("wrong-uid control peer reached the authenticated handler")
+	default:
+	}
+	cancelServe()
+	select {
+	case err := <-serveDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled control server returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("control server ignored cancellation")
+	}
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelShutdown()
+	if err := runtime.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
 	}
 }
 

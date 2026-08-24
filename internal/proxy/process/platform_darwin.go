@@ -60,7 +60,12 @@ func (nativeProcessView) Lookup(ctx context.Context, pid int) (ProcessRecord, bo
 
 func detachedProcessAttributes() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }
 
-func executableFDPath() string { return "/dev/fd/5" }
+// Darwin's fdesc filesystem removes execute permission from /dev/fd entries,
+// so execve("/dev/fd/5") fails even when fd 5 references an executable file.
+// Fail closed until a separately reviewed descriptor-backed execution seam is
+// available; falling back to the pathname would reintroduce a substitution
+// race after verification.
+func executableFDPath() (string, error) { return "", ErrSpawnUnsupported }
 
 func unixPeerUID(connection *net.UnixConn) (int, error) {
 	raw, err := connection.SyscallConn()

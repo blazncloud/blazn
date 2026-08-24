@@ -40,9 +40,10 @@ const (
 )
 
 var (
-	ErrUnavailable  = errors.New("proxy process core is unavailable")
-	ErrProtocol     = errors.New("proxy process protocol rejected")
-	ErrUnauthorized = errors.New("proxy listener control unauthorized")
+	ErrUnavailable      = errors.New("proxy process core is unavailable")
+	ErrProtocol         = errors.New("proxy process protocol rejected")
+	ErrUnauthorized     = errors.New("proxy listener control unauthorized")
+	ErrSpawnUnsupported = errors.New("proxy process spawn is unsupported on this platform")
 )
 
 var (
@@ -424,6 +425,9 @@ func safeError(err error) error {
 	}
 	if errors.Is(err, ErrUnauthorized) {
 		return ErrUnauthorized
+	}
+	if errors.Is(err, ErrSpawnUnsupported) {
+		return ErrSpawnUnsupported
 	}
 	return fmt.Errorf("%w: listener protocol failure", ErrUnavailable)
 }

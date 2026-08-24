@@ -101,6 +101,8 @@ func (f ResolvedRuntimeFactory) Start(ctx context.Context, bootstrap Bootstrap) 
 		evidence:    evidence,
 		timeout:     timeout,
 		done:        make(chan struct{}),
+		ownerUID:    bootstrap.Metadata.OwnerUID,
+		peerUID:     f.Platform.peerUID,
 	}, nil
 }
 
@@ -151,6 +153,8 @@ type resolvedRuntime struct {
 	done        chan struct{}
 	shutdownErr error
 	connections sync.WaitGroup
+	ownerUID    int
+	peerUID     func(*net.UnixConn) (int, error)
 }
 
 func (r *resolvedRuntime) Address() string        { return r.proxy.Address() }
@@ -186,6 +190,14 @@ func (r *resolvedRuntime) ServeControl(ctx context.Context, handler func(context
 		go func(connection *net.UnixConn) {
 			defer r.connections.Done()
 			defer connection.Close()
+			peerUID := r.peerUID
+			if peerUID == nil {
+				peerUID = unixPeerUID
+			}
+			peer, err := peerUID(connection)
+			if err != nil || peer != r.ownerUID {
+				return
+			}
 			_ = connection.SetDeadline(time.Now().Add(r.timeout))
 			var request ControlRequest
 			if err := readFrame(connection, MaxControlBytes, &request); err != nil {
