@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -23,6 +24,13 @@ import (
 )
 
 const maxResponseBytes = 16 * 1024 * 1024
+
+const (
+	maxEvidenceFiles     = 100
+	maxEvidenceFileBytes = 8 * 1024 * 1024
+	maxEvidenceBytes     = 64 * 1024 * 1024
+	evidenceManifestPath = "manifest.json"
+)
 
 type BuildDocument struct {
 	raw           json.RawMessage
@@ -54,7 +62,23 @@ type evidenceBundle struct {
 	Manifest json.RawMessage `json:"manifest"`
 	Files    []evidenceFile  `json:"files"`
 }
-type evidenceFile struct{ Path, ContentBase64 string }
+type evidenceFile struct {
+	ArtifactID    string `json:"artifactId"`
+	Path          string `json:"path"`
+	ContentBase64 string `json:"contentBase64"`
+}
+
+type validatedEvidence struct {
+	canonical   []byte
+	artifactIDs []string
+	files       []validatedEvidenceFile
+}
+
+type validatedEvidenceFile struct {
+	artifactID string
+	path       string
+	content    []byte
+}
 
 type Service struct {
 	sessions workspacepkg.SessionProvider
@@ -226,7 +250,7 @@ func containsForbidden(value any) bool {
 	case map[string]any:
 		for key, child := range current {
 			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
-			if normalized == "objectkey" || normalized == "signedurl" || normalized == "secretvalue" || normalized == "registrycredential" || normalized == "buildkitendpoint" || containsForbidden(child) {
+			if credentialField(normalized) || containsForbidden(child) {
 				return true
 			}
 		}
@@ -240,8 +264,20 @@ func containsForbidden(value any) bool {
 	return false
 }
 
-func writeEvidence(directory, buildID string, bundle evidenceBundle) (EvidenceExport, error) {
-	if directory == "" || len(bundle.Files) > 100 {
+func credentialField(normalized string) bool {
+	switch normalized {
+	case "apikey", "authorization", "buildkitendpoint", "credential", "credentials", "objectkey", "password", "registrycredential", "secret", "secretvalue", "signedurl", "token", "accesstoken", "refreshtoken":
+		return true
+	}
+	return strings.HasSuffix(normalized, "apikey") || strings.HasSuffix(normalized, "password") || strings.HasSuffix(normalized, "secret") || strings.HasSuffix(normalized, "token") || strings.HasSuffix(normalized, "credential")
+}
+
+func writeEvidence(directory, buildID string, bundle evidenceBundle) (result EvidenceExport, resultErr error) {
+	validated, err := validateEvidence(bundle)
+	if err != nil {
+		return EvidenceExport{}, err
+	}
+	if directory == "" {
 		return EvidenceExport{}, errors.New("evidence export is invalid")
 	}
 	absolute, err := filepath.Abs(directory)
@@ -249,80 +285,217 @@ func writeEvidence(directory, buildID string, bundle evidenceBundle) (EvidenceEx
 		return EvidenceExport{}, err
 	}
 	parent := filepath.Dir(absolute)
+	base := filepath.Base(absolute)
 	resolved, err := filepath.EvalSymlinks(parent)
-	if err != nil || resolved != parent {
+	if err != nil || resolved != parent || base == "." || base == string(filepath.Separator) {
 		return EvidenceExport{}, errors.New("evidence output parent is unsafe")
 	}
-	if _, err := os.Lstat(absolute); !errors.Is(err, os.ErrNotExist) {
-		return EvidenceExport{}, errors.New("evidence output already exists")
+	parentRoot, err := os.OpenRoot(parent)
+	if err != nil {
+		return EvidenceExport{}, errors.New("evidence output parent cannot be opened safely")
 	}
-	if err := os.Mkdir(absolute, 0o700); err != nil {
+	defer parentRoot.Close()
+	if err := parentRoot.Mkdir(base, 0o700); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return EvidenceExport{}, errors.New("evidence output already exists")
+		}
 		return EvidenceExport{}, err
 	}
-	written := false
+	createdRootInfo, err := parentRoot.Lstat(base)
+	if err != nil || !createdRootInfo.IsDir() || createdRootInfo.Mode()&os.ModeSymlink != 0 {
+		cleanupErr := removeCreatedRoot(parentRoot, base, createdRootInfo)
+		return EvidenceExport{}, errors.Join(errors.New("evidence output was substituted"), cleanupFailure(cleanupErr))
+	}
+	created := []string{}
+	root, err := parentRoot.OpenRoot(base)
+	if err != nil {
+		cleanupErr := removeCreatedRoot(parentRoot, base, createdRootInfo)
+		if cleanupErr != nil {
+			return EvidenceExport{}, errors.Join(err, fmt.Errorf("evidence cleanup failed: %w", cleanupErr))
+		}
+		return EvidenceExport{}, err
+	}
+	openedRootInfo, err := root.Stat(".")
+	if err != nil || !os.SameFile(createdRootInfo, openedRootInfo) {
+		closeErr := root.Close()
+		cleanupErr := removeCreatedRoot(parentRoot, base, createdRootInfo)
+		return EvidenceExport{}, errors.Join(errors.New("evidence output was substituted"), cleanupFailure(errors.Join(closeErr, cleanupErr)))
+	}
 	defer func() {
-		if !written {
-			_ = os.Remove(absolute)
+		if resultErr == nil {
+			if closeErr := root.Close(); closeErr != nil {
+				resultErr = fmt.Errorf("evidence output close failed: %w", closeErr)
+			}
+			return
+		}
+		cleanupErr := cleanupEvidence(root, parentRoot, base, createdRootInfo, created)
+		if cleanupErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("evidence cleanup failed: %w", cleanupErr))
 		}
 	}()
-	artifactIDs := []string{}
-	seen := map[string]bool{}
-	total := 0
-	for _, file := range bundle.Files {
-		if !safeEvidencePath(file.Path) || seen[file.Path] {
-			return EvidenceExport{}, errors.New("evidence file path is unsafe")
-		}
-		seen[file.Path] = true
-		content, err := base64.RawStdEncoding.DecodeString(file.ContentBase64)
-		if err != nil {
-			content, err = base64.StdEncoding.DecodeString(file.ContentBase64)
-		}
-		if err != nil || len(content) > 8*1024*1024 {
-			return EvidenceExport{}, errors.New("evidence file content is invalid")
-		}
-		total += len(content)
-		if total > 64*1024*1024 {
-			return EvidenceExport{}, errors.New("evidence export exceeds its bound")
-		}
-		target := filepath.Join(absolute, filepath.FromSlash(file.Path))
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	createdDirectories := map[string]bool{}
+	for _, file := range validated.files {
+		if err := createEvidenceParents(root, filepath.FromSlash(file.path), createdDirectories, &created); err != nil {
 			return EvidenceExport{}, err
 		}
-		handle, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
+		if err := writeEvidenceFile(root, filepath.FromSlash(file.path), file.content); err != nil {
 			return EvidenceExport{}, err
 		}
-		_, writeErr := handle.Write(content)
-		closeErr := handle.Close()
-		if writeErr != nil || closeErr != nil {
-			return EvidenceExport{}, errors.New("evidence file write failed")
-		}
+		created = append(created, filepath.FromSlash(file.path))
 	}
-	canonical, err := jcs.Transform(bundle.Manifest)
-	if err != nil {
-		return EvidenceExport{}, errors.New("evidence manifest is invalid")
+	if err := writeEvidenceFile(root, evidenceManifestPath, validated.canonical); err != nil {
+		return EvidenceExport{}, err
 	}
-	digest := sha256.Sum256(canonical)
+	created = append(created, evidenceManifestPath)
+	digest := sha256.Sum256(validated.canonical)
+	return EvidenceExport{BuildID: buildID, Directory: absolute, ManifestDigest: "sha256:" + hex.EncodeToString(digest[:]), ArtifactIDs: validated.artifactIDs}, nil
+}
+
+func validateEvidence(bundle evidenceBundle) (validatedEvidence, error) {
+	if len(bundle.Manifest) == 0 || len(bundle.Manifest) > maxManifestBytes || len(bundle.Files) == 0 || len(bundle.Files) > maxEvidenceFiles {
+		return validatedEvidence{}, errors.New("evidence export is invalid")
+	}
+	if err := validateJSONTopology(bundle.Manifest); err != nil {
+		return validatedEvidence{}, errors.New("evidence manifest is invalid")
+	}
+	var whole any
+	if err := json.Unmarshal(bundle.Manifest, &whole); err != nil || containsForbidden(whole) {
+		return validatedEvidence{}, errors.New("evidence manifest contains forbidden or invalid fields")
+	}
 	var manifest struct {
 		ArtifactIDs []string `json:"artifactIds"`
 	}
-	if err := json.Unmarshal(bundle.Manifest, &manifest); err != nil {
-		return EvidenceExport{}, errors.New("evidence manifest is invalid")
-	}
-	for _, id := range manifest.ArtifactIDs {
-		if !uuidPattern.MatchString(id) {
-			return EvidenceExport{}, errors.New("evidence artifact identity is invalid")
+	if err := strictJSON(bundle.Manifest, &manifest); err != nil {
+		// The manifest is intentionally extensible, but its complete topology and
+		// values were checked above. Decode the binding field separately.
+		if err := json.Unmarshal(bundle.Manifest, &manifest); err != nil {
+			return validatedEvidence{}, errors.New("evidence manifest is invalid")
 		}
+	}
+	if len(manifest.ArtifactIDs) == 0 || len(manifest.ArtifactIDs) > maxEvidenceFiles {
+		return validatedEvidence{}, errors.New("evidence artifact count is invalid")
+	}
+	manifestIDs := make(map[string]bool, len(manifest.ArtifactIDs))
+	artifactIDs := make([]string, 0, len(manifest.ArtifactIDs))
+	for _, id := range manifest.ArtifactIDs {
+		if !uuidPattern.MatchString(id) || manifestIDs[id] {
+			return validatedEvidence{}, errors.New("evidence artifact identity is invalid")
+		}
+		manifestIDs[id] = true
 		artifactIDs = append(artifactIDs, id)
 	}
-	if len(artifactIDs) > 100 {
-		return EvidenceExport{}, errors.New("evidence artifact count is invalid")
+	seenPaths := map[string]bool{evidenceManifestPath: true}
+	seenIDs := make(map[string]bool, len(bundle.Files))
+	files := make([]validatedEvidenceFile, 0, len(bundle.Files))
+	total := 0
+	for _, file := range bundle.Files {
+		if !safeEvidencePath(file.Path) || seenPaths[file.Path] || !uuidPattern.MatchString(file.ArtifactID) || seenIDs[file.ArtifactID] || !manifestIDs[file.ArtifactID] {
+			return validatedEvidence{}, errors.New("evidence file identity or path is invalid")
+		}
+		seenPaths[file.Path], seenIDs[file.ArtifactID] = true, true
+		content, err := base64.StdEncoding.Strict().DecodeString(file.ContentBase64)
+		if err != nil {
+			content, err = base64.RawStdEncoding.Strict().DecodeString(file.ContentBase64)
+		}
+		if err != nil || len(content) > maxEvidenceFileBytes || containsCredentialBytes(content) {
+			return validatedEvidence{}, errors.New("evidence file content is invalid")
+		}
+		total += len(content)
+		if total > maxEvidenceBytes {
+			return validatedEvidence{}, errors.New("evidence export exceeds its bound")
+		}
+		files = append(files, validatedEvidenceFile{artifactID: file.ArtifactID, path: file.Path, content: content})
 	}
-	written = true
-	return EvidenceExport{BuildID: buildID, Directory: absolute, ManifestDigest: "sha256:" + hex.EncodeToString(digest[:]), ArtifactIDs: artifactIDs}, nil
+	if len(seenIDs) != len(manifestIDs) {
+		return validatedEvidence{}, errors.New("evidence files do not exactly match manifest artifacts")
+	}
+	canonical, err := jcs.Transform(bundle.Manifest)
+	if err != nil {
+		return validatedEvidence{}, errors.New("evidence manifest is invalid")
+	}
+	return validatedEvidence{canonical: canonical, artifactIDs: artifactIDs, files: files}, nil
+}
+
+func containsCredentialBytes(content []byte) bool {
+	if !json.Valid(content) {
+		return false
+	}
+	var value any
+	return json.Unmarshal(content, &value) == nil && containsForbidden(value)
+}
+
+func createEvidenceParents(root *os.Root, name string, createdDirectories map[string]bool, created *[]string) error {
+	parent := filepath.Dir(name)
+	if parent == "." {
+		return nil
+	}
+	current := ""
+	for _, part := range strings.Split(parent, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		if createdDirectories[current] {
+			continue
+		}
+		if err := root.Mkdir(current, 0o700); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return errors.New("evidence output path was substituted")
+			}
+			return err
+		}
+		createdDirectories[current] = true
+		*created = append(*created, current)
+	}
+	return nil
+}
+
+func writeEvidenceFile(root *os.Root, name string, content []byte) error {
+	handle, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return errors.New("evidence file cannot be created safely")
+	}
+	_, writeErr := handle.Write(content)
+	closeErr := handle.Close()
+	if writeErr != nil || closeErr != nil {
+		return errors.Join(errors.New("evidence file write failed"), writeErr, closeErr)
+	}
+	return nil
+}
+
+func cleanupEvidence(root, parentRoot *os.Root, base string, createdRootInfo os.FileInfo, created []string) error {
+	var cleanupErr error
+	for index := len(created) - 1; index >= 0; index-- {
+		if err := root.Remove(created[index]); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	if err := root.Close(); err != nil {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	cleanupErr = errors.Join(cleanupErr, removeCreatedRoot(parentRoot, base, createdRootInfo))
+	return cleanupErr
+}
+
+func removeCreatedRoot(parentRoot *os.Root, base string, createdRootInfo os.FileInfo) error {
+	current, err := parentRoot.Lstat(base)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if createdRootInfo == nil || !os.SameFile(createdRootInfo, current) {
+		return errors.New("created evidence output path was substituted; refusing cleanup")
+	}
+	return parentRoot.Remove(base)
+}
+
+func cleanupFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("evidence cleanup failed: %w", err)
 }
 func safeEvidencePath(value string) bool {
-	if value == "" || len(value) > 512 || filepath.IsAbs(value) || strings.ContainsRune(value, '\x00') {
+	if value == "" || len(value) > 512 || filepath.IsAbs(value) || strings.ContainsAny(value, "\\\x00") {
 		return false
 	}
 	for _, part := range strings.Split(filepath.ToSlash(value), "/") {
