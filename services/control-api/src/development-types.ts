@@ -10,8 +10,10 @@ export interface DevelopmentProjectRecord {
 export interface DevelopmentBuildRecord {
   schemaVersion:"blazn.dev/build-status/v1alpha1";id:string;workspaceId:string;projectId:string;runId:string;
   version:number;status:DevelopmentBuildStatus;requestedBy:string;source:{repository:string;commit:string};
-  projectManifestDigest:string;planDigest:string;publication:{eligible:boolean;refusalReasons:string[];published:null};
-  finalDocument:Record<string,unknown>|null;createdAt:string;startedAt?:string;completedAt?:string;errorCode?:string;
+  projectVersion:number;projectManifestDigest:string;template:{versionId:string;digest:string};
+  publicationTarget:{templateId:string;candidateVersionId:string;expectedDraftVersion:number;candidateDigest:string};registryRepository:string;
+  planDigest:string;publication:{eligible:boolean;refusalReasons:string[];published:null};
+  receiptDigest:string|null;evidenceAvailable:boolean;createdAt:string;startedAt?:string;completedAt?:string;errorCode?:string;
 }
 export interface DevelopmentAccess {workspaceStatus:"active"|"archived";role:WorkspaceRole;projectStatus?:"active"|"archived"}
 
