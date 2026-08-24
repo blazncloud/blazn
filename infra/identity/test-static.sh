@@ -2,6 +2,7 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+"$SCRIPT_DIR/test-branding.sh"
 compose=$SCRIPT_DIR/compose.yaml
 control_overlay=$SCRIPT_DIR/../milestone-2/compose.identity.yaml
 
