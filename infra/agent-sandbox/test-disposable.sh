@@ -214,7 +214,7 @@ spec:
     matchLabels:
       kubernetes.io/metadata.name: blazn-poc-sandboxes
   resourceGroups:
-  - coveredResources: ["cpu", "memory"]
+  - coveredResources: ["cpu", "memory", "ephemeral-storage"]
     flavors:
     - name: blazn-adapter-$cluster_suffix
       resources:
@@ -222,6 +222,8 @@ spec:
         nominalQuota: "1"
       - name: memory
         nominalQuota: 1Gi
+      - name: ephemeral-storage
+        nominalQuota: 8Gi
 ---
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: LocalQueue
@@ -239,12 +241,17 @@ until curl -fsS "http://$node_ip:8001/version" >/dev/null; do
   [ "$attempt" -lt 30 ] || { printf 'disposable Kubernetes API proxy did not become ready\n' >&2; exit 1; }
   sleep 1
 done
-$docker_cmd run --rm --network kind \
+if ! $docker_cmd run --rm --network kind \
     -v "$(CDPATH='' cd -- "$ROOT/../.." && pwd):/src:ro" -w /src \
     -e "BLAZN_SANDBOX_KIND_PROXY_URL=http://$node_ip:8001" \
     -e "BLAZN_SANDBOX_KIND_IMAGE=$SYNTHETIC_IMAGE" \
     -e "BLAZN_SANDBOX_KIND_SUFFIX=$cluster_suffix" \
-    "$GO_TEST_IMAGE" go test ./internal/sandboxcontrol -run '^TestDisposableKindLifecycle$' -count=1 -v
+    "$GO_TEST_IMAGE" go test ./internal/sandboxcontrol -run '^TestDisposableKindLifecycle$' -count=1 -v; then
+  kctl get sandbox,pod,workload -n blazn-poc-sandboxes -o yaml >&2 || true
+  kctl get events -n blazn-poc-sandboxes --sort-by=.lastTimestamp >&2 || true
+  kctl logs deployment/agent-sandbox-controller -n agent-sandbox-system --tail=200 >&2 || true
+  exit 1
+fi
 [ "$(kctl get sandbox -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
 [ "$(kctl get pod -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
 [ "$(kctl get workload -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
