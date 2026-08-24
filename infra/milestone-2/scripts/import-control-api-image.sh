@@ -27,7 +27,9 @@ expected_image=blazn-control-api:source-${source_digest#sha256:}
 
 manifest=$(mktemp /tmp/blazn-image-manifest.XXXXXX)
 config=$(mktemp /tmp/blazn-image-config.XXXXXX)
-cleanup() { unlink "$manifest" "$config" 2>/dev/null || true; }
+index=$(mktemp /tmp/blazn-image-index.XXXXXX)
+oci_manifest=$(mktemp /tmp/blazn-image-oci-manifest.XXXXXX)
+cleanup() { unlink "$manifest" "$config" "$index" "$oci_manifest" 2>/dev/null || true; }
 trap cleanup EXIT HUP INT TERM
 tar -xOf "$archive" manifest.json >"$manifest"
 jq -e --arg image "$expected_image" 'length == 1 and .[0].RepoTags == [$image] and (. [0].Layers | length > 0)' "$manifest" >/dev/null || die "control API image archive manifest is invalid"
@@ -39,7 +41,17 @@ case $config_path in
   "$config_digest.json"|"blobs/sha256/$config_digest") ;;
   *) die "control API image config digest is invalid" ;;
 esac
-archive_image_id=sha256:$config_digest
+tar -xOf "$archive" index.json >"$index"
+jq -e '(.schemaVersion == 2) and (.manifests | length == 1)' "$index" >/dev/null || die "control API image OCI index is invalid"
+archive_image_id=$(jq -er '.manifests[0].digest' "$index")
+case $archive_image_id in sha256:????????????????????????????????????????????????????????????????) ;; *) die "control API image manifest digest is invalid" ;; esac
+manifest_digest=${archive_image_id#sha256:}
+manifest_path=blobs/sha256/$manifest_digest
+tar -xOf "$archive" "$manifest_path" >"$oci_manifest"
+[ "$(sha256_file "$oci_manifest")" = "$manifest_digest" ] || die "control API image manifest blob digest is invalid"
+jq -e --arg configDigest "sha256:$config_digest" '
+  .schemaVersion == 2 and .config.digest == $configDigest and (.layers | length > 0)
+' "$oci_manifest" >/dev/null || die "control API image manifest does not bind the verified config"
 jq -e '
   .config.User == "node" and .config.WorkingDir == "/app" and
   .config.Cmd == ["node","dist/server.js"] and
