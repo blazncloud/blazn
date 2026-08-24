@@ -369,6 +369,7 @@ func validateSources(sources []SourceMount) error {
 		parsed, err := url.Parse(source.URL)
 		if err != nil || !dnsLabelPattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) ||
 			parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			parsed.Port() != "" && parsed.Port() != "443" ||
 			!strings.HasPrefix(source.Destination, "/workspace/src/") || path.Clean(source.Destination) != source.Destination ||
 			strings.Contains(source.Destination, "..") || strings.Contains(source.Destination, `\`) || len(source.Destination) > 512 ||
 			seenNames[source.Name] || seenDestinations[source.Destination] {

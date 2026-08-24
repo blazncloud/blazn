@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,12 +15,15 @@ import (
 	"time"
 
 	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/storage/memory"
 )
 
 type fixedRepositoryFetcher struct{ repository *git.Repository }
 
-func (f fixedRepositoryFetcher) Fetch(context.Context, Source) (*git.Repository, error) {
+func (f fixedRepositoryFetcher) Fetch(context.Context, Source, string) (*git.Repository, error) {
 	return f.repository, nil
 }
 
@@ -30,6 +34,12 @@ func TestGitMaterializerWritesExactRegularTreeAndAdoptsReceipt(t *testing.T) {
 		"nested/value.txt": {body: "value\n", mode: 0o644},
 	})
 	destination := t.TempDir()
+	if err := os.WriteFile(filepath.Join(destination, "partial-from-crash"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(destination, sourceScratchName), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	source := Source{Name: "source", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/source", Commit: commit, Writable: false}
 	manifest := SourceManifest{SchemaVersion: SourceManifestVersion, Sources: []Source{source}}
 	canonical, err := MarshalSourceManifest(manifest)
@@ -50,6 +60,11 @@ func TestGitMaterializerWritesExactRegularTreeAndAdoptsReceipt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(destination, ".git")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("Git metadata escaped into the Sandbox source mount")
+	}
+	for _, absent := range []string{"partial-from-crash", sourceScratchName} {
+		if _, err := os.Stat(filepath.Join(destination, absent)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("restart residue %s remains", absent)
+		}
 	}
 	for name, mode := range map[string]os.FileMode{"README.md": 0o400, "bin/run": 0o500, "nested/value.txt": 0o400} {
 		info, err := os.Stat(filepath.Join(destination, filepath.FromSlash(name)))
@@ -72,6 +87,65 @@ func TestGitMaterializerWritesExactRegularTreeAndAdoptsReceipt(t *testing.T) {
 	}
 	if _, err := materializer.Materialize(context.Background(), manifest, canonical); !IsProtocolError(err, "source_materialization_changed") {
 		t.Fatalf("changed materialization error=%v", err)
+	}
+}
+
+func TestSourceTraversalBoundsRepeatedTreesDepthAndCancellation(t *testing.T) {
+	repository, err := git.Init(memory.NewStorage(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyHash := storeTree(t, repository, &object.Tree{})
+	root := &object.Tree{}
+	for index := range 5 {
+		root.Entries = append(root.Entries, object.TreeEntry{Name: fmt.Sprintf("dir-%d", index), Mode: filemode.Dir, Hash: emptyHash})
+	}
+	files := []sourceFile{}
+	err = collectTreeFiles(context.Background(), repository, root, "", 0,
+		&sourceTreeBudget{maxEntries: 4, maxDepth: 8, maxPathBytes: 128}, &files)
+	if !IsProtocolError(err, "source_tree_too_large") {
+		t.Fatalf("repeated subtree error=%v", err)
+	}
+
+	childHash := emptyHash
+	for depth := range 3 {
+		childHash = storeTree(t, repository, &object.Tree{Entries: []object.TreeEntry{{Name: fmt.Sprintf("level-%d", depth), Mode: filemode.Dir, Hash: childHash}}})
+	}
+	deep, err := repository.TreeObject(childHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = collectTreeFiles(context.Background(), repository, deep, "", 0,
+		&sourceTreeBudget{maxEntries: 10, maxDepth: 1, maxPathBytes: 128}, &files)
+	if !IsProtocolError(err, "source_tree_too_large") {
+		t.Fatalf("deep tree error=%v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := collectTreeFiles(canceled, repository, &object.Tree{}, "", 0,
+		&sourceTreeBudget{maxEntries: 1, maxDepth: 1, maxPathBytes: 1}, &files); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled traversal error=%v", err)
+	}
+}
+
+func TestCanceledMaterializationCleansScratchAndRetries(t *testing.T) {
+	repository, commit := testRepository(t, map[string]testSourceFile{"file": {body: "value", mode: 0o644}})
+	destination := t.TempDir()
+	source := Source{Name: "source", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/source", Commit: commit}
+	manifest := SourceManifest{SchemaVersion: SourceManifestVersion, Sources: []Source{source}}
+	canonical, _ := MarshalSourceManifest(manifest)
+	materializer := GitMaterializer{Fetcher: fixedRepositoryFetcher{repository}, ResolveDestination: func(Source) string { return destination }}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := materializer.Materialize(canceled, manifest, canonical); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled materialization error=%v", err)
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("canceled materialization residue=%v err=%v", entries, err)
+	}
+	if _, err := materializer.Materialize(context.Background(), manifest, canonical); err != nil {
+		t.Fatalf("retry after cancellation failed: %v", err)
 	}
 }
 
@@ -200,4 +274,17 @@ func testRepository(t *testing.T, files map[string]testSourceFile) (*git.Reposit
 		t.Fatal(err)
 	}
 	return repository, hash.String()
+}
+
+func storeTree(t *testing.T, repository *git.Repository, tree *object.Tree) plumbing.Hash {
+	t.Helper()
+	encoded := repository.Storer.NewEncodedObject()
+	if err := tree.Encode(encoded); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := repository.Storer.SetEncodedObject(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hash
 }

@@ -186,6 +186,7 @@ func ValidateSourceManifest(body []byte) (SourceManifest, []byte, error) {
 		parsed, err := url.Parse(source.URL)
 		if err != nil || !namePattern.MatchString(source.Name) || !commitPattern.MatchString(source.Commit) ||
 			parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			parsed.Port() != "" && parsed.Port() != "443" ||
 			!validWorkspacePath(source.Destination, "/workspace/src/") || seenNames[source.Name] || seenDestinations[source.Destination] {
 			return SourceManifest{}, nil, protocolError("source_manifest_invalid", err)
 		}

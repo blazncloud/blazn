@@ -502,6 +502,7 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 	assertCode(t, ValidateCreate(missing, trustedRuntimes()), ErrInvalidRequest)
 	for _, source := range []SourceMount{
 		{Name: "source", URL: "https://user:password@example.test/repo", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)},
+		{Name: "source", URL: "https://example.test:8443/repo", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)},
 		{Name: "source", URL: "https://example.test/repo", Destination: "/workspace/src/../escape", Commit: strings.Repeat("a", 40)},
 		{Name: "source", URL: "https://example.test/repo", Destination: "/workspace/src/repo", Commit: "main"},
 	} {

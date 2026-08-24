@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -24,7 +25,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	transportclient "github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
-	"github.com/go-git/go-git/v5/storage/memory"
 )
 
 const (
@@ -32,7 +32,11 @@ const (
 	MaxSourceFiles             = 100_000
 	MaxSourceBytes       int64 = 256 << 20
 	MaxGitNetworkBytes         = 512 << 20
+	MaxSourceTreeEntries       = 200_000
+	MaxSourceTreeDepth         = 64
+	MaxSourcePathBytes         = 4096
 	sourceMarkerName           = ".blazn-source-materialization.json"
+	sourceScratchName          = ".blazn-git-objects"
 )
 
 type SourceMaterialization struct {
@@ -55,7 +59,7 @@ type SourceMaterializationReceipt struct {
 }
 
 type GitRepositoryFetcher interface {
-	Fetch(context.Context, Source) (*git.Repository, error)
+	Fetch(context.Context, Source, string) (*git.Repository, error)
 }
 
 type SourceMaterializer interface {
@@ -76,6 +80,10 @@ type sourceFile struct {
 	mode filemode.FileMode
 	blob *object.Blob
 	sha  string
+}
+
+type sourceTreeBudget struct {
+	entries, maxEntries, maxDepth, maxPathBytes int
 }
 
 func (m GitMaterializer) Materialize(ctx context.Context, manifest SourceManifest, canonicalManifest []byte) (SourceMaterializationReceipt, error) {
@@ -194,16 +202,25 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 	}
 	defer root.Close()
 	if len(entries) != 0 {
-		result, err := adoptMaterialization(ctx, root, source)
-		if err != nil {
-			return SourceMaterialization{}, err
+		if hasSourceMarker(entries) {
+			result, err := adoptMaterialization(ctx, root, source)
+			if err != nil {
+				return SourceMaterialization{}, err
+			}
+			if !stableRootPath(root, destination) {
+				return SourceMaterialization{}, protocolError("source_destination_unsafe", nil)
+			}
+			return result, nil
 		}
-		if !stableRootPath(root, destination) {
-			return SourceMaterialization{}, protocolError("source_destination_unsafe", nil)
+		if err := resetIncompleteSource(root, entries); err != nil {
+			return SourceMaterialization{}, protocolError("source_destination_dirty", err)
 		}
-		return result, nil
 	}
-	repository, err := m.Fetcher.Fetch(ctx, source)
+	if err := root.Mkdir(sourceScratchName, 0o700); err != nil {
+		return SourceMaterialization{}, protocolError("source_write_failed", err)
+	}
+	defer root.RemoveAll(sourceScratchName)
+	repository, err := m.Fetcher.Fetch(ctx, source, filepath.Join(destination, sourceScratchName))
 	if err != nil {
 		return SourceMaterialization{}, protocolError("source_fetch_failed", err)
 	}
@@ -215,7 +232,7 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 	if err != nil {
 		return SourceMaterialization{}, protocolError("source_tree_unavailable", err)
 	}
-	files, contentDigest, total, err := canonicalSourceFiles(repository, tree)
+	files, contentDigest, total, err := canonicalSourceFiles(ctx, repository, tree)
 	if err != nil {
 		return SourceMaterialization{}, err
 	}
@@ -241,7 +258,7 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 		}
 		reader, err := file.blob.Reader()
 		if err == nil {
-			_, err = io.CopyN(target, reader, file.blob.Size)
+			_, err = io.CopyN(target, contextSourceReader{ctx: ctx, reader: reader}, file.blob.Size)
 		}
 		closeErr := target.Close()
 		if reader != nil {
@@ -250,6 +267,9 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 		if err != nil || closeErr != nil {
 			return SourceMaterialization{}, protocolError("source_write_failed", errors.Join(err, closeErr))
 		}
+	}
+	if err := root.RemoveAll(sourceScratchName); err != nil {
+		return SourceMaterialization{}, protocolError("source_write_failed", err)
 	}
 	result := SourceMaterialization{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit,
 		Tree: tree.Hash.String(), ContentDigest: contentDigest, FileCount: len(files), TotalBytes: total, Writable: source.Writable}
@@ -276,6 +296,31 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 		return SourceMaterialization{}, protocolError("source_destination_unsafe", nil)
 	}
 	return result, nil
+}
+
+func hasSourceMarker(entries []os.DirEntry) bool {
+	for _, entry := range entries {
+		if entry.Name() == sourceMarkerName {
+			return true
+		}
+	}
+	return false
+}
+
+func resetIncompleteSource(root *os.Root, entries []os.DirEntry) error {
+	for _, entry := range entries {
+		if entry.Name() == sourceMarkerName || entry.Name() == "." || entry.Name() == ".." || strings.ContainsAny(entry.Name(), "/\\\x00") {
+			return errors.New("incomplete source contains an unsafe entry")
+		}
+		if err := root.RemoveAll(entry.Name()); err != nil {
+			return err
+		}
+	}
+	remaining, err := readRootDir(root, ".")
+	if err != nil || len(remaining) != 0 {
+		return errors.Join(err, errors.New("incomplete source cleanup did not reach empty state"))
+	}
+	return nil
 }
 
 func stableRootPath(root *os.Root, destination string) bool {
@@ -327,9 +372,10 @@ func adoptMaterialization(ctx context.Context, root *os.Root, source Source) (So
 	return receipt, nil
 }
 
-func canonicalSourceFiles(repository *git.Repository, tree *object.Tree) ([]sourceFile, string, int64, error) {
+func canonicalSourceFiles(ctx context.Context, repository *git.Repository, tree *object.Tree) ([]sourceFile, string, int64, error) {
 	files := make([]sourceFile, 0)
-	if err := collectTreeFiles(repository, tree, "", &files); err != nil {
+	budget := &sourceTreeBudget{maxEntries: MaxSourceTreeEntries, maxDepth: MaxSourceTreeDepth, maxPathBytes: MaxSourcePathBytes}
+	if err := collectTreeFiles(ctx, repository, tree, "", 0, budget, &files); err != nil {
 		return nil, "", 0, err
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
@@ -339,6 +385,9 @@ func canonicalSourceFiles(repository *git.Repository, tree *object.Tree) ([]sour
 	hash := sha256.New()
 	var total int64
 	for index := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, "", 0, err
+		}
 		file := &files[index]
 		if file.blob.Size < 0 || file.blob.Size > MaxSourceBytes-total {
 			return nil, "", 0, protocolError("source_tree_too_large", nil)
@@ -348,7 +397,7 @@ func canonicalSourceFiles(repository *git.Repository, tree *object.Tree) ([]sour
 			return nil, "", 0, protocolError("source_object_invalid", err)
 		}
 		contentHash := sha256.New()
-		written, copyErr := io.CopyN(contentHash, reader, file.blob.Size)
+		written, copyErr := io.CopyN(contentHash, contextSourceReader{ctx: ctx, reader: reader}, file.blob.Size)
 		closeErr := reader.Close()
 		if copyErr != nil || closeErr != nil || written != file.blob.Size {
 			return nil, "", 0, protocolError("source_object_invalid", errors.Join(copyErr, closeErr))
@@ -379,19 +428,35 @@ func canonicalSourceFiles(repository *git.Repository, tree *object.Tree) ([]sour
 	return files, "sha256:" + hex.EncodeToString(hash.Sum(nil)), total, nil
 }
 
-func collectTreeFiles(repository *git.Repository, tree *object.Tree, prefix string, files *[]sourceFile) error {
+func collectTreeFiles(ctx context.Context, repository *git.Repository, tree *object.Tree, prefix string, depth int, budget *sourceTreeBudget, files *[]sourceFile) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if budget == nil || depth > budget.maxDepth || len(prefix) > budget.maxPathBytes || budget.maxEntries < 1 || budget.maxDepth < 0 || budget.maxPathBytes < 1 {
+		return protocolError("source_tree_too_large", nil)
+	}
 	for _, entry := range tree.Entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		budget.entries++
+		if budget.entries > budget.maxEntries {
+			return protocolError("source_tree_too_large", nil)
+		}
 		if entry.Name == "" || entry.Name == "." || entry.Name == ".." || strings.ContainsAny(entry.Name, "/\\\x00") {
 			return protocolError("source_tree_unsafe", nil)
 		}
 		name := path.Join(prefix, entry.Name)
+		if len(name) > budget.maxPathBytes {
+			return protocolError("source_tree_too_large", nil)
+		}
 		switch entry.Mode {
 		case filemode.Dir:
 			child, err := repository.TreeObject(entry.Hash)
 			if err != nil {
 				return protocolError("source_object_invalid", err)
 			}
-			if err := collectTreeFiles(repository, child, name, files); err != nil {
+			if err := collectTreeFiles(ctx, repository, child, name, depth+1, budget, files); err != nil {
 				return err
 			}
 		case filemode.Regular, filemode.Deprecated, filemode.Executable:
@@ -460,7 +525,7 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 				return errors.Join(statErr, errors.New("materialized source file changed before read"))
 			}
 			contentHash := sha256.New()
-			written, copyErr := io.Copy(contentHash, io.LimitReader(file, info.Size()+1))
+			written, copyErr := io.Copy(contentHash, io.LimitReader(contextSourceReader{ctx: ctx, reader: file}, info.Size()+1))
 			finalFD, finalErr := file.Stat()
 			closeErr := file.Close()
 			finalPath, pathErr := root.Lstat(name)
@@ -531,7 +596,7 @@ func writeDigestField(writer io.Writer, value string) {
 
 var gitTransportMu sync.Mutex
 
-func (f SecureGitFetcher) Fetch(ctx context.Context, source Source) (*git.Repository, error) {
+func (f SecureGitFetcher) Fetch(ctx context.Context, source Source, scratch string) (*git.Repository, error) {
 	if len(source.Commit) != 40 {
 		return nil, protocolError("source_commit_algorithm_unsupported", nil)
 	}
@@ -559,8 +624,10 @@ func (f SecureGitFetcher) Fetch(ctx context.Context, source Source) (*git.Reposi
 	previous := transportclient.Protocols["https"]
 	transportclient.InstallProtocol("https", githttp.NewClient(httpClient))
 	defer transportclient.InstallProtocol("https", previous)
-	store := memory.NewStorage()
-	repository, err := git.Init(store, nil)
+	if scratch == "" || !filepath.IsAbs(scratch) || filepath.Clean(scratch) != scratch {
+		return nil, protocolError("source_scratch_invalid", nil)
+	}
+	repository, err := git.PlainInit(scratch, true)
 	if err != nil {
 		return nil, err
 	}
@@ -645,3 +712,15 @@ func (r *budgetReadCloser) Read(value []byte) (int, error) {
 }
 
 func (r *budgetReadCloser) Close() error { return r.closer.Close() }
+
+type contextSourceReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextSourceReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
+}

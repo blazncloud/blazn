@@ -516,6 +516,9 @@ func validControllerSource(source Source) bool {
 		return false
 	}
 	port := parsed.Port()
+	if port != "" && port != "443" {
+		return false
+	}
 	if port != "" {
 		value, err := strconv.Atoi(port)
 		if err != nil || value < 1 || value > 65535 {

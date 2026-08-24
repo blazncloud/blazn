@@ -564,6 +564,7 @@ func TestValidateWorkItemRejectsNoncanonicalAndDuplicateSources(t *testing.T) {
 		"invalid host label": func(value *Source) { value.URL = "https://-example.test/repo.git" },
 		"noncanonical ipv4":  func(value *Source) { value.URL = "https://010.0.0.1/repo.git" },
 		"named port":         func(value *Source) { value.URL = "https://example.test:https/repo.git" },
+		"unapproved port":    func(value *Source) { value.URL = "https://example.test:8443/repo.git" },
 		"encoded path":       func(value *Source) { value.URL = "https://example.test/repo%2egit" },
 		"path traversal":     func(value *Source) { value.Destination = "/workspace/src/../escape" },
 		"wrong root":         func(value *Source) { value.Destination = "/workspace/other/source" },
