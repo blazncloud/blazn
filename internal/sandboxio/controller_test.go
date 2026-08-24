@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,6 +70,27 @@ func TestControllerRejectsOwnerDriftInjectionOversizeAndStall(t *testing.T) {
 	}
 }
 
+func TestControllerPreservesFramedHelperErrorThroughSuccessfulExec(t *testing.T) {
+	fileSystem, err := OpenRootFileSystem(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileSystem.Close()
+	controller, err := NewController(ControllerConfig{
+		Transport: artifactServerTransport{fileSystem: fileSystem},
+		Owners:    &ownerChecks{},
+		Timeout:   time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := FrozenPodTarget{Namespace: "blazn-poc-sandboxes", PodName: "sandbox-a-pod", PodUID: "pod-uid-1", SandboxUID: "sandbox-uid-1", Container: ArtifactContainer}
+	_, err = controller.ReadArtifact(context.Background(), target, "/workspace/artifacts/missing")
+	if !IsProtocolError(err, "artifact_path_unsafe") || strings.Contains(err.Error(), "transport failed") {
+		t.Fatalf("framed helper error was not preserved: %v", err)
+	}
+}
+
 type ownerChecks struct {
 	calls  int
 	failAt int
@@ -113,6 +135,14 @@ func (t *protocolTransport) Exec(ctx context.Context, target FrozenPodTarget, co
 }
 
 type oversizeTransport struct{}
+
+type artifactServerTransport struct{ fileSystem ArtifactFileSystem }
+
+func (t artifactServerTransport) Exec(ctx context.Context, _ FrozenPodTarget, _ []string, input io.Reader, output io.Writer) error {
+	// ServeArtifact returning nil models the helper executable's exit status 0
+	// after it successfully emits a logical error frame.
+	return ServeArtifact(ctx, input, output, t.fileSystem)
+}
 
 func (*oversizeTransport) Exec(_ context.Context, _ FrozenPodTarget, _ []string, _ io.Reader, output io.Writer) error {
 	_, _ = output.Write(make([]byte, MaxHeaderBytes+MaxManifestBytes+5))

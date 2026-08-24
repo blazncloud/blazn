@@ -2,7 +2,10 @@ package sandboxcontroller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -11,6 +14,12 @@ import (
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 )
+
+type noIOExporter struct{}
+
+func (noIOExporter) Export(context.Context, sandboxcontrol.SandboxRecord, []sandboxcontrol.ArtifactExport) ([]sandboxcontrol.ArtifactReceipt, error) {
+	return nil, nil
+}
 
 type fakeSandboxAdapter struct {
 	mu            sync.Mutex
@@ -224,6 +233,47 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	if observed.Record.ResourceVersion != ready.ResourceVersion || observed.Record.ArtifactContractDigest != record.ArtifactContractDigest ||
 		!reflect.DeepEqual(fake.snapshotCalls(), []string{"ensure", "get", "get", "observe"}) {
 		t.Fatalf("create evidence was not retained exactly: state=%#v calls=%v", observed, fake.snapshotCalls())
+	}
+}
+
+func TestKubernetesBackendCreatesNoIOItemThroughRealAdapter(t *testing.T) {
+	item, _, _ := backendFixture(t)
+	item.Artifacts = nil
+	var posts int
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet {
+			response.WriteHeader(http.StatusNotFound)
+			_, _ = response.Write([]byte(`{"reason":"NotFound","code":404}`))
+			return
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("unexpected method %s", request.Method)
+		}
+		posts++
+		var object map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&object); err != nil {
+			t.Fatal(err)
+		}
+		metadata := object["metadata"].(map[string]any)
+		metadata["uid"], metadata["resourceVersion"], metadata["generation"] = "sandbox-uid-real", "1", 1
+		object["status"] = map[string]any{"observedGeneration": 1, "conditions": []map[string]any{{"type": "Ready", "status": "False", "reason": "QueueAdmissionPending"}}}
+		response.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(response).Encode(object); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+	adapter, err := sandboxcontrol.New(sandboxcontrol.Config{BaseURL: server.URL, BearerToken: "proof", HTTPClient: server.Client(), Exporter: noIOExporter{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: func(context.Context) error { return nil }, ArtifactExportSupported: true, HelperImage: testSandboxIOImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := backend.EnsureCreated(context.Background(), item)
+	if err != nil || !state.Exists || posts != 1 {
+		t.Fatalf("no-I/O create failed before POST: state=%#v posts=%d err=%v", state, posts, err)
 	}
 }
 

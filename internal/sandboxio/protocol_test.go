@@ -75,8 +75,8 @@ func TestProtocolRejectsMalformedOversizedAndInjectedFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	injected.WriteString("injected")
-	if err := ServeBootstrap(context.Background(), &injected, &response, nil); !IsProtocolError(err, "protocol_injection") {
-		t.Fatalf("injection error=%v", err)
+	if err := ServeBootstrap(context.Background(), &injected, &response, nil); err != nil {
+		t.Fatalf("framed injection error was reported as a process failure: %v", err)
 	}
 	if _, _, err := DecodeResponse(context.Background(), &response, OperationBootstrap, MaxManifestBytes); !IsProtocolError(err, "protocol_injection") {
 		t.Fatalf("error response=%v", err)

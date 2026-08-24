@@ -365,9 +365,13 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 		artifacts[index] = sandboxcontrol.ArtifactExport{Name: artifact.Name, Path: artifact.Path,
 			MediaType: artifact.MediaType, Required: artifact.Required}
 	}
+	helperImage := ""
+	if len(item.Sources) != 0 || len(artifacts) != 0 {
+		helperImage = b.helperImage
+	}
 	return sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
-		HelperImage: b.helperImage,
+		HelperImage: helperImage,
 		Command:     append([]string(nil), item.Command...), Architecture: item.Architecture,
 		RuntimeClassName: "", TrustLevel: sandboxcontrol.TrustApprovedPOC, NonSensitive: true,
 		CPURequest: item.Resources.CPURequest, MemoryRequest: item.Resources.MemoryRequest,

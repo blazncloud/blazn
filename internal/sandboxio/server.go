@@ -150,7 +150,10 @@ func respondError(output io.Writer, operation string, err error) error {
 	if responseErr := EncodeResponse(output, ErrorHeader(operation, code), nil); responseErr != nil {
 		return responseErr
 	}
-	return err
+	// The logical failure is now represented by the authenticated, bounded
+	// response frame. Returning nil lets an exec transport preserve that frame;
+	// non-zero process status is reserved for failures to emit a response.
+	return nil
 }
 
 func requireEOF(ctx context.Context, reader io.Reader) error {
