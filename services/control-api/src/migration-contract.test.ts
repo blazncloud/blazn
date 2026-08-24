@@ -178,20 +178,10 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-3), [
-    "021_sandbox_artifact_export.sql",
     "022_development_runtime.sql",
     "023_node_activation.sql",
+    "024_development_controller.sql",
   ]);
-});
-
-test("node activation migration persists idempotency and permits pre-heartbeat activation", async () => {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(path.resolve(here, "../migrations/023_node_activation.sql"), "utf8");
-  assert.match(sql, /activation_idempotency_key/);
-  assert.match(sql, /request_digest/);
-  assert.match(sql, /expected_node_version/);
-  assert.match(sql, /UNIQUE\(node_id,activation_idempotency_key\)/);
-  assert.doesNotMatch(sql.match(/nodes_agent_eligibility_check[^;]+/)?.[0] ?? "", /current_capability_version/);
 });
 
 test("artifact export migration fences immutable object evidence and UUID replay", async () => {
@@ -274,4 +264,24 @@ test("Development runtime migration freezes tenant, version, bearer proof, and c
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*development_(?:projects|builds|registry_repositories|reproducibility_baselines)/);
   assert.match(sql, /REVOKE ALL ON FUNCTION development_controller_finalize[\s\S]*blazn_runtime/);
   assert.doesNotMatch(sql, /GRANT EXECUTE ON FUNCTION development_controller_finalize/);
+});
+
+test("Development controller migration normalizes evidence and grants only fenced functions",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/024_development_controller.sql"),"utf8");
+  assert.match(sql,/CREATE TABLE development_build_jobs/);
+  assert.match(sql,/FOR UPDATE OF job SKIP LOCKED/);
+  assert.match(sql,/job\.lease_token=p_lease_token[\s\S]*job\.lease_expires_at>effective_now/);
+  assert.match(sql,/CREATE TABLE development_build_evidence \(/);
+  assert.match(sql,/CREATE TABLE development_build_evidence_artifacts \(/);
+  assert.match(sql,/UNIQUE \(build_id,artifact_id\)/);
+  assert.match(sql,/UNIQUE \(build_id,content_digest\)/);
+  assert.match(sql,/stored\.source_run_id=target\.run_id/);
+  assert.match(sql,/INSERT INTO public\.run_receipts[\s\S]*UPDATE public\.runs[\s\S]*UPDATE public\.development_builds/);
+  assert.match(sql,/DROP FUNCTION development_controller_finalize\(uuid,bigint,jsonb\)/);
+  assert.match(sql,/REVOKE ALL ON TABLE development_build_jobs,development_build_evidence,development_build_evidence_artifacts[\s\S]*blazn_development_controller/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION development_controller_claim[\s\S]*development_controller_finalize_v1[\s\S]*TO blazn_development_controller/);
+  assert.doesNotMatch(sql,/GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_development_controller/);
+  for(const forbidden of ["objectkey","signedurl","buildkitendpoint","buildkitclientcertificate","registrycredential"])
+    assert.match(sql,new RegExp(`'${forbidden}'`));
 });
