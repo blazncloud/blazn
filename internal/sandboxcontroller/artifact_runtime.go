@@ -60,8 +60,8 @@ func (r *KubernetesArtifactRuntime) Export(ctx context.Context, item WorkItem, o
 				return ArtifactExportResult{}, backendFailure("artifact_identity_mismatch", "persisted artifact differs from its contract", false, true, err)
 			}
 			spec := artifactObjectSpec(item, persisted)
-			head, found, err := r.objects.Head(ctx, spec)
-			if err != nil || !found || !sameArtifactHead(spec, head) {
+			found, err := r.verifyArtifactObject(ctx, spec)
+			if err != nil || !found {
 				return ArtifactExportResult{}, backendFailure("artifact_object_unavailable", "persisted artifact object cannot be verified", true, !found, err)
 			}
 			result.Artifacts = append(result.Artifacts, persisted)
@@ -88,20 +88,36 @@ func (r *KubernetesArtifactRuntime) Export(ctx context.Context, item WorkItem, o
 		if err != nil {
 			return ArtifactExportResult{}, backendFailure("artifact_object_write_failed", "artifact object cannot be stored", true, false, err)
 		}
-		if !created {
-			body, found, err := r.objects.Get(ctx, spec)
-			digest := sha256.Sum256(body)
-			if err != nil || !found || int64(len(body)) != spec.Size || "sha256:"+hex.EncodeToString(digest[:]) != spec.Digest {
-				return ArtifactExportResult{}, backendFailure("artifact_object_mismatch", "existing artifact object verification failed", true, !found, err)
+		found, err := r.verifyArtifactObject(ctx, spec)
+		if err != nil || !found {
+			message := "artifact object verification failed"
+			if !created {
+				message = "existing artifact object verification failed"
 			}
-		}
-		head, found, err := r.objects.Head(ctx, spec)
-		if err != nil || !found || !sameArtifactHead(spec, head) {
-			return ArtifactExportResult{}, backendFailure("artifact_object_mismatch", "artifact object verification failed", true, !found, err)
+			return ArtifactExportResult{}, backendFailure("artifact_object_mismatch", message, true, !found, err)
 		}
 		result.Artifacts = append(result.Artifacts, persisted)
 	}
 	return result, nil
+}
+
+func (r *KubernetesArtifactRuntime) verifyArtifactObject(ctx context.Context, spec ArtifactObjectSpec) (bool, error) {
+	body, found, err := r.objects.Get(ctx, spec)
+	if err != nil || !found {
+		return found, err
+	}
+	digest := sha256.Sum256(body)
+	if int64(len(body)) != spec.Size || "sha256:"+hex.EncodeToString(digest[:]) != spec.Digest {
+		return true, errors.New("artifact object content differs")
+	}
+	head, found, err := r.objects.Head(ctx, spec)
+	if err != nil || !found {
+		return found, err
+	}
+	if !sameArtifactHead(spec, head) {
+		return true, errors.New("artifact object metadata differs")
+	}
+	return true, nil
 }
 
 func validateArtifactObservation(item WorkItem, observation sandboxcontrol.AdmissionObservation) error {
