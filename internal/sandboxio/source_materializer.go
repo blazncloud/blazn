@@ -487,7 +487,7 @@ func collectTreeFiles(ctx context.Context, repository *git.Repository, tree *obj
 }
 
 func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceMaterialization) error {
-	entries, err := readRootDir(root, ".")
+	_, err := readRootDir(root, ".")
 	if err != nil {
 		return protocolError("source_materialization_changed", err)
 	}
