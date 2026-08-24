@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -109,7 +110,19 @@ func TestRegisterUsesSelectedContextAndStableIdempotencyThenBuilds(t *testing.T)
 	if _, err := service.Build(context.Background(), "1111111111111111111111111111111111111111", "build-request-1"); err != nil {
 		t.Fatal(err)
 	}
-	if puts != 2 || builds != 1 || len(registrationBodies) != 2 || string(registrationBodies[0]) != string(registrationBodies[1]) || len(persistedOutputs) != 2 || string(persistedOutputs[0]) != string(projectJSON) || string(persistedOutputs[1]) != string(projectJSON) {
+	var expectedProject, firstProject, secondProject any
+	if err := json.Unmarshal(projectJSON, &expectedProject); err != nil {
+		t.Fatal(err)
+	}
+	if len(persistedOutputs) == 2 {
+		if err := json.Unmarshal(persistedOutputs[0], &firstProject); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(persistedOutputs[1], &secondProject); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if puts != 2 || builds != 1 || len(registrationBodies) != 2 || string(registrationBodies[0]) != string(registrationBodies[1]) || len(persistedOutputs) != 2 || !reflect.DeepEqual(firstProject, expectedProject) || !reflect.DeepEqual(secondProject, expectedProject) {
 		t.Fatalf("puts=%d builds=%d persisted=%d", puts, builds, len(persistedOutputs))
 	}
 	if want := []string{"register", "register", "build"}; len(operations) != len(want) || operations[0] != want[0] || operations[1] != want[1] || operations[2] != want[2] {

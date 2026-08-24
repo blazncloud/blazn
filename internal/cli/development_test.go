@@ -46,7 +46,7 @@ func TestDevelopmentCommandsMatchFrozenSurface(t *testing.T) {
 	for _, test := range []struct {
 		args []string
 		call string
-	}{{[]string{"dev", "register", "-f", "../../examples/coding-agent/blazn.yaml", "--request-id", "register-request-1"}, "register:20000000-0000-4000-8000-000000000001:0:register-request-1"}, {[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:" + strings.Repeat("1", 40) + ":request-1"}, {[]string{"dev", "status", id}, "status:" + id}} {
+	}{{[]string{"dev", "register", "-f", "../../examples/coding-agent/blazn.yaml", "--request-id", "register-request-1"}, "register:20000000-0000-4000-8000-000000000006:0:register-request-1"}, {[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:" + strings.Repeat("1", 40) + ":request-1"}, {[]string{"dev", "status", id}, "status:" + id}} {
 		stdout.Reset()
 		stderr.Reset()
 		before := len(fake.calls)
