@@ -157,10 +157,16 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend identity changed before admission", false, true, err)
 	}
 	if record.State != sandboxcontrol.StateReady {
-		return stateFromRecord(record), nil
+		if len(item.Sources) == 0 {
+			return stateFromRecord(record), nil
+		}
 	}
 	observation, err := b.adapter.ObserveAdmission(ctx, request, record, expected)
 	if err != nil {
+		var adapterErr *sandboxcontrol.AdapterError
+		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrAdmissionPending {
+			return stateFromRecord(record), nil
+		}
 		return BackendState{}, classifyAdapter("observe", err)
 	}
 	if err := verifyObservation(item, observation); err != nil {
@@ -170,7 +176,7 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 		return BackendState{}, backendFailure("backend_identity_mismatch", "backend admission record changed", false, true, nil)
 	}
 	return BackendState{Record: record, AdmissionObservation: &observation,
-		Exists: true, Ready: true}, nil
+		Exists: true, Ready: record.State == sandboxcontrol.StateReady}, nil
 }
 
 func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expected *sandboxcontrol.AdmissionObservation) (BackendState, error) {
@@ -537,6 +543,8 @@ func classifyAdapter(operation string, err error) error {
 		return backendFailure("cleanup_incomplete", "sandbox cleanup could not be proven complete", operation == "cleanup", true, err)
 	case sandboxcontrol.ErrNotFound:
 		return backendFailure("backend_not_found", "sandbox backend identity is absent", operation != "cleanup", operation == "cleanup", err)
+	case sandboxcontrol.ErrAdmissionPending:
+		return backendFailure("admission_pending", "sandbox admission is pending", true, false, err)
 	default:
 		return backendFailure("backend_request_rejected", "sandbox backend rejected the operation", false, false, err)
 	}

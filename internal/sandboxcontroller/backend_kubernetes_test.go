@@ -273,6 +273,34 @@ func TestKubernetesBackendMapsSourcesOnlyWithConfiguredRuntime(t *testing.T) {
 	}
 }
 
+func TestKubernetesBackendObservesAdmittedSourcePodBeforeReady(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	item.Sources = []Source{{Name: "repo", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)}}
+	record.State = sandboxcontrol.StatePending
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	network, transport, owners := &fakeSourceNetwork{}, &sourceProtocolTransport{}, &sourceOwnerChecks{}
+	ioController, err := sandboxio.NewController(sandboxio.ControllerConfig{Transport: transport, Owners: owners, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewKubernetesSourceRuntime(KubernetesSourceRuntimeConfig{Network: network, IO: ioController})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewKubernetesBackend(KubernetesBackendConfig{Adapter: fake, Health: func(context.Context) error { return nil },
+		ArtifactExportSupported: true, HelperImage: testSandboxIOImage, SourceRuntime: runtime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.EnsureCreated(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	state, err := backend.Observe(context.Background(), item, nil)
+	if err != nil || state.Ready || state.AdmissionObservation == nil || state.AdmissionObservation.Pod.UID != observation.Pod.UID {
+		t.Fatalf("pre-ready observation=%#v err=%v", state, err)
+	}
+}
+
 func TestKubernetesBackendCreatesNoIOItemThroughRealAdapter(t *testing.T) {
 	item, _, _ := backendFixture(t)
 	item.Artifacts = nil

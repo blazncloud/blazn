@@ -148,6 +148,9 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 			podCandidates = append(podCandidates, candidate)
 		}
 	}
+	if len(podCandidates) == 0 {
+		return AdmissionObservation{}, adapterError(ErrAdmissionPending, 409, "admission Pod is pending", nil)
+	}
 	if len(podCandidates) != 1 {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission requires exactly one API-stable owned Pod", nil)
 	}
@@ -173,15 +176,32 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 			workloadCandidates = append(workloadCandidates, candidate)
 		}
 	}
+	if len(workloadCandidates) == 0 {
+		return AdmissionObservation{}, adapterError(ErrAdmissionPending, 409, "admission Workload is pending", nil)
+	}
 	if len(workloadCandidates) != 1 {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission requires exactly one API-stable Workload", nil)
 	}
 	workload := workloadCandidates[0]
 	condition, admitted := exactAdmittedCondition(workload.Status.Conditions)
 	if !hasExactControllerOwner(workload.Metadata.OwnerReferences, podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.UID) ||
-		!hasAdmissionLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Status.Admission == nil ||
-		workload.Spec.QueueName != QueueName || !dnsNamePattern.MatchString(workload.Status.Admission.ClusterQueue) || !admitted {
+		!hasAdmissionLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Spec.QueueName != QueueName {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload did not preserve the exact admitted Pod ownership chain", nil)
+	}
+	if workload.Status.Admission == nil || !admitted {
+		admittedConditions := 0
+		for _, value := range workload.Status.Conditions {
+			if value.Type == "Admitted" {
+				admittedConditions++
+			}
+		}
+		if admittedConditions > 1 {
+			return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload has ambiguous admission conditions", nil)
+		}
+		return AdmissionObservation{}, adapterError(ErrAdmissionPending, 409, "Workload admission is pending", nil)
+	}
+	if !dnsNamePattern.MatchString(workload.Status.Admission.ClusterQueue) {
+		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload admitted ClusterQueue is invalid", nil)
 	}
 
 	identity := WorkloadIdentity{

@@ -45,6 +45,7 @@ const (
 	ErrArtifactExport       ErrorCode = "sandbox_artifact_export_failed"
 	ErrCleanupIncomplete    ErrorCode = "sandbox_cleanup_incomplete"
 	ErrResourceVersionStale ErrorCode = "sandbox_resource_version_stale"
+	ErrAdmissionPending     ErrorCode = "sandbox_admission_pending"
 )
 
 type AdapterError struct {
@@ -591,7 +592,7 @@ func errorStatus(code ErrorCode) int {
 		return 404
 	case ErrRuntimeUntrusted:
 		return 403
-	case ErrConflict, ErrCleanupIncomplete, ErrResourceVersionStale:
+	case ErrConflict, ErrCleanupIncomplete, ErrResourceVersionStale, ErrAdmissionPending:
 		return 409
 	case ErrQueueRequired, ErrBackend, ErrArtifactExport:
 		return 502

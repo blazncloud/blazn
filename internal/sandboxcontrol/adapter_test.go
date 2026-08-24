@@ -1151,7 +1151,7 @@ func TestArtifactReorderingUsesCanonicalTrustedSet(t *testing.T) {
 func TestFrozenErrorStatusesAndOrchestrationNotice(t *testing.T) {
 	for code, status := range map[ErrorCode]int{
 		ErrInvalidRequest: 400, ErrIdentityBoundary: 404, ErrQueueRequired: 502, ErrRuntimeUntrusted: 403,
-		ErrConflict: 409, ErrNotFound: 404, ErrBackend: 502, ErrArtifactExport: 502, ErrCleanupIncomplete: 409, ErrResourceVersionStale: 409,
+		ErrConflict: 409, ErrNotFound: 404, ErrBackend: 502, ErrArtifactExport: 502, ErrCleanupIncomplete: 409, ErrResourceVersionStale: 409, ErrAdmissionPending: 409,
 	} {
 		err := adapterError(code, 599, "safe", nil).(*AdapterError)
 		if err.Status != status {
