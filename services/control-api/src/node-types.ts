@@ -6,6 +6,7 @@ export type NodeArchitecture = "amd64" | "arm64";
 export type NodeOperationType = "pause" | "resume" | "label" | "cordon" | "uncordon" | "rotate_identity" | "repair" | "update" | "drain" | "remove";
 
 export interface KubernetesBinding { clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string }
+export interface NodeActivationRequest { expectedVersion: number; receipt: Record<string, unknown>; kubernetesBinding: KubernetesBinding }
 export interface NodePlanSigningKey { keyId: string; publicKey: string; fingerprint: string }
 export interface NodeEnrollmentIdentity { generation: number; signingKeyId: string; publicKeyFingerprint: string; issuedAt: string; expiresAt: string }
 export interface ExchangeNodeEnrollmentResponse { plan: Record<string, unknown>; identity: NodeEnrollmentIdentity }

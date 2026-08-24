@@ -18,6 +18,7 @@ type API interface {
 	CreateNodeEnrollment(context.Context, string, string, string, client.CreateNodeEnrollmentRequest) (client.NodeEnrollmentSecret, error)
 	ExchangeNodeEnrollment(context.Context, string, client.ExchangeNodeEnrollmentRequest) (client.ExchangeNodeEnrollmentResponse, error)
 	SubmitNodeHeartbeat(context.Context, string, client.NodeHeartbeat) error
+	ActivateNode(context.Context, string, string, client.NodeActivationRequest) (client.Node, error)
 }
 
 type EnrollOptions struct {
@@ -117,6 +118,25 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 				return result, fmt.Errorf("persist verified Kubernetes binding: %w", err)
 			}
 			result.State = state
+		}
+		if state.KubernetesBinding == nil {
+			return result, errors.New("installed node has no verified Kubernetes binding for activation")
+		}
+		expectedVersion := int64(1)
+		if response.Plan.Mode == client.NodeModeFresh {
+			expectedVersion = 2
+		}
+		activation := client.NodeActivationRequest{ExpectedVersion: expectedVersion, Receipt: receipt, KubernetesBinding: *state.KubernetesBinding}
+		proof, err := nodeProof(identity.PrivateKey, "blazn-node-activation-v1", activation)
+		if err != nil {
+			return result, err
+		}
+		activated, err := s.api.ActivateNode(ctx, proof, "node-activate-"+receipt.ReceiptID, activation)
+		if err != nil {
+			return result, fmt.Errorf("activate installed node: %w", err)
+		}
+		if err := client.ValidateNode(activated); err != nil || activated.ID != response.Plan.NodeID || activated.LifecycleState != "active" || activated.TrustState != "verified" || activated.KubernetesBinding == nil || *activated.KubernetesBinding != *state.KubernetesBinding {
+			return result, errors.New("activation response differs from the installed node")
 		}
 		if err := s.installer.FinalizeServiceState(ctx, response.Plan); err != nil {
 			return result, fmt.Errorf("finalize daemon-owned node state: %w", err)

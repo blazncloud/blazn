@@ -112,6 +112,12 @@ type ExchangeNodeEnrollmentRequest struct {
 	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
 }
 
+type NodeActivationRequest struct {
+	ExpectedVersion    int64              `json:"expectedVersion"`
+	Receipt            NodeInstallReceipt `json:"receipt"`
+	KubernetesBinding  KubernetesBinding  `json:"kubernetesBinding"`
+}
+
 type Node struct {
 	ID                 string             `json:"id"`
 	WorkspaceID        string             `json:"workspaceId"`
@@ -2379,6 +2385,15 @@ func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, hear
 		return fmt.Errorf("node heartbeat capability digest mismatch")
 	}
 	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
+}
+
+func (c *Client) ActivateNode(ctx context.Context, nodeProof, idempotencyKey string, request NodeActivationRequest) (Node, error) {
+	var output Node
+	if nodeProof == "" || !validNodeIdempotencyKey(idempotencyKey) || request.ExpectedVersion < 1 || ValidateNodeInstallReceipt(request.Receipt) != nil || request.KubernetesBinding.ClusterID == "" || request.KubernetesBinding.NodeName == "" || request.KubernetesBinding.NodeUID == "" || request.KubernetesBinding.ResourceVersion == "" {
+		return output, fmt.Errorf("node activation request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/activations", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
+	return output, err
 }
 
 func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof, idempotencyKey string, request JoinCredentialRequest) (JoinCredential, error) {

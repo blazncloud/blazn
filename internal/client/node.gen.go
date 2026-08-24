@@ -1,5 +1,5 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: afec6e5eb06f127fe7abf3f880973b59a1fc42664e0a160cb2cc4b862ff04db7
+// OpenAPI SHA256: f586260c45fc529c5d5bc9aa5662562a6455ccb8fd3d7a6ae5218d8990e4e80e
 // NodeInstallPlan SHA256: b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f
 // NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
@@ -150,6 +150,12 @@ type ExchangeNodeEnrollmentRequest struct {
 	Platform           NodePlatform       `json:"platform"`
 	Architecture       NodeArchitecture   `json:"architecture"`
 	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
+}
+
+type NodeActivationRequest struct {
+	ExpectedVersion   int64              `json:"expectedVersion"`
+	Receipt           NodeInstallReceipt `json:"receipt"`
+	KubernetesBinding KubernetesBinding  `json:"kubernetesBinding"`
 }
 
 type Node struct {
@@ -2421,6 +2427,15 @@ func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, hear
 		return fmt.Errorf("node heartbeat capability digest mismatch")
 	}
 	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
+}
+
+func (c *Client) ActivateNode(ctx context.Context, nodeProof, idempotencyKey string, request NodeActivationRequest) (Node, error) {
+	var output Node
+	if nodeProof == "" || !validNodeIdempotencyKey(idempotencyKey) || request.ExpectedVersion < 1 || ValidateNodeInstallReceipt(request.Receipt) != nil || request.KubernetesBinding.ClusterID == "" || request.KubernetesBinding.NodeName == "" || request.KubernetesBinding.NodeUID == "" || request.KubernetesBinding.ResourceVersion == "" {
+		return output, fmt.Errorf("node activation request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/activations", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
+	return output, err
 }
 
 func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof, idempotencyKey string, request JoinCredentialRequest) (JoinCredential, error) {

@@ -949,10 +949,14 @@ func (f fixedCapability) Capability(context.Context) (client.NodeCapability, err
 }
 
 type mockAPI struct {
-	lastProof     string
-	lastHeartbeat client.NodeHeartbeat
-	secret        client.NodeEnrollmentSecret
-	exchange      client.ExchangeNodeEnrollmentResponse
+	lastProof           string
+	lastHeartbeat       client.NodeHeartbeat
+	lastActivationProof string
+	lastActivationKey   string
+	lastActivation      client.NodeActivationRequest
+	secret              client.NodeEnrollmentSecret
+	exchange            client.ExchangeNodeEnrollmentResponse
+	activation          client.Node
 }
 
 func (m *mockAPI) CreateNodeEnrollment(context.Context, string, string, string, client.CreateNodeEnrollmentRequest) (client.NodeEnrollmentSecret, error) {
@@ -968,6 +972,12 @@ func (m *mockAPI) SubmitNodeHeartbeat(_ context.Context, proof string, heartbeat
 	m.lastProof = proof
 	m.lastHeartbeat = heartbeat
 	return nil
+}
+func (m *mockAPI) ActivateNode(_ context.Context, proof, key string, request client.NodeActivationRequest) (client.Node, error) {
+	m.lastActivationProof = proof
+	m.lastActivationKey = key
+	m.lastActivation = request
+	return m.activation, nil
 }
 
 type memoryState struct {
@@ -1169,7 +1179,7 @@ func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
 	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
 	state := &memoryState{}
 	installer := NewInstaller(platform, state)
-	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected}
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected, activation: client.Node{ID: authorization.Expected.Plan.NodeID, WorkspaceID: authorization.Expected.Plan.WorkspaceID, Name: authorization.Expected.Plan.Hostname, Kind: "worker", Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, LifecycleState: "active", TrustState: "verified", Version: 3, KubernetesBinding: authorization.KubernetesBinding, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:01:00Z"}}
 	service := NewService(api, fixedIdentity{identity}, state, installer)
 	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
 	service.now = func() time.Time { return when }
@@ -1177,6 +1187,9 @@ func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
 	result, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: authorization.Expected.Plan.WorkspaceID, IdempotencyKey: authorization.Expected.Plan.IdempotencyKey, Name: authorization.Expected.Plan.Hostname, Mode: authorization.Expected.Plan.Mode, Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, MachineFingerprint: authorization.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
 	if err != nil || !result.Installed || state.runtime.KubernetesBinding == nil {
 		t.Fatalf("result=%#v binding=%#v err=%v", result, state.runtime.KubernetesBinding, err)
+	}
+	if api.lastActivation.Receipt.ReceiptID != result.Receipt.ReceiptID || api.lastActivation.KubernetesBinding != *authorization.KubernetesBinding || api.lastActivation.ExpectedVersion != 2 || api.lastActivationKey != "node-activate-"+result.Receipt.ReceiptID || api.lastActivationProof == "" {
+		t.Fatalf("activation=%#v key=%q proof=%q", api.lastActivation, api.lastActivationKey, api.lastActivationProof)
 	}
 	plan := authorization.Expected.Plan
 	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}

@@ -21,7 +21,7 @@ import (
 var nodeTemplate []byte
 
 const (
-	openAPISHA256          = "afec6e5eb06f127fe7abf3f880973b59a1fc42664e0a160cb2cc4b862ff04db7"
+	openAPISHA256          = "f586260c45fc529c5d5bc9aa5662562a6455ccb8fd3d7a6ae5218d8990e4e80e"
 	commonOpenAPISHA256    = "3a8ff28d4ffd9d36daa2711e95a2748d709347bb480c9e7a4678d5870506f3d0"
 	planSHA256             = "b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f"
 	receiptSHA256          = "459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6"
@@ -47,6 +47,7 @@ var operations = []operation{
 	{"/v1/nodes/{nodeId}/operations", "post", "createNodeOperation", "202", "CreateNodeOperationRequest", "NodeOperation", "bearer"},
 	{"/v1/nodes/{nodeId}/events", "get", "streamNodeEvents", "200", "", "sse", "bearer"},
 	{"/v1/node-service/heartbeats", "post", "submitNodeHeartbeat", "204", "NodeHeartbeat", "", "nodeProof"},
+	{"/v1/node-service/activations", "post", "activateNode", "200", "NodeActivationRequest", "Node", "nodeProof"},
 	{"/v1/node-service/join-credentials", "post", "issueNodeJoinCredential", "200", "JoinCredentialRequest", "JoinCredential", "nodeProof"},
 	{"/v1/node-service/join-credentials/{issuanceId}/consume", "post", "consumeNodeJoinCredential", "200", "ConsumeJoinCredentialRequest", "Node", "nodeProof"},
 }
@@ -375,7 +376,7 @@ func validateOpenAPI(document map[string]any) error {
 				return fmt.Errorf("%s must inherit global bearer auth", expected.id)
 			}
 		}
-		needsIdempotency := expected.id == "createNodeEnrollment" || expected.id == "createNodeOperation" || expected.id == "issueNodeJoinCredential" || expected.id == "consumeNodeJoinCredential"
+		needsIdempotency := expected.id == "createNodeEnrollment" || expected.id == "createNodeOperation" || expected.id == "activateNode" || expected.id == "issueNodeJoinCredential" || expected.id == "consumeNodeJoinCredential"
 		parameters, _ := at(document, append(base, "parameters")...).([]any)
 		hasIdempotency := false
 		for _, parameter := range parameters {
