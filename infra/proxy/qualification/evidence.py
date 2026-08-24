@@ -11,6 +11,7 @@ import os
 import pathlib
 import re
 import tempfile
+import uuid
 from typing import Any
 
 SCHEMA_VERSION = "proxy-qualification/v1"
@@ -260,8 +261,37 @@ def check_completion(values: list[dict[str, Any]]) -> None:
         raise EvidenceError("config tree sentinel is invalid")
     if baseline.get("directConnectivity", {}).get("reachable") is not True or not DIGEST.fullmatch(str(baseline.get("directConnectivity", {}).get("proofDigest", ""))):
         raise EvidenceError("authenticated direct-connectivity baseline is required")
-    if set(baseline.get("owner", {})) != {"hostId", "userId", "sessionId", "stateDigest"} or not DIGEST.fullmatch(str(baseline["owner"].get("stateDigest", ""))):
+    if set(baseline.get("owner", {})) != {"hostId", "userId", "sessionId", "stateDigest", "stateRoot"} or not DIGEST.fullmatch(str(baseline["owner"].get("stateDigest", ""))):
         raise EvidenceError("owner baseline is invalid")
+    state_root = baseline["owner"].get("stateRoot")
+    if not isinstance(state_root, str) or not pathlib.Path(state_root).is_absolute() or pathlib.Path(os.path.normpath(state_root)) != pathlib.Path(state_root) or state_root == "/":
+        raise EvidenceError("owner baseline state root is invalid")
+
+    def require_zero_residue(item: dict[str, Any], label: str) -> None:
+        result = item["result"]
+        observation = result.get("residueObservation")
+        required = {
+            "activationId", "sessionId", "stateRoot", "listenerObserved",
+            "listenerResidue", "ownedStateObserved", "ownedStateResidue",
+        }
+        try:
+            activation_id = str(uuid.UUID(str(observation.get("activationId"))))
+        except (AttributeError, ValueError) as exc:
+            raise EvidenceError(f"{label} residue observation activation is invalid") from exc
+        if (
+            not isinstance(observation, dict)
+            or set(observation) != required
+            or activation_id != observation["activationId"]
+            or observation["sessionId"] != item["identity"]["sessionId"]
+            or observation["stateRoot"] != state_root
+            or observation["listenerObserved"] is not True
+            or observation["ownedStateObserved"] is not True
+            or observation["listenerResidue"] is not False
+            or observation["ownedStateResidue"] is not False
+            or result.get("listenerResidue") is not observation["listenerResidue"]
+            or result.get("ownedStateResidue") is not observation["ownedStateResidue"]
+        ):
+            raise EvidenceError(f"{label} lacks exact activation/session/state-root zero-residue evidence")
 
     cycles = [item for item in values if item["action"] == "cycle" and item["status"] in {"passed", "recovery_required"}]
     numbers = [item["result"].get("cycle") for item in cycles]
@@ -269,6 +299,8 @@ def check_completion(values: list[dict[str, Any]]) -> None:
         raise EvidenceError("the exact twenty-cycle matrix is incomplete")
     if any(item["result"].get("configTreesUnchanged") is not True or item["result"].get("exactFiveRestored") is not True or item["result"].get("directConnectivityRestored") is not True for item in cycles):
         raise EvidenceError("a cycle did not prove config/CAS/direct restoration")
+    for item in cycles:
+        require_zero_residue(item, "cycle")
     cases = {item["result"].get("case") for item in cycles}
     if not REQUIRED_RECOVERY.issubset(cases):
         raise EvidenceError("the required recovery/failure cycle cases are incomplete")
@@ -295,6 +327,7 @@ def check_completion(values: list[dict[str, Any]]) -> None:
     result = cleanup[0]["result"]
     if result.get("directConnectivityRestored") is not True or result.get("configTreesUnchanged") is not True or result.get("listenerResidue") is not False or result.get("ownedStateResidue") is not False:
         raise EvidenceError("cleanup did not prove direct restoration and zero residue")
+    require_zero_residue(cleanup[0], "cleanup")
     cas = result.get("compareAndSet")
     if not isinstance(cas, list) or [item.get("name") for item in cas] != list(EXACT_ENVIRONMENT) or any(item.get("outcome") not in {"restored", "unchanged"} for item in cas):
         raise EvidenceError("cleanup lacks exact-five compare-and-set restoration evidence")

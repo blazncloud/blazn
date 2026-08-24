@@ -59,6 +59,8 @@ class StaticQualificationTest(unittest.TestCase):
         self.host = "fake-linux-01"
         self.user = "uid-1000"
         self.session = "session-01"
+        self.activation = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        self.state_root = self.home / ".local" / "share" / "blazn" / "proxy"
         key = qualification.lock_key(self.host, self.user)
         self.coordinator_lock = self.root / f"proxy-coordinator-{key}.lock"
         self.session_lock = self.root / f"proxy-session-{key}.lock"
@@ -103,7 +105,16 @@ class StaticQualificationTest(unittest.TestCase):
             "configTrees": {"codex": sha(b"codex-tree"), "claude": sha(b"claude-tree"), "hermes": sha(b"hermes-tree")},
             "directConnectivity": {"reachable": True, "proofDigest": sha(b"authenticated-direct-proof")},
             "proxy": {
-                "active": False, "listenerResidue": False, "ownedStateResidue": False,
+                "activationId": self.activation, "sessionId": self.session, "stateRoot": str(self.state_root),
+                "active": False,
+                "listenerObservation": {
+                    "activationId": self.activation, "sessionId": self.session, "stateRoot": str(self.state_root),
+                    "available": True, "residue": False,
+                },
+                "ownedStateObservation": {
+                    "activationId": self.activation, "sessionId": self.session, "stateRoot": str(self.state_root),
+                    "available": True, "residue": False,
+                },
                 "cas": {name: "restored" for name in qualification.EXACT_ENVIRONMENT},
             },
         }
@@ -224,7 +235,7 @@ class StaticQualificationTest(unittest.TestCase):
         self.assert_failed(result, "differs from the direct baseline")
 
         residue = copy.deepcopy(self.state)
-        residue["proxy"]["listenerResidue"] = True
+        residue["proxy"]["listenerObservation"]["residue"] = True
         residue_path = self.root / "residue-state.json"
         self.write_json(residue_path, residue)
         result = self.command("cleanup", state_path=residue_path)
@@ -236,6 +247,38 @@ class StaticQualificationTest(unittest.TestCase):
                 "recovery", "passed", qualification.identity(profile, self.correlation),
                 qualification.digest(qualification.canonical(profile)), {"prompt": "must never appear"},
             )
+
+    def test_cycle_and_cleanup_require_bound_available_zero_residue_observations(self) -> None:
+        self.assertEqual(self.command("capture-before").returncode, 0)
+        for action, extra in (("cycle", ("--cycle", "1", "--case", "normal-stop")), ("cleanup", ())):
+            for observation in ("listenerObservation", "ownedStateObservation"):
+                residue = copy.deepcopy(self.state)
+                residue["proxy"][observation]["residue"] = True
+                residue_path = self.root / f"{action}-{observation}-residue.json"
+                self.write_json(residue_path, residue)
+                result = self.command(action, *extra, state_path=residue_path)
+                self.assert_failed(result, "residue")
+
+                disappeared = copy.deepcopy(self.state)
+                disappeared["proxy"][observation]["available"] = False
+                disappeared_path = self.root / f"{action}-{observation}-disappeared.json"
+                self.write_json(disappeared_path, disappeared)
+                result = self.command(action, *extra, state_path=disappeared_path)
+                self.assert_failed(result, "unavailable")
+
+        malformed = copy.deepcopy(self.state)
+        del malformed["proxy"]["listenerObservation"]["residue"]
+        malformed_path = self.root / "malformed-observation.json"
+        self.write_json(malformed_path, malformed)
+        result = self.command("cycle", "--cycle", "1", "--case", "normal-stop", state_path=malformed_path)
+        self.assert_failed(result, "must contain exactly")
+
+        unbound = copy.deepcopy(self.state)
+        unbound["proxy"]["ownedStateObservation"]["activationId"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        unbound_path = self.root / "unbound-observation.json"
+        self.write_json(unbound_path, unbound)
+        result = self.command("cycle", "--cycle", "1", "--case", "normal-stop", state_path=unbound_path)
+        self.assert_failed(result, "exact activation/session/state root")
 
     def proof(self, client: str, version: str, decision: str) -> pathlib.Path:
         protocol = "anthropic-native" if client == "claude" else ("openai-responses" if client == "codex" else "openai-chat")
@@ -279,8 +322,7 @@ class StaticQualificationTest(unittest.TestCase):
 
         receipt = next((self.output / "receipts").glob("*cycle*.json"))
         value = json.loads(receipt.read_text())
-        value["result"]["configTreesUnchanged"] = False
-        value["checksum"] = evidence.checksum(value)
+        value["result"]["residueObservation"]["listenerResidue"] = True
         self.write_json(receipt, value)
         manifest = json.loads((self.output / "run.json").read_text())
         descriptor = next(item for item in manifest["receipts"] if item["path"] == f"receipts/{receipt.name}")
@@ -289,7 +331,24 @@ class StaticQualificationTest(unittest.TestCase):
         manifest["manifestDigest"] = evidence.digest_bytes(evidence.canonical({key: item for key, item in manifest.items() if key != "manifestDigest"}))
         self.write_json(self.output / "run.json", manifest)
         result = self.command("verify", approve=False)
-        self.assert_failed(result, "did not prove")
+        self.assert_failed(result, "receipt checksum")
+
+        value["checksum"] = evidence.checksum(value)
+        self.write_json(receipt, value)
+        descriptor["digest"] = evidence.digest_file(receipt)
+        descriptor["bytes"] = receipt.stat().st_size
+        manifest["manifestDigest"] = evidence.digest_bytes(evidence.canonical({key: item for key, item in manifest.items() if key != "manifestDigest"}))
+        self.write_json(self.output / "run.json", manifest)
+        paths = sorted(
+            [self.output / "run.json", *(self.output / "receipts").glob("*.json")],
+            key=lambda item: item.relative_to(self.output).as_posix(),
+        )
+        (self.output / "SHA256SUMS").write_text("".join(
+            f"{evidence.digest_file(path).removeprefix('sha256:')}  {path.relative_to(self.output).as_posix()}\n"
+            for path in paths
+        ))
+        result = self.command("verify", approve=False)
+        self.assert_failed(result, "zero-residue evidence")
 
 
 if __name__ == "__main__":

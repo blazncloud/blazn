@@ -72,7 +72,10 @@ corruption, manager outage, partial publication, ambiguous recovery, repeated
 on/off, receipt/both-record corruption, stale PID reuse, missing CA, and
 Management API outage. Each cycle must prove byte-identical client sentinels,
 exact-five compare-and-set restoration, direct connectivity, and zero listener
-or Blazn-owned state residue. Ambiguous ownership must emit
+or Blazn-owned state residue. Zero-residue receipts are derived from explicit,
+available listener and owned-state observations bound to the exact activation,
+login session, and platform account state root; an unavailable, malformed, or
+positive observation fails the action and cannot be finalized. Ambiguous ownership must emit
 `RECOVERY_REQUIRED`, report `userStateChanged: false`, and leave user state
 untouched.
 

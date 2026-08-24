@@ -373,9 +373,40 @@ def validate_fake_state(value: Any, profile: dict[str, Any]) -> dict[str, Any]:
     direct = strict_keys(state_value["directConnectivity"], {"reachable", "proofDigest"}, "fake direct connectivity")
     if not isinstance(direct["reachable"], bool) or not DIGEST.fullmatch(str(direct["proofDigest"])):
         raise QualificationError("fake direct connectivity proof is invalid")
-    proxy = strict_keys(state_value["proxy"], {"active", "listenerResidue", "ownedStateResidue", "cas"}, "fake proxy state")
-    if any(not isinstance(proxy[name], bool) for name in ("active", "listenerResidue", "ownedStateResidue")):
-        raise QualificationError("fake proxy flags must be boolean")
+    proxy = strict_keys(
+        state_value["proxy"],
+        {"activationId", "sessionId", "stateRoot", "active", "listenerObservation", "ownedStateObservation", "cas"},
+        "fake proxy state",
+    )
+    try:
+        activation_id = str(uuid.UUID(str(proxy["activationId"])))
+    except (ValueError, AttributeError) as exc:
+        raise QualificationError("fake proxy activationId must be a canonical UUID") from exc
+    if activation_id != proxy["activationId"]:
+        raise QualificationError("fake proxy activationId must be a canonical UUID")
+    if proxy["sessionId"] != profile["owner"]["sessionId"]:
+        raise QualificationError("fake proxy session differs from qualification profile")
+    state_root = clean_absolute_path(proxy["stateRoot"], "fake proxy stateRoot", pathlib.Path(profile["owner"]["home"]))
+    platform_root = (
+        pathlib.Path(profile["owner"]["home"]) / ".local" / "share" / "blazn" / "proxy"
+        if profile["platform"] == "linux"
+        else pathlib.Path(profile["owner"]["home"]) / "Library" / "Application Support" / "Blazn" / "proxy"
+    )
+    if state_root != platform_root:
+        raise QualificationError("fake proxy stateRoot differs from the exact account state root")
+    if not isinstance(proxy["active"], bool):
+        raise QualificationError("fake proxy active flag must be boolean")
+    binding = {"activationId": proxy["activationId"], "sessionId": proxy["sessionId"], "stateRoot": proxy["stateRoot"]}
+    for name in ("listenerObservation", "ownedStateObservation"):
+        observation = strict_keys(
+            proxy[name],
+            {"activationId", "sessionId", "stateRoot", "available", "residue"},
+            f"fake proxy {name}",
+        )
+        if any(observation[field] != expected for field, expected in binding.items()):
+            raise QualificationError(f"fake proxy {name} is not bound to the exact activation/session/state root")
+        if not isinstance(observation["available"], bool) or not isinstance(observation["residue"], bool):
+            raise QualificationError(f"fake proxy {name} availability and residue must be boolean")
     if not isinstance(proxy["cas"], dict) or set(proxy["cas"]) != set(EXACT_ENVIRONMENT) or any(value not in {"restored", "unchanged", "conflict"} for value in proxy["cas"].values()):
         raise QualificationError("fake compare-and-set results are invalid")
     return state_value
@@ -399,7 +430,26 @@ def baseline_result(state_value: dict[str, Any]) -> dict[str, Any]:
         ],
         "configTrees": [{"client": client, "treeDigest": state_value["configTrees"][client]} for client in CLIENT_PATHS],
         "directConnectivity": state_value["directConnectivity"],
-        "owner": state_value["owner"],
+        "owner": {**state_value["owner"], "stateRoot": state_value["proxy"]["stateRoot"]},
+    }
+
+
+def zero_residue_result(state_value: dict[str, Any]) -> dict[str, Any]:
+    proxy = state_value["proxy"]
+    listener = proxy["listenerObservation"]
+    owned_state = proxy["ownedStateObservation"]
+    if not listener["available"] or not owned_state["available"]:
+        raise QualificationError("proxy residue observation became unavailable")
+    if proxy["active"] or listener["residue"] or owned_state["residue"]:
+        raise QualificationError("proxy post-state contains an active listener or Blazn-owned residue")
+    return {
+        "activationId": proxy["activationId"],
+        "sessionId": proxy["sessionId"],
+        "stateRoot": proxy["stateRoot"],
+        "listenerObserved": listener["available"],
+        "listenerResidue": listener["residue"],
+        "ownedStateObserved": owned_state["available"],
+        "ownedStateResidue": owned_state["residue"],
     }
 
 
@@ -480,6 +530,7 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
         trees_ok, env_ok = unchanged(state_value, baseline)
         if not trees_ok or not env_ok or not state_value["directConnectivity"]["reachable"]:
             raise QualificationError("cycle post-state differs from the direct baseline")
+        residue = zero_residue_result(state_value)
         ambiguous = args.case == "ambiguous-recovery"
         result = {
             "cycle": args.cycle,
@@ -487,8 +538,9 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
             "configTreesUnchanged": trees_ok,
             "exactFiveRestored": env_ok,
             "directConnectivityRestored": state_value["directConnectivity"]["reachable"],
-            "listenerResidue": False,
-            "ownedStateResidue": False,
+            "listenerResidue": residue["listenerResidue"],
+            "ownedStateResidue": residue["ownedStateResidue"],
+            "residueObservation": residue,
             "userStateChanged": False if ambiguous else None,
         }
         receipt = make_receipt("cycle", "recovery_required" if ambiguous else "passed", identity_value, profile_digest, result)
@@ -516,14 +568,16 @@ def execute(args: argparse.Namespace, profile: dict[str, Any], profile_digest: s
         baseline = load_baseline(args.evidence)
         trees_ok, env_ok = unchanged(state_value, baseline)
         cas = [{"name": name, "outcome": state_value["proxy"]["cas"][name]} for name in EXACT_ENVIRONMENT]
-        if not trees_ok or not env_ok or not state_value["directConnectivity"]["reachable"] or state_value["proxy"]["active"] or state_value["proxy"]["listenerResidue"] or state_value["proxy"]["ownedStateResidue"] or any(item["outcome"] not in {"restored", "unchanged"} for item in cas):
+        residue = zero_residue_result(state_value)
+        if not trees_ok or not env_ok or not state_value["directConnectivity"]["reachable"] or any(item["outcome"] not in {"restored", "unchanged"} for item in cas):
             raise QualificationError("cleanup found config drift, CAS conflict, lost direct connectivity, or Blazn residue")
         result = {
             "compareAndSet": cas,
             "directConnectivityRestored": True,
             "configTreesUnchanged": True,
-            "listenerResidue": False,
-            "ownedStateResidue": False,
+            "listenerResidue": residue["listenerResidue"],
+            "ownedStateResidue": residue["ownedStateResidue"],
+            "residueObservation": residue,
         }
         receipt = make_receipt("cleanup", "passed", identity_value, profile_digest, result)
     else:
