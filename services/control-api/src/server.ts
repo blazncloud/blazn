@@ -341,7 +341,10 @@ const server = createServer((request, response) => {
     const httpError = error instanceof HttpError ? error : new HttpError("internal_error", "request failed");
     if (!response.headersSent) {
       if (httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
-      sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
+      const browserApproval = request.method === "POST" && request.url?.split("?")[0] === "/v1/auth/device/approve" && (request.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded");
+      if (browserApproval) {
+        sendHtml(response, httpError.status, renderLegacyAuthResult("Authorization failed", httpError.message, false));
+      } else sendJson(response, httpError.status, { code: httpError.code, message: httpError.message, requestId });
     }
     else response.end();
     if (!(error instanceof HttpError) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });
