@@ -45,6 +45,7 @@ for required in \
   'write_request()' \
   'cmp -s "$current" "$source_file"' \
   'if ! active_matches "$actual"' \
+  '--form "file=@$source_file;type=image/svg+xml"' \
   'stat -c '\''%u:%a:%h'\'''; do
   grep -F -- "$required" "$installer" >/dev/null
 done
