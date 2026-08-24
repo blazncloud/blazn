@@ -957,6 +957,7 @@ type mockAPI struct {
 	secret              client.NodeEnrollmentSecret
 	exchange            client.ExchangeNodeEnrollmentResponse
 	activation          client.Node
+	activationErr       error
 }
 
 func (m *mockAPI) CreateNodeEnrollment(context.Context, string, string, string, client.CreateNodeEnrollmentRequest) (client.NodeEnrollmentSecret, error) {
@@ -977,7 +978,7 @@ func (m *mockAPI) ActivateNode(_ context.Context, proof, key string, request cli
 	m.lastActivationProof = proof
 	m.lastActivationKey = key
 	m.lastActivation = request
-	return m.activation, nil
+	return m.activation, m.activationErr
 }
 
 type memoryState struct {
@@ -1077,7 +1078,9 @@ type mockPlatform struct {
 }
 type bindingMockPlatform struct {
 	*mockPlatform
-	binding *client.KubernetesBinding
+	binding      *client.KubernetesBinding
+	releaseCount int
+	releaseErr   error
 }
 type checkpointPlatform struct {
 	*mockPlatform
@@ -1142,6 +1145,17 @@ func (p *bindingMockPlatform) KubernetesBinding() *client.KubernetesBinding {
 	return &value
 }
 
+func (p *bindingMockPlatform) ReleaseNodeCapacity(context.Context, client.NodeInstallPlan, client.NodeInstallReceipt) (*client.KubernetesBinding, error) {
+	p.releaseCount++
+	if p.releaseErr != nil {
+		return nil, p.releaseErr
+	}
+	value := *p.binding
+	value.ResourceVersion = "8"
+	p.binding = &value
+	return &value, nil
+}
+
 func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
 	m.authorization = &authorization
 	return m.authorizeErr
@@ -1191,12 +1205,28 @@ func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
 	if api.lastActivation.Receipt.ReceiptID != result.Receipt.ReceiptID || api.lastActivation.KubernetesBinding != *authorization.KubernetesBinding || api.lastActivation.ExpectedVersion != 2 || api.lastActivationKey != "node-activate-"+result.Receipt.ReceiptID || api.lastActivationProof == "" {
 		t.Fatalf("activation=%#v key=%q proof=%q", api.lastActivation, api.lastActivationKey, api.lastActivationProof)
 	}
+	if platform.releaseCount != 1 || state.runtime.KubernetesBinding.ResourceVersion != "8" || result.State.KubernetesBinding.ResourceVersion != "8" || platform.finalized != 1 {
+		t.Fatalf("release count=%d runtime=%#v result=%#v finalized=%d", platform.releaseCount, state.runtime.KubernetesBinding, result.State.KubernetesBinding, platform.finalized)
+	}
 	plan := authorization.Expected.Plan
-	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *state.runtime.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
 	daemon := NewDaemon(api, state, fixedIdentity{identity}, ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}})
 	daemon.now = func() time.Time { return when }
 	if _, err := daemon.Heartbeat(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInstallDoesNotReleaseCapacityWhenControlPlaneActivationFails(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
+	state := &memoryState{}
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected, activationErr: errors.New("activation unavailable")}
+	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, state))
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
+	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: authorization.Expected.Plan.WorkspaceID, IdempotencyKey: authorization.Expected.Plan.IdempotencyKey, Name: authorization.Expected.Plan.Hostname, Mode: authorization.Expected.Plan.Mode, Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, MachineFingerprint: authorization.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: trustedBootstrapProfile(authorization.Expected.Plan), ProfilePath: authorization.ProfilePath}, true)
+	if err == nil || platform.releaseCount != 0 || platform.finalized != 0 || state.runtime.KubernetesBinding == nil || state.runtime.KubernetesBinding.ResourceVersion != "7" {
+		t.Fatalf("err=%v release=%d finalized=%d binding=%#v", err, platform.releaseCount, platform.finalized, state.runtime.KubernetesBinding)
 	}
 }
 

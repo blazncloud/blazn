@@ -138,6 +138,19 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 		if err := client.ValidateNode(activated); err != nil || activated.ID != response.Plan.NodeID || activated.LifecycleState != "active" || activated.TrustState != "verified" || activated.KubernetesBinding == nil || *activated.KubernetesBinding != *state.KubernetesBinding {
 			return result, errors.New("activation response differs from the installed node")
 		}
+		releasedBinding, err := s.installer.ReleaseNodeCapacity(ctx, response.Plan, receipt)
+		if err != nil {
+			return result, fmt.Errorf("release activated node capacity: %w", err)
+		}
+		if releasedBinding.ClusterID != state.KubernetesBinding.ClusterID || releasedBinding.NodeName != state.KubernetesBinding.NodeName || releasedBinding.NodeUID != state.KubernetesBinding.NodeUID || releasedBinding.ResourceVersion == "" {
+			return result, errors.New("released capacity binding differs from the activated node")
+		}
+		state.KubernetesBinding = releasedBinding
+		state.UpdatedAt = nowString(s.now())
+		if err := s.state.SaveRuntime(state); err != nil {
+			return result, fmt.Errorf("persist released Kubernetes binding: %w", err)
+		}
+		result.State = state
 		if err := s.installer.FinalizeServiceState(ctx, response.Plan); err != nil {
 			return result, fmt.Errorf("finalize daemon-owned node state: %w", err)
 		}

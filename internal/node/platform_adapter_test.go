@@ -977,7 +977,7 @@ func TestRootHelperResponseRequiresEOF(t *testing.T) {
 
 func TestDaemonObservationClientRejectsEveryMutationOperation(t *testing.T) {
 	client := PipeObservationClient{HelperPath: DefaultRootHelperPath, Timeout: time.Second}
-	for _, operation := range []RootOperation{RootApply, RootRollback, RootJoin, RootLoadReceipt, RootFinalizeState} {
+	for _, operation := range []RootOperation{RootApply, RootRollback, RootJoin, RootReleaseCapacity, RootLoadReceipt, RootFinalizeState} {
 		if _, err := client.Call(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: operation}); err == nil {
 			t.Fatalf("operation %s reached daemon sudo boundary", operation)
 		}
@@ -1014,6 +1014,125 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 	}
 	if coordinator.issues != 0 || coordinator.confirms != 0 || adapter.joined == nil || adapter.joined.ExpectedResourceVersion != "8" {
 		t.Fatalf("issues=%d confirms=%d joined=%#v", coordinator.issues, coordinator.confirms, adapter.joined)
+	}
+}
+
+func TestPlatformAdapterReleasesCapacityAndAdvancesExactBinding(t *testing.T) {
+	plan := testJoinPlan("linux")
+	receipt := client.NodeInstallReceipt{ReceiptID: "receipt-1"}
+	calls := 0
+	privileged := functionPrivilegedClient(func(_ context.Context, request RootRequest) (RootResponse, error) {
+		calls++
+		if request.Operation != RootReleaseCapacity || request.Join == nil || request.Join.ExpectedNodeUID != "uid-1" || request.Join.ExpectedResourceVersion != "7" || request.Receipt == nil || request.Receipt.ReceiptID != receipt.ReceiptID {
+			return RootResponse{}, errors.New("capacity release request lost its binding")
+		}
+		return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "8"}}, nil
+	})
+	adapter, err := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, &countingJoinCoordinator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.plan = plan
+	adapter.joined = &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	binding, err := adapter.ReleaseNodeCapacity(context.Background(), plan, receipt)
+	if err != nil || calls != 1 || binding.ResourceVersion != "8" || adapter.KubernetesBinding().ResourceVersion != "8" {
+		t.Fatalf("binding=%#v adapter=%#v calls=%d err=%v", binding, adapter.KubernetesBinding(), calls, err)
+	}
+}
+
+func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	stateStore := &memoryState{}
+	installer := NewInstaller(&mockPlatform{failAt: -1}, stateStore)
+	installer.uid = func() int64 { return 0 }
+	issuedAt, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+	installer.now = func() time.Time { return issuedAt.Add(time.Minute) }
+	receipt, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := testRoot(t)
+	authorityPath := filepath.Join(root, "authority", "install-authority.json")
+	if err := os.Mkdir(filepath.Dir(authorityPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: plan.IssuedAt}
+	authority.Digest, err = RootInstallAuthorityDigest(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedAuthority, _ := json.Marshal(authority)
+	if err := writePrivateCreate(authorityPath, encodedAuthority); err != nil {
+		t.Fatal(err)
+	}
+	initial := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"7","labels":{"blazn.dev/pool":"default"}},"spec":{"unschedulable":true,"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"},{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+	released := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"8","labels":{"blazn.dev/pool":"default","blazn.dev/sandbox-eligible":"true"}},"spec":{"unschedulable":false,"taints":[{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+	getCalls, patchCalls := 0, 0
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		switch args[0] {
+		case "get":
+			getCalls++
+			if getCalls == 1 {
+				return []byte(initial), nil
+			}
+			return []byte(released), nil
+		case "patch":
+			patchCalls++
+			var operations []map[string]any
+			if len(args) != 8 || args[4] != "--patch" || json.Unmarshal([]byte(args[5]), &operations) != nil {
+				return nil, errors.New("invalid patch arguments")
+			}
+			patchJSON := args[5]
+			for _, required := range []string{`"op":"test","path":"/metadata/uid","value":"uid-1"`, `"op":"test","path":"/metadata/resourceVersion","value":"7"`, `"path":"/metadata/labels/blazn.dev~1sandbox-eligible","value":"true"`, `"path":"/spec/unschedulable","value":true`, `"path":"/spec/unschedulable","value":false`} {
+				if !strings.Contains(patchJSON, required) {
+					return nil, fmt.Errorf("patch lacks %s", required)
+				}
+			}
+			return []byte(released), nil
+		default:
+			return nil, errors.New("unexpected kubectl operation")
+		}
+	}}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: authorityPath, RootStateRoot: root}
+	join := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	binding, err := engine.releaseNodeCapacity(context.Background(), plan, join, &receipt)
+	if err != nil || binding.ResourceVersion != "8" || patchCalls != 1 || getCalls != 2 {
+		t.Fatalf("binding=%#v patch=%d get=%d err=%v", binding, patchCalls, getCalls, err)
+	}
+	join.ExpectedResourceVersion = "7"
+	binding, err = engine.releaseNodeCapacity(context.Background(), plan, join, &receipt)
+	if err != nil || binding.ResourceVersion != "8" || patchCalls != 1 {
+		t.Fatalf("idempotent binding=%#v patch=%d err=%v", binding, patchCalls, err)
+	}
+	join.ExpectedResourceVersion = "8"
+	if err := engine.verify(context.Background(), plan, join); err != nil {
+		t.Fatalf("released active receipt did not verify for retry: %v", err)
+	}
+	persisted, err := loadRootAuthority(authorityPath)
+	if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "8" {
+		t.Fatalf("persisted=%#v err=%v", persisted.KubernetesBinding, err)
+	}
+}
+
+func TestCapacityReleaseRejectsUnsafeNodeState(t *testing.T) {
+	falseValue := false
+	base := capacityNodeState{Name: "worker-1", UID: "uid-1", ResourceVersion: "7", Labels: map[string]string{}, Taints: []clusterTaint{{Key: "blazn.dev/bootstrap", Value: "pending", Effect: "NoSchedule"}}, Unschedulable: &falseValue}
+	for name, mutate := range map[string]func(*capacityNodeState){
+		"foreign bootstrap variant": func(state *capacityNodeState) { state.Taints[0].Value = "foreign" },
+		"duplicate bootstrap":       func(state *capacityNodeState) { state.Taints = append(state.Taints, state.Taints[0]) },
+		"conflicting label":         func(state *capacityNodeState) { state.Labels[capacityEligibilityLabel] = "false" },
+		"partial release":           func(state *capacityNodeState) { state.Labels[capacityEligibilityLabel] = "true" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := base
+			state.Labels = map[string]string{}
+			state.Taints = append([]clusterTaint(nil), base.Taints...)
+			mutate(&state)
+			if _, err := validateCapacityState(state); err == nil {
+				t.Fatal("unsafe capacity state accepted")
+			}
+		})
 	}
 }
 
