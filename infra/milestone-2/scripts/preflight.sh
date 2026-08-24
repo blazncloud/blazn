@@ -160,10 +160,8 @@ if [ "$MODE" = deploy ]; then
     die "initial-password must be a non-symlink regular file"
   fi
   [ "$(stat -c '%u' "$SECRETS_ROOT/initial-password")" = 0 ] || die "initial-password must be owned by root"
-  case "$(stat -c '%a' "$SECRETS_ROOT/initial-password")" in
-    400|444) ;;
-    *) die "initial-password must have mode 0400 or 0444" ;;
-  esac
+  [ "$(stat -c '%a' "$SECRETS_ROOT/initial-password")" = 444 ] || \
+    die "initial-password must have mode 0444"
 fi
 
 printf '{"status":"ok","mode":"%s","bindAddress":"%s","ports":[%s,%s,%s,%s],"dataBytesFree":%s,"backupBytesFree":%s,"dataInodesFree":%s,"backupInodesFree":%s,"separateFilesystem":true}\n' \

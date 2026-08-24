@@ -26,6 +26,7 @@ esac
 require_command docker
 require_command install
 require_command cmp
+require_command chmod
 require_command mv
 export DOCKER_CONFIG="${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli}"
 ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
@@ -41,10 +42,8 @@ if [ ! -f "$SECRETS_ROOT/initial-password" ] || [ -L "$SECRETS_ROOT/initial-pass
   die "installed initial password is not a non-symlink regular file"
 fi
 [ "$(stat -c '%u' "$SECRETS_ROOT/initial-password")" = 0 ] || die "installed initial password must be owned by root"
-case "$(stat -c '%a' "$SECRETS_ROOT/initial-password")" in
-  400|444) ;;
-  *) die "installed initial password must have mode 0400 or 0444" ;;
-esac
+[ "$(stat -c '%a' "$SECRETS_ROOT/initial-password")" = 444 ] || \
+  die "installed initial password must have mode 0444"
 
 load_control_api_image "$ROOT_DIR"
 docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" config --quiet >/dev/null || \
@@ -52,7 +51,14 @@ docker compose -f "$ROOT_DIR/compose.yaml" --env-file "$ENV_FILE" config --quiet
 
 candidate=$SECRETS_ROOT/.initial-password.recovery-candidate
 if [ -e "$candidate" ] || [ -L "$candidate" ]; then
-  assert_regular_file_owned_mode "$candidate" 0 400
+  if [ ! -f "$candidate" ] || [ -L "$candidate" ]; then
+    die "recovery candidate must be a non-symlink regular file"
+  fi
+  [ "$(stat -c '%u' "$candidate")" = 0 ] || die "recovery candidate must be owned by root"
+  case "$(stat -c '%a' "$candidate")" in
+    400|444) ;;
+    *) die "recovery candidate must have mode 0400 or 0444" ;;
+  esac
   cmp -s -- "$staged" "$candidate" || die "a different recovery candidate is already pending reconciliation"
 else
   install -o root -g root -m 0400 -- "$staged" "$candidate"
@@ -91,6 +97,8 @@ if [ "$database_status" -eq 10 ]; then
 fi
 [ "$database_status" -eq 0 ] || die "database rotation outcome is uncertain; preserve the candidate and rerun the locked recovery command"
 
+chmod 0444 -- "$candidate" || \
+  die "database rotation succeeded but candidate permission activation failed; rerun the locked recovery command with the same staged file"
 mv -f -- "$candidate" "$SECRETS_ROOT/initial-password" || \
   die "database rotation succeeded but secret activation failed; rerun the locked recovery command with the same staged file"
 preserve_candidate=0

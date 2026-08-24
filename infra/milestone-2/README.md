@@ -170,9 +170,9 @@ operator reconciles the main receipt in a separate reviewed lock operation.
 Password recovery is an explicit operator operation; neither normal API startup
 nor the restart-idempotent identity bootstrap invokes it. Use only the reviewed,
 receipt-bound control API image containing this recovery command. First apply
-its migrations using the normal locked deployment procedure. The recovery
-grant remains limited to password fields, session revocation, and authorization
-expiry; registered device rows are not changed.
+its migrations using the normal locked deployment procedure. Recovery is
+isolated behind a hardened migration-owned database function executable only by
+the bootstrap role; registered device rows are not changed.
 
 Run the following from a root operator shell. The documented entry point is the
 normal mutation-lock wrapper, which supplies a new fencing token to the
@@ -204,9 +204,12 @@ it copies that file to a mode-0400 candidate beside `initial-password`, leaving
 the old installed secret active. The container runs as root solely to read that
 candidate mount; its existing dropped capabilities and no-new-privileges policy
 still apply. A database-command failure removes the candidate and leaves the
-old secret untouched. Success atomically renames the same-filesystem candidate
-over `initial-password` only after password update, session revocation, and
-invalidation of outstanding device authorizations commit together.
+old secret untouched. After password update, session revocation, and
+invalidation of outstanding device authorizations commit together, the script
+changes the candidate to the installed mode 0444 and atomically renames it over
+`initial-password`. A permission or rename failure preserves the candidate;
+reconciliation accepts the same root-owned, same-content candidate in mode 0400
+or 0444 and safely retries activation.
 
 If the locked command fails, do not remove the staged file. A failure or
 interrupt after the database may have committed preserves the candidate and

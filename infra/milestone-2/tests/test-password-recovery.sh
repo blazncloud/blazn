@@ -50,6 +50,21 @@ case "$1:$2" in
 esac
 exec /usr/bin/mv -- "$1" "$2"
 EOF
+cat >"$top/bin/chmod" <<'EOF'
+#!/bin/sh
+set -eu
+mode=$1
+shift
+[ "${1:-}" != -- ] || shift
+target=${1:?missing chmod target}
+case "$mode:$target" in
+  0444:*".initial-password.recovery-candidate")
+    printf 'candidate-publishable\n' >>"$FAKE_RECOVERY_LOG"
+    [ "${FAKE_CHMOD_FAIL:-0}" != 1 ] || exit 74
+    ;;
+esac
+exec /usr/bin/chmod "$mode" -- "$target"
+EOF
 cat >"$top/bin/docker" <<'EOF'
 #!/bin/sh
 set -eu
@@ -59,8 +74,10 @@ case "$*" in
   compose*" run "*)
     candidate=$BLAZN_SECRETS_ROOT/.initial-password.recovery-candidate
     [ -f "$candidate" ] || { printf 'database command ran without a candidate\n' >&2; exit 72; }
+    candidate_mode=$(stat -c '%a' "$candidate")
+    case "$candidate_mode" in 400|444) ;; *) printf 'candidate has unsafe mode\n' >&2; exit 72 ;; esac
     [ "$(cat "$BLAZN_SECRETS_ROOT/initial-password")" = old-password ] || { printf 'installed secret changed before database command\n' >&2; exit 72; }
-    printf 'database-command\n' >>"$FAKE_RECOVERY_LOG"
+    printf 'database-command-%s\n' "$candidate_mode" >>"$FAKE_RECOVERY_LOG"
     case "${FAKE_DB_RESULT:-success}" in
       success) exit 0 ;;
       known-failure) exit 10 ;;
@@ -107,10 +124,11 @@ run_locked() {
 success=$(fixture success)
 run_locked "$success" env >"$success/out" 2>"$success/err"
 [ "$(cat "$success/events")" = "candidate-prepared
-database-command
+database-command-400
+candidate-publishable
 atomic-rename" ] || { printf 'recovery ordering is incorrect\n' >&2; exit 1; }
 [ "$(cat "$success/secrets/initial-password")" = new-password-value ]
-[ "$(stat -c '%a' "$success/secrets/initial-password")" = 400 ]
+[ "$(stat -c '%a' "$success/secrets/initial-password")" = 444 ]
 [ ! -e "$success/secrets/.initial-password.recovery-candidate" ]
 grep -F 'bootstrap password recovery completed' "$success/out" >/dev/null
 
@@ -122,7 +140,7 @@ fi
 [ "$(cat "$db_failure/secrets/initial-password")" = old-password ]
 [ ! -e "$db_failure/secrets/.initial-password.recovery-candidate" ]
 [ "$(cat "$db_failure/events")" = "candidate-prepared
-database-command" ]
+database-command-400" ]
 
 uncertain=$(fixture uncertain)
 if run_locked "$uncertain" env FAKE_DB_RESULT=uncertain >"$uncertain/out" 2>"$uncertain/err"; then
@@ -133,6 +151,16 @@ fi
 cmp -s "$uncertain/staged" "$uncertain/secrets/.initial-password.recovery-candidate"
 grep -F 'outcome is uncertain' "$uncertain/err" >/dev/null
 
+chmod_failure=$(fixture chmod-failure)
+if run_locked "$chmod_failure" env FAKE_CHMOD_FAIL=1 >"$chmod_failure/out" 2>"$chmod_failure/err"; then
+  printf 'permission activation failure unexpectedly succeeded\n' >&2
+  exit 1
+fi
+[ "$(cat "$chmod_failure/secrets/initial-password")" = old-password ]
+cmp -s "$chmod_failure/staged" "$chmod_failure/secrets/.initial-password.recovery-candidate"
+[ "$(stat -c '%a' "$chmod_failure/secrets/.initial-password.recovery-candidate")" = 400 ]
+grep -F 'candidate permission activation failed' "$chmod_failure/err" >/dev/null
+
 rename_failure=$(fixture rename-failure)
 if run_locked "$rename_failure" env FAKE_RENAME_FAIL=1 >"$rename_failure/out" 2>"$rename_failure/err"; then
   printf 'rename failure unexpectedly succeeded\n' >&2
@@ -140,9 +168,12 @@ if run_locked "$rename_failure" env FAKE_RENAME_FAIL=1 >"$rename_failure/out" 2>
 fi
 [ "$(cat "$rename_failure/secrets/initial-password")" = old-password ]
 cmp -s "$rename_failure/staged" "$rename_failure/secrets/.initial-password.recovery-candidate"
+[ "$(stat -c '%a' "$rename_failure/secrets/.initial-password.recovery-candidate")" = 444 ]
 grep -F 'preserve the recovery candidate' "$rename_failure/err" >/dev/null
 run_locked "$rename_failure" env >"$rename_failure/retry.out" 2>"$rename_failure/retry.err"
 [ "$(cat "$rename_failure/secrets/initial-password")" = new-password-value ]
+[ "$(stat -c '%a' "$rename_failure/secrets/initial-password")" = 444 ]
+grep -F 'database-command-444' "$rename_failure/events" >/dev/null
 
 validation=$(fixture validation)
 if env PATH="$top/bin:$PATH" BLAZN_SECRETS_ROOT="$validation/secrets" "$RECOVERY" "$validation/staged" >"$validation/direct.out" 2>"$validation/direct.err"; then
