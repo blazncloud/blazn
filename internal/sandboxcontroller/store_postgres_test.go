@@ -58,6 +58,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	executor := &fakeExecutor{rows: []sqlRow{
 		resultRow{values: []any{true}},
 		resultRow{values: []any{true}},
+		resultRow{values: []any{sql.NullString{String: "80000000-0000-4000-8000-000000000001", Valid: true}}},
 		resultRow{values: []any{string(RetryScheduled)}},
 		resultRow{values: []any{true}},
 		resultRow{values: []any{3}},
@@ -78,6 +79,15 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	if recorded, err := store.RecordSources(context.Background(), "operation", "worker", "lease", observation, receipt); err != nil || !recorded {
 		t.Fatalf("record sources: recorded=%v err=%v", recorded, err)
 	}
+	artifactObservation := observation
+	artifactObservation.Sandbox.Name = "30000000-0000-4000-8000-000000000001"
+	artifactObservation.Workload.WorkspaceID = "40000000-0000-4000-8000-000000000001"
+	artifact := PersistedArtifact{Name: "result", Path: "/workspace/artifacts/result", MediaType: "text/plain",
+		Digest: "sha256:" + strings.Repeat("d", 64), Size: 6}
+	artifact.ObjectKey, _ = ArtifactObjectKey(artifactObservation.Workload.WorkspaceID, artifactObservation.Sandbox.Name, artifact.Name)
+	if id, recorded, err := store.RecordArtifact(context.Background(), "operation", "worker", "lease", artifactObservation, artifact); err != nil || !recorded || id != "80000000-0000-4000-8000-000000000001" {
+		t.Fatalf("record artifact: id=%q recorded=%v err=%v", id, recorded, err)
+	}
 	if outcome, err := store.Retry(context.Background(), "operation", "worker", "lease", 10,
 		SafeError{Code: "backend_failure", Message: "safe", RequestID: "request-123"}); err != nil || outcome != RetryScheduled {
 		t.Fatalf("retry: outcome=%q err=%v", outcome, err)
@@ -91,7 +101,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	if count, err := store.EnqueueExpired(context.Background(), 4); err != nil || count != 3 {
 		t.Fatalf("expiry: count=%d err=%v", count, err)
 	}
-	queries := []string{bindSQL, recordSourcesSQL, retrySQL, completeSQL, expirySQL}
+	queries := []string{bindSQL, recordSourcesSQL, recordArtifactSQL, retrySQL, completeSQL, expirySQL}
 	for index, query := range queries {
 		if executor.calls[index].query != query {
 			t.Fatalf("query %d was %q, want %q", index, executor.calls[index].query, query)

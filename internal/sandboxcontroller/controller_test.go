@@ -65,6 +65,9 @@ func (s *fakeStore) RecordSources(_ context.Context, _, _, _ string, _ sandboxco
 	s.sourceReceipt = &receipt
 	return true, nil
 }
+func (*fakeStore) RecordArtifact(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, artifact PersistedArtifact) (string, bool, error) {
+	return artifact.ID, true, nil
+}
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
 	s.retryCalls++
 	s.retry = &safe

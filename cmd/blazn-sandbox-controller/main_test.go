@@ -26,6 +26,9 @@ func (*factoryStore) BindBackend(context.Context, string, string, string, sandbo
 func (*factoryStore) RecordSources(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) (bool, error) {
 	return false, nil
 }
+func (*factoryStore) RecordArtifact(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxcontroller.PersistedArtifact) (string, bool, error) {
+	return "", false, nil
+}
 func (*factoryStore) Retry(context.Context, string, string, string, int, sandboxcontroller.SafeError) (sandboxcontroller.RetryOutcome, error) {
 	return sandboxcontroller.Fenced, nil
 }

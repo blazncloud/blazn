@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -16,13 +17,14 @@ import (
 )
 
 const (
-	claimSQL         = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v4($1,$2) claimed"
-	renewSQL         = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
-	bindSQL          = "SELECT public.sandbox_controller_bind_backend_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
-	recordSourcesSQL = "SELECT public.sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)"
-	retrySQL         = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
-	completeSQL      = "SELECT public.sandbox_controller_complete_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
-	expirySQL        = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
+	claimSQL          = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v5($1,$2) claimed"
+	renewSQL          = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
+	bindSQL           = "SELECT public.sandbox_controller_bind_backend_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
+	recordSourcesSQL  = "SELECT public.sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)"
+	recordArtifactSQL = "SELECT public.sandbox_controller_record_artifact_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
+	retrySQL          = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
+	completeSQL       = "SELECT public.sandbox_controller_complete_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
+	expirySQL         = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
 )
 
 var sha256Pattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -173,6 +175,37 @@ func (s *PgStore) RecordSources(ctx context.Context, operationID, workerID, leas
 	return recorded, err
 }
 
+func (s *PgStore) RecordArtifact(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation, artifact PersistedArtifact) (string, bool, error) {
+	if artifact.ID != "" || !artifactNamePattern.MatchString(artifact.Name) || !validWorkspaceArtifactPath(artifact.Path) ||
+		!mediaTypePattern.MatchString(artifact.MediaType) || !sha256Pattern.MatchString(artifact.Digest) || artifact.Size < 0 || artifact.Size > maxArtifactBytes {
+		return "", false, errors.New("sandbox artifact persistence input is invalid")
+	}
+	wantedKey, err := ArtifactObjectKey(observation.Workload.WorkspaceID, observation.Sandbox.Name, artifact.Name)
+	if err != nil || artifact.ObjectKey != wantedKey {
+		return "", false, errors.New("sandbox artifact object key is invalid")
+	}
+	workloadDigest, err := rawDigest(observation.Workload.Digest)
+	if err != nil {
+		return "", false, err
+	}
+	observationDigest, err := rawDigest(observation.Digest)
+	if err != nil {
+		return "", false, err
+	}
+	contentDigest, err := rawDigest(artifact.Digest)
+	if err != nil {
+		return "", false, err
+	}
+	var id sql.NullString
+	err = s.executor.QueryRow(ctx, recordArtifactSQL, operationID, workerID, leaseToken,
+		observation.Sandbox.UID, observation.Sandbox.ResourceVersion, workloadDigest, observationDigest,
+		artifact.Name, artifact.Path, artifact.MediaType, contentDigest, artifact.Size, artifact.ObjectKey).Scan(&id)
+	if err != nil || !id.Valid {
+		return "", false, err
+	}
+	return id.String, true, nil
+}
+
 func (s *PgStore) Retry(ctx context.Context, operationID, workerID, leaseToken string, delaySeconds int, safe SafeError) (RetryOutcome, error) {
 	var outcome string
 	if err := s.executor.QueryRow(ctx, retrySQL, operationID, workerID, leaseToken, delaySeconds,
@@ -290,6 +323,13 @@ type workItemRow struct {
 	ObservationDigest          *string         `json:"observation_digest"`
 	SourceReceipt              json.RawMessage `json:"source_materialization_receipt"`
 	SourceBootstrapObservation json.RawMessage `json:"source_bootstrap_observation"`
+	ExportedArtifactIDs        []string        `json:"exported_artifact_ids"`
+	ExportedArtifactNames      []string        `json:"exported_artifact_names"`
+	ExportedArtifactPaths      []string        `json:"exported_artifact_paths"`
+	ExportedArtifactMediaTypes []string        `json:"exported_artifact_media_types"`
+	ExportedArtifactDigests    []string        `json:"exported_artifact_digests"`
+	ExportedArtifactSizes      []int64         `json:"exported_artifact_sizes"`
+	ExportedArtifactKeys       []string        `json:"exported_artifact_keys"`
 }
 
 func decodeWorkItem(payload []byte) (*WorkItem, error) {
@@ -338,6 +378,30 @@ func decodeWorkItem(payload []byte) (*WorkItem, error) {
 	for index, name := range row.ArtifactNames {
 		item.Artifacts = append(item.Artifacts, Artifact{Name: name, Path: row.ArtifactPaths[index],
 			MediaType: row.ArtifactMediaTypes[index], Required: row.ArtifactRequired[index]})
+	}
+	exportedCount := len(row.ExportedArtifactIDs)
+	if len(row.ExportedArtifactNames) != exportedCount || len(row.ExportedArtifactPaths) != exportedCount ||
+		len(row.ExportedArtifactMediaTypes) != exportedCount || len(row.ExportedArtifactDigests) != exportedCount ||
+		len(row.ExportedArtifactSizes) != exportedCount || len(row.ExportedArtifactKeys) != exportedCount {
+		return nil, errors.New("sandbox controller exported artifact columns are inconsistent")
+	}
+	contracts := make(map[string]Artifact, len(item.Artifacts))
+	for _, artifact := range item.Artifacts {
+		contracts[artifact.Name] = artifact
+	}
+	for index, id := range row.ExportedArtifactIDs {
+		name := row.ExportedArtifactNames[index]
+		contract, ok := contracts[name]
+		digest := "sha256:" + strings.TrimSpace(row.ExportedArtifactDigests[index])
+		wantedKey, keyErr := ArtifactObjectKey(item.WorkspaceID, item.SandboxID, name)
+		if !ok || !canonicalUUID(id) || index > 0 && row.ExportedArtifactNames[index-1] >= name ||
+			row.ExportedArtifactPaths[index] != contract.Path || row.ExportedArtifactMediaTypes[index] != contract.MediaType ||
+			!sha256Pattern.MatchString(digest) || row.ExportedArtifactSizes[index] < 0 || row.ExportedArtifactSizes[index] > maxArtifactBytes ||
+			keyErr != nil || row.ExportedArtifactKeys[index] != wantedKey {
+			return nil, errors.New("sandbox controller exported artifact identity is inconsistent")
+		}
+		item.PersistedArtifacts = append(item.PersistedArtifacts, PersistedArtifact{ID: id, Name: name, Path: contract.Path,
+			MediaType: contract.MediaType, Digest: digest, Size: row.ExportedArtifactSizes[index], ObjectKey: wantedKey})
 	}
 	observation, workloadDigest, err := decodeObservation(row)
 	if err != nil {
@@ -474,4 +538,9 @@ func rawDigest(value string) (string, error) {
 		return "", errors.New("sandbox controller admission digest is invalid")
 	}
 	return strings.TrimPrefix(value, "sha256:"), nil
+}
+
+func validWorkspaceArtifactPath(value string) bool {
+	return len(value) > len("/workspace/artifacts/") && len(value) <= 512 && strings.HasPrefix(value, "/workspace/artifacts/") &&
+		path.Clean(value) == value && !strings.Contains(value, "//") && !strings.Contains(value, `\`)
 }

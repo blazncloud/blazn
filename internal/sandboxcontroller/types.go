@@ -19,6 +19,11 @@ type Artifact struct {
 	Required              bool
 }
 
+type PersistedArtifact struct {
+	ID, Name, Path, MediaType, Digest, ObjectKey string
+	Size                                         int64
+}
+
 type Resources struct {
 	CPURequest, MemoryRequest, EphemeralRequest string
 	CPULimit, MemoryLimit, EphemeralLimit       string
@@ -47,6 +52,7 @@ type WorkItem struct {
 	AdmissionObservation                                                          *sandboxcontrol.AdmissionObservation
 	SourceMaterialization                                                         *sandboxio.SourceMaterializationReceipt
 	SourceBootstrapObservation                                                    *sandboxcontrol.AdmissionObservation
+	PersistedArtifacts                                                            []PersistedArtifact
 }
 
 type LeaseWindow struct {
@@ -78,6 +84,7 @@ type Store interface {
 	Renew(context.Context, string, string, string, int) (LeaseWindow, bool, error)
 	BindBackend(context.Context, string, string, string, sandboxcontrol.AdmissionObservation) (bool, error)
 	RecordSources(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) (bool, error)
+	RecordArtifact(context.Context, string, string, string, sandboxcontrol.AdmissionObservation, PersistedArtifact) (string, bool, error)
 	Retry(context.Context, string, string, string, int, SafeError) (RetryOutcome, error)
 	Complete(context.Context, string, string, string, Completion) (bool, error)
 	EnqueueExpired(context.Context, int) (int, error)
