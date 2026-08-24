@@ -584,6 +584,7 @@ func TestValidateWorkItemRejectsNoncanonicalAndDuplicateSources(t *testing.T) {
 	for label, source := range map[string]Source{
 		"duplicate name":        {Name: valid.Name, URL: "https://example.test/other.git", Destination: "/workspace/src/other", Commit: strings.Repeat("b", 40)},
 		"duplicate destination": {Name: "other", URL: "https://example.test/other.git", Destination: valid.Destination, Commit: strings.Repeat("b", 40)},
+		"nested destination":    {Name: "other", URL: "https://example.test/other.git", Destination: valid.Destination + "/vendor", Commit: strings.Repeat("b", 40)},
 	} {
 		t.Run(label, func(t *testing.T) {
 			candidate := item
@@ -592,6 +593,11 @@ func TestValidateWorkItemRejectsNoncanonicalAndDuplicateSources(t *testing.T) {
 				t.Fatal("duplicate source identity accepted")
 			}
 		})
+	}
+	reversed := item
+	reversed.Sources = []Source{{Name: "child", URL: "https://example.test/child.git", Destination: valid.Destination + "/vendor", Commit: strings.Repeat("b", 40)}, valid}
+	if err := validateWorkItem(reversed); err == nil {
+		t.Fatal("reverse-ordered nested destination was accepted")
 	}
 }
 

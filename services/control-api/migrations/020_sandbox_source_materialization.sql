@@ -1,6 +1,37 @@
 -- Fence credential-free source materialization receipts to the exact active
 -- create lease and persisted Sandbox -> Pod -> Workload observation.
 
+DO $$ BEGIN
+  IF EXISTS(
+    SELECT 1 FROM sandbox_template_version_repositories parent
+    JOIN sandbox_template_version_repositories child ON child.version_id=parent.version_id AND child.name<>parent.name
+    WHERE left(child.destination,char_length(parent.destination)+1)=parent.destination||'/') THEN
+    RAISE EXCEPTION 'existing Sandbox repository destinations overlap' USING ERRCODE='23514';
+  END IF;
+END $$;
+
+CREATE FUNCTION sandbox_reject_nested_repository_destinations()
+RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
+AS $$
+DECLARE target_version uuid := coalesce(NEW.version_id,OLD.version_id);
+BEGIN
+  IF EXISTS(
+    SELECT 1 FROM public.sandbox_template_version_repositories parent
+    JOIN public.sandbox_template_version_repositories child
+      ON child.version_id=parent.version_id AND child.name<>parent.name
+    WHERE parent.version_id=target_version AND
+      left(child.destination,char_length(parent.destination)+1)=parent.destination||'/') THEN
+    RAISE EXCEPTION 'Sandbox repository destinations overlap' USING ERRCODE='23514';
+  END IF;
+  RETURN NULL;
+END
+$$;
+CREATE CONSTRAINT TRIGGER sandbox_repository_destinations_nonoverlapping
+AFTER INSERT OR UPDATE OR DELETE ON sandbox_template_version_repositories
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
+EXECUTE FUNCTION sandbox_reject_nested_repository_destinations();
+
 CREATE FUNCTION sandbox_source_digest_field(p_value text)
 RETURNS bytea
 LANGUAGE sql IMMUTABLE STRICT
@@ -353,6 +384,7 @@ $$;
 REVOKE ALL ON TABLE sandbox_source_materialization_receipts
   FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker, blazn_sandbox_controller;
 REVOKE ALL ON FUNCTION
+  sandbox_reject_nested_repository_destinations(),
   sandbox_source_digest_field(text),sandbox_source_manifest_digest(text[],text[],text[],text[],boolean[]),
   sandbox_source_receipt_digest(text,jsonb),sandbox_source_receipts_immutable(),
   sandbox_controller_record_source_materialization_v1(uuid,text,uuid,text,text,text,text,text,jsonb,jsonb),

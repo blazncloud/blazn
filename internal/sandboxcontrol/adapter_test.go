@@ -431,7 +431,7 @@ func TestRenderedSandboxIOPodContractIsExactTokenlessAndCredentialFree(t *testin
 	request := testCreate()
 	request.Sources = []SourceMount{
 		{Name: "repo", URL: "https://example.test/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40), Writable: true},
-		{Name: "vendor", URL: "https://example.test/vendor.git", Destination: "/workspace/src/repo/vendor", Commit: strings.Repeat("b", 40), Writable: false},
+		{Name: "vendor", URL: "https://example.test/vendor.git", Destination: "/workspace/src/vendor", Commit: strings.Repeat("b", 40), Writable: false},
 	}
 	canonicalArtifacts, artifactDigest, err := CanonicalArtifactContract(request.Artifacts)
 	if err != nil {
@@ -459,17 +459,17 @@ func TestRenderedSandboxIOPodContractIsExactTokenlessAndCredentialFree(t *testin
 	if len(sidecar.VolumeMounts) != 1 || sidecar.VolumeMounts[0] != (kubeVolumeMount{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}) {
 		t.Fatalf("artifact sidecar mount escaped boundary: %#v", sidecar.VolumeMounts)
 	}
-	readonlyNested := false
+	readonlySource := false
 	for _, mount := range pod.Containers[0].VolumeMounts {
 		if mount.MountPath == "/workspace" {
 			t.Fatal("main received a broad workspace volume")
 		}
-		if mount.MountPath == "/workspace/src/repo/vendor" && mount.ReadOnly {
-			readonlyNested = true
+		if mount.MountPath == "/workspace/src/vendor" && mount.ReadOnly {
+			readonlySource = true
 		}
 	}
-	if !readonlyNested {
-		t.Fatalf("nested read-only source mount missing: %#v", pod.Containers[0].VolumeMounts)
+	if !readonlySource {
+		t.Fatalf("read-only source mount missing: %#v", pod.Containers[0].VolumeMounts)
 	}
 	for _, helper := range pod.InitContainers {
 		if helper.SecurityContext["allowPrivilegeEscalation"] != false || helper.SecurityContext["readOnlyRootFilesystem"] != true ||
@@ -510,6 +510,12 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 		request.Sources = []SourceMount{source}
 		assertCode(t, ValidateCreate(request, trustedRuntimes()), ErrInvalidRequest)
 	}
+	nested := testCreate()
+	nested.Sources = []SourceMount{
+		{Name: "parent", URL: "https://example.test/parent", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)},
+		{Name: "child", URL: "https://example.test/child", Destination: "/workspace/src/repo/vendor", Commit: strings.Repeat("b", 40)},
+	}
+	assertCode(t, ValidateCreate(nested, trustedRuntimes()), ErrInvalidRequest)
 	withoutIO := testCreate()
 	withoutIO.Artifacts, withoutIO.HelperImage = nil, ""
 	if err := ValidateCreate(withoutIO, trustedRuntimes()); err != nil {

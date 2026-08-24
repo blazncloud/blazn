@@ -18,13 +18,16 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/go-git/go-billy/v5/osfs"
 	git "github.com/go-git/go-git/v5"
 	gitconfig "github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/cache"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	transportclient "github.com/go-git/go-git/v5/plumbing/transport/client"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 )
 
 const (
@@ -273,6 +276,9 @@ func (m GitMaterializer) materializeSource(ctx context.Context, source Source) (
 	}
 	result := SourceMaterialization{Name: source.Name, URL: source.URL, Destination: source.Destination, Commit: source.Commit,
 		Tree: tree.Hash.String(), ContentDigest: contentDigest, FileCount: len(files), TotalBytes: total, Writable: source.Writable}
+	if err := verifyMaterializedFiles(ctx, root, result); err != nil {
+		return SourceMaterialization{}, err
+	}
 	marker, err := json.Marshal(result)
 	if err != nil {
 		return SourceMaterialization{}, protocolError("source_receipt_invalid", err)
@@ -446,6 +452,9 @@ func collectTreeFiles(ctx context.Context, repository *git.Repository, tree *obj
 		if entry.Name == "" || entry.Name == "." || entry.Name == ".." || strings.ContainsAny(entry.Name, "/\\\x00") {
 			return protocolError("source_tree_unsafe", nil)
 		}
+		if prefix == "" && (entry.Name == sourceMarkerName || entry.Name == sourceScratchName) {
+			return protocolError("source_tree_unsafe", nil)
+		}
 		name := path.Join(prefix, entry.Name)
 		if len(name) > budget.maxPathBytes {
 			return protocolError("source_tree_too_large", nil)
@@ -479,7 +488,7 @@ func collectTreeFiles(ctx context.Context, repository *git.Repository, tree *obj
 
 func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceMaterialization) error {
 	entries, err := readRootDir(root, ".")
-	if err != nil || len(entries) == 0 {
+	if err != nil {
 		return protocolError("source_materialization_changed", err)
 	}
 	hash := sha256.New()
@@ -627,7 +636,9 @@ func (f SecureGitFetcher) Fetch(ctx context.Context, source Source, scratch stri
 	if scratch == "" || !filepath.IsAbs(scratch) || filepath.Clean(scratch) != scratch {
 		return nil, protocolError("source_scratch_invalid", nil)
 	}
-	repository, err := git.PlainInit(scratch, true)
+	storage := filesystem.NewStorageWithOptions(osfs.New(scratch, osfs.WithBoundOS()), cache.NewObjectLRU(4*cache.MiByte),
+		filesystem.Options{ExclusiveAccess: true, KeepDescriptors: false, MaxOpenDescriptors: 32, LargeObjectThreshold: 1 << 20})
+	repository, err := git.Init(storage, nil)
 	if err != nil {
 		return nil, err
 	}

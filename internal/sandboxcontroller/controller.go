@@ -11,6 +11,7 @@ import (
 	"path"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -448,11 +449,19 @@ func validateWorkItem(item WorkItem) error {
 		}
 	}
 	seenSourceNames, seenSourceDestinations := map[string]bool{}, map[string]bool{}
+	sourceDestinations := make([]string, 0, len(item.Sources))
 	for _, source := range item.Sources {
 		if !validControllerSource(source) || seenSourceNames[source.Name] || seenSourceDestinations[source.Destination] {
 			return fmt.Errorf("source identity is invalid")
 		}
 		seenSourceNames[source.Name], seenSourceDestinations[source.Destination] = true, true
+		sourceDestinations = append(sourceDestinations, source.Destination)
+	}
+	sort.Strings(sourceDestinations)
+	for index := 1; index < len(sourceDestinations); index++ {
+		if strings.HasPrefix(sourceDestinations[index], sourceDestinations[index-1]+"/") {
+			return fmt.Errorf("source destinations overlap")
+		}
 	}
 	for _, artifact := range item.Artifacts {
 		if artifact.Name == "" || artifact.Path == "" || artifact.MediaType == "" {

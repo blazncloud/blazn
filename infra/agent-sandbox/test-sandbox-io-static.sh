@@ -34,6 +34,10 @@ if grep -R -E 'net/http' "$ROOT/cmd/blazn-sandbox-io" "$ROOT/internal/sandboxio"
   exit 1
 fi
 source=$ROOT/internal/sandboxio/source_materializer.go
+if grep -E 'storage/memory|memory\.NewStorage' "$source" >/dev/null; then
+  printf 'Sandbox source materializer uses unbounded in-memory Git storage\n' >&2
+  exit 1
+fi
 for boundary in \
   'base.Proxy = nil' \
   'request.Header.Get("Authorization") != ""' \
@@ -44,6 +48,8 @@ for boundary in \
   'request.URL.RawQuery != "service=git-upload-pack"' \
   'Depth: 1' \
   'Tags: git.NoTags' \
+  'LargeObjectThreshold: 1 << 20' \
+  'cache.NewObjectLRU(4 * cache.MiByte)' \
   'Auth:'; do
   if [ "$boundary" = 'Auth:' ]; then
     if grep -F "$boundary" "$source" >/dev/null; then

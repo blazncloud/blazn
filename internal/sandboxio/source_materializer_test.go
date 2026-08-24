@@ -151,8 +151,10 @@ func TestCanceledMaterializationCleansScratchAndRetries(t *testing.T) {
 
 func TestGitMaterializerRejectsSymlinkSubstituteAndLFSPointer(t *testing.T) {
 	for name, files := range map[string]map[string]testSourceFile{
-		"symlink": {"escape": {body: "/etc/passwd", mode: os.ModeSymlink | 0o777}},
-		"lfs":     {"large.bin": {body: "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n", mode: 0o644}},
+		"symlink":        {"escape": {body: "/etc/passwd", mode: os.ModeSymlink | 0o777}},
+		"lfs":            {"large.bin": {body: "version https://git-lfs.github.com/spec/v1\noid sha256:" + strings.Repeat("a", 64) + "\nsize 123\n", mode: 0o644}},
+		"scratch name":   {sourceScratchName + "/attack": {body: "hidden", mode: 0o644}},
+		"receipt marker": {sourceMarkerName: {body: "substitute", mode: 0o644}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			repository, commit := testRepository(t, files)
@@ -162,7 +164,7 @@ func TestGitMaterializerRejectsSymlinkSubstituteAndLFSPointer(t *testing.T) {
 			canonical, _ := MarshalSourceManifest(manifest)
 			materializer := GitMaterializer{Fetcher: fixedRepositoryFetcher{repository}, ResolveDestination: func(Source) string { return destination }}
 			_, err := materializer.Materialize(context.Background(), manifest, canonical)
-			if name == "symlink" && !IsProtocolError(err, "source_tree_unsafe") || name == "lfs" && !IsProtocolError(err, "source_lfs_unsupported") {
+			if name == "lfs" && !IsProtocolError(err, "source_lfs_unsupported") || name != "lfs" && !IsProtocolError(err, "source_tree_unsafe") {
 				t.Fatalf("error=%v", err)
 			}
 		})

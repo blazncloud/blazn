@@ -364,6 +364,7 @@ func validateSources(sources []SourceMount) error {
 		return adapterError(ErrInvalidRequest, 400, "source mount limit exceeded", nil)
 	}
 	seenNames, seenDestinations := map[string]bool{}, map[string]bool{}
+	destinations := make([]string, 0, len(sources))
 	commitPattern := regexp.MustCompile(`^[0-9a-f]{40}$`)
 	for _, source := range sources {
 		parsed, err := url.Parse(source.URL)
@@ -376,6 +377,13 @@ func validateSources(sources []SourceMount) error {
 			return adapterError(ErrInvalidRequest, 400, "source mount is invalid", err)
 		}
 		seenNames[source.Name], seenDestinations[source.Destination] = true, true
+		destinations = append(destinations, source.Destination)
+	}
+	sort.Strings(destinations)
+	for index := 1; index < len(destinations); index++ {
+		if strings.HasPrefix(destinations[index], destinations[index-1]+"/") {
+			return adapterError(ErrInvalidRequest, 400, "source mount destinations overlap", nil)
+		}
 	}
 	return nil
 }

@@ -193,6 +193,16 @@ func ValidateSourceManifest(body []byte) (SourceManifest, []byte, error) {
 		seenNames[source.Name], seenDestinations[source.Destination] = true, true
 	}
 	sort.Slice(manifest.Sources, func(i, j int) bool { return manifest.Sources[i].Name < manifest.Sources[j].Name })
+	destinations := make([]string, len(manifest.Sources))
+	for index, source := range manifest.Sources {
+		destinations[index] = source.Destination
+	}
+	sort.Strings(destinations)
+	for index := 1; index < len(destinations); index++ {
+		if strings.HasPrefix(destinations[index], destinations[index-1]+"/") {
+			return SourceManifest{}, nil, protocolError("source_manifest_invalid", nil)
+		}
+	}
 	canonical, err := json.Marshal(manifest)
 	if err != nil || len(canonical) > MaxManifestBytes {
 		return SourceManifest{}, nil, protocolError("source_manifest_invalid", err)

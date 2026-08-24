@@ -192,6 +192,7 @@ test("source materialization migration fences exact receipts before create compl
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/020_sandbox_source_materialization.sql"), "utf8");
   assert.match(sql, /CREATE TABLE sandbox_source_materialization_receipts/);
+  assert.match(sql, /sandbox_repository_destinations_nonoverlapping/);
   assert.match(sql, /sandbox_source_manifest_digest/);
   assert.match(sql, /sandbox_source_receipt_digest/);
   assert.match(sql, /sandbox_controller_record_source_materialization_v1/);

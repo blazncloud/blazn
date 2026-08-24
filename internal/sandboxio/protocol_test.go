@@ -74,6 +74,7 @@ func TestBootstrapProtocolIsClosedBoundedAndCanonical(t *testing.T) {
 		[]byte(`{"schemaVersion":"blazn.dev/sandbox-source-manifest/v1","sources":[{"name":"source","url":"https://user:pass@example.test/repo","destination":"/workspace/src/repo","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writable":false}]}`),
 		[]byte(`{"schemaVersion":"blazn.dev/sandbox-source-manifest/v1","sources":[{"name":"source","url":"https://example.test:8443/repo","destination":"/workspace/src/repo","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writable":false}]}`),
 		[]byte(`{"schemaVersion":"blazn.dev/sandbox-source-manifest/v1","sources":[{"name":"source","url":"https://example.test/repo","destination":"/workspace/src/../escape","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writable":false}]}`),
+		[]byte(`{"schemaVersion":"blazn.dev/sandbox-source-manifest/v1","sources":[{"name":"parent","url":"https://example.test/parent","destination":"/workspace/src/repo","commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","writable":false},{"name":"child","url":"https://example.test/child","destination":"/workspace/src/repo/vendor","commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","writable":false}]}`),
 	}
 	for _, candidate := range invalid {
 		if _, _, err := ValidateSourceManifest(candidate); err == nil {
