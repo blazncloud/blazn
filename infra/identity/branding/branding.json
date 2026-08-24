@@ -1,0 +1,13 @@
+{
+  "primaryColor": "#f97316",
+  "warnColor": "#dc2626",
+  "backgroundColor": "#fff7ed",
+  "fontColor": "#18181b",
+  "primaryColorDark": "#fb923c",
+  "warnColorDark": "#f87171",
+  "backgroundColorDark": "#090a0f",
+  "fontColorDark": "#f8fafc",
+  "hideLoginNameSuffix": true,
+  "disableWatermark": true,
+  "themeMode": "THEME_MODE_AUTO"
+}

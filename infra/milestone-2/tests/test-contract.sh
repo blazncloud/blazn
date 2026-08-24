@@ -179,6 +179,20 @@ grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
 for runtime_script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do
   grep -F 'control_plane_compose' "$ROOT_DIR/scripts/$runtime_script" >/dev/null
 done
+# These assertions intentionally match literal shell and jq variables.
+# shellcheck disable=SC2016
+for required in \
+  'BLAZN_CONTROL_API_BUILD_MODE:-local' \
+  'prebuilt) validate_control_api_build "$ROOT_DIR"' \
+  'actual_archive=sha256:' \
+  'RepoTags == [$image]' \
+  'archive_image_id=$(jq' \
+  'tar -xOf "$archive" index.json' \
+  'manifest_path=blobs/sha256/' \
+  '.config.digest == $configDigest' \
+  'buildMode:"prebuilt"'; do
+  grep -F -- "$required" "$ROOT_DIR/scripts/start-control-plane.sh" "$ROOT_DIR/scripts/import-control-api-image.sh" >/dev/null
+done
 grep -F 'controlApi' "$ROOT_DIR/ownership-receipt.schema.json" >/dev/null
 grep -F 'verify_control_api_containers' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 grep -F 'verify_control_api_containers' "$ROOT_DIR/scripts/run-control-plane.sh" >/dev/null
