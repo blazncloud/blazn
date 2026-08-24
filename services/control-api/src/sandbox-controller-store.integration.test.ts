@@ -4,7 +4,8 @@ import test from "node:test";
 import type { Pool } from "pg";
 import { createDatabase } from "./db.js";
 import { PgSandboxControllerStore, type SandboxControllerAdmissionIdentity,
-  type SandboxControllerAdmissionObservation } from "./sandbox-controller-store.js";
+  type SandboxControllerAdmissionObservation, type SandboxControllerSource,
+  type SandboxControllerSourceReceipt } from "./sandbox-controller-store.js";
 
 const adminUrl = process.env.BLAZN_SANDBOX_CONTROLLER_TEST_ADMIN_DATABASE_URL;
 const controllerUrl = process.env.BLAZN_SANDBOX_CONTROLLER_TEST_DATABASE_URL;
@@ -21,19 +22,26 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     for (const role of ["blazn_runtime", "blazn_bootstrap", "blazn_node_broker"]) {
       const privilege = await admin.query<{ allowed: boolean }>(`SELECT bool_or(has_function_privilege($1,p.oid,'EXECUTE')) AS allowed
         FROM pg_proc p WHERE p.proname IN ('sandbox_controller_claim_v2','sandbox_controller_bind_backend_v2','sandbox_controller_complete_v2',
-          'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3')`, [role]);
+          'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
+          'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
+          'sandbox_controller_record_source_materialization_v1')`, [role]);
       assert.equal(privilege.rows[0]?.allowed, false, `${role} can execute a controller function`);
     }
     const publicPrivilege = await admin.query<{ count: string }>(`SELECT count(*)::text AS count FROM pg_proc p,
       LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) acl
       WHERE p.proname IN ('sandbox_controller_claim_v2','sandbox_controller_bind_backend_v2','sandbox_controller_complete_v2',
-        'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3')
+        'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
+        'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
+        'sandbox_controller_record_source_materialization_v1')
         AND acl.grantee=0 AND acl.privilege_type='EXECUTE'`);
     assert.equal(publicPrivilege.rows[0]?.count, "0", "PUBLIC can execute a controller v2 function");
     for (const signature of [
       "sandbox_controller_claim_v2(text,integer)",
       "sandbox_controller_bind_backend_v2(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text)",
       "sandbox_controller_complete_v2(uuid,text,uuid,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)",
+      "sandbox_controller_claim_v3(text,integer)",
+      "sandbox_controller_bind_backend_v3(uuid,text,uuid,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,text,boolean,text,text,boolean,text,text,text,text)",
+      "sandbox_controller_complete_v3(uuid,text,uuid,text,text,text,text,text,boolean,boolean,boolean,boolean,uuid[],text[],text,text,uuid)",
     ]) {
       const retired = await admin.query<{ allowed: boolean }>("SELECT has_function_privilege('blazn_sandbox_controller',$1,'EXECUTE') AS allowed", [signature]);
       assert.equal(retired.rows[0]?.allowed, false, `controller retained v2 authority ${signature}`);
@@ -78,6 +86,10 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
 
     const owner = claims[0] ? first : second;
     const worker = claims[0] ? "controller-a" : "controller-b";
+    const bootstrapObservation = admissionObservation(workspaceId, createSandboxId, "backend-create", "resource-bootstrap", "workload-create");
+    const receipt = sourceReceipt(claimed.sources);
+    assert.equal(await owner.recordSources(createOperationId, worker, claimed.leaseToken, bootstrapObservation, receipt), true);
+    assert.equal(await owner.recordSources(createOperationId, worker, claimed.leaseToken, bootstrapObservation, receipt), true, "source receipt replay failed");
     const createObservation = admissionObservation(workspaceId, createSandboxId, "backend-create", "resource-create", "workload-create");
     for (const substitute of [
       { ...createObservation, workload: { ...createObservation.workload, owner: { ...createObservation.workload.owner, controller: false as true } } },
@@ -121,10 +133,13 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     const bindDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
     const bindDriftOperationId = await insertOperation(admin, workspaceId, bindDriftSandboxId, userId, "create");
     const bindDrift = await first.claim("controller-bind-drift", 30); assert.equal(bindDrift?.operationId, bindDriftOperationId);
+    const bindDriftObservation = admissionObservation(workspaceId, bindDriftSandboxId, "must-not-bind", "must-not-bind", "must-not-bind");
+    assert.equal(await first.recordSources(bindDriftOperationId, "controller-bind-drift", bindDrift!.leaseToken,
+      bindDriftObservation, sourceReceipt(bindDrift!.sources)), true);
     await admin.query("UPDATE sandboxes SET desired_state='deleted' WHERE id=$1", [bindDriftSandboxId]);
     const bindSnapshot = await sandboxSnapshot(admin, bindDriftSandboxId);
     assert.equal(await first.bindBackend(bindDriftOperationId, "controller-bind-drift", bindDrift!.leaseToken,
-      admissionObservation(workspaceId, bindDriftSandboxId, "must-not-bind", "must-not-bind", "must-not-bind")), false);
+      bindDriftObservation), false);
     await assertStaleQuarantine(admin, bindDriftOperationId, bindDriftSandboxId, bindSnapshot);
 
     const retryDriftSandboxId = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
@@ -151,6 +166,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     const completeDrift = await first.claim("controller-complete-drift", 30); assert.equal(completeDrift?.operationId, completeDriftOperationId);
     const completeDriftObservation = admissionObservation(workspaceId, completeDriftSandboxId,
       "backend-complete-drift", "resource-complete-drift", "workload-complete-drift");
+    assert.equal(await first.recordSources(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
+      completeDriftObservation, sourceReceipt(completeDrift!.sources)), true);
     assert.equal(await first.bindBackend(completeDriftOperationId, "controller-complete-drift", completeDrift!.leaseToken,
       completeDriftObservation), true);
     await admin.query("UPDATE sandboxes SET version=version+1 WHERE id=$1", [completeDriftSandboxId]);
@@ -336,6 +353,31 @@ function successCreate(uid: string, observation: SandboxControllerAdmissionObser
     expectedObservationDigest: observation?.digest ?? null,
     cleanupComplete: false, artifactExportComplete: false, grantsRevoked: false,
     backendDestroyed: false, artifactIds: [], warningCodes: [], error: null };
+}
+
+function sourceReceipt(sources: SandboxControllerSource[]): SandboxControllerSourceReceipt {
+  const materialized = sources.map((source) => ({ ...source, tree: source.commit,
+    contentDigest: `sha256:${"e".repeat(64)}`, fileCount: 0, totalBytes: 0 }));
+  const manifestDigest = sourceFieldDigest(["blazn.dev/sandbox-source-manifest/v1",
+    ...sources.flatMap((source) => [source.name, source.url, source.destination, source.commit, String(source.writable)])]);
+  const receipt: SandboxControllerSourceReceipt = {
+    schemaVersion: "blazn.dev/sandbox-source-materialization/v1", manifestDigest,
+    sources: materialized, digest: "",
+  };
+  receipt.digest = sourceFieldDigest([receipt.schemaVersion, receipt.manifestDigest,
+    ...materialized.flatMap((source) => [source.name, source.url, source.destination, source.commit, source.tree,
+      source.contentDigest, String(source.fileCount), String(source.totalBytes), String(source.writable)])]);
+  return receipt;
+}
+
+function sourceFieldDigest(fields: string[]): string {
+  const hash = createHash("sha256");
+  for (const field of fields) {
+    const encoded = Buffer.from(field, "utf8"), size = Buffer.alloc(8);
+    size.writeBigUInt64BE(BigInt(encoded.length));
+    hash.update(size); hash.update(encoded);
+  }
+  return `sha256:${hash.digest("hex")}`;
 }
 
 function admissionObservation(workspaceId: string, sandboxId: string, backendUid: string,

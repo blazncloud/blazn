@@ -49,6 +49,18 @@ export interface SandboxControllerAdmissionObservation {
   digest: string;
 }
 
+export interface SandboxControllerSourceMaterialization {
+  name: string; url: string; destination: string; commit: string; tree: string;
+  contentDigest: string; fileCount: number; totalBytes: number; writable: boolean;
+}
+
+export interface SandboxControllerSourceReceipt {
+  schemaVersion: "blazn.dev/sandbox-source-materialization/v1";
+  manifestDigest: string;
+  sources: SandboxControllerSourceMaterialization[];
+  digest: string;
+}
+
 export interface SandboxControllerWorkItem {
   operationId: string;
   workspaceId: string;
@@ -82,6 +94,8 @@ export interface SandboxControllerWorkItem {
   artifacts: SandboxControllerArtifactContractEntry[];
   persistedWorkloadDigest: string | null;
   admissionObservation: SandboxControllerAdmissionObservation | null;
+  sourceMaterialization: SandboxControllerSourceReceipt | null;
+  sourceBootstrapObservation: SandboxControllerAdmissionObservation | null;
 }
 
 export interface SandboxControllerCompletion {
@@ -109,7 +123,7 @@ export class PgSandboxControllerStore {
   }
 
   async claim(workerId: string, leaseSeconds: number): Promise<SandboxControllerWorkItem | undefined> {
-    const result = await this.database.query("SELECT * FROM sandbox_controller_claim_v3($1,$2)", [workerId, leaseSeconds]);
+    const result = await this.database.query("SELECT * FROM sandbox_controller_claim_v4($1,$2)", [workerId, leaseSeconds]);
     return result.rows[0] ? workItemRow(result.rows[0]) : undefined;
   }
 
@@ -126,7 +140,7 @@ export class PgSandboxControllerStore {
     validateObservation(observation);
     const admission = observation.workload;
     const result = await this.database.query<{ bound: boolean }>(
-      "SELECT sandbox_controller_bind_backend_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) AS bound",
+      "SELECT sandbox_controller_bind_backend_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) AS bound",
       [operationId, workerId, leaseToken, observation.sandbox.uid, observation.sandbox.resourceVersion,
         observation.sandbox.apiVersion, observation.sandbox.kind, observation.sandbox.namespace,
         observation.sandbox.name, observation.sandbox.uid, observation.sandbox.resourceVersion,
@@ -140,6 +154,19 @@ export class PgSandboxControllerStore {
     return result.rows[0]?.bound === true;
   }
 
+  async recordSources(operationId: string, workerId: string, leaseToken: string,
+    observation: SandboxControllerAdmissionObservation, receipt: SandboxControllerSourceReceipt): Promise<boolean> {
+    validateObservation(observation);
+    validateSourceReceipt(receipt);
+    const result = await this.database.query<{ recorded: boolean }>(
+      "SELECT sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb) AS recorded",
+      [operationId, workerId, leaseToken, observation.sandbox.uid, observation.sandbox.resourceVersion,
+        rawDigest(observation.digest), rawDigest(receipt.manifestDigest), rawDigest(receipt.digest),
+        JSON.stringify(receipt), JSON.stringify(observation)],
+    );
+    return result.rows[0]?.recorded === true;
+  }
+
   async retry(operationId: string, workerId: string, leaseToken: string, delaySeconds: number, error: { code: string; message: string; requestId: string }): Promise<SandboxControllerRetryResult> {
     const result = await this.database.query<{ outcome: SandboxControllerRetryResult }>(
       "SELECT sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7) AS outcome",
@@ -151,7 +178,7 @@ export class PgSandboxControllerStore {
   async complete(operationId: string, workerId: string, leaseToken: string, completion: SandboxControllerCompletion): Promise<boolean> {
     const error = completion.error;
     const result = await this.database.query<{ completed: boolean }>(
-      "SELECT sandbox_controller_complete_v3($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17) AS completed",
+      "SELECT sandbox_controller_complete_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17) AS completed",
       [operationId, workerId, leaseToken, completion.status, completion.expectedBackendUid,
         completion.expectedBackendResourceVersion,
         completion.expectedWorkloadDigest ? rawDigest(completion.expectedWorkloadDigest) : null,
@@ -201,8 +228,38 @@ function workItemRow(row: QueryResultRow): SandboxControllerWorkItem {
     artifacts: artifactNames.map((name, index) => ({ name, path: artifactPaths[index]!,
       mediaType: artifactMediaTypes[index]!, required: artifactRequired[index]! })),
     ...observationRow(row),
+    ...sourceReceiptRow(row),
   };
 }
+
+function sourceReceiptRow(row: QueryResultRow): Pick<SandboxControllerWorkItem, "sourceMaterialization" | "sourceBootstrapObservation"> {
+  const receipt = row.source_materialization_receipt as SandboxControllerSourceReceipt | null | undefined;
+  const observation = row.source_bootstrap_observation as SandboxControllerAdmissionObservation | null | undefined;
+  if (receipt != null) validateSourceReceipt(receipt);
+  if (observation != null) validateObservation(observation);
+  if (receipt == null && observation != null) throw new Error("source bootstrap observation lacks a receipt");
+  return { sourceMaterialization: receipt ?? null, sourceBootstrapObservation: observation ?? null };
+}
+
+function validateSourceReceipt(receipt: SandboxControllerSourceReceipt): void {
+  if (!receipt || receipt.schemaVersion !== "blazn.dev/sandbox-source-materialization/v1" || !digest(receipt.manifestDigest) ||
+    !digest(receipt.digest) || !Array.isArray(receipt.sources) || receipt.sources.length > 32) {
+    throw new Error("sandbox source materialization receipt is invalid");
+  }
+  let previous = "";
+  for (const source of receipt.sources) {
+    if (!source || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(source.name) || source.name <= previous ||
+      !/^https:\/\//.test(source.url) || !/^\/workspace\/src\//.test(source.destination) ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(source.commit) || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(source.tree) ||
+      !digest(source.contentDigest) || !Number.isInteger(source.fileCount) || source.fileCount < 0 || source.fileCount > 100000 ||
+      !Number.isInteger(source.totalBytes) || source.totalBytes < 0 || source.totalBytes > 256 * 1024 * 1024 || typeof source.writable !== "boolean") {
+      throw new Error("sandbox source materialization entry is invalid");
+    }
+    previous = source.name;
+  }
+}
+
+function digest(value: unknown): value is string { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value); }
 
 function observationRow(row: QueryResultRow): Pick<SandboxControllerWorkItem, "persistedWorkloadDigest" | "admissionObservation"> {
   const workloadFields = [row.workload_api_version, row.workload_namespace, row.workload_name,

@@ -195,12 +195,14 @@ test("source materialization migration fences exact receipts before create compl
   assert.match(sql, /sandbox_source_manifest_digest/);
   assert.match(sql, /sandbox_source_receipt_digest/);
   assert.match(sql, /sandbox_controller_record_source_materialization_v1/);
+  assert.match(sql, /sandbox_controller_bind_backend_v4/);
   assert.match(sql, /j\.lease_expires_at>clock_timestamp\(\)/);
   assert.match(sql, /target\.observation_digest<>p_expected_observation_digest/);
   assert.match(sql, /ON CONFLICT \(sandbox_id\) DO NOTHING/);
   assert.match(sql, /sandbox_controller_claim_v4/);
   assert.match(sql, /sandbox_controller_complete_v4/);
   assert.match(sql, /target\.source_count>0 AND NOT target\.source_receipt/);
+  assert.match(sql, /bootstrap#>>'\{pod,uid\}'<>p_pod_uid/);
   assert.match(sql, /REVOKE ALL ON TABLE sandbox_source_materialization_receipts[\s\S]*blazn_sandbox_controller/);
   assert.doesNotMatch(sql, /GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*sandbox_source_materialization_receipts/);
 });
