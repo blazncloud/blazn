@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 var workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -244,7 +245,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	if err != nil {
 		return err
 	}
-	for !state.Ready || state.AdmissionObservation == nil {
+	for state.AdmissionObservation == nil || len(item.Sources) == 0 && !state.Ready {
 		if !wait(ctx, c.config.PollEvery) {
 			return ctx.Err()
 		}
@@ -253,7 +254,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 			return err
 		}
 	}
-	if err := validateCreated(item, state); err != nil {
+	if err := validateObserved(item, state); err != nil {
 		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match work item", Ambiguous: true, Cause: err}
 	}
 	if item.BackendUID == nil {
@@ -267,6 +268,53 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	} else if err := validateExisting(item, state); err != nil {
 		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "backend identity does not match persisted identity", Ambiguous: true, Cause: err}
 	}
+	if len(item.Sources) != 0 {
+		sourceBackend, ok := c.backend.(SourceBackend)
+		if !ok {
+			return &Failure{Code: "sources_unsupported", SafeMessage: "source materialization runtime is unavailable", Ambiguous: true}
+		}
+		receipt := item.SourceMaterialization
+		if receipt == nil {
+			if state.Ready {
+				return &Failure{Code: "source_receipt_missing", SafeMessage: "backend became ready without persisted source evidence", Ambiguous: true}
+			}
+			if err := sourceBackend.PrepareSourceBootstrap(ctx, item, *state.AdmissionObservation); err != nil {
+				return err
+			}
+			materialized, err := sourceBackend.MaterializeSources(ctx, item, *state.AdmissionObservation)
+			if err != nil {
+				return err
+			}
+			recorded, err := c.store.RecordSources(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, *state.AdmissionObservation, materialized)
+			if err != nil {
+				return err
+			}
+			if !recorded {
+				return nil
+			}
+			receipt = &materialized
+		}
+		if err := sourceBackend.RestrictSourceRuntime(ctx, item, *state.AdmissionObservation, *receipt); err != nil {
+			return err
+		}
+		if !state.Ready {
+			if err := sourceBackend.ReleaseSources(ctx, item, *state.AdmissionObservation, *receipt); err != nil {
+				return err
+			}
+		}
+		for !state.Ready {
+			if !wait(ctx, c.config.PollEvery) {
+				return ctx.Err()
+			}
+			state, err = c.backend.Observe(ctx, item, state.AdmissionObservation)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if err := validateCreated(item, state); err != nil {
+		return &Failure{Code: "backend_identity_mismatch", SafeMessage: "ready backend identity does not match work item", Ambiguous: true, Cause: err}
+	}
 	workloadDigest := state.AdmissionObservation.Workload.Digest
 	observationDigest := state.AdmissionObservation.Digest
 	uid, rv := state.Record.UID, state.Record.ResourceVersion
@@ -276,6 +324,20 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 	}
 	if !ok {
 		return nil
+	}
+	return nil
+}
+
+func validateObserved(item WorkItem, state BackendState) error {
+	if !state.Exists || state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace ||
+		state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy ||
+		state.Record.UID == "" || state.Record.ResourceVersion == "" || state.AdmissionObservation == nil {
+		return fmt.Errorf("observed identity incomplete")
+	}
+	if err := sandboxcontrol.ValidateAdmissionObservation(*state.AdmissionObservation); err != nil ||
+		state.AdmissionObservation.Sandbox.UID != state.Record.UID ||
+		state.AdmissionObservation.Sandbox.ResourceVersion != state.Record.ResourceVersion {
+		return fmt.Errorf("observed admission identity is invalid")
 	}
 	return nil
 }
@@ -402,6 +464,12 @@ func validateWorkItem(item WorkItem) error {
 		sandboxcontrol.ValidateAdmissionObservation(*item.AdmissionObservation) != nil) {
 		return fmt.Errorf("persisted admission identity is inconsistent")
 	}
+	if item.SourceMaterialization != nil {
+		manifest := sourceManifest(item.Sources)
+		if len(item.Sources) == 0 || item.AdmissionObservation == nil || sandboxio.ValidateSourceMaterializationReceipt(*item.SourceMaterialization, &manifest) != nil {
+			return fmt.Errorf("persisted source materialization is inconsistent")
+		}
+	}
 	return nil
 }
 
@@ -455,13 +523,11 @@ func validSourceHostname(hostname string) bool {
 	return true
 }
 func validateCreated(item WorkItem, state BackendState) error {
-	if !state.Exists || state.Record.Name != item.SandboxID || state.Record.Namespace != sandboxcontrol.Namespace || state.Record.WorkspaceID != item.WorkspaceID || state.Record.OwnerID != item.RequestedBy || state.Record.UID == "" || state.Record.ResourceVersion == "" || state.AdmissionObservation == nil {
-		return fmt.Errorf("created identity incomplete")
+	if !state.Ready {
+		return fmt.Errorf("created backend is not ready")
 	}
-	if err := sandboxcontrol.ValidateAdmissionObservation(*state.AdmissionObservation); err != nil ||
-		state.AdmissionObservation.Sandbox.UID != state.Record.UID ||
-		state.AdmissionObservation.Sandbox.ResourceVersion != state.Record.ResourceVersion {
-		return fmt.Errorf("created admission observation is invalid")
+	if err := validateObserved(item, state); err != nil {
+		return err
 	}
 	receipt, err := sandboxcontrol.NewReceipt("controller-"+item.OperationID, sandboxcontrol.OperationCreate, state.Record, nil, time.Unix(1, 0))
 	if err != nil {

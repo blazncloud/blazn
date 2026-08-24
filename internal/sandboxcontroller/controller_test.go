@@ -80,12 +80,14 @@ func (*fakeStore) Health(context.Context) error                     { return nil
 func (*fakeStore) Close() error                                     { return nil }
 
 type fakeBackend struct {
-	created   BackendState
-	observed  BackendState
-	deleting  BackendState
-	finalized CleanupResult
-	err       error
-	calls     int
+	created                                      BackendState
+	observed                                     BackendState
+	observedStates                               []BackendState
+	deleting                                     BackendState
+	finalized                                    CleanupResult
+	err                                          error
+	calls                                        int
+	prepared, materialized, restricted, released int
 }
 
 type blockingBackend struct {
@@ -123,6 +125,11 @@ func (b *fakeBackend) EnsureCreated(context.Context, WorkItem) (BackendState, er
 }
 func (b *fakeBackend) Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	b.calls++
+	if len(b.observedStates) != 0 {
+		state := b.observedStates[0]
+		b.observedStates = b.observedStates[1:]
+		return state, b.err
+	}
 	return b.observed, b.err
 }
 func (b *fakeBackend) BeginDelete(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
@@ -132,6 +139,29 @@ func (b *fakeBackend) BeginDelete(context.Context, WorkItem, *sandboxcontrol.Adm
 func (b *fakeBackend) Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
 	b.calls++
 	return b.finalized, b.err
+}
+func (b *fakeBackend) PrepareSourceBootstrap(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) error {
+	b.prepared++
+	return b.err
+}
+func (b *fakeBackend) MaterializeSources(_ context.Context, item WorkItem, _ sandboxcontrol.AdmissionObservation) (sandboxio.SourceMaterializationReceipt, error) {
+	b.materialized++
+	manifest := sourceManifest(item.Sources)
+	sources := make([]sandboxio.SourceMaterialization, len(item.Sources))
+	for index, source := range item.Sources {
+		sources[index] = sandboxio.SourceMaterialization{Name: source.Name, URL: source.URL, Destination: source.Destination,
+			Commit: source.Commit, Tree: source.Commit, ContentDigest: "sha256:" + strings.Repeat("e", 64), Writable: source.Writable}
+	}
+	receipt, err := sandboxio.NewSourceMaterializationReceipt(manifest, sources)
+	return receipt, errors.Join(b.err, err)
+}
+func (b *fakeBackend) RestrictSourceRuntime(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error {
+	b.restricted++
+	return b.err
+}
+func (b *fakeBackend) ReleaseSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error {
+	b.released++
+	return b.err
 }
 
 func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
@@ -148,6 +178,48 @@ func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
 		store.completion.ExpectedWorkloadDigest == nil || *store.completion.ExpectedWorkloadDigest != state.AdmissionObservation.Workload.Digest ||
 		store.completion.ExpectedObservationDigest == nil || *store.completion.ExpectedObservationDigest != state.AdmissionObservation.Digest {
 		t.Fatalf("unexpected completion: %#v", store.completion)
+	}
+}
+
+func TestCreatePersistsSourcesBeforeRuntimeRestrictionAndRelease(t *testing.T) {
+	item, ready := createFixture(t)
+	item.Sources = []Source{{Name: "repo", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)}}
+	pending := ready
+	pending.Ready = false
+	pending.Record.State = sandboxcontrol.StatePending
+	created := pending
+	created.AdmissionObservation = nil
+	store := &fakeStore{}
+	backend := &fakeBackend{created: created, observedStates: []BackendState{pending, ready}}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if !store.bound || store.sourceReceipt == nil || backend.prepared != 1 || backend.materialized != 1 || backend.restricted != 1 || backend.released != 1 {
+		t.Fatalf("source sequence store=%#v backend=%#v", store.sourceReceipt, backend)
+	}
+	if store.completion == nil || store.completion.Status != "succeeded" {
+		t.Fatalf("source create did not complete: %#v", store.completion)
+	}
+}
+
+func TestCreateRestartAdoptsPersistedSourceReceiptWithoutReleasingReadyPod(t *testing.T) {
+	item, ready := createFixture(t)
+	item.Sources = []Source{{Name: "repo", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/repo", Commit: strings.Repeat("a", 40)}}
+	bindWorkItem(&item, ready)
+	manifest := sourceManifest(item.Sources)
+	receipt, err := sandboxio.NewSourceMaterializationReceipt(manifest, []sandboxio.SourceMaterialization{{Name: "repo", URL: item.Sources[0].URL,
+		Destination: item.Sources[0].Destination, Commit: item.Sources[0].Commit, Tree: item.Sources[0].Commit,
+		ContentDigest: "sha256:" + strings.Repeat("e", 64)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.SourceMaterialization = &receipt
+	store, backend := &fakeStore{}, &fakeBackend{observed: ready}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if backend.prepared != 0 || backend.materialized != 0 || backend.restricted != 1 || backend.released != 0 || store.sourceReceipt != nil || store.completion == nil {
+		t.Fatalf("restart did not adopt persisted source receipt: backend=%#v store=%#v", backend, store)
 	}
 }
 

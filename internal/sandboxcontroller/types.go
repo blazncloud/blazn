@@ -102,6 +102,13 @@ type Backend interface {
 	Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error)
 }
 
+type SourceBackend interface {
+	PrepareSourceBootstrap(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) error
+	MaterializeSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) (sandboxio.SourceMaterializationReceipt, error)
+	RestrictSourceRuntime(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error
+	ReleaseSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation, sandboxio.SourceMaterializationReceipt) error
+}
+
 type Failure struct {
 	Code, SafeMessage    string
 	Retryable, Ambiguous bool
