@@ -176,15 +176,16 @@ test("refresh and reproducibility fixture digests are derived from exact Build i
   assert.equal(comparison.referenceInputDigest, developmentBuildInputDigest((build.finalization as { referenceBuild: unknown }).referenceBuild));
 });
 
-test("CLI contract freezes the six acceptance commands and authority boundary", async () => {
+test("CLI contract freezes the seven acceptance commands and authority boundary", async () => {
   const rawContract = await readJSON(path.join(contracts, "development-cli-contract.json"));
   const contract = rawContract as unknown as {
     commands: Record<string, { mutation: boolean; authentication: boolean; arguments: { required?: string[] }; outputSchema: { $ref: string } }>;
     securityBoundary: { clientMayNotAssert: string[]; neverReturned: string[] };
   };
-  assert.deepEqual(Object.keys(contract.commands), ["dev validate", "dev build", "dev test", "dev status", "dev evidence", "dev publish"]);
+  assert.deepEqual(Object.keys(contract.commands), ["dev validate", "dev register", "dev build", "dev test", "dev status", "dev evidence", "dev publish"]);
   assert.equal(contract.commands["dev validate"]!.mutation, false);
   assert.equal(contract.commands["dev validate"]!.authentication, false);
+  assert.deepEqual(contract.commands["dev register"]!.arguments.required, ["--request-id"]);
   assert.deepEqual(contract.commands["dev build"]!.arguments.required, ["--ref", "--request-id"]);
   assert.deepEqual(contract.commands["dev publish"]!.arguments.required, ["BUILD", "--expected-version", "--request-id"]);
   for (const field of ["builderIdentity", "outputDigest", "testResult", "secretScanResult", "provenance", "publicationEligibility"]) assert.ok(contract.securityBoundary.clientMayNotAssert.includes(field));
@@ -193,10 +194,13 @@ test("CLI contract freezes the six acceptance commands and authority boundary", 
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   addFormats(ajv);
   ajv.addSchema(await readJSON(path.join(contracts, "development-build.schema.json")));
+  ajv.addSchema(await readJSON(path.join(contracts, "development-project.schema.json")));
   ajv.addSchema(rawContract, "development-cli");
   const build = await readJSON(path.join(fixtures, "build-good.json"));
+  const project = await readJSON(path.join(fixtures, "project-good.json"));
   const outputs: Record<string, unknown> = {
     "dev validate": { valid: true, manifestDigest: `sha256:${"a".repeat(64)}`, errors: [], warnings: [] },
+    "dev register": { workspaceId: "10000000-0000-4000-8000-000000000001", projectId: project.projectId, version: 1, manifest: project, manifestDigest: `sha256:${"a".repeat(64)}`, createdBy: "10000000-0000-4000-8000-000000000002", createdAt: "2026-08-24T00:00:00Z", updatedAt: "2026-08-24T00:00:00Z" },
     "dev build": build,
     "dev test": build,
     "dev status": build,

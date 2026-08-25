@@ -54,10 +54,16 @@ func TestValidateRejectsSignedURLArgumentsAndInvalidRepositoryAuthorities(t *tes
 	}
 
 	for name, repositoryURL := range map[string]string{
-		"triple slash":       "https:///blazncloud/blazn.git",
-		"empty hostname":     "https://:443/blazncloud/blazn.git",
-		"malformed hostname": "https://github..com/blazncloud/blazn.git",
-		"userinfo authority": "https://github.com@evil.test/blazncloud/blazn.git",
+		"triple slash":          "https:///blazncloud/blazn.git",
+		"empty hostname":        "https://:443/blazncloud/blazn.git",
+		"malformed hostname":    "https://github..com/blazncloud/blazn.git",
+		"userinfo authority":    "https://github.com@evil.test/blazncloud/blazn.git",
+		"percent encoded name":  "https://github.com/blazncloud/bl%61zn.git",
+		"percent encoded slash": "https://github.com/blazncloud%2Fblazn.git",
+		"trailing slash":        "https://github.com/blazncloud/blazn.git/",
+		"extra leading slash":   "https://github.com//blazncloud/blazn.git",
+		"space in name":         "https://github.com/blazncloud/blazn repo.git",
+		"third path segment":    "https://github.com/blazncloud/blazn/extra",
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := []byte(strings.Replace(string(good), "https://github.com/blazncloud/blazn.git", repositoryURL, 1))
