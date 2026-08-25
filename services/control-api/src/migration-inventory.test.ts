@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateAppliedMigrations, validateMigrationInventory } from "./migration-inventory.js";
+import { validateAppliedMigrationChecksums, validateAppliedMigrations, validateMigrationInventory } from "./migration-inventory.js";
 
 const inventory = ["001_auth.sql", "002_workspaces.sql", "003_projects.sql"] as const;
 
@@ -35,5 +35,33 @@ test("applied migration validation permits only an ordered prefix during migrati
   assert.throws(
     () => validateAppliedMigrations(inventory, ["001_auth.sql", "003_projects.sql"]),
     /003_projects.sql is out of order; expected 002_workspaces.sql/,
+  );
+});
+
+test("applied migration validation accepts an optional historical migration in its lexical slot", () => {
+  const legacy = ["003_password_recovery.sql"] as const;
+  assert.doesNotThrow(() => validateAppliedMigrations(inventory, ["001_auth.sql", "002_workspaces.sql", legacy[0]], false, legacy));
+  assert.doesNotThrow(() => validateAppliedMigrations(inventory, [...inventory.slice(0, 2), legacy[0], inventory[2]], true, legacy));
+  assert.doesNotThrow(() => validateAppliedMigrations(inventory, inventory, true, legacy));
+});
+
+test("applied migration validation rejects misplaced or unknown historical migrations", () => {
+  const legacy = ["003_password_recovery.sql"] as const;
+  assert.throws(
+    () => validateAppliedMigrations(inventory, ["001_auth.sql", legacy[0]], false, legacy),
+    /legacy applied migration .* is out of order/,
+  );
+  assert.throws(
+    () => validateAppliedMigrations(inventory, ["001_auth.sql", "002_workspaces.sql", "003_unknown.sql"]),
+    /absent from the migration inventory/,
+  );
+});
+
+test("historical migration checksum validation fails closed", () => {
+  const expected = new Map([["003_password_recovery.sql", "abc"]]);
+  assert.doesNotThrow(() => validateAppliedMigrationChecksums(expected, [{ version: "003_password_recovery.sql", checksum: "abc" }]));
+  assert.throws(
+    () => validateAppliedMigrationChecksums(expected, [{ version: "003_password_recovery.sql", checksum: "def" }]),
+    /applied migration 003_password_recovery.sql has changed/,
   );
 });

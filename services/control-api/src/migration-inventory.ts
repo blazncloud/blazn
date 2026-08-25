@@ -40,18 +40,50 @@ export function validateAppliedMigrations(
   inventory: readonly string[],
   applied: readonly string[],
   requireComplete = false,
+  optionalLegacy: readonly string[] = [],
 ): void {
-  const seen = new Set<string>();
-  for (const [index, name] of applied.entries()) {
-    if (seen.has(name)) throw new Error(`duplicate applied migration ${name}`);
-    seen.add(name);
-    const expected = inventory[index];
-    if (name !== expected) {
-      if (inventory.includes(name)) throw new Error(`applied migration ${name} is out of order; expected ${expected ?? "none"}`);
-      throw new Error(`applied migration ${name} is absent from the migration inventory`);
-    }
+  const legacy = new Set(optionalLegacy);
+  for (const name of legacy) {
+    if (!migrationPattern.test(name)) throw new Error(`invalid legacy migration filename ${name}`);
+    if (inventory.includes(name)) throw new Error(`legacy migration ${name} is in the active inventory`);
   }
-  if (requireComplete && applied.length !== inventory.length) {
-    throw new Error(`unapplied migration ${inventory[applied.length] ?? "unknown"}`);
+
+  const seen = new Set<string>();
+  let inventoryIndex = 0;
+  let previous: string | undefined;
+  for (const name of applied) {
+    if (seen.has(name)) throw new Error(`duplicate applied migration ${name}`);
+    if (previous !== undefined && name <= previous) throw new Error(`applied migration ${name} is out of order`);
+    seen.add(name);
+    previous = name;
+    const expected = inventory[inventoryIndex];
+    if (name === expected) {
+      inventoryIndex += 1;
+      continue;
+    }
+    if (legacy.has(name)) {
+      const priorActive = inventoryIndex === 0 ? undefined : inventory[inventoryIndex - 1];
+      if ((priorActive !== undefined && name <= priorActive) || (expected !== undefined && name >= expected)) {
+        throw new Error(`legacy applied migration ${name} is out of order; expected ${expected ?? "none"}`);
+      }
+      continue;
+    }
+    if (inventory.includes(name)) throw new Error(`applied migration ${name} is out of order; expected ${expected ?? "none"}`);
+    throw new Error(`applied migration ${name} is absent from the migration inventory`);
+  }
+  if (requireComplete && inventoryIndex !== inventory.length) {
+    throw new Error(`unapplied migration ${inventory[inventoryIndex] ?? "unknown"}`);
+  }
+}
+
+export function validateAppliedMigrationChecksums(
+  expected: ReadonlyMap<string, string>,
+  applied: readonly { version: string; checksum: string }[],
+): void {
+  for (const row of applied) {
+    const checksum = expected.get(row.version);
+    if (checksum !== undefined && row.checksum !== checksum) {
+      throw new Error(`applied migration ${row.version} has changed`);
+    }
   }
 }
