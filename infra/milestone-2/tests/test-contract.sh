@@ -216,8 +216,10 @@ recreate_identity_line=$(grep -n 'compose up --no-start --no-deps --force-recrea
 start_identity_line=$(grep -n 'compose up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 [ "$prepare_identity_line" -lt "$recreate_identity_line" ]
 [ "$recreate_identity_line" -lt "$start_identity_line" ]
-grep -F '/etc/blazn/control-plane/identity-secrets/zitadel-client-secret' "$ROOT_DIR/compose.identity.yaml" >/dev/null
-grep -F '/etc/blazn/control-plane/identity-secrets/oidc-cookie-key' "$ROOT_DIR/compose.identity.yaml" >/dev/null
+grep -F 'RuntimeDirectory=blazn/identity-secrets' "$unit" >/dev/null
+grep -F 'RuntimeDirectoryMode=0700' "$unit" >/dev/null
+grep -F '/run/blazn/identity-secrets/zitadel-client-secret' "$ROOT_DIR/compose.identity.yaml" >/dev/null
+grep -F '/run/blazn/identity-secrets/oidc-cookie-key' "$ROOT_DIR/compose.identity.yaml" >/dev/null
 for runtime_script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do
   grep -F 'control_plane_compose' "$ROOT_DIR/scripts/$runtime_script" >/dev/null
 done
