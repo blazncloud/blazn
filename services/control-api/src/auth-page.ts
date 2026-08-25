@@ -44,12 +44,25 @@ export function renderActivationPage(input: ActivationPageInput): string {
   return document("Authorize Blazn", `<div class="shell"><section class="story"><div class="brand">${flame()}<span>Blazn</span></div><div class="hero"><div class="eyebrow">Your AI workforce, one command away</div><h1>Build with agents.<br>Keep control.</h1><p>Securely connect this machine to the workspace where your models, tools, environments, and team operate together.</p></div><div class="proof"><span>Device-bound sessions</span><span>Verified identities</span><span>MFA enforced</span></div></section><main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><div class="device"><strong>${escapeHtml(input.deviceName)}</strong><span>${escapeHtml(input.platform)} · key ${escapeHtml(input.publicKeyDigest.slice(7, 19))}</span><div class="code">${escapeHtml(input.code)}</div></div><nav class="tabs" aria-label="Account access"><a class="tab ${signin ? "active" : ""}" href="${tabBase}&mode=signin">Sign in</a><a class="tab ${signin ? "" : "active"}" href="${tabBase}&mode=signup">Sign up</a></nav><h2>${heading}</h2><p class="lede">${lede}</p>${legacy}${identityButton(input)}<p class="terms">By continuing, you explicitly approve the device and public-key fingerprint shown above.</p></div></main></div>`);
 }
 
+function codeEntry(error?: string): string {
+  const notice = error ? `<div class="notice" role="alert"><strong>That code could not be used.</strong><span>${escapeHtml(error)}</span></div>` : "";
+  return `<form method="get" action="/activate"><label class="field">Activation code<input name="user_code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" minlength="8" maxlength="11" pattern="[A-HJ-NP-Za-hj-np-z2-9 -]{8,11}" placeholder="ABCD-EFGH" required></label><button class="primary" type="submit">Continue</button></form>${notice}`;
+}
+
+export function renderActivationLandingPage(): string {
+  return document("Activate Blazn", `<div class="shell"><section class="story"><div class="brand">${flame()}<span>Blazn</span></div><div class="hero"><div class="eyebrow">Connect your CLI</div><h1>Enter the code.<br>Approve the device.</h1><p>Your CLI displays a short one-time code. Enter it here to inspect the device and choose Sign in or Sign up.</p></div><div class="proof"><span>Short-lived codes</span><span>Device-bound keys</span><span>Explicit approval</span></div></section><main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><h2>Activate a device</h2><p class="lede">Enter the code shown by <strong>blazn auth login</strong>. Codes are short-lived and can be used only once.</p>${codeEntry()}<p class="terms">Only continue if you started this sign-in from a device you recognize.</p></div></main></div>`);
+}
+
+export function renderActivationErrorPage(message: string): string {
+  return document("Activation code unavailable", `<main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><h2>Try another activation code</h2><p class="lede">Return to your CLI if you need to request a new code.</p>${codeEntry(message)}</div></main>`);
+}
+
 export function renderAuthResult(title: string, message: string, ok: boolean): string {
   return document(title, `<main class="panel"><div class="card success">${flame()}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${ok ? "<p>You may close this window and return to the CLI.</p>" : "<p>Return to the activation page and try again.</p>"}</div></main>`);
 }
 
 export function sendHtml(response: ServerResponse, status: number, html: string, clearCookie = false): void {
-  const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "content-length": String(Buffer.byteLength(html)), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", "x-frame-options": "DENY", "referrer-policy": "no-referrer", "permissions-policy": "camera=(), microphone=(), geolocation=()" };
+  const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "content-length": String(Buffer.byteLength(html)), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer", "permissions-policy": "camera=(), microphone=(), geolocation=()" };
   if (clearCookie) headers["set-cookie"] = "blazn_oidc=; Path=/v1/auth/oidc/callback; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
   response.writeHead(status, headers);
   response.end(html);
