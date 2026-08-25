@@ -67,7 +67,7 @@ observe_services() {
   done | LC_ALL=C sort
 }
 services_before=$(observe_services)
-docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" exec -T zitadel-login node /blazn/assert-no-active-idps.mjs > "$receipt_dir/identity-providers-before.json"
+docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" exec -T idp-gate node /blazn/assert-no-active-idps.mjs > "$receipt_dir/identity-providers-before.json"
 identity_require_root_file "$receipt_dir/identity-providers-before.json"
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "https://${ZITADEL_DOMAIN}/.well-known/openid-configuration" >/dev/null
 pat_before=$(docker run --rm --mount type=volume,src=blazn-identity_zitadel-bootstrap,dst=/source,readonly "$ZITADEL_BACKUP_IMAGE" sh -ceu 'sha256sum /source/login-client.pat' | awk '{print $1}')
@@ -79,7 +79,7 @@ database_digest=sha256:$(sha256sum "$backup_dir/postgres.sql" | awk '{print $1}'
 "$script_dir/restore.sh" "$backup_dir" "$env_file"
 pre_restore_pat_snapshot_digest=$(cat "$recovery_dir/pre-restore-pat.sha256")
 services_after=$(observe_services)
-docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" exec -T zitadel-login node /blazn/assert-no-active-idps.mjs > "$receipt_dir/identity-providers-after.json"
+docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" exec -T idp-gate node /blazn/assert-no-active-idps.mjs > "$receipt_dir/identity-providers-after.json"
 identity_require_root_file "$receipt_dir/identity-providers-after.json"
 backup_image_id_after=$(docker image inspect --format '{{.Id}}' "$ZITADEL_BACKUP_IMAGE")
 pat_after=$(docker run --rm --mount type=volume,src=blazn-identity_zitadel-bootstrap,dst=/source,readonly "$ZITADEL_BACKUP_IMAGE" sh -ceu 'sha256sum /source/login-client.pat' | awk '{print $1}')

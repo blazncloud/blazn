@@ -86,6 +86,7 @@ grep -F 'repair-pat-volume.sh' "$SCRIPT_DIR/restore.sh" >/dev/null
 grep -F 'QUALIFICATION_SERVICES_BEFORE' "$SCRIPT_DIR/test-disposable.sh" >/dev/null
 grep -F 'QUALIFICATION_SERVICES_AFTER' "$SCRIPT_DIR/test-disposable.sh" >/dev/null
 grep -F 'QUALIFICATION_DRIVER_DIGEST' "$SCRIPT_DIR/test-disposable.sh" >/dev/null
+[ "$(grep -c 'exec -T idp-gate node /blazn/assert-no-active-idps.mjs' "$SCRIPT_DIR/test-disposable.sh")" -eq 2 ] || { printf 'qualification provider evidence does not run twice in the authoritative gate container\n' >&2; exit 1; }
 if grep -F '"const": true' "$SCRIPT_DIR/qualification-receipt.schema.json" >/dev/null; then
   printf 'qualification receipt still trusts self-authored pass booleans\n' >&2; exit 1
 fi
