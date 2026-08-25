@@ -183,7 +183,7 @@ publish_identity_runtime_secrets() {
   assert_not_symlink_chain "$identity_runtime_root"
   assert_directory_owned_mode "$identity_source_root" 0 700
   identity_runtime_parent=$(dirname -- "$identity_runtime_root")
-  assert_directory_owned_mode "$identity_runtime_parent" 0 700
+  assert_directory_owned_mode "$identity_runtime_parent" 0 700,750,755
   if [ -e "$identity_runtime_root" ] || [ -L "$identity_runtime_root" ]; then
     assert_directory_owned_mode "$identity_runtime_root" 0 700
   else
