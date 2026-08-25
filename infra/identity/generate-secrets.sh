@@ -18,14 +18,14 @@ case "$secrets_root" in /*) ;; *) printf 'secrets directory must be absolute\n' 
 printf '%s' "$admin_email" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$' || { printf 'initial administrator email is invalid\n' >&2; exit 64; }
 
 assert_secret_file() {
-  target=$1
-  if [ ! -f "$target" ] || [ -L "$target" ]; then
-    printf 'secret is not a regular file: %s\n' "$target" >&2
+  assert_secret_path=$1
+  if [ ! -f "$assert_secret_path" ] || [ -L "$assert_secret_path" ]; then
+    printf 'secret is not a regular file: %s\n' "$assert_secret_path" >&2
     exit 73
   fi
-  metadata=$(stat -c '%u:%a:%h' -- "$target")
-  [ "$metadata" = '0:600:1' ] || { printf 'secret owner, mode, or link count is unsafe: %s (%s)\n' "$target" "$metadata" >&2; exit 73; }
-  [ -s "$target" ] || { printf 'secret is empty: %s\n' "$target" >&2; exit 73; }
+  assert_secret_metadata=$(stat -c '%u:%a:%h' -- "$assert_secret_path")
+  [ "$assert_secret_metadata" = '0:600:1' ] || { printf 'secret owner, mode, or link count is unsafe: %s (%s)\n' "$assert_secret_path" "$assert_secret_metadata" >&2; exit 73; }
+  [ -s "$assert_secret_path" ] || { printf 'secret is empty: %s\n' "$assert_secret_path" >&2; exit 73; }
 }
 
 identity_validate_path "$secrets_root" secrets
