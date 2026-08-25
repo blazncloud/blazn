@@ -50,19 +50,27 @@ type PublicationTarget struct {
 	TemplateID string `json:"templateId"`
 }
 type Build struct {
-	Context, Dockerfile, RegistryRepository string
+	Context            string `json:"context"`
+	Dockerfile         string `json:"dockerfile"`
+	RegistryRepository string `json:"registryRepository"`
 }
 type TestDefinition struct {
 	Argv           []string `json:"argv"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 }
-type Policy struct{ BuilderProfile, NetworkProfile, ResourceProfile, PublicationPolicy string }
+type Policy struct {
+	BuilderProfile    string `json:"builderProfile"`
+	NetworkProfile    string `json:"networkProfile"`
+	ResourceProfile   string `json:"resourceProfile"`
+	PublicationPolicy string `json:"publicationPolicy"`
+}
 
 var (
 	uuidPattern       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	digestPattern     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	policyPattern     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	registryPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$`)
+	repositoryURLPath = regexp.MustCompile(`^/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?:\.git)?$`)
 	secretFlagPattern = regexp.MustCompile(`(?i)^--?[a-z0-9_-]*(?:api[_-]?key|token|secret|password|credential|authorization)[a-z0-9_-]*(?:=|$)`)
 	secretAssign      = regexp.MustCompile(`(?i)^[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION)[A-Z0-9_]*=`)
 )
@@ -186,7 +194,7 @@ func validateManifest(value Manifest) []string {
 
 func validRepositoryURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme != "https" || parsed.Opaque != "" || parsed.User != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Opaque != "" || parsed.User != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return false
 	}
 	port := parsed.Port()
@@ -203,8 +211,7 @@ func validRepositoryURL(value string) bool {
 	if parsed.Host != expectedAuthority || !validRepositoryHostname(parsed.Hostname()) {
 		return false
 	}
-	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+	return repositoryURLPath.MatchString(parsed.Path)
 }
 
 func validRepositoryHostname(value string) bool {

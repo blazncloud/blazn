@@ -43,6 +43,17 @@ type BuildDocument struct {
 	ReceiptDigest *string
 }
 
+type ProjectDocument struct {
+	raw                                    json.RawMessage
+	WorkspaceID, ProjectID, ManifestDigest string
+	Version                                int
+}
+
+func (p ProjectDocument) MarshalJSON() ([]byte, error) { return append([]byte(nil), p.raw...), nil }
+func (p ProjectDocument) Summary() (string, int, string) {
+	return p.ProjectID, p.Version, p.ManifestDigest
+}
+
 func (b BuildDocument) MarshalJSON() ([]byte, error) { return append([]byte(nil), b.raw...), nil }
 func (b BuildDocument) Summary() (string, string, int, *string) {
 	return b.ID, b.Status, b.Version, b.ReceiptDigest
@@ -110,6 +121,79 @@ func NewService(s workspacepkg.SessionProvider, c workspacepkg.ContextStore, h *
 
 func (s *Service) Build(ctx context.Context, commit, requestID string) (BuildDocument, error) {
 	return s.mutate(ctx, http.MethodPost, "/development-builds", requestID, map[string]any{"commit": commit})
+}
+func (s *Service) Register(ctx context.Context, manifest Manifest, expectedVersion int, requestID string) (ProjectDocument, error) {
+	if expectedVersion < 0 {
+		return ProjectDocument{}, errors.New("expected version must be at least 0")
+	}
+	if len(requestID) < 8 || len(requestID) > 128 {
+		return ProjectDocument{}, errors.New("request ID must contain 8 to 128 characters")
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		return ProjectDocument{}, err
+	}
+	validation, _ := Validate(manifestBytes)
+	if !validation.Valid || validation.ManifestDigest == nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject manifest is invalid")
+	}
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return ProjectDocument{}, err
+	}
+	if manifest.ProjectID != selection.ProjectID {
+		return ProjectDocument{}, errors.New("DevelopmentProject projectId does not match the selected Project")
+	}
+	action := func(current workspacepkg.Session) (ProjectDocument, error) {
+		path := "/v1/workspaces/" + url.PathEscape(selection.WorkspaceID) + "/projects/" + url.PathEscape(selection.ProjectID) + "/development-project"
+		data, err := json.Marshal(map[string]any{"expectedVersion": expectedVersion, "manifest": manifest})
+		if err != nil {
+			return ProjectDocument{}, err
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPut, s.sessions.Origin()+path, bytes.NewReader(data))
+		if err != nil {
+			return ProjectDocument{}, err
+		}
+		request.Header.Set("Authorization", "Bearer "+current.AccessToken)
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Idempotency-Key", requestID)
+		response, err := s.client.Do(request)
+		if err != nil {
+			return ProjectDocument{}, err
+		}
+		defer response.Body.Close()
+		payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+		if err != nil || len(payload) > maxResponseBytes {
+			return ProjectDocument{}, errors.New("development response exceeds its bound")
+		}
+		if response.StatusCode < 200 || response.StatusCode > 299 {
+			return ProjectDocument{}, apiError(response.StatusCode, payload)
+		}
+		var envelope struct {
+			Project json.RawMessage `json:"project"`
+		}
+		if err := strictJSON(payload, &envelope); err != nil || len(envelope.Project) == 0 {
+			return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+		}
+		project, err := DecodeProject(envelope.Project)
+		if err != nil {
+			return ProjectDocument{}, err
+		}
+		if project.WorkspaceID != selection.WorkspaceID || project.ProjectID != selection.ProjectID || project.Version != expectedVersion+1 || project.ManifestDigest != *validation.ManifestDigest {
+			return ProjectDocument{}, errors.New("DevelopmentProject response does not match the registration request")
+		}
+		return project, nil
+	}
+	result, err := action(session)
+	if client.IsCode(err, "access_expired") {
+		session, refreshErr := s.sessions.Session(ctx, true)
+		if refreshErr != nil {
+			return ProjectDocument{}, refreshErr
+		}
+		return action(session)
+	}
+	return result, err
 }
 func (s *Service) Status(ctx context.Context, id string) (BuildDocument, error) {
 	return s.requestBuild(ctx, http.MethodGet, "/development-builds/"+id, "", nil)
@@ -209,12 +293,97 @@ func DecodeBuild(raw json.RawMessage) (BuildDocument, error) {
 	}
 	return BuildDocument{raw: append(json.RawMessage(nil), raw...), ID: summary.ID, Status: summary.Status, Version: summary.Version, ReceiptDigest: summary.ReceiptDigest}, nil
 }
+
+func DecodeProject(raw json.RawMessage) (ProjectDocument, error) {
+	if err := validateJSONTopology(raw); err != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
+	if err := validateProjectResponseSchema(raw); err != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
+	var summary struct {
+		WorkspaceID    string   `json:"workspaceId"`
+		ProjectID      string   `json:"projectId"`
+		Version        int      `json:"version"`
+		Manifest       Manifest `json:"manifest"`
+		ManifestDigest string   `json:"manifestDigest"`
+		CreatedBy      string   `json:"createdBy"`
+		CreatedAt      string   `json:"createdAt"`
+		UpdatedAt      string   `json:"updatedAt"`
+	}
+	if err := strictJSON(raw, &summary); err != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
+	_, createdErr := time.Parse(time.RFC3339, summary.CreatedAt)
+	_, updatedErr := time.Parse(time.RFC3339, summary.UpdatedAt)
+	if !uuidPattern.MatchString(summary.WorkspaceID) || !uuidPattern.MatchString(summary.ProjectID) || !uuidPattern.MatchString(summary.CreatedBy) || summary.Version < 1 || !digestPattern.MatchString(summary.ManifestDigest) || summary.Manifest.ProjectID != summary.ProjectID || createdErr != nil || updatedErr != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
+	manifestBytes, err := json.Marshal(summary.Manifest)
+	if err != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
+	validation, _ := Validate(manifestBytes)
+	if !validation.Valid || validation.ManifestDigest == nil || *validation.ManifestDigest != summary.ManifestDigest {
+		return ProjectDocument{}, errors.New("DevelopmentProject response manifest is invalid")
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil || containsForbidden(value) {
+		return ProjectDocument{}, errors.New("DevelopmentProject response contains forbidden fields")
+	}
+	return ProjectDocument{raw: append(json.RawMessage(nil), raw...), WorkspaceID: summary.WorkspaceID, ProjectID: summary.ProjectID, Version: summary.Version, ManifestDigest: summary.ManifestDigest}, nil
+}
+
+func validateProjectResponseSchema(raw json.RawMessage) error {
+	project, err := requireExactObjectFields(raw, "workspaceId", "projectId", "version", "manifest", "manifestDigest", "createdBy", "createdAt", "updatedAt")
+	if err != nil {
+		return err
+	}
+	manifest, err := requireExactObjectFields(project["manifest"], "schemaVersion", "projectId", "repository", "template", "publicationTarget", "platforms", "build", "dependencyLocks", "tests", "policy")
+	if err != nil {
+		return err
+	}
+	for field, expected := range map[string][]string{
+		"repository":        {"url"},
+		"template":          {"versionId", "digest"},
+		"publicationTarget": {"templateId"},
+		"build":             {"context", "dockerfile", "registryRepository"},
+		"policy":            {"builderProfile", "networkProfile", "resourceProfile", "publicationPolicy"},
+	} {
+		if _, err := requireExactObjectFields(manifest[field], expected...); err != nil {
+			return err
+		}
+	}
+	var tests map[string]json.RawMessage
+	if err := json.Unmarshal(manifest["tests"], &tests); err != nil || tests == nil {
+		return errors.New("tests must be an object")
+	}
+	for _, definition := range tests {
+		if _, err := requireExactObjectFields(definition, "argv", "timeoutSeconds"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireExactObjectFields(raw json.RawMessage, expected ...string) (map[string]json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil || len(object) != len(expected) {
+		return nil, errors.New("object fields do not match the frozen schema")
+	}
+	for _, field := range expected {
+		if _, ok := object[field]; !ok {
+			return nil, errors.New("object fields do not match the frozen schema")
+		}
+	}
+	return object, nil
+}
 func containsForbidden(value any) bool {
 	switch current := value.(type) {
 	case map[string]any:
 		for key, child := range current {
 			normalized := normalizeCredentialKey(key)
-			if credentialField(normalized) || containsForbidden(child) {
+			if credentialField(normalized) || containsCredentialString(key) || containsForbidden(child) {
 				return true
 			}
 		}
