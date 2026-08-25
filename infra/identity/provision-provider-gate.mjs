@@ -83,7 +83,10 @@ if (!tokenInventory.ok || Number(tokenInventory.payload?.pagination?.totalResult
 
 let sentinel = await sentinelOrganization(gateToken);
 if (!sentinel.ok) fail("authority sentinel inventory is unavailable");
-if (Number(sentinel.payload?.details?.totalResult) === 0 && sentinel.payload?.result?.length === 0) {
+const sentinelResults = sentinel.payload?.result ?? [];
+const sentinelTotal = sentinel.payload?.details?.totalResult ?? (sentinelResults.length === 0 ? "0" : undefined);
+if (!Array.isArray(sentinelResults) || !Number.isSafeInteger(Number(sentinelTotal)) || Number(sentinelTotal) !== sentinelResults.length || sentinelResults.length > 1) fail("authority sentinel inventory is invalid");
+if (Number(sentinelTotal) === 0) {
   const created = await request(gateToken, "/v2/organizations", { method: "POST", body: { name: sentinelName, organizationId: sentinelId }, accepted: [201] });
   if (!created.ok || created.payload?.organizationId !== sentinelId) fail("authority sentinel could not be created");
   sentinel = { ok: true, payload: { details: { totalResult: "1" }, result: [{ id: sentinelId, name: sentinelName, state: "ORGANIZATION_STATE_ACTIVE" }] } };
