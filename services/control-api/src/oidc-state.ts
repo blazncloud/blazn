@@ -105,9 +105,15 @@ export function stateMatches(expected: string, actual: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function activationOriginMatches(origin: string | undefined, publicUrl: string): boolean {
-	if (!origin) return false;
-	try { return new URL(origin).origin === origin && origin === new URL(publicUrl).origin; }
+export function activationOriginMatches(origin: string | undefined, referer: string | undefined, fetchSite: string | undefined, publicUrl: string): boolean {
+	const expectedOrigin = new URL(publicUrl).origin;
+	if (origin) {
+		try { return new URL(origin).origin === origin && origin === expectedOrigin; }
+		catch { return false; }
+	}
+	if (fetchSite === "same-origin") return true;
+	if (!referer) return false;
+	try { return new URL(referer).origin === expectedOrigin; }
 	catch { return false; }
 }
 
