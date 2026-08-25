@@ -10,7 +10,7 @@ const fixture=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../.
 test("development controller validates authority, redaction, lease fencing, and terminal bindings",async()=>{
   const document=JSON.parse(await readFile(fixture,"utf8")) as Record<string,unknown>;
   const claim:DevelopmentControllerWorkItem={buildId:String(document.id),workspaceId:String(document.workspaceId),projectId:String(document.projectId),runId:String(document.runId),
-    buildVersion:Number(document.version)-1,leaseToken:"90000000-0000-4000-8000-000000000001",leaseExpiresAt:"2026-08-22T00:10:00.000Z",attempt:1,
+    buildVersion:Number(document.version)-1,leaseToken:"90000000-0000-4000-8000-000000000001",leaseExpiresAt:"2026-08-22T00:10:00.000Z",attempt:1,generation:1,
     requestedBy:String(document.requestedBy),source:document.source as {repository:string;commit:string},projectManifestDigest:String(document.projectManifestDigest),
     projectSnapshot:JSON.parse(await readFile(path.resolve(path.dirname(fixture),"project-good.json"),"utf8")),planDigest:String(document.planDigest),createdAt:String(document.createdAt)};
   const store=new MemoryStore(claim),service=new DevelopmentControllerService(store);
@@ -33,5 +33,6 @@ test("development controller validates authority, redaction, lease fencing, and 
 class MemoryStore implements DevelopmentControllerStore {
   finalized=0;constructor(private readonly item:DevelopmentControllerWorkItem|undefined){}
   async claim(){return this.item;}async renew(){return this.item?.leaseExpiresAt;}async resolve(){return this.item;}
+  async storeArtifact(){return true;}async commitExecution(){return true;}async release(){return true;}
   async finalize(){this.finalized++;return true;}
 }
