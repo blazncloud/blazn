@@ -20,8 +20,8 @@ printf 'PUBLIC_URL=https://blazn.benpelo.com\n' >"$top/control-plane.env"
   printf 'ZITADEL_ISSUER_URL=https://auth.blazn.benpelo.com\n'
   printf 'ZITADEL_REVIEWED_RELEASE=v4.17.1\n'
   printf 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST=sha256:%064d\n' 0
-  printf 'ZITADEL_REVIEWED_ACR_VALUES=urn:zitadel:iam:org:project:roles,urn:blazn:mfa\n'
-  printf 'ZITADEL_REVIEWED_MFA_AMR_SETS=pwd+otp;pwd+webauthn\n'
+  printf 'ZITADEL_REVIEWED_ACR_POLICY=zitadel-v4.17.1-empty\n'
+  printf 'ZITADEL_REVIEWED_MFA_AMR_SETS=pwd+mfa+otp;user+mfa\n'
 } >"$top/identity.env"
 chmod 0600 "$top/identity.env"
 sudo chown 0:0 "$top/identity.env"
@@ -49,6 +49,20 @@ if (validate_identity_policy_fields "$top/invalid-policy.env") >"$top/policy.out
   exit 1
 fi
 grep -F 'reviewed ZITADEL assurance policy digest is invalid' "$top/policy.err" >/dev/null
+
+sed 's/^ZITADEL_REVIEWED_ACR_POLICY=.*/ZITADEL_REVIEWED_ACR_POLICY=accept-any-empty-acr/' "$top/identity.env" >"$top/invalid-acr.env"
+if (validate_identity_policy_fields "$top/invalid-acr.env") >"$top/acr.out" 2>"$top/acr.err"; then
+  printf 'unreviewed identity ACR policy unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'reviewed ZITADEL ACR policy must require v4.17.1 empty ACR' "$top/acr.err" >/dev/null
+
+sed 's/^ZITADEL_REVIEWED_MFA_AMR_SETS=.*/ZITADEL_REVIEWED_MFA_AMR_SETS=pwd+otp;user/' "$top/identity.env" >"$top/invalid-amr.env"
+if (validate_identity_policy_fields "$top/invalid-amr.env") >"$top/amr.out" 2>"$top/amr.err"; then
+  printf 'weakened identity AMR policy unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'reviewed ZITADEL MFA AMR sets must match v4.17.1' "$top/amr.err" >/dev/null
 
 BLAZN_IDENTITY_ENABLED=invalid
 export BLAZN_IDENTITY_ENABLED

@@ -42,7 +42,7 @@ export interface Config {
 			provider: "zitadel";
 			reviewedRelease: string;
 			policyDigest: string;
-			acrValues: string[];
+			acrPolicy: "zitadel-v4.17.1-empty";
 			acceptedAmrSets: string[][];
 		};
   };
@@ -67,10 +67,12 @@ function zitadelConfig(): Config["zitadel"] {
 	if (!booleanValue("ZITADEL_REQUIRE_MFA", true)) throw new Error("ZITADEL_REQUIRE_MFA must remain true for the qualified provider");
 	const reviewedRelease = process.env.ZITADEL_REVIEWED_RELEASE?.trim() ?? "";
 	const policyDigest = process.env.ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST?.trim() ?? "";
-	const acrValues = (process.env.ZITADEL_REVIEWED_ACR_VALUES ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+	const acrPolicy = process.env.ZITADEL_REVIEWED_ACR_POLICY?.trim() ?? "";
 	const acceptedAmrSets = (process.env.ZITADEL_REVIEWED_MFA_AMR_SETS ?? "").split(";").filter(Boolean).map((set) => set.split("+").map((value) => value.trim().toLowerCase()).filter(Boolean));
-	if (!/^v?[0-9]+\.[0-9]+\.[0-9]+$/.test(reviewedRelease) || !/^sha256:[0-9a-f]{64}$/.test(policyDigest) || acrValues.length === 0 || acrValues.some((value) => !/^[A-Za-z0-9:._/-]{1,256}$/.test(value)) || acceptedAmrSets.length === 0 || acceptedAmrSets.some((set) => set.length < 2 || new Set(set).size !== set.length || set.some((value) => !/^[a-z0-9._:-]{1,64}$/.test(value)))) throw new Error("reviewed ZITADEL ACR/MFA policy configuration is required");
-	return { issuerUrl: issuer.href.replace(/\/$/, ""), clientId, clientSecret: valueOrFile("ZITADEL_CLIENT_SECRET"), cookieKey: valueOrFile("OIDC_COOKIE_KEY"), assurancePolicy: { provider: "zitadel", reviewedRelease, policyDigest, acrValues, acceptedAmrSets } };
+	const reviewedAmrSets = [["pwd", "mfa", "otp"], ["user", "mfa"]];
+	const matchesReviewedAmrSets = acceptedAmrSets.length === reviewedAmrSets.length && acceptedAmrSets.every((set, index) => set.length === reviewedAmrSets[index]!.length && set.every((value, valueIndex) => value === reviewedAmrSets[index]![valueIndex]));
+	if (reviewedRelease !== "v4.17.1" || !/^sha256:[0-9a-f]{64}$/.test(policyDigest) || acrPolicy !== "zitadel-v4.17.1-empty" || !matchesReviewedAmrSets) throw new Error("reviewed ZITADEL v4.17.1 empty-ACR/MFA policy configuration is required");
+	return { issuerUrl: issuer.href.replace(/\/$/, ""), clientId, clientSecret: valueOrFile("ZITADEL_CLIENT_SECRET"), cookieKey: valueOrFile("OIDC_COOKIE_KEY"), assurancePolicy: { provider: "zitadel", reviewedRelease, policyDigest, acrPolicy, acceptedAmrSets } };
 }
 
 function cidrList(name: string): string[] {

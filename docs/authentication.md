@@ -107,8 +107,8 @@ ZITADEL_CLIENT_SECRET_FILE=/run/secrets/zitadel_client_secret
 ZITADEL_REQUIRE_MFA=true
 ZITADEL_REVIEWED_RELEASE=v4.17.1
 ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST=sha256:<review-receipt-digest>
-ZITADEL_REVIEWED_ACR_VALUES=<exact-ZITADEL-ACR>
-ZITADEL_REVIEWED_MFA_AMR_SETS=pwd+otp;pwd+webauthn
+ZITADEL_REVIEWED_ACR_POLICY=zitadel-v4.17.1-empty
+ZITADEL_REVIEWED_MFA_AMR_SETS=pwd+mfa+otp;user+mfa
 OIDC_COOKIE_KEY_FILE=/run/secrets/oidc_cookie_key
 ```
 
@@ -138,10 +138,16 @@ compatible fallback, and require recovery setup before production access. SMS
 is not a primary factor.
 
 The callback intentionally fails closed unless the identity token has verified
-email, an exact ACR from the reviewed ZITADEL release, and every method in one
-reviewed multi-method AMR set. A generic `mfa`, `passwordless`, or other single
-AMR value is insufficient. The release, assurance-policy digest, ACR, and AMR
-set are recorded on the device authorization for audit.
+email, an absent or empty ACR from the exact reviewed ZITADEL v4.17.1 behavior,
+and every method in one reviewed multi-method AMR set. ZITADEL v4.17.1 does not
+implement ACR and returns an empty value, so Blazn does not send `acr_values`;
+any non-empty ACR is rejected. The reviewed AMR alternatives are password plus
+the MFA marker and OTP (`pwd+mfa+otp`), or U2F/WebAuthn user presence plus the
+MFA marker (`user+mfa`). Provider-added aliases such as `password` do not weaken
+the required subset. A generic `mfa`, `passwordless`, or other single AMR value
+is insufficient. The policy digest is the independently reviewed receipt for
+this exact release and claim contract. The release, receipt digest, empty ACR,
+and observed AMR set are recorded on the device authorization for audit.
 
 ## Backup, restore, and exact rollback
 

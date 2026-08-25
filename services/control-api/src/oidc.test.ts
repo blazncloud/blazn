@@ -10,21 +10,25 @@ Object.assign(jwk, { kid: "test-key", use: "sig", alg: "RS256" });
 function token(overrides: Record<string, unknown> = {}): string {
   const now = 1_800_000_000;
   const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key", typ: "JWT" })).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ iss: "https://identity.blazn.example/", aud: "client-id", sub: "zitadel-user-id", email: "USER@example.com", email_verified: true, name: "Blaze User", nonce: "nonce", acr: "urn:zitadel:blazn:aal2", amr: ["pwd", "otp"], iat: now - 5, exp: now + 300, ...overrides })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ iss: "https://identity.blazn.example/", aud: "client-id", sub: "zitadel-user-id", email: "USER@example.com", email_verified: true, name: "Blaze User", nonce: "nonce", amr: ["password", "pwd", "mfa", "otp"], iat: now - 5, exp: now + 300, ...overrides })).toString("base64url");
   const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), pair.privateKey).toString("base64url");
   return `${header}.${payload}.${signature}`;
 }
 
-const verification = { issuer: "https://identity.blazn.example/", clientId: "client-id", nonce: "nonce", assurancePolicy: { provider: "zitadel" as const, reviewedRelease: "v4.17.1", policyDigest: `sha256:${"a".repeat(64)}`, acrValues: ["urn:zitadel:blazn:aal2"], acceptedAmrSets: [["pwd", "otp"], ["pwd", "webauthn"]] }, keys: [jwk as Jwk], now: 1_800_000_000 };
+const verification = { issuer: "https://identity.blazn.example/", clientId: "client-id", nonce: "nonce", assurancePolicy: { provider: "zitadel" as const, reviewedRelease: "v4.17.1", policyDigest: `sha256:${"a".repeat(64)}`, acrPolicy: "zitadel-v4.17.1-empty" as const, acceptedAmrSets: [["pwd", "mfa", "otp"], ["user", "mfa"]] }, keys: [jwk as Jwk], now: 1_800_000_000 };
 
 test("verified OIDC identity requires signature, issuer, audience, nonce, email, and MFA", () => {
-  assert.deepEqual(verifyOidcIdToken(token(), verification), { issuer: verification.issuer, subject: "zitadel-user-id", email: "user@example.com", displayName: "Blaze User", amr: ["pwd", "otp"], acr: "urn:zitadel:blazn:aal2", reviewedRelease: "v4.17.1", assurancePolicyDigest: `sha256:${"a".repeat(64)}` });
+  assert.deepEqual(verifyOidcIdToken(token(), verification), { issuer: verification.issuer, subject: "zitadel-user-id", email: "user@example.com", displayName: "Blaze User", amr: ["password", "pwd", "mfa", "otp"], acr: "", reviewedRelease: "v4.17.1", assurancePolicyDigest: `sha256:${"a".repeat(64)}` });
   assert.throws(() => verifyOidcIdToken(token({ nonce: "wrong" }), verification), /claims/);
   assert.throws(() => verifyOidcIdToken(token({ email_verified: false }), verification), /verified email/);
   assert.throws(() => verifyOidcIdToken(token({ amr: ["pwd"] }), verification), /multi-factor/);
 	assert.throws(() => verifyOidcIdToken(token({ amr: ["mfa"] }), verification), /assurance/);
-	assert.throws(() => verifyOidcIdToken(token({ acr: "urn:zitadel:unreviewed", amr: ["pwd", "otp"] }), verification), /assurance/);
-	assert.doesNotThrow(() => verifyOidcIdToken(token({ amr: ["pwd", "webauthn"] }), verification));
+	assert.throws(() => verifyOidcIdToken(token({ amr: ["pwd", "otp"] }), verification), /assurance/);
+	assert.throws(() => verifyOidcIdToken(token({ acr: "urn:zitadel:unreviewed" }), verification), /assurance/);
+	assert.throws(() => verifyOidcIdToken(token({ acr: null }), verification), /assurance/);
+	assert.doesNotThrow(() => verifyOidcIdToken(token({ acr: "" }), verification));
+	assert.doesNotThrow(() => verifyOidcIdToken(token({ amr: ["user", "mfa"] }), verification));
+	assert.doesNotThrow(() => verifyOidcIdToken(token({ amr: ["password", "pwd", "mfa", "otp", "provider-added-alias"] }), verification));
 });
 
 test("OIDC identity rejects an altered signature", () => {
@@ -34,7 +38,7 @@ test("OIDC identity rejects an altered signature", () => {
   assert.throws(() => verifyOidcIdToken(`${segments[0]}.${segments[1]}.${signature.toString("base64url")}`, verification), /signature/);
 });
 
-test("OIDC health validates discovery and signing keys and requests reviewed ACR values", async () => {
+test("OIDC health validates discovery and signing keys without requesting unsupported ACR values", async () => {
 	const originalFetch = globalThis.fetch;
 	const calls: string[] = [];
 	globalThis.fetch = (async (input: string | URL | Request) => {
@@ -48,7 +52,7 @@ test("OIDC health validates discovery and signing keys and requests reviewed ACR
 		const client = new OidcClient({ issuerUrl: verification.issuer, clientId: verification.clientId, clientSecret: "secret", callbackUrl: "https://api.blazn.example/v1/auth/oidc/callback", assurancePolicy: verification.assurancePolicy });
 		await Promise.all(Array.from({ length: 20 }, () => client.health()));
 		const authorization = await client.authorizationUrl(client.createTransaction("ABCD-EFGH", "signin"));
-		assert.equal(authorization.searchParams.get("acr_values"), verification.assurancePolicy.acrValues.join(" "));
+		assert.equal(authorization.searchParams.has("acr_values"), false);
 		assert.equal(calls.length, 2);
 		await client.health();
 		assert.equal(calls.length, 2, "health bypassed bounded cache or singleflight");
