@@ -334,7 +334,9 @@ control_plane_config_digest() {
         systemd/blazn-ngrok-qualification.service
       find . -maxdepth 1 -type f -name '*.schema.json' -print0
       find scripts -maxdepth 1 -type f -name '*.sh' -print0
-      find postgres-compat -maxdepth 1 -type f -name '*.sh' -print0
+      if [ -d postgres-compat ]; then
+        find postgres-compat -maxdepth 1 -type f -name '*.sh' -print0
+      fi
       find ../node -type f -print0
     } | LC_ALL=C sort -z | xargs -0 sha256sum
     printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"
