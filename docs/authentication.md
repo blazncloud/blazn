@@ -138,10 +138,15 @@ old inode, runs deployment preflight, and only then starts the full stack.
 
 ## Registration, social identity, and MFA policy
 
-Enable self-registration and verified email. Configure Google, GitHub, and
-Apple as instance-level external identity providers, but do not enable automatic
-linking by email. A matching verified email is not sufficient proof that a new
-social identity owns an existing Blazn account.
+Enable self-registration and verified email. Keep every external identity
+provider disabled while the reviewed ZITADEL v4.17.1 Login image is pinned:
+its first-time social-registration path does not send the verification required
+by `EMAIL_VERIFICATION`, so enabling Google, GitHub, Apple, or another provider
+would strand the new account. Social registration may be enabled only with a
+patched immutable Login image and fresh first-login, repeat-login, mail-delivery,
+and `email_verified=true` qualification evidence. Automatic linking by email
+must remain disabled; a matching verified email is not sufficient proof that a
+new social identity owns an existing Blazn account.
 
 Require MFA for Blazn. Prefer passkeys/WebAuthn, allow TOTP as the recovery-
 compatible fallback, and require recovery setup before production access. SMS
@@ -185,7 +190,8 @@ Do not replace the current live authentication route until all of these pass:
 
 1. new email registration and email verification;
 2. existing email/password login;
-3. Google, GitHub, and Apple first login and repeat login;
+3. Google, GitHub, and Apple first login with one delivered verification
+   message, a final `email_verified=true` callback, and repeat login;
 4. passkey enrollment/login and TOTP enrollment/login;
 5. recovery-code use and replay rejection;
 6. CLI device approval, denial, expiration, and polling throttling;
