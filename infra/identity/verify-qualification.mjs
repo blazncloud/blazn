@@ -32,10 +32,10 @@ for (const name of gateNames) { exact(receipt.gates[name], ["evidenceDigest", "o
 exact(receipt.identityProviders, ["before", "after"], "identity providers");
 for (const phase of ["before", "after"]) {
   const evidence = receipt.identityProviders[phase];
-  exact(evidence, ["organizationCount", "activeProviderCount", "evidenceDigest", "observedAt"], `identity providers ${phase}`);
+  exact(evidence, ["authorityPrincipal", "authoritySentinel", "organizationCount", "activeProviderCount", "evidenceDigest", "observedAt"], `identity providers ${phase}`);
   digest(evidence.evidenceDigest, `identity providers ${phase}`);
   const observed = Date.parse(evidence.observedAt);
-  if (evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > observedMillis + 30_000) throw new Error(`identity providers ${phase} evidence is invalid or stale`);
+  if (evidence.authorityPrincipal !== "blazn-provider-gate" || evidence.authoritySentinel !== "blazn-provider-gate-sentinel" || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > observedMillis + 30_000) throw new Error(`identity providers ${phase} evidence is invalid or stale`);
 }
 if (Date.parse(receipt.identityProviders.after.observedAt) < Date.parse(receipt.identityProviders.before.observedAt)) throw new Error("identity provider evidence order is invalid");
 const backupNames = ["manifestDigest", "databaseDigest", "masterKeyBefore", "masterKeyAfter", "patBefore", "patAfter", "preRestorePatSnapshotDigest"];

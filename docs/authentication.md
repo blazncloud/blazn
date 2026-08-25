@@ -42,6 +42,9 @@ The isolated stack is in `infra/identity`:
   database-backed organization and active-provider inventories with a dedicated
   gate-only PAT. The provisioner grants that principal instance-wide
   organization visibility, while the Login container never receives its token.
+  Every request also verifies the token subject and reads a fixed inactive
+  sentinel organization, so a credential swap or membership downgrade fails
+  closed even before another active organization exists.
   Login fails closed unless the instance has exactly one active organization
   and its effective provider inventory is empty for the pinned v4.17.1 image.
 - Traefik provides the required h2c connection to the API without access to the

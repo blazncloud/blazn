@@ -8,12 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const script = fileURLToPath(new URL("./assert-no-active-idps.mjs", import.meta.url));
 
-async function runProbe({ organizationStatus = 200, organizationBody = { details: { totalResult: "1" }, result: [{ id: "123456789", state: "ORGANIZATION_STATE_ACTIVE" }] }, providerStatus = 200, providerBody = { details: {} } }) {
+async function runProbe({ principalBody = { user: { id: "blazn-provider-gate" } }, sentinelBody = { details: { totalResult: "1" }, result: [{ id: "blazn-provider-gate-sentinel", name: "Blazn Provider Gate Authority Sentinel", state: "ORGANIZATION_STATE_INACTIVE" }] }, organizationStatus = 200, organizationBody = { details: { totalResult: "1" }, result: [{ id: "123456789", state: "ORGANIZATION_STATE_ACTIVE" }] }, providerStatus = 200, providerBody = { details: {} } }) {
   const directory = await mkdtemp(join(tmpdir(), "blazn-active-idps-test."));
   const tokenPath = join(directory, "login-client.pat");
   const preloadPath = join(directory, "fetch.mjs");
   await writeFile(tokenPath, "test-token-that-must-not-leak\n", { mode: 0o600 });
-  await writeFile(preloadPath, `globalThis.fetch = async (url) => { const organizations = new URL(url).pathname === "/v2/organizations/_search"; return new Response(organizations ? ${JSON.stringify(JSON.stringify(organizationBody))} : ${JSON.stringify(JSON.stringify(providerBody))}, { status: organizations ? ${organizationStatus} : ${providerStatus}, headers: { "content-type": "application/json" } }); };\n`);
+  await writeFile(preloadPath, `globalThis.fetch = async (url, init = {}) => { const path = new URL(url).pathname; const query = init.body ? JSON.parse(init.body).queries?.[0] : undefined; let body = ${JSON.stringify(JSON.stringify(providerBody))}, status = ${providerStatus}; if (path === "/auth/v1/users/me") { body = ${JSON.stringify(JSON.stringify(principalBody))}; status = 200; } else if (path === "/v2/organizations/_search" && query?.idQuery) { body = ${JSON.stringify(JSON.stringify(sentinelBody))}; status = 200; } else if (path === "/v2/organizations/_search") { body = ${JSON.stringify(JSON.stringify(organizationBody))}; status = ${organizationStatus}; } return new Response(body, { status, headers: { "content-type": "application/json" } }); };\n`);
   try {
     return await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, ["--import", preloadPath, script], {
@@ -41,6 +41,8 @@ test("accepts and receipts an empty active-provider inventory", async () => {
   assert.equal(result.code, 0, result.stderr);
   const evidence = JSON.parse(result.stdout);
   assert.equal(evidence.schemaVersion, "blazn.identity.active-idps/v1");
+  assert.equal(evidence.authorityPrincipal, "blazn-provider-gate");
+  assert.equal(evidence.authoritySentinel, "blazn-provider-gate-sentinel");
   assert.equal(evidence.organizationCount, 1);
   assert.equal(evidence.activeProviderCount, 0);
   assert.ok(Number.isFinite(Date.parse(evidence.observedAt)));
@@ -57,6 +59,18 @@ test("rejects a second organization before its providers can bypass the gate", a
   const result = await runProbe({ organizationBody: { details: { totalResult: "2" }, result: [{ id: "123456789", state: "ORGANIZATION_STATE_ACTIVE" }, { id: "987654321", state: "ORGANIZATION_STATE_ACTIVE" }] } });
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /exactly one organization is required/);
+});
+
+test("rejects an organization-local token swapped into the gate", async () => {
+  const result = await runProbe({ principalBody: { user: { id: "organization-local-principal" } } });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /token subject is invalid/);
+});
+
+test("rejects authority loss after the gate principal is downgraded", async () => {
+  const result = await runProbe({ sentinelBody: { details: { totalResult: "0" }, result: [] } });
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /authority sentinel is unavailable/);
 });
 
 test("fails closed when the organization inventory endpoint is unavailable", async () => {

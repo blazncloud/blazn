@@ -35,10 +35,22 @@ export async function assertNoActiveIdentityProviders() {
     return JSON.parse(new TextDecoder().decode(payloadBytes));
   };
 
+  const principal = await requestJson(new URL("/auth/v1/users/me", api), "provider gate principal");
+  if (principal?.user?.id !== "blazn-provider-gate") fail("provider gate token subject is invalid");
+
+  const sentinel = await requestJson(new URL("/v2/organizations/_search", api), "authority sentinel", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ query: { offset: "0", limit: 2, asc: true }, queries: [{ idQuery: { id: "blazn-provider-gate-sentinel" } }] }),
+  });
+  if (Number(sentinel?.details?.totalResult) !== 1 || sentinel?.result?.length !== 1 || sentinel.result[0]?.id !== "blazn-provider-gate-sentinel" || sentinel.result[0]?.name !== "Blazn Provider Gate Authority Sentinel" || sentinel.result[0]?.state !== "ORGANIZATION_STATE_INACTIVE") {
+    fail("instance-wide authority sentinel is unavailable");
+  }
+
   const organizations = await requestJson(new URL("/v2/organizations/_search", api), "organization inventory", {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
-    body: JSON.stringify({ query: { offset: "0", limit: 2, asc: true } }),
+    body: JSON.stringify({ query: { offset: "0", limit: 2, asc: true }, queries: [{ stateQuery: { state: "ORGANIZATION_STATE_ACTIVE" } }] }),
   });
   const totalOrganizations = Number(organizations?.details?.totalResult);
   if (!Number.isSafeInteger(totalOrganizations) || totalOrganizations !== 1 || !Array.isArray(organizations.result) || organizations.result.length !== 1) {
@@ -55,7 +67,7 @@ export async function assertNoActiveIdentityProviders() {
   if (!Array.isArray(providers)) fail("inventory provider list is invalid");
   if (providers.length !== 0) fail(`${providers.length} active provider(s) are not allowed with the pinned Login image`);
 
-  return { schemaVersion: "blazn.identity.active-idps/v1", organizationCount: 1, activeProviderCount: 0, observedAt: new Date().toISOString() };
+  return { schemaVersion: "blazn.identity.active-idps/v1", authorityPrincipal: "blazn-provider-gate", authoritySentinel: "blazn-provider-gate-sentinel", organizationCount: 1, activeProviderCount: 0, observedAt: new Date().toISOString() };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

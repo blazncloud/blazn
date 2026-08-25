@@ -36,15 +36,13 @@ const request = async (token, path, { method = "GET", body, accepted = [200] } =
   }
   return { response, payload, ok: accepted.includes(response.status) };
 };
-const organizations = async (token) => request(token, "/v2/organizations/_search", { method: "POST", body: { query: { offset: "0", limit: 2, asc: true } } });
+const searchOrganizations = async (token, queries) => request(token, "/v2/organizations/_search", { method: "POST", body: { query: { offset: "0", limit: 2, asc: true }, queries } });
+const activeOrganizations = (token) => searchOrganizations(token, [{ stateQuery: { state: "ORGANIZATION_STATE_ACTIVE" } }]);
+const sentinelId = "blazn-provider-gate-sentinel";
+const sentinelName = "Blazn Provider Gate Authority Sentinel";
+const sentinelOrganization = (token) => searchOrganizations(token, [{ idQuery: { id: sentinelId } }]);
 
-const existingToken = (await readFile(target, "utf8")).trim();
-if (existingToken) {
-  const existingCheck = await organizations(existingToken);
-  if (existingCheck.ok && Number(existingCheck.payload?.details?.totalResult) === 1 && existingCheck.payload?.result?.length === 1) process.exit(0);
-}
-
-const visible = await organizations(loginToken);
+const visible = await activeOrganizations(loginToken);
 if (!visible.ok || Number(visible.payload?.details?.totalResult) !== 1 || visible.payload?.result?.length !== 1) fail("login client organization context is invalid");
 const organizationId = visible.payload.result[0]?.id;
 if (!/^[0-9]+$/.test(organizationId ?? "")) fail("login client organization ID is invalid");
@@ -67,8 +65,24 @@ if (!membership.ok) fail("instance-wide provider gate role could not be assigned
 const pat = await request(loginToken, `/v2/users/${userId}/pats`, { method: "POST", body: { userId, expirationDate: expiration } });
 const gateToken = pat.payload?.token;
 if (!pat.ok || typeof gateToken !== "string" || gateToken.length < 16 || gateToken.length > 65_536) fail("provider gate token could not be created");
-const authoritative = await organizations(gateToken);
-if (!authoritative.ok || Number(authoritative.payload?.details?.totalResult) !== 1 || authoritative.payload?.result?.length !== 1) fail("provider gate token is not instance-authoritative");
+
+let sentinel = await sentinelOrganization(gateToken);
+if (!sentinel.ok) fail("authority sentinel inventory is unavailable");
+if (Number(sentinel.payload?.details?.totalResult) === 0 && sentinel.payload?.result?.length === 0) {
+  const created = await request(gateToken, "/v2/organizations", { method: "POST", body: { name: sentinelName, organizationId: sentinelId }, accepted: [201] });
+  if (!created.ok || created.payload?.organizationId !== sentinelId) fail("authority sentinel could not be created");
+  sentinel = { ok: true, payload: { details: { totalResult: "1" }, result: [{ id: sentinelId, name: sentinelName, state: "ORGANIZATION_STATE_ACTIVE" }] } };
+}
+if (Number(sentinel.payload?.details?.totalResult) !== 1 || sentinel.payload?.result?.length !== 1 || sentinel.payload.result[0]?.id !== sentinelId || sentinel.payload.result[0]?.name !== sentinelName) fail("authority sentinel identity is invalid");
+if (sentinel.payload.result[0]?.state === "ORGANIZATION_STATE_ACTIVE") {
+  const deactivated = await request(gateToken, `/v2/organizations/${sentinelId}/deactivate`, { method: "POST", body: { organizationId: sentinelId } });
+  if (!deactivated.ok) fail("authority sentinel could not be deactivated");
+} else if (sentinel.payload.result[0]?.state !== "ORGANIZATION_STATE_INACTIVE") fail("authority sentinel state is invalid");
+
+const principal = await request(gateToken, "/auth/v1/users/me");
+const authoritativeSentinel = await sentinelOrganization(gateToken);
+const authoritative = await activeOrganizations(gateToken);
+if (!principal.ok || principal.payload?.user?.id !== userId || !authoritativeSentinel.ok || Number(authoritativeSentinel.payload?.details?.totalResult) !== 1 || authoritativeSentinel.payload?.result?.[0]?.state !== "ORGANIZATION_STATE_INACTIVE" || !authoritative.ok || Number(authoritative.payload?.details?.totalResult) !== 1 || authoritative.payload?.result?.length !== 1) fail("provider gate token is not bound to the authoritative principal and sentinel");
 
 const handle = await open(target, "r+", 0o600);
 try {
