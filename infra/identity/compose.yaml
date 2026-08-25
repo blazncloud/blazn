@@ -21,6 +21,8 @@ services:
         condition: service_healthy
       zitadel-login:
         condition: service_healthy
+      idp-gate:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "traefik", "healthcheck", "--ping"]
       interval: 10s
@@ -132,6 +134,37 @@ services:
       timeout: 30s
       retries: 12
       start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - identity
+
+  idp-gate:
+    image: ${ZITADEL_LOGIN_IMAGE:?set ZITADEL_LOGIN_IMAGE to a reviewed immutable digest}
+    restart: unless-stopped
+    user: "0"
+    entrypoint: ["node", "/blazn/provider-gate.mjs"]
+    environment:
+      ZITADEL_API_URL: http://zitadel-api:8080
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      BLAZN_ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:?set the public identity domain}
+      BLAZN_PROVIDER_GATE_PORT: "3100"
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:ro
+      - ./assert-no-active-idps.mjs:/blazn/assert-no-active-idps.mjs:ro
+      - ./provider-gate.mjs:/blazn/provider-gate.mjs:ro
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
