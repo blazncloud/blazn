@@ -21,6 +21,7 @@ SECRETS_ROOT=${BLAZN_SECRETS_ROOT:-/etc/blazn/control-plane/secrets}
 NODE_SECRETS_ROOT=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
 NODE_PLAN_ROOT=${BLAZN_NODE_PLAN_ROOT:-/etc/blazn/node-plan}
 RECEIPT_PATH=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
+ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
 BIND_ADDRESS=${BLAZN_BIND_ADDRESS:-127.0.0.1}
 MIN_DATA_BYTES=${BLAZN_MIN_DATA_BYTES:-42949672960}
 MIN_BACKUP_BYTES=${BLAZN_MIN_BACKUP_BYTES:-21474836480}
@@ -35,7 +36,8 @@ for named_path in \
   "BLAZN_SECRETS_ROOT:$SECRETS_ROOT" \
   "BLAZN_NODE_BROKER_SECRETS_ROOT:$NODE_SECRETS_ROOT" \
   "BLAZN_NODE_PLAN_ROOT:$NODE_PLAN_ROOT" \
-  "BLAZN_RECEIPT_PATH:$RECEIPT_PATH"; do
+  "BLAZN_RECEIPT_PATH:$RECEIPT_PATH" \
+  "BLAZN_CONTROL_PLANE_ENV_FILE:$ENV_FILE"; do
   name=${named_path%%:*}
   value=${named_path#*:}
   require_absolute_path "$name" "$value"
@@ -170,9 +172,8 @@ if [ "$MODE" != plan ]; then
   installed_unit=${BLAZN_SYSTEMD_UNIT_PATH:-/etc/systemd/system/blazn-control-plane.service}
   assert_regular_file_owned_mode "$installed_unit" 0 644
   cmp -s "$ROOT_DIR/systemd/blazn-control-plane.service" "$installed_unit" || die "installed control-plane systemd unit differs from the active release"
+  assert_regular_file_owned_mode "$ENV_FILE" 0 600
   if [ "$MODE" = existing-deploy ]; then
-    ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/control-plane.env}
-    assert_regular_file_owned_mode "$ENV_FILE" 0 600
     verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
     for service in postgres object api; do
       container=$(control_plane_compose "$ROOT_DIR" "$ENV_FILE" ps -q "$service")
