@@ -35,7 +35,20 @@ The isolated stack is in `infra/identity`:
 
 - PostgreSQL holds only ZITADEL state.
 - `zitadel-api` exposes the identity and standards APIs.
-- `zitadel-login` is the self-hosted Next.js login application.
+- `zitadel-login` is the self-hosted Next.js login application. Its
+  `EMAIL_VERIFICATION` setting is enabled so registration sends and requires
+  email verification before completing an identity login.
+- The Traefik request-path gate queries ZITADEL's
+  database-backed organization and active-provider inventories with a dedicated
+  gate-only PAT. The provisioner grants that principal instance-wide
+  organization visibility, while the Login container never receives its token.
+  Every request also verifies the token subject and reads a fixed inactive
+  sentinel organization, so a credential swap or membership downgrade fails
+  closed even before another active organization exists.
+  Provisioning rotates the gate PAT to the configured expiry, revokes every
+  superseded PAT, and refuses to start unless exactly the retained PAT remains.
+  Login fails closed unless the instance has exactly one active organization
+  and its effective provider inventory is empty for the pinned v4.17.1 image.
 - Traefik provides the required h2c connection to the API without access to the
   Docker socket.
 - A private Docker volume transfers the generated login-client credential from
@@ -136,10 +149,19 @@ old inode, runs deployment preflight, and only then starts the full stack.
 
 ## Registration, social identity, and MFA policy
 
-Enable self-registration and verified email. Configure Google, GitHub, and
-Apple as instance-level external identity providers, but do not enable automatic
-linking by email. A matching verified email is not sufficient proof that a new
-social identity owns an existing Blazn account.
+Enable self-registration and verified email. Keep every external identity
+provider disabled while the reviewed ZITADEL v4.17.1 Login image is pinned:
+its first-time social-registration path does not send the verification required
+by `EMAIL_VERIFICATION`, so enabling Google, GitHub, Apple, or another provider
+would strand the new account. Social registration may be enabled only with a
+patched immutable Login image and fresh first-login, repeat-login, mail-delivery,
+and `email_verified=true` qualification evidence. Automatic linking by email
+must remain disabled; a matching verified email is not sufficient proof that a
+new social identity owns an existing Blazn account.
+Until that image is replaced, the ZITADEL instance must also contain exactly
+one active organization. The live request-path gate rejects Login when a second
+organization exists, preventing an organization-scoped provider from bypassing
+the global safe-off policy.
 
 Require MFA for Blazn. Prefer passkeys/WebAuthn, allow TOTP as the recovery-
 compatible fallback, and require recovery setup before production access. SMS
@@ -183,7 +205,8 @@ Do not replace the current live authentication route until all of these pass:
 
 1. new email registration and email verification;
 2. existing email/password login;
-3. Google, GitHub, and Apple first login and repeat login;
+3. Google, GitHub, and Apple first login with one delivered verification
+   message, a final `email_verified=true` callback, and repeat login;
 4. passkey enrollment/login and TOTP enrollment/login;
 5. recovery-code use and replay rejection;
 6. CLI device approval, denial, expiration, and polling throttling;
@@ -201,6 +224,14 @@ legacy login, explicit device confirmation, OIDC-aware health, backup/restore,
 exact image rollback, master-key recovery, and PAT-volume recovery. Absence of
 the reviewed images, mail delivery, provider/bootstrap configuration, or driver
 is a hard blocker rather than a skipped green gate.
+The qualification receipt also binds single-organization and
+zero-active-provider observations from both before and after backup/restore, so
+a restored or administratively changed organization/provider inventory cannot
+pass on documentation or static configuration alone.
+The disposable qualification also creates a second organization that is not
+directly granted to the gate principal and proves the public Login route returns
+503 before deleting the qualification organization. This exercises ZITADEL's
+real permission filtering rather than trusting a mocked organization count.
 The browser driver must be a root-owned, single-link mode-0500/0700 file at the
 fixed driver path and must match a separately reviewed SHA-256 digest. It emits
 per-gate evidence digests and timestamps, not self-authored pass booleans. The

@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 if [ "$(id -u)" -ne 0 ] || [ "$#" -ne 2 ]; then
   printf 'usage: sudo %s REVIEWED_ENV_FILE QUALIFICATION_DRIVER\n' "$0" >&2
@@ -51,10 +52,13 @@ trap cleanup EXIT HUP INT TERM
 
 "$script_dir/generate-secrets.sh" "$BLAZN_IDENTITY_SECRETS_ROOT" "${ZITADEL_QUALIFICATION_ADMIN_EMAIL:?set qualification admin email}"
 docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" up -d --wait
+BLAZN_IDENTITY_LOCAL_ORIGIN="http://127.0.0.1:${ZITADEL_PROXY_PORT:-58081}" \
+ZITADEL_PROVIDER_GATE_TOKEN_FILE="$BLAZN_IDENTITY_SECRETS_ROOT/provider-gate.pat" \
+node "$script_dir/test-provider-gate-authority.mjs"
 observe_services() {
-  for service_image in "postgres|$ZITADEL_POSTGRES_IMAGE" "proxy|$ZITADEL_TRAEFIK_IMAGE" "zitadel-api|$ZITADEL_IMAGE" "zitadel-login|$ZITADEL_LOGIN_IMAGE"; do
+  for service_image in "postgres|$ZITADEL_POSTGRES_IMAGE" "proxy|$ZITADEL_TRAEFIK_IMAGE" "zitadel-api|$ZITADEL_IMAGE" "zitadel-login|$ZITADEL_LOGIN_IMAGE" "provider-gate-provision|$ZITADEL_LOGIN_IMAGE" "idp-gate|$ZITADEL_LOGIN_IMAGE"; do
     service=${service_image%%|*}; configured=${service_image#*|}
-    container_id=$(docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" ps -q "$service")
+    container_id=$(docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" ps -aq "$service")
     [ "$(printf '%s' "$container_id" | wc -l | tr -d ' ')" -eq 0 ] || identity_fail "service $service resolved multiple containers"
 	printf '%s' "$container_id" | grep -Eq '^[0-9a-f]{64}$' || identity_fail "service $service container identity is invalid"
     observed_config=$(docker inspect --format '{{.Config.Image}}' "$container_id")
@@ -63,6 +67,8 @@ observe_services() {
   done | LC_ALL=C sort
 }
 services_before=$(observe_services)
+docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" exec -T idp-gate node /blazn/assert-no-active-idps.mjs > "$receipt_dir/identity-providers-before.json"
+identity_require_root_file "$receipt_dir/identity-providers-before.json"
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "https://${ZITADEL_DOMAIN}/.well-known/openid-configuration" >/dev/null
 pat_before=$(docker run --rm --mount type=volume,src=blazn-identity_zitadel-bootstrap,dst=/source,readonly "$ZITADEL_BACKUP_IMAGE" sh -ceu 'sha256sum /source/login-client.pat' | awk '{print $1}')
 master_before=$(sha256sum "$BLAZN_IDENTITY_SECRETS_ROOT/zitadel-masterkey" | awk '{print $1}')
@@ -73,6 +79,8 @@ database_digest=sha256:$(sha256sum "$backup_dir/postgres.sql" | awk '{print $1}'
 "$script_dir/restore.sh" "$backup_dir" "$env_file"
 pre_restore_pat_snapshot_digest=$(cat "$recovery_dir/pre-restore-pat.sha256")
 services_after=$(observe_services)
+docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" exec -T idp-gate node /blazn/assert-no-active-idps.mjs > "$receipt_dir/identity-providers-after.json"
+identity_require_root_file "$receipt_dir/identity-providers-after.json"
 backup_image_id_after=$(docker image inspect --format '{{.Id}}' "$ZITADEL_BACKUP_IMAGE")
 pat_after=$(docker run --rm --mount type=volume,src=blazn-identity_zitadel-bootstrap,dst=/source,readonly "$ZITADEL_BACKUP_IMAGE" sh -ceu 'sha256sum /source/login-client.pat' | awk '{print $1}')
 master_after=$(sha256sum "$BLAZN_IDENTITY_SECRETS_ROOT/zitadel-masterkey" | awk '{print $1}')
@@ -89,6 +97,8 @@ QUALIFICATION_DRIVER_DIGEST="$driver_digest" \
 QUALIFICATION_ENVIRONMENT_DIGEST="sha256:$(sha256sum "$env_file" | awk '{print $1}')" \
 QUALIFICATION_CONFIGURED_POSTGRES="$ZITADEL_POSTGRES_IMAGE" QUALIFICATION_CONFIGURED_PROXY="$ZITADEL_TRAEFIK_IMAGE" \
 QUALIFICATION_CONFIGURED_ZITADEL_API="$ZITADEL_IMAGE" QUALIFICATION_CONFIGURED_ZITADEL_LOGIN="$ZITADEL_LOGIN_IMAGE" \
+QUALIFICATION_CONFIGURED_PROVIDER_GATE_PROVISION="$ZITADEL_LOGIN_IMAGE" \
+QUALIFICATION_CONFIGURED_IDP_GATE="$ZITADEL_LOGIN_IMAGE" \
 QUALIFICATION_SERVICES_BEFORE="$services_before" QUALIFICATION_SERVICES_AFTER="$services_after" \
 QUALIFICATION_BACKUP_IMAGE="$ZITADEL_BACKUP_IMAGE" QUALIFICATION_BACKUP_IMAGE_ID_BEFORE="$backup_image_id_before" QUALIFICATION_BACKUP_IMAGE_ID_AFTER="$backup_image_id_after" \
 QUALIFICATION_BACKUP_MANIFEST_DIGEST="$backup_manifest_digest" \
@@ -96,7 +106,7 @@ QUALIFICATION_DATABASE_DIGEST="$database_digest" \
 QUALIFICATION_MASTER_BEFORE="sha256:$master_before" QUALIFICATION_MASTER_AFTER="sha256:$master_after" \
 QUALIFICATION_PAT_BEFORE="sha256:$pat_before" QUALIFICATION_PAT_AFTER="sha256:$pat_after" \
 QUALIFICATION_PRE_RESTORE_PAT_SNAPSHOT_DIGEST="$pre_restore_pat_snapshot_digest" \
-node "$script_dir/compose-qualification.mjs" "$receipt_dir/driver.json" "$receipt_dir/final.json"
+node "$script_dir/compose-qualification.mjs" "$receipt_dir/driver.json" "$receipt_dir/identity-providers-before.json" "$receipt_dir/identity-providers-after.json" "$receipt_dir/final.json"
 node "$script_dir/verify-qualification.mjs" "$receipt_dir/final.json" "$env_file"
 install -d -o root -g root -m 700 "$(dirname -- "$receipt_output")"
 install -o root -g root -m 600 "$receipt_dir/final.json" "$receipt_output"

@@ -3,6 +3,9 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 "$SCRIPT_DIR/test-branding.sh"
+node --test "$SCRIPT_DIR/assert-no-active-idps.test.mjs"
+node --test "$SCRIPT_DIR/provider-gate.test.mjs"
+node --test "$SCRIPT_DIR/provision-provider-gate.test.mjs"
 compose=$SCRIPT_DIR/compose.yaml
 control_overlay=$SCRIPT_DIR/../milestone-2/compose.identity.yaml
 
@@ -15,6 +18,13 @@ for expected in \
   'ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"' \
   'ZITADEL_SYSTEMDEFAULTS_MULTIFACTORS_OTP_ISSUER: Blazn' \
   'ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat' \
+  'EMAIL_VERIFICATION: "true"' \
+  'BLAZN_ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:?set the public identity domain}' \
+  './assert-no-active-idps.mjs:/blazn/assert-no-active-idps.mjs:ro' \
+  './provision-provider-gate.mjs:/blazn/provision-provider-gate.mjs:ro' \
+  './provider-gate.mjs:/blazn/provider-gate.mjs:ro' \
+  'ZITADEL_PROVIDER_GATE_TOKEN_FILE: /run/secrets/provider_gate_pat' \
+  'condition: service_completed_successfully' \
   '127.0.0.1}:${ZITADEL_PROXY_PORT:-58081}:8080' \
   'driver: bridge'; do
   grep -F -- "$expected" "$compose" >/dev/null || {
@@ -22,9 +32,13 @@ for expected in \
     exit 1
   }
 done
+node --check "$SCRIPT_DIR/provision-provider-gate.mjs"
+node --check "$SCRIPT_DIR/test-provider-gate-authority.mjs"
 
 grep -F 'url: h2c://zitadel-api:8080' "$SCRIPT_DIR/traefik-routes.yaml" >/dev/null
 grep -F 'url: http://zitadel-login:3000' "$SCRIPT_DIR/traefik-routes.yaml" >/dev/null
+grep -F 'provider-safe-off' "$SCRIPT_DIR/traefik-routes.yaml" >/dev/null
+grep -F 'address: http://idp-gate:3100/authorize' "$SCRIPT_DIR/traefik-routes.yaml" >/dev/null
 if grep -F '/var/run/docker.sock' "$compose" >/dev/null; then
   printf 'identity proxy receives the Docker socket\n' >&2
   exit 1
@@ -72,6 +86,7 @@ grep -F 'repair-pat-volume.sh' "$SCRIPT_DIR/restore.sh" >/dev/null
 grep -F 'QUALIFICATION_SERVICES_BEFORE' "$SCRIPT_DIR/test-disposable.sh" >/dev/null
 grep -F 'QUALIFICATION_SERVICES_AFTER' "$SCRIPT_DIR/test-disposable.sh" >/dev/null
 grep -F 'QUALIFICATION_DRIVER_DIGEST' "$SCRIPT_DIR/test-disposable.sh" >/dev/null
+[ "$(grep -c 'exec -T idp-gate node /blazn/assert-no-active-idps.mjs' "$SCRIPT_DIR/test-disposable.sh")" -eq 2 ] || { printf 'qualification provider evidence does not run twice in the authoritative gate container\n' >&2; exit 1; }
 if grep -F '"const": true' "$SCRIPT_DIR/qualification-receipt.schema.json" >/dev/null; then
   printf 'qualification receipt still trusts self-authored pass booleans\n' >&2; exit 1
 fi
@@ -85,6 +100,8 @@ printf '%s\n' \
   'ZITADEL_LOGIN_IMAGE=ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444' \
   'ZITADEL_BACKUP_IMAGE=alpine@sha256:9999999999999999999999999999999999999999999999999999999999999999' > "$qualification_tmp/reviewed.env"
 reviewed_env_digest=sha256:$(sha256sum "$qualification_tmp/reviewed.env" | awk '{print $1}')
+printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","authorityPrincipal":"blazn-provider-gate","authoritySentinel":"blazn-provider-gate-sentinel","authorityPatId":"555555555","authorityPatExpiration":"2099-01-01T00:00:00Z","organizationCount":1,"activeProviderCount":0,"observedAt":"2026-08-22T00:00:01Z"}' > "$qualification_tmp/idps-before.json"
+printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","authorityPrincipal":"blazn-provider-gate","authoritySentinel":"blazn-provider-gate-sentinel","authorityPatId":"666666666","authorityPatExpiration":"2099-01-01T00:00:00Z","organizationCount":1,"activeProviderCount":0,"observedAt":"2026-08-22T00:00:02Z"}' > "$qualification_tmp/idps-after.json"
 QUALIFICATION_ISSUER=https://identity.example.test \
 QUALIFICATION_STARTED_AT=2026-08-21T23:59:00Z \
 QUALIFICATION_DRIVER_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -93,14 +110,20 @@ QUALIFICATION_CONFIGURED_POSTGRES=postgres@sha256:111111111111111111111111111111
 QUALIFICATION_CONFIGURED_PROXY=traefik@sha256:2222222222222222222222222222222222222222222222222222222222222222 \
 QUALIFICATION_CONFIGURED_ZITADEL_API=ghcr.io/zitadel/zitadel@sha256:3333333333333333333333333333333333333333333333333333333333333333 \
 QUALIFICATION_CONFIGURED_ZITADEL_LOGIN=ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444 \
+QUALIFICATION_CONFIGURED_PROVIDER_GATE_PROVISION=ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444 \
+QUALIFICATION_CONFIGURED_IDP_GATE=ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444 \
 QUALIFICATION_SERVICES_BEFORE="postgres|postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111|sha256:5555555555555555555555555555555555555555555555555555555555555555
 proxy|traefik@sha256:2222222222222222222222222222222222222222222222222222222222222222|cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc|traefik@sha256:2222222222222222222222222222222222222222222222222222222222222222|sha256:6666666666666666666666666666666666666666666666666666666666666666
 zitadel-api|ghcr.io/zitadel/zitadel@sha256:3333333333333333333333333333333333333333333333333333333333333333|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|ghcr.io/zitadel/zitadel@sha256:3333333333333333333333333333333333333333333333333333333333333333|sha256:7777777777777777777777777777777777777777777777777777777777777777
-zitadel-login|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|1111111111111111111111111111111111111111111111111111111111111111|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888" \
+zitadel-login|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|1111111111111111111111111111111111111111111111111111111111111111|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888
+provider-gate-provision|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|5555555555555555555555555555555555555555555555555555555555555555|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888
+idp-gate|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|3333333333333333333333333333333333333333333333333333333333333333|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888" \
 QUALIFICATION_SERVICES_AFTER="postgres|postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111|bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb|postgres@sha256:1111111111111111111111111111111111111111111111111111111111111111|sha256:5555555555555555555555555555555555555555555555555555555555555555
 proxy|traefik@sha256:2222222222222222222222222222222222222222222222222222222222222222|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd|traefik@sha256:2222222222222222222222222222222222222222222222222222222222222222|sha256:6666666666666666666666666666666666666666666666666666666666666666
 zitadel-api|ghcr.io/zitadel/zitadel@sha256:3333333333333333333333333333333333333333333333333333333333333333|ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff|ghcr.io/zitadel/zitadel@sha256:3333333333333333333333333333333333333333333333333333333333333333|sha256:7777777777777777777777777777777777777777777777777777777777777777
-zitadel-login|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|2222222222222222222222222222222222222222222222222222222222222222|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888" \
+zitadel-login|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|2222222222222222222222222222222222222222222222222222222222222222|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888
+provider-gate-provision|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|6666666666666666666666666666666666666666666666666666666666666666|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888
+idp-gate|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|4444444444444444444444444444444444444444444444444444444444444444|ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444|sha256:8888888888888888888888888888888888888888888888888888888888888888" \
 QUALIFICATION_BACKUP_IMAGE=alpine@sha256:9999999999999999999999999999999999999999999999999999999999999999 \
 QUALIFICATION_BACKUP_IMAGE_ID_BEFORE=sha256:abababababababababababababababababababababababababababababababab \
 QUALIFICATION_BACKUP_IMAGE_ID_AFTER=sha256:abababababababababababababababababababababababababababababababab \
@@ -111,8 +134,10 @@ QUALIFICATION_MASTER_AFTER=sha256:1212121212121212121212121212121212121212121212
 QUALIFICATION_PAT_BEFORE=sha256:1313131313131313131313131313131313131313131313131313131313131313 \
 QUALIFICATION_PAT_AFTER=sha256:1313131313131313131313131313131313131313131313131313131313131313 \
 QUALIFICATION_PRE_RESTORE_PAT_SNAPSHOT_DIGEST=sha256:1414141414141414141414141414141414141414141414141414141414141414 \
-node "$SCRIPT_DIR/compose-qualification.mjs" "$SCRIPT_DIR/driver-evidence.test.json" "$qualification_tmp/receipt.json"
+node "$SCRIPT_DIR/compose-qualification.mjs" "$SCRIPT_DIR/driver-evidence.test.json" "$qualification_tmp/idps-before.json" "$qualification_tmp/idps-after.json" "$qualification_tmp/receipt.json"
 node "$SCRIPT_DIR/verify-qualification.mjs" "$qualification_tmp/receipt.json" "$qualification_tmp/reviewed.env" >/dev/null
+node -e 'const fs=require("fs"),p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.identityProviders.after.activeProviderCount=1;fs.writeFileSync(process.argv[2],JSON.stringify(v))' "$qualification_tmp/receipt.json" "$qualification_tmp/bad-idps.json"
+if node "$SCRIPT_DIR/verify-qualification.mjs" "$qualification_tmp/bad-idps.json" "$qualification_tmp/reviewed.env" >/dev/null 2>&1; then printf 'qualification verifier accepted an active external identity provider\n' >&2; exit 1; fi
 node -e 'const fs=require("fs"),p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.services.proxy.after.imageId="sha256:"+"f".repeat(64);fs.writeFileSync(process.argv[2],JSON.stringify(v))' "$qualification_tmp/receipt.json" "$qualification_tmp/bad-service.json"
 if node "$SCRIPT_DIR/verify-qualification.mjs" "$qualification_tmp/bad-service.json" "$qualification_tmp/reviewed.env" >/dev/null 2>&1; then printf 'qualification verifier accepted stale service mapping\n' >&2; exit 1; fi
 node -e 'const fs=require("fs"),p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.backupUtility.configuredImage="evil.invalid/tool@sha256:"+"e".repeat(64);fs.writeFileSync(process.argv[2],JSON.stringify(v))' "$qualification_tmp/receipt.json" "$qualification_tmp/bad-backup.json"

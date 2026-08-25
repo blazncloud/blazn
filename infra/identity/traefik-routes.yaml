@@ -4,12 +4,13 @@ http:
       entryPoints: [web]
       rule: PathPrefix(`/ui/v2/login`)
       priority: 200
+      middlewares: [provider-safe-off]
       service: login
     root:
       entryPoints: [web]
       rule: Path(`/`)
       priority: 300
-      middlewares: [login-root]
+      middlewares: [provider-safe-off, login-root]
       service: login
     api:
       entryPoints: [web]
@@ -17,6 +18,10 @@ http:
       priority: 100
       service: api
   middlewares:
+    provider-safe-off:
+      forwardAuth:
+        address: http://idp-gate:3100/authorize
+        trustForwardHeader: false
     login-root:
       replacePath:
         path: /ui/v2/login/

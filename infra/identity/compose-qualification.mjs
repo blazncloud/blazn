@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 
-if (process.argv.length !== 4) throw new Error("usage: node compose-qualification.mjs DRIVER_EVIDENCE.json RECEIPT.json");
+if (process.argv.length !== 6) throw new Error("usage: node compose-qualification.mjs DRIVER_EVIDENCE.json IDP_BEFORE.json IDP_AFTER.json RECEIPT.json");
 const driver = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const startedAt = process.env.QUALIFICATION_STARTED_AT ?? "";
 const startedMillis = Date.parse(startedAt);
@@ -17,13 +18,27 @@ for (const name of gateNames) {
 	const observed = Date.parse(driver.gates[name].observedAt);
 	if (!/^sha256:[0-9a-f]{64}$/.test(driver.gates[name].evidenceDigest) || !Number.isFinite(observed) || observed < startedMillis || observed > Date.now() + 30_000) throw new Error(`driver gate ${name} evidence is invalid or stale`);
 }
+const readIdentityProviderEvidence = (path, label) => {
+  const raw = readFileSync(path);
+  const evidence = JSON.parse(raw.toString("utf8"));
+  exact(evidence, ["schemaVersion", "authorityPrincipal", "authoritySentinel", "authorityPatId", "authorityPatExpiration", "organizationCount", "activeProviderCount", "observedAt"], label);
+  const observed = Date.parse(evidence.observedAt);
+  if (evidence.schemaVersion !== "blazn.identity.active-idps/v1" || evidence.authorityPrincipal !== "blazn-provider-gate" || evidence.authoritySentinel !== "blazn-provider-gate-sentinel" || !/^[0-9]+$/.test(evidence.authorityPatId) || !Number.isFinite(Date.parse(evidence.authorityPatExpiration)) || Date.parse(evidence.authorityPatExpiration) <= observed || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > Date.now() + 30_000) throw new Error(`${label} is invalid or stale`);
+  return { authorityPrincipal: evidence.authorityPrincipal, authoritySentinel: evidence.authoritySentinel, authorityPatId: evidence.authorityPatId, authorityPatExpiration: evidence.authorityPatExpiration, organizationCount: 1, activeProviderCount: 0, evidenceDigest: `sha256:${createHash("sha256").update(raw).digest("hex")}`, observedAt: evidence.observedAt };
+};
+const identityProviders = {
+  before: readIdentityProviderEvidence(process.argv[3], "identity provider evidence before restore"),
+  after: readIdentityProviderEvidence(process.argv[4], "identity provider evidence after restore"),
+};
+if (Date.parse(identityProviders.after.observedAt) < Date.parse(identityProviders.before.observedAt)) throw new Error("identity provider evidence order is invalid");
+if (identityProviders.after.authorityPatId === identityProviders.before.authorityPatId) throw new Error("provider gate PAT was not rotated across restore");
 const lines = (name) => (process.env[name] ?? "").split("\n").filter(Boolean).sort();
 const digest = (name) => {
   const value = process.env[name] ?? "";
   if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error(`${name} is invalid`);
   return value;
 };
-const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login"];
+const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login", "provider-gate-provision", "idp-gate"];
 const imageRefPattern = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 const parseObservations = (name) => {
   const result = {};
@@ -47,13 +62,14 @@ for (const service of serviceNames) {
 const backupUtility = { configuredImage: process.env.QUALIFICATION_BACKUP_IMAGE ?? "", beforeImageId: process.env.QUALIFICATION_BACKUP_IMAGE_ID_BEFORE ?? "", afterImageId: process.env.QUALIFICATION_BACKUP_IMAGE_ID_AFTER ?? "" };
 if (!imageRefPattern.test(backupUtility.configuredImage) || !/^sha256:[0-9a-f]{64}$/.test(backupUtility.beforeImageId) || backupUtility.beforeImageId !== backupUtility.afterImageId) throw new Error("backup utility image identity or rollback comparison is invalid");
 const receipt = {
-  schemaVersion: "blazn.identity.qualification/v2",
+  schemaVersion: "blazn.identity.qualification/v3",
   issuer: process.env.QUALIFICATION_ISSUER,
   driverDigest: digest("QUALIFICATION_DRIVER_DIGEST"),
   environmentDigest: digest("QUALIFICATION_ENVIRONMENT_DIGEST"),
   services,
   backupUtility,
   gates: driver.gates,
+  identityProviders,
   backup: {
     manifestDigest: digest("QUALIFICATION_BACKUP_MANIFEST_DIGEST"),
     databaseDigest: digest("QUALIFICATION_DATABASE_DIGEST"),
@@ -67,4 +83,4 @@ const receipt = {
   observedAt: new Date().toISOString()
 };
 if (receipt.backup.masterKeyBefore !== receipt.backup.masterKeyAfter || receipt.backup.patBefore !== receipt.backup.patAfter) throw new Error("restored master key or PAT digest differs");
-writeFileSync(process.argv[3], `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+writeFileSync(process.argv[5], `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });

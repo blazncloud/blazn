@@ -78,6 +78,7 @@ install_generated "$masterkey_file" masterkey
 install_generated "$admin_password_file" admin
 install_generated "$secrets_root/zitadel-client-secret" base64url
 install_generated "$secrets_root/oidc-cookie-key" base64url
+install_generated "$secrets_root/provider-gate.pat" base64url
 
 postgres_password=$(sed -n '1p' "$postgres_password_file")
 zitadel_password=$(sed -n '1p' "$zitadel_password_file")
