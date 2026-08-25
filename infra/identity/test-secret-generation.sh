@@ -3,7 +3,7 @@ set -eu
 
 [ "$(id -u)" -eq 0 ] || { printf 'root is required\n' >&2; exit 77; }
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-test_root=$(mktemp -d /tmp/blazn-identity-secret-test.XXXXXX)
+test_root=$(mktemp -d /tmp/blazn-identity-disposable.secret-test.XXXXXX)
 cleanup() { rm -rf -- "$test_root"; }
 trap cleanup EXIT HUP INT TERM
 

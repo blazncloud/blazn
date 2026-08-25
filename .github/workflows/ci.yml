@@ -44,6 +44,8 @@ jobs:
         run: make test-harness-contract
       - name: Verify hosted identity contracts and isolation
         run: make test-identity
+      - name: Verify root-owned identity secret generation
+        run: sudo make test-identity-root
       - name: Run unit tests
         run: make test
       - name: Verify isolated identity contract
