@@ -161,6 +161,53 @@ validate_identity_policy_fields() {
   [ "$identity_amr" = 'pwd+mfa+otp;user+mfa' ] || die "reviewed ZITADEL MFA AMR sets must match v4.17.1"
 }
 
+validate_identity_runtime_secrets() {
+  identity_source_root=$1
+  identity_runtime_root=$2
+  assert_directory_owned_mode "$identity_source_root" 0 700
+  assert_directory_owned_mode "$identity_runtime_root" 0 700
+  for identity_secret in zitadel-client-secret oidc-cookie-key; do
+    assert_regular_file_owned_mode "$identity_source_root/$identity_secret" 0 600
+    assert_regular_file_owned_mode "$identity_runtime_root/$identity_secret" 0 444
+    cmp -s "$identity_source_root/$identity_secret" "$identity_runtime_root/$identity_secret" || \
+      die "published identity runtime secret differs from its root-only source: $identity_secret"
+  done
+}
+
+publish_identity_runtime_secrets() {
+  identity_source_root=$1
+  identity_runtime_root=$2
+  require_absolute_path BLAZN_IDENTITY_SECRETS_ROOT "$identity_source_root"
+  require_absolute_path BLAZN_IDENTITY_RUNTIME_SECRETS_ROOT "$identity_runtime_root"
+  assert_not_symlink_chain "$identity_source_root"
+  assert_not_symlink_chain "$identity_runtime_root"
+  assert_directory_owned_mode "$identity_source_root" 0 700
+  identity_runtime_parent=$(dirname -- "$identity_runtime_root")
+  assert_directory_owned_mode "$identity_runtime_parent" 0 700,750,755
+  if [ -e "$identity_runtime_root" ] || [ -L "$identity_runtime_root" ]; then
+    assert_directory_owned_mode "$identity_runtime_root" 0 700
+  else
+    mkdir -m 700 -- "$identity_runtime_root"
+    chown 0:0 -- "$identity_runtime_root"
+  fi
+  for identity_secret in zitadel-client-secret oidc-cookie-key; do
+    identity_source=$identity_source_root/$identity_secret
+    identity_target=$identity_runtime_root/$identity_secret
+    assert_regular_file_owned_mode "$identity_source" 0 600
+    if [ -e "$identity_target" ] || [ -L "$identity_target" ]; then
+      assert_regular_file_owned_mode "$identity_target" 0 444
+    fi
+    identity_temporary=$(mktemp "$identity_runtime_root/.${identity_secret}.XXXXXX")
+    trap 'test -z "${identity_temporary:-}" || test ! -e "$identity_temporary" || rm -- "$identity_temporary"' EXIT HUP INT TERM
+    install -o root -g root -m 0444 -- "$identity_source" "$identity_temporary"
+    mv -- "$identity_temporary" "$identity_target"
+    identity_temporary=
+    sync -f "$identity_target" 2>/dev/null || sync
+    trap - EXIT HUP INT TERM
+  done
+  validate_identity_runtime_secrets "$identity_source_root" "$identity_runtime_root"
+}
+
 control_plane_compose() {
   infra_root=$1
   env_file=$2
@@ -214,6 +261,7 @@ validate_identity_overlay() {
   assert_directory_owned_mode "$identity_root" 0 700
   assert_regular_file_owned_mode "$identity_root/zitadel-client-secret" 0 600
   assert_regular_file_owned_mode "$identity_root/oidc-cookie-key" 0 600
+  validate_identity_runtime_secrets "$identity_root" /etc/blazn/control-plane/identity-secrets
   client_secret_size=$(wc -c <"$identity_root/zitadel-client-secret" | tr -d ' ')
   case $client_secret_size in ''|*[!0-9]*) die "ZITADEL client secret size is invalid" ;; esac
   if [ "$client_secret_size" -lt 16 ] || [ "$client_secret_size" -gt 1024 ]; then

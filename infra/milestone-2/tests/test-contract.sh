@@ -210,6 +210,14 @@ grep -F 'ZITADEL_REVIEWED_RELEASE' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_ACR_POLICY' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
+prepare_identity_line=$(grep -n 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
+recreate_identity_line=$(grep -n 'compose up --no-start --no-deps --force-recreate api' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
+start_identity_line=$(grep -n 'compose up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
+[ "$prepare_identity_line" -lt "$recreate_identity_line" ]
+[ "$recreate_identity_line" -lt "$start_identity_line" ]
+grep -F '/etc/blazn/control-plane/identity-secrets/zitadel-client-secret' "$ROOT_DIR/compose.identity.yaml" >/dev/null
+grep -F '/etc/blazn/control-plane/identity-secrets/oidc-cookie-key' "$ROOT_DIR/compose.identity.yaml" >/dev/null
 for runtime_script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do
   grep -F 'control_plane_compose' "$ROOT_DIR/scripts/$runtime_script" >/dev/null
 done

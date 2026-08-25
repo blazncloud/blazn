@@ -64,6 +64,24 @@ if (validate_identity_policy_fields "$top/invalid-amr.env") >"$top/amr.out" 2>"$
 fi
 grep -F 'reviewed ZITADEL MFA AMR sets must match v4.17.1' "$top/amr.err" >/dev/null
 
+sudo mkdir -m 700 "$top/source-secrets" "$top/runtime-parent"
+sudo install -o root -g root -m 0600 /dev/null "$top/source-secrets/zitadel-client-secret"
+sudo install -o root -g root -m 0600 /dev/null "$top/source-secrets/oidc-cookie-key"
+printf 'client-secret-value\n' | sudo tee "$top/source-secrets/zitadel-client-secret" >/dev/null
+printf '0123456789012345678901234567890123456789012' | sudo tee "$top/source-secrets/oidc-cookie-key" >/dev/null
+sudo sh -c ". '$ROOT_DIR/scripts/common.sh'; publish_identity_runtime_secrets '$top/source-secrets' '$top/runtime-parent/runtime-secrets'"
+sudo sh -c ". '$ROOT_DIR/scripts/common.sh'; validate_identity_runtime_secrets '$top/source-secrets' '$top/runtime-parent/runtime-secrets'"
+[ "$(sudo stat -c '%u:%a' "$top/runtime-parent/runtime-secrets/zitadel-client-secret")" = 0:444 ]
+[ "$(sudo stat -c '%u:%a' "$top/runtime-parent/runtime-secrets/oidc-cookie-key")" = 0:444 ]
+sudo sh -c "printf drift > '$top/runtime-parent/runtime-secrets/oidc-cookie-key'; chmod 0444 '$top/runtime-parent/runtime-secrets/oidc-cookie-key'"
+# The redirected diagnostics are intentionally owned by the invoking test user.
+# shellcheck disable=SC2024
+if sudo sh -c ". '$ROOT_DIR/scripts/common.sh'; validate_identity_runtime_secrets '$top/source-secrets' '$top/runtime-parent/runtime-secrets'" >"$top/runtime.out" 2>"$top/runtime.err"; then
+  printf 'drifted identity runtime secret unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'published identity runtime secret differs' "$top/runtime.err" >/dev/null
+
 BLAZN_IDENTITY_ENABLED=invalid
 export BLAZN_IDENTITY_ENABLED
 if (control_plane_compose "$top/infra" "$top/control-plane.env" ps api) >"$top/out" 2>"$top/err"; then
