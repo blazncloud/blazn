@@ -38,6 +38,14 @@ export async function assertNoActiveIdentityProviders() {
   const principal = await requestJson(new URL("/auth/v1/users/me", api), "provider gate principal");
   if (principal?.user?.id !== "blazn-provider-gate") fail("provider gate token subject is invalid");
 
+  const tokenInventory = await requestJson(new URL("/v2/users/pats/search", api), "provider gate token inventory", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ pagination: { offset: 0, limit: 2, asc: true }, filters: [{ userIdFilter: { id: "blazn-provider-gate" } }] }),
+  });
+  const retainedToken = tokenInventory?.result?.[0];
+  if (Number(tokenInventory?.pagination?.totalResult) !== 1 || tokenInventory?.result?.length !== 1 || !/^[0-9]+$/.test(retainedToken?.id ?? "") || retainedToken?.userId !== "blazn-provider-gate" || !Number.isFinite(Date.parse(retainedToken?.expirationDate)) || Date.parse(retainedToken.expirationDate) <= Date.now()) fail("provider gate token inventory is not reconciled");
+
   const sentinel = await requestJson(new URL("/v2/organizations/_search", api), "authority sentinel", {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
@@ -67,7 +75,7 @@ export async function assertNoActiveIdentityProviders() {
   if (!Array.isArray(providers)) fail("inventory provider list is invalid");
   if (providers.length !== 0) fail(`${providers.length} active provider(s) are not allowed with the pinned Login image`);
 
-  return { schemaVersion: "blazn.identity.active-idps/v1", authorityPrincipal: "blazn-provider-gate", authoritySentinel: "blazn-provider-gate-sentinel", organizationCount: 1, activeProviderCount: 0, observedAt: new Date().toISOString() };
+  return { schemaVersion: "blazn.identity.active-idps/v1", authorityPrincipal: "blazn-provider-gate", authoritySentinel: "blazn-provider-gate-sentinel", authorityPatId: retainedToken.id, authorityPatExpiration: retainedToken.expirationDate, organizationCount: 1, activeProviderCount: 0, observedAt: new Date().toISOString() };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -45,6 +45,8 @@ The isolated stack is in `infra/identity`:
   Every request also verifies the token subject and reads a fixed inactive
   sentinel organization, so a credential swap or membership downgrade fails
   closed even before another active organization exists.
+  Provisioning rotates the gate PAT to the configured expiry, revokes every
+  superseded PAT, and refuses to start unless exactly the retained PAT remains.
   Login fails closed unless the instance has exactly one active organization
   and its effective provider inventory is empty for the pinned v4.17.1 image.
 - Traefik provides the required h2c connection to the API without access to the

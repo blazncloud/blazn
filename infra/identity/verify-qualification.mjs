@@ -32,12 +32,13 @@ for (const name of gateNames) { exact(receipt.gates[name], ["evidenceDigest", "o
 exact(receipt.identityProviders, ["before", "after"], "identity providers");
 for (const phase of ["before", "after"]) {
   const evidence = receipt.identityProviders[phase];
-  exact(evidence, ["authorityPrincipal", "authoritySentinel", "organizationCount", "activeProviderCount", "evidenceDigest", "observedAt"], `identity providers ${phase}`);
+  exact(evidence, ["authorityPrincipal", "authoritySentinel", "authorityPatId", "authorityPatExpiration", "organizationCount", "activeProviderCount", "evidenceDigest", "observedAt"], `identity providers ${phase}`);
   digest(evidence.evidenceDigest, `identity providers ${phase}`);
   const observed = Date.parse(evidence.observedAt);
-  if (evidence.authorityPrincipal !== "blazn-provider-gate" || evidence.authoritySentinel !== "blazn-provider-gate-sentinel" || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > observedMillis + 30_000) throw new Error(`identity providers ${phase} evidence is invalid or stale`);
+  if (evidence.authorityPrincipal !== "blazn-provider-gate" || evidence.authoritySentinel !== "blazn-provider-gate-sentinel" || !/^[0-9]+$/.test(evidence.authorityPatId) || !Number.isFinite(Date.parse(evidence.authorityPatExpiration)) || Date.parse(evidence.authorityPatExpiration) <= observed || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > observedMillis + 30_000) throw new Error(`identity providers ${phase} evidence is invalid or stale`);
 }
 if (Date.parse(receipt.identityProviders.after.observedAt) < Date.parse(receipt.identityProviders.before.observedAt)) throw new Error("identity provider evidence order is invalid");
+if (receipt.identityProviders.after.authorityPatId === receipt.identityProviders.before.authorityPatId) throw new Error("provider gate PAT was not rotated across restore");
 const backupNames = ["manifestDigest", "databaseDigest", "masterKeyBefore", "masterKeyAfter", "patBefore", "patAfter", "preRestorePatSnapshotDigest"];
 exact(receipt.backup, backupNames, "backup"); for (const name of backupNames) digest(receipt.backup[name], name);
 if (receipt.backup.masterKeyBefore !== receipt.backup.masterKeyAfter || receipt.backup.patBefore !== receipt.backup.patAfter) throw new Error("backup restoration evidence mismatches");

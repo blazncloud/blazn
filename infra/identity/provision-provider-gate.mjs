@@ -64,7 +64,22 @@ if (membership.response.status === 409) membership = await request(loginToken, `
 if (!membership.ok) fail("instance-wide provider gate role could not be assigned");
 const pat = await request(loginToken, `/v2/users/${userId}/pats`, { method: "POST", body: { userId, expirationDate: expiration } });
 const gateToken = pat.payload?.token;
-if (!pat.ok || typeof gateToken !== "string" || gateToken.length < 16 || gateToken.length > 65_536) fail("provider gate token could not be created");
+const gateTokenId = pat.payload?.tokenId;
+if (!pat.ok || typeof gateToken !== "string" || gateToken.length < 16 || gateToken.length > 65_536 || !/^[0-9]+$/.test(gateTokenId ?? "")) fail("provider gate token could not be created");
+
+const listTokens = () => request(loginToken, "/v2/users/pats/search", { method: "POST", body: { pagination: { offset: 0, limit: 100, asc: true }, filters: [{ userIdFilter: { id: userId } }] } });
+let tokenInventory = await listTokens();
+if (!tokenInventory.ok || Number(tokenInventory.payload?.pagination?.totalResult) !== tokenInventory.payload?.result?.length || !Array.isArray(tokenInventory.payload?.result) || tokenInventory.payload.result.length > 100) fail("provider gate token inventory is invalid");
+for (const candidate of tokenInventory.payload.result) {
+  if (candidate?.userId !== userId || !/^[0-9]+$/.test(candidate?.id ?? "")) fail("provider gate token inventory contains an invalid entry");
+  if (candidate.id !== gateTokenId) {
+    const removed = await request(loginToken, `/v2/users/${userId}/pats/${candidate.id}`, { method: "DELETE" });
+    if (!removed.ok) fail("superseded provider gate token could not be revoked");
+  }
+}
+tokenInventory = await listTokens();
+const retainedToken = tokenInventory.payload?.result?.[0];
+if (!tokenInventory.ok || Number(tokenInventory.payload?.pagination?.totalResult) !== 1 || tokenInventory.payload?.result?.length !== 1 || retainedToken?.id !== gateTokenId || retainedToken?.userId !== userId || Date.parse(retainedToken?.expirationDate) !== Date.parse(expiration)) fail("provider gate token rotation did not converge");
 
 let sentinel = await sentinelOrganization(gateToken);
 if (!sentinel.ok) fail("authority sentinel inventory is unavailable");

@@ -21,16 +21,17 @@ for (const name of gateNames) {
 const readIdentityProviderEvidence = (path, label) => {
   const raw = readFileSync(path);
   const evidence = JSON.parse(raw.toString("utf8"));
-  exact(evidence, ["schemaVersion", "authorityPrincipal", "authoritySentinel", "organizationCount", "activeProviderCount", "observedAt"], label);
+  exact(evidence, ["schemaVersion", "authorityPrincipal", "authoritySentinel", "authorityPatId", "authorityPatExpiration", "organizationCount", "activeProviderCount", "observedAt"], label);
   const observed = Date.parse(evidence.observedAt);
-  if (evidence.schemaVersion !== "blazn.identity.active-idps/v1" || evidence.authorityPrincipal !== "blazn-provider-gate" || evidence.authoritySentinel !== "blazn-provider-gate-sentinel" || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > Date.now() + 30_000) throw new Error(`${label} is invalid or stale`);
-  return { authorityPrincipal: evidence.authorityPrincipal, authoritySentinel: evidence.authoritySentinel, organizationCount: 1, activeProviderCount: 0, evidenceDigest: `sha256:${createHash("sha256").update(raw).digest("hex")}`, observedAt: evidence.observedAt };
+  if (evidence.schemaVersion !== "blazn.identity.active-idps/v1" || evidence.authorityPrincipal !== "blazn-provider-gate" || evidence.authoritySentinel !== "blazn-provider-gate-sentinel" || !/^[0-9]+$/.test(evidence.authorityPatId) || !Number.isFinite(Date.parse(evidence.authorityPatExpiration)) || Date.parse(evidence.authorityPatExpiration) <= observed || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > Date.now() + 30_000) throw new Error(`${label} is invalid or stale`);
+  return { authorityPrincipal: evidence.authorityPrincipal, authoritySentinel: evidence.authoritySentinel, authorityPatId: evidence.authorityPatId, authorityPatExpiration: evidence.authorityPatExpiration, organizationCount: 1, activeProviderCount: 0, evidenceDigest: `sha256:${createHash("sha256").update(raw).digest("hex")}`, observedAt: evidence.observedAt };
 };
 const identityProviders = {
   before: readIdentityProviderEvidence(process.argv[3], "identity provider evidence before restore"),
   after: readIdentityProviderEvidence(process.argv[4], "identity provider evidence after restore"),
 };
 if (Date.parse(identityProviders.after.observedAt) < Date.parse(identityProviders.before.observedAt)) throw new Error("identity provider evidence order is invalid");
+if (identityProviders.after.authorityPatId === identityProviders.before.authorityPatId) throw new Error("provider gate PAT was not rotated across restore");
 const lines = (name) => (process.env[name] ?? "").split("\n").filter(Boolean).sort();
 const digest = (name) => {
   const value = process.env[name] ?? "";
