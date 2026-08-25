@@ -120,18 +120,19 @@ OIDC_COOKIE_KEY_FILE=/run/secrets/oidc_cookie_key
 ```
 
 These values and secrets are intentionally absent from the base control-plane
-Compose file. After the qualification gate passes, enable the integration with
-the additive overlay so an ordinary control-plane restart cannot accidentally
-activate an unqualified identity provider:
+Compose file. After the qualification gate passes, install the reviewed
+identity environment, set `BLAZN_IDENTITY_ENABLED=true` in the owner-only
+control-plane environment, and reconcile the ownership receipt while the
+service is inactive. Start only through the fenced systemd workflow:
 
 ```sh
-docker compose \
-  --env-file /etc/blazn/control-plane.env \
-  --env-file /etc/blazn/identity/control-api.env \
-  -f infra/milestone-2/compose.yaml \
-  -f infra/milestone-2/compose.identity.yaml \
-  up -d --wait
+sudo systemctl start blazn-control-plane.service
 ```
+
+Do not invoke raw Compose for identity enablement. The systemd start path runs
+the receipt-bound build, atomically publishes and verifies runtime secrets,
+forces recreation of the API container so rotated bind mounts cannot retain an
+old inode, runs deployment preflight, and only then starts the full stack.
 
 ## Registration, social identity, and MFA policy
 

@@ -22,7 +22,12 @@ case $build_mode in
   *) die "BLAZN_CONTROL_API_BUILD_MODE must be local or prebuilt" ;;
 esac
 load_control_api_image "$ROOT_DIR"
-if identity_overlay_enabled; then "$SCRIPT_DIR/prepare-identity-runtime-secrets.sh"; fi
+if identity_overlay_enabled; then
+  "$SCRIPT_DIR/prepare-identity-runtime-secrets.sh"
+  # File-backed Compose secrets are inode-bound. Recreate the only consumer so
+  # an atomic credential rotation cannot restart a container on retired bytes.
+  compose create --no-deps --force-recreate api
+fi
 "$SCRIPT_DIR/preflight.sh" --deploy
 compose up --detach --wait --remove-orphans
 verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
