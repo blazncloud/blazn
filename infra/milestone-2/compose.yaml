@@ -220,6 +220,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      database-role-compat:
+        condition: service_completed_successfully
     restart: "no"
     tmpfs:
       - /tmp:mode=0700,uid=999,gid=999

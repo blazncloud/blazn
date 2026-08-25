@@ -39,11 +39,14 @@ for service in api node-plan-verify; do
 done
 
 api_migrate=$(awk '/^  api-migrate:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
+node_migration_preflight=$(awk '/^  node-migration-preflight:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
 database_hardening=$(awk '/^  database-role-hardening:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
 node_broker_verify=$(awk '/^  node-broker-verify:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
 api_bootstrap=$(awk '/^  api-bootstrap:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
 api_runtime=$(awk '/^  api:$/ {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
 printf '%s\n' "$api_migrate" | grep -F 'node-migration-preflight:' >/dev/null
+printf '%s\n' "$node_migration_preflight" | grep -F 'database-role-compat:' >/dev/null
+printf '%s\n' "$node_migration_preflight" | grep -F 'condition: service_completed_successfully' >/dev/null
 printf '%s\n' "$database_hardening" | grep -F 'api-migrate:' >/dev/null
 printf '%s\n' "$node_broker_verify" | grep -F 'database-role-hardening:' >/dev/null
 printf '%s\n' "$api_bootstrap" | grep -F 'node-broker-verify:' >/dev/null
