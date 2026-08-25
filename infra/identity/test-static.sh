@@ -60,7 +60,7 @@ if grep -F 'method === "GET" && url.pathname === "/v1/auth/oidc/start"' "$SCRIPT
   printf 'OIDC start remains drive-by GET reachable\n' >&2; exit 1
 fi
 grep -F 'unsealActivationConfirmation' "$SCRIPT_DIR/../../services/control-api/src/server.ts" >/dev/null
-grep -F 'ZITADEL_REVIEWED_ACR_VALUES' "$control_overlay" >/dev/null
+grep -F 'ZITADEL_REVIEWED_ACR_POLICY' "$control_overlay" >/dev/null
 grep -F 'acceptedAmrSets' "$SCRIPT_DIR/../../services/control-api/src/oidc.ts" >/dev/null
 grep -F 'identityProvider: oidcClient ? "ok" : "disabled"' "$SCRIPT_DIR/../../services/control-api/src/server.ts" >/dev/null
 grep -F '@sha256:REPLACE_64_HEX' "$SCRIPT_DIR/env.example" >/dev/null

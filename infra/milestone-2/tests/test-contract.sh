@@ -208,7 +208,7 @@ grep -F 'ENV_FILE=${BLAZN_CONTROL_PLANE_ENV_FILE:-/etc/blazn/control-plane/contr
 grep -F 'assert_regular_file_owned_mode "$ENV_FILE" 0 600' "$ROOT_DIR/scripts/preflight.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_RELEASE' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST' "$ROOT_DIR/scripts/common.sh" >/dev/null
-grep -F 'ZITADEL_REVIEWED_ACR_VALUES' "$ROOT_DIR/scripts/common.sh" >/dev/null
+grep -F 'ZITADEL_REVIEWED_ACR_POLICY' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
 for runtime_script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do
   grep -F 'control_plane_compose' "$ROOT_DIR/scripts/$runtime_script" >/dev/null

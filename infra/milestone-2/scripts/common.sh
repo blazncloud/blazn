@@ -148,17 +148,17 @@ identity_overlay_enabled() {
 
 validate_identity_policy_fields() {
   identity_env=$1
-  for identity_name in ZITADEL_REVIEWED_RELEASE ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST ZITADEL_REVIEWED_ACR_VALUES ZITADEL_REVIEWED_MFA_AMR_SETS; do
+  for identity_name in ZITADEL_REVIEWED_RELEASE ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST ZITADEL_REVIEWED_ACR_POLICY ZITADEL_REVIEWED_MFA_AMR_SETS; do
     [ "$(grep -c "^${identity_name}=" "$identity_env")" -eq 1 ] || die "$identity_name must occur exactly once"
   done
   identity_release=$(sed -n 's/^ZITADEL_REVIEWED_RELEASE=//p' "$identity_env")
   identity_policy=$(sed -n 's/^ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST=//p' "$identity_env")
-  identity_acr=$(sed -n 's/^ZITADEL_REVIEWED_ACR_VALUES=//p' "$identity_env")
+  identity_acr=$(sed -n 's/^ZITADEL_REVIEWED_ACR_POLICY=//p' "$identity_env")
   identity_amr=$(sed -n 's/^ZITADEL_REVIEWED_MFA_AMR_SETS=//p' "$identity_env")
-  printf '%s\n' "$identity_release" | LC_ALL=C grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$' || die "reviewed ZITADEL release is invalid"
+  [ "$identity_release" = v4.17.1 ] || die "reviewed ZITADEL release must be v4.17.1"
   printf '%s\n' "$identity_policy" | LC_ALL=C grep -Eq '^sha256:[0-9a-f]{64}$' || die "reviewed ZITADEL assurance policy digest is invalid"
-  printf '%s\n' "$identity_acr" | LC_ALL=C grep -Eq '^[A-Za-z0-9:._/-]{1,256}(,[A-Za-z0-9:._/-]{1,256})*$' || die "reviewed ZITADEL ACR values are invalid"
-  printf '%s\n' "$identity_amr" | LC_ALL=C grep -Eq '^([a-z0-9._:-]{1,64}\+){1,}[a-z0-9._:-]{1,64}(;([a-z0-9._:-]{1,64}\+){1,}[a-z0-9._:-]{1,64})*$' || die "reviewed ZITADEL MFA AMR sets are invalid"
+  [ "$identity_acr" = zitadel-v4.17.1-empty ] || die "reviewed ZITADEL ACR policy must require v4.17.1 empty ACR"
+  [ "$identity_amr" = 'pwd+mfa+otp;user+mfa' ] || die "reviewed ZITADEL MFA AMR sets must match v4.17.1"
 }
 
 control_plane_compose() {

@@ -12,7 +12,7 @@ export interface OidcAssurancePolicy {
 	provider: "zitadel";
 	reviewedRelease: string;
 	policyDigest: string;
-	acrValues: string[];
+	acrPolicy: "zitadel-v4.17.1-empty";
 	acceptedAmrSets: string[][];
 }
 
@@ -92,8 +92,9 @@ function audienceIncludes(audience: unknown, clientId: string): boolean {
   return audience === clientId || (Array.isArray(audience) && audience.every((item) => typeof item === "string") && audience.includes(clientId));
 }
 
-function assuranceSatisfied(acr: string, amr: string[], policy: OidcAssurancePolicy): boolean {
-	if (policy.provider !== "zitadel" || !policy.acrValues.includes(acr)) return false;
+function assuranceSatisfied(acr: unknown, amr: string[], policy: OidcAssurancePolicy): boolean {
+	if (policy.provider !== "zitadel" || policy.reviewedRelease !== "v4.17.1" || policy.acrPolicy !== "zitadel-v4.17.1-empty") return false;
+	if (acr !== undefined && acr !== "") return false;
 	const methods = new Set(amr.map((method) => method.toLowerCase()));
 	return policy.acceptedAmrSets.some((required) => required.length >= 2 && required.every((method) => methods.has(method.toLowerCase())));
 }
@@ -113,8 +114,8 @@ export function verifyOidcIdToken(encoded: string, input: IdTokenVerification): 
   if (Array.isArray(claims.aud) && claims.aud.length > 1 && claims.azp !== input.clientId) throw new Error("ID token authorized party is invalid");
   if (claims.email_verified !== true || typeof claims.email !== "string" || typeof claims.sub !== "string") throw new Error("a verified email identity is required");
   const amr = Array.isArray(claims.amr) && claims.amr.every((value) => typeof value === "string") ? claims.amr as string[] : [];
-	const acr = typeof claims.acr === "string" ? claims.acr : "";
-	if (!assuranceSatisfied(acr, amr, input.assurancePolicy)) throw new Error("reviewed ZITADEL assurance and multi-factor policy is required");
+	if (!assuranceSatisfied(claims.acr, amr, input.assurancePolicy)) throw new Error("reviewed ZITADEL assurance and multi-factor policy is required");
+	const acr = "";
   const displayName = typeof claims.name === "string" && claims.name.trim() ? claims.name.trim().slice(0, 128) : claims.email.split("@")[0]!.slice(0, 128);
 	return { issuer: String(claims.iss), subject: claims.sub, email: claims.email.trim().toLowerCase(), displayName, amr, acr, reviewedRelease: input.assurancePolicy.reviewedRelease, assurancePolicyDigest: input.assurancePolicy.policyDigest };
 }
@@ -137,7 +138,7 @@ export class OidcClient {
   async authorizationUrl(transaction: ReturnType<OidcClient["createTransaction"]>): Promise<URL> {
     const metadata = await this.metadata();
     const url = httpsUrl(metadata.authorization_endpoint, "authorization endpoint");
-		url.search = new URLSearchParams({ response_type: "code", client_id: this.config.clientId, redirect_uri: this.config.callbackUrl, scope: "openid profile email", state: transaction.state, nonce: transaction.nonce, code_challenge: pkceChallenge(transaction.codeVerifier), code_challenge_method: "S256", prompt: "login", acr_values: this.config.assurancePolicy.acrValues.join(" "), ...(transaction.mode === "signup" ? { screen_hint: "signup" } : {}) }).toString();
+		url.search = new URLSearchParams({ response_type: "code", client_id: this.config.clientId, redirect_uri: this.config.callbackUrl, scope: "openid profile email", state: transaction.state, nonce: transaction.nonce, code_challenge: pkceChallenge(transaction.codeVerifier), code_challenge_method: "S256", prompt: "login", ...(transaction.mode === "signup" ? { screen_hint: "signup" } : {}) }).toString();
     return url;
   }
 
