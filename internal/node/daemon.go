@@ -55,10 +55,6 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	capability, err := d.capabilities.Capability(ctx)
-	if err != nil {
-		return HeartbeatResult{}, err
-	}
 	fingerprint, err := identity.Fingerprint()
 	if err != nil || fingerprint != state.Exchange.Identity.PublicKeyFingerprint {
 		return HeartbeatResult{}, errors.New("local node identity differs from the enrolled identity")
@@ -66,6 +62,31 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	expiresAt, err := time.Parse(time.RFC3339, state.Exchange.Identity.ExpiresAt)
 	if err != nil || !d.now().Before(expiresAt) {
 		return HeartbeatResult{}, errors.New("node identity is expired")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if state.PendingHeartbeat != nil {
+		heartbeat := *state.PendingHeartbeat
+		binding := heartbeat.Capability.Worker.KubernetesBinding
+		digest, digestErr := client.NodeCapabilityDigest(heartbeat.Capability)
+		if digestErr != nil || digest != heartbeat.CapabilityDigest || heartbeat.NodeID != state.Exchange.Plan.NodeID || heartbeat.IdentityGeneration != state.Exchange.Identity.Generation || heartbeat.BootID == "" || heartbeat.Sequence < 0 || heartbeat.SentAt == "" || state.KubernetesBinding == nil || heartbeat.PriorKubernetesResourceVersion != state.KubernetesBinding.ResourceVersion || binding.ClusterID != state.KubernetesBinding.ClusterID || binding.NodeName != state.KubernetesBinding.NodeName || binding.NodeUID != state.KubernetesBinding.NodeUID || binding.ResourceVersion == "" || heartbeat.Capability.Host.Platform != state.Exchange.Plan.Target.Platform || heartbeat.Capability.Host.Architecture != state.Exchange.Plan.Target.Architecture || heartbeat.Capability.Worker.Architecture != state.Exchange.Plan.Target.Architecture || binding.ClusterID != state.Exchange.Plan.Cluster.ID {
+			return HeartbeatResult{}, errors.New("persisted pending heartbeat differs from enrolled node state")
+		}
+		proof, proofErr := nodeProof(identity.PrivateKey, "blazn-node-heartbeat-v1", heartbeat)
+		if proofErr != nil {
+			return HeartbeatResult{}, proofErr
+		}
+		if err := d.api.SubmitNodeHeartbeat(ctx, proof, heartbeat); err != nil {
+			return HeartbeatResult{}, err
+		}
+		if heartbeat.Sequence > d.sequence {
+			d.sequence = heartbeat.Sequence
+		}
+		return d.acceptHeartbeat(state, heartbeat)
+	}
+	capability, err := d.capabilities.Capability(ctx)
+	if err != nil {
+		return HeartbeatResult{}, err
 	}
 	if capability.Host.Platform != state.Exchange.Plan.Target.Platform || capability.Host.Architecture != state.Exchange.Plan.Target.Architecture || capability.Worker.Architecture != state.Exchange.Plan.Target.Architecture || capability.Worker.KubernetesBinding.ClusterID != state.Exchange.Plan.Cluster.ID {
 		return HeartbeatResult{}, errors.New("node capability differs from the verified install plan binding")
@@ -77,8 +98,6 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.bootID == "" {
 		d.bootID, err = randomToken(24)
 		if err != nil {
@@ -92,16 +111,26 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if err != nil {
 		return HeartbeatResult{}, err
 	}
+	state.PendingHeartbeat = &heartbeat
+	state.UpdatedAt = sentAt
+	if err := d.state.SaveRuntime(state); err != nil {
+		return HeartbeatResult{}, fmt.Errorf("persist pending Kubernetes heartbeat transition: %w", err)
+	}
 	if err := d.api.SubmitNodeHeartbeat(ctx, proof, heartbeat); err != nil {
 		return HeartbeatResult{}, err
 	}
-	updatedBinding := capability.Worker.KubernetesBinding
+	return d.acceptHeartbeat(state, heartbeat)
+}
+
+func (d *Daemon) acceptHeartbeat(state RuntimeState, heartbeat client.NodeHeartbeat) (HeartbeatResult, error) {
+	updatedBinding := heartbeat.Capability.Worker.KubernetesBinding
 	state.KubernetesBinding = &updatedBinding
-	state.UpdatedAt = sentAt
+	state.PendingHeartbeat = nil
+	state.UpdatedAt = heartbeat.SentAt
 	if err := d.state.SaveRuntime(state); err != nil {
 		return HeartbeatResult{}, fmt.Errorf("persist accepted Kubernetes heartbeat transition: %w", err)
 	}
-	return HeartbeatResult{NodeID: heartbeat.NodeID, BootID: heartbeat.BootID, Sequence: heartbeat.Sequence, SentAt: sentAt}, nil
+	return HeartbeatResult{NodeID: heartbeat.NodeID, BootID: heartbeat.BootID, Sequence: heartbeat.Sequence, SentAt: heartbeat.SentAt}, nil
 }
 
 func nodeProof(privateKey ed25519.PrivateKey, prefix string, body any) (string, error) {

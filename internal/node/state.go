@@ -31,6 +31,7 @@ type RuntimeState struct {
 	Exchange           client.ExchangeNodeEnrollmentResponse `json:"exchange"`
 	KubernetesBinding  *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
 	ActivationGrant    *client.NodeActivationGrant           `json:"activationGrant,omitempty"`
+	PendingHeartbeat   *client.NodeHeartbeat                 `json:"pendingHeartbeat,omitempty"`
 	PendingJoin        *PendingJoinState                     `json:"pendingJoin,omitempty"`
 	UpdatedAt          string                                `json:"updatedAt"`
 }

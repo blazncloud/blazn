@@ -179,7 +179,7 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 
 func (s *Service) recoverActivatedCapacity(ctx context.Context, options EnrollOptions) (EnrollResult, bool, error) {
 	state, err := s.state.LoadRuntime()
-	if err != nil || state.ActivationGrant == nil || state.KubernetesBinding == nil {
+	if err != nil || state.KubernetesBinding == nil {
 		return EnrollResult{}, false, nil
 	}
 	plan := state.Exchange.Plan
@@ -188,10 +188,40 @@ func (s *Service) recoverActivatedCapacity(ctx context.Context, options EnrollOp
 	}
 	receipt, err := s.installer.LoadReceipt()
 	if err != nil {
-		return EnrollResult{State: state}, true, errors.New("persisted activation grant lacks its exact active receipt")
+		return EnrollResult{State: state}, true, errors.New("persisted activation recovery state lacks its exact active receipt")
 	}
 	receiptDigest, err := client.NodeInstallReceiptDigest(receipt)
-	if err != nil || client.VerifyNodeActivationGrant(*state.ActivationGrant, state.Pin.PlanSigningKey, plan.NodeID, plan.PlanID, receiptDigest, state.ActivationGrant.KubernetesBinding) != nil || state.ActivationGrant.KubernetesBinding.ClusterID != state.KubernetesBinding.ClusterID || state.ActivationGrant.KubernetesBinding.NodeName != state.KubernetesBinding.NodeName || state.ActivationGrant.KubernetesBinding.NodeUID != state.KubernetesBinding.NodeUID {
+	if err != nil {
+		return EnrollResult{State: state}, true, errors.New("persisted activation recovery evidence is invalid")
+	}
+	if state.ActivationGrant == nil {
+		identity, identityErr := s.identities.LoadOrCreate()
+		if identityErr != nil {
+			return EnrollResult{State: state}, true, fmt.Errorf("load node identity for activation recovery: %w", identityErr)
+		}
+		expectedVersion := int64(1)
+		if plan.Mode == client.NodeModeFresh {
+			expectedVersion = 2
+		}
+		activation := client.NodeActivationRequest{ExpectedVersion: expectedVersion, Receipt: receipt, KubernetesBinding: *state.KubernetesBinding}
+		proof, proofErr := nodeProof(identity.PrivateKey, "blazn-node-activation-v1", activation)
+		if proofErr != nil {
+			return EnrollResult{State: state}, true, proofErr
+		}
+		response, activationErr := s.api.ActivateNode(ctx, proof, "node-activate-"+receipt.ReceiptID, activation)
+		if activationErr != nil {
+			return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, fmt.Errorf("recover committed node activation: %w", activationErr)
+		}
+		if err := client.ValidateNode(response.Node); err != nil || response.Node.ID != plan.NodeID || response.Node.LifecycleState != "active" || response.Node.TrustState != "verified" || response.Node.KubernetesBinding == nil || *response.Node.KubernetesBinding != *state.KubernetesBinding || client.VerifyNodeActivationGrant(response.ActivationGrant, state.Pin.PlanSigningKey, plan.NodeID, plan.PlanID, receiptDigest, *state.KubernetesBinding) != nil {
+			return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, errors.New("replayed activation response differs from persisted install evidence")
+		}
+		state.ActivationGrant = &response.ActivationGrant
+		state.UpdatedAt = nowString(s.now())
+		if err := s.state.SaveRuntime(state); err != nil {
+			return EnrollResult{State: state, Installed: true, Receipt: &receipt}, true, fmt.Errorf("persist replayed activation grant before capacity recovery: %w", err)
+		}
+	}
+	if client.VerifyNodeActivationGrant(*state.ActivationGrant, state.Pin.PlanSigningKey, plan.NodeID, plan.PlanID, receiptDigest, state.ActivationGrant.KubernetesBinding) != nil || state.ActivationGrant.KubernetesBinding.ClusterID != state.KubernetesBinding.ClusterID || state.ActivationGrant.KubernetesBinding.NodeName != state.KubernetesBinding.NodeName || state.ActivationGrant.KubernetesBinding.NodeUID != state.KubernetesBinding.NodeUID {
 		return EnrollResult{State: state}, true, errors.New("persisted activation recovery evidence is invalid")
 	}
 	released, err := s.installer.RecoverActivatedCapacity(ctx, plan, receipt, *state.ActivationGrant, state.ActivationGrant.KubernetesBinding)

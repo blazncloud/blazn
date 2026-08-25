@@ -10,7 +10,12 @@ ALTER TABLE nodes ADD CONSTRAINT nodes_agent_eligibility_check CHECK (NOT agent_
 ALTER TABLE node_install_receipts
   ADD COLUMN activation_idempotency_key text,
   ADD COLUMN request_digest char(64),
-  ADD COLUMN expected_node_version bigint;
+  ADD COLUMN expected_node_version bigint,
+  ADD COLUMN activation_grant jsonb;
+
+ALTER TABLE node_heartbeat_state
+  ADD COLUMN request_digest char(64),
+  ADD CHECK (request_digest IS NULL OR request_digest ~ '^[0-9a-f]{64}$');
 
 UPDATE node_install_receipts SET
   activation_idempotency_key='legacy-'||id::text,
