@@ -26,3 +26,33 @@ after=$(control_plane_config_digest "$tmp/infra/milestone-2")
   printf 'privileged PostgreSQL compatibility logic is absent from the configuration digest\n' >&2
   exit 1
 }
+
+legacy_config_digest() {
+  legacy_root=$1
+  (
+    cd "$legacy_root"
+    {
+      printf '%s\0' \
+        compose.yaml \
+        compose.identity.yaml \
+        postgres-init/01-roles.sh \
+        ngrok.example.yml \
+        systemd/blazn-control-plane.service \
+        systemd/blazn-ngrok.service \
+        systemd/blazn-ngrok-qualification.service
+      find . -maxdepth 1 -type f -name '*.schema.json' -print0
+      find scripts -maxdepth 1 -type f -name '*.sh' -print0
+      find ../node -type f -print0
+    } | LC_ALL=C sort -z | xargs -0 sha256sum
+    printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$legacy_root")"
+  ) | sha256sum | awk '{ print $1 }'
+}
+
+find "$tmp/infra/milestone-2/postgres-compat" -type f -delete
+find "$tmp/infra/milestone-2/postgres-compat" -depth -type d -empty -delete
+legacy_expected=$(legacy_config_digest "$tmp/infra/milestone-2")
+legacy_actual=$(control_plane_config_digest "$tmp/infra/milestone-2")
+[ "$legacy_actual" = "$legacy_expected" ] || {
+  printf 'configuration digest is incompatible with releases that predate PostgreSQL compatibility logic\n' >&2
+  exit 1
+}
