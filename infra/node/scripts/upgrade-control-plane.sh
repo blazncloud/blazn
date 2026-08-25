@@ -47,6 +47,15 @@ case "$DEFER_CONFIG" in 0|1) ;; *) die "BLAZN_NODE_UPGRADE_DEFER_CONFIG must be 
 export BLAZN_NODE_BROKER_SECRETS_ROOT="$NODE_SECRETS"
 export BLAZN_NODE_PLAN_ROOT="$PLAN_ROOT" BLAZN_NODE_PLAN_CREATE_JOURNAL="$PLAN_CREATE_JOURNAL"
 
+ROLE_GRANTS_SQL=$SCRIPT_DIR/../sql/restore-runtime-function-grants.sql
+if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" = 1 ]; then
+  if [ ! -f "$ROLE_GRANTS_SQL" ] || [ -L "$ROLE_GRANTS_SQL" ]; then die "runtime function grant SQL is not a regular release file"; fi
+else
+  assert_regular_file_owned_mode "$ROLE_GRANTS_SQL" 0 444
+fi
+role_grants_sql=$(cat -- "$ROLE_GRANTS_SQL") || die "could not read runtime function grant SQL"
+printf '%s\n' "$role_grants_sql" | grep -F "to_regprocedure('public.workspace_json_contains_secret_key(jsonb)')" >/dev/null || die "runtime function grant SQL is invalid"
+
 for path in "$ENV_FILE" "$MAIN_RECEIPT"; do assert_regular_file_owned_mode "$path" 0 600; done
 for path in "$UPGRADE_RECEIPT" "$BACKUP_ROOT" "$RETRY_HISTORY_ROOT" "$CREATE_JOURNAL"; do require_absolute_path node-infra-path "$path"; assert_not_symlink_chain "$path"; done
 jq -e --arg host "$(hostname)" '.schemaVersion=="blazn.dev/control-plane-ownership/v1" and .owner=="blazn-poc" and .host==$host' "$MAIN_RECEIPT" >/dev/null || die "main ownership receipt does not belong to this host"
@@ -300,7 +309,7 @@ if [ "$phase" = inputs-backed-up ]; then
     printf 'ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_node_broker;\n'
     printf 'ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;\n'
     printf 'REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;\n'
-    printf 'GRANT EXECUTE ON FUNCTION workspace_json_contains_secret_key(jsonb) TO blazn_runtime;\n'
+    printf '%s\n' "$role_grants_sql"
     printf "ALTER ROLE blazn_node_broker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '%s';\n" "$password"
     printf 'GRANT CONNECT ON DATABASE "%s" TO blazn_node_broker, blazn_sandbox_controller; GRANT USAGE ON SCHEMA public TO blazn_node_broker, blazn_sandbox_controller; COMMIT;\n' "${POSTGRES_DB:-blazn}"
   } | compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-blazn_admin}" -d "${POSTGRES_DB:-blazn}" >/dev/null

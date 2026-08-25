@@ -30,7 +30,10 @@ case "$*" in
   "compose "*" exec -T postgres psql "*)
     body=$(cat); [ "${FAKE_SQL_FAIL:-0}" != 1 ] || exit 88
     if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_node_broker'; then rm -f "$FAKE_ROLE_STATE"
-    elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_node_broker'; then : >"$FAKE_ROLE_STATE"; fi
+    elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_node_broker'; then
+      printf '%s' "$body" | grep -Fq "to_regprocedure('public.workspace_json_contains_secret_key(jsonb)')" || exit 96
+      : >"$FAKE_ROLE_STATE"
+    fi
     if printf '%s' "$body" | grep -Fq 'DROP ROLE blazn_sandbox_controller'; then rm -f "$FAKE_CONTROLLER_ROLE_STATE"
     elif printf '%s' "$body" | grep -Fq 'CREATE ROLE blazn_sandbox_controller'; then : >"$FAKE_CONTROLLER_ROLE_STATE"; fi
     exit 0
