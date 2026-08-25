@@ -124,8 +124,12 @@ BEGIN
               ('development_controller_store_artifact_v1','uuid,text,uuid,uuid,text,text,text,bytea'),
               ('development_controller_release_v1','uuid,text,uuid,integer,text'),
               ('development_controller_commit_execution_v1','uuid,text,uuid,bigint,uuid,uuid,jsonb,jsonb'),
+              ('development_collector_bind_candidate_images_v1','uuid,uuid,bigint,text,text,text'),
               ('development_collector_prepare_sandbox_v1','uuid,bigint,text,text,text'),
+              ('development_collector_prepare_bound_sandbox_v1','uuid,bigint,text,text,text'),
               ('development_collector_resolve_sandbox_v1','uuid,bigint,text,text'),
+              ('development_collector_resolve_bound_sandbox_v1','uuid,bigint,text,text'),
+              ('development_collector_mark_sandbox_ready_v1','uuid,bigint,text,text,uuid'),
               ('development_collector_authorize_execution_v1','uuid,bigint,text,text,uuid')
             )
           END

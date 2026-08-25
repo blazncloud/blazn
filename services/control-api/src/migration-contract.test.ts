@@ -183,7 +183,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
     "027_controller_role_public_grants.sql",
-    "027_development_candidate_image_binding.sql",
+    "028_development_candidate_image_binding.sql",
   ]);
 });
 
@@ -342,12 +342,18 @@ test("Development Sandbox evidence migration reuses lifecycle authority and rema
 
 test("Development candidate images replace only controller claims and fence terminal evidence",async()=>{
   const here=path.dirname(fileURLToPath(import.meta.url));
-  const sql=await readFile(path.resolve(here,"../migrations/027_development_candidate_image_binding.sql"),"utf8");
+  const sql=await readFile(path.resolve(here,"../migrations/028_development_candidate_image_binding.sql"),"utf8");
   assert.match(sql,/CREATE TABLE development_candidate_image_bindings/);
   assert.match(sql,/FOREIGN KEY \(candidate_binding_id,build_id,workspace_id,project_id,attempt_generation,platform,candidate_image_index,candidate_image_child\)/);
-  assert.match(sql,/CREATE OR REPLACE FUNCTION sandbox_controller_claim_v2[\s\S]*coalesce\(binding\.image_child_digest,claimed\.image_child_digest\)/);
-  assert.match(sql,/development_quarantine_stale_candidate_claim_v1[\s\S]*job\.execution_generation=run\.attempt_generation[\s\S]*job\.lease_expires_at>clock_timestamp\(\)/);
+  assert.match(sql,/CREATE OR REPLACE FUNCTION sandbox_controller_claim_v2[\s\S]*CASE WHEN authority\.mode='candidate' THEN binding\.image_child_digest ELSE claimed\.image_child_digest END/);
+  assert.match(sql,/development_candidate_claim_mode_v1[\s\S]*development_build_jobs WHERE build_id=run\.build_id FOR UPDATE[\s\S]*job\.lease_expires_at>clock_timestamp\(\)[\s\S]*job\.execution_generation=run\.attempt_generation/);
+  assert.match(sql,/run\.create_operation_id=p_operation_id AND p_operation_type='create'/);
+  assert.match(sql,/run\.cleanup_operation_id=p_operation_id AND p_operation_type='delete'[\s\S]*RETURN 'ordinary'/);
+  assert.match(sql,/development_collector_mark_sandbox_ready_v1[\s\S]*run\.status IN \('preparing','ready'\)[\s\S]*admission\.operation_id=run\.create_operation_id/);
+  assert.match(sql,/development_collector_authorize_execution_v1[\s\S]*run\.status IN \('ready','running'\)/);
   assert.match(sql,/sandbox\.state IN \('ready','running'\)[\s\S]*admission\.observation_digest IS NOT NULL/);
+  assert.match(sql,/REVOKE ALL ON FUNCTION development_reject_candidate_binding_mutation\(\)[\s\S]*FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller/);
+  assert.match(sql,/REVOKE ALL ON FUNCTION development_reject_test_run_candidate_rebinding\(\)[\s\S]*FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller/);
   assert.match(sql,/CREATE OR REPLACE FUNCTION development_controller_commit_execution_v1[\s\S]*Development terminal images do not match the resolved candidate binding/);
   assert.match(sql,/REVOKE EXECUTE ON FUNCTION development_controller_finalize_v1[\s\S]*FROM blazn_development_controller/);
   assert.doesNotMatch(sql,/UPDATE public\.sandboxes SET image_/);

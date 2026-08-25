@@ -23,6 +23,8 @@ END $$;
 CREATE TRIGGER development_candidate_image_bindings_immutable
 BEFORE UPDATE ON development_candidate_image_bindings
 FOR EACH ROW EXECUTE FUNCTION development_reject_candidate_binding_mutation();
+REVOKE ALL ON FUNCTION development_reject_candidate_binding_mutation()
+  FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller;
 
 ALTER TABLE development_sandbox_test_runs ADD COLUMN candidate_binding_id uuid;
 ALTER TABLE development_sandbox_test_runs ADD COLUMN candidate_image_child text CHECK (candidate_image_child IS NULL OR candidate_image_child ~ '^.+@sha256:[0-9a-f]{64}$');
@@ -91,6 +93,8 @@ END $$;
 CREATE TRIGGER development_sandbox_test_run_candidate_binding_immutable
 BEFORE UPDATE ON development_sandbox_test_runs
 FOR EACH ROW EXECUTE FUNCTION development_reject_test_run_candidate_rebinding();
+REVOKE ALL ON FUNCTION development_reject_test_run_candidate_rebinding()
+  FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller;
 
 CREATE FUNCTION development_collector_prepare_bound_sandbox_v1(
   p_build_id uuid,p_attempt_generation bigint,p_platform text,p_test_name text,p_candidate_image_index text
@@ -137,21 +141,56 @@ LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
     AND job.execution_generation=p_attempt_generation AND job.lease_expires_at>clock_timestamp()
 $$;
 
+CREATE FUNCTION development_collector_mark_sandbox_ready_v1(
+  p_build_id uuid,p_attempt_generation bigint,p_platform text,p_test_name text,p_sandbox_id uuid
+) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE job public.development_build_jobs%ROWTYPE; changed bigint;
+BEGIN
+  SELECT * INTO job FROM public.development_build_jobs WHERE build_id=p_build_id FOR UPDATE;
+  IF NOT FOUND OR job.completed_at IS NOT NULL OR job.worker_id IS NULL OR job.lease_token IS NULL OR
+     job.lease_expires_at IS NULL OR job.lease_expires_at<=clock_timestamp() OR
+     job.execution_generation<>p_attempt_generation THEN RETURN false; END IF;
+  UPDATE public.development_sandbox_test_runs run SET status='ready',updated_at=clock_timestamp()
+    FROM public.sandboxes sandbox,public.sandbox_workload_admissions admission,public.development_builds build
+    WHERE run.build_id=p_build_id AND run.attempt_generation=p_attempt_generation AND run.platform=p_platform AND
+      run.test_name=p_test_name AND run.sandbox_id=p_sandbox_id AND run.candidate_image_bound AND run.status IN ('preparing','ready') AND
+      build.id=run.build_id AND build.workspace_id=run.workspace_id AND build.project_id=run.project_id AND build.status IN ('building','testing') AND
+      job.workspace_id=run.workspace_id AND job.project_id=run.project_id AND
+      sandbox.id=run.sandbox_id AND sandbox.workspace_id=run.workspace_id AND sandbox.state IN ('ready','running') AND
+      sandbox.backend_uid IS NOT NULL AND sandbox.backend_resource_version IS NOT NULL AND
+      admission.sandbox_id=sandbox.id AND admission.workspace_id=sandbox.workspace_id AND
+      admission.operation_id=run.create_operation_id AND admission.backend_uid=sandbox.backend_uid AND
+      admission.backend_resource_version=sandbox.backend_resource_version AND admission.admitted AND
+      admission.condition_type='Admitted' AND admission.condition_status='True' AND admission.owner_controller AND
+      admission.owner_name=sandbox.id::text AND admission.owner_uid=sandbox.backend_uid AND
+      admission.workspace_label=sandbox.workspace_id::text AND admission.sandbox_label=sandbox.id::text AND
+      admission.pod_api_version='v1' AND admission.pod_kind='Pod' AND admission.pod_namespace='blazn-poc-sandboxes' AND
+      admission.pod_name IS NOT NULL AND admission.pod_uid IS NOT NULL AND admission.pod_resource_version IS NOT NULL AND
+      admission.observation_digest IS NOT NULL AND
+      EXISTS(SELECT 1 FROM public.development_candidate_image_bindings binding WHERE binding.id=run.candidate_binding_id AND
+        binding.build_id=run.build_id AND binding.workspace_id=run.workspace_id AND binding.project_id=run.project_id AND
+        binding.attempt_generation=run.attempt_generation AND binding.platform=run.platform AND
+        binding.image_index_digest=run.candidate_image_index AND binding.image_child_digest=run.candidate_image_child);
+  GET DIAGNOSTICS changed=ROW_COUNT;
+  RETURN changed=1;
+END $$;
+
 CREATE OR REPLACE FUNCTION development_collector_authorize_execution_v1(
   p_build_id uuid,p_attempt_generation bigint,p_platform text,p_test_name text,p_sandbox_id uuid
 ) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE job public.development_build_jobs%ROWTYPE; changed bigint;
 BEGIN
   SELECT * INTO job FROM public.development_build_jobs WHERE build_id=p_build_id FOR UPDATE;
-  IF NOT FOUND OR job.completed_at IS NOT NULL OR job.lease_expires_at IS NULL OR job.lease_expires_at<=clock_timestamp() OR
+  IF NOT FOUND OR job.completed_at IS NOT NULL OR job.worker_id IS NULL OR job.lease_token IS NULL OR
+     job.lease_expires_at IS NULL OR job.lease_expires_at<=clock_timestamp() OR
      job.execution_generation<>p_attempt_generation THEN RETURN false; END IF;
   UPDATE public.development_sandbox_test_runs run SET status='running',updated_at=clock_timestamp()
     FROM public.sandboxes sandbox,public.sandbox_workload_admissions admission
     WHERE run.build_id=p_build_id AND run.attempt_generation=p_attempt_generation AND run.platform=p_platform AND
-      run.test_name=p_test_name AND run.sandbox_id=p_sandbox_id AND run.candidate_image_bound AND run.status IN ('preparing','ready','running') AND
+      run.test_name=p_test_name AND run.sandbox_id=p_sandbox_id AND run.candidate_image_bound AND run.status IN ('ready','running') AND
       sandbox.id=run.sandbox_id AND sandbox.workspace_id=run.workspace_id AND sandbox.state IN ('ready','running') AND
       sandbox.backend_uid IS NOT NULL AND sandbox.backend_resource_version IS NOT NULL AND
-      admission.sandbox_id=sandbox.id AND admission.workspace_id=sandbox.workspace_id AND
+      admission.sandbox_id=sandbox.id AND admission.workspace_id=sandbox.workspace_id AND admission.operation_id=run.create_operation_id AND
       admission.backend_uid=sandbox.backend_uid AND admission.backend_resource_version=sandbox.backend_resource_version AND
       admission.admitted AND admission.condition_type='Admitted' AND admission.condition_status='True' AND
       admission.owner_controller AND admission.owner_name=sandbox.id::text AND admission.owner_uid=sandbox.backend_uid AND
@@ -171,27 +210,59 @@ END $$;
 REVOKE EXECUTE ON FUNCTION development_collector_prepare_sandbox_v1(uuid,bigint,text,text,text),
   development_collector_resolve_sandbox_v1(uuid,bigint,text,text) FROM blazn_development_controller;
 REVOKE ALL ON FUNCTION development_collector_prepare_bound_sandbox_v1(uuid,bigint,text,text,text),
-  development_collector_resolve_bound_sandbox_v1(uuid,bigint,text,text)
+  development_collector_resolve_bound_sandbox_v1(uuid,bigint,text,text),
+  development_collector_mark_sandbox_ready_v1(uuid,bigint,text,text,uuid)
   FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller;
 GRANT EXECUTE ON FUNCTION development_collector_prepare_bound_sandbox_v1(uuid,bigint,text,text,text),
-  development_collector_resolve_bound_sandbox_v1(uuid,bigint,text,text) TO blazn_development_controller;
+  development_collector_resolve_bound_sandbox_v1(uuid,bigint,text,text),
+  development_collector_mark_sandbox_ready_v1(uuid,bigint,text,text,uuid) TO blazn_development_controller;
 
 -- Preserve the ordinary Sandbox tuple and its published-template foreign key,
 -- but project the immutable Development candidate into the controller claim.
 -- v3/v4/v5 compose this v2 function, so every production controller path sees
 -- the candidate child that is linked to the Development run rather than the
 -- published template child used to bootstrap the ordinary lifecycle row.
-CREATE FUNCTION development_quarantine_stale_candidate_claim_v1(
+CREATE FUNCTION development_candidate_claim_mode_v1(
   p_operation_id uuid,p_workspace_id uuid,p_sandbox_id uuid,p_operation_type text,
   p_backend_uid text,p_backend_resource_version text
-) RETURNS boolean
+) RETURNS text
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE run public.development_sandbox_test_runs%ROWTYPE; job public.development_build_jobs%ROWTYPE; job_found boolean;
 BEGIN
+  SELECT * INTO run FROM public.development_sandbox_test_runs
+    WHERE sandbox_id=p_sandbox_id AND workspace_id=p_workspace_id;
+  IF NOT FOUND THEN RETURN 'ordinary'; END IF;
+  -- Follow the job -> run lock order used by prepare/readiness authority so a
+  -- claim cannot deadlock with a generation reclaim or candidate binding.
+  SELECT * INTO job FROM public.development_build_jobs WHERE build_id=run.build_id FOR UPDATE;
+  job_found:=FOUND;
+  SELECT * INTO run FROM public.development_sandbox_test_runs
+    WHERE sandbox_id=p_sandbox_id AND workspace_id=p_workspace_id FOR UPDATE;
+  IF NOT FOUND THEN RETURN 'ordinary'; END IF;
+  IF run.cleanup_operation_id=p_operation_id AND p_operation_type='delete' THEN RETURN 'ordinary'; END IF;
+  IF run.create_operation_id=p_operation_id AND p_operation_type='create' AND
+     run.status IN ('preparing','ready','running') AND run.candidate_image_bound THEN
+    -- Serialize candidate projection with Development lease reclaim. A plain
+    -- outer-join snapshot can remain stale while another controller advances
+    -- execution_generation, so authority has to lock and re-read the job.
+    IF job_found AND job.workspace_id=run.workspace_id AND job.project_id=run.project_id AND
+       job.completed_at IS NULL AND job.worker_id IS NOT NULL AND job.lease_token IS NOT NULL AND
+       job.lease_expires_at IS NOT NULL AND job.lease_expires_at>clock_timestamp() AND
+       job.execution_generation=run.attempt_generation AND
+       EXISTS(SELECT 1 FROM public.development_builds build WHERE build.id=run.build_id AND
+         build.workspace_id=run.workspace_id AND build.project_id=run.project_id AND build.status IN ('building','testing')) AND
+       EXISTS(SELECT 1 FROM public.development_candidate_image_bindings binding WHERE binding.id=run.candidate_binding_id AND
+         binding.build_id=run.build_id AND binding.workspace_id=run.workspace_id AND binding.project_id=run.project_id AND
+         binding.attempt_generation=run.attempt_generation AND binding.platform=run.platform AND
+         binding.image_index_digest=run.candidate_image_index AND binding.image_child_digest=run.candidate_image_child) THEN
+      RETURN 'candidate';
+    END IF;
+  END IF;
   PERFORM public.sandbox_controller_quarantine_stale(p_operation_id,p_workspace_id,p_sandbox_id,p_operation_type,
     p_backend_uid,p_backend_resource_version);
-  RETURN false;
+  RETURN NULL;
 END $$;
-REVOKE ALL ON FUNCTION development_quarantine_stale_candidate_claim_v1(uuid,uuid,uuid,text,text,text)
+REVOKE ALL ON FUNCTION development_candidate_claim_mode_v1(uuid,uuid,uuid,text,text,text)
   FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller;
 
 CREATE OR REPLACE FUNCTION sandbox_controller_claim_v2(p_worker_id text,p_lease_seconds integer)
@@ -213,8 +284,9 @@ LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
   SELECT claimed.operation_id,claimed.workspace_id,claimed.sandbox_id,s.requested_by,
     claimed.operation_type,claimed.expected_sandbox_version,claimed.lease_token,claimed.lease_expires_at,
     claimed.attempt,claimed.allocation_mode,claimed.desired_state,claimed.architecture,claimed.template_version_id,
-    claimed.template_digest,claimed.variant_name,coalesce(binding.image_index_digest,claimed.image_index_digest),
-    coalesce(binding.image_child_digest,claimed.image_child_digest),
+    claimed.template_digest,claimed.variant_name,
+    CASE WHEN authority.mode='candidate' THEN binding.image_index_digest ELSE claimed.image_index_digest END,
+    CASE WHEN authority.mode='candidate' THEN binding.image_child_digest ELSE claimed.image_child_digest END,
     claimed.placement_profile,claimed.command,claimed.request_cpu,claimed.request_memory,claimed.request_ephemeral_storage,
     claimed.limit_cpu,claimed.limit_memory,claimed.limit_ephemeral_storage,claimed.queue_name,claimed.admission_id,
     claimed.backend_uid,claimed.backend_resource_version,claimed.expires_at,
@@ -227,14 +299,15 @@ LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
     admission.workspace_label,admission.sandbox_label,admission.admitted,admission.condition_type,admission.condition_status
   FROM public.sandbox_controller_claim(p_worker_id,p_lease_seconds) claimed
   JOIN public.sandboxes s ON s.id=claimed.sandbox_id AND s.workspace_id=claimed.workspace_id
+  JOIN LATERAL (SELECT public.development_candidate_claim_mode_v1(claimed.operation_id,claimed.workspace_id,
+    claimed.sandbox_id,claimed.operation_type,claimed.backend_uid,claimed.backend_resource_version) mode) authority
+    ON authority.mode IS NOT NULL
   LEFT JOIN public.development_sandbox_test_runs run ON run.sandbox_id=claimed.sandbox_id AND
     run.workspace_id=claimed.workspace_id
   LEFT JOIN public.development_candidate_image_bindings binding ON binding.id=run.candidate_binding_id AND
     binding.build_id=run.build_id AND binding.workspace_id=run.workspace_id AND binding.project_id=run.project_id AND
     binding.attempt_generation=run.attempt_generation AND binding.platform=run.platform AND
     binding.image_index_digest=run.candidate_image_index AND binding.image_child_digest=run.candidate_image_child
-  LEFT JOIN public.development_build_jobs job ON job.build_id=run.build_id
-  LEFT JOIN public.development_builds build ON build.id=run.build_id AND build.workspace_id=run.workspace_id AND build.project_id=run.project_id
   LEFT JOIN public.sandbox_workload_admissions admission ON admission.sandbox_id=s.id AND admission.workspace_id=s.workspace_id
   LEFT JOIN LATERAL (
     SELECT array_agg(entry.name ORDER BY entry.name) names,array_agg(entry.path ORDER BY entry.name) paths,
@@ -242,12 +315,6 @@ LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
     FROM public.sandbox_artifact_contract_entries entry
     WHERE entry.sandbox_id=claimed.sandbox_id AND entry.workspace_id=claimed.workspace_id
   ) artifacts ON true
-  WHERE CASE WHEN run.build_id IS NULL THEN true
-    WHEN run.candidate_image_bound AND binding.id IS NOT NULL AND job.completed_at IS NULL AND
-      job.execution_generation=run.attempt_generation AND job.lease_expires_at>clock_timestamp() AND
-      build.status IN ('building','testing') THEN true
-    ELSE public.development_quarantine_stale_candidate_claim_v1(claimed.operation_id,claimed.workspace_id,
-      claimed.sandbox_id,claimed.operation_type,claimed.backend_uid,claimed.backend_resource_version) END
 $$;
 
 CREATE OR REPLACE FUNCTION development_controller_commit_execution_v1(

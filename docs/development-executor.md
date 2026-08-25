@@ -63,6 +63,10 @@ creates or re-adopts one ordinary Sandbox lifecycle record for every committed
 platform/test pair, freezes the exact argv and timeout, and waits for the
 controller's complete Sandbox/Pod admission observation. It cannot receive the
 Build lease token, mutate controller evidence tables, or execute a shell.
+After that real lifecycle observation, the collector persists a lease-fenced
+`preparing -> ready` transition. Execution authority accepts only persisted
+`ready` or idempotent `running` rows; complete admission evidence alone cannot
+skip the transition.
 
 The controller resolves the exact BuildKit index bytes at the allowlisted
 registry and supplies the two architecture child digests to the collector. The
@@ -72,7 +76,10 @@ Each Development test run references the matching platform binding before its
 ordinary Sandbox is prepared; replay must be byte-for-byte exact and stale or
 cross-workspace workers are fenced. Ordinary Sandboxes remain foreign-key bound
 to their published template images and those fields are never rewritten to the
-candidate image.
+candidate image. Candidate projection at Sandbox claim time re-locks the exact
+active Development job generation; expired, reclaimed, completed, or unrelated
+create operations are quarantined, while a bound delete cleanup retains the
+ordinary Sandbox image tuple.
 
 The command transport must independently verify
 the frozen Sandbox and Pod UIDs, resolve the scheduled Kubernetes Node to an

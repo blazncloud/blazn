@@ -11,6 +11,7 @@ export interface DevelopmentSandboxEvidenceStore {
   bindCandidateImages(buildId:string,workspaceId:string,generation:number,imageIndex:string,amd64Child:string,arm64Child:string):Promise<boolean>;
   prepare(buildId:string,generation:number,platform:string,testName:string,candidateImageIndex:string):Promise<DevelopmentSandboxTestRun|undefined>;
   resolve(buildId:string,generation:number,platform:string,testName:string):Promise<DevelopmentSandboxTestRun|undefined>;
+  markReady(buildId:string,generation:number,platform:string,testName:string,sandboxId:string):Promise<boolean>;
   authorizeExecution(buildId:string,generation:number,platform:string,testName:string,sandboxId:string):Promise<boolean>;
 }
 
@@ -31,6 +32,7 @@ export class PgDevelopmentSandboxEvidenceStore implements DevelopmentSandboxEvid
     const result=await this.database.query("SELECT * FROM development_collector_resolve_bound_sandbox_v1($1,$2,$3,$4)",[buildId,generation,platform,testName]);
     return result.rows[0]?testRun(result.rows[0]):undefined;
   }
+  async markReady(buildId:string,generation:number,platform:string,testName:string,sandboxId:string){const result=await this.database.query<{ready:boolean}>("SELECT development_collector_mark_sandbox_ready_v1($1,$2,$3,$4,$5) AS ready",[buildId,generation,platform,testName,sandboxId]);return result.rows[0]?.ready===true;}
   async authorizeExecution(buildId:string,generation:number,platform:string,testName:string,sandboxId:string){const result=await this.database.query<{authorized:boolean}>("SELECT development_collector_authorize_execution_v1($1,$2,$3,$4,$5) AS authorized",[buildId,generation,platform,testName,sandboxId]);return result.rows[0]?.authorized===true;}
 }
 
@@ -74,7 +76,12 @@ export class DevelopmentSandboxEvidenceOrchestrator {
       if(run.sandboxState==="ready"||run.sandboxState==="running"){
         if(!run.backendUid||!run.backendResourceVersion||!run.podNamespace||!run.podName||!run.podUid||!run.podResourceVersion||!run.observationDigest)
           throw new Error("Development Sandbox readiness lacks frozen admission evidence");
-        return run;
+        if(!await this.store.markReady(buildId,generation,platform,testName,run.sandboxId))throw new Error("Development Sandbox readiness was fenced");
+        const ready=await this.store.resolve(buildId,generation,platform,testName);
+        if(!ready||ready.sandboxId!==run.sandboxId||!ready.candidateImageBound||!ready.backendUid||!ready.backendResourceVersion||
+          !ready.podNamespace||!ready.podName||!ready.podUid||!ready.podResourceVersion||!ready.observationDigest||ready.status!=="ready"&&ready.status!=="running")
+          throw new Error("Development Sandbox persisted readiness is invalid");
+        return ready;
       }
       await abortableDelay(this.pollMilliseconds,signal);
     }
