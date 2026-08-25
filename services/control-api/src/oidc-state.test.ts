@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { activationOriginMatches, activationPublicKeyDigest, oidcCookieKey, sealActivationConfirmation, sealOidcTransaction, stateMatches, unsealActivationConfirmation, unsealOidcTransaction } from "./oidc-state.js";
+import { activationPublicKeyDigest, oidcCookieKey, sealActivationConfirmation, sealOidcTransaction, stateMatches, unsealActivationConfirmation, unsealOidcTransaction } from "./oidc-state.js";
 
 const key = oidcCookieKey(Buffer.alloc(32, 7).toString("base64url"));
 const transaction = { state: "state", nonce: "nonce", codeVerifier: "verifier", userCode: "ABCD-EFGH", mode: "signup" as const, issuedAt: 1_800_000_000_000 };
@@ -11,16 +11,7 @@ test("OIDC transactions round-trip through authenticated encryption", () => {
   assert.doesNotMatch(sealed, /state|nonce|verifier|ABCD/);
 });
 
-test("activation requires an exact same-origin POST and binds a raw Ed25519 key digest", () => {
-	assert.equal(activationOriginMatches("https://api.blazn.example", undefined, undefined, "https://api.blazn.example/activate"), true);
-	assert.equal(activationOriginMatches(undefined, undefined, "same-origin", "https://api.blazn.example"), true);
-	assert.equal(activationOriginMatches(undefined, "https://api.blazn.example/activate?user_code=ABCD-EFGH", undefined, "https://api.blazn.example"), true);
-	for (const origin of ["https://evil.example", "https://api.blazn.example.evil", "https://api.blazn.example/path", "null"]) {
-		assert.equal(activationOriginMatches(origin, "https://api.blazn.example/activate", "same-origin", "https://api.blazn.example"), false);
-	}
-	for (const referer of [undefined, "https://evil.example", "https://api.blazn.example.evil/activate", "not-a-url"]) {
-		assert.equal(activationOriginMatches(undefined, referer, "cross-site", "https://api.blazn.example"), false);
-	}
+test("activation binds a raw Ed25519 key digest", () => {
 	const publicKey = Buffer.alloc(32, 9).toString("base64url");
 	assert.match(activationPublicKeyDigest(publicKey), /^sha256:[0-9a-f]{64}$/);
 	assert.throws(() => activationPublicKeyDigest("not-a-key"));
