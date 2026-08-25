@@ -20,6 +20,7 @@ export interface DevelopmentBuildExecutor {execute(item:DevelopmentControllerWor
 export interface BuildKitExecutorConfig {
   buildctlPath:string;address:string;serverName:string;builderId:string;caPath:string;certificatePath:string;keyPath:string;
   evidenceCommand:string;maximumArtifactBytes:number;maximumTotalArtifactBytes:number;executionTimeoutSeconds:number;
+  evidenceSecretsRoot:string;
 }
 
 interface CommandResult {code:number;logDigest:string}
@@ -47,7 +48,7 @@ export class BuildKitDevelopmentExecutor implements DevelopmentBuildExecutor {
         builder:{id:this.config.builderId,profile:text(record(item.projectSnapshot.policy)?.builderProfile),...qualifiedBuildKit},
         build:{succeeded:true,imageIndexDigest,logDigest:build.logDigest,startedAt,completedAt},
       }));
-      const collected=await this.run(this.config.evidenceCommand,[],{input:collectorInput,signal:executionSignal,env:safeEnvironment()});
+      const collected=await this.run(this.config.evidenceCommand,[],{input:collectorInput,signal:executionSignal,env:safeEnvironment({BLAZN_DEVELOPMENT_SECRETS_ROOT:this.config.evidenceSecretsRoot})});
       if(collected.code!==0||!collected.stdout)throw new Error("Development evidence collector failed");
       const profile=text(record(item.projectSnapshot.policy)?.builderProfile),imageIndexReference=`${project.registryRepository}@${imageIndexDigest}`;
       return parseCollectorResult(collected.stdout,item,artifactIds,this.config,{imageIndexReference,builder:{id:this.config.builderId,profile,...qualifiedBuildKit}});
@@ -67,6 +68,7 @@ function projectBuild(snapshot:Record<string,unknown>):ProjectBuild{
 export function buildctlArguments(item:DevelopmentControllerWorkItem,project:ProjectBuild,metadataPath:string,config:BuildKitExecutorConfig):string[]{
   for(const path of [config.buildctlPath,config.caPath,config.certificatePath,config.keyPath])if(!path.startsWith("/"))throw new Error("BuildKit executable and TLS paths must be absolute");
   if(!config.evidenceCommand.startsWith("/"))throw new Error("Development evidence command must be absolute");
+  if(!config.evidenceSecretsRoot.startsWith("/")||config.evidenceSecretsRoot.includes("\0"))throw new Error("Development evidence secrets root must be absolute");
   let repository:URL;try{repository=new URL(item.source.repository);}catch{throw new Error("Development source identity is invalid");}
   if(repository.protocol!=="https:"||repository.username||repository.password||repository.search||repository.hash||repository.href!==item.source.repository||!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(item.source.commit))throw new Error("Development source identity is invalid");
   let address:URL;try{address=new URL(config.address);}catch{throw new Error("BuildKit address is invalid");}

@@ -15,5 +15,6 @@ COPY --from=buildkit /usr/bin/buildctl /usr/local/bin/buildctl
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
+COPY --chmod=0555 development-evidence-launcher.mjs /usr/local/libexec/blazn-development-evidence
 USER node
 ENTRYPOINT ["node", "dist/development-controller-main.js"]

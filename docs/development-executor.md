@@ -56,14 +56,24 @@ Build document or passed to the evidence collector.
 collector operation (one hour by default, two hours maximum). Cancellation
 sends TERM and escalates to KILL after five seconds before the queue continues.
 
-The collector is intentionally not a generic shell hook. Its implementation
-must use the existing Sandbox create/ready/exec/artifact/stop/delete lifecycle,
-run the committed argv tests without a shell, resolve the observed Kubernetes
-Node to an active verified Blazn Node, inspect the two immutable image children,
-and bind a distinct reproducibility baseline. Until that concrete collector is
-installed, the controller retries and emits an `operational-failure` event on
-each fifth unsuccessful attempt; it never fabricates a successful or terminal
-Sandbox receipt.
+The pinned image now includes the first concrete collector stage. It durably
+creates or re-adopts one ordinary Sandbox lifecycle record for every committed
+platform/test pair, freezes the exact argv and timeout, and waits for the
+controller's complete Sandbox/Pod admission observation. It cannot receive the
+Build lease token, mutate controller evidence tables, or execute a shell.
+
+This stage is deliberately fail closed at candidate-image binding. Ordinary
+Sandboxes remain foreign-key bound to their published template image, which is
+not automatically the new BuildKit output. The collector records the candidate
+index but will not execute even a committed argv until a later migration binds
+the exact index and architecture child through a Development-specific immutable
+template version. After that, the command transport must independently verify
+the frozen Sandbox and Pod UIDs, resolve the scheduled Kubernetes Node to an
+active verified Blazn Node, bound output to digests and byte counts, and drive
+stop/delete cleanup. Complete terminal success additionally requires real
+two-platform security, lifecycle, refresh, registry inspection, reproducibility,
+and cleanup evidence. Missing stages remain operational retries; no successful
+or terminal receipt is synthesized.
 
 ## Current cluster prerequisite
 
