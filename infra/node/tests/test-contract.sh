@@ -61,6 +61,14 @@ grep -F 'nodeBroker' "$M2_ROOT/ownership-receipt.schema.json" >/dev/null
 grep -F 'nodeBrokerReceiptDigest' "$M2_ROOT/scripts/backup.sh" >/dev/null
 grep -F 'Node migrations are applied; automatic prerequisite rollback is forbidden' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
 grep -F 'REASSIGN OWNED BY blazn_node_broker TO blazn_migration' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
+grep -F 'CREATE_JOURNAL=/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json' "$NODE_ROOT/scripts/upgrade-control-plane.sh" >/dev/null
+validate_secret_paths=$NODE_ROOT/scripts/validate-secret-paths.sh
+"$validate_secret_paths" /etc/blazn/node-broker/secrets /var/lib/blazn/ownership/node-broker-secret-create.json 0
+"$validate_secret_paths" /etc/blazn/node-broker/secrets /var/lib/blazn/ownership/node-broker-upgrade-secret-create.json 0
+if "$validate_secret_paths" /etc/blazn/node-broker/secrets /var/lib/blazn/ownership/unreviewed-secret-create.json 0 >/dev/null 2>&1; then
+  printf 'Node broker production journal allowlist admitted an unreviewed path\n' >&2
+  exit 1
+fi
 for service in node-migration-preflight node-broker-verify; do
   body=$(awk -v marker="  $service:" '$0==marker {p=1; next} p && /^  [a-z]/ {exit} p {print}' "$compose")
   printf '%s\n' "$body" | grep -F 'user: "999:999"' >/dev/null
