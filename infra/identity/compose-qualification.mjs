@@ -37,7 +37,7 @@ const digest = (name) => {
   if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error(`${name} is invalid`);
   return value;
 };
-const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login", "idp-gate"];
+const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login", "provider-gate-provision", "idp-gate"];
 const imageRefPattern = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 const parseObservations = (name) => {
   const result = {};

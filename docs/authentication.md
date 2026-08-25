@@ -38,11 +38,12 @@ The isolated stack is in `infra/identity`:
 - `zitadel-login` is the self-hosted Next.js login application. Its
   `EMAIL_VERIFICATION` setting is enabled so registration sends and requires
   email verification before completing an identity login.
-- The Login healthcheck and Traefik request-path gate query ZITADEL's
-  database-backed organization and active-provider inventories with the scoped
-  login-client token. Login fails closed unless the instance has exactly one
-  active organization and its effective provider inventory is empty for the
-  pinned v4.17.1 image.
+- The Traefik request-path gate queries ZITADEL's
+  database-backed organization and active-provider inventories with a dedicated
+  gate-only PAT. The provisioner grants that principal instance-wide
+  organization visibility, while the Login container never receives its token.
+  Login fails closed unless the instance has exactly one active organization
+  and its effective provider inventory is empty for the pinned v4.17.1 image.
 - Traefik provides the required h2c connection to the API without access to the
   Docker socket.
 - A private Docker volume transfers the generated login-client credential from
@@ -222,6 +223,10 @@ The qualification receipt also binds single-organization and
 zero-active-provider observations from both before and after backup/restore, so
 a restored or administratively changed organization/provider inventory cannot
 pass on documentation or static configuration alone.
+The disposable qualification also creates a second organization that is not
+directly granted to the gate principal and proves the public Login route returns
+503 before deleting the qualification organization. This exercises ZITADEL's
+real permission filtering rather than trusting a mocked organization count.
 The browser driver must be a root-owned, single-link mode-0500/0700 file at the
 fixed driver path and must match a separately reviewed SHA-256 digest. It emits
 per-gate evidence digests and timestamps, not self-authored pass booleans. The

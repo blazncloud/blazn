@@ -52,10 +52,13 @@ trap cleanup EXIT HUP INT TERM
 
 "$script_dir/generate-secrets.sh" "$BLAZN_IDENTITY_SECRETS_ROOT" "${ZITADEL_QUALIFICATION_ADMIN_EMAIL:?set qualification admin email}"
 docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" up -d --wait
+BLAZN_IDENTITY_LOCAL_ORIGIN="http://127.0.0.1:${ZITADEL_PROXY_PORT:-58081}" \
+ZITADEL_PROVIDER_GATE_TOKEN_FILE="$BLAZN_IDENTITY_SECRETS_ROOT/provider-gate.pat" \
+node "$script_dir/test-provider-gate-authority.mjs"
 observe_services() {
-  for service_image in "postgres|$ZITADEL_POSTGRES_IMAGE" "proxy|$ZITADEL_TRAEFIK_IMAGE" "zitadel-api|$ZITADEL_IMAGE" "zitadel-login|$ZITADEL_LOGIN_IMAGE" "idp-gate|$ZITADEL_LOGIN_IMAGE"; do
+  for service_image in "postgres|$ZITADEL_POSTGRES_IMAGE" "proxy|$ZITADEL_TRAEFIK_IMAGE" "zitadel-api|$ZITADEL_IMAGE" "zitadel-login|$ZITADEL_LOGIN_IMAGE" "provider-gate-provision|$ZITADEL_LOGIN_IMAGE" "idp-gate|$ZITADEL_LOGIN_IMAGE"; do
     service=${service_image%%|*}; configured=${service_image#*|}
-    container_id=$(docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" ps -q "$service")
+    container_id=$(docker compose --env-file "$env_file" -f "$script_dir/compose.yaml" ps -aq "$service")
     [ "$(printf '%s' "$container_id" | wc -l | tr -d ' ')" -eq 0 ] || identity_fail "service $service resolved multiple containers"
 	printf '%s' "$container_id" | grep -Eq '^[0-9a-f]{64}$' || identity_fail "service $service container identity is invalid"
     observed_config=$(docker inspect --format '{{.Config.Image}}' "$container_id")
@@ -94,6 +97,7 @@ QUALIFICATION_DRIVER_DIGEST="$driver_digest" \
 QUALIFICATION_ENVIRONMENT_DIGEST="sha256:$(sha256sum "$env_file" | awk '{print $1}')" \
 QUALIFICATION_CONFIGURED_POSTGRES="$ZITADEL_POSTGRES_IMAGE" QUALIFICATION_CONFIGURED_PROXY="$ZITADEL_TRAEFIK_IMAGE" \
 QUALIFICATION_CONFIGURED_ZITADEL_API="$ZITADEL_IMAGE" QUALIFICATION_CONFIGURED_ZITADEL_LOGIN="$ZITADEL_LOGIN_IMAGE" \
+QUALIFICATION_CONFIGURED_PROVIDER_GATE_PROVISION="$ZITADEL_LOGIN_IMAGE" \
 QUALIFICATION_CONFIGURED_IDP_GATE="$ZITADEL_LOGIN_IMAGE" \
 QUALIFICATION_SERVICES_BEFORE="$services_before" QUALIFICATION_SERVICES_AFTER="$services_after" \
 QUALIFICATION_BACKUP_IMAGE="$ZITADEL_BACKUP_IMAGE" QUALIFICATION_BACKUP_IMAGE_ID_BEFORE="$backup_image_id_before" QUALIFICATION_BACKUP_IMAGE_ID_AFTER="$backup_image_id_after" \

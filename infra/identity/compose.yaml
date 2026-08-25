@@ -120,20 +120,46 @@ services:
       NEXT_PUBLIC_BASE_PATH: /ui/v2/login
       ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
       EMAIL_VERIFICATION: "true"
-      BLAZN_ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:?set the public identity domain}
       CUSTOM_REQUEST_HEADERS: Host:${ZITADEL_DOMAIN},X-Forwarded-Proto:https
     volumes:
       - zitadel-bootstrap:/zitadel/bootstrap:ro
-      - ./assert-no-active-idps.mjs:/blazn/assert-no-active-idps.mjs:ro
     depends_on:
       zitadel-api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "/bin/sh", "-c", "node /app/healthcheck.mjs http://localhost:3000/ui/v2/login/healthy && node /blazn/assert-no-active-idps.mjs"]
+      test: ["CMD", "node", "/app/healthcheck.mjs", "http://localhost:3000/ui/v2/login/healthy"]
       interval: 10s
       timeout: 30s
       retries: 12
       start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - identity
+
+  provider-gate-provision:
+    image: ${ZITADEL_LOGIN_IMAGE:?set ZITADEL_LOGIN_IMAGE to a reviewed immutable digest}
+    restart: "no"
+    user: "0"
+    entrypoint: ["node", "/blazn/provision-provider-gate.mjs"]
+    environment:
+      ZITADEL_API_URL: http://zitadel-api:8080
+      ZITADEL_LOGIN_CLIENT_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      ZITADEL_PROVIDER_GATE_TOKEN_FILE: /run/secrets/provider_gate_pat
+      ZITADEL_PROVIDER_GATE_PAT_EXPIRATION: ${ZITADEL_PROVIDER_GATE_PAT_EXPIRATION:?set a reviewed RFC3339 expiration}
+      BLAZN_ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:?set the public identity domain}
+    volumes:
+      - zitadel-bootstrap:/zitadel/bootstrap:ro
+      - ./provision-provider-gate.mjs:/blazn/provision-provider-gate.mjs:ro
+      - type: bind
+        source: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/provider-gate.pat
+        target: /run/secrets/provider_gate_pat
+    depends_on:
+      zitadel-api:
+        condition: service_healthy
+    read_only: true
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -148,16 +174,17 @@ services:
     entrypoint: ["node", "/blazn/provider-gate.mjs"]
     environment:
       ZITADEL_API_URL: http://zitadel-api:8080
-      ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat
+      ZITADEL_SERVICE_USER_TOKEN_FILE: /run/secrets/provider_gate_pat
       BLAZN_ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:?set the public identity domain}
       BLAZN_PROVIDER_GATE_PORT: "3100"
     volumes:
-      - zitadel-bootstrap:/zitadel/bootstrap:ro
       - ./assert-no-active-idps.mjs:/blazn/assert-no-active-idps.mjs:ro
       - ./provider-gate.mjs:/blazn/provider-gate.mjs:ro
+    secrets:
+      - provider_gate_pat
     depends_on:
-      zitadel-api:
-        condition: service_healthy
+      provider-gate-provision:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/healthz').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
       interval: 10s
@@ -181,6 +208,8 @@ secrets:
     file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-secrets.yaml
   zitadel_steps:
     file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-steps.yaml
+  provider_gate_pat:
+    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/provider-gate.pat
 
 volumes:
   zitadel-bootstrap:

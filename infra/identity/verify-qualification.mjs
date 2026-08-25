@@ -11,7 +11,7 @@ exact(receipt, ["schemaVersion", "issuer", "driverDigest", "environmentDigest", 
 const startedMillis = Date.parse(receipt.startedAt), observedMillis = Date.parse(receipt.observedAt);
 if (receipt.schemaVersion !== "blazn.identity.qualification/v3" || !String(receipt.issuer).startsWith("https://") || !Number.isFinite(startedMillis) || !Number.isFinite(observedMillis) || observedMillis < startedMillis) throw new Error("receipt identity or time range is invalid");
 digest(receipt.driverDigest, "driver"); digest(receipt.environmentDigest, "environment");
-const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login", "idp-gate"];
+const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login", "provider-gate-provision", "idp-gate"];
 const imageRefPattern = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
 exact(receipt.services, serviceNames, "services");
 for (const service of serviceNames) {
@@ -46,7 +46,7 @@ if (process.argv[3]) {
   const environmentDigest = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
   if (environmentDigest !== receipt.environmentDigest) throw new Error("reviewed environment digest mismatch");
   const environment = Object.fromEntries(raw.toString("utf8").split(/\r?\n/).filter((line) => line && !line.startsWith("#")).map((line) => { const separator = line.indexOf("="); if (separator < 1) throw new Error("reviewed environment entry is invalid"); return [line.slice(0, separator), line.slice(separator + 1)]; }));
-  const expected = { postgres: environment.ZITADEL_POSTGRES_IMAGE, proxy: environment.ZITADEL_TRAEFIK_IMAGE, "zitadel-api": environment.ZITADEL_IMAGE, "zitadel-login": environment.ZITADEL_LOGIN_IMAGE, "idp-gate": environment.ZITADEL_LOGIN_IMAGE };
+  const expected = { postgres: environment.ZITADEL_POSTGRES_IMAGE, proxy: environment.ZITADEL_TRAEFIK_IMAGE, "zitadel-api": environment.ZITADEL_IMAGE, "zitadel-login": environment.ZITADEL_LOGIN_IMAGE, "provider-gate-provision": environment.ZITADEL_LOGIN_IMAGE, "idp-gate": environment.ZITADEL_LOGIN_IMAGE };
   for (const service of serviceNames) if (receipt.services[service].configuredImage !== expected[service]) throw new Error(`service ${service} differs from reviewed environment`);
   if (receipt.backupUtility.configuredImage !== environment.ZITADEL_BACKUP_IMAGE) throw new Error("backup utility differs from reviewed environment");
 }
