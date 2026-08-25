@@ -383,7 +383,7 @@ func containsForbidden(value any) bool {
 	case map[string]any:
 		for key, child := range current {
 			normalized := normalizeCredentialKey(key)
-			if credentialField(normalized) || containsForbidden(child) {
+			if credentialField(normalized) || containsCredentialString(key) || containsForbidden(child) {
 				return true
 			}
 		}

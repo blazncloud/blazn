@@ -135,11 +135,31 @@ func TestDecodeProjectRejectsMalformedPersistedOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	validation, _ := Validate(data)
-	valid := `{"workspaceId":"` + registerWorkspaceID + `","projectId":"` + registerProjectID + `","version":1,"manifest":` + string(data) + `,"manifestDigest":"` + *validation.ManifestDigest + `","createdBy":"10000000-0000-4000-8000-000000000002","createdAt":"2026-08-24T00:00:00Z","updatedAt":"2026-08-24T00:00:00Z"}`
+	projectResponse := func(manifest []byte) string {
+		t.Helper()
+		validation, _ := Validate(manifest)
+		if !validation.Valid || validation.ManifestDigest == nil {
+			t.Fatal("test manifest is invalid")
+		}
+		return `{"workspaceId":"` + registerWorkspaceID + `","projectId":"` + registerProjectID + `","version":1,"manifest":` + string(manifest) + `,"manifestDigest":"` + *validation.ManifestDigest + `","createdBy":"10000000-0000-4000-8000-000000000002","createdAt":"2026-08-24T00:00:00Z","updatedAt":"2026-08-24T00:00:00Z"}`
+	}
+	valid := projectResponse(data)
 	if _, err := DecodeProject([]byte(valid)); err != nil {
 		t.Fatalf("valid persisted output rejected: %v", err)
 	}
+	for name, manifest := range map[string]string{
+		"dependency lock containing non-credential token text": strings.Replace(string(data), `"package-lock.json"`, `"vendor/tokenizer.lock"`, 1),
+		"test name containing non-credential secret text":      strings.Replace(string(data), `"poc":`, `"secretary":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeProject([]byte(projectResponse([]byte(manifest)))); err != nil {
+				t.Fatalf("legitimate dynamic key rejected: %v", err)
+			}
+		})
+	}
+	credentialKey := projectResponse([]byte(strings.Replace(string(data), `"package-lock.json"`, `"github_pat_12345678901234567890"`, 1)))
+	encodedCredentialKey := projectResponse([]byte(strings.Replace(string(data), `"package-lock.json"`, `"%67ithub_pat_12345678901234567890"`, 1)))
+	credentialTestKey := projectResponse([]byte(strings.Replace(string(data), `"poc":`, `"access-token":`, 1)))
 	for name, candidate := range map[string]string{
 		"unknown field":                     valid[:len(valid)-1] + `,"accessToken":"secret-value"}`,
 		"bad creator":                       strings.Replace(valid, "10000000-0000-4000-8000-000000000002", "not-a-user", 1),
@@ -154,6 +174,9 @@ func TestDecodeProjectRejectsMalformedPersistedOutput(t *testing.T) {
 		"case-variant build field":          strings.Replace(valid, `"registryRepository":`, `"RegistryRepository":`, 1),
 		"case-variant test field":           strings.Replace(valid, `"argv":`, `"Argv":`, 1),
 		"case-variant policy field":         strings.Replace(valid, `"builderProfile":`, `"BuilderProfile":`, 1),
+		"credential-shaped dependency key":  credentialKey,
+		"encoded credential dependency key": encodedCredentialKey,
+		"credential-shaped test key":        credentialTestKey,
 	} {
 		t.Run(name, func(t *testing.T) {
 			project, err := DecodeProject([]byte(candidate))
