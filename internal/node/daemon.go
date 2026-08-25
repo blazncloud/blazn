@@ -87,6 +87,7 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 		if heartbeat.Sequence > d.sequence {
 			d.sequence = heartbeat.Sequence
 		}
+		d.bootID = heartbeat.BootID
 		return d.acceptHeartbeat(state, heartbeat)
 	}
 	capability, err := d.capabilities.Capability(ctx)

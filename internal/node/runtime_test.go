@@ -940,11 +940,18 @@ func TestDaemonPersistsAndExactlyReplaysHeartbeatAfterAcknowledgmentLoss(t *test
 		t.Fatalf("pending=%#v binding=%#v err=%v", state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
 	}
 	pending := *state.runtime.PendingHeartbeat
-	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: client.NodeCapability{}})
+	nextCapability := capability
+	nextCapability.Worker.KubernetesBinding.ResourceVersion = "opaque-after-replay"
+	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: nextCapability})
 	restarted.now = func() time.Time { return when.Add(time.Minute) }
 	result, err := restarted.Heartbeat(context.Background())
 	if err != nil || api.heartbeatCalls != 2 || !reflect.DeepEqual(api.lastHeartbeat, pending) || result.Sequence != pending.Sequence || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
 		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
+	}
+	restarted.now = func() time.Time { return when.Add(2 * time.Minute) }
+	next, err := restarted.Heartbeat(context.Background())
+	if err != nil || api.heartbeatCalls != 3 || next.BootID != pending.BootID || next.Sequence != pending.Sequence+1 || api.lastHeartbeat.BootID != pending.BootID || api.lastHeartbeat.Sequence != pending.Sequence+1 || api.lastHeartbeat.PriorKubernetesResourceVersion != "opaque-next" || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-after-replay" {
+		t.Fatalf("next=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", next, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
 	}
 }
 
