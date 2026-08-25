@@ -105,6 +105,7 @@ esac
 
 command -v go >/dev/null 2>&1 || { echo "go is required" >&2; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "tar is required" >&2; exit 1; }
+command -v gzip >/dev/null 2>&1 || { echo "gzip is required" >&2; exit 1; }
 if [ "${BLAZN_RELEASE_MODE:-development}" = "publish" ] && ! tar --version 2>/dev/null | grep -q 'GNU tar'; then
   echo "publish-mode releases require GNU tar for normalized archive metadata" >&2
   exit 1
@@ -179,12 +180,14 @@ printf '%s\n' "$targets" | while read -r target_os target_arch; do
   fi
 
   archive="${output_dir}/blazn_${archive_version}_${target_os}_${target_arch}.tar.gz"
+  archive_tar="${tmp_root}/${target_os}-${target_arch}.tar"
   if tar --version 2>/dev/null | grep -q 'GNU tar'; then
     tar --sort=name --mtime="@${build_date_epoch}" --owner=0 --group=0 \
-      --numeric-owner -C "$stage_dir" -czf "$archive" blazn
+      --numeric-owner -C "$stage_dir" -cf "$archive_tar" blazn
   else
-    COPYFILE_DISABLE=1 tar -C "$stage_dir" -czf "$archive" blazn
+    COPYFILE_DISABLE=1 tar -C "$stage_dir" -cf "$archive_tar" blazn
   fi
+  gzip -n -c "$archive_tar" >"$archive"
 done
 
 printf '%s\n' "$version" >"${output_dir}/version.txt"

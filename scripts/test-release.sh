@@ -49,6 +49,11 @@ for archive in "$output_dir"/blazn_*.tar.gz; do
     echo "unexpected archive content in $archive: $contents" >&2
     exit 1
   }
+  set -- $(dd if="$archive" bs=1 skip=4 count=4 2>/dev/null | od -An -tu1)
+  [ "$#" -eq 4 ] && [ "$1" -eq 0 ] && [ "$2" -eq 0 ] && [ "$3" -eq 0 ] && [ "$4" -eq 0 ] || {
+    echo "gzip header contains a build-time timestamp in $archive" >&2
+    exit 1
+  }
 done
 
 (
