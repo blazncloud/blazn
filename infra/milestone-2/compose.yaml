@@ -207,7 +207,7 @@ services:
     image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
     user: "999:999"
     read_only: true
-    entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "pre-migration"]
+    entrypoint: ["/bin/sh", "/opt/blazn-node/verify-database.sh", "migration-boundary"]
     environment:
       NODE_BROKER_DATABASE_URL_FILE: /run/secrets/node_broker_database_url
     secrets:
@@ -220,6 +220,41 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    restart: "no"
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 64
+    networks:
+      - control
+
+  database-role-hardening:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    user: "999:999"
+    read_only: true
+    entrypoint: ["/bin/sh", "/opt/blazn-postgres/ensure-controller-roles.sh"]
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-blazn_admin}
+      POSTGRES_DB: ${POSTGRES_DB:-blazn}
+    secrets:
+      - postgres_password
+    volumes:
+      - type: bind
+        source: ./postgres-compat/ensure-controller-roles.sh
+        target: /opt/blazn-postgres/ensure-controller-roles.sh
+        read_only: true
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
     restart: "no"
     tmpfs:
       - /tmp:mode=0700,uid=999,gid=999
@@ -251,7 +286,7 @@ services:
         target: /opt/blazn-node/verify-database.sh
         read_only: true
     depends_on:
-      api-migrate:
+      database-role-hardening:
         condition: service_completed_successfully
     restart: "no"
     tmpfs:

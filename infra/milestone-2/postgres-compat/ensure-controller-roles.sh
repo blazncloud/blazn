@@ -219,6 +219,39 @@ BEGIN
   END LOOP;
 END
 $roles$;
+-- pgcrypto installs reviewed functions with PUBLIC EXECUTE even when the
+-- migration owner has hardened its default privileges.  The validation above
+-- accepts only the exact extension-owned signatures.  Normalize those legacy
+-- defaults before the broker performs its migration-boundary verification,
+-- while preserving only the digest overloads used by migration-owned
+-- SECURITY DEFINER functions.
+REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
+DO $pgcrypto$
+DECLARE function_signature text;
+DECLARE function_oid oid;
+BEGIN
+  FOREACH function_signature IN ARRAY ARRAY['public.digest(bytea,text)','public.digest(text,text)'] LOOP
+    function_oid := to_regprocedure(function_signature);
+    IF function_oid IS NULL THEN
+      IF EXISTS (SELECT FROM pg_extension WHERE extname='pgcrypto') THEN
+        RAISE EXCEPTION 'reviewed pgcrypto function % is missing', function_signature;
+      END IF;
+      CONTINUE;
+    END IF;
+    IF NOT EXISTS (
+      SELECT FROM pg_depend extension_member
+      JOIN pg_extension extension_row ON extension_row.oid=extension_member.refobjid
+      WHERE extension_member.classid='pg_proc'::regclass
+        AND extension_member.objid=function_oid
+        AND extension_member.deptype='e'
+        AND extension_row.extname='pgcrypto'
+    ) THEN
+      RAISE EXCEPTION 'reviewed pgcrypto function % is not extension owned', function_signature;
+    END IF;
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO blazn_migration', function_signature);
+  END LOOP;
+END
+$pgcrypto$;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_sandbox_controller,blazn_development_controller;
 GRANT USAGE ON SCHEMA public TO blazn_sandbox_controller,blazn_development_controller;
 COMMIT;

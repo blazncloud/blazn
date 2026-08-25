@@ -210,12 +210,99 @@ DROP FUNCTION legacy_public_invoker_probe();
 SQL
 run_role_compat
 
+hardening_migration=$repo_root/services/control-api/migrations/029_public_function_hardening_boundary.sql
 for migration in "$repo_root"/services/control-api/migrations/*.sql; do
+  [ "$migration" != "$hardening_migration" ] || continue
   {
     printf '%s\n' 'SET ROLE blazn_migration;'
     sed -n '1,$p' "$migration"
   } | psql_admin >/dev/null
 done
+psql_admin <<'SQL'
+DO $$
+DECLARE function_row record;
+BEGIN
+  -- Reconstruct the exact legacy pgcrypto defaults observed on the live
+  -- database so the compatibility transaction must validate and normalize
+  -- every trusted-extension function rather than relying on the fresh path.
+  FOR function_row IN
+    SELECT function_catalog.oid::regprocedure AS signature
+    FROM pg_proc function_catalog
+    JOIN pg_depend extension_member ON extension_member.classid='pg_proc'::regclass
+      AND extension_member.objid=function_catalog.oid AND extension_member.deptype='e'
+    JOIN pg_extension extension_catalog ON extension_catalog.oid=extension_member.refobjid
+    WHERE extension_catalog.extname='pgcrypto'
+  LOOP
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC',function_row.signature);
+  END LOOP;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+      SELECT FROM pg_proc function_row
+      CROSS JOIN LATERAL aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+      WHERE function_row.oid='public.digest(bytea,text)'::regprocedure
+        AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+    ) OR NOT EXISTS (
+      SELECT FROM pg_proc function_row
+      CROSS JOIN LATERAL aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+      WHERE function_row.oid='public.digest(text,text)'::regprocedure
+        AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+    ) THEN
+    RAISE EXCEPTION 'legacy pgcrypto fixture lacks the expected PUBLIC defaults';
+  END IF;
+END $$;
+SQL
+run_role_compat
+psql_admin <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (
+      SELECT FROM pg_proc function_row
+      CROSS JOIN LATERAL aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+      WHERE function_row.oid IN ('public.digest(bytea,text)'::regprocedure,'public.digest(text,text)'::regprocedure)
+        AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+    )
+    OR has_function_privilege('blazn_sandbox_controller','public.digest(bytea,text)','EXECUTE')
+    OR has_function_privilege('blazn_development_controller','public.digest(text,text)','EXECUTE')
+    OR NOT has_function_privilege('blazn_migration','public.digest(bytea,text)','EXECUTE')
+    OR NOT has_function_privilege('blazn_migration','public.digest(text,text)','EXECUTE') THEN
+    RAISE EXCEPTION 'controller compatibility did not normalize pgcrypto authority';
+  END IF;
+  IF EXISTS (
+    SELECT FROM pg_proc function_row
+    JOIN pg_namespace schema_row ON schema_row.oid=function_row.pronamespace
+    CROSS JOIN LATERAL aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+    WHERE schema_row.nspname='public'
+      AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'controller compatibility retained PUBLIC function authority';
+  END IF;
+END $$;
+SQL
+psql_admin <<'SQL'
+DO $$
+DECLARE function_row record;
+BEGIN
+  -- Exercise the fresh-database migration boundary: migration 029 must accept
+  -- only the exact trusted-extension defaults until the administrator-only
+  -- post-migration hardening job removes them.
+  FOR function_row IN
+    SELECT function_catalog.oid::regprocedure AS signature
+    FROM pg_proc function_catalog
+    JOIN pg_depend extension_member ON extension_member.classid='pg_proc'::regclass
+      AND extension_member.objid=function_catalog.oid AND extension_member.deptype='e'
+    JOIN pg_extension extension_catalog ON extension_catalog.oid=extension_member.refobjid
+    WHERE extension_catalog.extname='pgcrypto'
+  LOOP
+    EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO PUBLIC',function_row.signature);
+  END LOOP;
+END $$;
+SQL
+{
+  printf '%s\n' 'SET ROLE blazn_migration;'
+  sed -n '1,$p' "$hardening_migration"
+} | psql_admin >/dev/null
 psql_admin <<'SQL'
 DO $$
 BEGIN
@@ -225,6 +312,21 @@ BEGIN
 END $$;
 SQL
 run_role_compat
+psql_admin <<'SQL'
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT FROM pg_proc function_row
+    JOIN pg_namespace schema_row ON schema_row.oid=function_row.pronamespace
+    CROSS JOIN LATERAL aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+    WHERE schema_row.nspname='public'
+      AND privilege.grantee=0 AND privilege.privilege_type='EXECUTE'
+  ) OR NOT has_function_privilege('blazn_migration','public.digest(bytea,text)','EXECUTE')
+    OR NOT has_function_privilege('blazn_migration','public.digest(text,text)','EXECUTE') THEN
+    RAISE EXCEPTION 'post-migration controller compatibility did not harden function authority';
+  END IF;
+END $$;
+SQL
 
 psql_admin <<'SQL'
 SET ROLE blazn_migration;

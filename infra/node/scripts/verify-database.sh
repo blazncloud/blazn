@@ -3,8 +3,8 @@ set -eu
 
 mode=${1:-}
 case "$mode" in
-  pre-migration|post-migration) ;;
-  *) printf 'usage: verify-database.sh pre-migration|post-migration\n' >&2; exit 2 ;;
+  pre-migration|post-migration|migration-boundary) ;;
+  *) printf 'usage: verify-database.sh pre-migration|post-migration|migration-boundary\n' >&2; exit 2 ;;
 esac
 
 url_file=${NODE_BROKER_DATABASE_URL_FILE:-/run/secrets/node_broker_database_url}
@@ -67,6 +67,46 @@ identity=$(query "select current_user, rolcanlogin, rolsuper, rolcreatedb, rolcr
   printf 'node broker unexpectedly has schema CREATE\n' >&2
   exit 1
 }
+
+if [ "$mode" = migration-boundary ]; then
+  boundary=$(query "with target as (
+      select to_regprocedure('public.node_broker_lock_join_binding(uuid,uuid,uuid)') as oid
+    )
+    select case
+      when target.oid is null then 'pre-migration'
+      when exists (
+        select from pg_proc function_row
+        join pg_roles owner_role on owner_role.oid=function_row.proowner
+        join pg_language language_row on language_row.oid=function_row.prolang
+        where function_row.oid=target.oid
+          and owner_role.rolname='blazn_migration'
+          and language_row.lanname='plpgsql'
+          and function_row.prokind='f'
+          and function_row.prorettype='boolean'::regtype
+          and not function_row.proretset
+          and function_row.prosecdef
+          and function_row.proconfig=array['search_path=pg_catalog, public']::text[]
+          and exists (
+            select from aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+            where privilege.grantee=(select oid from pg_roles where rolname=current_user)
+              and privilege.privilege_type='EXECUTE' and not privilege.is_grantable
+          )
+          and not exists (
+            select from aclexplode(coalesce(function_row.proacl,acldefault('f',function_row.proowner))) privilege
+            where not (
+              (privilege.grantee=function_row.proowner and privilege.privilege_type='EXECUTE')
+              or (privilege.grantee=(select oid from pg_roles where rolname=current_user)
+                  and privilege.privilege_type='EXECUTE' and not privilege.is_grantable)
+            )
+          )
+      ) then 'post-migration'
+      else 'invalid'
+    end from target")
+  case "$boundary" in
+    pre-migration|post-migration) mode=$boundary ;;
+    *) printf 'node broker migration boundary marker is not the reviewed migration 008 authority\n' >&2; exit 1 ;;
+  esac
+fi
 
 assert_empty "select datname from pg_database where datallowconn and
   ((datname=current_database() and (not has_database_privilege(current_user,oid,'CONNECT') or has_database_privilege(current_user,oid,'CREATE') or has_database_privilege(current_user,oid,'TEMP')))

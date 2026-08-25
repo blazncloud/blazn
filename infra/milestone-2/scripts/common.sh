@@ -299,7 +299,7 @@ verify_node_prerequisite_containers() {
   infra_root=$1
   env_file=$2
   expected_id=$(docker image inspect "$POSTGRES_IMAGE" --format '{{.Id}}') || die "pinned PostgreSQL image is unavailable"
-  for service in database-role-compat node-migration-preflight node-broker-verify; do
+  for service in database-role-compat node-migration-preflight database-role-hardening node-broker-verify; do
     container=$(control_plane_compose "$infra_root" "$env_file" ps -a -q "$service")
     [ -n "$container" ] || die "Node prerequisite service has no container: $service"
     identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
