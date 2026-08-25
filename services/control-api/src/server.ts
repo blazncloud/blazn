@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { renderAuthResult, sendHtml, type AuthMode } from "./auth-page.js";
+import { renderAuthResult, renderOidcHandoff, sendHtml, type AuthMode } from "./auth-page.js";
 import { serveActivationPage } from "./activation-http.js";
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db.js";
@@ -182,8 +182,7 @@ async function startOidc(request: IncomingMessage, response: ServerResponse): Pr
 	if (confirmation.authorizationId !== pending.id || confirmation.publicKeyDigest !== publicKeyDigest) throw new HttpError("activation_confirmation_required", "activation confirmation does not match this device key");
   const transaction = oidcClient.createTransaction(code, mode);
   const destination = await oidcClient.authorizationUrl(transaction);
-  response.writeHead(303, { location: destination.href, "set-cookie": oidcTransactionCookie(oidcKey, transaction), "cache-control": "no-store", "referrer-policy": "no-referrer" });
-  response.end();
+  sendHtml(response, 200, renderOidcHandoff(destination.href), false, oidcTransactionCookie(oidcKey, transaction));
 }
 
 async function approveOidcIdentity(transaction: { userCode: string; mode: AuthMode }, identity: OidcIdentity): Promise<void> {

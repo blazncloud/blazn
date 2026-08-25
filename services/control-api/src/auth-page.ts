@@ -61,9 +61,15 @@ export function renderAuthResult(title: string, message: string, ok: boolean): s
   return document(title, `<main class="panel"><div class="card success">${flame()}<h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p>${ok ? "<p>You may close this window and return to the CLI.</p>" : "<p>Return to the activation page and try again.</p>"}</div></main>`);
 }
 
-export function sendHtml(response: ServerResponse, status: number, html: string, clearCookie = false): void {
+export function renderOidcHandoff(destination: string): string {
+  if (new URL(destination).protocol !== "https:") throw new Error("OIDC handoff destination must use HTTPS");
+  return document("Continue to Blazn identity", `<main class="panel"><div class="card success">${flame()}<h1>Continue to account setup</h1><p>Your device request is confirmed. Continue to Blazn's self-hosted identity service to sign in or create your account.</p><a class="primary" href="${escapeHtml(destination)}">Continue to identity service</a><p class="terms">The identity service will return you here after verification.</p></div></main>`);
+}
+
+export function sendHtml(response: ServerResponse, status: number, html: string, clearCookie = false, setCookie?: string): void {
   const headers: Record<string, string> = { "content-type": "text/html; charset=utf-8", "content-length": String(Buffer.byteLength(html)), "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", "x-content-type-options": "nosniff", "x-frame-options": "DENY", "referrer-policy": "no-referrer", "permissions-policy": "camera=(), microphone=(), geolocation=()" };
   if (clearCookie) headers["set-cookie"] = "blazn_oidc=; Path=/v1/auth/oidc/callback; Max-Age=0; HttpOnly; Secure; SameSite=Lax";
+  else if (setCookie) headers["set-cookie"] = setCookie;
   response.writeHead(status, headers);
   response.end(html);
 }
