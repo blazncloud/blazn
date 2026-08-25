@@ -43,9 +43,15 @@ GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
 GRANT USAGE ON SCHEMA public TO blazn_runtime, blazn_bootstrap;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 SQL
-for migration in 001_auth.sql 002_auth_role_grants.sql 003_workspaces.sql; do
+for migration in 001_auth.sql 002_auth_role_grants.sql; do
   docker exec -i "$container" env PGPASSWORD=1111111111111111111111111111111111111111111111111111111111111111 psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_migration -d blazn <"$REPO_ROOT/services/control-api/migrations/$migration" >/dev/null
 done
+docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn <"$NODE_ROOT/sql/restore-runtime-function-grants.sql" >/dev/null
+[ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select to_regprocedure('public.workspace_json_contains_secret_key(jsonb)') is null")" = t ] || { printf 'legacy role preparation unexpectedly created the workspace helper\n' >&2; exit 1; }
+docker exec -i "$container" env PGPASSWORD=1111111111111111111111111111111111111111111111111111111111111111 psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_migration -d blazn <"$REPO_ROOT/services/control-api/migrations/003_workspaces.sql" >/dev/null
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'REVOKE EXECUTE ON FUNCTION public.workspace_json_contains_secret_key(jsonb) FROM blazn_runtime' >/dev/null
+docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn <"$NODE_ROOT/sql/restore-runtime-function-grants.sql" >/dev/null
+[ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_function_privilege('blazn_runtime','public.workspace_json_contains_secret_key(jsonb)','EXECUTE')")" = t ] || { printf 'role preparation did not restore the existing workspace helper grant\n' >&2; exit 1; }
 if docker exec -i "$container" psql -X -1 -v ON_ERROR_STOP=1 -U blazn_admin -d blazn <"$REPO_ROOT/services/control-api/migrations/004_nodes.sql" >"$tmp/out" 2>"$tmp/err"; then
   printf 'migration 004 unexpectedly passed without the broker role\n' >&2
   exit 1
@@ -74,7 +80,6 @@ REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM blazn_node_broker;
 REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM blazn_node_broker;
 REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM blazn_node_broker;
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION workspace_json_contains_secret_key(jsonb) TO blazn_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON TABLES FROM blazn_node_broker;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE ALL ON SEQUENCES FROM blazn_node_broker;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM blazn_node_broker;
@@ -83,6 +88,7 @@ GRANT CONNECT ON DATABASE blazn TO blazn_node_broker;
 GRANT USAGE ON SCHEMA public TO blazn_node_broker;
 COMMIT;
 SQL
+  docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn <"$NODE_ROOT/sql/restore-runtime-function-grants.sql" >/dev/null
 }
 setup_broker
 printf 'postgresql://blazn_node_broker:4444444444444444444444444444444444444444444444444444444444444444@postgres:5432/blazn\n' >"$tmp/database-url"
