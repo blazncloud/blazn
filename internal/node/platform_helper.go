@@ -1631,10 +1631,13 @@ func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.N
 		return nil, errors.New("capacity release request resourceVersion differs from root authority")
 	}
 	if state.ResourceVersion != authorized.ResourceVersion {
-		if !released {
-			return nil, errors.New("capacity release resourceVersion differs from its precondition")
+		if released {
+			return e.updateRootKubernetesBinding(plan, JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion})
 		}
-		return e.updateRootKubernetesBinding(plan, JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion})
+		// Kubernetes may advance its opaque resourceVersion for unrelated benign
+		// metadata. The grant remains bound to the original root authority; only
+		// the exact same UID in the complete quarantine state may be reconciled,
+		// and the patch below still tests the live UID and resourceVersion.
 	}
 	if released {
 		return e.updateRootKubernetesBinding(plan, JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion})

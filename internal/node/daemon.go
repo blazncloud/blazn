@@ -47,6 +47,11 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if d.api == nil || d.state == nil || d.identities == nil || d.capabilities == nil {
 		return HeartbeatResult{}, errors.New("node daemon dependencies are incomplete")
 	}
+	release, err := d.state.AcquireRuntimeLock()
+	if err != nil {
+		return HeartbeatResult{}, fmt.Errorf("acquire node runtime transition lock: %w", err)
+	}
+	defer release()
 	state, err := d.state.LoadRuntime()
 	if err != nil {
 		return HeartbeatResult{}, err

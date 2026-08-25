@@ -63,6 +63,11 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if install && s.installer == nil {
 		return EnrollResult{}, errors.New("privileged installer is unavailable")
 	}
+	release, err := s.state.AcquireRuntimeLock()
+	if err != nil {
+		return EnrollResult{}, fmt.Errorf("acquire node runtime transition lock: %w", err)
+	}
+	defer release()
 	if install {
 		if recovered, ok, err := s.recoverActivatedCapacity(ctx, options); ok || err != nil {
 			return recovered, err

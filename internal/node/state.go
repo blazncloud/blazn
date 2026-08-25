@@ -68,6 +68,7 @@ type UninstallCleanupJournal struct {
 
 type StateStore interface {
 	AcquireInstallLock() (func(), error)
+	AcquireRuntimeLock() (func(), error)
 	Pin(EnrollmentPin) error
 	LoadPin() (EnrollmentPin, error)
 	SaveRuntime(RuntimeState) error
@@ -87,6 +88,12 @@ func (s FileStateStore) AcquireInstallLock() (func(), error) {
 		return nil, err
 	}
 	return lockInstallFile(filepath.Join(s.Root, ".install.lock"))
+}
+func (s FileStateStore) AcquireRuntimeLock() (func(), error) {
+	if err := ensurePrivateDirectory(s.Root, currentUID()); err != nil {
+		return nil, err
+	}
+	return lockInstallFile(filepath.Join(s.Root, ".runtime.lock"))
 }
 
 func (s FileStateStore) Pin(v EnrollmentPin) error {

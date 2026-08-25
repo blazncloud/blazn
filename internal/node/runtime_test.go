@@ -974,6 +974,43 @@ func TestDaemonReplaysPendingHeartbeatAfterAcceptedStateSaveCrash(t *testing.T) 
 	}
 }
 
+func TestSeparateDaemonsCannotOverwriteAcceptedBindingWithStalePendingHeartbeat(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	firstCapability := testCapability()
+	origin := firstCapability.Worker.KubernetesBinding
+	origin.ResourceVersion = "opaque-origin"
+	firstCapability.Worker.KubernetesBinding.ResourceVersion = "opaque-first"
+	staleCapability := firstCapability
+	staleCapability.Worker.KubernetesBinding.ResourceVersion = "opaque-stale"
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &origin}}
+	api := &mockAPI{heartbeatEntered: make(chan struct{}), heartbeatRelease: make(chan struct{})}
+	when := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	first := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: firstCapability})
+	first.now = func() time.Time { return when }
+	second := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: staleCapability})
+	second.now = func() time.Time { return when.Add(time.Second) }
+	result := make(chan error, 1)
+	go func() {
+		_, err := first.Heartbeat(context.Background())
+		result <- err
+	}()
+	<-api.heartbeatEntered
+	if state.runtime.PendingHeartbeat == nil || state.runtime.PendingHeartbeat.Capability.Worker.KubernetesBinding.ResourceVersion != "opaque-first" {
+		t.Fatalf("first pending heartbeat was not journaled: %#v", state.runtime.PendingHeartbeat)
+	}
+	if _, err := second.Heartbeat(context.Background()); err == nil || !strings.Contains(err.Error(), "runtime transition lock") {
+		t.Fatalf("overlapping daemon was not rejected: %v", err)
+	}
+	if state.runtime.PendingHeartbeat == nil || state.runtime.PendingHeartbeat.Capability.Worker.KubernetesBinding.ResourceVersion != "opaque-first" || api.heartbeatCalls != 1 {
+		t.Fatalf("stale caller overwrote pending transition: pending=%#v calls=%d", state.runtime.PendingHeartbeat, api.heartbeatCalls)
+	}
+	close(api.heartbeatRelease)
+	if err := <-result; err != nil || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-first" || api.heartbeatCalls != 1 {
+		t.Fatalf("accepted binding was not preserved: binding=%#v pending=%#v calls=%d err=%v", state.runtime.KubernetesBinding, state.runtime.PendingHeartbeat, api.heartbeatCalls, err)
+	}
+}
+
 func TestEnrollmentPinsSignerBeforeRejectingUntrustedPlan(t *testing.T) {
 	identity := testIdentity(t)
 	signer := testIdentity(t)
@@ -1014,6 +1051,9 @@ type mockAPI struct {
 	activationErr            error
 	heartbeatResponseLosses  int
 	heartbeatCalls           int
+	heartbeatEntered         chan struct{}
+	heartbeatRelease         chan struct{}
+	heartbeatEnteredOnce     sync.Once
 	activationResponseLosses int
 	createCalls              int
 	exchangeCalls            int
@@ -1034,6 +1074,12 @@ func (m *mockAPI) SubmitNodeHeartbeat(_ context.Context, proof string, heartbeat
 	m.heartbeatCalls++
 	m.lastProof = proof
 	m.lastHeartbeat = heartbeat
+	if m.heartbeatEntered != nil {
+		m.heartbeatEnteredOnce.Do(func() { close(m.heartbeatEntered) })
+	}
+	if m.heartbeatRelease != nil {
+		<-m.heartbeatRelease
+	}
 	if m.heartbeatResponseLosses > 0 {
 		m.heartbeatResponseLosses--
 		return errors.New("injected heartbeat response loss")
@@ -1062,12 +1108,13 @@ func (m *mockAPI) ActivateNode(_ context.Context, proof, key string, request cli
 }
 
 type memoryState struct {
-	lock    sync.Mutex
-	pin     EnrollmentPin
-	runtime RuntimeState
-	wal     InstallWAL
-	hasWAL  bool
-	receipt client.NodeInstallReceipt
+	lock        sync.Mutex
+	runtimeLock sync.Mutex
+	pin         EnrollmentPin
+	runtime     RuntimeState
+	wal         InstallWAL
+	hasWAL      bool
+	receipt     client.NodeInstallReceipt
 }
 
 type faultState struct {
@@ -1121,6 +1168,12 @@ func (m *memoryState) AcquireInstallLock() (func(), error) {
 	}
 	return m.lock.Unlock, nil
 }
+func (m *memoryState) AcquireRuntimeLock() (func(), error) {
+	if !m.runtimeLock.TryLock() {
+		return nil, errors.New("runtime locked")
+	}
+	return m.runtimeLock.Unlock, nil
+}
 
 func (m *memoryState) Pin(v EnrollmentPin) error {
 	if m.pin.EnrollmentID != "" && !samePin(m.pin, v) {
@@ -1172,9 +1225,13 @@ type mockPlatform struct {
 }
 type bindingMockPlatform struct {
 	*mockPlatform
-	binding      *client.KubernetesBinding
-	releaseCount int
-	releaseErr   error
+	binding                 *client.KubernetesBinding
+	releaseCount            int
+	releaseErr              error
+	recoveryDrift           string
+	releasedResourceVersion string
+	recoveryInput           *client.KubernetesBinding
+	recoveryGrantBinding    *client.KubernetesBinding
 }
 type checkpointPlatform struct {
 	*mockPlatform
@@ -1245,13 +1302,23 @@ func (p *bindingMockPlatform) ReleaseNodeCapacity(context.Context, client.NodeIn
 		return nil, p.releaseErr
 	}
 	value := *p.binding
-	value.ResourceVersion = "8"
+	value.ResourceVersion = p.releasedResourceVersion
+	if value.ResourceVersion == "" {
+		value.ResourceVersion = "8"
+	}
 	p.binding = &value
 	return &value, nil
 }
 
-func (p *bindingMockPlatform) RecoverActivatedCapacity(_ context.Context, _ client.NodeInstallPlan, _ client.NodeInstallReceipt, _ client.NodeActivationGrant, binding client.KubernetesBinding) (*client.KubernetesBinding, error) {
-	p.binding = &binding
+func (p *bindingMockPlatform) RecoverActivatedCapacity(_ context.Context, _ client.NodeInstallPlan, _ client.NodeInstallReceipt, grant client.NodeActivationGrant, binding client.KubernetesBinding) (*client.KubernetesBinding, error) {
+	p.recoveryInput = &binding
+	grantBinding := grant.KubernetesBinding
+	p.recoveryGrantBinding = &grantBinding
+	current := binding
+	if p.recoveryDrift != "" {
+		current.ResourceVersion = p.recoveryDrift
+	}
+	p.binding = &current
 	return p.ReleaseNodeCapacity(context.Background(), client.NodeInstallPlan{}, client.NodeInstallReceipt{}, client.NodeActivationGrant{})
 }
 
@@ -1331,7 +1398,7 @@ func TestInstallDoesNotReleaseCapacityWhenControlPlaneActivationFails(t *testing
 
 func TestExpiredActivationRecoveryReplaysCommittedActivationAfterResponseLoss(t *testing.T) {
 	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
-	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding, recoveryDrift: "opaque-drift", releasedResourceVersion: "opaque-released"}
 	state := &memoryState{}
 	api := activatedMockAPI(authorization, planSigner)
 	api.activationResponseLosses = 1
@@ -1343,7 +1410,7 @@ func TestExpiredActivationRecoveryReplaysCommittedActivationAfterResponseLoss(t 
 	}
 	service.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	result, err := service.Enroll(context.Background(), options, true)
-	if err != nil || result.State.ActivationGrant == nil || result.State.KubernetesBinding == nil || result.State.KubernetesBinding.ResourceVersion != "8" || platform.releaseCount != 1 || platform.finalized != 1 || api.createCalls != 1 || api.exchangeCalls != 1 {
+	if err != nil || result.State.ActivationGrant == nil || result.State.KubernetesBinding == nil || result.State.KubernetesBinding.ResourceVersion != "opaque-released" || platform.recoveryInput == nil || platform.recoveryInput.ResourceVersion != "7" || platform.recoveryGrantBinding == nil || platform.recoveryGrantBinding.ResourceVersion != "7" || platform.releaseCount != 1 || platform.finalized != 1 || api.createCalls != 1 || api.exchangeCalls != 1 {
 		t.Fatalf("result=%#v release=%d finalized=%d create=%d exchange=%d err=%v", result, platform.releaseCount, platform.finalized, api.createCalls, api.exchangeCalls, err)
 	}
 }

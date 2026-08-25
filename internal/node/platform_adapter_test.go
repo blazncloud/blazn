@@ -1141,8 +1141,8 @@ func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
 	if err := writePrivateCreate(authorityPath, encodedAuthority); err != nil {
 		t.Fatal(err)
 	}
-	initial := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"7","labels":{"blazn.dev/pool":"default"}},"spec":{"unschedulable":true,"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"},{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
-	released := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"8","labels":{"blazn.dev/pool":"default","blazn.dev/sandbox-eligible":"true"}},"spec":{"unschedulable":false,"taints":[{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+	initial := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-drift","labels":{"blazn.dev/pool":"default"}},"spec":{"unschedulable":true,"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"},{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+	released := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-released","labels":{"blazn.dev/pool":"default","blazn.dev/sandbox-eligible":"true"}},"spec":{"unschedulable":false,"taints":[{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
 	getCalls, patchCalls := 0, 0
 	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
 		switch args[0] {
@@ -1159,7 +1159,7 @@ func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
 				return nil, errors.New("invalid patch arguments")
 			}
 			patchJSON := args[5]
-			for _, required := range []string{`"op":"test","path":"/metadata/uid","value":"uid-1"`, `"op":"test","path":"/metadata/resourceVersion","value":"7"`, `"path":"/metadata/labels/blazn.dev~1sandbox-eligible","value":"true"`, `"path":"/spec/unschedulable","value":true`, `"path":"/spec/unschedulable","value":false`} {
+			for _, required := range []string{`"op":"test","path":"/metadata/uid","value":"uid-1"`, `"op":"test","path":"/metadata/resourceVersion","value":"opaque-drift"`, `"path":"/metadata/labels/blazn.dev~1sandbox-eligible","value":"true"`, `"path":"/spec/unschedulable","value":true`, `"path":"/spec/unschedulable","value":false`} {
 				if !strings.Contains(patchJSON, required) {
 					return nil, fmt.Errorf("patch lacks %s", required)
 				}
@@ -1172,20 +1172,20 @@ func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
 	engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: authorityPath, RootStateRoot: root}
 	join := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
 	binding, err := engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
-	if err != nil || binding.ResourceVersion != "8" || patchCalls != 1 || getCalls != 2 {
+	if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != 1 || getCalls != 2 {
 		t.Fatalf("binding=%#v patch=%d get=%d err=%v", binding, patchCalls, getCalls, err)
 	}
 	join.ExpectedResourceVersion = "7"
 	binding, err = engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
-	if err != nil || binding.ResourceVersion != "8" || patchCalls != 1 {
+	if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != 1 {
 		t.Fatalf("idempotent binding=%#v patch=%d err=%v", binding, patchCalls, err)
 	}
-	join.ExpectedResourceVersion = "8"
+	join.ExpectedResourceVersion = "opaque-released"
 	if err := engine.verifyActivatedCapacityState(context.Background(), plan, join); err != nil {
 		t.Fatalf("released capacity state did not verify for retry: %v", err)
 	}
 	persisted, err := loadRootAuthority(authorityPath)
-	if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "8" {
+	if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "opaque-released" {
 		t.Fatalf("persisted=%#v err=%v", persisted.KubernetesBinding, err)
 	}
 }
