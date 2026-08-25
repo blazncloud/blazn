@@ -15,9 +15,10 @@ node = json.loads((root / "node-broker-receipt.schema.json").read_text())
 plan = json.loads((root / "node-plan-material-receipt.schema.json").read_text())
 template = json.loads((root / "node-install-plan-template.schema.json").read_text())
 upgrade = json.loads((root / "node-broker-upgrade-receipt.schema.json").read_text())
+retry = json.loads((root / "node-broker-upgrade-retry.schema.json").read_text())
 ownership = json.loads((m2 / "ownership-receipt.schema.json").read_text())
 metadata = json.loads((m2 / "backup-metadata.schema.json").read_text())
-for schema in (node, plan, template, upgrade, ownership, metadata):
+for schema in (node, plan, template, upgrade, retry, ownership, metadata):
     jsonschema.Draft202012Validator.check_schema(schema)
 
 digest = "sha256:" + "a" * 64
@@ -40,7 +41,7 @@ plan_value = {
 }
 store = {node["$id"]: node, plan["$id"]: plan}
 resolver = jsonschema.RefResolver.from_schema(upgrade, store=store)
-jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
+upgrade_value = {
     "schemaVersion": "blazn.dev/node-broker-upgrade/v2",
     "owner": "blazn-poc",
     "host": "test",
@@ -55,6 +56,31 @@ jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
     },
     "nodeBroker": node_value,
     "nodePlan": plan_value,
+}
+jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate(upgrade_value)
+retry_value = {
+    "schemaVersion": "blazn.dev/node-broker-upgrade-retry/v1",
+    "owner": "blazn-poc",
+    "host": "test",
+    "correlationId": "retry-1",
+    "phase": "receipt-retained",
+    "startedAt": "2026-08-24T08:00:00Z",
+    "updatedAt": "2026-08-24T08:01:00Z",
+    "previousReceipt": {"sourcePath": "/receipt", "retainedPath": "/history/receipt.json", "digest": digest},
+    "previousInputs": {"sourcePath": "/inputs", "retainedPath": "/history/inputs"},
+    "rollbackEvidencePath": "/history/rollback",
+    "rollbackEvidenceDigest": digest,
+}
+jsonschema.Draft202012Validator(retry).validate(retry_value)
+jsonschema.Draft202012Validator(upgrade, resolver=resolver).validate({
+    **upgrade_value,
+    "retry": {
+        "correlationId": "retry-1",
+        "previousReceipt": {"path": "/history/receipt.json", "digest": digest},
+        "previousInputsPath": "/history/inputs",
+        "rollbackEvidencePath": "/history/rollback",
+        "rollbackEvidenceDigest": digest,
+    },
 })
 metadata_validator = jsonschema.Draft202012Validator(metadata)
 metadata_value = {

@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/poc/node-broker-upgrade-retry-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "owner", "host", "correlationId", "phase", "startedAt", "previousReceipt", "previousInputs", "rollbackEvidencePath", "rollbackEvidenceDigest"],
+  "properties": {
+    "schemaVersion": { "const": "blazn.dev/node-broker-upgrade-retry/v1" },
+    "owner": { "const": "blazn-poc" },
+    "host": { "type": "string", "minLength": 1 },
+    "correlationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+    "phase": { "enum": ["prepared", "inputs-retained", "receipt-retained"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "previousReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcePath", "retainedPath", "digest"],
+      "properties": {
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "retainedPath": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "previousInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcePath", "retainedPath"],
+      "properties": {
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "retainedPath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rollbackEvidencePath": { "type": "string", "minLength": 1 },
+    "rollbackEvidenceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

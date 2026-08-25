@@ -84,6 +84,17 @@ run_upgrade() {
   sql_fail=${3:-0}
   defer_config=${4:-0}
   postgres_unavailable=${5:-0}
+  retry_correlation=${6:-}
+  lock_correlation=${7:-}
+  lock_purpose=${8:-}
+  if [ -n "$retry_correlation" ]; then
+    [ -n "$lock_correlation" ] || lock_correlation=$retry_correlation
+    [ -n "$lock_purpose" ] || lock_purpose=node-prereqs-retry
+  else
+    [ -n "$lock_correlation" ] || lock_correlation=upgrade
+    [ -n "$lock_purpose" ] || lock_purpose=node-prereqs
+  fi
+  if [ -n "$retry_correlation" ]; then set -- --retry-after-rollback "$retry_correlation"; else set --; fi
   sudo env \
     PATH="$root/bin:$PATH" \
     FAKE_ROLE_STATE="$root/role-ready" \
@@ -91,6 +102,8 @@ run_upgrade() {
     FAKE_SQL_FAIL="$sql_fail" \
     FAKE_POSTGRES_UNAVAILABLE="$postgres_unavailable" \
     BLAZN_FENCING_TOKEN=11 \
+    BLAZN_CORRELATION_ID="$lock_correlation" \
+    BLAZN_MUTATION_PURPOSE="$lock_purpose" \
     BLAZN_NODE_INFRA_TEST_MODE=1 \
     BLAZN_NODE_INFRA_TEST_FAIL_AFTER="$fail_after" \
     BLAZN_NODE_UPGRADE_DEFER_CONFIG="$defer_config" \
@@ -106,8 +119,9 @@ run_upgrade() {
     BLAZN_RECEIPT_PATH="$root/ownership/control-plane.json" \
     BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$root/ownership/node-broker-upgrade.json" \
     BLAZN_NODE_BROKER_UPGRADE_BACKUP_ROOT="$root/ownership/upgrade-inputs" \
+    BLAZN_NODE_BROKER_UPGRADE_RETRY_ROOT="$root/ownership/upgrade-retries" \
     BLAZN_CONTROL_API_BUILD_RECEIPT="$root/ownership/no-build-receipt" \
-    "$UPGRADE"
+    "$UPGRADE" "$@"
 }
 
 sql_root=$(fixture sql-transaction)
@@ -208,6 +222,77 @@ grep -F 'prior source restore is required' "$source_root/source-bad.err" >/dev/n
 sudo jq -e '.phase=="source-restore-required"' "$source_root/ownership/node-broker-upgrade.json" >/dev/null
 run_rollback "$source_root" >"$source_root/source-good.out"
 sudo jq -e '.phase=="rolled-back"' "$source_root/ownership/node-broker-upgrade.json" >/dev/null
+
+for retry_fault in retry-inputs-retained retry-receipt-retained; do
+  retry_root=$(fixture "$retry_fault")
+  run_upgrade "$retry_root" >"$retry_root/upgrade.out"
+  run_rollback "$retry_root" >"$retry_root/rollback.out"
+  old_receipt_digest=$(sudo sha256sum "$retry_root/ownership/node-broker-upgrade.json" | awk '{print $1}')
+  old_main_digest=$(sudo sha256sum "$retry_root/ownership/upgrade-inputs/control-plane.json" | awk '{print $1}')
+  old_env_digest=$(sudo sha256sum "$retry_root/ownership/upgrade-inputs/control-plane.env" | awk '{print $1}')
+  if run_upgrade "$retry_root" >"$retry_root/unapproved-retry.out" 2>"$retry_root/unapproved-retry.err"; then printf 'rolled-back upgrade retried without explicit approval\n' >&2; exit 1; fi
+  grep -F -- '--retry-after-rollback CORRELATION_ID' "$retry_root/unapproved-retry.err" >/dev/null
+  sudo test ! -e "$retry_root/etc/node-broker"
+  sudo test ! -e "$retry_root/etc/node-plan"
+  [ "$old_receipt_digest" = "$(sudo sha256sum "$retry_root/ownership/node-broker-upgrade.json" | awk '{print $1}')" ] || { printf 'unapproved retry changed the rolled-back receipt\n' >&2; exit 1; }
+  for invalid_correlation in . .. -retry _retry; do
+    if run_upgrade "$retry_root" '' 0 0 0 "$invalid_correlation" >"$retry_root/invalid-correlation.out" 2>"$retry_root/invalid-correlation.err"; then printf 'retry accepted a dot-segment correlation: %s\n' "$invalid_correlation" >&2; exit 1; fi
+    grep -F 'post-rollback retry correlation ID is invalid' "$retry_root/invalid-correlation.err" >/dev/null
+  done
+  if run_upgrade "$retry_root" '' 0 0 0 retry-1 different-lock-correlation >"$retry_root/mismatched-correlation.out" 2>"$retry_root/mismatched-correlation.err"; then printf 'retry accepted a mismatched lock correlation\n' >&2; exit 1; fi
+  grep -F 'retry correlation differs from the control-plane lock' "$retry_root/mismatched-correlation.err" >/dev/null
+  if run_upgrade "$retry_root" '' 0 0 0 retry-1 retry-1 wrong-purpose >"$retry_root/mismatched-purpose.out" 2>"$retry_root/mismatched-purpose.err"; then printf 'retry accepted a mismatched lock purpose\n' >&2; exit 1; fi
+  grep -F 'requires the node-prereqs-retry control-plane lock purpose' "$retry_root/mismatched-purpose.err" >/dev/null
+  sudo test ! -e "$retry_root/ownership/upgrade-retries"
+  if run_upgrade "$retry_root" "$retry_fault" 0 0 0 retry-1 >"$retry_root/retry-first.out" 2>"$retry_root/retry-first.err"; then printf 'retry retention fault unexpectedly completed: %s\n' "$retry_fault" >&2; exit 1; fi
+  grep -F "injected test fault after $retry_fault" "$retry_root/retry-first.err" >/dev/null
+  sudo jq -e --arg phase "${retry_fault#retry-}" '.schemaVersion=="blazn.dev/node-broker-upgrade-retry/v1" and .correlationId=="retry-1" and .phase==$phase' "$retry_root/ownership/upgrade-retries/retry-1.json" >/dev/null
+  sudo test ! -e "$retry_root/etc/node-broker"
+  sudo test ! -e "$retry_root/etc/node-plan"
+  if run_upgrade "$retry_root" >"$retry_root/unapproved-resume.out" 2>"$retry_root/unapproved-resume.err"; then printf 'retry retention resumed without its correlation: %s\n' "$retry_fault" >&2; exit 1; fi
+  sudo test ! -e "$retry_root/etc/node-broker"
+  sudo test ! -e "$retry_root/etc/node-plan"
+  run_upgrade "$retry_root" '' 0 0 0 retry-1 >"$retry_root/retry-resumed.out"
+  sudo jq -e '.phase=="complete" and .retry.correlationId=="retry-1"' "$retry_root/ownership/node-broker-upgrade.json" >/dev/null
+  sudo jq -e --arg digest "sha256:$old_receipt_digest" --arg root "$retry_root/ownership/upgrade-retries/retry-1" '.retry.previousReceipt.path==($root+"/receipt.json") and .retry.previousReceipt.digest==$digest and .retry.previousInputsPath==($root+"/inputs") and (.retry.rollbackEvidencePath|endswith("/node-broker-rollback-rollback"))' "$retry_root/ownership/node-broker-upgrade.json" >/dev/null
+  [ "$old_receipt_digest" = "$(sudo sha256sum "$retry_root/ownership/upgrade-retries/retry-1/receipt.json" | awk '{print $1}')" ] || { printf 'retained rolled-back receipt digest changed\n' >&2; exit 1; }
+  [ "$old_main_digest" = "$(sudo sha256sum "$retry_root/ownership/upgrade-retries/retry-1/inputs/control-plane.json" | awk '{print $1}')" ] || { printf 'retained main receipt backup digest changed\n' >&2; exit 1; }
+  [ "$old_env_digest" = "$(sudo sha256sum "$retry_root/ownership/upgrade-retries/retry-1/inputs/control-plane.env" | awk '{print $1}')" ] || { printf 'retained environment backup digest changed\n' >&2; exit 1; }
+  sudo test -d "$retry_root/ownership/node-broker-rollback-rollback"
+  sudo test -d "$retry_root/ownership/upgrade-inputs"
+done
+
+boolean_type_root=$(fixture retry-build-presence-type)
+run_upgrade "$boolean_type_root" >"$boolean_type_root/upgrade.out"
+run_rollback "$boolean_type_root" >"$boolean_type_root/rollback.out"
+for string_boolean in false true; do
+  sudo jq --arg value "$string_boolean" '.inputs.buildReceipt.present=$value' "$boolean_type_root/ownership/node-broker-upgrade.json" | sudo tee "$boolean_type_root/ownership/node-broker-upgrade.json.tmp" >/dev/null
+  sudo chmod 0600 "$boolean_type_root/ownership/node-broker-upgrade.json.tmp"
+  sudo mv -- "$boolean_type_root/ownership/node-broker-upgrade.json.tmp" "$boolean_type_root/ownership/node-broker-upgrade.json"
+  if run_upgrade "$boolean_type_root" '' 0 0 0 "retry-string-$string_boolean" >"$boolean_type_root/string-$string_boolean.out" 2>"$boolean_type_root/string-$string_boolean.err"; then printf 'retry accepted a string build-receipt presence: %s\n' "$string_boolean" >&2; exit 1; fi
+  grep -F 'rolled-back build receipt presence must be boolean' "$boolean_type_root/string-$string_boolean.err" >/dev/null
+  sudo test ! -e "$boolean_type_root/ownership/upgrade-retries/retry-string-$string_boolean.json"
+done
+
+tampered_retry_root=$(fixture retry-retained-input-tamper)
+run_upgrade "$tampered_retry_root" >"$tampered_retry_root/upgrade.out"
+run_rollback "$tampered_retry_root" >"$tampered_retry_root/rollback.out"
+if run_upgrade "$tampered_retry_root" retry-inputs-retained 0 0 0 retry-tamper >"$tampered_retry_root/retain.out" 2>"$tampered_retry_root/retain.err"; then printf 'retry input-retention fault unexpectedly completed\n' >&2; exit 1; fi
+sudo sh -c 'printf "tampered\n" >>"$1"' sh "$tampered_retry_root/ownership/upgrade-retries/retry-tamper/inputs/control-plane.env"
+if run_upgrade "$tampered_retry_root" '' 0 0 0 retry-tamper >"$tampered_retry_root/tamper.out" 2>"$tampered_retry_root/tamper.err"; then printf 'retry accepted a changed retained input backup\n' >&2; exit 1; fi
+grep -F 'retained rolled-back input backup changed: environment' "$tampered_retry_root/tamper.err" >/dev/null
+sudo test ! -e "$tampered_retry_root/etc/node-broker"
+sudo test ! -e "$tampered_retry_root/etc/node-plan"
+
+tampered_evidence_root=$(fixture retry-rollback-evidence-tamper)
+run_upgrade "$tampered_evidence_root" >"$tampered_evidence_root/upgrade.out"
+run_rollback "$tampered_evidence_root" >"$tampered_evidence_root/rollback.out"
+if run_upgrade "$tampered_evidence_root" retry-inputs-retained 0 0 0 retry-evidence >"$tampered_evidence_root/retain.out" 2>"$tampered_evidence_root/retain.err"; then printf 'retry evidence-retention fault unexpectedly completed\n' >&2; exit 1; fi
+sudo sh -c 'printf "substituted\n" >"$1"' sh "$tampered_evidence_root/ownership/node-broker-rollback-rollback/substituted-evidence"
+if run_upgrade "$tampered_evidence_root" '' 0 0 0 retry-evidence >"$tampered_evidence_root/tamper.out" 2>"$tampered_evidence_root/tamper.err"; then printf 'retry accepted changed rollback evidence\n' >&2; exit 1; fi
+grep -F 'rollback evidence changed after retry approval' "$tampered_evidence_root/tamper.err" >/dev/null
+sudo test ! -e "$tampered_evidence_root/etc/node-broker"
+sudo test ! -e "$tampered_evidence_root/etc/node-plan"
 
 trap - EXIT HUP INT TERM
 cleanup

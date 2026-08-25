@@ -94,6 +94,35 @@ an already-created broker role, retains exact keys, restores inputs
 idempotently, and refuses completion until the active prior source and
 configuration digests match.
 
+A verified `rolled-back` receipt is terminal and an ordinary upgrade invocation
+must continue to stop. To begin a later production attempt, first inspect the
+receipt's `rollback.retainedPath`, confirm the restored main/environment/build
+inputs and retained evidence are the expected prior release, and choose a new
+non-secret correlation ID for this retry. Under the same control-plane lock,
+invoke the staged candidate explicitly:
+
+```sh
+retry_id=<new-correlation-id>
+sudo "$candidate/infra/milestone-2/scripts/with-control-plane-env.sh" \
+  "$candidate/infra/milestone-2/scripts/with-control-plane-lock.sh" \
+  node-prereqs-retry "$retry_id" auto \
+  env BLAZN_NODE_UPGRADE_DEFER_CONFIG=1 \
+  "$candidate/infra/node/scripts/upgrade-control-plane.sh" \
+  --retry-after-rollback "$retry_id"
+```
+
+The explicit transition validates the terminal rollback and restored input
+digests before creating any new secret or plan material. It moves, but never
+deletes, the prior receipt and its input backups into the root-only
+`node-broker-upgrade-retries/<retry_id>/` archive. A separate retry journal
+records each fsynced retention phase, the exact prior receipt digest, and the
+rollback evidence path and inventory digest; the new upgrade receipt links
+those records. The retry ID must exactly match the lock correlation and the lock
+purpose must remain `node-prereqs-retry`. If the process stops during
+retention, rerun the exact command with the same retry ID.
+If the new attempt is itself rolled back, inspect its evidence and use a new
+retry ID. Never remove or rename a retry archive to make an attempt proceed.
+
 **Hold point B0:** the Node upgrade receipt is exactly `environment-bound`;
 broker authentication and its exact privilege matrix, key inventory, and
 environment binding match. The old main/build receipts remain byte-identical.
