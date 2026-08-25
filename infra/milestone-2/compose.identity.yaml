@@ -16,6 +16,6 @@ services:
 
 secrets:
   zitadel_client_secret:
-    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/zitadel-client-secret
+    file: /etc/blazn/control-plane/identity-secrets/zitadel-client-secret
   oidc_cookie_key:
-    file: ${BLAZN_IDENTITY_SECRETS_ROOT:?set BLAZN_IDENTITY_SECRETS_ROOT}/oidc-cookie-key
+    file: /etc/blazn/control-plane/identity-secrets/oidc-cookie-key

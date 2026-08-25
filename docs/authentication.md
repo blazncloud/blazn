@@ -98,6 +98,13 @@ encryption key as root-owned files outside the repository:
 /etc/blazn/identity/secrets/oidc-cookie-key
 ```
 
+The control-plane start path atomically publishes root-owned, mode `0444`
+runtime copies under `/etc/blazn/control-plane/identity-secrets`, whose parent
+directory remains root-only. Compose bind-mounts only those copies into the
+unprivileged API container. Preflight verifies that each published copy exactly
+matches its mode `0600` source, so a restore or rotation cannot silently start
+with stale identity credentials.
+
 Configure the control API with:
 
 ```text
