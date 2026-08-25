@@ -4,7 +4,7 @@ set -eu
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 postgres_image=postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
 node_image=node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90
-admin_password=node-ci-admin
+admin_password=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 suffix=$$
 network=blazn-node-pg-$suffix
 postgres=blazn-node-pg-$suffix
@@ -19,6 +19,10 @@ case "$network:$postgres:$node_runner" in
 esac
 
 cleanup() {
+	if [ -n "$secret_dir" ] && [ -d "$secret_dir" ]; then
+		find "$secret_dir" -type f -delete
+		find "$secret_dir" -depth -type d -empty -delete
+	fi
 	if [ "$created_node_runner" = true ]; then
 		docker rm -f "$node_runner" >/dev/null 2>&1 || true
 	fi
@@ -32,6 +36,7 @@ cleanup() {
 created_network=false
 created_postgres=false
 created_node_runner=false
+secret_dir=
 trap cleanup EXIT HUP INT TERM
 
 if docker network inspect "$network" >/dev/null 2>&1 || docker container inspect "$postgres" >/dev/null 2>&1 || docker container inspect "$node_runner" >/dev/null 2>&1; then
@@ -67,19 +72,143 @@ psql_admin() {
 }
 
 psql_admin <<'SQL'
+DO $block$
+DECLARE database_row record;
+BEGIN
+  FOR database_row IN SELECT datname FROM pg_database WHERE datallowconn LOOP
+    EXECUTE format('REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC',database_row.datname);
+  END LOOP;
+END
+$block$;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+SQL
+
+secret_dir=$(mktemp -d)
+printf '%s\n' "$admin_password" >"$secret_dir/postgres_password"
+chmod 0444 "$secret_dir/postgres_password"
+run_role_compat() {
+  docker run --rm --network "$network" --user 999:999 \
+    -e PGHOST="$postgres" -e POSTGRES_USER=postgres -e POSTGRES_DB=blazn \
+    -v "$repo_root/infra/milestone-2/postgres-compat/ensure-controller-roles.sh:/opt/blazn-postgres/ensure-controller-roles.sh:ro" \
+    -v "$secret_dir/postgres_password:/run/secrets/postgres_password:ro" \
+    --entrypoint /bin/sh "$postgres_image" /opt/blazn-postgres/ensure-controller-roles.sh
+}
+run_role_compat
+
+psql_admin <<'SQL'
 CREATE ROLE blazn_migration NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE blazn_runtime NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE blazn_bootstrap NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE blazn_node_broker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-CREATE ROLE blazn_sandbox_controller NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-CREATE ROLE blazn_development_controller NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER DATABASE blazn OWNER TO blazn_migration;
 REVOKE ALL ON DATABASE blazn FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
-GRANT USAGE ON SCHEMA public TO blazn_runtime, blazn_bootstrap, blazn_node_broker, blazn_sandbox_controller;
+GRANT USAGE ON SCHEMA public TO blazn_runtime, blazn_bootstrap, blazn_node_broker;
 GRANT CONNECT ON DATABASE blazn TO blazn_runtime;
+
+DO $$
+DECLARE unsafe_count integer;
+BEGIN
+  SELECT count(*) INTO unsafe_count FROM pg_roles
+    WHERE rolname IN ('blazn_sandbox_controller','blazn_development_controller')
+      AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls);
+  IF unsafe_count <> 0 THEN RAISE EXCEPTION 'controller compatibility created unsafe roles'; END IF;
+  IF NOT has_database_privilege('blazn_sandbox_controller','blazn','CONNECT')
+     OR NOT has_database_privilege('blazn_development_controller','blazn','CONNECT')
+     OR NOT has_schema_privilege('blazn_sandbox_controller','public','USAGE')
+     OR NOT has_schema_privilege('blazn_development_controller','public','USAGE') THEN
+    RAISE EXCEPTION 'controller compatibility grants are incomplete';
+  END IF;
+END $$;
 SQL
+
+run_role_compat
+psql_admin <<'SQL'
+ALTER ROLE blazn_development_controller LOGIN;
+SQL
+if run_role_compat >"$secret_dir/unsafe.out" 2>"$secret_dir/unsafe.err"; then
+  printf 'controller role compatibility accepted an unsafe pre-existing role\n' >&2
+  exit 1
+fi
+grep -F 'controller role blazn_development_controller has unsafe attributes' "$secret_dir/unsafe.err" >/dev/null
+psql_admin <<'SQL'
+ALTER ROLE blazn_development_controller NOLOGIN;
+SQL
+run_role_compat
+psql_admin <<'SQL'
+GRANT blazn_migration TO blazn_development_controller;
+SQL
+if run_role_compat >"$secret_dir/membership.out" 2>"$secret_dir/membership.err"; then
+  printf 'controller role compatibility accepted inherited database authority\n' >&2
+  exit 1
+fi
+grep -F 'controller role blazn_development_controller inherits another role' "$secret_dir/membership.err" >/dev/null
+psql_admin <<'SQL'
+REVOKE blazn_migration FROM blazn_development_controller;
+SQL
+run_role_compat
+psql_admin <<'SQL'
+CREATE TABLE legacy_controller_acl_probe(id integer);
+GRANT SELECT ON legacy_controller_acl_probe TO blazn_development_controller;
+SQL
+if run_role_compat >"$secret_dir/acl.out" 2>"$secret_dir/acl.err"; then
+  printf 'controller role compatibility accepted direct relation authority\n' >&2
+  exit 1
+fi
+grep -F 'controller role blazn_development_controller has an unexpected relation privilege' "$secret_dir/acl.err" >/dev/null
+psql_admin <<'SQL'
+REVOKE ALL ON legacy_controller_acl_probe FROM blazn_development_controller;
+DROP TABLE legacy_controller_acl_probe;
+SQL
+run_role_compat
+psql_admin <<'SQL'
+CREATE TABLE legacy_controller_public_acl_probe(id integer);
+GRANT SELECT ON legacy_controller_public_acl_probe TO PUBLIC;
+SQL
+if run_role_compat >"$secret_dir/public-acl.out" 2>"$secret_dir/public-acl.err"; then
+  printf 'controller role compatibility accepted effective PUBLIC relation authority\n' >&2
+  exit 1
+fi
+grep -F 'controller role blazn_sandbox_controller has an unexpected relation privilege' "$secret_dir/public-acl.err" >/dev/null
+psql_admin <<'SQL'
+REVOKE ALL ON legacy_controller_public_acl_probe FROM PUBLIC;
+DROP TABLE legacy_controller_public_acl_probe;
+SQL
+run_role_compat
+psql_admin <<'SQL'
+CREATE FUNCTION development_controller_claim(text) RETURNS void
+  LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public AS 'SELECT';
+ALTER FUNCTION development_controller_claim(text) OWNER TO blazn_migration;
+GRANT EXECUTE ON FUNCTION development_controller_claim(text) TO blazn_development_controller;
+REVOKE EXECUTE ON FUNCTION development_controller_claim(text) FROM PUBLIC;
+SQL
+if run_role_compat >"$secret_dir/overload.out" 2>"$secret_dir/overload.err"; then
+  printf 'controller role compatibility accepted an unreviewed function overload\n' >&2
+  exit 1
+fi
+grep -F 'controller role blazn_development_controller has an unexpected function privilege' "$secret_dir/overload.err" >/dev/null
+psql_admin <<'SQL'
+REVOKE ALL ON FUNCTION development_controller_claim(text) FROM blazn_development_controller;
+DROP FUNCTION development_controller_claim(text);
+SQL
+run_role_compat
+psql_admin <<'SQL'
+CREATE FUNCTION legacy_public_invoker_probe() RETURNS text
+  LANGUAGE sql SECURITY INVOKER AS 'SELECT current_user';
+ALTER FUNCTION legacy_public_invoker_probe() OWNER TO postgres;
+GRANT EXECUTE ON FUNCTION legacy_public_invoker_probe() TO PUBLIC;
+SQL
+if run_role_compat >"$secret_dir/public-function.out" 2>"$secret_dir/public-function.err"; then
+  printf 'controller role compatibility accepted an unreviewed PUBLIC function\n' >&2
+  exit 1
+fi
+grep -F 'controller role blazn_sandbox_controller has an unexpected function privilege' "$secret_dir/public-function.err" >/dev/null
+psql_admin <<'SQL'
+REVOKE EXECUTE ON FUNCTION legacy_public_invoker_probe() FROM PUBLIC;
+DROP FUNCTION legacy_public_invoker_probe();
+SQL
+run_role_compat
 
 for migration in "$repo_root"/services/control-api/migrations/*.sql; do
   {
@@ -87,6 +216,15 @@ for migration in "$repo_root"/services/control-api/migrations/*.sql; do
     sed -n '1,$p' "$migration"
   } | psql_admin >/dev/null
 done
+psql_admin <<'SQL'
+DO $$
+BEGIN
+  IF has_function_privilege('blazn_sandbox_controller','sandbox_enforce_successful_create_admission()','EXECUTE') THEN
+    RAISE EXCEPTION 'historical trigger function retained effective controller execute authority';
+  END IF;
+END $$;
+SQL
+run_role_compat
 
 psql_admin <<'SQL'
 SET ROLE blazn_migration;

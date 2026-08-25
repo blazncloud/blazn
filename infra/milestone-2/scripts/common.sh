@@ -299,7 +299,7 @@ verify_node_prerequisite_containers() {
   infra_root=$1
   env_file=$2
   expected_id=$(docker image inspect "$POSTGRES_IMAGE" --format '{{.Id}}') || die "pinned PostgreSQL image is unavailable"
-  for service in node-migration-preflight node-broker-verify; do
+  for service in database-role-compat node-migration-preflight node-broker-verify; do
     container=$(control_plane_compose "$infra_root" "$env_file" ps -a -q "$service")
     [ -n "$container" ] || die "Node prerequisite service has no container: $service"
     identity=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}/{{index .Config.Labels "com.docker.compose.service"}}/{{.Image}}' "$container")
@@ -334,6 +334,7 @@ control_plane_config_digest() {
         systemd/blazn-ngrok-qualification.service
       find . -maxdepth 1 -type f -name '*.schema.json' -print0
       find scripts -maxdepth 1 -type f -name '*.sh' -print0
+      find postgres-compat -maxdepth 1 -type f -name '*.sh' -print0
       find ../node -type f -print0
     } | LC_ALL=C sort -z | xargs -0 sha256sum
     printf 'control-api-source sha256:%s\n' "$(control_api_source_digest "$root")"

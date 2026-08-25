@@ -74,7 +74,7 @@ for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_I
   fi
 done
 printf '%s\n' "$runtime_api" | grep -F -- '- workspace_invitation_hmac_v1' >/dev/null
-for privileged_service in api-migrate api-bootstrap postgres object object-init object-client; do
+for privileged_service in api-migrate api-bootstrap database-role-compat postgres object object-init object-client; do
   service_block=$(awk -v service="$privileged_service" '
     $0 == "  " service ":" { in_service=1; next }
     in_service && /^  [a-zA-Z0-9_-]+:$/ { exit }
@@ -85,6 +85,22 @@ for privileged_service in api-migrate api-bootstrap postgres object object-init 
     exit 1
   fi
 done
+
+role_compat=$(awk '
+  /^  database-role-compat:$/ { in_service=1; next }
+  in_service && /^  [a-zA-Z0-9_-]+:$/ { exit }
+  in_service { print }
+' "$compose")
+for required in 'postgres_password' 'read_only: true' 'no-new-privileges:true' 'condition: service_healthy'; do
+  printf '%s\n' "$role_compat" | grep -F "$required" >/dev/null || {
+    printf 'database role compatibility service is missing: %s\n' "$required" >&2
+    exit 1
+  }
+done
+grep -F 'database-role-compat:' "$compose" >/dev/null
+grep -F 'condition: service_completed_successfully' "$compose" >/dev/null
+grep -F "ARRAY['blazn_sandbox_controller','blazn_development_controller']" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
+grep -F 'controller role % has unsafe attributes' "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 
 grep -F 'CREATE ROLE blazn_migration' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
 grep -F 'CREATE ROLE blazn_runtime' "$ROOT_DIR/postgres-init/01-roles.sh" >/dev/null
