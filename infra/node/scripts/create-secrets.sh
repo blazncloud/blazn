@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 die() { printf 'blazn-node-infra: %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "secret provisioning must run as root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "secret provisioning must run through the control-plane lock"
@@ -9,11 +10,7 @@ for command_name in dirname jq openssl sha256sum sync wc; do command -v "$comman
 secrets=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
 target=$(dirname -- "$secrets")
 journal=${BLAZN_NODE_BROKER_CREATE_JOURNAL:-/var/lib/blazn/ownership/node-broker-secret-create.json}
-if [ "${BLAZN_NODE_INFRA_TEST_MODE:-0}" != 1 ]; then
-  [ "$secrets" = /etc/blazn/node-broker/secrets ] || die "node broker secrets root is outside the reviewed path"
-  [ "$journal" = /var/lib/blazn/ownership/node-broker-secret-create.json ] || die "node broker create journal is outside the reviewed path"
-fi
-case "$target:$journal" in /*:/*) ;; *) die "secret and journal paths must be absolute" ;; esac
+"$SCRIPT_DIR/validate-secret-paths.sh" "$secrets" "$journal" "${BLAZN_NODE_INFRA_TEST_MODE:-0}"
 
 assert_no_links() { candidate=$1; while [ "$candidate" != / ]; do [ ! -L "$candidate" ] || die "path contains a symbolic link: $candidate"; candidate=$(dirname -- "$candidate"); done; }
 assert_no_links "$target"
