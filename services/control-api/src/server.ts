@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { renderActivationPage, renderAuthResult, sendHtml, type AuthMode } from "./auth-page.js";
+import { renderAuthResult, sendHtml, type AuthMode } from "./auth-page.js";
+import { serveActivationPage } from "./activation-http.js";
 import { loadConfig } from "./config.js";
 import { createDatabase, type Database } from "./db.js";
 import { HttpError, jsonBody, requireExactKeys, requiredSecret, requiredString, sendJson } from "./http.js";
@@ -154,16 +155,6 @@ async function startDeviceAuthorization(request: IncomingMessage, response: Serv
     interval: 2,
     challenge,
   });
-}
-
-async function activationPage(response: ServerResponse, code: string, mode: AuthMode): Promise<void> {
-  const escaped = code.replace(/[^A-Z0-9-]/g, "");
-  const authorization = await database.query<{ id: string; device_name: string; platform: string; public_key: string }>("SELECT id, device_name, platform, public_key FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [escaped]);
-  const device = authorization.rows[0];
-  if (!device) throw new HttpError("authorization_not_found", "authorization code is invalid or expired");
-	const publicKeyDigest = activationPublicKeyDigest(device.public_key);
-	const activationConfirmation = oidcClient && oidcKey ? sealActivationConfirmation(oidcKey, { authorizationId: device.id, userCode: escaped, mode, publicKeyDigest, issuedAt: Date.now() }) : undefined;
-  sendHtml(response, 200, renderActivationPage({ code: escaped, deviceName: device.device_name, platform: device.platform, mode, oidcEnabled: Boolean(oidcClient), publicKeyDigest, ...(activationConfirmation ? { activationConfirmation } : {}) }));
 }
 
 async function startOidc(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -393,7 +384,16 @@ async function revokeSessionWithProof(request: IncomingMessage, response: Server
 async function route(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", config.publicUrl);
   if (request.method === "GET" && url.pathname === "/healthz") return health(response);
-  if (request.method === "GET" && url.pathname === "/activate") return activationPage(response, url.searchParams.get("user_code") ?? "", url.searchParams.get("mode") === "signup" ? "signup" : "signin");
+  if (request.method === "GET" && url.pathname === "/activate") return serveActivationPage(response, url, {
+    lookup: async (code) => {
+      const authorization = await database.query<{ id: string; device_name: string; platform: string; public_key: string }>("SELECT id, device_name, platform, public_key FROM device_authorizations WHERE user_code=$1 AND expires_at > now() AND consumed_at IS NULL", [code]);
+      const device = authorization.rows[0];
+      return device ? { id: device.id, deviceName: device.device_name, platform: device.platform, publicKey: device.public_key } : undefined;
+    },
+    oidcEnabled: Boolean(oidcClient),
+    publicKeyDigest: activationPublicKeyDigest,
+    ...(oidcClient && oidcKey ? { activationConfirmation: ({ authorizationId, userCode: code, mode, publicKeyDigest }) => sealActivationConfirmation(oidcKey, { authorizationId, userCode: code, mode, publicKeyDigest, issuedAt: Date.now() }) } : {}),
+  });
 	if (request.method === "POST" && url.pathname === "/v1/auth/oidc/start") return startOidc(request, response);
   if (request.method === "GET" && url.pathname === "/v1/auth/oidc/callback") return oidcCallback(request, response, url);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/authorizations") return startDeviceAuthorization(request, response);
