@@ -7,9 +7,9 @@ const exact = (value, keys, label) => {
   if (!value || typeof value !== "object" || Array.isArray(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) throw new Error(`${label} fields are invalid`);
 };
 const digest = (value, label) => { if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error(`${label} digest is invalid`); };
-exact(receipt, ["schemaVersion", "issuer", "driverDigest", "environmentDigest", "services", "backupUtility", "gates", "backup", "startedAt", "observedAt"], "receipt");
+exact(receipt, ["schemaVersion", "issuer", "driverDigest", "environmentDigest", "services", "backupUtility", "gates", "identityProviders", "backup", "startedAt", "observedAt"], "receipt");
 const startedMillis = Date.parse(receipt.startedAt), observedMillis = Date.parse(receipt.observedAt);
-if (receipt.schemaVersion !== "blazn.identity.qualification/v2" || !String(receipt.issuer).startsWith("https://") || !Number.isFinite(startedMillis) || !Number.isFinite(observedMillis) || observedMillis < startedMillis) throw new Error("receipt identity or time range is invalid");
+if (receipt.schemaVersion !== "blazn.identity.qualification/v3" || !String(receipt.issuer).startsWith("https://") || !Number.isFinite(startedMillis) || !Number.isFinite(observedMillis) || observedMillis < startedMillis) throw new Error("receipt identity or time range is invalid");
 digest(receipt.driverDigest, "driver"); digest(receipt.environmentDigest, "environment");
 const serviceNames = ["postgres", "proxy", "zitadel-api", "zitadel-login"];
 const imageRefPattern = /^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$/;
@@ -29,6 +29,15 @@ if (!imageRefPattern.test(receipt.backupUtility.configuredImage) || !/^sha256:[0
 const gateNames = ["composeBootstrap", "tlsIssuer", "oidcDiscovery", "authorizationCodePkce", "verifiedEmail", "reviewedAcrMfa", "legacyLogin", "oidcAwareHealth", "deviceConfirmation"];
 exact(receipt.gates, gateNames, "gates");
 for (const name of gateNames) { exact(receipt.gates[name], ["evidenceDigest", "observedAt"], `gate ${name}`); digest(receipt.gates[name].evidenceDigest, `gate ${name}`); const gateTime = Date.parse(receipt.gates[name].observedAt); if (!Number.isFinite(gateTime) || gateTime < startedMillis || gateTime > observedMillis + 30_000) throw new Error(`gate ${name} time is invalid or stale`); }
+exact(receipt.identityProviders, ["before", "after"], "identity providers");
+for (const phase of ["before", "after"]) {
+  const evidence = receipt.identityProviders[phase];
+  exact(evidence, ["activeProviderCount", "evidenceDigest", "observedAt"], `identity providers ${phase}`);
+  digest(evidence.evidenceDigest, `identity providers ${phase}`);
+  const observed = Date.parse(evidence.observedAt);
+  if (evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > observedMillis + 30_000) throw new Error(`identity providers ${phase} evidence is invalid or stale`);
+}
+if (Date.parse(receipt.identityProviders.after.observedAt) < Date.parse(receipt.identityProviders.before.observedAt)) throw new Error("identity provider evidence order is invalid");
 const backupNames = ["manifestDigest", "databaseDigest", "masterKeyBefore", "masterKeyAfter", "patBefore", "patAfter", "preRestorePatSnapshotDigest"];
 exact(receipt.backup, backupNames, "backup"); for (const name of backupNames) digest(receipt.backup[name], name);
 if (receipt.backup.masterKeyBefore !== receipt.backup.masterKeyAfter || receipt.backup.patBefore !== receipt.backup.patAfter) throw new Error("backup restoration evidence mismatches");

@@ -38,6 +38,9 @@ The isolated stack is in `infra/identity`:
 - `zitadel-login` is the self-hosted Next.js login application. Its
   `EMAIL_VERIFICATION` setting is enabled so registration sends and requires
   email verification before completing an identity login.
+- The Login healthcheck queries ZITADEL's database-backed active-provider
+  inventory with the scoped login-client token and fails closed unless the
+  inventory is empty for the pinned v4.17.1 image.
 - Traefik provides the required h2c connection to the API without access to the
   Docker socket.
 - A private Docker volume transfers the generated login-client credential from
@@ -209,6 +212,9 @@ legacy login, explicit device confirmation, OIDC-aware health, backup/restore,
 exact image rollback, master-key recovery, and PAT-volume recovery. Absence of
 the reviewed images, mail delivery, provider/bootstrap configuration, or driver
 is a hard blocker rather than a skipped green gate.
+The qualification receipt also binds zero-active-provider observations from
+both before and after backup/restore, so a restored or administratively changed
+provider inventory cannot pass on documentation or static configuration alone.
 The browser driver must be a root-owned, single-link mode-0500/0700 file at the
 fixed driver path and must match a separately reviewed SHA-256 digest. It emits
 per-gate evidence digests and timestamps, not self-authored pass booleans. The

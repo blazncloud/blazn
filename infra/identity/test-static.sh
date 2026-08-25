@@ -3,6 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 "$SCRIPT_DIR/test-branding.sh"
+node --test "$SCRIPT_DIR/assert-no-active-idps.test.mjs"
 compose=$SCRIPT_DIR/compose.yaml
 control_overlay=$SCRIPT_DIR/../milestone-2/compose.identity.yaml
 
@@ -16,6 +17,9 @@ for expected in \
   'ZITADEL_SYSTEMDEFAULTS_MULTIFACTORS_OTP_ISSUER: Blazn' \
   'ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat' \
   'EMAIL_VERIFICATION: "true"' \
+  'BLAZN_ZITADEL_DOMAIN: ${ZITADEL_DOMAIN:?set the public identity domain}' \
+  './assert-no-active-idps.mjs:/blazn/assert-no-active-idps.mjs:ro' \
+  'node /blazn/assert-no-active-idps.mjs' \
   '127.0.0.1}:${ZITADEL_PROXY_PORT:-58081}:8080' \
   'driver: bridge'; do
   grep -F -- "$expected" "$compose" >/dev/null || {
@@ -86,6 +90,8 @@ printf '%s\n' \
   'ZITADEL_LOGIN_IMAGE=ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444' \
   'ZITADEL_BACKUP_IMAGE=alpine@sha256:9999999999999999999999999999999999999999999999999999999999999999' > "$qualification_tmp/reviewed.env"
 reviewed_env_digest=sha256:$(sha256sum "$qualification_tmp/reviewed.env" | awk '{print $1}')
+printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","activeProviderCount":0,"observedAt":"2026-08-22T00:00:01Z"}' > "$qualification_tmp/idps-before.json"
+printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","activeProviderCount":0,"observedAt":"2026-08-22T00:00:02Z"}' > "$qualification_tmp/idps-after.json"
 QUALIFICATION_ISSUER=https://identity.example.test \
 QUALIFICATION_STARTED_AT=2026-08-21T23:59:00Z \
 QUALIFICATION_DRIVER_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -112,8 +118,10 @@ QUALIFICATION_MASTER_AFTER=sha256:1212121212121212121212121212121212121212121212
 QUALIFICATION_PAT_BEFORE=sha256:1313131313131313131313131313131313131313131313131313131313131313 \
 QUALIFICATION_PAT_AFTER=sha256:1313131313131313131313131313131313131313131313131313131313131313 \
 QUALIFICATION_PRE_RESTORE_PAT_SNAPSHOT_DIGEST=sha256:1414141414141414141414141414141414141414141414141414141414141414 \
-node "$SCRIPT_DIR/compose-qualification.mjs" "$SCRIPT_DIR/driver-evidence.test.json" "$qualification_tmp/receipt.json"
+node "$SCRIPT_DIR/compose-qualification.mjs" "$SCRIPT_DIR/driver-evidence.test.json" "$qualification_tmp/idps-before.json" "$qualification_tmp/idps-after.json" "$qualification_tmp/receipt.json"
 node "$SCRIPT_DIR/verify-qualification.mjs" "$qualification_tmp/receipt.json" "$qualification_tmp/reviewed.env" >/dev/null
+node -e 'const fs=require("fs"),p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.identityProviders.after.activeProviderCount=1;fs.writeFileSync(process.argv[2],JSON.stringify(v))' "$qualification_tmp/receipt.json" "$qualification_tmp/bad-idps.json"
+if node "$SCRIPT_DIR/verify-qualification.mjs" "$qualification_tmp/bad-idps.json" "$qualification_tmp/reviewed.env" >/dev/null 2>&1; then printf 'qualification verifier accepted an active external identity provider\n' >&2; exit 1; fi
 node -e 'const fs=require("fs"),p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.services.proxy.after.imageId="sha256:"+"f".repeat(64);fs.writeFileSync(process.argv[2],JSON.stringify(v))' "$qualification_tmp/receipt.json" "$qualification_tmp/bad-service.json"
 if node "$SCRIPT_DIR/verify-qualification.mjs" "$qualification_tmp/bad-service.json" "$qualification_tmp/reviewed.env" >/dev/null 2>&1; then printf 'qualification verifier accepted stale service mapping\n' >&2; exit 1; fi
 node -e 'const fs=require("fs"),p=process.argv[1],v=JSON.parse(fs.readFileSync(p));v.backupUtility.configuredImage="evil.invalid/tool@sha256:"+"e".repeat(64);fs.writeFileSync(process.argv[2],JSON.stringify(v))' "$qualification_tmp/receipt.json" "$qualification_tmp/bad-backup.json"
