@@ -4,6 +4,7 @@ import { mkdtemp,readFile,rm,stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevelopmentControllerWorkItem } from "./development-controller-store.js";
+import { resolveDevelopmentImageChildren,type DevelopmentImageChildren } from "./development-registry-resolver.js";
 
 const digestPattern=/^sha256:[0-9a-f]{64}$/;
 const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -20,14 +21,16 @@ export interface DevelopmentBuildExecutor {execute(item:DevelopmentControllerWor
 export interface BuildKitExecutorConfig {
   buildctlPath:string;address:string;serverName:string;builderId:string;caPath:string;certificatePath:string;keyPath:string;
   evidenceCommand:string;maximumArtifactBytes:number;maximumTotalArtifactBytes:number;executionTimeoutSeconds:number;
-  evidenceSecretsRoot:string;
+  evidenceSecretsRoot:string;registryAuthority:string;
 }
 
 interface CommandResult {code:number;logDigest:string}
 type CommandRunner=(file:string,args:string[],options:{input?:Buffer;env?:NodeJS.ProcessEnv;signal:AbortSignal;killGraceMilliseconds?:number})=>Promise<CommandResult&{stdout?:Buffer}>;
+type ImageResolver=(reference:string,signal:AbortSignal,options:{allowedAuthority:string})=>Promise<DevelopmentImageChildren>;
 
 export class BuildKitDevelopmentExecutor implements DevelopmentBuildExecutor {
-  constructor(private readonly config:BuildKitExecutorConfig,private readonly run:CommandRunner=runDevelopmentCommand){}
+  constructor(private readonly config:BuildKitExecutorConfig,private readonly run:CommandRunner=runDevelopmentCommand,
+    private readonly resolveImages:ImageResolver=resolveDevelopmentImageChildren){}
   async execute(item:DevelopmentControllerWorkItem,signal:AbortSignal):Promise<DevelopmentExecutionResult>{
     const project=projectBuild(item.projectSnapshot),artifactIds=developmentArtifactIds(item);
     if(!uuidPattern.test(this.config.builderId))throw new Error("BuildKit builder ID is invalid");
@@ -43,15 +46,17 @@ export class BuildKitDevelopmentExecutor implements DevelopmentBuildExecutor {
       const completedAt=new Date().toISOString();
       const metadata=JSON.parse(await readBoundedFile(metadataPath,1024*1024)) as unknown;
       const imageIndexDigest=metadataImageDigest(metadata);
+      const imageIndexReference=`${project.registryRepository}@${imageIndexDigest}`;
+      const imageChildren=await this.resolveImages(imageIndexReference,executionSignal,{allowedAuthority:this.config.registryAuthority});
       const collectorInput=Buffer.from(JSON.stringify({
         schemaVersion:"blazn.dev/buildkit-execution/v1alpha1",workItem:safeWorkItem(item),artifactIds,
         builder:{id:this.config.builderId,profile:text(record(item.projectSnapshot.policy)?.builderProfile),...qualifiedBuildKit},
-        build:{succeeded:true,imageIndexDigest,logDigest:build.logDigest,startedAt,completedAt},
+        build:{succeeded:true,imageIndexDigest,imageChildren,logDigest:build.logDigest,startedAt,completedAt},
       }));
       const collected=await this.run(this.config.evidenceCommand,[],{input:collectorInput,signal:executionSignal,env:safeEnvironment({BLAZN_DEVELOPMENT_SECRETS_ROOT:this.config.evidenceSecretsRoot})});
       if(collected.code!==0||!collected.stdout)throw new Error("Development evidence collector failed");
-      const profile=text(record(item.projectSnapshot.policy)?.builderProfile),imageIndexReference=`${project.registryRepository}@${imageIndexDigest}`;
-      return parseCollectorResult(collected.stdout,item,artifactIds,this.config,{imageIndexReference,builder:{id:this.config.builderId,profile,...qualifiedBuildKit}});
+      const profile=text(record(item.projectSnapshot.policy)?.builderProfile);
+      return parseCollectorResult(collected.stdout,item,artifactIds,this.config,{imageIndexReference,imageChildren,builder:{id:this.config.builderId,profile,...qualifiedBuildKit}});
     }finally{await rm(directory,{recursive:true,force:true});}
   }
 }
@@ -106,7 +111,7 @@ function deterministicUUID(buildId:string,role:string):string{
 function safeWorkItem(item:DevelopmentControllerWorkItem){return{buildId:item.buildId,workspaceId:item.workspaceId,projectId:item.projectId,runId:item.runId,buildVersion:item.buildVersion,generation:item.generation,requestedBy:item.requestedBy,source:item.source,projectManifestDigest:item.projectManifestDigest,projectSnapshot:item.projectSnapshot,planDigest:item.planDigest,createdAt:item.createdAt};}
 function safeEnvironment(extra:NodeJS.ProcessEnv={}):NodeJS.ProcessEnv{return{PATH:"/usr/local/bin:/usr/bin:/bin",HOME:"/tmp",LANG:"C.UTF-8",...extra};}
 
-interface ActualBuild {imageIndexReference:string;builder:{id:string;profile:string;imageDigest:string;version:string}}
+interface ActualBuild {imageIndexReference:string;imageChildren:DevelopmentImageChildren;builder:{id:string;profile:string;imageDigest:string;version:string}}
 export function parseCollectorResult(raw:Buffer,item:DevelopmentControllerWorkItem,ids:Record<string,string>,config:Pick<BuildKitExecutorConfig,"maximumArtifactBytes"|"maximumTotalArtifactBytes">,actual:ActualBuild):DevelopmentExecutionResult{
   if(raw.byteLength>4*1024*1024)throw new Error("Development evidence response is too large");
   let value:unknown;try{value=JSON.parse(raw.toString("utf8"));}catch{throw new Error("Development evidence response is invalid JSON");}
@@ -127,6 +132,13 @@ export function parseCollectorResult(raw:Buffer,item:DevelopmentControllerWorkIt
   if(document.id!==item.buildId||document.workspaceId!==item.workspaceId||document.projectId!==item.projectId||document.runId!==item.runId)throw new Error("Development evidence document identity is invalid");
   const outputs=record(document.outputs),builder=record(document.builder),status=text(document.status);
   if(status!=="succeeded"||!outputs||outputs.imageIndexDigest!==actual.imageIndexReference)throw new Error("Development evidence success is not bound to BuildKit output");
+  const images=Array.isArray(outputs.images)?outputs.images:[],refresh=record(outputs.refreshArtifacts),observed=new Map<string,string>();
+  for(const rawImage of images){const entry=record(rawImage),platform=text(entry?.platform),digest=text(entry?.digest);if(!entry||observed.has(platform))throw new Error("Development evidence image children are not bound to the resolved index");observed.set(platform,digest);}
+  for(const platform of ["linux/amd64","linux/arm64"] as const){
+    const refreshEntry=record(refresh?.[platform]);
+    if(observed.get(platform)!==actual.imageChildren[platform]||text(refreshEntry?.imageDigest)!==actual.imageChildren[platform])throw new Error("Development evidence image children are not bound to the resolved index");
+  }
+  if(images.length!==2||observed.size!==2)throw new Error("Development evidence image children are not bound to the resolved index");
   if(!builder||builder.id!==actual.builder.id||builder.profile!==actual.builder.profile||builder.imageDigest!==actual.builder.imageDigest||builder.version!==actual.builder.version)throw new Error("Development evidence builder is not bound to the qualified BuildKit identity");
   return{execution:{nodeId:text(execution.nodeId),sandboxId:text(execution.sandboxId)},document,artifacts:parsed};
 }
