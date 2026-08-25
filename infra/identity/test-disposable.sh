@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 if [ "$(id -u)" -ne 0 ] || [ "$#" -ne 2 ]; then
   printf 'usage: sudo %s REVIEWED_ENV_FILE QUALIFICATION_DRIVER\n' "$0" >&2
