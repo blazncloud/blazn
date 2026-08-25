@@ -105,18 +105,6 @@ export function stateMatches(expected: string, actual: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function activationOriginMatches(origin: string | undefined, referer: string | undefined, fetchSite: string | undefined, publicUrl: string): boolean {
-	const expectedOrigin = new URL(publicUrl).origin;
-	if (origin) {
-		try { return new URL(origin).origin === origin && origin === expectedOrigin; }
-		catch { return false; }
-	}
-	if (fetchSite === "same-origin") return true;
-	if (!referer) return false;
-	try { return new URL(referer).origin === expectedOrigin; }
-	catch { return false; }
-}
-
 export function activationPublicKeyDigest(encoded: string): string {
 	if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) throw new Error("activation public key is invalid");
 	const key = Buffer.from(encoded, "base64url");

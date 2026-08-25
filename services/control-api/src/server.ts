@@ -35,7 +35,7 @@ import { PgSandboxStore } from "./sandbox-store.js";
 import { routeSandboxRequest } from "./sandbox-server-routing.js";
 import { isControlHttpError, normalizeControlHttpError } from "./server-errors.js";
 import { OidcClient, type OidcIdentity } from "./oidc.js";
-import { activationOriginMatches, activationPublicKeyDigest, oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, sealActivationConfirmation, stateMatches, unsealActivationConfirmation } from "./oidc-state.js";
+import { activationPublicKeyDigest, oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, sealActivationConfirmation, stateMatches, unsealActivationConfirmation } from "./oidc-state.js";
 
 const config = loadConfig();
 const database = createDatabase(config.databaseUrl);
@@ -160,8 +160,6 @@ async function startDeviceAuthorization(request: IncomingMessage, response: Serv
 async function startOidc(request: IncomingMessage, response: ServerResponse): Promise<void> {
 	if (!oidcClient || !oidcKey || !config.zitadel) throw new HttpError("not_found", "ZITADEL identity is not configured");
   await enforceLimit(database, "oidc-start", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 20, 60);
-	const origin = request.headers.origin;
-	if (!activationOriginMatches(origin, request.headers.referer, request.headers["sec-fetch-site"], config.publicUrl)) throw new HttpError("activation_confirmation_required", "OIDC activation requires an explicit same-origin confirmation");
 	const body = await formBody(request);
 	requireExactKeys(body, ["user_code", "mode", "activation_confirmation"]);
 	const code = requiredString(body, "user_code", 16).toUpperCase();
@@ -170,6 +168,10 @@ async function startOidc(request: IncomingMessage, response: ServerResponse): Pr
 	const mode = modeValue;
 	const sealed = requiredSecret(body, "activation_confirmation", 4096);
 	let confirmation;
+	// The encrypted, short-lived confirmation is the CSRF capability. It is
+	// emitted only on the activation page and is bound below to this request,
+	// authorization row, and device public key. Browser navigation headers are
+	// intentionally not an authority because privacy clients may omit them.
 	try { confirmation = unsealActivationConfirmation(oidcKey, sealed); }
 	catch { throw new HttpError("activation_confirmation_required", "activation confirmation is invalid or expired"); }
 	if (confirmation.userCode !== code || confirmation.mode !== mode) throw new HttpError("activation_confirmation_required", "activation confirmation does not match this device request");
