@@ -177,20 +177,27 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-6), [
+  assert.deepEqual(migrations.slice(-7), [
     "023_node_activation.sql",
     "024_development_controller.sql",
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
     "027_controller_role_public_grants.sql",
     "028_development_candidate_image_binding.sql",
+    "029_public_function_hardening_boundary.sql",
   ]);
 });
 
-test("controller privilege hardening revokes the historical PUBLIC trigger grant", async () => {
+test("controller privilege hardening closes PUBLIC functions and preserves exact pgcrypto authority", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sql = await readFile(path.resolve(here, "../migrations/027_controller_role_public_grants.sql"), "utf8");
-  assert.match(sql, /REVOKE EXECUTE ON FUNCTION sandbox_enforce_successful_create_admission\(\) FROM PUBLIC/);
+  const sql = await readFile(path.resolve(here, "../migrations/029_public_function_hardening_boundary.sql"), "utf8");
+  assert.match(sql, /owner_name=current_user[\s\S]*REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC/);
+  assert.match(sql, /reviewed_pgcrypto[\s\S]*extension_catalog\.extname='pgcrypto'/);
+  assert.match(sql, /unreviewed external function % retains PUBLIC EXECUTE/);
+  assert.match(sql, /REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC/);
+  assert.match(sql, /public\.digest\(bytea,text\)[\s\S]*public\.digest\(text,text\)/);
+  assert.match(sql, /reviewed pgcrypto digest authority is unavailable/);
+  assert.doesNotMatch(sql, /GRANT EXECUTE ON (?:ALL FUNCTIONS|FUNCTION .*?) TO PUBLIC/);
 });
 
 test("artifact export migration fences immutable object evidence and UUID replay", async () => {

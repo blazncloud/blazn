@@ -102,6 +102,7 @@ verify() {
     "$image" /bin/sh /verify-database.sh "$mode"
 }
 verify pre-migration >/dev/null
+verify migration-boundary >/dev/null
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_database_privilege('unrelated_login','postgres','CONNECT'),has_database_privilege('unrelated_login','template1','CONNECT'),has_database_privilege('unrelated_login','postgres','TEMP'),has_database_privilege('blazn_node_broker','postgres','CONNECT'),has_database_privilege('blazn_node_broker','template1','CONNECT'),has_database_privilege('blazn_node_broker','postgres','TEMP')")" = 't|t|t|f|f|f' ] || { printf 'database PUBLIC conversion changed unrelated access or retained broker access\n' >&2; exit 1; }
 docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'GRANT SELECT ON users TO blazn_node_broker' >/dev/null
 setup_broker
@@ -134,6 +135,15 @@ for migration in 004_nodes.sql 005_node_broker_security.sql 006_node_plan_signin
   docker exec -i "$container" env PGPASSWORD=1111111111111111111111111111111111111111111111111111111111111111 psql -X -1 -v ON_ERROR_STOP=1 -h 127.0.0.1 -U blazn_migration -d blazn <"$REPO_ROOT/services/control-api/migrations/$migration" >/dev/null
 done
 verify post-migration >/dev/null
+verify migration-boundary >/dev/null
+
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'GRANT EXECUTE ON FUNCTION node_broker_lock_join_binding(uuid,uuid,uuid) TO blazn_runtime' >/dev/null
+if verify migration-boundary >"$tmp/out" 2>"$tmp/err"; then
+  printf 'unreviewed migration boundary marker authority unexpectedly passed\n' >&2
+  exit 1
+fi
+grep -F 'migration boundary marker is not the reviewed migration 008 authority' "$tmp/err" >/dev/null
+docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U blazn_admin -d blazn -c 'REVOKE EXECUTE ON FUNCTION node_broker_lock_join_binding(uuid,uuid,uuid) FROM blazn_runtime' >/dev/null
 
 [ "$(docker exec "$container" psql -X -U blazn_admin -d blazn -Atqc "select has_table_privilege('blazn_node_broker','node_join_issuances','INSERT'),has_table_privilege('blazn_node_broker','node_join_issuances','UPDATE'),has_column_privilege('blazn_node_broker','node_join_issuances','id','INSERT'),has_column_privilege('blazn_node_broker','node_join_issuances','joined_node_uid','INSERT'),has_table_privilege('blazn_node_broker','node_join_issuance_intents','SELECT'),has_table_privilege('blazn_node_broker','node_join_issuance_intents','INSERT'),has_column_privilege('blazn_node_broker','node_join_issuance_intents','status','UPDATE'),has_function_privilege('blazn_node_broker','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE'),has_function_privilege('blazn_runtime','node_broker_lock_join_binding(uuid,uuid,uuid)','EXECUTE')")" = 'f|f|t|f|t|f|t|t|f' ] || { printf 'broker issuance/intent/function privilege matrix differs\n' >&2; exit 1; }
 
