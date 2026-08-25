@@ -619,8 +619,52 @@ func TestExpiredPlanAllowsOnlyReceiptBoundRecovery(t *testing.T) {
 	}
 }
 
+func TestExpiredCapacityEvidenceRequiresExactReceiptAndServerGrant(t *testing.T) {
+	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
+	plan := authorization.Expected.Plan
+	state := &memoryState{}
+	installer := NewInstaller(&mockPlatform{failAt: -1}, state)
+	installer.uid = func() int64 { return 0 }
+	issued, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+	installer.now = func() time.Time { return issued.Add(time.Minute) }
+	receipt, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding}
+	grant := signedActivationGrant(t, plan, receipt, *authorization.KubernetesBinding, planSigner)
+	if err := verifyActivationRecoveryEvidence(authority, receipt, grant); err != nil {
+		t.Fatalf("exact activation evidence rejected: %v", err)
+	}
+	join := &RootJoinBinding{ClusterID: authorization.KubernetesBinding.ClusterID, ExpectedNodeName: authorization.KubernetesBinding.NodeName, ExpectedNodeUID: authorization.KubernetesBinding.NodeUID, ExpectedResourceVersion: authorization.KubernetesBinding.ResourceVersion}
+	if err := validateRootRequestShape(RootRequest{Operation: RootReleaseCapacity, Plan: plan, Join: join, Receipt: &receipt}); err == nil {
+		t.Fatal("capacity release accepted a receipt without its server grant")
+	}
+	if err := validateRootRequestShape(RootRequest{Operation: RootVerify, Plan: plan, Join: join, Receipt: &receipt}); err == nil {
+		t.Fatal("capacity verification accepted a receipt without its server grant")
+	}
+	for name, mutate := range map[string]func(*client.NodeActivationGrant){
+		"signature": func(value *client.NodeActivationGrant) { value.Signature = strings.Repeat("A", 86) },
+		"receipt":   func(value *client.NodeActivationGrant) { value.ReceiptDigest = "sha256:" + strings.Repeat("b", 64) },
+		"binding":   func(value *client.NodeActivationGrant) { value.KubernetesBinding.NodeUID = "attacker" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := grant
+			mutate(&candidate)
+			if err := verifyActivationRecoveryEvidence(authority, receipt, candidate); err == nil {
+				t.Fatal("tampered activation grant authorized expired capacity")
+			}
+		})
+	}
+	tamperedReceipt := receipt
+	tamperedReceipt.UpdatedAt = issued.Add(2 * time.Minute).Format(time.RFC3339)
+	if err := verifyActivationRecoveryEvidence(authority, tamperedReceipt, grant); err == nil {
+		t.Fatal("unverified local receipt authorized expired capacity")
+	}
+}
+
 func TestExpiredObservationAndUninstallRequireExactActiveReceipt(t *testing.T) {
-	authorization, identity := validBootstrapAuthorization(t)
+	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
 	plan := authorization.Expected.Plan
 	profile := trustedBootstrapProfile(plan)
 	state := &memoryState{}
@@ -640,6 +684,22 @@ func TestExpiredObservationAndUninstallRequireExactActiveReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := NativeRootEngine{RootStateRoot: root}
+	grant := signedActivationGrant(t, plan, receipt, *authorization.KubernetesBinding, planSigner)
+	join := &RootJoinBinding{ClusterID: authorization.KubernetesBinding.ClusterID, ExpectedNodeName: authorization.KubernetesBinding.NodeName, ExpectedNodeUID: authorization.KubernetesBinding.NodeUID, ExpectedResourceVersion: authorization.KubernetesBinding.ResourceVersion}
+	for _, operation := range []RootOperation{RootVerify, RootReleaseCapacity} {
+		request := RootRequest{Operation: operation, Plan: plan, Join: join, Receipt: &receipt, ActivationGrant: &grant}
+		if err := engine.authorizeReceiptBoundRecovery(request, authority, profile, "sha256:"+testHash); err != nil {
+			t.Fatalf("expired %s with exact activation evidence: %v", operation, err)
+		}
+	}
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootReleaseCapacity, Plan: plan, Join: join, Receipt: &receipt}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("expired capacity release accepted active receipt without server activation grant")
+	}
+	tamperedGrant := grant
+	tamperedGrant.Signature = strings.Repeat("A", 86)
+	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootVerify, Plan: plan, Join: join, Receipt: &receipt, ActivationGrant: &tamperedGrant}, authority, profile, "sha256:"+testHash); err == nil {
+		t.Fatal("expired capacity verification accepted tampered server activation grant")
+	}
 	if err := engine.authorizeReceiptBoundRecovery(RootRequest{Operation: RootObserve, Plan: plan}, authority, profile, "sha256:"+testHash); err != nil {
 		t.Fatalf("post-lifetime observation: %v", err)
 	}
@@ -977,7 +1037,7 @@ func TestRootHelperResponseRequiresEOF(t *testing.T) {
 
 func TestDaemonObservationClientRejectsEveryMutationOperation(t *testing.T) {
 	client := PipeObservationClient{HelperPath: DefaultRootHelperPath, Timeout: time.Second}
-	for _, operation := range []RootOperation{RootApply, RootRollback, RootJoin, RootLoadReceipt, RootFinalizeState} {
+	for _, operation := range []RootOperation{RootApply, RootRollback, RootJoin, RootReleaseCapacity, RootLoadReceipt, RootFinalizeState} {
 		if _, err := client.Call(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: operation}); err == nil {
 			t.Fatalf("operation %s reached daemon sudo boundary", operation)
 		}
@@ -1015,6 +1075,155 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 	if coordinator.issues != 0 || coordinator.confirms != 0 || adapter.joined == nil || adapter.joined.ExpectedResourceVersion != "8" {
 		t.Fatalf("issues=%d confirms=%d joined=%#v", coordinator.issues, coordinator.confirms, adapter.joined)
 	}
+}
+
+func TestPlatformAdapterReleasesCapacityAndAdvancesExactBinding(t *testing.T) {
+	plan := testJoinPlan("linux")
+	receipt := client.NodeInstallReceipt{ReceiptID: "receipt-1"}
+	grant := client.NodeActivationGrant{NodeID: plan.NodeID, PlanID: plan.PlanID}
+	calls := 0
+	privileged := functionPrivilegedClient(func(_ context.Context, request RootRequest) (RootResponse, error) {
+		calls++
+		if request.Operation != RootReleaseCapacity || request.Join == nil || request.Join.ExpectedNodeUID != "uid-1" || request.Join.ExpectedResourceVersion != "7" || request.Receipt == nil || request.Receipt.ReceiptID != receipt.ReceiptID || request.ActivationGrant == nil {
+			return RootResponse{}, errors.New("capacity release request lost its binding")
+		}
+		return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: "8"}}, nil
+	})
+	adapter, err := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, &countingJoinCoordinator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.plan = plan
+	adapter.joined = &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	binding, err := adapter.ReleaseNodeCapacity(context.Background(), plan, receipt, grant)
+	if err != nil || calls != 1 || binding.ResourceVersion != "8" || adapter.KubernetesBinding().ResourceVersion != "8" {
+		t.Fatalf("binding=%#v adapter=%#v calls=%d err=%v", binding, adapter.KubernetesBinding(), calls, err)
+	}
+}
+
+func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
+	authorization, identity, signer := validBootstrapAuthorizationWithSigner(t)
+	plan := authorization.Expected.Plan
+	plan.Mutations = append(plan.Mutations,
+		client.NodeInstallMutation{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		client.NodeInstallMutation{Ordinal: 5, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+	)
+	plan.Digest = ""
+	plan.Signature = ""
+	digest, err := client.NodeInstallPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest = digest
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+	authorization.Expected.Plan = plan
+	stateStore := &memoryState{}
+	installer := NewInstaller(&mockPlatform{failAt: -1}, stateStore)
+	installer.uid = func() int64 { return 0 }
+	issuedAt, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+	installer.now = func() time.Time { return issuedAt.Add(time.Minute) }
+	receipt, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := signedActivationGrant(t, plan, receipt, *authorization.KubernetesBinding, signer)
+	root := testRoot(t)
+	authorityPath := filepath.Join(root, "authority", "install-authority.json")
+	if err := os.Mkdir(filepath.Dir(authorityPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: plan.IssuedAt}
+	authority.Digest, err = RootInstallAuthorityDigest(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedAuthority, _ := json.Marshal(authority)
+	if err := writePrivateCreate(authorityPath, encodedAuthority); err != nil {
+		t.Fatal(err)
+	}
+	initial := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-drift","labels":{"blazn.dev/pool":"default"}},"spec":{"unschedulable":true,"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"},{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+	released := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-released","labels":{"blazn.dev/pool":"default","blazn.dev/sandbox-eligible":"true"}},"spec":{"unschedulable":false,"taints":[{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+	getCalls, patchCalls := 0, 0
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		switch args[0] {
+		case "get":
+			getCalls++
+			if getCalls == 1 {
+				return []byte(initial), nil
+			}
+			return []byte(released), nil
+		case "patch":
+			patchCalls++
+			var operations []map[string]any
+			if len(args) != 8 || args[4] != "--patch" || json.Unmarshal([]byte(args[5]), &operations) != nil {
+				return nil, errors.New("invalid patch arguments")
+			}
+			patchJSON := args[5]
+			for _, required := range []string{`"op":"test","path":"/metadata/uid","value":"uid-1"`, `"op":"test","path":"/metadata/resourceVersion","value":"opaque-drift"`, `"path":"/metadata/labels/blazn.dev~1sandbox-eligible","value":"true"`, `"path":"/spec/unschedulable","value":true`, `"path":"/spec/unschedulable","value":false`} {
+				if !strings.Contains(patchJSON, required) {
+					return nil, fmt.Errorf("patch lacks %s", required)
+				}
+			}
+			return []byte(released), nil
+		default:
+			return nil, errors.New("unexpected kubectl operation")
+		}
+	}}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: authorityPath, RootStateRoot: root}
+	join := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+	binding, err := engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
+	if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != 1 || getCalls != 2 {
+		t.Fatalf("binding=%#v patch=%d get=%d err=%v", binding, patchCalls, getCalls, err)
+	}
+	join.ExpectedResourceVersion = "7"
+	binding, err = engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
+	if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != 1 {
+		t.Fatalf("idempotent binding=%#v patch=%d err=%v", binding, patchCalls, err)
+	}
+	join.ExpectedResourceVersion = "opaque-released"
+	if err := engine.verifyActivatedCapacityState(context.Background(), plan, join); err != nil {
+		t.Fatalf("released capacity state did not verify for retry: %v", err)
+	}
+	persisted, err := loadRootAuthority(authorityPath)
+	if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "opaque-released" {
+		t.Fatalf("persisted=%#v err=%v", persisted.KubernetesBinding, err)
+	}
+}
+
+func TestCapacityReleaseRejectsUnsafeNodeState(t *testing.T) {
+	falseValue := false
+	base := capacityNodeState{Name: "worker-1", UID: "uid-1", ResourceVersion: "7", Labels: map[string]string{}, Taints: []clusterTaint{{Key: "blazn.dev/bootstrap", Value: "pending", Effect: "NoSchedule"}}, Unschedulable: &falseValue}
+	for name, mutate := range map[string]func(*capacityNodeState){
+		"foreign bootstrap variant": func(state *capacityNodeState) { state.Taints[0].Value = "foreign" },
+		"duplicate bootstrap":       func(state *capacityNodeState) { state.Taints = append(state.Taints, state.Taints[0]) },
+		"conflicting label":         func(state *capacityNodeState) { state.Labels[capacityEligibilityLabel] = "false" },
+		"partial release":           func(state *capacityNodeState) { state.Labels[capacityEligibilityLabel] = "true" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := base
+			state.Labels = map[string]string{}
+			state.Taints = append([]clusterTaint(nil), base.Taints...)
+			mutate(&state)
+			if _, err := validateCapacityState(state); err == nil {
+				t.Fatal("unsafe capacity state accepted")
+			}
+		})
+	}
+}
+
+func signedActivationGrant(t *testing.T, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt, binding client.KubernetesBinding, signer Identity) client.NodeActivationGrant {
+	t.Helper()
+	receiptDigest, err := client.NodeInstallReceiptDigest(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := client.NodeActivationGrant{SchemaVersion: client.NodeSchemaVersion, Kind: "node_capacity_activation", NodeID: plan.NodeID, PlanID: plan.PlanID, ReceiptDigest: receiptDigest, KubernetesBinding: binding, SigningKeyID: plan.SigningKeyID}
+	grant.Digest, err = client.NodeActivationGrantDigest(grant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-capacity-activation-grant-v1\n"+grant.Digest)))
+	return grant
 }
 
 func TestFreshJoinConsumptionUsesFinalDeferredMutationBinding(t *testing.T) {

@@ -49,10 +49,26 @@ export function verifyNodePlanSignature(publicKey: string, digest: string, signa
   } catch { return false; }
 }
 
+export function nodeInstallReceiptDigest(receipt: Record<string, unknown>): string {
+  const unsigned = { ...receipt };
+  delete unsigned.digest;
+  delete unsigned.signature;
+  return `sha256:${sha256Hex(canonicalJson(unsigned))}`;
+}
+
+export function verifyNodeInstallReceiptSignature(publicKey: string, digest: string, signature: string): boolean {
+  try {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(publicKey) || !/^sha256:[0-9a-f]{64}$/.test(digest) || !/^[A-Za-z0-9_-]{86}$/.test(signature)) return false;
+    const key = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: publicKey }, format: "jwk" });
+    return verify(null, Buffer.from(`blazn-node-install-receipt-v1\n${digest}`, "utf8"), key, Buffer.from(signature, "base64url"));
+  } catch { return false; }
+}
+
 export interface NodePlanSigner {
   readonly keyId: string;
   publicKey(): Promise<{ keyId: string; publicKey: string; fingerprint: string }>;
   sign(unsignedPlan: Record<string, unknown>): Promise<Record<string, unknown>>;
+  signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 export class FileNodePlanSigner implements NodePlanSigner {
@@ -71,6 +87,14 @@ export class FileNodePlanSigner implements NodePlanSigner {
     const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
     const key = await readEd25519PrivateKey(this.privateKeyFile);
     const signature = sign(null, Buffer.from(`blazn-node-install-plan-v1\n${digest}`, "utf8"), key).toString("base64url");
+    return { ...normalized, digest, signature };
+  }
+  async signActivationGrant(unsignedGrant: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const normalized: Record<string, unknown> = { ...unsignedGrant, signingKeyId: this.keyId };
+    delete normalized.digest; delete normalized.signature;
+    const digest = `sha256:${sha256Hex(canonicalJson(normalized))}`;
+    const key = await readEd25519PrivateKey(this.privateKeyFile);
+    const signature = sign(null, Buffer.from(`blazn-node-capacity-activation-grant-v1\n${digest}`, "utf8"), key).toString("base64url");
     return { ...normalized, digest, signature };
   }
 }

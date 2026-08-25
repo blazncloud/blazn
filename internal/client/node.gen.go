@@ -1,5 +1,5 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: afec6e5eb06f127fe7abf3f880973b59a1fc42664e0a160cb2cc4b862ff04db7
+// OpenAPI SHA256: 28e58f649cdf4e65034c3dba3003b547bf6580bf4ad1381ac4cf056f6b8fc7e2
 // NodeInstallPlan SHA256: b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f
 // NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
@@ -152,6 +152,29 @@ type ExchangeNodeEnrollmentRequest struct {
 	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
 }
 
+type NodeActivationRequest struct {
+	ExpectedVersion   int64              `json:"expectedVersion"`
+	Receipt           NodeInstallReceipt `json:"receipt"`
+	KubernetesBinding KubernetesBinding  `json:"kubernetesBinding"`
+}
+
+type NodeActivationGrant struct {
+	SchemaVersion     string            `json:"schemaVersion"`
+	Kind              string            `json:"kind"`
+	NodeID            string            `json:"nodeId"`
+	PlanID            string            `json:"planId"`
+	ReceiptDigest     string            `json:"receiptDigest"`
+	KubernetesBinding KubernetesBinding `json:"kubernetesBinding"`
+	SigningKeyID      string            `json:"signingKeyId"`
+	Digest            string            `json:"digest"`
+	Signature         string            `json:"signature"`
+}
+
+type NodeActivationResponse struct {
+	Node            Node                `json:"node"`
+	ActivationGrant NodeActivationGrant `json:"activationGrant"`
+}
+
 type Node struct {
 	ID                string             `json:"id"`
 	WorkspaceID       string             `json:"workspaceId"`
@@ -235,13 +258,14 @@ type NodeOperation struct {
 }
 
 type NodeHeartbeat struct {
-	NodeID             string         `json:"nodeId"`
-	IdentityGeneration int64          `json:"identityGeneration"`
-	BootID             string         `json:"bootId"`
-	Sequence           int64          `json:"sequence"`
-	SentAt             string         `json:"sentAt"`
-	CapabilityDigest   string         `json:"capabilityDigest"`
-	Capability         NodeCapability `json:"capability"`
+	NodeID                         string         `json:"nodeId"`
+	IdentityGeneration             int64          `json:"identityGeneration"`
+	BootID                         string         `json:"bootId"`
+	Sequence                       int64          `json:"sequence"`
+	SentAt                         string         `json:"sentAt"`
+	PriorKubernetesResourceVersion string         `json:"priorKubernetesResourceVersion"`
+	CapabilityDigest               string         `json:"capabilityDigest"`
+	Capability                     NodeCapability `json:"capability"`
 }
 
 type NodeCapability struct {
@@ -1416,6 +1440,35 @@ func NodeCapabilityDigest(capability NodeCapability) (string, error) {
 	return "sha256:" + hex.EncodeToString(digest.Sum(nil)), nil
 }
 
+func NodeActivationGrantDigest(grant NodeActivationGrant) (string, error) {
+	return nodeCanonicalDigest(grant, "digest", "signature")
+}
+
+func VerifyNodeActivationGrant(grant NodeActivationGrant, signingKey NodePlanSigningKey, nodeID, planID, receiptDigest string, binding KubernetesBinding) error {
+	if grant.SchemaVersion != NodeSchemaVersion || grant.Kind != "node_capacity_activation" || !nodeUUIDPattern.MatchString(grant.NodeID) || !nodeUUIDPattern.MatchString(grant.PlanID) || !nodeDigestPattern.MatchString(grant.ReceiptDigest) || !nodeDigestPattern.MatchString(grant.Digest) || len(grant.Signature) != 86 || !nodeBase64URLPattern.MatchString(grant.Signature) || grant.KubernetesBinding.ClusterID == "" || grant.KubernetesBinding.NodeName == "" || grant.KubernetesBinding.NodeUID == "" || grant.KubernetesBinding.ResourceVersion == "" {
+		return fmt.Errorf("node activation grant is invalid")
+	}
+	digest, err := NodeActivationGrantDigest(grant)
+	if err != nil || !nodeSecureEqual(grant.Digest, digest) {
+		return fmt.Errorf("node activation grant digest mismatch")
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(signingKey.PublicKey)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize || signingKey.KeyID == "" || grant.SigningKeyID != signingKey.KeyID {
+		return fmt.Errorf("node activation grant signer is invalid")
+	}
+	fingerprint, err := NodePublicKeyFingerprint(ed25519.PublicKey(publicKey))
+	if err != nil || !nodeSecureEqual(fingerprint, signingKey.Fingerprint) {
+		return fmt.Errorf("node activation grant signer fingerprint mismatch")
+	}
+	if err := verifyNodeSignature(NodeSigningKeyring{signingKey.KeyID: ed25519.PublicKey(publicKey)}, grant.SigningKeyID, grant.Signature, "blazn-node-capacity-activation-grant-v1\n", digest); err != nil {
+		return fmt.Errorf("node activation grant signature: %w", err)
+	}
+	if grant.NodeID != nodeID || grant.PlanID != planID || grant.ReceiptDigest != receiptDigest || grant.KubernetesBinding != binding {
+		return fmt.Errorf("node activation grant differs from trusted activation evidence")
+	}
+	return nil
+}
+
 func NodePublicKeyFingerprint(publicKey ed25519.PublicKey) (string, error) {
 	if len(publicKey) != ed25519.PublicKeySize {
 		return "", fmt.Errorf("node Ed25519 public key must contain 32 bytes")
@@ -2407,7 +2460,7 @@ func (c *Client) CreateNodeOperation(ctx context.Context, accessToken, nodeID, i
 }
 
 func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, heartbeat NodeHeartbeat) error {
-	if nodeProof == "" || !nodeUUIDPattern.MatchString(heartbeat.NodeID) || heartbeat.IdentityGeneration < 1 || len(heartbeat.BootID) < 1 || len(heartbeat.BootID) > 128 || heartbeat.Sequence < 0 || !nodeDigestPattern.MatchString(heartbeat.CapabilityDigest) {
+	if nodeProof == "" || !nodeUUIDPattern.MatchString(heartbeat.NodeID) || heartbeat.IdentityGeneration < 1 || len(heartbeat.BootID) < 1 || len(heartbeat.BootID) > 128 || heartbeat.Sequence < 0 || heartbeat.PriorKubernetesResourceVersion == "" || len(heartbeat.PriorKubernetesResourceVersion) > 128 || !nodeDigestPattern.MatchString(heartbeat.CapabilityDigest) {
 		return fmt.Errorf("node heartbeat is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339, heartbeat.SentAt); err != nil {
@@ -2421,6 +2474,15 @@ func (c *Client) SubmitNodeHeartbeat(ctx context.Context, nodeProof string, hear
 		return fmt.Errorf("node heartbeat capability digest mismatch")
 	}
 	return c.nodeDo(ctx, http.MethodPost, "/v1/node-service/heartbeats", "", nodeProof, "", heartbeat, nil, http.StatusNoContent)
+}
+
+func (c *Client) ActivateNode(ctx context.Context, nodeProof, idempotencyKey string, request NodeActivationRequest) (NodeActivationResponse, error) {
+	var output NodeActivationResponse
+	if nodeProof == "" || !validNodeIdempotencyKey(idempotencyKey) || request.ExpectedVersion < 1 || ValidateNodeInstallReceipt(request.Receipt) != nil || request.KubernetesBinding.ClusterID == "" || request.KubernetesBinding.NodeName == "" || request.KubernetesBinding.NodeUID == "" || request.KubernetesBinding.ResourceVersion == "" {
+		return output, fmt.Errorf("node activation request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/activations", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
+	return output, err
 }
 
 func (c *Client) IssueNodeJoinCredential(ctx context.Context, nodeProof, idempotencyKey string, request JoinCredentialRequest) (JoinCredential, error) {

@@ -44,7 +44,7 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 	if json.Unmarshal(data, &raw) != nil {
 		return errors.New("root helper request is invalid")
 	}
-	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true, "wal": true, "receipt": true}
+	allowed := map[string]bool{"schemaVersion": true, "operation": true, "platform": true, "plan": true, "ordinal": true, "backupRoot": true, "prior": true, "material": true, "join": true, "bootstrap": true, "wal": true, "receipt": true, "activationGrant": true}
 	for key := range raw {
 		if !allowed[key] {
 			return fmt.Errorf("root helper field %q is unsupported", key)
@@ -97,8 +97,11 @@ func RunRootHelper(ctx context.Context, input io.Reader, output io.Writer, engin
 }
 
 func validateRootRequestShape(request RootRequest) error {
+	if request.ActivationGrant != nil && request.Operation != RootReleaseCapacity && request.Operation != RootVerify {
+		return errors.New("root activation grant is not valid for this operation")
+	}
 	noMutationFields := func() bool {
-		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil && request.WAL == nil && request.Receipt == nil
+		return request.Ordinal == 0 && request.BackupRoot == "" && request.Prior == nil && request.Material == nil && request.Join == nil && request.WAL == nil && request.Receipt == nil && request.ActivationGrant == nil
 	}
 	switch request.Operation {
 	case RootAuthorize:
@@ -133,8 +136,12 @@ func validateRootRequestShape(request RootRequest) error {
 		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt != nil {
 			return errors.New("root quarantine request fields are invalid")
 		}
+	case RootReleaseCapacity:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt == nil || request.ActivationGrant == nil {
+			return errors.New("root capacity release request fields are invalid")
+		}
 	case RootVerify:
-		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil {
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || (request.Receipt == nil) != (request.ActivationGrant == nil) {
 			return errors.New("root verify request fields are invalid")
 		}
 	case RootCreateWAL, RootSaveWAL:
@@ -339,7 +346,13 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		}
 		binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
 		return RootResponse{KubernetesBinding: binding}, err
+	case RootReleaseCapacity:
+		binding, err := e.releaseNodeCapacity(ctx, request.Plan, request.Join, request.Receipt, request.ActivationGrant)
+		return RootResponse{KubernetesBinding: binding}, err
 	case RootVerify:
+		if request.ActivationGrant != nil {
+			return RootResponse{}, e.verifyActivatedCapacityState(ctx, request.Plan, request.Join)
+		}
 		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
 	case RootFinalizeState:
 		return RootResponse{}, e.finalizeServiceState(ctx, request.Plan)
@@ -1395,11 +1408,7 @@ func (e NativeRootEngine) verifyRollbackDesired(ctx context.Context, plan client
 				Labels map[string]string `json:"labels"`
 			} `json:"metadata"`
 			Spec struct {
-				Taints []struct {
-					Key    string `json:"key"`
-					Value  string `json:"value"`
-					Effect string `json:"effect"`
-				} `json:"taints"`
+				Taints []clusterTaint `json:"taints"`
 			} `json:"spec"`
 		}
 		if json.Unmarshal(output, &node) != nil || node.Metadata.UID != join.ExpectedNodeUID {
@@ -1576,6 +1585,186 @@ func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.
 	return nil
 }
 
+const capacityEligibilityLabel = "blazn.dev/sandbox-eligible"
+
+type capacityNodeState struct {
+	Name, UID, ResourceVersion   string
+	Labels                       map[string]string
+	Taints                       []clusterTaint
+	LabelsPresent, TaintsPresent bool
+	Unschedulable                *bool
+}
+
+func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding, receipt *client.NodeInstallReceipt, grant *client.NodeActivationGrant) (*client.KubernetesBinding, error) {
+	if join == nil || receipt == nil || grant == nil || join.ClusterID != plan.Cluster.ID || join.ExpectedNodeName != plan.Hostname || join.ExpectedNodeUID == "" || join.ExpectedResourceVersion == "" {
+		return nil, errors.New("capacity release requires the exact installed node binding")
+	}
+	_, _, authorityPath, err := e.authorityPaths()
+	if err != nil {
+		return nil, err
+	}
+	authority, err := loadRootAuthority(authorityPath)
+	if err != nil || authority.KubernetesBinding == nil || verifyAuthorityReceipt(authority, *receipt, "active") != nil {
+		return nil, errors.New("capacity release lacks a trusted active install receipt")
+	}
+	receiptDigest, err := client.NodeInstallReceiptDigest(*receipt)
+	if err != nil || client.VerifyNodeActivationGrant(*grant, authority.PlanSigningKey, plan.NodeID, plan.PlanID, receiptDigest, grant.KubernetesBinding) != nil {
+		return nil, errors.New("capacity release lacks a valid server activation grant")
+	}
+	authorized := authority.KubernetesBinding
+	grantBinding := grant.KubernetesBinding
+	if authorized.ClusterID != join.ClusterID || authorized.NodeName != join.ExpectedNodeName || authorized.NodeUID != join.ExpectedNodeUID || grantBinding.ClusterID != authorized.ClusterID || grantBinding.NodeName != authorized.NodeName || grantBinding.NodeUID != authorized.NodeUID || grantBinding.ResourceVersion != join.ExpectedResourceVersion {
+		return nil, errors.New("capacity release binding differs from root authority")
+	}
+	state, err := e.readCapacityNode(ctx, plan, authorized.NodeName)
+	if err != nil {
+		return nil, err
+	}
+	if state.Name != authorized.NodeName || state.UID != authorized.NodeUID {
+		return nil, errors.New("capacity release node UID differs from root authority")
+	}
+	released, stateErr := validateCapacityState(state)
+	if stateErr != nil {
+		return nil, stateErr
+	}
+	if join.ExpectedResourceVersion != authorized.ResourceVersion && !released {
+		return nil, errors.New("capacity release request resourceVersion differs from root authority")
+	}
+	if state.ResourceVersion != authorized.ResourceVersion {
+		if released {
+			return e.updateRootKubernetesBinding(plan, JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion})
+		}
+		// Kubernetes may advance its opaque resourceVersion for unrelated benign
+		// metadata. The grant remains bound to the original root authority; only
+		// the exact same UID in the complete quarantine state may be reconciled,
+		// and the patch below still tests the live UID and resourceVersion.
+	}
+	if released {
+		return e.updateRootKubernetesBinding(plan, JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion})
+	}
+
+	updatedTaints := make([]clusterTaint, 0, len(state.Taints)-1)
+	for _, taint := range state.Taints {
+		if taint.Key != "blazn.dev/bootstrap" {
+			updatedTaints = append(updatedTaints, taint)
+		}
+	}
+	operations := []map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": state.UID},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": state.ResourceVersion},
+		{"op": "test", "path": "/spec/taints", "value": state.Taints},
+		{"op": "replace", "path": "/spec/taints", "value": updatedTaints},
+	}
+	labelPath := "/metadata/labels/" + strings.ReplaceAll(strings.ReplaceAll(capacityEligibilityLabel, "~", "~0"), "/", "~1")
+	if state.LabelsPresent {
+		operations = append(operations, map[string]any{"op": "add", "path": labelPath, "value": "true"})
+	} else {
+		operations = append(operations, map[string]any{"op": "add", "path": "/metadata/labels", "value": map[string]string{capacityEligibilityLabel: "true"}})
+	}
+	if state.Unschedulable != nil && *state.Unschedulable {
+		operations = append(operations,
+			map[string]any{"op": "test", "path": "/spec/unschedulable", "value": true},
+			map[string]any{"op": "replace", "path": "/spec/unschedulable", "value": false},
+		)
+	}
+	encoded, err := json.Marshal(operations)
+	if err != nil {
+		return nil, err
+	}
+	output, err := e.kubectl(ctx, plan, "patch", "node", authorized.NodeName, "--type=json", "--patch", string(encoded), "-o", "json")
+	if err != nil {
+		return nil, errors.New("atomic Kubernetes capacity release failed")
+	}
+	patched, err := decodeCapacityNode(output)
+	if err != nil || patched.Name != authorized.NodeName || patched.UID != authorized.NodeUID {
+		return nil, errors.New("capacity release response differs from root authority")
+	}
+	if released, verifyErr := validateCapacityState(patched); verifyErr != nil || !released {
+		return nil, errors.New("capacity release response is not schedulable and eligible")
+	}
+	readBack, err := e.readCapacityNode(ctx, plan, authorized.NodeName)
+	if err != nil || readBack.Name != authorized.NodeName || readBack.UID != authorized.NodeUID {
+		return nil, errors.New("capacity release read-back differs from root authority")
+	}
+	if released, verifyErr := validateCapacityState(readBack); verifyErr != nil || !released {
+		return nil, errors.New("capacity release read-back is not schedulable and eligible")
+	}
+	return e.updateRootKubernetesBinding(plan, JoinedNode{Name: readBack.Name, UID: readBack.UID, ResourceVersion: readBack.ResourceVersion})
+}
+
+func validateCapacityState(state capacityNodeState) (bool, error) {
+	bootstrapCount := 0
+	for _, taint := range state.Taints {
+		if taint.Key != "blazn.dev/bootstrap" {
+			continue
+		}
+		if taint.Value != "pending" || taint.Effect != "NoSchedule" {
+			return false, errors.New("capacity release found an unexpected bootstrap taint variant")
+		}
+		bootstrapCount++
+	}
+	if bootstrapCount > 1 {
+		return false, errors.New("capacity release found duplicate bootstrap taints")
+	}
+	eligibility, hasEligibility := state.Labels[capacityEligibilityLabel]
+	if hasEligibility && eligibility != "true" {
+		return false, errors.New("capacity release found a conflicting eligibility label")
+	}
+	unschedulable := state.Unschedulable != nil && *state.Unschedulable
+	released := bootstrapCount == 0 && hasEligibility && !unschedulable
+	if !released && (bootstrapCount != 1 || hasEligibility) {
+		return false, errors.New("capacity release found partially released node state")
+	}
+	return released, nil
+}
+
+func (e NativeRootEngine) verifyActivatedCapacityState(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
+	if binding == nil || binding.ClusterID != plan.Cluster.ID || binding.ExpectedNodeName != plan.Hostname || binding.ExpectedNodeUID == "" || binding.ExpectedResourceVersion == "" {
+		return errors.New("activated-capacity verification binding is invalid")
+	}
+	state, err := e.readCapacityNode(ctx, plan, binding.ExpectedNodeName)
+	if err != nil || state.Name != binding.ExpectedNodeName || state.UID != binding.ExpectedNodeUID || state.ResourceVersion == "" {
+		return errors.New("activated-capacity verification differs from the authorized node")
+	}
+	_, err = validateCapacityState(state)
+	return err
+}
+
+func (e NativeRootEngine) readCapacityNode(ctx context.Context, plan client.NodeInstallPlan, name string) (capacityNodeState, error) {
+	output, err := e.kubectl(ctx, plan, "get", "node", name, "-o", "json")
+	if err != nil {
+		return capacityNodeState{}, err
+	}
+	return decodeCapacityNode(output)
+}
+
+func decodeCapacityNode(output []byte) (capacityNodeState, error) {
+	var value struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string `json:"labels"`
+		} `json:"metadata"`
+		Spec struct {
+			Taints        *[]clusterTaint `json:"taints"`
+			Unschedulable *bool           `json:"unschedulable"`
+		} `json:"spec"`
+	}
+	if decodeSingleJSON(output, &value) != nil || value.Metadata.Name == "" || value.Metadata.UID == "" || value.Metadata.ResourceVersion == "" {
+		return capacityNodeState{}, errors.New("capacity release node response is invalid")
+	}
+	state := capacityNodeState{Name: value.Metadata.Name, UID: value.Metadata.UID, ResourceVersion: value.Metadata.ResourceVersion, Labels: value.Metadata.Labels, LabelsPresent: value.Metadata.Labels != nil, TaintsPresent: value.Spec.Taints != nil, Unschedulable: value.Spec.Unschedulable}
+	if state.Labels == nil {
+		state.Labels = map[string]string{}
+	}
+	if value.Spec.Taints != nil {
+		state.Taints = *value.Spec.Taints
+	}
+	if state.Taints == nil {
+		state.Taints = []clusterTaint{}
+	}
+	return state, nil
+}
+
 type clusterTaint struct {
 	Key    string `json:"key"`
 	Value  string `json:"value,omitempty"`
@@ -1647,43 +1836,34 @@ func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPla
 		return errors.New("verification binding is incomplete")
 	}
 	joined, err := e.observeNode(ctx, plan, binding.ExpectedNodeName)
-	if err != nil || joined.UID != binding.ExpectedNodeUID {
-		return errors.New("joined node UID differs from binding")
+	if err != nil || joined.UID != binding.ExpectedNodeUID || joined.ResourceVersion != binding.ExpectedResourceVersion {
+		return errors.New("joined node identity or resourceVersion differs from binding")
 	}
 	output, err := e.kubectl(ctx, plan, "get", "node", binding.ExpectedNodeName, "-o", "json")
 	if err != nil {
 		return err
 	}
-	var node struct {
-		Metadata struct {
-			Labels map[string]string `json:"labels"`
-		} `json:"metadata"`
-		Spec struct {
-			Taints []struct {
-				Key    string `json:"key"`
-				Value  string `json:"value"`
-				Effect string `json:"effect"`
-			} `json:"taints"`
-		} `json:"spec"`
-	}
-	if json.Unmarshal(output, &node) != nil {
+	node, err := decodeCapacityNode(output)
+	if err != nil || node.Name != binding.ExpectedNodeName || node.UID != binding.ExpectedNodeUID || node.ResourceVersion != binding.ExpectedResourceVersion {
 		return errors.New("joined node taint response is invalid")
 	}
+	released, err := validateCapacityState(node)
+	if err != nil {
+		return err
+	}
 	for _, mutation := range sortedMutations(plan) {
-		if err := e.verifyMutation(ctx, plan, mutation, node.Metadata.Labels, node.Spec.Taints); err != nil {
+		if released && isBootstrapTaintMutation(mutation) {
+			continue
+		}
+		if err := e.verifyMutation(ctx, plan, mutation, node.Labels, node.Taints); err != nil {
 			return fmt.Errorf("verify mutation %d: %w", mutation.Ordinal, err)
 		}
 	}
-	observedTaint := false
-	for _, taint := range node.Spec.Taints {
-		if taint.Key == "blazn.dev/bootstrap" && taint.Value == "pending" && taint.Effect == "NoSchedule" {
-			observedTaint = true
-		}
-	}
-	if !observedTaint {
-		return errors.New("bootstrap taint is not observed")
-	}
 	return nil
+}
+
+func isBootstrapTaintMutation(mutation client.NodeInstallMutation) bool {
+	return mutation.Kind == "taint" && mutation.Target == "blazn.dev/bootstrap" && stringValue(mutation.Desired["value"]) == "pending" && stringValue(mutation.Desired["effect"]) == "NoSchedule"
 }
 
 func (e NativeRootEngine) verifyQuarantinedJoin(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
@@ -1732,11 +1912,7 @@ func (e NativeRootEngine) quarantineJoinedNode(ctx context.Context, plan client.
 	return e.verifyQuarantinedJoin(ctx, plan, binding)
 }
 
-func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, labels map[string]string, taints []struct {
-	Key    string `json:"key"`
-	Value  string `json:"value"`
-	Effect string `json:"effect"`
-}) error {
+func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeInstallPlan, mutation client.NodeInstallMutation, labels map[string]string, taints []clusterTaint) error {
 	switch mutation.Kind {
 	case "group":
 		group, err := user.LookupGroup(mutation.Target)

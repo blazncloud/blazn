@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -83,11 +84,12 @@ func TestDaemonRuntimeStartsAndHeartbeatsFromServiceStateWithoutUserToken(t *tes
 	}
 	plan := installPlan()
 	plan.ExpiresAt = "2026-08-22T13:00:00Z"
+	capability := testCapability()
 	state := FileStateStore{Root: paths.ServiceStateRoot}
-	if err := state.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: server.URL, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, UpdatedAt: plan.IssuedAt}); err != nil {
+	if err := state.SaveRuntime(RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: server.URL, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 1, SigningKeyID: "node-identity/v1", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &capability.Worker.KubernetesBinding, UpdatedAt: plan.IssuedAt}); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := newProductionDaemonCommandRuntime(paths, "v-test", server.Client(), fixedCapability{capability: testCapability()})
+	runtime, err := newProductionDaemonCommandRuntime(paths, "v-test", server.Client(), fixedCapability{capability: capability})
 	if err != nil || runtime.AccessToken != "" || runtime.Service != nil || runtime.Daemon == nil {
 		t.Fatalf("runtime=%#v err=%v", runtime, err)
 	}
@@ -896,9 +898,10 @@ func TestEnrollmentPinIsCreateOnceAndRejectsTrustReplacement(t *testing.T) {
 func TestDaemonSignsCanonicalHeartbeatAndAdvancesSequence(t *testing.T) {
 	identity := testIdentity(t)
 	plan := installPlan()
-	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}}}
+	capability := testCapability()
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &capability.Worker.KubernetesBinding}}
 	api := &mockAPI{}
-	daemon := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: testCapability()})
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: capability})
 	daemon.now = func() time.Time { return time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC) }
 	first, err := daemon.Heartbeat(context.Background())
 	if err != nil {
@@ -918,6 +921,100 @@ func TestDaemonSignsCanonicalHeartbeatAndAdvancesSequence(t *testing.T) {
 	signature, err := base64.RawURLEncoding.DecodeString(api.lastProof)
 	if err != nil || !ed25519.Verify(identity.PublicKey, append([]byte("blazn-node-heartbeat-v1\n"), canonical...), signature) {
 		t.Fatal("heartbeat proof invalid")
+	}
+}
+
+func TestDaemonPersistsAndExactlyReplaysHeartbeatAfterAcknowledgmentLoss(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	capability := testCapability()
+	origin := capability.Worker.KubernetesBinding
+	origin.ResourceVersion = "opaque-origin"
+	capability.Worker.KubernetesBinding.ResourceVersion = "opaque-next"
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &origin}}
+	api := &mockAPI{heartbeatResponseLosses: 1}
+	when := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: capability})
+	daemon.now = func() time.Time { return when }
+	if _, err := daemon.Heartbeat(context.Background()); err == nil || state.runtime.PendingHeartbeat == nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-origin" {
+		t.Fatalf("pending=%#v binding=%#v err=%v", state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
+	}
+	pending := *state.runtime.PendingHeartbeat
+	nextCapability := capability
+	nextCapability.Worker.KubernetesBinding.ResourceVersion = "opaque-after-replay"
+	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: nextCapability})
+	restarted.now = func() time.Time { return when.Add(time.Minute) }
+	result, err := restarted.Heartbeat(context.Background())
+	if err != nil || api.heartbeatCalls != 2 || !reflect.DeepEqual(api.lastHeartbeat, pending) || result.Sequence != pending.Sequence || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
+		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
+	}
+	restarted.now = func() time.Time { return when.Add(2 * time.Minute) }
+	next, err := restarted.Heartbeat(context.Background())
+	if err != nil || api.heartbeatCalls != 3 || next.BootID != pending.BootID || next.Sequence != pending.Sequence+1 || api.lastHeartbeat.BootID != pending.BootID || api.lastHeartbeat.Sequence != pending.Sequence+1 || api.lastHeartbeat.PriorKubernetesResourceVersion != "opaque-next" || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-after-replay" {
+		t.Fatalf("next=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", next, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
+	}
+}
+
+func TestDaemonReplaysPendingHeartbeatAfterAcceptedStateSaveCrash(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	capability := testCapability()
+	origin := capability.Worker.KubernetesBinding
+	origin.ResourceVersion = "opaque-origin"
+	capability.Worker.KubernetesBinding.ResourceVersion = "opaque-next"
+	base := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &origin}}
+	state := &runtimeFaultState{memoryState: base, failAt: 2}
+	api := &mockAPI{}
+	when := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: capability})
+	daemon.now = func() time.Time { return when }
+	if _, err := daemon.Heartbeat(context.Background()); err == nil || base.runtime.PendingHeartbeat == nil || base.runtime.KubernetesBinding.ResourceVersion != "opaque-origin" || api.heartbeatCalls != 1 {
+		t.Fatalf("pending=%#v binding=%#v calls=%d err=%v", base.runtime.PendingHeartbeat, base.runtime.KubernetesBinding, api.heartbeatCalls, err)
+	}
+	pending := *base.runtime.PendingHeartbeat
+	state.failAt = 0
+	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: client.NodeCapability{}})
+	restarted.now = func() time.Time { return when.Add(time.Minute) }
+	result, err := restarted.Heartbeat(context.Background())
+	if err != nil || api.heartbeatCalls != 2 || !reflect.DeepEqual(api.lastHeartbeat, pending) || result.Sequence != pending.Sequence || base.runtime.PendingHeartbeat != nil || base.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
+		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, base.runtime.PendingHeartbeat, base.runtime.KubernetesBinding, err)
+	}
+}
+
+func TestSeparateDaemonsCannotOverwriteAcceptedBindingWithStalePendingHeartbeat(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	firstCapability := testCapability()
+	origin := firstCapability.Worker.KubernetesBinding
+	origin.ResourceVersion = "opaque-origin"
+	firstCapability.Worker.KubernetesBinding.ResourceVersion = "opaque-first"
+	staleCapability := firstCapability
+	staleCapability.Worker.KubernetesBinding.ResourceVersion = "opaque-stale"
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &origin}}
+	api := &mockAPI{heartbeatEntered: make(chan struct{}), heartbeatRelease: make(chan struct{})}
+	when := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	first := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: firstCapability})
+	first.now = func() time.Time { return when }
+	second := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: staleCapability})
+	second.now = func() time.Time { return when.Add(time.Second) }
+	result := make(chan error, 1)
+	go func() {
+		_, err := first.Heartbeat(context.Background())
+		result <- err
+	}()
+	<-api.heartbeatEntered
+	if state.runtime.PendingHeartbeat == nil || state.runtime.PendingHeartbeat.Capability.Worker.KubernetesBinding.ResourceVersion != "opaque-first" {
+		t.Fatalf("first pending heartbeat was not journaled: %#v", state.runtime.PendingHeartbeat)
+	}
+	if _, err := second.Heartbeat(context.Background()); err == nil || !strings.Contains(err.Error(), "runtime transition lock") {
+		t.Fatalf("overlapping daemon was not rejected: %v", err)
+	}
+	if state.runtime.PendingHeartbeat == nil || state.runtime.PendingHeartbeat.Capability.Worker.KubernetesBinding.ResourceVersion != "opaque-first" || api.heartbeatCalls != 1 {
+		t.Fatalf("stale caller overwrote pending transition: pending=%#v calls=%d", state.runtime.PendingHeartbeat, api.heartbeatCalls)
+	}
+	close(api.heartbeatRelease)
+	if err := <-result; err != nil || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-first" || api.heartbeatCalls != 1 {
+		t.Fatalf("accepted binding was not preserved: binding=%#v pending=%#v calls=%d err=%v", state.runtime.KubernetesBinding, state.runtime.PendingHeartbeat, api.heartbeatCalls, err)
 	}
 }
 
@@ -949,34 +1046,82 @@ func (f fixedCapability) Capability(context.Context) (client.NodeCapability, err
 }
 
 type mockAPI struct {
-	lastProof     string
-	lastHeartbeat client.NodeHeartbeat
-	secret        client.NodeEnrollmentSecret
-	exchange      client.ExchangeNodeEnrollmentResponse
+	lastProof                string
+	lastHeartbeat            client.NodeHeartbeat
+	lastActivationProof      string
+	lastActivationKey        string
+	lastActivation           client.NodeActivationRequest
+	secret                   client.NodeEnrollmentSecret
+	exchange                 client.ExchangeNodeEnrollmentResponse
+	activation               client.Node
+	activationSigner         *Identity
+	activationErr            error
+	heartbeatResponseLosses  int
+	heartbeatCalls           int
+	heartbeatEntered         chan struct{}
+	heartbeatRelease         chan struct{}
+	heartbeatEnteredOnce     sync.Once
+	activationResponseLosses int
+	createCalls              int
+	exchangeCalls            int
 }
 
 func (m *mockAPI) CreateNodeEnrollment(context.Context, string, string, string, client.CreateNodeEnrollmentRequest) (client.NodeEnrollmentSecret, error) {
+	m.createCalls++
 	if m.secret.ID == "" {
 		return client.NodeEnrollmentSecret{}, errors.New("unused")
 	}
 	return m.secret, nil
 }
 func (m *mockAPI) ExchangeNodeEnrollment(context.Context, string, client.ExchangeNodeEnrollmentRequest) (client.ExchangeNodeEnrollmentResponse, error) {
+	m.exchangeCalls++
 	return m.exchange, nil
 }
 func (m *mockAPI) SubmitNodeHeartbeat(_ context.Context, proof string, heartbeat client.NodeHeartbeat) error {
+	m.heartbeatCalls++
 	m.lastProof = proof
 	m.lastHeartbeat = heartbeat
+	if m.heartbeatEntered != nil {
+		m.heartbeatEnteredOnce.Do(func() { close(m.heartbeatEntered) })
+	}
+	if m.heartbeatRelease != nil {
+		<-m.heartbeatRelease
+	}
+	if m.heartbeatResponseLosses > 0 {
+		m.heartbeatResponseLosses--
+		return errors.New("injected heartbeat response loss")
+	}
 	return nil
+}
+func (m *mockAPI) ActivateNode(_ context.Context, proof, key string, request client.NodeActivationRequest) (client.NodeActivationResponse, error) {
+	m.lastActivationProof = proof
+	m.lastActivationKey = key
+	m.lastActivation = request
+	if m.activationErr != nil {
+		return client.NodeActivationResponse{}, m.activationErr
+	}
+	if m.activationSigner == nil {
+		return client.NodeActivationResponse{}, errors.New("activation signer unavailable")
+	}
+	receiptDigest, _ := client.NodeInstallReceiptDigest(request.Receipt)
+	grant := client.NodeActivationGrant{SchemaVersion: client.NodeSchemaVersion, Kind: "node_capacity_activation", NodeID: request.Receipt.NodeID, PlanID: request.Receipt.PlanID, ReceiptDigest: receiptDigest, KubernetesBinding: request.KubernetesBinding, SigningKeyID: m.secret.PlanSigningKey.KeyID}
+	grant.Digest, _ = client.NodeActivationGrantDigest(grant)
+	grant.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(m.activationSigner.PrivateKey, []byte("blazn-node-capacity-activation-grant-v1\n"+grant.Digest)))
+	if m.activationResponseLosses > 0 {
+		m.activationResponseLosses--
+		return client.NodeActivationResponse{}, errors.New("injected activation response loss after commit")
+	}
+	return client.NodeActivationResponse{Node: m.activation, ActivationGrant: grant}, nil
 }
 
 type memoryState struct {
-	lock    sync.Mutex
-	pin     EnrollmentPin
-	runtime RuntimeState
-	wal     InstallWAL
-	hasWAL  bool
-	receipt client.NodeInstallReceipt
+	lock        sync.Mutex
+	runtimeLock sync.Mutex
+	pin         EnrollmentPin
+	runtime     RuntimeState
+	wal         InstallWAL
+	hasWAL      bool
+	receipt     client.NodeInstallReceipt
 }
 
 type faultState struct {
@@ -984,6 +1129,20 @@ type faultState struct {
 	failAt int
 	saves  int
 }
+type runtimeFaultState struct {
+	*memoryState
+	failAt int
+	saves  int
+}
+
+func (f *runtimeFaultState) SaveRuntime(v RuntimeState) error {
+	f.saves++
+	if f.saves == f.failAt {
+		return errors.New("injected runtime persistence crash")
+	}
+	return f.memoryState.SaveRuntime(v)
+}
+
 type persistResidueFaultState struct {
 	*memoryState
 	failed bool
@@ -1015,6 +1174,12 @@ func (m *memoryState) AcquireInstallLock() (func(), error) {
 		return nil, errors.New("locked")
 	}
 	return m.lock.Unlock, nil
+}
+func (m *memoryState) AcquireRuntimeLock() (func(), error) {
+	if !m.runtimeLock.TryLock() {
+		return nil, errors.New("runtime locked")
+	}
+	return m.runtimeLock.Unlock, nil
 }
 
 func (m *memoryState) Pin(v EnrollmentPin) error {
@@ -1067,7 +1232,13 @@ type mockPlatform struct {
 }
 type bindingMockPlatform struct {
 	*mockPlatform
-	binding *client.KubernetesBinding
+	binding                 *client.KubernetesBinding
+	releaseCount            int
+	releaseErr              error
+	recoveryDrift           string
+	releasedResourceVersion string
+	recoveryInput           *client.KubernetesBinding
+	recoveryGrantBinding    *client.KubernetesBinding
 }
 type checkpointPlatform struct {
 	*mockPlatform
@@ -1132,6 +1303,32 @@ func (p *bindingMockPlatform) KubernetesBinding() *client.KubernetesBinding {
 	return &value
 }
 
+func (p *bindingMockPlatform) ReleaseNodeCapacity(context.Context, client.NodeInstallPlan, client.NodeInstallReceipt, client.NodeActivationGrant) (*client.KubernetesBinding, error) {
+	p.releaseCount++
+	if p.releaseErr != nil {
+		return nil, p.releaseErr
+	}
+	value := *p.binding
+	value.ResourceVersion = p.releasedResourceVersion
+	if value.ResourceVersion == "" {
+		value.ResourceVersion = "8"
+	}
+	p.binding = &value
+	return &value, nil
+}
+
+func (p *bindingMockPlatform) RecoverActivatedCapacity(_ context.Context, _ client.NodeInstallPlan, _ client.NodeInstallReceipt, grant client.NodeActivationGrant, binding client.KubernetesBinding) (*client.KubernetesBinding, error) {
+	p.recoveryInput = &binding
+	grantBinding := grant.KubernetesBinding
+	p.recoveryGrantBinding = &grantBinding
+	current := binding
+	if p.recoveryDrift != "" {
+		current.ResourceVersion = p.recoveryDrift
+	}
+	p.binding = &current
+	return p.ReleaseNodeCapacity(context.Background(), client.NodeInstallPlan{}, client.NodeInstallReceipt{}, client.NodeActivationGrant{})
+}
+
 func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
 	m.authorization = &authorization
 	return m.authorizeErr
@@ -1165,11 +1362,11 @@ func (m *mockPlatform) FinalizeServiceState(context.Context, client.NodeInstallP
 }
 
 func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
-	authorization, identity := validBootstrapAuthorization(t)
+	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
 	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
 	state := &memoryState{}
 	installer := NewInstaller(platform, state)
-	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected}
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected, activationSigner: &planSigner, activation: client.Node{ID: authorization.Expected.Plan.NodeID, WorkspaceID: authorization.Expected.Plan.WorkspaceID, Name: authorization.Expected.Plan.Hostname, Kind: "shared", Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, LifecycleState: "active", TrustState: "verified", Version: 3, KubernetesBinding: authorization.KubernetesBinding, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:01:00Z"}}
 	service := NewService(api, fixedIdentity{identity}, state, installer)
 	when := time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC)
 	service.now = func() time.Time { return when }
@@ -1178,13 +1375,98 @@ func TestInstallPersistsFinalBindingForHeartbeat(t *testing.T) {
 	if err != nil || !result.Installed || state.runtime.KubernetesBinding == nil {
 		t.Fatalf("result=%#v binding=%#v err=%v", result, state.runtime.KubernetesBinding, err)
 	}
+	if api.lastActivation.Receipt.ReceiptID != result.Receipt.ReceiptID || api.lastActivation.KubernetesBinding != *authorization.KubernetesBinding || api.lastActivation.ExpectedVersion != 1 || api.lastActivationKey != "node-activate-"+result.Receipt.ReceiptID || api.lastActivationProof == "" {
+		t.Fatalf("activation=%#v key=%q proof=%q", api.lastActivation, api.lastActivationKey, api.lastActivationProof)
+	}
+	if platform.releaseCount != 1 || state.runtime.KubernetesBinding.ResourceVersion != "8" || result.State.KubernetesBinding.ResourceVersion != "8" || platform.finalized != 1 {
+		t.Fatalf("release count=%d runtime=%#v result=%#v finalized=%d", platform.releaseCount, state.runtime.KubernetesBinding, result.State.KubernetesBinding, platform.finalized)
+	}
 	plan := authorization.Expected.Plan
-	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *authorization.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
+	observation := LiveNodeObservation{CPUMillis: plan.Target.MinCPU*1000 + plan.ResourceBounds.ReservedCPUMillis, MemoryBytes: plan.Target.MinMemoryBytes + plan.ResourceBounds.ReservedMemoryBytes, DiskBytes: plan.Target.MinDiskBytes, AllocatableCPUMillis: plan.Target.MinCPU * 1000, AllocatableMemoryBytes: plan.Target.MinMemoryBytes, AllocatableDiskBytes: plan.Target.MinDiskBytes, ServiceActive: true, NodeReady: true, Binding: *state.runtime.KubernetesBinding, RuntimeClasses: []string{}, SandboxBackends: []string{}, ReasonCodes: []string{}}
 	daemon := NewDaemon(api, state, fixedIdentity{identity}, ProductionCapabilityProvider{State: state, Observer: fixedLiveObserver{observation: observation}})
 	daemon.now = func() time.Time { return when }
 	if _, err := daemon.Heartbeat(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestInstallDoesNotReleaseCapacityWhenControlPlaneActivationFails(t *testing.T) {
+	authorization, identity := validBootstrapAuthorization(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
+	state := &memoryState{}
+	api := &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected, activationErr: errors.New("activation unavailable")}
+	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, state))
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
+	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: authorization.Expected.Plan.WorkspaceID, IdempotencyKey: authorization.Expected.Plan.IdempotencyKey, Name: authorization.Expected.Plan.Hostname, Mode: authorization.Expected.Plan.Mode, Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, MachineFingerprint: authorization.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: trustedBootstrapProfile(authorization.Expected.Plan), ProfilePath: authorization.ProfilePath}, true)
+	if err == nil || platform.releaseCount != 0 || platform.finalized != 0 || state.runtime.KubernetesBinding == nil || state.runtime.KubernetesBinding.ResourceVersion != "7" {
+		t.Fatalf("err=%v release=%d finalized=%d binding=%#v", err, platform.releaseCount, platform.finalized, state.runtime.KubernetesBinding)
+	}
+}
+
+func TestExpiredActivationRecoveryReplaysCommittedActivationAfterResponseLoss(t *testing.T) {
+	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding, recoveryDrift: "opaque-drift", releasedResourceVersion: "opaque-released"}
+	state := &memoryState{}
+	api := activatedMockAPI(authorization, planSigner)
+	api.activationResponseLosses = 1
+	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, state))
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
+	options := recoveryEnrollOptions(authorization)
+	if _, err := service.Enroll(context.Background(), options, true); err == nil || state.runtime.ActivationGrant != nil || platform.releaseCount != 0 || api.createCalls != 1 || api.exchangeCalls != 1 {
+		t.Fatalf("grant=%#v release=%d create=%d exchange=%d err=%v", state.runtime.ActivationGrant, platform.releaseCount, api.createCalls, api.exchangeCalls, err)
+	}
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
+	result, err := service.Enroll(context.Background(), options, true)
+	if err != nil || result.State.ActivationGrant == nil || result.State.KubernetesBinding == nil || result.State.KubernetesBinding.ResourceVersion != "opaque-released" || platform.recoveryInput == nil || platform.recoveryInput.ResourceVersion != "7" || platform.recoveryGrantBinding == nil || platform.recoveryGrantBinding.ResourceVersion != "7" || platform.releaseCount != 1 || platform.finalized != 1 || api.createCalls != 1 || api.exchangeCalls != 1 {
+		t.Fatalf("result=%#v release=%d finalized=%d create=%d exchange=%d err=%v", result, platform.releaseCount, platform.finalized, api.createCalls, api.exchangeCalls, err)
+	}
+}
+
+func TestExpiredActivationRecoveryFinishesAfterGrantPersistedBeforeRelease(t *testing.T) {
+	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding, releaseErr: errors.New("injected crash before capacity mutation")}
+	state := &memoryState{}
+	api := activatedMockAPI(authorization, planSigner)
+	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, state))
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
+	options := recoveryEnrollOptions(authorization)
+	if _, err := service.Enroll(context.Background(), options, true); err == nil || state.runtime.ActivationGrant == nil || platform.releaseCount != 1 {
+		t.Fatalf("grant=%#v releases=%d err=%v", state.runtime.ActivationGrant, platform.releaseCount, err)
+	}
+	platform.releaseErr = nil
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
+	result, err := service.Enroll(context.Background(), options, true)
+	if err != nil || result.State.KubernetesBinding == nil || result.State.KubernetesBinding.ResourceVersion != "8" || platform.releaseCount != 2 || platform.finalized != 1 {
+		t.Fatalf("result=%#v releases=%d finalized=%d err=%v", result, platform.releaseCount, platform.finalized, err)
+	}
+}
+
+func TestExpiredActivationRecoveryRepairsRuntimeAfterReleasedBindingSaveCrash(t *testing.T) {
+	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
+	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding}
+	state := &runtimeFaultState{memoryState: &memoryState{}, failAt: 4}
+	api := activatedMockAPI(authorization, planSigner)
+	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, state))
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
+	options := recoveryEnrollOptions(authorization)
+	if _, err := service.Enroll(context.Background(), options, true); err == nil || state.runtime.ActivationGrant == nil || state.runtime.KubernetesBinding.ResourceVersion != "7" || platform.binding.ResourceVersion != "8" {
+		t.Fatalf("runtime=%#v platform=%#v err=%v", state.runtime, platform.binding, err)
+	}
+	state.failAt = 0
+	service.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
+	result, err := service.Enroll(context.Background(), options, true)
+	if err != nil || result.State.KubernetesBinding == nil || result.State.KubernetesBinding.ResourceVersion != "8" || platform.releaseCount != 2 || platform.finalized != 1 {
+		t.Fatalf("result=%#v releases=%d finalized=%d err=%v", result, platform.releaseCount, platform.finalized, err)
+	}
+}
+
+func activatedMockAPI(authorization BootstrapAuthorization, planSigner Identity) *mockAPI {
+	return &mockAPI{secret: client.NodeEnrollmentSecret{ID: authorization.EnrollmentID, Token: authorization.Token, TokenKeyID: "node-enrollment/v1", PlanSigningKey: authorization.PlanSigningKey, ExpiresAt: authorization.Expected.Plan.ExpiresAt}, exchange: authorization.Expected, activationSigner: &planSigner, activation: client.Node{ID: authorization.Expected.Plan.NodeID, WorkspaceID: authorization.Expected.Plan.WorkspaceID, Name: authorization.Expected.Plan.Hostname, Kind: "shared", Platform: authorization.Expected.Plan.Target.Platform, Architecture: authorization.Expected.Plan.Target.Architecture, LifecycleState: "active", TrustState: "verified", Version: 3, KubernetesBinding: authorization.KubernetesBinding, CreatedAt: "2026-08-21T00:00:00Z", UpdatedAt: "2026-08-21T00:01:00Z"}}
+}
+
+func recoveryEnrollOptions(authorization BootstrapAuthorization) EnrollOptions {
+	plan := authorization.Expected.Plan
+	return EnrollOptions{AccessToken: "access", WorkspaceID: plan.WorkspaceID, IdempotencyKey: plan.IdempotencyKey, Name: plan.Hostname, Mode: plan.Mode, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, MachineFingerprint: plan.Target.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: trustedBootstrapProfile(plan), ProfilePath: authorization.ProfilePath}
 }
 
 func testRoot(t *testing.T) string {

@@ -55,6 +55,9 @@ func (s *PrivilegedInstallState) call(operation RootOperation, wal *InstallWAL, 
 func (s *PrivilegedInstallState) AcquireInstallLock() (func(), error) {
 	return s.Local.AcquireInstallLock()
 }
+func (s *PrivilegedInstallState) AcquireRuntimeLock() (func(), error) {
+	return s.Local.AcquireRuntimeLock()
+}
 func (s *PrivilegedInstallState) Pin(v EnrollmentPin) error          { return s.Local.Pin(v) }
 func (s *PrivilegedInstallState) LoadPin() (EnrollmentPin, error)    { return s.Local.LoadPin() }
 func (s *PrivilegedInstallState) SaveRuntime(v RuntimeState) error   { return s.Local.SaveRuntime(v) }

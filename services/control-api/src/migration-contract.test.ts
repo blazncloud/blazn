@@ -178,10 +178,20 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-3), [
-    "020_sandbox_source_materialization.sql",
     "021_sandbox_artifact_export.sql",
     "022_development_runtime.sql",
+    "023_node_activation.sql",
   ]);
+});
+
+test("node activation migration persists idempotency and permits pre-heartbeat activation", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/023_node_activation.sql"), "utf8");
+  assert.match(sql, /activation_idempotency_key/);
+  assert.match(sql, /request_digest/);
+  assert.match(sql, /expected_node_version/);
+  assert.match(sql, /UNIQUE\(node_id,activation_idempotency_key\)/);
+  assert.doesNotMatch(sql.match(/nodes_agent_eligibility_check[^;]+/)?.[0] ?? "", /current_capability_version/);
 });
 
 test("artifact export migration fences immutable object evidence and UUID replay", async () => {

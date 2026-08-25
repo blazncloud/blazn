@@ -44,6 +44,33 @@ func (i *Installer) FinalizeServiceState(ctx context.Context, plan client.NodeIn
 	return finalizer.FinalizeServiceState(ctx, plan)
 }
 
+func (i *Installer) ReleaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt, grant client.NodeActivationGrant) (*client.KubernetesBinding, error) {
+	releaser, ok := i.platform.(interface {
+		ReleaseNodeCapacity(context.Context, client.NodeInstallPlan, client.NodeInstallReceipt, client.NodeActivationGrant) (*client.KubernetesBinding, error)
+	})
+	if !ok {
+		return nil, errors.New("platform capacity releaser is unavailable")
+	}
+	return releaser.ReleaseNodeCapacity(ctx, plan, receipt, grant)
+}
+
+func (i *Installer) RecoverActivatedCapacity(ctx context.Context, plan client.NodeInstallPlan, receipt client.NodeInstallReceipt, grant client.NodeActivationGrant, binding client.KubernetesBinding) (*client.KubernetesBinding, error) {
+	recoverer, ok := i.platform.(interface {
+		RecoverActivatedCapacity(context.Context, client.NodeInstallPlan, client.NodeInstallReceipt, client.NodeActivationGrant, client.KubernetesBinding) (*client.KubernetesBinding, error)
+	})
+	if !ok {
+		return nil, errors.New("platform activated-capacity recovery is unavailable")
+	}
+	return recoverer.RecoverActivatedCapacity(ctx, plan, receipt, grant, binding)
+}
+
+func (i *Installer) LoadReceipt() (client.NodeInstallReceipt, error) {
+	if i.state == nil {
+		return client.NodeInstallReceipt{}, errors.New("installer state is unavailable")
+	}
+	return i.state.LoadReceipt()
+}
+
 func (i *Installer) AuthorizeBootstrap(ctx context.Context, authorization BootstrapAuthorization) error {
 	if i.platform == nil {
 		return errors.New("privileged platform is unavailable")
