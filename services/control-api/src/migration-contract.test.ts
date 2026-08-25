@@ -177,10 +177,12 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-3), [
+  assert.deepEqual(migrations.slice(-5), [
     "022_development_runtime.sql",
     "023_node_activation.sql",
     "024_development_controller.sql",
+    "025_development_executor.sql",
+    "026_development_sandbox_evidence.sql",
   ]);
 });
 
@@ -284,4 +286,49 @@ test("Development controller migration normalizes evidence and grants only fence
   assert.doesNotMatch(sql,/GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_development_controller/);
   for(const forbidden of ["objectkey","signedurl","buildkitendpoint","buildkitclientcertificate","registrycredential"])
     assert.match(sql,new RegExp(`'${forbidden}'`));
+});
+
+test("Development executor migration persists bounded evidence through lease-fenced authority",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/025_development_executor.sql"),"utf8");
+  assert.match(sql,/CREATE TABLE development_artifact_blobs/);
+  assert.match(sql,/octet_length\(content\) BETWEEN 1 AND 16777216/);
+  assert.match(sql,/p_content_digest <> 'sha256:' \|\| encode\(digest\(p_content,'sha256'\),'hex'\)/);
+  assert.match(sql,/job\.worker_id<>p_worker_id[\s\S]*job\.lease_token<>p_lease_token[\s\S]*job\.lease_expires_at<=effective_now/);
+  assert.match(sql,/stored_content=p_content/);
+  assert.match(sql,/development_build_jobs WHERE build_id=p_build_id FOR UPDATE/);
+  assert.match(sql,/development_controller_release_v1/);
+  assert.match(sql,/attempt_count=CASE WHEN attempt_count>=5 THEN 0 ELSE attempt_count END/);
+  assert.match(sql,/failure_count=failure_count\+1/);
+  assert.match(sql,/execution_generation bigint NOT NULL DEFAULT 0/);
+  assert.match(sql,/execution_generation=job\.execution_generation\+1/);
+  assert.match(sql,/attempt_count=CASE WHEN job\.attempt_count>=5 THEN 1 ELSE job\.attempt_count\+1 END/);
+  assert.doesNotMatch(sql,/available_at<=effective_now AND job\.attempt_count<5/);
+  assert.match(sql,/CREATE FUNCTION development_controller_commit_execution_v1/);
+  assert.match(sql,/Development Artifact commit was fenced[\s\S]*development_controller_finalize_v1[\s\S]*Development finalization was fenced/);
+  assert.match(sql,/development_evidence_is_redacted\(content_document\)/);
+  assert.match(sql,/github_pat_/);
+  assert.match(sql,/REVOKE ALL ON TABLE development_artifact_blobs[\s\S]*blazn_development_controller/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION development_controller_store_artifact_v1[\s\S]*TO blazn_development_controller/);
+  assert.doesNotMatch(sql,/GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_development_controller/);
+});
+
+test("Development Sandbox evidence migration reuses lifecycle authority and remains candidate-image fail closed",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/026_development_sandbox_evidence.sql"),"utf8");
+  assert.match(sql,/CREATE TABLE development_sandbox_test_runs/);
+  assert.match(sql,/candidate_image_bound boolean NOT NULL DEFAULT false/);
+  assert.match(sql,/CHECK \(candidate_image_bound OR status IN \('preparing','ready','cleanup_pending','clean'\)\)/);
+  assert.match(sql,/sandbox_create_bound_sandbox_for_duration/);
+  assert.match(sql,/INSERT INTO public\.sandbox_operations[\s\S]*'create','pending'/);
+  assert.match(sql,/development_collector_prepare_sandbox_v1/);
+  assert.match(sql,/development_collector_resolve_sandbox_v1/);
+  assert.match(sql,/attempt_generation bigint NOT NULL/);
+  assert.match(sql,/job\.execution_generation=p_attempt_generation AND job\.lease_expires_at>clock_timestamp\(\)/);
+  assert.match(sql,/development_build_jobs WHERE build_id=p_build_id FOR UPDATE/);
+  assert.match(sql,/development_collector_authorize_execution_v1/);
+  assert.match(sql,/PRIMARY KEY \(build_id,attempt_generation,platform,test_name\)/);
+  assert.match(sql,/timeout_seconds integer NOT NULL CHECK \(timeout_seconds BETWEEN 1 AND 600\)/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION[\s\S]*TO blazn_development_controller/);
+  assert.doesNotMatch(sql,/GRANT (?:SELECT|INSERT|UPDATE|DELETE).*development_sandbox_test_runs/);
 });

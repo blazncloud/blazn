@@ -12,6 +12,7 @@
     "migrate": "node dist/migrate.js",
     "start": "node dist/server.js",
     "start:node-broker": "node dist/node-broker-main.js",
+    "start:development-controller": "node dist/development-controller-main.js",
     "test": "node --test dist/**/*.test.js"
   },
   "dependencies": {

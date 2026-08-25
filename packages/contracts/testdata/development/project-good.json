@@ -7,6 +7,6 @@
   "platforms": ["linux/amd64", "linux/arm64"],
   "build": {"context": ".", "dockerfile": "Dockerfile", "registryRepository": "registry.blazn.invalid/poc/coding-agent"},
   "dependencyLocks": {"package-lock.json": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
-  "tests": {"poc": {"argv": ["npm", "test"], "timeoutSeconds": 900}},
+  "tests": {"poc": {"argv": ["npm", "test"], "timeoutSeconds": 600}},
   "policy": {"builderProfile": "trusted-buildkit-v1", "networkProfile": "build-egress-v1", "resourceProfile": "poc-build-small-v1", "publicationPolicy": "poc-development-v1"}
 }

@@ -8,6 +8,15 @@ export class DevelopmentControllerService {
   async claim(workerId:string,leaseSeconds:number){validateWorker(workerId);validateLease(leaseSeconds);return this.store.claim(workerId,leaseSeconds);}
   async renew(buildId:string,workerId:string,leaseToken:string,leaseSeconds:number){validateUUID(buildId,"Build ID");validateWorker(workerId);validateUUID(leaseToken,"lease token");validateLease(leaseSeconds);return this.store.renew(buildId,workerId,leaseToken,leaseSeconds);}
   async finalize(buildId:string,workerId:string,leaseToken:string,expectedVersion:number,execution:{nodeId:string;sandboxId:string},document:Record<string,unknown>):Promise<boolean>{
+    const valid=await this.validateFinalization(buildId,workerId,leaseToken,expectedVersion,execution,document);if(!valid)return false;
+    return this.store.finalize(buildId,workerId,leaseToken,expectedVersion,execution,document);
+  }
+  async commitExecution(buildId:string,workerId:string,leaseToken:string,expectedVersion:number,execution:{nodeId:string;sandboxId:string},document:Record<string,unknown>,artifacts:Array<{id:string;role:string;kind:string;contentDigest:string;content:Buffer}>):Promise<boolean>{
+    const valid=await this.validateFinalization(buildId,workerId,leaseToken,expectedVersion,execution,document);if(!valid)return false;
+    if(!Array.isArray(artifacts)||artifacts.length<1||artifacts.length>100)invalid("Development Artifact set is invalid");
+    return this.store.commitExecution(buildId,workerId,leaseToken,expectedVersion,execution,document,artifacts);
+  }
+  private async validateFinalization(buildId:string,workerId:string,leaseToken:string,expectedVersion:number,execution:{nodeId:string;sandboxId:string},document:Record<string,unknown>):Promise<boolean>{
     validateUUID(buildId,"Build ID");validateWorker(workerId);validateUUID(leaseToken,"lease token");
     validateUUID(execution.nodeId,"execution Node ID");validateUUID(execution.sandboxId,"execution Sandbox ID");
     if(!Number.isSafeInteger(expectedVersion)||expectedVersion<1)invalid("expected Build version is invalid");
@@ -16,7 +25,7 @@ export class DevelopmentControllerService {
     validateTerminalBinding(claimed,expectedVersion,document);
     const forbidden=redactionViolation(document);if(forbidden)invalid(`terminal Build document contains forbidden ${forbidden}`);
     const errors=verifyDevelopmentFinalization(claimed.projectSnapshot,document);if(errors.length)invalid(errors.join("; "));
-    return this.store.finalize(buildId,workerId,leaseToken,expectedVersion,execution,document);
+    return true;
   }
 }
 
