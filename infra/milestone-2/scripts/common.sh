@@ -261,7 +261,7 @@ validate_identity_overlay() {
   assert_directory_owned_mode "$identity_root" 0 700
   assert_regular_file_owned_mode "$identity_root/zitadel-client-secret" 0 600
   assert_regular_file_owned_mode "$identity_root/oidc-cookie-key" 0 600
-  validate_identity_runtime_secrets "$identity_root" /etc/blazn/control-plane/identity-secrets
+  validate_identity_runtime_secrets "$identity_root" /run/blazn/identity-secrets
   client_secret_size=$(wc -c <"$identity_root/zitadel-client-secret" | tr -d ' ')
   case $client_secret_size in ''|*[!0-9]*) die "ZITADEL client secret size is invalid" ;; esac
   if [ "$client_secret_size" -lt 16 ] || [ "$client_secret_size" -gt 1024 ]; then

@@ -22,6 +22,8 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
+RuntimeDirectory=blazn/identity-secrets
+RuntimeDirectoryMode=0700
 ReadWritePaths=/srv/frontro/blazn-poc /var/lib/blazn /etc/blazn/docker-cli -/run/lock/blazn-poc
 
 [Install]
