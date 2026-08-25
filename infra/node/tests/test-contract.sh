@@ -62,6 +62,8 @@ grep -F 'nodeBrokerReceiptDigest' "$M2_ROOT/scripts/backup.sh" >/dev/null
 grep -F 'Node migrations are applied; automatic prerequisite rollback is forbidden' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
 grep -F 'REASSIGN OWNED BY blazn_node_broker TO blazn_migration' "$NODE_ROOT/scripts/rollback-control-plane.sh" >/dev/null
 grep -F 'CREATE_JOURNAL=/var/lib/blazn/ownership/node-broker-upgrade-secret-create.json' "$NODE_ROOT/scripts/upgrade-control-plane.sh" >/dev/null
+grep -F -- '--retry-after-rollback' "$NODE_ROOT/scripts/upgrade-control-plane.sh" >/dev/null
+grep -F 'blazn.dev/node-broker-upgrade-retry/v1' "$NODE_ROOT/node-broker-upgrade-retry.schema.json" >/dev/null
 validate_secret_paths=$NODE_ROOT/scripts/validate-secret-paths.sh
 "$validate_secret_paths" /etc/blazn/node-broker/secrets /var/lib/blazn/ownership/node-broker-secret-create.json 0
 "$validate_secret_paths" /etc/blazn/node-broker/secrets /var/lib/blazn/ownership/node-broker-upgrade-secret-create.json 0
