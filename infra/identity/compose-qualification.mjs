@@ -21,10 +21,10 @@ for (const name of gateNames) {
 const readIdentityProviderEvidence = (path, label) => {
   const raw = readFileSync(path);
   const evidence = JSON.parse(raw.toString("utf8"));
-  exact(evidence, ["schemaVersion", "activeProviderCount", "observedAt"], label);
+  exact(evidence, ["schemaVersion", "organizationCount", "activeProviderCount", "observedAt"], label);
   const observed = Date.parse(evidence.observedAt);
-  if (evidence.schemaVersion !== "blazn.identity.active-idps/v1" || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > Date.now() + 30_000) throw new Error(`${label} is invalid or stale`);
-  return { activeProviderCount: 0, evidenceDigest: `sha256:${createHash("sha256").update(raw).digest("hex")}`, observedAt: evidence.observedAt };
+  if (evidence.schemaVersion !== "blazn.identity.active-idps/v1" || evidence.organizationCount !== 1 || evidence.activeProviderCount !== 0 || !Number.isFinite(observed) || observed < startedMillis || observed > Date.now() + 30_000) throw new Error(`${label} is invalid or stale`);
+  return { organizationCount: 1, activeProviderCount: 0, evidenceDigest: `sha256:${createHash("sha256").update(raw).digest("hex")}`, observedAt: evidence.observedAt };
 };
 const identityProviders = {
   before: readIdentityProviderEvidence(process.argv[3], "identity provider evidence before restore"),

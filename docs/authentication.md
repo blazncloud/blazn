@@ -38,9 +38,11 @@ The isolated stack is in `infra/identity`:
 - `zitadel-login` is the self-hosted Next.js login application. Its
   `EMAIL_VERIFICATION` setting is enabled so registration sends and requires
   email verification before completing an identity login.
-- The Login healthcheck queries ZITADEL's database-backed active-provider
-  inventory with the scoped login-client token and fails closed unless the
-  inventory is empty for the pinned v4.17.1 image.
+- The Login healthcheck and Traefik request-path gate query ZITADEL's
+  database-backed organization and active-provider inventories with the scoped
+  login-client token. Login fails closed unless the instance has exactly one
+  active organization and its effective provider inventory is empty for the
+  pinned v4.17.1 image.
 - Traefik provides the required h2c connection to the API without access to the
   Docker socket.
 - A private Docker volume transfers the generated login-client credential from
@@ -150,6 +152,10 @@ patched immutable Login image and fresh first-login, repeat-login, mail-delivery
 and `email_verified=true` qualification evidence. Automatic linking by email
 must remain disabled; a matching verified email is not sufficient proof that a
 new social identity owns an existing Blazn account.
+Until that image is replaced, the ZITADEL instance must also contain exactly
+one active organization. The live request-path gate rejects Login when a second
+organization exists, preventing an organization-scoped provider from bypassing
+the global safe-off policy.
 
 Require MFA for Blazn. Prefer passkeys/WebAuthn, allow TOTP as the recovery-
 compatible fallback, and require recovery setup before production access. SMS
@@ -212,9 +218,10 @@ legacy login, explicit device confirmation, OIDC-aware health, backup/restore,
 exact image rollback, master-key recovery, and PAT-volume recovery. Absence of
 the reviewed images, mail delivery, provider/bootstrap configuration, or driver
 is a hard blocker rather than a skipped green gate.
-The qualification receipt also binds zero-active-provider observations from
-both before and after backup/restore, so a restored or administratively changed
-provider inventory cannot pass on documentation or static configuration alone.
+The qualification receipt also binds single-organization and
+zero-active-provider observations from both before and after backup/restore, so
+a restored or administratively changed organization/provider inventory cannot
+pass on documentation or static configuration alone.
 The browser driver must be a root-owned, single-link mode-0500/0700 file at the
 fixed driver path and must match a separately reviewed SHA-256 digest. It emits
 per-gate evidence digests and timestamps, not self-authored pass booleans. The

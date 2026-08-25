@@ -94,8 +94,8 @@ printf '%s\n' \
   'ZITADEL_LOGIN_IMAGE=ghcr.io/zitadel/zitadel-login@sha256:4444444444444444444444444444444444444444444444444444444444444444' \
   'ZITADEL_BACKUP_IMAGE=alpine@sha256:9999999999999999999999999999999999999999999999999999999999999999' > "$qualification_tmp/reviewed.env"
 reviewed_env_digest=sha256:$(sha256sum "$qualification_tmp/reviewed.env" | awk '{print $1}')
-printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","activeProviderCount":0,"observedAt":"2026-08-22T00:00:01Z"}' > "$qualification_tmp/idps-before.json"
-printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","activeProviderCount":0,"observedAt":"2026-08-22T00:00:02Z"}' > "$qualification_tmp/idps-after.json"
+printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","organizationCount":1,"activeProviderCount":0,"observedAt":"2026-08-22T00:00:01Z"}' > "$qualification_tmp/idps-before.json"
+printf '%s\n' '{"schemaVersion":"blazn.identity.active-idps/v1","organizationCount":1,"activeProviderCount":0,"observedAt":"2026-08-22T00:00:02Z"}' > "$qualification_tmp/idps-after.json"
 QUALIFICATION_ISSUER=https://identity.example.test \
 QUALIFICATION_STARTED_AT=2026-08-21T23:59:00Z \
 QUALIFICATION_DRIVER_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
