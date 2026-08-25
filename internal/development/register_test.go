@@ -146,6 +146,14 @@ func TestDecodeProjectRejectsMalformedPersistedOutput(t *testing.T) {
 		"bad timestamp":                     strings.Replace(valid, "2026-08-24T00:00:00Z", "yesterday", 1),
 		"wrong workspace":                   strings.Replace(valid, registerWorkspaceID, "not-a-workspace", 1),
 		"shadowed credential-bearing field": strings.Replace(valid, `"manifestDigest":"`, `"manifestDigest":"github_pat_12345678901234567890","manifestDigest":"`, 1),
+		"case-variant Project field":        strings.Replace(valid, `"workspaceId":`, `"WorkspaceID":`, 1),
+		"case-variant manifest field":       strings.Replace(valid, `"schemaVersion":`, `"SchemaVersion":`, 1),
+		"case-variant repository field":     strings.Replace(valid, `"url":`, `"URL":`, 1),
+		"case-variant template field":       strings.Replace(valid, `"versionId":`, `"VersionID":`, 1),
+		"case-variant publication field":    strings.Replace(valid, `"templateId":`, `"TemplateID":`, 1),
+		"case-variant build field":          strings.Replace(valid, `"registryRepository":`, `"RegistryRepository":`, 1),
+		"case-variant test field":           strings.Replace(valid, `"argv":`, `"Argv":`, 1),
+		"case-variant policy field":         strings.Replace(valid, `"builderProfile":`, `"BuilderProfile":`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			project, err := DecodeProject([]byte(candidate))

@@ -298,6 +298,9 @@ func DecodeProject(raw json.RawMessage) (ProjectDocument, error) {
 	if err := validateJSONTopology(raw); err != nil {
 		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
 	}
+	if err := validateProjectResponseSchema(raw); err != nil {
+		return ProjectDocument{}, errors.New("DevelopmentProject response is invalid")
+	}
 	var summary struct {
 		WorkspaceID    string   `json:"workspaceId"`
 		ProjectID      string   `json:"projectId"`
@@ -329,6 +332,51 @@ func DecodeProject(raw json.RawMessage) (ProjectDocument, error) {
 		return ProjectDocument{}, errors.New("DevelopmentProject response contains forbidden fields")
 	}
 	return ProjectDocument{raw: append(json.RawMessage(nil), raw...), WorkspaceID: summary.WorkspaceID, ProjectID: summary.ProjectID, Version: summary.Version, ManifestDigest: summary.ManifestDigest}, nil
+}
+
+func validateProjectResponseSchema(raw json.RawMessage) error {
+	project, err := requireExactObjectFields(raw, "workspaceId", "projectId", "version", "manifest", "manifestDigest", "createdBy", "createdAt", "updatedAt")
+	if err != nil {
+		return err
+	}
+	manifest, err := requireExactObjectFields(project["manifest"], "schemaVersion", "projectId", "repository", "template", "publicationTarget", "platforms", "build", "dependencyLocks", "tests", "policy")
+	if err != nil {
+		return err
+	}
+	for field, expected := range map[string][]string{
+		"repository":        {"url"},
+		"template":          {"versionId", "digest"},
+		"publicationTarget": {"templateId"},
+		"build":             {"context", "dockerfile", "registryRepository"},
+		"policy":            {"builderProfile", "networkProfile", "resourceProfile", "publicationPolicy"},
+	} {
+		if _, err := requireExactObjectFields(manifest[field], expected...); err != nil {
+			return err
+		}
+	}
+	var tests map[string]json.RawMessage
+	if err := json.Unmarshal(manifest["tests"], &tests); err != nil || tests == nil {
+		return errors.New("tests must be an object")
+	}
+	for _, definition := range tests {
+		if _, err := requireExactObjectFields(definition, "argv", "timeoutSeconds"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requireExactObjectFields(raw json.RawMessage, expected ...string) (map[string]json.RawMessage, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil || len(object) != len(expected) {
+		return nil, errors.New("object fields do not match the frozen schema")
+	}
+	for _, field := range expected {
+		if _, ok := object[field]; !ok {
+			return nil, errors.New("object fields do not match the frozen schema")
+		}
+	}
+	return object, nil
 }
 func containsForbidden(value any) bool {
 	switch current := value.(type) {
