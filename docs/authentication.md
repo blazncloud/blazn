@@ -35,7 +35,9 @@ The isolated stack is in `infra/identity`:
 
 - PostgreSQL holds only ZITADEL state.
 - `zitadel-api` exposes the identity and standards APIs.
-- `zitadel-login` is the self-hosted Next.js login application.
+- `zitadel-login` is the self-hosted Next.js login application. Its
+  `EMAIL_VERIFICATION` setting is enabled so registration sends and requires
+  email verification before completing an identity login.
 - Traefik provides the required h2c connection to the API without access to the
   Docker socket.
 - A private Docker volume transfers the generated login-client credential from

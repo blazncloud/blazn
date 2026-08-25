@@ -15,6 +15,7 @@ for expected in \
   'ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED: "true"' \
   'ZITADEL_SYSTEMDEFAULTS_MULTIFACTORS_OTP_ISSUER: Blazn' \
   'ZITADEL_SERVICE_USER_TOKEN_FILE: /zitadel/bootstrap/login-client.pat' \
+  'EMAIL_VERIFICATION: "true"' \
   '127.0.0.1}:${ZITADEL_PROXY_PORT:-58081}:8080' \
   'driver: bridge'; do
   grep -F -- "$expected" "$compose" >/dev/null || {
