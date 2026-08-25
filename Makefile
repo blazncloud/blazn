@@ -77,6 +77,7 @@ test-infra:
 	./infra/milestone-2/tests/test-poc-identity.sh
 	./infra/milestone-2/tests/test-release-promotion.sh
 	./infra/milestone-2/tests/test-control-plane-env.sh
+	./infra/milestone-2/tests/test-control-plane-compose.sh
 	./infra/milestone-2/tests/test-identity-overlay.sh
 	./infra/milestone-2/tests/test-api-build.sh
 	./infra/milestone-2/tests/test-rollback-metadata-policy.sh

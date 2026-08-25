@@ -173,10 +173,12 @@ control_plane_compose() {
     if [ ! -f "$infra_root/compose.identity.yaml" ] || [ -L "$infra_root/compose.identity.yaml" ]; then
       die "identity Compose overlay is unavailable"
     fi
-    docker compose -f "$infra_root/compose.yaml" -f "$infra_root/compose.identity.yaml" \
+    DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli} \
+      docker compose -f "$infra_root/compose.yaml" -f "$infra_root/compose.identity.yaml" \
       --env-file "$env_file" --env-file "$identity_env" "$@"
   else
-    docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" "$@"
+    DOCKER_CONFIG=${BLAZN_DOCKER_CONFIG_ROOT:-/etc/blazn/docker-cli} \
+      docker compose -f "$infra_root/compose.yaml" --env-file "$env_file" "$@"
   fi
 }
 
