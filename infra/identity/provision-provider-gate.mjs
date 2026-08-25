@@ -59,8 +59,8 @@ if (current.response.status === 404) {
   fail("existing provider gate principal does not match the immutable identity");
 }
 
-let membership = await request(loginToken, "/members", { method: "POST", body: { userId, roles: ["IAM_ORG_MANAGER"] }, accepted: [200, 409] });
-if (membership.response.status === 409) membership = await request(loginToken, `/members/${userId}`, { method: "PUT", body: { userId, roles: ["IAM_ORG_MANAGER"] } });
+let membership = await request(loginToken, "/admin/v1/members", { method: "POST", body: { userId, roles: ["IAM_ORG_MANAGER"] }, accepted: [200, 409] });
+if (membership.response.status === 409) membership = await request(loginToken, `/admin/v1/members/${userId}`, { method: "PUT", body: { userId, roles: ["IAM_ORG_MANAGER"] } });
 if (!membership.ok) fail("instance-wide provider gate role could not be assigned");
 const pat = await request(loginToken, `/v2/users/${userId}/pats`, { method: "POST", body: { userId, expirationDate: expiration } });
 const gateToken = pat.payload?.token;
