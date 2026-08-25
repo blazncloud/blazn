@@ -12,8 +12,15 @@ test("OIDC transactions round-trip through authenticated encryption", () => {
 });
 
 test("activation requires an exact same-origin POST and binds a raw Ed25519 key digest", () => {
-	assert.equal(activationOriginMatches("https://api.blazn.example", "https://api.blazn.example/activate"), true);
-	for (const origin of [undefined, "https://evil.example", "https://api.blazn.example.evil", "https://api.blazn.example/path", "null"]) assert.equal(activationOriginMatches(origin, "https://api.blazn.example"), false);
+	assert.equal(activationOriginMatches("https://api.blazn.example", undefined, undefined, "https://api.blazn.example/activate"), true);
+	assert.equal(activationOriginMatches(undefined, undefined, "same-origin", "https://api.blazn.example"), true);
+	assert.equal(activationOriginMatches(undefined, "https://api.blazn.example/activate?user_code=ABCD-EFGH", undefined, "https://api.blazn.example"), true);
+	for (const origin of ["https://evil.example", "https://api.blazn.example.evil", "https://api.blazn.example/path", "null"]) {
+		assert.equal(activationOriginMatches(origin, "https://api.blazn.example/activate", "same-origin", "https://api.blazn.example"), false);
+	}
+	for (const referer of [undefined, "https://evil.example", "https://api.blazn.example.evil/activate", "not-a-url"]) {
+		assert.equal(activationOriginMatches(undefined, referer, "cross-site", "https://api.blazn.example"), false);
+	}
 	const publicKey = Buffer.alloc(32, 9).toString("base64url");
 	assert.match(activationPublicKeyDigest(publicKey), /^sha256:[0-9a-f]{64}$/);
 	assert.throws(() => activationPublicKeyDigest("not-a-key"));

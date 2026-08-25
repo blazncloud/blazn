@@ -158,10 +158,10 @@ async function startDeviceAuthorization(request: IncomingMessage, response: Serv
 }
 
 async function startOidc(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  if (!oidcClient || !oidcKey || !config.zitadel) throw new HttpError("not_found", "ZITADEL identity is not configured");
+	if (!oidcClient || !oidcKey || !config.zitadel) throw new HttpError("not_found", "ZITADEL identity is not configured");
   await enforceLimit(database, "oidc-start", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 20, 60);
 	const origin = request.headers.origin;
-	if (!activationOriginMatches(origin, config.publicUrl)) throw new HttpError("activation_confirmation_required", "OIDC activation requires an explicit same-origin confirmation");
+	if (!activationOriginMatches(origin, request.headers.referer, request.headers["sec-fetch-site"], config.publicUrl)) throw new HttpError("activation_confirmation_required", "OIDC activation requires an explicit same-origin confirmation");
 	const body = await formBody(request);
 	requireExactKeys(body, ["user_code", "mode", "activation_confirmation"]);
 	const code = requiredString(body, "user_code", 16).toUpperCase();
