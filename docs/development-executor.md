@@ -26,6 +26,8 @@ Mount a read-only secret directory at
 - `buildkit-address`: exact `tcp://host:port` address.
 - `buildkit-server-name`: DNS identity checked by TLS.
 - `buildkit-builder-id`: stable UUID for this qualified builder installation.
+- `registry-authority`: exact DNS authority of the authorized Development OCI
+  registry. The resolver refuses every other authority and follows no redirects.
 - `buildkit-ca.pem`, `buildkit-cert.pem`, and `buildkit-key.pem`: a dedicated,
   short-lived BuildKit client identity. Do not reuse the BuildKit server key.
 
@@ -61,13 +63,25 @@ creates or re-adopts one ordinary Sandbox lifecycle record for every committed
 platform/test pair, freezes the exact argv and timeout, and waits for the
 controller's complete Sandbox/Pod admission observation. It cannot receive the
 Build lease token, mutate controller evidence tables, or execute a shell.
+After that real lifecycle observation, the collector persists a lease-fenced
+`preparing -> ready` transition. Execution authority accepts only persisted
+`ready` or idempotent `running` rows; complete admission evidence alone cannot
+skip the transition.
 
-This stage is deliberately fail closed at candidate-image binding. Ordinary
-Sandboxes remain foreign-key bound to their published template image, which is
-not automatically the new BuildKit output. The collector records the candidate
-index but will not execute even a committed argv until a later migration binds
-the exact index and architecture child through a Development-specific immutable
-template version. After that, the command transport must independently verify
+The controller resolves the exact BuildKit index bytes at the allowlisted
+registry and supplies the two architecture child digests to the collector. The
+collector atomically records a Development-only immutable binding for that
+index, both child digests, workspace, build, and active execution generation.
+Each Development test run references the matching platform binding before its
+ordinary Sandbox is prepared; replay must be byte-for-byte exact and stale or
+cross-workspace workers are fenced. Ordinary Sandboxes remain foreign-key bound
+to their published template images and those fields are never rewritten to the
+candidate image. Candidate projection at Sandbox claim time re-locks the exact
+active Development job generation; expired, reclaimed, completed, or unrelated
+create operations are quarantined, while a bound delete cleanup retains the
+ordinary Sandbox image tuple.
+
+The command transport must independently verify
 the frozen Sandbox and Pod UIDs, resolve the scheduled Kubernetes Node to an
 active verified Blazn Node, bound output to digests and byte counts, and drive
 stop/delete cleanup. Complete terminal success additionally requires real

@@ -2,14 +2,16 @@ import type { Database } from "./db.js";
 
 export interface DevelopmentSandboxTestRun {
   buildId:string;workspaceId:string;projectId:string;platform:"linux/amd64"|"linux/arm64";testName:string;sandboxId:string;
-  status:string;sandboxState:string;candidateImageIndex:string;candidateImageBound:boolean;argv:string[];argvDigest:string;
+  status:string;sandboxState:string;candidateImageIndex:string;candidateImageChild:string;candidateImageBound:boolean;argv:string[];argvDigest:string;
   timeoutSeconds:number;backendUid?:string;backendResourceVersion?:string;podNamespace?:string;podName?:string;podUid?:string;
   podResourceVersion?:string;observationDigest?:string;nodeId?:string;receipt?:Record<string,unknown>;
 }
 
 export interface DevelopmentSandboxEvidenceStore {
+  bindCandidateImages(buildId:string,workspaceId:string,generation:number,imageIndex:string,amd64Child:string,arm64Child:string):Promise<boolean>;
   prepare(buildId:string,generation:number,platform:string,testName:string,candidateImageIndex:string):Promise<DevelopmentSandboxTestRun|undefined>;
   resolve(buildId:string,generation:number,platform:string,testName:string):Promise<DevelopmentSandboxTestRun|undefined>;
+  markReady(buildId:string,generation:number,platform:string,testName:string,sandboxId:string):Promise<boolean>;
   authorizeExecution(buildId:string,generation:number,platform:string,testName:string,sandboxId:string):Promise<boolean>;
 }
 
@@ -19,29 +21,36 @@ export interface DevelopmentSandboxCommandTransport {
 
 export class PgDevelopmentSandboxEvidenceStore implements DevelopmentSandboxEvidenceStore {
   constructor(private readonly database:Database){}
+  async bindCandidateImages(buildId:string,workspaceId:string,generation:number,imageIndex:string,amd64Child:string,arm64Child:string){
+    const result=await this.database.query<{bound:boolean}>("SELECT development_collector_bind_candidate_images_v1($1,$2,$3,$4,$5,$6) AS bound",[buildId,workspaceId,generation,imageIndex,amd64Child,arm64Child]);return result.rows[0]?.bound===true;
+  }
   async prepare(buildId:string,generation:number,platform:string,testName:string,candidateImageIndex:string){
-    const result=await this.database.query("SELECT * FROM development_collector_prepare_sandbox_v1($1,$2,$3,$4,$5)",[buildId,generation,platform,testName,candidateImageIndex]);
+    const result=await this.database.query("SELECT * FROM development_collector_prepare_bound_sandbox_v1($1,$2,$3,$4,$5)",[buildId,generation,platform,testName,candidateImageIndex]);
     return result.rows[0]?testRun(result.rows[0]):undefined;
   }
   async resolve(buildId:string,generation:number,platform:string,testName:string){
-    const result=await this.database.query("SELECT * FROM development_collector_resolve_sandbox_v1($1,$2,$3,$4)",[buildId,generation,platform,testName]);
+    const result=await this.database.query("SELECT * FROM development_collector_resolve_bound_sandbox_v1($1,$2,$3,$4)",[buildId,generation,platform,testName]);
     return result.rows[0]?testRun(result.rows[0]):undefined;
   }
+  async markReady(buildId:string,generation:number,platform:string,testName:string,sandboxId:string){const result=await this.database.query<{ready:boolean}>("SELECT development_collector_mark_sandbox_ready_v1($1,$2,$3,$4,$5) AS ready",[buildId,generation,platform,testName,sandboxId]);return result.rows[0]?.ready===true;}
   async authorizeExecution(buildId:string,generation:number,platform:string,testName:string,sandboxId:string){const result=await this.database.query<{authorized:boolean}>("SELECT development_collector_authorize_execution_v1($1,$2,$3,$4,$5) AS authorized",[buildId,generation,platform,testName,sandboxId]);return result.rows[0]?.authorized===true;}
 }
 
 export interface DevelopmentSandboxEvidenceInput {
-  workItem:{buildId:string;generation:number;projectSnapshot:Record<string,unknown>};
-  build:{imageIndexDigest:string};
+  workItem:{buildId:string;workspaceId:string;generation:number;projectSnapshot:Record<string,unknown>};
+  build:{imageIndexDigest:string;imageChildren:{"linux/amd64":string;"linux/arm64":string}};
 }
 
 export class DevelopmentSandboxEvidenceOrchestrator {
   constructor(private readonly store:DevelopmentSandboxEvidenceStore,private readonly transport:DevelopmentSandboxCommandTransport,
     private readonly pollMilliseconds=1000){}
   async execute(input:DevelopmentSandboxEvidenceInput,signal:AbortSignal):Promise<never>{
-    const buildId=input.workItem.buildId,generation=input.workItem.generation,tests=record(input.workItem.projectSnapshot.tests),build=record(input.workItem.projectSnapshot.build);
+    const buildId=input.workItem.buildId,workspaceId=input.workItem.workspaceId,generation=input.workItem.generation,tests=record(input.workItem.projectSnapshot.tests),build=record(input.workItem.projectSnapshot.build);
     const repository=text(build?.registryRepository),digest=input.build.imageIndexDigest,imageIndex=`${repository}@${digest}`;
-    if(!uuidPattern.test(buildId)||!Number.isSafeInteger(generation)||generation<1||!digestPattern.test(digest)||!ociPattern.test(imageIndex)||!tests||Object.keys(tests).length<1)throw new Error("Development Sandbox evidence input is invalid");
+    const amd64Child=text(input.build.imageChildren?.["linux/amd64"]),arm64Child=text(input.build.imageChildren?.["linux/arm64"]);
+    if(!uuidPattern.test(buildId)||!uuidPattern.test(workspaceId)||!Number.isSafeInteger(generation)||generation<1||!digestPattern.test(digest)||!ociPattern.test(imageIndex)||
+      !ociPattern.test(amd64Child)||!ociPattern.test(arm64Child)||amd64Child===arm64Child||!tests||Object.keys(tests).length<1)throw new Error("Development Sandbox evidence input is invalid");
+    if(!await this.store.bindCandidateImages(buildId,workspaceId,generation,imageIndex,amd64Child,arm64Child))throw new Error("Development candidate image binding was fenced");
     const matrix=(['linux/amd64','linux/arm64'] as const).flatMap(platform=>Object.keys(tests).sort().map(testName=>({platform,testName})));
     for(const {platform,testName} of matrix){
       const prepared=await this.store.prepare(buildId,generation,platform,testName,imageIndex);
@@ -67,7 +76,12 @@ export class DevelopmentSandboxEvidenceOrchestrator {
       if(run.sandboxState==="ready"||run.sandboxState==="running"){
         if(!run.backendUid||!run.backendResourceVersion||!run.podNamespace||!run.podName||!run.podUid||!run.podResourceVersion||!run.observationDigest)
           throw new Error("Development Sandbox readiness lacks frozen admission evidence");
-        return run;
+        if(!await this.store.markReady(buildId,generation,platform,testName,run.sandboxId))throw new Error("Development Sandbox readiness was fenced");
+        const ready=await this.store.resolve(buildId,generation,platform,testName);
+        if(!ready||ready.sandboxId!==run.sandboxId||!ready.candidateImageBound||!ready.backendUid||!ready.backendResourceVersion||
+          !ready.podNamespace||!ready.podName||!ready.podUid||!ready.podResourceVersion||!ready.observationDigest||ready.status!=="ready"&&ready.status!=="running")
+          throw new Error("Development Sandbox persisted readiness is invalid");
+        return ready;
       }
       await abortableDelay(this.pollMilliseconds,signal);
     }
@@ -76,7 +90,7 @@ export class DevelopmentSandboxEvidenceOrchestrator {
 
 function testRun(row:Record<string,unknown>):DevelopmentSandboxTestRun{return{
   buildId:text(row.build_id),workspaceId:text(row.workspace_id),projectId:text(row.project_id),platform:text(row.platform) as DevelopmentSandboxTestRun["platform"],
-  testName:text(row.test_name),sandboxId:text(row.sandbox_id),status:text(row.status),sandboxState:text(row.sandbox_state),candidateImageIndex:text(row.candidate_image_index),
+  testName:text(row.test_name),sandboxId:text(row.sandbox_id),status:text(row.status),sandboxState:text(row.sandbox_state),candidateImageIndex:text(row.candidate_image_index),candidateImageChild:text(row.candidate_image_child),
   candidateImageBound:row.candidate_image_bound===true,argv:Array.isArray(row.argv)?row.argv.map(text):[],argvDigest:text(row.argv_digest),timeoutSeconds:Number(row.timeout_seconds),
   ...optional("backendUid",row.backend_uid),...optional("backendResourceVersion",row.backend_resource_version),...optional("podNamespace",row.pod_namespace),
   ...optional("podName",row.pod_name),...optional("podUid",row.pod_uid),...optional("podResourceVersion",row.pod_resource_version),
