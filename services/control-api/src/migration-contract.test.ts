@@ -178,12 +178,18 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-5), [
-    "022_development_runtime.sql",
     "023_node_activation.sql",
     "024_development_controller.sql",
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
+    "027_controller_role_public_grants.sql",
   ]);
+});
+
+test("controller privilege hardening revokes the historical PUBLIC trigger grant", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/027_controller_role_public_grants.sql"), "utf8");
+  assert.match(sql, /REVOKE EXECUTE ON FUNCTION sandbox_enforce_successful_create_admission\(\) FROM PUBLIC/);
 });
 
 test("artifact export migration fences immutable object evidence and UUID replay", async () => {

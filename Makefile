@@ -71,6 +71,7 @@ test-identity-root:
 test-infra:
 	./infra/milestone-2/tests/test-preflight.sh
 	./infra/milestone-2/tests/test-contract.sh
+	./infra/milestone-2/tests/test-config-digest.sh
 	./infra/milestone-2/tests/test-live-upgrade.sh
 	./infra/milestone-2/tests/test-workspace-secret-upgrade.sh
 	./infra/milestone-2/tests/test-poc-identity.sh
@@ -79,7 +80,7 @@ test-infra:
 	./infra/milestone-2/tests/test-identity-overlay.sh
 	./infra/milestone-2/tests/test-api-build.sh
 	./infra/milestone-2/tests/test-rollback-metadata-policy.sh
-	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh
+	shellcheck infra/milestone-2/scripts/*.sh infra/milestone-2/tests/*.sh infra/milestone-2/postgres-compat/*.sh
 	./infra/node/tests/test-contract.sh
 	./infra/node/tests/test-secret-create-resume.sh
 	./infra/node/tests/test-plan-materials.sh

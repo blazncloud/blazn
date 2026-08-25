@@ -150,6 +150,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      database-role-compat:
+        condition: service_completed_successfully
       node-migration-preflight:
         condition: service_completed_successfully
     restart: "no"
@@ -163,6 +165,41 @@ services:
           cpus: "0.50"
           memory: 512M
           pids: 128
+    networks:
+      - control
+
+  database-role-compat:
+    image: ${POSTGRES_IMAGE:?set POSTGRES_IMAGE to the reviewed immutable digest}
+    user: "999:999"
+    read_only: true
+    entrypoint: ["/bin/sh", "/opt/blazn-postgres/ensure-controller-roles.sh"]
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-blazn_admin}
+      POSTGRES_DB: ${POSTGRES_DB:-blazn}
+    secrets:
+      - postgres_password
+    volumes:
+      - type: bind
+        source: ./postgres-compat/ensure-controller-roles.sh
+        target: /opt/blazn-postgres/ensure-controller-roles.sh
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+          pids: 64
     networks:
       - control
 
