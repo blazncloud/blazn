@@ -26,7 +26,7 @@ if identity_overlay_enabled; then
   "$SCRIPT_DIR/prepare-identity-runtime-secrets.sh"
   # File-backed Compose secrets are inode-bound. Recreate the only consumer so
   # an atomic credential rotation cannot restart a container on retired bytes.
-  compose create --no-deps --force-recreate api
+  compose up --no-start --no-deps --force-recreate api
 fi
 "$SCRIPT_DIR/preflight.sh" --deploy
 compose up --detach --wait --remove-orphans

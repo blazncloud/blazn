@@ -212,7 +212,7 @@ grep -F 'ZITADEL_REVIEWED_ACR_POLICY' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
 prepare_identity_line=$(grep -n 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
-recreate_identity_line=$(grep -n 'compose create --no-deps --force-recreate api' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
+recreate_identity_line=$(grep -n 'compose up --no-start --no-deps --force-recreate api' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 start_identity_line=$(grep -n 'compose up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 [ "$prepare_identity_line" -lt "$recreate_identity_line" ]
 [ "$recreate_identity_line" -lt "$start_identity_line" ]
