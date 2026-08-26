@@ -191,8 +191,33 @@ func transitionPrivateStateOwnership(root string, uid, gid int, allowed map[int6
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || uid <= 0 || gid <= 0 || !allowed[int64(uid)] {
 		return errors.New("service-state ownership transition is invalid")
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
+	parent := filepath.Dir(root)
+	if parent == root || parent == string(filepath.Separator) {
+		return errors.New("service-state parent path is invalid")
+	}
+	if err := os.MkdirAll(parent, 0711); err != nil {
 		return err
+	}
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return err
+	}
+	parentOwner, _, ok := fileOwner(parentInfo)
+	if !ok || !allowed[parentOwner] || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("service-state parent contains an unsafe ownership boundary")
+	}
+	if err := os.Chmod(parent, 0711); err != nil {
+		return err
+	}
+	if err := os.Mkdir(root, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("service-state root is not a directory")
 	}
 	if err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
