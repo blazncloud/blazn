@@ -43,15 +43,15 @@ fixture() {
 }
 
 run_rotate() {
-  root=$1; correlation=$2; fault=${3:-}; mode=${4:-forward}
-  rollback=
-  [ "$mode" = forward ] || rollback=--rollback
-  sudo env BLAZN_FENCING_TOKEN=2 BLAZN_CORRELATION_ID="$correlation" \
-    BLAZN_NODE_PLAN_ROTATION_TEST_MODE=1 BLAZN_NODE_PLAN_ROTATION_FAIL_AFTER="$fault" \
-    BLAZN_NODE_PLAN_ROOT="$root/material" BLAZN_NODE_PLAN_CREATE_JOURNAL="$root/ownership/journal.json" \
-    BLAZN_RECEIPT_PATH="$root/ownership/main.json" BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$root/ownership/upgrade.json" \
-    BLAZN_NODE_PLAN_ROTATION_ROOT="$root/ownership/rotations" BLAZN_NODE_PLAN_TEMPLATE_SOURCE="$root/source.json" \
-    BLAZN_NODE_PLAN_SOURCE_TEMPLATES="$NODE_ROOT/templates" "$ROTATE" $rollback
+  rr_root=$1; rr_correlation=$2; rr_fault=${3:-}; rr_mode=${4:-forward}
+  rr_rollback=
+  [ "$rr_mode" = forward ] || rr_rollback=--rollback
+  sudo env BLAZN_FENCING_TOKEN=2 BLAZN_CORRELATION_ID="$rr_correlation" \
+    BLAZN_NODE_PLAN_ROTATION_TEST_MODE=1 BLAZN_NODE_PLAN_ROTATION_FAIL_AFTER="$rr_fault" \
+    BLAZN_NODE_PLAN_ROOT="$rr_root/material" BLAZN_NODE_PLAN_CREATE_JOURNAL="$rr_root/ownership/journal.json" \
+    BLAZN_RECEIPT_PATH="$rr_root/ownership/main.json" BLAZN_NODE_BROKER_UPGRADE_RECEIPT="$rr_root/ownership/upgrade.json" \
+    BLAZN_NODE_PLAN_ROTATION_ROOT="$rr_root/ownership/rotations" BLAZN_NODE_PLAN_TEMPLATE_SOURCE="$rr_root/source.json" \
+    BLAZN_NODE_PLAN_SOURCE_TEMPLATES="$NODE_ROOT/templates" "$ROTATE" $rr_rollback
 }
 
 for fault in initialized template-published journal-published upgrade-receipt-published main-receipt-published complete; do
