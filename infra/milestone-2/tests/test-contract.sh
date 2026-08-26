@@ -228,6 +228,10 @@ recreate_identity_line=$(grep -n 'compose up --no-start --no-deps --force-recrea
 start_identity_line=$(grep -n 'compose up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 [ "$prepare_identity_line" -lt "$recreate_identity_line" ]
 [ "$recreate_identity_line" -lt "$start_identity_line" ]
+if grep -F 'if identity_overlay_enabled; then' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null; then
+  printf 'runtime secret publication is incorrectly conditional on the identity overlay\n' >&2
+  exit 1
+fi
 grep -F 'RuntimeDirectory=blazn/identity-secrets' "$unit" >/dev/null
 grep -F 'RuntimeDirectoryMode=0700' "$unit" >/dev/null
 grep -F '/run/blazn/identity-secrets/zitadel-client-secret' "$ROOT_DIR/compose.identity.yaml" >/dev/null
