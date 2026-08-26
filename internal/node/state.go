@@ -32,6 +32,7 @@ type RuntimeState struct {
 	KubernetesBinding  *client.KubernetesBinding             `json:"kubernetesBinding,omitempty"`
 	ActivationGrant    *client.NodeActivationGrant           `json:"activationGrant,omitempty"`
 	PendingHeartbeat   *client.NodeHeartbeat                 `json:"pendingHeartbeat,omitempty"`
+	CapabilityVersion  int64                                 `json:"capabilityVersion,omitempty"`
 	PendingJoin        *PendingJoinState                     `json:"pendingJoin,omitempty"`
 	UpdatedAt          string                                `json:"updatedAt"`
 }
@@ -134,7 +135,7 @@ func (s FileStateStore) SaveRuntime(v RuntimeState) error { return s.write("runt
 func (s FileStateStore) LoadRuntime() (RuntimeState, error) {
 	var v RuntimeState
 	err := s.read("runtime.json", 64<<10, &v)
-	if err == nil && (v.SchemaVersion != 1 || v.Pin.SchemaVersion != 1 || !validControlPlaneOrigin(v.ControlPlaneOrigin) || (v.PendingJoin != nil && (v.PendingJoin.PlanID == "" || v.PendingJoin.IssuanceID == ""))) {
+	if err == nil && (v.SchemaVersion != 1 || v.Pin.SchemaVersion != 1 || !validControlPlaneOrigin(v.ControlPlaneOrigin) || v.CapabilityVersion < 0 || v.CapabilityVersion > maxSafeCapabilityVersion || (v.PendingHeartbeat != nil && v.PendingHeartbeat.Capability.Version != v.CapabilityVersion+1) || (v.PendingJoin != nil && (v.PendingJoin.PlanID == "" || v.PendingJoin.IssuanceID == ""))) {
 		err = errors.New("node runtime state schema is unsupported")
 	}
 	return v, err

@@ -21,6 +21,8 @@ type CapabilityProvider interface {
 	Capability(context.Context) (client.NodeCapability, error)
 }
 
+const maxSafeCapabilityVersion int64 = 1<<53 - 1
+
 type HeartbeatResult struct {
 	NodeID   string `json:"nodeId"`
 	BootID   string `json:"bootId"`
@@ -82,8 +84,21 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 			return HeartbeatResult{}, proofErr
 		}
 		if err := d.api.SubmitNodeHeartbeat(ctx, proof, heartbeat); err != nil {
-			if !client.IsCode(err, "heartbeat_skew") {
+			staleTimestamp := client.IsCode(err, "heartbeat_skew")
+			staleCapabilityVersion := client.IsCode(err, "state_conflict")
+			if !staleTimestamp && !staleCapabilityVersion {
 				return HeartbeatResult{}, err
+			}
+			if staleCapabilityVersion {
+				if heartbeat.Capability.Version >= maxSafeCapabilityVersion {
+					return HeartbeatResult{}, errors.New("node capability version is exhausted")
+				}
+				state.CapabilityVersion = heartbeat.Capability.Version
+				heartbeat.Capability.Version++
+				heartbeat.CapabilityDigest, digestErr = client.NodeCapabilityDigest(heartbeat.Capability)
+				if digestErr != nil {
+					return HeartbeatResult{}, digestErr
+				}
 			}
 			heartbeat.SentAt = d.now().UTC().Format(time.RFC3339Nano)
 			proof, proofErr = nodeProof(identity.PrivateKey, "blazn-node-heartbeat-v1", heartbeat)
@@ -115,6 +130,10 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 	if state.KubernetesBinding == nil || state.KubernetesBinding.ClusterID != capability.Worker.KubernetesBinding.ClusterID || state.KubernetesBinding.NodeName != capability.Worker.KubernetesBinding.NodeName || state.KubernetesBinding.NodeUID != capability.Worker.KubernetesBinding.NodeUID || state.KubernetesBinding.ResourceVersion == "" {
 		return HeartbeatResult{}, errors.New("node capability lacks the exact persisted Kubernetes transition origin")
 	}
+	if state.CapabilityVersion >= maxSafeCapabilityVersion {
+		return HeartbeatResult{}, errors.New("node capability version is exhausted")
+	}
+	capability.Version = state.CapabilityVersion + 1
 	digest, err := client.NodeCapabilityDigest(capability)
 	if err != nil {
 		return HeartbeatResult{}, err
@@ -146,6 +165,7 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 func (d *Daemon) acceptHeartbeat(state RuntimeState, heartbeat client.NodeHeartbeat) (HeartbeatResult, error) {
 	updatedBinding := heartbeat.Capability.Worker.KubernetesBinding
 	state.KubernetesBinding = &updatedBinding
+	state.CapabilityVersion = heartbeat.Capability.Version
 	state.PendingHeartbeat = nil
 	state.UpdatedAt = heartbeat.SentAt
 	if err := d.state.SaveRuntime(state); err != nil {
