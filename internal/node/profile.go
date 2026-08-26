@@ -79,10 +79,15 @@ func readTrustedProfile(path string) ([]byte, error) {
 	}
 	owner, nlink, ok := fileOwner(info)
 	mode := info.Mode().Perm()
-	if !ok || owner != currentUID() || nlink != 1 || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || (mode != 0400 && mode != 0600) {
+	private, delegated := trustedProfileAccess(owner, currentUID(), mode)
+	if !ok || (!private && !delegated) || nlink != 1 || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("trusted profile ownership or mode is unsafe")
 	}
-	if err := ensurePrivateDirectory(filepath.Dir(path), currentUID()); err != nil {
+	expectedOwner := currentUID()
+	if delegated {
+		expectedOwner = owner
+	}
+	if err := ensurePrivateDirectory(filepath.Dir(path), expectedOwner); err != nil {
 		return nil, err
 	}
 	file, err := openNoFollow(path)
@@ -99,6 +104,30 @@ func readTrustedProfile(path string) ([]byte, error) {
 		return nil, errors.New("trusted profile cannot be read safely")
 	}
 	return value, nil
+}
+
+func trustedProfileAccess(owner, uid int64, mode os.FileMode) (private, delegated bool) {
+	private = owner == uid && (mode == 0400 || mode == 0600)
+	delegated = uid == 0 && owner > 0 && (mode == 0400 || mode == 0600)
+	return private, delegated
+}
+
+func ensureTrustedProfileRoot(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	owner, _, ok := fileOwner(info)
+	if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("trusted profile directory is unsafe")
+	}
+	if owner == currentUID() && info.Mode().Perm() == 0700 {
+		return ensurePrivateDirectory(path, currentUID())
+	}
+	if currentUID() == 0 && owner > 0 && info.Mode().Perm() == 0700 {
+		return ensurePrivateDirectory(path, owner)
+	}
+	return errors.New("trusted profile directory ownership or mode is unsafe")
 }
 
 func verifyNoSymlinkTraversal(target string) error {

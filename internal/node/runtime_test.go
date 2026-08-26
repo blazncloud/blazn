@@ -519,6 +519,31 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestTrustedProfileAccessSupportsPrivateCallerAndPrivilegedDelegation(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		owner         int64
+		uid           int64
+		mode          os.FileMode
+		wantPrivate   bool
+		wantDelegated bool
+	}{
+		{name: "private-caller", owner: 1000, uid: 1000, mode: 0600, wantPrivate: true},
+		{name: "private-caller-read-only", owner: 1000, uid: 1000, mode: 0400, wantPrivate: true},
+		{name: "delegated-to-root", owner: 1000, uid: 0, mode: 0600, wantDelegated: true},
+		{name: "delegated-to-root-read-only", owner: 1000, uid: 0, mode: 0400, wantDelegated: true},
+		{name: "delegated-writable", owner: 1000, uid: 0, mode: 0644},
+		{name: "other-user", owner: 1001, uid: 1000, mode: 0400},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			private, delegated := trustedProfileAccess(test.owner, test.uid, test.mode)
+			if private != test.wantPrivate || delegated != test.wantDelegated {
+				t.Fatalf("private=%v delegated=%v", private, delegated)
+			}
+		})
+	}
+}
+
 func TestInstallerPersistsSignedReceiptAndRollsBackOnFailure(t *testing.T) {
 	for _, failure := range []int{-1, 1} {
 		t.Run(map[bool]string{true: "success", false: "rollback"}[failure < 0], func(t *testing.T) {

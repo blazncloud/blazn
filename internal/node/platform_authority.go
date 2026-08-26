@@ -649,10 +649,7 @@ func (e NativeRootEngine) authorityPaths() (string, string, string, error) {
 }
 
 func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority) (client.NodeTrustedInstallProfile, string, error) {
-	if info, err := os.Lstat(root); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0700 {
-		return client.NodeTrustedInstallProfile{}, "", errors.New("root trusted profile directory is unsafe")
-	}
-	if err := ensurePrivateDirectory(root, currentUID()); err != nil {
+	if err := ensureTrustedProfileRoot(root); err != nil {
 		return client.NodeTrustedInstallProfile{}, "", err
 	}
 	entries, err := os.ReadDir(root)
