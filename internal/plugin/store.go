@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/user"
 	"path/filepath"
 	"syscall"
 )
@@ -31,11 +30,11 @@ type Installed struct {
 type Store struct{ root string }
 
 func NewStore() (*Store, error) {
-	current, err := user.Current()
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolve current user: %w", err)
+		return nil, fmt.Errorf("resolve current user home: %w", err)
 	}
-	return NewStoreAt(filepath.Join(current.HomeDir, ".local", "share", "blazn", "plugins"))
+	return NewStoreAt(filepath.Join(home, ".local", "share", "blazn", "plugins"))
 }
 
 func NewStoreAt(root string) (*Store, error) {

@@ -15,6 +15,19 @@ func candidate(t *testing.T, directory, body string) string {
 	return path
 }
 
+func TestNewStoreUsesConfiguredUserHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	store, err := NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".local", "share", "blazn", "plugins")
+	if store.Root() != want {
+		t.Fatalf("root=%q want=%q", store.Root(), want)
+	}
+}
+
 func TestStoreActivateValidateRollbackAndRemove(t *testing.T) {
 	store, err := NewStoreAt(filepath.Join(t.TempDir(), "plugins"))
 	if err != nil {
