@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -191,38 +192,106 @@ func transitionPrivateStateOwnership(root string, uid, gid int, allowed map[int6
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || uid <= 0 || gid <= 0 || !allowed[int64(uid)] {
 		return errors.New("service-state ownership transition is invalid")
 	}
-	if err := os.MkdirAll(root, 0700); err != nil {
+	parent := filepath.Dir(root)
+	if parent == root || parent == string(filepath.Separator) {
+		return errors.New("service-state parent path is invalid")
+	}
+	if err := os.MkdirAll(parent, 0711); err != nil {
 		return err
 	}
-	if err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return err
+	}
+	parentFile, err := os.Open(parent)
+	if err != nil {
+		return err
+	}
+	defer parentFile.Close()
+	openedParentInfo, err := parentFile.Stat()
+	if err != nil {
+		return err
+	}
+	parentOwner, _, ok := fileOwner(openedParentInfo)
+	if !ok || !allowed[parentOwner] || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(parentInfo, openedParentInfo) {
+		return errors.New("service-state parent contains an unsafe ownership boundary")
+	}
+	if err := parentFile.Chmod(0711); err != nil {
+		return err
+	}
+	parentRoot, err := os.OpenRoot(parent)
+	if err != nil {
+		return err
+	}
+	defer parentRoot.Close()
+	pinnedParentInfo, err := parentRoot.Lstat(".")
+	if err != nil || !os.SameFile(openedParentInfo, pinnedParentInfo) {
+		return errors.New("service-state parent changed during ownership transition")
+	}
+	rootName := filepath.Base(root)
+	if err := parentRoot.Mkdir(rootName, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	rootInfo, err := parentRoot.Lstat(rootName)
+	if err != nil {
+		return err
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("service-state root is not a directory")
+	}
+	stateRoot, err := parentRoot.OpenRoot(rootName)
+	if err != nil {
+		return err
+	}
+	defer stateRoot.Close()
+	openedRootInfo, err := stateRoot.Lstat(".")
+	if err != nil || !os.SameFile(rootInfo, openedRootInfo) {
+		return errors.New("service-state root changed during ownership transition")
+	}
+	return fs.WalkDir(stateRoot.FS(), ".", func(path string, _ fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		owner, links, ok := fileOwner(info)
-		if !ok || !allowed[owner] || info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && (!info.Mode().IsRegular() || links != 1)) {
+		return transitionPinnedStateEntry(stateRoot, path, uid, gid, allowed, nil)
+	})
+}
+
+func transitionPinnedStateEntry(root *os.Root, path string, uid, gid int, allowed map[int64]bool, afterLstat func()) error {
+	info, err := root.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("service state contains an unsafe ownership boundary")
+	}
+	if afterLstat != nil {
+		afterLstat()
+	}
+	file, err := root.Open(path)
+	if err != nil {
+		return err
+	}
+	mutationErr := func() error {
+		opened, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		owner, links, ok := fileOwner(opened)
+		if !ok || !allowed[owner] || (!opened.IsDir() && (!opened.Mode().IsRegular() || links != 1)) {
 			return errors.New("service state contains an unsafe ownership boundary")
 		}
 		want := os.FileMode(0600)
-		if info.IsDir() {
+		if opened.IsDir() {
 			want = 0700
 		}
-		if info.Mode().Perm() != want {
+		if opened.Mode().Perm() != want {
 			return errors.New("service state permissions differ from the private contract")
 		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	return filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := os.Chown(path, uid, gid); err != nil {
+		if err := file.Chown(uid, gid); err != nil {
 			return err
 		}
-		if info.IsDir() {
-			return os.Chmod(path, 0700)
-		}
-		return os.Chmod(path, 0600)
-	})
+		return file.Chmod(want)
+	}()
+	closeErr := file.Close()
+	if mutationErr != nil {
+		return mutationErr
+	}
+	return closeErr
 }

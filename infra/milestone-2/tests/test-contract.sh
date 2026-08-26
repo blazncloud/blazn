@@ -28,6 +28,7 @@ for expected in \
   'TRUSTED_PROXY_HOPS: "1"' \
   'TRUSTED_PROXY_SECRET_FILE: /run/secrets/proxy_auth_secret' \
   'WORKSPACE_INVITATION_HMAC_KEY_FILE: /run/secrets/workspace_invitation_hmac_v1' \
+  'NODE_ENROLLMENT_HMAC_FILE: /run/secrets/node_enrollment_hmac_v1' \
   'S3_ENDPOINT: http://object:9000' \
   'S3_ACCESS_KEY_FILE: /run/secrets/s3_runtime_access_key' \
   'S3_SECRET_KEY_FILE: /run/secrets/s3_runtime_secret_key'; do
@@ -74,6 +75,10 @@ for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_I
   fi
 done
 printf '%s\n' "$runtime_api" | grep -F -- '- workspace_invitation_hmac_v1' >/dev/null
+printf '%s\n' "$runtime_api" | grep -F -- '- node_enrollment_hmac_v1' >/dev/null
+# This intentionally asserts the literal required Compose interpolation.
+# shellcheck disable=SC2016
+grep -F 'file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/enrollment-hmac-v1' "$compose" >/dev/null
 for privileged_service in api-migrate api-bootstrap database-role-compat database-role-hardening postgres object object-init object-client; do
   service_block=$(awk -v service="$privileged_service" '
     $0 == "  " service ":" { in_service=1; next }
@@ -82,6 +87,10 @@ for privileged_service in api-migrate api-bootstrap database-role-compat databas
   ' "$compose")
   if printf '%s\n' "$service_block" | grep -F 'workspace_invitation_hmac_v1' >/dev/null; then
     printf 'workspace invitation HMAC key reaches non-runtime service: %s\n' "$privileged_service" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$service_block" | grep -F 'node_enrollment_hmac_v1' >/dev/null; then
+    printf 'node enrollment HMAC key reaches non-runtime service: %s\n' "$privileged_service" >&2
     exit 1
   fi
 done
