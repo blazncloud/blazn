@@ -71,13 +71,18 @@ func (i *Installer) LoadReceipt() (client.NodeInstallReceipt, error) {
 	return i.state.LoadReceipt()
 }
 
-func (i *Installer) BindPlan(plan client.NodeInstallPlan) {
+func (i *Installer) BindRecoveryContext(ctx context.Context, plan client.NodeInstallPlan) func() {
 	if i == nil || i.state == nil {
-		return
+		return func() {}
 	}
 	if binder, ok := i.state.(interface{ BindPlan(client.NodeInstallPlan) }); ok {
 		binder.BindPlan(plan)
 	}
+	if binder, ok := i.state.(interface{ BindContext(context.Context) }); ok {
+		binder.BindContext(ctx)
+		return func() { binder.BindContext(nil) }
+	}
+	return func() {}
 }
 
 func (i *Installer) AuthorizeBootstrap(ctx context.Context, authorization BootstrapAuthorization) error {

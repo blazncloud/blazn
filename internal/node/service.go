@@ -265,7 +265,8 @@ func (s *Service) recoverActivatedCapacity(ctx context.Context, options EnrollOp
 	if state.Pin.WorkspaceID != options.WorkspaceID || state.Pin.IdempotencyKey != options.IdempotencyKey || state.Pin.Hostname != options.Name || state.Pin.MachineFingerprint != options.MachineFingerprint || state.Pin.ProfileID != options.Profile.ID || plan.NodeID == "" || plan.PlanID == "" {
 		return EnrollResult{}, false, nil
 	}
-	s.installer.BindPlan(plan)
+	releaseRecoveryContext := s.installer.BindRecoveryContext(ctx, plan)
+	defer releaseRecoveryContext()
 	receipt, err := s.installer.LoadReceipt()
 	if err != nil {
 		return EnrollResult{State: state}, true, errors.New("persisted activation recovery state lacks its exact active receipt")

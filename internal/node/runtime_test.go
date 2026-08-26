@@ -1584,11 +1584,13 @@ func (m *memoryState) RetireEnrollmentState(expected RuntimeState) error {
 type planBoundState struct {
 	*memoryState
 	planID string
+	ctx    context.Context
 }
 
 func (s *planBoundState) BindPlan(plan client.NodeInstallPlan) { s.planID = plan.PlanID }
+func (s *planBoundState) BindContext(ctx context.Context)      { s.ctx = ctx }
 func (s *planBoundState) LoadReceipt() (client.NodeInstallReceipt, error) {
-	if s.planID == "" || s.planID != s.runtime.Exchange.Plan.PlanID {
+	if s.planID == "" || s.planID != s.runtime.Exchange.Plan.PlanID || s.ctx == nil {
 		return client.NodeInstallReceipt{}, errors.New("privileged install state plan is unavailable")
 	}
 	return s.memoryState.LoadReceipt()
@@ -1818,6 +1820,7 @@ func TestExpiredActivationRecoveryFinishesAfterGrantPersistedBeforeRelease(t *te
 		t.Fatalf("grant=%#v releases=%d err=%v", state.runtime.ActivationGrant, platform.releaseCount, err)
 	}
 	installerState.planID = ""
+	installerState.ctx = nil
 	platform.releaseErr = nil
 	service.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	result, err := service.Enroll(context.Background(), options, true)
