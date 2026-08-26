@@ -406,6 +406,22 @@ func TestRootInstallAuthorityDigestIsDomainBoundAndTokenFree(t *testing.T) {
 	if _, err := DecodeRootInstallAuthority(encoded); err != nil {
 		t.Fatal(err)
 	}
+	legacy := authority
+	legacy.SchemaVersion = LegacyRootInstallAuthoritySchema
+	legacy.ProfileOwnerUID = 0
+	legacy.Digest, _ = RootInstallAuthorityDigest(legacy)
+	legacyEncoded, _ := json.Marshal(legacy)
+	var legacyFields map[string]json.RawMessage
+	_ = json.Unmarshal(legacyEncoded, &legacyFields)
+	delete(legacyFields, "profileOwnerUid")
+	legacyEncoded, _ = json.Marshal(legacyFields)
+	decodedLegacy, err := DecodeRootInstallAuthority(legacyEncoded)
+	if err != nil || decodedLegacy.SchemaVersion != LegacyRootInstallAuthoritySchema || decodedLegacy.ProfileOwnerUID != 0 {
+		t.Fatalf("legacy authority=%#v err=%v", decodedLegacy, err)
+	}
+	if err := VerifyRootInstallAuthority(decodedLegacy, trust); err != nil {
+		t.Fatalf("legacy authority verification failed: %v", err)
+	}
 	var unknown map[string]any
 	_ = json.Unmarshal(encoded, &unknown)
 	unknown["enrollmentToken"] = strings.Repeat("s", 43)

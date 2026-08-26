@@ -21,7 +21,10 @@ import (
 	"github.com/blazncloud/blazn/internal/client"
 )
 
-const RootInstallAuthoritySchema = "blazn.dev/node-root-install-authority/v1"
+const (
+	LegacyRootInstallAuthoritySchema = "blazn.dev/node-root-install-authority/v1"
+	RootInstallAuthoritySchema       = "blazn.dev/node-root-install-authority/v2"
+)
 
 var (
 	bootstrapDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -122,7 +125,9 @@ type RootInstallAuthorityTrust struct {
 }
 
 func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
-	if authority.SchemaVersion != RootInstallAuthoritySchema || authority.ProfileID == "" || authority.Plan.InstallProfile != authority.ProfileID || !bootstrapDigestPattern.MatchString(authority.ProfileSHA256) || authority.ProfileOwnerUID < 0 || !validControlPlaneOrigin(authority.ControlPlaneOrigin) {
+	validSchema := authority.SchemaVersion == RootInstallAuthoritySchema || authority.SchemaVersion == LegacyRootInstallAuthoritySchema
+	validOwner := authority.ProfileOwnerUID >= 0 && (authority.SchemaVersion != LegacyRootInstallAuthoritySchema || authority.ProfileOwnerUID == 0)
+	if !validSchema || !validOwner || authority.ProfileID == "" || authority.Plan.InstallProfile != authority.ProfileID || !bootstrapDigestPattern.MatchString(authority.ProfileSHA256) || !validControlPlaneOrigin(authority.ControlPlaneOrigin) {
 		return errors.New("root install authority binding is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, authority.AuthorizedAt); err != nil {
@@ -177,10 +182,25 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 func DecodeRootInstallAuthority(encoded []byte) (RootInstallAuthority, error) {
 	var authority RootInstallAuthority
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 13 {
+	if json.Unmarshal(encoded, &fields) != nil {
 		return authority, errors.New("root install authority fields are invalid")
 	}
-	for _, name := range []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "joinIntent", "profileId", "profileSha256", "profileOwnerUid", "controlPlaneOrigin", "authorizedAt", "digest"} {
+	var schema string
+	if json.Unmarshal(fields["schemaVersion"], &schema) != nil {
+		return authority, errors.New("root install authority fields are invalid")
+	}
+	required := []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "joinIntent", "profileId", "profileSha256", "controlPlaneOrigin", "authorizedAt", "digest"}
+	expectedFields := 12
+	if schema == RootInstallAuthoritySchema {
+		required = append(required, "profileOwnerUid")
+		expectedFields = 13
+	} else if schema != LegacyRootInstallAuthoritySchema {
+		return authority, errors.New("root install authority fields are invalid")
+	}
+	if len(fields) != expectedFields {
+		return authority, errors.New("root install authority fields are invalid")
+	}
+	for _, name := range required {
 		if fields[name] == nil {
 			return RootInstallAuthority{}, errors.New("root install authority fields are incomplete")
 		}
@@ -222,11 +242,28 @@ func VerifyRootInstallAuthority(authority RootInstallAuthority, trust RootInstal
 
 func RootInstallAuthorityDigest(authority RootInstallAuthority) (string, error) {
 	authority.Digest = ""
-	canonical, err := canonicalJSON(authority)
+	var payload any = authority
+	domain := "blazn-node-root-install-authority-v2\n"
+	if authority.SchemaVersion == LegacyRootInstallAuthoritySchema {
+		encoded, err := json.Marshal(authority)
+		if err != nil {
+			return "", err
+		}
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(encoded, &fields) != nil {
+			return "", errors.New("legacy root install authority is invalid")
+		}
+		delete(fields, "profileOwnerUid")
+		payload = fields
+		domain = "blazn-node-root-install-authority-v1\n"
+	} else if authority.SchemaVersion != RootInstallAuthoritySchema {
+		return "", errors.New("root install authority schema is unsupported")
+	}
+	canonical, err := canonicalJSON(payload)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(append([]byte("blazn-node-root-install-authority-v1\n"), canonical...))
+	sum := sha256.Sum256(append([]byte(domain), canonical...))
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
