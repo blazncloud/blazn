@@ -28,7 +28,7 @@ test("auth migration grants only the reviewed bootstrap and runtime operations",
 
 test("OIDC signup serializes by email without requiring users update privilege", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const server = await readFile(path.resolve(here, "server.ts"), "utf8");
+  const server = await readFile(path.resolve(here, "../src/server.ts"), "utf8");
   const advisoryLock = 'SELECT pg_advisory_xact_lock(hashtext($1))';
   const existingUserLookup = 'SELECT id FROM users WHERE email=$1';
   assert.ok(server.indexOf(advisoryLock) < server.indexOf(existingUserLookup), "email advisory lock must precede the existing-user lookup");
