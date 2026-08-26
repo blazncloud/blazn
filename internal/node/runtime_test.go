@@ -535,6 +535,32 @@ func TestTrustedProfileMeasuresCurrentBinaryAndRejectsSymlink(t *testing.T) {
 	}
 }
 
+func TestUnprivilegedProfileTraversalDefersRootOnlySuffixToHelper(t *testing.T) {
+	if currentUID() == 0 {
+		t.Skip("permission boundary requires an unprivileged test process")
+	}
+	root := testRoot(t)
+	blocked := filepath.Join(root, "root-only")
+	if err := os.Mkdir(blocked, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0700) })
+	target := filepath.Join(blocked, "install-backups", "receipt")
+	if err := verifyNoSymlinkTraversal(target); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected permission boundary, got %v", err)
+	}
+	if err := verifyProfileTargetTraversal(target); err != nil {
+		t.Fatalf("unprivileged profile check did not defer root-only suffix: %v", err)
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(blocked, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyProfileTargetTraversal(filepath.Join(link, "install-backups")); err == nil {
+		t.Fatal("accessible symbolic-link prefix was deferred")
+	}
+}
+
 func TestTrustedProfileAccessSupportsPrivateCallerAndPrivilegedDelegation(t *testing.T) {
 	for _, test := range []struct {
 		name          string

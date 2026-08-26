@@ -73,7 +73,7 @@ func loadTrustedProfileForOwner(path, currentBinaryPath, currentVersion string, 
 	if _, err := io.Copy(hash, file); err != nil {
 		return client.NodeTrustedInstallProfile{}, nil, err
 	}
-	profile := client.NodeTrustedInstallProfile{ID: stored.ID, ControlPlaneOrigin: stored.ControlPlaneOrigin, AllowedClusterOrigins: stored.AllowedClusterOrigins, AllowedDownloadOrigins: stored.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: stored.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: stored.AllowedRegistryOrigins, AllowedMutationRoots: stored.AllowedMutationRoots, CurrentBinaryVersion: currentVersion, CurrentBinarySHA256: hex.EncodeToString(hash.Sum(nil)), EmbeddedComponentSHA256: stored.EmbeddedComponentSHA256, LimaBinding: stored.LimaBinding, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
+	profile := client.NodeTrustedInstallProfile{ID: stored.ID, ControlPlaneOrigin: stored.ControlPlaneOrigin, AllowedClusterOrigins: stored.AllowedClusterOrigins, AllowedDownloadOrigins: stored.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: stored.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: stored.AllowedRegistryOrigins, AllowedMutationRoots: stored.AllowedMutationRoots, CurrentBinaryVersion: currentVersion, CurrentBinarySHA256: hex.EncodeToString(hash.Sum(nil)), EmbeddedComponentSHA256: stored.EmbeddedComponentSHA256, LimaBinding: stored.LimaBinding, VerifyNoSymlinkTraversal: verifyProfileTargetTraversal}
 	return profile, encoded, nil
 }
 
@@ -151,4 +151,15 @@ func verifyNoSymlinkTraversal(target string) error {
 		}
 	}
 	return nil
+}
+
+func verifyProfileTargetTraversal(target string) error {
+	err := verifyNoSymlinkTraversal(target)
+	if err != nil && currentUID() != 0 && errors.Is(err, os.ErrPermission) {
+		// The caller cannot inspect below a root-only mutation root. The root
+		// helper reloads this profile and repeats the traversal check as UID 0
+		// before authorizing or applying any mutation.
+		return nil
+	}
+	return err
 }
