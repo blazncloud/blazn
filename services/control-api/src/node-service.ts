@@ -57,7 +57,7 @@ export class NodeService {
       const identity=await tx.createExchangedNode({nodeId,identityId:randomUUID(),enrollment,architecture:input.architecture,machineFingerprint:input.machineFingerprint,publicKey:input.nodePublicKey,publicKeyFingerprint:fingerprint,...(input.kubernetesBinding?{kubernetesBinding:input.kubernetesBinding}:{}),planId,plan,planDigest:digest.slice(7),signingKeyId,signature,issuedAt,expiresAt});
       if(identity.publicKeyFingerprint!==`sha256:${fingerprint}`||identity.issuedAt!==issuedAt.toISOString())throw new Error("created Node identity does not match enrollment exchange");
       return {plan,identity};
-    });
+    }).catch(mapStoreError);
   }
 
   async listNodes(principal:NodePrincipal,workspaceId:string):Promise<{items:NodeView[]}>{

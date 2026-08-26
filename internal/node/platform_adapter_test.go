@@ -402,6 +402,16 @@ func TestServiceStateRequiresExactSystemdOutputs(t *testing.T) {
 	}
 }
 
+func TestServiceStateTreatsSystemdNotFoundAsAbsent(t *testing.T) {
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+		return []byte("not-found\n"), &FixedCommandError{ExitCode: 4}
+	}}
+	response, err := (NativeRootEngine{Platform: "linux", Commands: commands}).serviceState(context.Background(), client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"})
+	if err != nil || response.Service == nil || response.Service.Enabled || response.Service.Active {
+		t.Fatalf("missing systemd unit was not captured as absent: response=%+v err=%v", response.Service, err)
+	}
+}
+
 func TestServiceStateFailsOnUnclassifiedManagerErrors(t *testing.T) {
 	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) { return nil, &FixedCommandError{ExitCode: 9} }}
 	engine := NativeRootEngine{Platform: "linux", Commands: commands}

@@ -718,7 +718,7 @@ func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeI
 			default:
 				return RootResponse{}, errors.New("capture systemd enabled state is ambiguous")
 			}
-		} else if err != nil && !fixedExit(err, 1) {
+		} else if err != nil && !fixedExit(err, 1) && !fixedExit(err, 4) {
 			return RootResponse{}, errors.New("capture systemd enabled state failed")
 		}
 		if output, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", service.UnitName); err == nil {
@@ -729,7 +729,7 @@ func (e NativeRootEngine) serviceState(ctx context.Context, service client.NodeI
 			default:
 				return RootResponse{}, errors.New("capture systemd active state is ambiguous")
 			}
-		} else if err != nil && !fixedExit(err, 3) {
+		} else if err != nil && !fixedExit(err, 3) && !fixedExit(err, 4) {
 			return RootResponse{}, errors.New("capture systemd active state failed")
 		}
 	} else {
