@@ -237,6 +237,8 @@ type NativeRootEngine struct {
 	AuthorityHTTPClient  *http.Client
 	LookupUser           func(string) (*user.User, error)
 	LookupGroup          func(string) (*user.Group, error)
+	LookupUserID         func(string) (*user.User, error)
+	LookupGroupID        func(string) (*user.Group, error)
 	ObservationIdentity  RootObservedIdentity
 }
 
@@ -642,7 +644,15 @@ func (e NativeRootEngine) startAndVerifyNodeService(ctx context.Context, plan cl
 	if target == "" {
 		return errors.New("finalized launchd service lacks its signed enable mutation")
 	}
-	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err == nil {
+	serviceTarget := "system/" + plan.NodeService.UnitName
+	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "enable", serviceTarget); err != nil {
+		return errors.New("enable finalized launchd service failed")
+	}
+	disabled, err := e.Commands.Run(ctx, "/bin/launchctl", "print-disabled", "system")
+	if err != nil || !launchdOverrideEnabled(disabled, plan.NodeService.UnitName) {
+		return errors.New("finalized launchd service enable override is not verified")
+	}
+	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", serviceTarget); err == nil {
 		return nil
 	} else if !fixedExit(err, 113) && !fixedExit(err, 3) {
 		return errors.New("finalized launchd service state is ambiguous")
@@ -650,10 +660,20 @@ func (e NativeRootEngine) startAndVerifyNodeService(ctx context.Context, plan cl
 	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", target); err != nil {
 		return err
 	}
-	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err != nil {
+	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", serviceTarget); err != nil {
 		return errors.New("finalized launchd service is not active")
 	}
 	return nil
+}
+
+func launchdOverrideEnabled(output []byte, label string) bool {
+	want := `"` + label + `" => false`
+	for _, line := range strings.Split(string(output), "\n") {
+		if strings.TrimSpace(strings.TrimSuffix(line, ",")) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (e NativeRootEngine) removeServiceSupport(plan client.NodeInstallPlan) error {
@@ -692,32 +712,88 @@ func (e NativeRootEngine) ensureMacOSServiceIdentity(ctx context.Context, servic
 		return errors.New("macOS node service identity contract is invalid")
 	}
 	lookupUser, lookupGroup := e.LookupUser, e.LookupGroup
+	lookupUserID, lookupGroupID := e.LookupUserID, e.LookupGroupID
 	if lookupUser == nil {
 		lookupUser = user.Lookup
 	}
 	if lookupGroup == nil {
 		lookupGroup = user.LookupGroup
 	}
-	if account, err := lookupUser(service.RunAsUser); err == nil {
-		group, groupErr := lookupGroup(service.RunAsGroup)
-		if groupErr != nil || account.Username != service.RunAsUser || account.Uid != "299" || account.Gid != "299" || account.HomeDir != home || group.Name != service.RunAsGroup || group.Gid != "299" {
-			return errors.New("existing macOS node service identity differs from the dedicated contract")
-		}
-		return e.verifyMacOSDSCLIdentity(ctx, home)
+	if lookupUserID == nil {
+		lookupUserID = user.LookupId
 	}
-	if account, err := user.LookupId("299"); err == nil && account.Username != service.RunAsUser {
+	if lookupGroupID == nil {
+		lookupGroupID = user.LookupGroupId
+	}
+	if account, err := lookupUser(service.RunAsUser); err == nil &&
+		((account.Username != "" && account.Username != service.RunAsUser) || (account.Uid != "" && account.Uid != "299") || (account.Gid != "" && account.Gid != "299") || (account.HomeDir != "" && account.HomeDir != home)) {
+		return errors.New("existing macOS node service identity differs from the dedicated contract")
+	}
+	if group, err := lookupGroup(service.RunAsGroup); err == nil &&
+		((group.Name != "" && group.Name != service.RunAsGroup) || (group.Gid != "" && group.Gid != "299")) {
+		return errors.New("existing macOS node service identity differs from the dedicated contract")
+	}
+	if account, err := lookupUserID("299"); err == nil && account.Username != service.RunAsUser {
 		return errors.New("macOS node service UID is already occupied")
 	}
-	if group, err := user.LookupGroupId("299"); err == nil && group.Name != service.RunAsGroup {
+	if group, err := lookupGroupID("299"); err == nil && group.Name != service.RunAsGroup {
 		return errors.New("macOS node service GID is already occupied")
 	}
-	commands := [][]string{{".", "-create", "/Groups/_blazn-node"}, {".", "-create", "/Groups/_blazn-node", "PrimaryGroupID", "299"}, {".", "-create", "/Users/_blazn-node"}, {".", "-create", "/Users/_blazn-node", "UniqueID", "299"}, {".", "-create", "/Users/_blazn-node", "PrimaryGroupID", "299"}, {".", "-create", "/Users/_blazn-node", "NFSHomeDirectory", home}, {".", "-create", "/Users/_blazn-node", "UserShell", "/usr/bin/false"}, {".", "-create", "/Users/_blazn-node", "IsHidden", "1"}}
-	for _, args := range commands {
-		if _, err := e.Commands.Run(ctx, "/usr/bin/dscl", args...); err != nil {
+	attributes := []struct{ record, key, value string }{
+		{"/Groups/_blazn-node", "PrimaryGroupID", "299"},
+		{"/Users/_blazn-node", "UniqueID", "299"},
+		{"/Users/_blazn-node", "PrimaryGroupID", "299"},
+		{"/Users/_blazn-node", "NFSHomeDirectory", home},
+		{"/Users/_blazn-node", "UserShell", "/usr/bin/false"},
+		{"/Users/_blazn-node", "IsHidden", "1"},
+	}
+	missing := make([]int, 0, len(attributes))
+	for i, attribute := range attributes {
+		present, err := e.macOSDSCLAttributeMatches(ctx, attribute.record, attribute.key, attribute.value)
+		if err != nil {
+			return err
+		}
+		if !present {
+			missing = append(missing, i)
+		}
+	}
+	if err := e.verifyMacOSDSCLMembership(ctx); err != nil {
+		return err
+	}
+	for _, i := range missing {
+		attribute := attributes[i]
+		if _, err := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-create", attribute.record, attribute.key, attribute.value); err != nil {
 			return errors.New("create dedicated macOS node service identity failed")
 		}
 	}
 	return e.verifyMacOSDSCLIdentity(ctx, home)
+}
+
+func (e NativeRootEngine) macOSDSCLAttributeMatches(ctx context.Context, record, key, expected string) (bool, error) {
+	value, err := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", record, key)
+	if err == nil {
+		if !exactDSCLAttributes(value, map[string]string{key: expected}) {
+			return false, errors.New("existing macOS node service identity differs from the dedicated contract")
+		}
+		return true, nil
+	}
+	if fixedExit(err, 1) {
+		return false, nil
+	}
+	return false, errors.New("existing macOS node service identity cannot be inspected")
+}
+
+func (e NativeRootEngine) verifyMacOSDSCLMembership(ctx context.Context) error {
+	for _, attribute := range []string{"GroupMembership", "GroupMembers"} {
+		value, memberErr := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", "/Groups/_blazn-node", attribute)
+		if memberErr == nil && strings.TrimSpace(string(value)) != "" {
+			return errors.New("existing macOS node service group has supplementary members")
+		}
+		if memberErr != nil && !fixedExit(memberErr, 1) {
+			return errors.New("existing macOS node service membership cannot be verified")
+		}
+	}
+	return nil
 }
 
 func (e NativeRootEngine) verifyMacOSDSCLIdentity(ctx context.Context, home string) error {
@@ -729,19 +805,7 @@ func (e NativeRootEngine) verifyMacOSDSCLIdentity(ctx context.Context, home stri
 	if groupAttrErr != nil || !exactDSCLAttributes(groupAttributes, map[string]string{"PrimaryGroupID": "299"}) {
 		return errors.New("existing macOS node service group differs from contract")
 	}
-	for _, attribute := range []string{"GroupMembership", "GroupMembers"} {
-		value, memberErr := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", "/Groups/_blazn-node", attribute)
-		if memberErr == nil && strings.TrimSpace(string(value)) != "" {
-			return errors.New("existing macOS node service group has supplementary members")
-		}
-		if memberErr != nil {
-			var commandErr *FixedCommandError
-			if !errors.As(memberErr, &commandErr) || commandErr.ExitCode != 1 {
-				return errors.New("existing macOS node service membership cannot be verified")
-			}
-		}
-	}
-	return nil
+	return e.verifyMacOSDSCLMembership(ctx)
 }
 
 func exactDSCLAttributes(output []byte, expected map[string]string) bool {
