@@ -97,7 +97,9 @@ export class NodeService {
       const prior=await tx.heartbeatState(input.nodeId);
       if(node.kubernetesBinding&&canonicalJson(node.kubernetesBinding)===canonicalJson(binding)&&prior?.requestDigest===heartbeatRequestDigest)return;
       if(Math.abs(this.now().getTime()-sentAt.getTime())>5*60_000)throw new NodeHttpError("heartbeat_skew","heartbeat timestamp exceeds allowed clock skew");
-      if(!node.kubernetesBinding||input.priorKubernetesResourceVersion!==node.kubernetesBinding.resourceVersion||!bindingAdvances(node.kubernetesBinding,binding))throw new NodeHttpError("version_conflict","heartbeat Kubernetes binding changed before this exact transition");
+      const exactPrior=node.kubernetesBinding&&input.priorKubernetesResourceVersion===node.kubernetesBinding.resourceVersion;
+      const firstHeartbeatCapacityReconcile=node.kubernetesBinding&&!prior&&input.priorKubernetesResourceVersion===binding.resourceVersion;
+      if(!node.kubernetesBinding||(!exactPrior&&!firstHeartbeatCapacityReconcile)||!bindingAdvances(node.kubernetesBinding,binding))throw new NodeHttpError("version_conflict","heartbeat Kubernetes binding changed before this exact transition");
       if(prior&&prior.identityGeneration===input.identityGeneration){
         if(prior.bootId===input.bootId&&input.sequence<=prior.sequence) throw new NodeHttpError("heartbeat_replay","heartbeat sequence was already observed");
         if(prior.bootId!==input.bootId&&(input.sequence!==0||sentAt.getTime()<=prior.sentAt.getTime()||await tx.bootObserved(input.nodeId,input.identityGeneration,input.bootId))) throw new NodeHttpError("heartbeat_replay","new boot epoch is invalid or already observed");
