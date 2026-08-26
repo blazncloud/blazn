@@ -353,7 +353,7 @@ func TestAgentSandboxControllerAvailabilityRequiresObservedAvailableGeneration(t
 
 func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
 	materials := ProductionEmbeddedMaterials()
-	for name, want := range map[string]string{"blazn-node-systemd": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
+	for name, want := range map[string]string{"blazn-node-systemd": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
 		sum := sha256.Sum256(materials[name])
 		if fmt.Sprintf("%x", sum) != want {
 			t.Fatalf("material %s digest=%x", name, sum)
@@ -361,6 +361,9 @@ func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
 	}
 	if !strings.Contains(string(materials["blazn-node-systemd"]), "User=blazn-node\nGroup=blazn-node\nExecStart=/usr/local/bin/blazn node serve") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>UserName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>GroupName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<string>node</string><string>serve</string>") {
 		t.Fatal("installed service units do not execute node serve under the dedicated identity")
+	}
+	if !strings.Contains(string(materials["blazn-node-systemd"]), "ProtectHome=read-only\n") || strings.Contains(string(materials["blazn-node-systemd"]), "ProtectHome=true\n") {
+		t.Fatal("systemd home protection must permit read-only MicroK8s snap observation")
 	}
 	if DefaultRootHelperPath != defaultRootBinaryPath || RootHelperSubcommand != "node-root-helper" {
 		t.Fatalf("helper path=%q subcommand=%q", DefaultRootHelperPath, RootHelperSubcommand)
