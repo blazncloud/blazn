@@ -7,6 +7,8 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 [ "$(id -u)" -eq 0 ] || die "identity runtime secret publication must run as root"
 [ -n "${BLAZN_FENCING_TOKEN:-}" ] || die "identity runtime secret publication must run through with-control-plane-lock.sh"
+node_source_root=${BLAZN_NODE_BROKER_SECRETS_ROOT:-/etc/blazn/node-broker/secrets}
+publish_node_enrollment_runtime_secret "$node_source_root" /run/blazn/identity-secrets
 identity_overlay_enabled || exit 0
 
 identity_env=${BLAZN_IDENTITY_ENV_FILE:-/etc/blazn/identity/control-api.env}

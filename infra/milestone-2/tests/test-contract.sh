@@ -78,7 +78,7 @@ printf '%s\n' "$runtime_api" | grep -F -- '- workspace_invitation_hmac_v1' >/dev
 printf '%s\n' "$runtime_api" | grep -F -- '- node_enrollment_hmac_v1' >/dev/null
 # This intentionally asserts the literal required Compose interpolation.
 # shellcheck disable=SC2016
-grep -F 'file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/enrollment-hmac-v1' "$compose" >/dev/null
+grep -F 'file: /run/blazn/identity-secrets/node-enrollment-hmac-v1' "$compose" >/dev/null
 for privileged_service in api-migrate api-bootstrap database-role-compat database-role-hardening postgres object object-init object-client; do
   service_block=$(awk -v service="$privileged_service" '
     $0 == "  " service ":" { in_service=1; next }
@@ -220,11 +220,22 @@ grep -F 'ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST' "$ROOT_DIR/scripts/common.sh"
 grep -F 'ZITADEL_REVIEWED_ACR_POLICY' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'ZITADEL_REVIEWED_MFA_AMR_SETS' "$ROOT_DIR/scripts/common.sh" >/dev/null
 grep -F 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null
+# This intentionally asserts a literal shell variable in the preparation script.
+# shellcheck disable=SC2016
+grep -F 'publish_node_enrollment_runtime_secret "$node_source_root" /run/blazn/identity-secrets' "$ROOT_DIR/scripts/prepare-identity-runtime-secrets.sh" >/dev/null
 prepare_identity_line=$(grep -n 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
+# This intentionally asserts the literal script-directory variable.
+# shellcheck disable=SC2016
+preflight_start_line=$(grep -n '"$SCRIPT_DIR/preflight.sh" --deploy' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 recreate_identity_line=$(grep -n 'compose up --no-start --no-deps --force-recreate api' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 start_identity_line=$(grep -n 'compose up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
-[ "$prepare_identity_line" -lt "$recreate_identity_line" ]
+[ "$prepare_identity_line" -lt "$preflight_start_line" ]
+[ "$preflight_start_line" -lt "$recreate_identity_line" ]
 [ "$recreate_identity_line" -lt "$start_identity_line" ]
+if grep -F 'if identity_overlay_enabled; then' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null; then
+  printf 'runtime secret publication is incorrectly conditional on the identity overlay\n' >&2
+  exit 1
+fi
 grep -F 'RuntimeDirectory=blazn/identity-secrets' "$unit" >/dev/null
 grep -F 'RuntimeDirectoryMode=0700' "$unit" >/dev/null
 grep -F '/run/blazn/identity-secrets/zitadel-client-secret' "$ROOT_DIR/compose.identity.yaml" >/dev/null

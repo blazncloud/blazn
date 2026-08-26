@@ -208,6 +208,39 @@ publish_identity_runtime_secrets() {
   validate_identity_runtime_secrets "$identity_source_root" "$identity_runtime_root"
 }
 
+publish_node_enrollment_runtime_secret() {
+  node_source_root=$1
+  node_runtime_root=$2
+  require_absolute_path BLAZN_NODE_BROKER_SECRETS_ROOT "$node_source_root"
+  require_absolute_path BLAZN_NODE_RUNTIME_SECRETS_ROOT "$node_runtime_root"
+  assert_not_symlink_chain "$node_source_root"
+  assert_not_symlink_chain "$node_runtime_root"
+  assert_directory_owned_mode "$node_source_root" 0 700
+  node_source=$node_source_root/enrollment-hmac-v1
+  assert_regular_file_owned_mode "$node_source" 0 400
+  [ "$(wc -c <"$node_source" | tr -d ' ')" = 32 ] || die "Node enrollment HMAC must contain exactly 32 bytes"
+  node_runtime_parent=$(dirname -- "$node_runtime_root")
+  assert_directory_owned_mode "$node_runtime_parent" 0 700,750,755
+  if [ -e "$node_runtime_root" ] || [ -L "$node_runtime_root" ]; then
+    assert_directory_owned_mode "$node_runtime_root" 0 700
+  else
+    mkdir -m 700 -- "$node_runtime_root"
+    chown 0:0 -- "$node_runtime_root"
+  fi
+  node_target=$node_runtime_root/node-enrollment-hmac-v1
+  if [ -e "$node_target" ] || [ -L "$node_target" ]; then
+    assert_regular_file_owned_mode "$node_target" 0 444
+  fi
+  node_temporary=$(mktemp "$node_runtime_root/.node-enrollment-hmac-v1.XXXXXX")
+  trap 'test -z "${node_temporary:-}" || test ! -e "$node_temporary" || rm -- "$node_temporary"' EXIT HUP INT TERM
+  install -o root -g root -m 0444 -- "$node_source" "$node_temporary"
+  mv -- "$node_temporary" "$node_target"
+  node_temporary=
+  sync -f "$node_target" 2>/dev/null || sync
+  trap - EXIT HUP INT TERM
+  cmp -s "$node_source" "$node_target" || die "published Node enrollment HMAC differs from its source"
+}
+
 control_plane_compose() {
   infra_root=$1
   env_file=$2
