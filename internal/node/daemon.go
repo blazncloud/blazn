@@ -82,7 +82,22 @@ func (d *Daemon) Heartbeat(ctx context.Context) (HeartbeatResult, error) {
 			return HeartbeatResult{}, proofErr
 		}
 		if err := d.api.SubmitNodeHeartbeat(ctx, proof, heartbeat); err != nil {
-			return HeartbeatResult{}, err
+			if !client.IsCode(err, "heartbeat_skew") {
+				return HeartbeatResult{}, err
+			}
+			heartbeat.SentAt = d.now().UTC().Format(time.RFC3339Nano)
+			proof, proofErr = nodeProof(identity.PrivateKey, "blazn-node-heartbeat-v1", heartbeat)
+			if proofErr != nil {
+				return HeartbeatResult{}, proofErr
+			}
+			state.PendingHeartbeat = &heartbeat
+			state.UpdatedAt = heartbeat.SentAt
+			if err := d.state.SaveRuntime(state); err != nil {
+				return HeartbeatResult{}, fmt.Errorf("persist refreshed Kubernetes heartbeat transition: %w", err)
+			}
+			if err := d.api.SubmitNodeHeartbeat(ctx, proof, heartbeat); err != nil {
+				return HeartbeatResult{}, err
+			}
 		}
 		if heartbeat.Sequence > d.sequence {
 			d.sequence = heartbeat.Sequence

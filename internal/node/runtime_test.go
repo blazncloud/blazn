@@ -1272,6 +1272,31 @@ func TestDaemonPersistsAndExactlyReplaysHeartbeatAfterAcknowledgmentLoss(t *test
 	}
 }
 
+func TestDaemonRefreshesPendingHeartbeatOnlyAfterServerRejectsItsTimestamp(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	capability := testCapability()
+	origin := capability.Worker.KubernetesBinding
+	origin.ResourceVersion = "opaque-origin"
+	capability.Worker.KubernetesBinding.ResourceVersion = "opaque-next"
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &origin}}
+	api := &mockAPI{heartbeatResponseLosses: 1}
+	when := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: capability})
+	daemon.now = func() time.Time { return when }
+	if _, err := daemon.Heartbeat(context.Background()); err == nil {
+		t.Fatal("expected injected response loss")
+	}
+	original := *state.runtime.PendingHeartbeat
+	api.heartbeatErrors = []error{&client.APIError{StatusCode: 400, Body: client.ErrorBody{Code: "heartbeat_skew", Message: "heartbeat timestamp exceeds allowed clock skew"}}}
+	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: client.NodeCapability{}})
+	restarted.now = func() time.Time { return when.Add(10 * time.Minute) }
+	result, err := restarted.Heartbeat(context.Background())
+	if err != nil || api.heartbeatCalls != 3 || result.BootID != original.BootID || result.Sequence != original.Sequence || api.lastHeartbeat.SentAt == original.SentAt || api.lastHeartbeat.SentAt != when.Add(10*time.Minute).Format(time.RFC3339Nano) || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
+		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
+	}
+}
+
 func TestDaemonReplaysPendingHeartbeatAfterAcceptedStateSaveCrash(t *testing.T) {
 	identity := testIdentity(t)
 	plan := installPlan()
@@ -1378,6 +1403,7 @@ type mockAPI struct {
 	activationSigner         *Identity
 	activationErr            error
 	heartbeatResponseLosses  int
+	heartbeatErrors          []error
 	heartbeatCalls           int
 	heartbeatEntered         chan struct{}
 	heartbeatRelease         chan struct{}
@@ -1411,6 +1437,11 @@ func (m *mockAPI) SubmitNodeHeartbeat(_ context.Context, proof string, heartbeat
 	if m.heartbeatResponseLosses > 0 {
 		m.heartbeatResponseLosses--
 		return errors.New("injected heartbeat response loss")
+	}
+	if len(m.heartbeatErrors) > 0 {
+		err := m.heartbeatErrors[0]
+		m.heartbeatErrors = m.heartbeatErrors[1:]
+		return err
 	}
 	return nil
 }
@@ -1548,6 +1579,21 @@ func (m *memoryState) RetireEnrollmentState(expected RuntimeState) error {
 	m.runtime = RuntimeState{}
 	m.pin = EnrollmentPin{}
 	return nil
+}
+
+type planBoundState struct {
+	*memoryState
+	planID string
+	ctx    context.Context
+}
+
+func (s *planBoundState) BindPlan(plan client.NodeInstallPlan) { s.planID = plan.PlanID }
+func (s *planBoundState) BindContext(ctx context.Context)      { s.ctx = ctx }
+func (s *planBoundState) LoadReceipt() (client.NodeInstallReceipt, error) {
+	if s.planID == "" || s.planID != s.runtime.Exchange.Plan.PlanID || s.ctx == nil {
+		return client.NodeInstallReceipt{}, errors.New("privileged install state plan is unavailable")
+	}
+	return s.memoryState.LoadReceipt()
 }
 
 type mockPlatform struct {
@@ -1765,13 +1811,16 @@ func TestExpiredActivationRecoveryFinishesAfterGrantPersistedBeforeRelease(t *te
 	authorization, identity, planSigner := validBootstrapAuthorizationWithSigner(t)
 	platform := &bindingMockPlatform{mockPlatform: &mockPlatform{failAt: -1}, binding: authorization.KubernetesBinding, releaseErr: errors.New("injected crash before capacity mutation")}
 	state := &memoryState{}
+	installerState := &planBoundState{memoryState: state}
 	api := activatedMockAPI(authorization, planSigner)
-	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, state))
+	service := NewService(api, fixedIdentity{identity}, state, NewInstaller(platform, installerState))
 	service.now = func() time.Time { return time.Date(2026, 8, 21, 0, 1, 0, 0, time.UTC) }
 	options := recoveryEnrollOptions(authorization)
 	if _, err := service.Enroll(context.Background(), options, true); err == nil || state.runtime.ActivationGrant == nil || platform.releaseCount != 1 {
 		t.Fatalf("grant=%#v releases=%d err=%v", state.runtime.ActivationGrant, platform.releaseCount, err)
 	}
+	installerState.planID = ""
+	installerState.ctx = nil
 	platform.releaseErr = nil
 	service.now = func() time.Time { return time.Date(2026, 8, 21, 1, 0, 0, 0, time.UTC) }
 	result, err := service.Enroll(context.Background(), options, true)
