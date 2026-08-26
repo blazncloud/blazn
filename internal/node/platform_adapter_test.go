@@ -1089,6 +1089,63 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 	}
 }
 
+func TestAdoptedWorkerCaptureOnlyBindsClusterMutations(t *testing.T) {
+	authorization, _, signer := validBootstrapAuthorizationWithSigner(t)
+	plan := authorization.Expected.Plan
+	plan.Mutations = append(plan.Mutations,
+		client.NodeInstallMutation{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+		client.NodeInstallMutation{Ordinal: 5, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+	)
+	plan.Digest = ""
+	plan.Signature = ""
+	digest, err := client.NodeInstallPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Digest = digest
+	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+	binding := *authorization.KubernetesBinding
+	var captures []RootRequest
+	privileged := functionPrivilegedClient(func(_ context.Context, request RootRequest) (RootResponse, error) {
+		switch request.Operation {
+		case RootProbe:
+			return RootResponse{OK: true, KubernetesBinding: &binding}, nil
+		case RootCapture:
+			captures = append(captures, request)
+			return RootResponse{OK: true, Prior: &PriorState{State: "absent", Material: client.NodeRollbackMaterial{Kind: "absent"}}}, nil
+		default:
+			return RootResponse{}, errors.New("unexpected privileged operation")
+		}
+	})
+	adapter, err := NewPlatformAdapter("linux", privileged, TrustedMaterialResolver{}, &countingJoinCoordinator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Preflight(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	backupRoot := plan.Rollback.BackupRoot
+	if _, err := adapter.Capture(context.Background(), plan.Mutations[0], backupRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutation := range plan.Mutations[3:] {
+		if _, err := adapter.Capture(context.Background(), mutation, backupRoot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(captures) != 3 || captures[0].Join != nil {
+		t.Fatalf("capture requests=%#v", captures)
+	}
+	for index, request := range captures {
+		if err := validateRootRequestShape(request); err != nil {
+			t.Fatalf("capture %d has invalid root request shape: %v", index, err)
+		}
+		if index > 0 && (request.Join == nil || request.Join.ExpectedNodeName != binding.NodeName || request.Join.ExpectedNodeUID != binding.NodeUID || request.Join.ExpectedResourceVersion != binding.ResourceVersion) {
+			t.Fatalf("cluster capture binding=%#v want=%#v", request.Join, binding)
+		}
+	}
+}
+
 func TestPlatformAdapterReleasesCapacityAndAdvancesExactBinding(t *testing.T) {
 	plan := testJoinPlan("linux")
 	receipt := client.NodeInstallReceipt{ReceiptID: "receipt-1"}

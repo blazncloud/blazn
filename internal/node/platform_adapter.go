@@ -425,14 +425,17 @@ func (a *PlatformAdapter) ServiceState(ctx context.Context, service client.NodeI
 	return *response.Service, nil
 }
 func (a *PlatformAdapter) Capture(ctx context.Context, mutation client.NodeInstallMutation, backupRoot string) (PriorState, error) {
-	if mutation.Kind == "label" || mutation.Kind == "taint" {
+	clusterMutation := mutation.Kind == "label" || mutation.Kind == "taint"
+	if clusterMutation {
 		if err := a.ensureJoined(ctx, a.plan); err != nil {
 			return PriorState{}, err
 		}
 	}
 	request := a.request(RootCapture, a.plan, mutation.Ordinal)
 	request.BackupRoot = backupRoot
-	request.Join = a.joined
+	if clusterMutation {
+		request.Join = a.joined
+	}
 	response, err := a.Privileged.Call(ctx, request)
 	if err != nil || response.Prior == nil {
 		return PriorState{}, errors.New("capture mutation state failed")
