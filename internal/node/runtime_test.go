@@ -165,6 +165,43 @@ func TestOwnershipTransitionRejectsRegularFileStateRoot(t *testing.T) {
 	}
 }
 
+func TestOwnershipTransitionDoesNotFollowSubstitutedSymlink(t *testing.T) {
+	base := testRoot(t)
+	rootPath := filepath.Join(base, "state")
+	if err := os.Mkdir(rootPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(rootPath, "identity.json")
+	if err := os.WriteFile(victim, []byte("state"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(base, "external")
+	if err := os.WriteFile(external, []byte("protected"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	uid, gid := int(currentUID()), os.Getgid()
+	err = transitionPinnedStateEntry(root, "identity.json", uid, gid, map[int64]bool{int64(uid): true}, func() {
+		if removeErr := os.Remove(victim); removeErr != nil {
+			t.Fatal(removeErr)
+		}
+		if linkErr := os.Symlink(external, victim); linkErr != nil {
+			t.Fatal(linkErr)
+		}
+	})
+	if err == nil {
+		t.Fatal("substituted external symlink was accepted")
+	}
+	info, statErr := os.Stat(external)
+	if statErr != nil || info.Mode().Perm() != 0644 {
+		t.Fatalf("external target was mutated: info=%v err=%v", info, statErr)
+	}
+}
+
 func TestSystemBinaryPromotionRequiresMatchingActiveNodeReceipt(t *testing.T) {
 	value := []byte("old-root-binary")
 	sum := sha256.Sum256(value)
