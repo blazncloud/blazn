@@ -139,6 +139,49 @@ func (s FileStateStore) LoadRuntime() (RuntimeState, error) {
 	}
 	return v, err
 }
+func (s FileStateStore) RetireEnrollmentState(expected RuntimeState) error {
+	if !filepath.IsAbs(s.Root) {
+		return errors.New("node state root must be absolute")
+	}
+	current, err := s.LoadRuntime()
+	if err != nil {
+		return err
+	}
+	if !sameJSON(current, expected) || client.ValidateExchangeNodeEnrollmentResponse(current.Exchange) != nil || current.Exchange.Plan.PlanID == "" || !samePin(current.Pin, expected.Pin) {
+		return errors.New("node runtime changed before retirement")
+	}
+	pin, pinErr := s.LoadPin()
+	if pinErr == nil && !samePin(pin, current.Pin) {
+		return errors.New("node enrollment pin changed before retirement")
+	}
+	if pinErr != nil && !errors.Is(pinErr, os.ErrNotExist) {
+		return pinErr
+	}
+	planID := current.Exchange.Plan.PlanID
+	runtimeBytes, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	pinBytes, err := json.Marshal(current.Pin)
+	if err != nil {
+		return err
+	}
+	if err := archivePrivateExact(filepath.Join(s.Root, "retired-"+planID+"-runtime.json"), runtimeBytes); err != nil {
+		return err
+	}
+	if err := archivePrivateExact(filepath.Join(s.Root, "retired-"+planID+"-enrollment-pin.json"), pinBytes); err != nil {
+		return err
+	}
+	if pinErr == nil {
+		if err := os.Remove(filepath.Join(s.Root, "enrollment-pin.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(s.Root, "runtime.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
 func (s FileStateStore) SaveWAL(v InstallWAL) error { return s.write("install-wal.json", v) }
 func (s FileStateStore) CreateWAL(v InstallWAL) error {
 	if !filepath.IsAbs(s.Root) {

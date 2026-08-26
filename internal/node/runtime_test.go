@@ -118,6 +118,48 @@ func TestFileStateRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestFileStateRetirementArchivesExactStateAndRecoversAfterPinRemoval(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, IdempotencyKey: plan.IdempotencyKey, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath, PlanSigningKey: authorization.PlanSigningKey, PinnedAt: plan.IssuedAt}
+	runtimeState := RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: pin, Exchange: authorization.Expected, UpdatedAt: plan.IssuedAt}
+	root := filepath.Join(testRoot(t), "state")
+	store := FileStateStore{Root: root}
+	if err := store.Pin(pin); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntime(runtimeState); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash after the archive was published and the canonical pin was
+	// removed, but before runtime.json was removed.
+	runtimeBytes, _ := json.Marshal(runtimeState)
+	pinBytes, _ := json.Marshal(pin)
+	if err := archivePrivateExact(filepath.Join(root, "retired-"+plan.PlanID+"-runtime.json"), runtimeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := archivePrivateExact(filepath.Join(root, "retired-"+plan.PlanID+"-enrollment-pin.json"), pinBytes); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "enrollment-pin.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RetireEnrollmentState(runtimeState); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"runtime.json", "enrollment-pin.json"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("canonical %s remains: %v", name, err)
+		}
+	}
+	for _, name := range []string{"retired-" + plan.PlanID + "-runtime.json", "retired-" + plan.PlanID + "-enrollment-pin.json"} {
+		info, err := os.Stat(filepath.Join(root, name))
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("archive %s info=%v err=%v", name, info, err)
+		}
+	}
+}
+
 func TestAuthorizedOwnershipTransitionPreservesPrivateDaemonState(t *testing.T) {
 	parent := filepath.Join(testRoot(t), "state")
 	if err := os.Mkdir(parent, 0700); err != nil {
@@ -387,6 +429,103 @@ func TestServiceAuthorizesBootstrapBeforeRuntimePersistenceAndInstall(t *testing
 	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: plan.WorkspaceID, IdempotencyKey: plan.IdempotencyKey, Name: plan.Hostname, Mode: plan.Mode, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, MachineFingerprint: plan.Target.MachineFingerprint, KubernetesBinding: authorization.KubernetesBinding, Profile: profile, ProfilePath: authorization.ProfilePath}, true)
 	if err == nil || platform.authorization == nil || platform.authorization.Token != authorization.Token || state.runtime.SchemaVersion != 0 || platform.applyCalls != 0 {
 		t.Fatalf("authorization=%#v runtime=%#v apply=%d err=%v", platform.authorization, state.runtime, platform.applyCalls, err)
+	}
+}
+
+func TestServiceRetiresVerifiedRemovedEnrollmentBeforeAcceptingDifferentTrust(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, IdempotencyKey: plan.IdempotencyKey, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath, PlanSigningKey: authorization.PlanSigningKey, PinnedAt: plan.IssuedAt}
+	runtimeState := RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: pin, Exchange: authorization.Expected, UpdatedAt: plan.IssuedAt}
+	state := &memoryState{pin: pin, runtime: runtimeState}
+	platform := &mockPlatform{failAt: -1}
+	service := NewService(&mockAPI{}, fixedIdentity{}, state, NewInstaller(platform, state))
+	options := EnrollOptions{WorkspaceID: plan.WorkspaceID, IdempotencyKey: "different-idempotency-key", Name: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, Profile: trustedBootstrapProfile(plan), ProfilePath: authorization.ProfilePath}
+	if err := service.retireRemovedEnrollment(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	if platform.retireCalls != 1 || platform.retiredPlan.PlanID != plan.PlanID || state.runtime.SchemaVersion != 0 || state.pin.EnrollmentID != "" || state.retireCalls != 1 {
+		t.Fatalf("platform=%#v state=%#v", platform, state)
+	}
+}
+
+func TestEnrollRetiresDifferentTrustBeforeLoadingIdentityOrCallingAPI(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	oldPin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, IdempotencyKey: plan.IdempotencyKey, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, ProfileID: authorization.ProfileID, ProfilePath: "/etc/blazn/node/profiles/retired-profile.json", PlanSigningKey: authorization.PlanSigningKey, PinnedAt: plan.IssuedAt}
+	runtimeState := RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: oldPin, Exchange: authorization.Expected, UpdatedAt: plan.IssuedAt}
+	state := &memoryState{pin: oldPin, runtime: runtimeState}
+	platform := &mockPlatform{failAt: -1}
+	api := &mockAPI{}
+	identityChecked := false
+	identities := identityStoreFunc(func() (Identity, error) {
+		identityChecked = true
+		if state.runtime.SchemaVersion != 0 || state.pin.EnrollmentID != "" || state.retireCalls != 1 || platform.retireCalls != 1 {
+			t.Fatal("new enrollment reached identity creation before old trust was retired")
+		}
+		return Identity{}, errors.New("stop after ordering check")
+	})
+	service := NewService(api, identities, state, NewInstaller(platform, state))
+	options := EnrollOptions{AccessToken: "access", WorkspaceID: plan.WorkspaceID, IdempotencyKey: plan.IdempotencyKey, Name: plan.Hostname, Mode: plan.Mode, Platform: plan.Target.Platform, Architecture: plan.Target.Architecture, MachineFingerprint: plan.Target.MachineFingerprint, Profile: trustedBootstrapProfile(plan), ProfilePath: authorization.ProfilePath}
+	if _, err := service.Enroll(context.Background(), options, true); err == nil || !identityChecked {
+		t.Fatalf("identityChecked=%v err=%v", identityChecked, err)
+	}
+}
+
+func TestServiceFailsClosedBeforeLocalRetirement(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, IdempotencyKey: plan.IdempotencyKey, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath, PlanSigningKey: authorization.PlanSigningKey, PinnedAt: plan.IssuedAt}
+	runtimeState := RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: pin, Exchange: authorization.Expected, UpdatedAt: plan.IssuedAt}
+	for name, fixture := range map[string]struct {
+		state    *memoryState
+		rootErr  error
+		wantRoot int
+	}{
+		"missing runtime":       {state: &memoryState{pin: pin}},
+		"runtime pin mismatch":  {state: &memoryState{pin: func() EnrollmentPin { changed := pin; changed.EnrollmentID = "different"; return changed }(), runtime: runtimeState}},
+		"unverified root state": {state: &memoryState{pin: pin, runtime: runtimeState}, rootErr: errors.New("active or recovery state"), wantRoot: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			beforeRuntime, beforePin := fixture.state.runtime, fixture.state.pin
+			platform := &mockPlatform{failAt: -1, retireErr: fixture.rootErr}
+			service := NewService(&mockAPI{}, fixedIdentity{}, fixture.state, NewInstaller(platform, fixture.state))
+			options := EnrollOptions{WorkspaceID: plan.WorkspaceID, IdempotencyKey: "different-idempotency-key", Name: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, Profile: trustedBootstrapProfile(plan), ProfilePath: authorization.ProfilePath}
+			if err := service.retireRemovedEnrollment(context.Background(), options); err == nil {
+				t.Fatal("unsafe prior state was retired")
+			}
+			if platform.retireCalls != fixture.wantRoot || fixture.state.retireCalls != 0 || !sameJSON(fixture.state.runtime, beforeRuntime) || !samePin(fixture.state.pin, beforePin) {
+				t.Fatalf("root calls=%d state=%#v", platform.retireCalls, fixture.state)
+			}
+		})
+	}
+}
+
+func TestRetirementRuntimeRequiresEveryPinnedPlanBindingAndSignature(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	pin := EnrollmentPin{SchemaVersion: 1, WorkspaceID: plan.WorkspaceID, EnrollmentID: plan.EnrollmentID, IdempotencyKey: plan.IdempotencyKey, Hostname: plan.Hostname, MachineFingerprint: plan.Target.MachineFingerprint, ProfileID: authorization.ProfileID, ProfilePath: authorization.ProfilePath, PlanSigningKey: authorization.PlanSigningKey, PinnedAt: plan.IssuedAt}
+	base := RuntimeState{SchemaVersion: 1, ControlPlaneOrigin: "https://control.example.test", Pin: pin, Exchange: authorization.Expected, UpdatedAt: plan.IssuedAt}
+	if err := verifyPinnedRetirementRuntime(base); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*RuntimeState){
+		"workspace":           func(v *RuntimeState) { v.Pin.WorkspaceID = "different" },
+		"enrollment":          func(v *RuntimeState) { v.Pin.EnrollmentID = "different" },
+		"idempotency":         func(v *RuntimeState) { v.Pin.IdempotencyKey = "different" },
+		"hostname":            func(v *RuntimeState) { v.Pin.Hostname = "different" },
+		"machine fingerprint": func(v *RuntimeState) { v.Pin.MachineFingerprint = strings.Repeat("b", 64) },
+		"profile":             func(v *RuntimeState) { v.Pin.ProfileID = "different" },
+		"signing key":         func(v *RuntimeState) { v.Pin.PlanSigningKey.Fingerprint = "sha256:" + strings.Repeat("b", 64) },
+		"plan signature":      func(v *RuntimeState) { v.Exchange.Plan.Signature = strings.Repeat("A", 86) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			value := base
+			mutate(&value)
+			if err := verifyPinnedRetirementRuntime(value); err == nil {
+				t.Fatal("mismatched pin/plan retirement evidence was accepted")
+			}
+		})
 	}
 }
 
@@ -1214,6 +1353,10 @@ type fixedIdentity struct{ Identity }
 
 func (f fixedIdentity) LoadOrCreate() (Identity, error) { return f.Identity, nil }
 
+type identityStoreFunc func() (Identity, error)
+
+func (f identityStoreFunc) LoadOrCreate() (Identity, error) { return f() }
+
 type fixedCapability struct{ capability client.NodeCapability }
 
 func (f fixedCapability) Capability(context.Context) (client.NodeCapability, error) {
@@ -1297,6 +1440,7 @@ type memoryState struct {
 	wal         InstallWAL
 	hasWAL      bool
 	receipt     client.NodeInstallReceipt
+	retireCalls int
 }
 
 type faultState struct {
@@ -1393,6 +1537,15 @@ func (m *memoryState) LoadReceipt() (client.NodeInstallReceipt, error) {
 	}
 	return m.receipt, nil
 }
+func (m *memoryState) RetireEnrollmentState(expected RuntimeState) error {
+	if !sameJSON(m.runtime, expected) {
+		return errors.New("runtime mismatch")
+	}
+	m.retireCalls++
+	m.runtime = RuntimeState{}
+	m.pin = EnrollmentPin{}
+	return nil
+}
 
 type mockPlatform struct {
 	failAt        int
@@ -1404,6 +1557,9 @@ type mockPlatform struct {
 	finalized     int
 	authorizeErr  error
 	authorization *BootstrapAuthorization
+	retireErr     error
+	retireCalls   int
+	retiredPlan   client.NodeInstallPlan
 }
 type bindingMockPlatform struct {
 	*mockPlatform
@@ -1507,6 +1663,11 @@ func (p *bindingMockPlatform) RecoverActivatedCapacity(_ context.Context, _ clie
 func (m *mockPlatform) AuthorizeBootstrap(_ context.Context, authorization BootstrapAuthorization) error {
 	m.authorization = &authorization
 	return m.authorizeErr
+}
+func (m *mockPlatform) RetireRemovedEnrollment(_ context.Context, plan client.NodeInstallPlan) error {
+	m.retireCalls++
+	m.retiredPlan = plan
+	return m.retireErr
 }
 func (*mockPlatform) Preflight(context.Context, client.NodeInstallPlan) error { return nil }
 func (*mockPlatform) ServiceState(context.Context, client.NodeInstallService) (ServicePriorState, error) {

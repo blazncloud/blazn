@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"time"
 
@@ -71,6 +72,9 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if install {
 		if recovered, ok, err := s.recoverActivatedCapacity(ctx, options); ok || err != nil {
 			return recovered, err
+		}
+		if err := s.retireRemovedEnrollment(ctx, options); err != nil {
+			return EnrollResult{}, err
 		}
 	}
 	identity, err := s.identities.LoadOrCreate()
@@ -180,6 +184,76 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) retireRemovedEnrollment(ctx context.Context, options EnrollOptions) error {
+	runtimeState, runtimeErr := s.state.LoadRuntime()
+	runtimeExists := runtimeErr == nil && runtimeState.SchemaVersion != 0
+	if runtimeErr != nil && !errors.Is(runtimeErr, os.ErrNotExist) {
+		return fmt.Errorf("load prior node runtime before enrollment: %w", runtimeErr)
+	}
+	pin, pinErr := s.state.LoadPin()
+	pinExists := pinErr == nil
+	if pinErr != nil && !errors.Is(pinErr, os.ErrNotExist) {
+		return fmt.Errorf("load prior node pin before enrollment: %w", pinErr)
+	}
+	if !runtimeExists && !pinExists {
+		return nil
+	}
+	if pinExists && sameEnrollmentIntent(pin, options) {
+		if runtimeExists && !samePin(runtimeState.Pin, pin) {
+			return errors.New("matching enrollment pin differs from its verified runtime state")
+		}
+		return nil
+	}
+	if !runtimeExists {
+		return errors.New("different enrollment pin lacks cryptographically verified removed runtime state")
+	}
+	if pinExists && !samePin(runtimeState.Pin, pin) {
+		return errors.New("prior node runtime differs from its enrollment pin")
+	}
+	if err := verifyPinnedRetirementRuntime(runtimeState); err != nil {
+		return errors.New("prior node runtime cannot authorize enrollment retirement")
+	}
+	if err := s.installer.RetireRemovedEnrollment(ctx, runtimeState.Exchange.Plan); err != nil {
+		return err
+	}
+	retirer, ok := s.state.(interface{ RetireEnrollmentState(RuntimeState) error })
+	if !ok {
+		return errors.New("local removed-enrollment retirer is unavailable")
+	}
+	if err := retirer.RetireEnrollmentState(runtimeState); err != nil {
+		return fmt.Errorf("retire removed local enrollment state: %w", err)
+	}
+	return nil
+}
+
+func verifyPinnedRetirementRuntime(runtimeState RuntimeState) error {
+	if err := client.ValidateExchangeNodeEnrollmentResponse(runtimeState.Exchange); err != nil {
+		return err
+	}
+	plan, pin := runtimeState.Exchange.Plan, runtimeState.Pin
+	if pin.SchemaVersion != 1 || plan.WorkspaceID != pin.WorkspaceID || plan.EnrollmentID != pin.EnrollmentID || plan.IdempotencyKey != pin.IdempotencyKey || plan.Hostname != pin.Hostname || plan.Target.MachineFingerprint != pin.MachineFingerprint || plan.InstallProfile != pin.ProfileID || plan.SigningKeyID != pin.PlanSigningKey.KeyID {
+		return errors.New("retired plan differs from its pinned enrollment trust")
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(pin.PlanSigningKey.PublicKey)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize {
+		return errors.New("retired plan signer public key is invalid")
+	}
+	fingerprint, err := client.NodePublicKeyFingerprint(ed25519.PublicKey(publicKey))
+	if err != nil || fingerprint != pin.PlanSigningKey.Fingerprint {
+		return errors.New("retired plan signer fingerprint differs from pin")
+	}
+	digest, err := client.NodeInstallPlanDigest(plan)
+	signature, signatureErr := base64.RawURLEncoding.DecodeString(plan.Signature)
+	if err != nil || signatureErr != nil || digest != plan.Digest || !ed25519.Verify(ed25519.PublicKey(publicKey), []byte("blazn-node-install-plan-v1\n"+digest), signature) {
+		return errors.New("retired plan signature differs from pin")
+	}
+	return nil
+}
+
+func sameEnrollmentIntent(pin EnrollmentPin, options EnrollOptions) bool {
+	return pin.WorkspaceID == options.WorkspaceID && pin.IdempotencyKey == options.IdempotencyKey && pin.Hostname == options.Name && pin.MachineFingerprint == options.MachineFingerprint && pin.ProfileID == options.Profile.ID && pin.ProfilePath == options.ProfilePath
 }
 
 func (s *Service) recoverActivatedCapacity(ctx context.Context, options EnrollOptions) (EnrollResult, bool, error) {

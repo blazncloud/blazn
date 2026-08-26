@@ -108,7 +108,7 @@ func validateRootRequestShape(request RootRequest) error {
 		if request.Bootstrap == nil || !noMutationFields() {
 			return errors.New("root authorize request fields are invalid")
 		}
-	case RootProbe, RootServiceState, RootFinalizeState, RootObserve, RootRemoveSupport, RootAbortJoin:
+	case RootProbe, RootRetireRemoved, RootServiceState, RootFinalizeState, RootObserve, RootRemoveSupport, RootAbortJoin:
 		if request.Bootstrap != nil || !noMutationFields() {
 			return errors.New("root probe request fields are invalid")
 		}
@@ -247,6 +247,8 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 	switch request.Operation {
 	case RootAuthorize:
 		return RootResponse{}, e.authorizeBootstrap(ctx, request)
+	case RootRetireRemoved:
+		return RootResponse{}, e.retireRemovedEnrollment(request.Plan)
 	case RootProbe:
 		if e.Platform != request.Platform {
 			return RootResponse{}, errors.New("root helper OS mismatch")
