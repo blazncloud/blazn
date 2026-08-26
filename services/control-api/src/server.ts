@@ -199,7 +199,7 @@ async function approveOidcIdentity(transaction: { userCode: string; mode: AuthMo
       await client.query("UPDATE user_identities SET email=$1,last_login_at=now() WHERE issuer=$2 AND subject=$3", [identity.email, identity.issuer, identity.subject]);
     } else {
       if (transaction.mode !== "signup") throw new Error("No Blazn account is linked to this identity. Choose Sign up first.");
-      const existingUser = await client.query("SELECT id FROM users WHERE email=$1 FOR UPDATE", [identity.email]);
+      const existingUser = await client.query("SELECT id FROM users WHERE email=$1", [identity.email]);
       if (existingUser.rowCount) throw new Error("An account already exists for this email. Sign in with the existing method; social linking requires separate approval.");
       userId = randomUUID();
       await client.query("INSERT INTO users(id,email,display_name,email_verified_at) VALUES($1,$2,$3,now())", [userId, identity.email, identity.displayName]);

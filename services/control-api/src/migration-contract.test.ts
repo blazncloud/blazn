@@ -26,6 +26,20 @@ test("auth migration grants only the reviewed bootstrap and runtime operations",
   assert.doesNotMatch(migration, /GRANT\s+(?:ALL|SELECT, INSERT, UPDATE, DELETE)\s+ON\s+(?:ALL TABLES|TABLE users)\s+TO blazn_runtime/i);
 });
 
+test("OIDC signup serializes by email without requiring users update privilege", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const server = await readFile(path.resolve(here, "../src/server.ts"), "utf8");
+  const signup = server.slice(server.indexOf("async function approveOidcIdentity"), server.indexOf("async function oidcCallback"));
+  const advisoryLock = 'SELECT pg_advisory_xact_lock(hashtext($1))';
+  const existingUserLookup = 'SELECT id FROM users WHERE email=$1';
+  const advisoryLockIndex = signup.indexOf(advisoryLock);
+  const existingUserLookupIndex = signup.indexOf(existingUserLookup);
+  assert.ok(advisoryLockIndex >= 0, "OIDC signup must hold an email advisory lock");
+  assert.ok(existingUserLookupIndex >= 0, "OIDC signup must check for an existing email");
+  assert.ok(advisoryLockIndex < existingUserLookupIndex, "email advisory lock must precede the existing-user lookup");
+  assert.doesNotMatch(signup, /SELECT id FROM users WHERE email=\$1 FOR UPDATE/);
+});
+
 test("node enrollment signing trust is immutable and relationally bound to plans", async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const sql = await readFile(path.resolve(here, "../migrations/006_node_plan_signing_trust.sql"), "utf8");
