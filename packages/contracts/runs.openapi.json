@@ -32,6 +32,19 @@
         "responses": {"200": {"description": "Run cancellation recorded", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunEnvelope"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
       }
     },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/messages": {
+      "get": {
+        "operationId": "listRunMessages",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Ordered Run messages", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunMessageList"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      },
+      "post": {
+        "operationId": "sendRunMessage",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SendRunMessageRequest"}}}},
+        "responses": {"201": {"description": "Message durably queued for the Run", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunMessageEnvelope"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      }
+    },
     "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/synthetic/progress": {
       "post": {
         "operationId": "recordSyntheticRunProgress",
@@ -137,6 +150,21 @@
       "RunList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Run"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
       "CreateRunRequest": {"type": "object", "additionalProperties": false, "required": ["kind", "proofClass", "planDigest", "inputArtifactIds", "outputNames"], "properties": {"kind": {"type": "string", "pattern": "^[a-z][a-z0-9.-]{0,95}$"}, "proofClass": {"$ref": "#/components/schemas/ProofClass"}, "planDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "inputArtifactIds": {"type": "array", "maxItems": 1000, "items": {"type": "string", "format": "uuid"}}, "outputNames": {"type": "array", "maxItems": 1000, "items": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"}}}},
       "CancelRunRequest": {"type": "object", "additionalProperties": false, "required": ["expectedVersion"], "properties": {"expectedVersion": {"type": "integer", "minimum": 1}}},
+      "RunMessageKind": {"type": "string", "enum": ["prompt", "followup", "steer"]},
+      "RunMessage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "workspaceId", "projectId", "runId", "ordinal", "role", "kind", "status", "content", "contentDigest", "createdBy", "createdAt"],
+        "properties": {
+          "id": {"type": "string", "format": "uuid"}, "workspaceId": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "runId": {"type": "string", "format": "uuid"},
+          "ordinal": {"type": "integer", "minimum": 1}, "role": {"type": "string", "enum": ["user", "assistant", "tool"]}, "kind": {"$ref": "#/components/schemas/RunMessageKind"},
+          "status": {"type": "string", "enum": ["queued", "claimed", "delivered", "rejected"]}, "parentMessageId": {"type": "string", "format": "uuid"},
+          "content": {"type": "string", "minLength": 1, "maxLength": 16384}, "contentDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "SendRunMessageRequest": {"type": "object", "additionalProperties": false, "required": ["kind", "content"], "properties": {"kind": {"$ref": "#/components/schemas/RunMessageKind"}, "content": {"type": "string", "minLength": 1, "maxLength": 16384}, "parentMessageId": {"type": "string", "format": "uuid"}}},
+      "RunMessageEnvelope": {"type": "object", "additionalProperties": false, "required": ["message"], "properties": {"message": {"$ref": "#/components/schemas/RunMessage"}}},
+      "RunMessageList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/RunMessage"}}, "nextCursor": {"type": ["string", "null"], "pattern": "^[1-9][0-9]*$"}}},
       "SyntheticRunProgressRequest": {"type": "object", "additionalProperties": false, "required": ["sequence", "phase", "percent"], "properties": {"sequence": {"type": "integer", "minimum": 0}, "phase": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,95}$"}, "percent": {"type": "integer", "minimum": 0, "maximum": 100}, "message": {"type": "string", "maxLength": 512}}},
       "ProgressAck": {"type": "object", "additionalProperties": false, "required": ["runId", "sequence", "runVersion", "status"], "properties": {"runId": {"type": "string", "format": "uuid"}, "sequence": {"type": "integer", "minimum": 0}, "runVersion": {"type": "integer", "minimum": 1}, "status": {"const": "running"}}},
       "CompleteSyntheticRunRequest": {"type": "object", "additionalProperties": false, "required": ["expectedVersion", "planDigest", "artifactIds", "summary"], "properties": {"expectedVersion": {"type": "integer", "minimum": 1}, "planDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "artifactIds": {"type": "array", "maxItems": 1000, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}, "summary": {"$ref": "#/components/schemas/RunReceiptSummary"}}},
@@ -159,7 +187,7 @@
       },
       "ArtifactEnvelope": {"type": "object", "additionalProperties": false, "required": ["artifact"], "properties": {"artifact": {"$ref": "#/components/schemas/Artifact"}}},
       "ArtifactList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Artifact"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
-      "RunError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"], "properties": {"code": {"type": "string", "enum": ["run_not_found", "run_terminal", "run_sequence_conflict", "artifact_not_found", "artifact_name_conflict", "artifact_digest_mismatch", "artifact_size_mismatch", "upload_too_large", "project_not_found", "workspace_not_found", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invalid_request", "method_not_allowed", "rate_limited", "access_expired", "session_revoked", "unauthorized", "internal_error"]}, "message": {"type": "string", "minLength": 1, "maxLength": 1024}, "requestId": {"type": "string", "minLength": 1, "maxLength": 128}}, "x-blazn-error-status": {"run_not_found": 404, "run_terminal": 409, "run_sequence_conflict": 409, "artifact_not_found": 404, "artifact_name_conflict": 409, "artifact_digest_mismatch": 400, "artifact_size_mismatch": 400, "upload_too_large": 413, "project_not_found": 404, "workspace_not_found": 404, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invalid_request": 400, "method_not_allowed": 405, "rate_limited": 429, "access_expired": 401, "session_revoked": 401, "unauthorized": 401, "internal_error": 500}}
+      "RunError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"], "properties": {"code": {"type": "string", "enum": ["run_not_found", "run_terminal", "run_sequence_conflict", "message_conflict", "message_parent_not_found", "artifact_not_found", "artifact_name_conflict", "artifact_digest_mismatch", "artifact_size_mismatch", "upload_too_large", "project_not_found", "workspace_not_found", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invalid_request", "method_not_allowed", "rate_limited", "access_expired", "session_revoked", "unauthorized", "internal_error"]}, "message": {"type": "string", "minLength": 1, "maxLength": 1024}, "requestId": {"type": "string", "minLength": 1, "maxLength": 128}}, "x-blazn-error-status": {"run_not_found": 404, "run_terminal": 409, "run_sequence_conflict": 409, "message_conflict": 409, "message_parent_not_found": 404, "artifact_not_found": 404, "artifact_name_conflict": 409, "artifact_digest_mismatch": 400, "artifact_size_mismatch": 400, "upload_too_large": 413, "project_not_found": 404, "workspace_not_found": 404, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invalid_request": 400, "method_not_allowed": 405, "rate_limited": 429, "access_expired": 401, "session_revoked": 401, "unauthorized": 401, "internal_error": 500}}
     }
   }
 }

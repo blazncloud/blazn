@@ -15,14 +15,17 @@ const addFormats = ("default" in formatsModule ? formatsModule.default : formats
 const contract = path.resolve(here, "../../../packages/contracts/runs.openapi.json");
 const migration = path.resolve(here, "../migrations/012_runs_artifacts.sql");
 const syntheticMigration = path.resolve(here, "../migrations/017_run_synthetic_execution.sql");
+const messageMigration = path.resolve(here, "../migrations/030_run_messages.sql");
 
 test("Run and Artifact OpenAPI exposes only Project-scoped routes", async () => {
   const document = await SwaggerParser.validate(contract) as unknown as { paths: Record<string, Record<string, { operationId?: string }>> };
-  assert.equal(Object.keys(document.paths).length, 8);
+  assert.equal(Object.keys(document.paths).length, 9);
   const operations = Object.values(document.paths).flatMap((route) => Object.values(route).map((operation) => operation.operationId)).sort();
-  assert.deepEqual(operations, ["cancelRun", "completeSyntheticRun", "createRun", "getArtifact", "getRun", "listArtifacts", "listRuns", "recordSyntheticRunProgress", "uploadSyntheticRunArtifact"]);
+  assert.deepEqual(operations, ["cancelRun", "completeSyntheticRun", "createRun", "getArtifact", "getRun", "listArtifacts", "listRunMessages", "listRuns", "recordSyntheticRunProgress", "sendRunMessage", "uploadSyntheticRunArtifact"]);
   assert.equal(Object.keys(document.paths).every((route) => route.startsWith("/v1/workspaces/{workspaceId}/projects/{projectId}/")), true);
 });
+
+test("Run message schemas and storage freeze bounded queue and steering authority",async()=>{const document=await SwaggerParser.dereference(contract) as unknown as {components:{schemas:Record<string,object>}};const ajv=new Ajv2020({strict:true,strictRequired:false,allErrors:true});addFormats(ajv);const send=ajv.compile(document.components.schemas.SendRunMessageRequest!);assert.equal(send({kind:"prompt",content:"Inspect the repository"}),true,JSON.stringify(send.errors));assert.equal(send({kind:"steer",content:"Only update docs",parentMessageId:"00000000-0000-4000-8000-000000000001"}),true,JSON.stringify(send.errors));assert.equal(send({kind:"followup",content:""}),false);assert.equal(send({kind:"steer",content:"x",accessToken:"forbidden"}),false);const sql=await readFile(messageMigration,"utf8");assert.match(sql,/UNIQUE \(run_id, ordinal\)/);assert.match(sql,/FOREIGN KEY \(parent_message_id, run_id\) REFERENCES run_messages\(id, run_id\)/);assert.match(sql,/content_digest = 'sha256:' \|\| encode\(digest\(convert_to\(content, 'UTF8'\), 'sha256'\), 'hex'\)/);assert.match(sql,/CHECK \(\(kind = 'prompt'\) = \(ordinal = 1\)\)/);assert.match(sql,/REVOKE UPDATE, DELETE ON TABLE run_messages FROM blazn_runtime/);assert.doesNotMatch(sql,/GRANT[^;]*(?:UPDATE|DELETE)[^;]*TO blazn_runtime/);});
 
 test("synthetic execution schemas are closed, bounded, and cannot set authority", async () => {
   const document = await SwaggerParser.dereference(contract) as unknown as { components: { schemas: Record<string, object> }; paths: Record<string, Record<string, unknown>> };
