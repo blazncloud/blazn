@@ -12,7 +12,7 @@ Restart=on-failure
 RestartSec=5s
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
+ProtectHome=true
 ReadWritePaths=/var/lib/blazn
 
 [Install]

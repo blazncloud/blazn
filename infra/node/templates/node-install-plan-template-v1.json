@@ -45,7 +45,7 @@
             "sourceClass": "embedded",
             "version": "v1",
             "publisher": "Blazn",
-            "sha256": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "sha256": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "ownership": "install"
           }
         ],
@@ -55,7 +55,7 @@
           "binaryPath": "/usr/local/bin/blazn",
           "runAsUser": "blazn-node",
           "runAsGroup": "blazn-node",
-          "definitionSha256": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175"
+          "definitionSha256": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661"
         },
         "labels": {
           "blazn.dev/node": "true",
@@ -175,7 +175,7 @@
               "unitName": "blazn-node.service",
               "sourceComponent": "blazn-node-systemd"
             },
-            "desiredDigest": "sha256:6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "desiredDigest": "sha256:f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "mode": 420,
             "uid": 0,
             "gid": 0,
@@ -190,7 +190,7 @@
               "unitName": "blazn-node.service",
               "sourceComponent": "blazn-node-systemd"
             },
-            "desiredDigest": "sha256:6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "desiredDigest": "sha256:f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "mode": 0,
             "uid": 0,
             "gid": 0,
@@ -290,7 +290,7 @@
             "sourceClass": "embedded",
             "version": "v1",
             "publisher": "Blazn",
-            "sha256": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "sha256": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "ownership": "install"
           }
         ],
@@ -300,7 +300,7 @@
           "binaryPath": "/usr/local/bin/blazn",
           "runAsUser": "blazn-node",
           "runAsGroup": "blazn-node",
-          "definitionSha256": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175"
+          "definitionSha256": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661"
         },
         "labels": {
           "blazn.dev/node": "true",
@@ -408,7 +408,7 @@
               "unitName": "blazn-node.service",
               "sourceComponent": "blazn-node-systemd"
             },
-            "desiredDigest": "sha256:6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "desiredDigest": "sha256:f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "mode": 420,
             "uid": 0,
             "gid": 0,
@@ -423,7 +423,7 @@
               "unitName": "blazn-node.service",
               "sourceComponent": "blazn-node-systemd"
             },
-            "desiredDigest": "sha256:6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "desiredDigest": "sha256:f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "mode": 0,
             "uid": 0,
             "gid": 0,
@@ -520,7 +520,7 @@
             "sourceClass": "embedded",
             "version": "v1",
             "publisher": "Blazn",
-            "sha256": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "sha256": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "ownership": "install"
           }
         ],
@@ -530,7 +530,7 @@
           "binaryPath": "/usr/local/bin/blazn",
           "runAsUser": "blazn-node",
           "runAsGroup": "blazn-node",
-          "definitionSha256": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175"
+          "definitionSha256": "f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661"
         },
         "labels": {
           "blazn.dev/node": "true",
@@ -638,7 +638,7 @@
               "unitName": "blazn-node.service",
               "sourceComponent": "blazn-node-systemd"
             },
-            "desiredDigest": "sha256:6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "desiredDigest": "sha256:f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "mode": 420,
             "uid": 0,
             "gid": 0,
@@ -653,7 +653,7 @@
               "unitName": "blazn-node.service",
               "sourceComponent": "blazn-node-systemd"
             },
-            "desiredDigest": "sha256:6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175",
+            "desiredDigest": "sha256:f16a9389831f6f08b613c96da5af01293f87b129979f4b4bca012b5bf010c661",
             "mode": 0,
             "uid": 0,
             "gid": 0,
