@@ -1,9 +1,9 @@
 {
   "schemaVersion": "blazn.dev/current-binary-digests/v1",
-  "releaseTag": "v0.1.0-poc.109",
+  "releaseTag": "v0.1.0-poc.110",
   "binaries": {
-    "darwin-arm64": "8f3fdc8553b750472a70dc2412e911085e338e46fc196e4a88d9f7632d12cc3a",
-    "linux-amd64": "17f058717b995493c9ea95082ea7b0f4c3f7969079dd63ccc890a96e15d71cd1",
-    "linux-arm64": "c2488c125903b38be4cb0e5146f9e21e5232efa78c0451d2263ce9800324482e"
+    "darwin-arm64": "aeaea77292fdf8a988488993dd61fe9499243fd37fbaeece4e4d9d826fd6bf28",
+    "linux-amd64": "673e9eb7bff6f0fa41ab9f8593c1915c7d66e19f947122f432ebc2b970cd02cb",
+    "linux-arm64": "360115375277a4acc14bc113ebc702716934dc72ebf2257211a89bed144f9a29"
   }
 }
