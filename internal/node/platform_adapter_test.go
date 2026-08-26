@@ -424,6 +424,12 @@ func TestSystemdPriorRestoreReloadsThenRestoresEnabledAndActive(t *testing.T) {
 	calls := []string{}
 	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
 		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		if args[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
 		return nil, nil
 	}}
 	plan := testJoinPlan("linux")
@@ -433,9 +439,199 @@ func TestSystemdPriorRestoreReloadsThenRestoresEnabledAndActive(t *testing.T) {
 	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).restoreServicePrior(context.Background(), plan, mutation, metadata); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"daemon-reload", "disable blazn-node.service", "stop blazn-node.service"}
+	want := []string{"is-enabled blazn-node.service", "is-active blazn-node.service", "daemon-reload", "disable blazn-node.service", "stop blazn-node.service"}
 	if !sameJSON(calls, want) {
 		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestSystemdPriorRestoreTreatsMissingAsDisabledAndInactive(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return []byte("not-found\n"), &FixedCommandError{ExitCode: 4}
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	metadata := map[string]string{"active": "false", "enabled": "false", "kind": "service", "manager": "systemd", "name": "blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).restoreServicePrior(context.Background(), plan, mutation, metadata); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"is-enabled blazn-node.service", "is-active blazn-node.service"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestSystemdEnableDoesNotStartBeforePrivateStateHandoff(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return nil, nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).apply(context.Background(), plan, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sameJSON(calls, []string{"enable blazn-node.service"}) {
+		t.Fatalf("pre-finalization commands=%#v", calls)
+	}
+}
+
+func TestPreActivationSystemdVerificationDoesNotRequireLiveDaemon(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] != "is-enabled" {
+			return nil, errors.New("service was touched before private-state handoff")
+		}
+		return []byte("enabled\n"), nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).verifyMutation(context.Background(), plan, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sameJSON(calls, []string{"is-enabled blazn-node.service"}) {
+		t.Fatalf("pre-finalization verification commands=%#v", calls)
+	}
+}
+
+func TestFinalizedSystemdServiceStartsAfterHandoffAndIsVerified(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		if args[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
+		return nil, nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"daemon-reload", "start blazn-node.service", "is-enabled blazn-node.service", "is-active blazn-node.service"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("finalization commands=%#v want=%#v", calls, want)
+	}
+}
+
+func TestDeferredServiceParentPreservesPrivateInstallerStateUntilFinalize(t *testing.T) {
+	parent := filepath.Join(testRoot(t), "blazn")
+	stateRoot := filepath.Join(parent, "node")
+	if err := os.MkdirAll(stateRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	identity := filepath.Join(stateRoot, "identity.json")
+	if err := os.WriteFile(identity, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeUID, _, ownerOK := fileOwner(before)
+	if !ownerOK {
+		t.Fatal("test parent owner is unavailable")
+	}
+	if err := prepareDeferredServiceDirectory(parent); err != nil {
+		t.Fatal(err)
+	}
+	prepared, _ := os.Lstat(parent)
+	preparedUID, _, preparedOwnerOK := fileOwner(prepared)
+	stateInfo, stateErr := os.Lstat(stateRoot)
+	identityInfo, identityErr := os.Lstat(identity)
+	if !preparedOwnerOK || preparedUID != beforeUID || prepared.Mode().Perm() != 0711 || stateErr != nil || stateInfo.Mode().Perm() != 0700 || identityErr != nil || identityInfo.Mode().Perm() != 0600 {
+		t.Fatalf("prepared parent=%v uid=%d state=%v identity=%v", prepared.Mode(), preparedUID, stateInfo, identityInfo)
+	}
+	mutation := client.NodeInstallMutation{Kind: "directory", Action: "create", Target: parent, Mode: 0700, UID: int64(os.Getuid()), GID: int64(os.Getgid())}
+	if err := finalizeDeferredServiceDirectory(mutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeDeferredServiceDirectory(mutation); err != nil {
+		t.Fatalf("idempotent finalization: %v", err)
+	}
+	final, _ := os.Lstat(parent)
+	finalUID, _, finalOwnerOK := fileOwner(final)
+	if !finalOwnerOK || finalUID != int64(os.Getuid()) || final.Mode().Perm() != 0700 {
+		t.Fatalf("final parent=%v uid=%d", final.Mode(), finalUID)
+	}
+}
+
+func TestDeferredServiceParentRejectsUnrelatedOwner(t *testing.T) {
+	if trustedPreparedDirectoryOwner(4242, 4242, int64(os.Getuid()), int64(os.Getgid())) {
+		t.Fatal("unrelated local owner was accepted for installer-private state")
+	}
+	if !trustedPreparedDirectoryOwner(0, 0, int64(os.Getuid()), int64(os.Getgid())) {
+		t.Fatal("root-owned prepared boundary was rejected")
+	}
+}
+
+func TestLaunchdEnableDoesNotCreateOverrideOrStartBeforeHandoff(t *testing.T) {
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+		return nil, errors.New("launchd was touched before private-state handoff")
+	}}
+	plan := testJoinPlan("macos")
+	plan.NodeService = client.NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node"}
+	mutation := client.NodeInstallMutation{Kind: "launchd_unit", Action: "enable", Target: "/Library/LaunchDaemons/com.blazn.node.plist"}
+	if err := (NativeRootEngine{Platform: "macos", Commands: commands}).apply(context.Background(), plan, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLaunchdFinalizationIsIdempotentAfterBootstrap(t *testing.T) {
+	calls := []string{}
+	loaded := false
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "print" {
+			if loaded {
+				return []byte("service"), nil
+			}
+			return nil, &FixedCommandError{ExitCode: 113}
+		}
+		if args[0] == "bootstrap" {
+			loaded = true
+			return nil, nil
+		}
+		return nil, errors.New("unexpected launchctl command")
+	}}
+	plan := testJoinPlan("macos")
+	plan.NodeService = client.NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node"}
+	plan.Mutations = []client.NodeInstallMutation{{Kind: "launchd_unit", Action: "enable", Target: "/Library/LaunchDaemons/com.blazn.node.plist"}}
+	engine := NativeRootEngine{Platform: "macos", Commands: commands}
+	if err := engine.startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatalf("retry after bootstrap: %v", err)
+	}
+	want := []string{"print system/com.blazn.node", "bootstrap system /Library/LaunchDaemons/com.blazn.node.plist", "print system/com.blazn.node", "print system/com.blazn.node"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestLinuxServiceParentMutationIsDeferred(t *testing.T) {
+	plan := testJoinPlan("linux")
+	mutation := client.NodeInstallMutation{Ordinal: 3, Kind: "directory", Action: "create", Target: "/var/lib/blazn", Mode: 0700, UID: 950, GID: 950}
+	plan.Mutations = []client.NodeInstallMutation{mutation}
+	deferred, err := isDeferredServiceDirectory(plan, mutation)
+	if err != nil || !deferred {
+		t.Fatalf("deferred=%v err=%v", deferred, err)
+	}
+	other := mutation
+	other.Target = "/etc/blazn/node"
+	if deferred, err := isDeferredServiceDirectory(plan, other); err != nil || deferred {
+		t.Fatalf("unrelated deferred=%v err=%v", deferred, err)
 	}
 }
 

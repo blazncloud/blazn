@@ -558,6 +558,18 @@ func (e NativeRootEngine) finalizeServiceState(ctx context.Context, plan client.
 	if uidErr != nil || gidErr != nil || uid == 0 || gid == 0 {
 		return errors.New("node service identity must be dedicated and non-root")
 	}
+	if plan.Target.Platform == client.NodePlatformLinux {
+		mutation, ok, findErr := deferredServiceDirectory(plan)
+		if findErr != nil {
+			return findErr
+		}
+		if !ok || mutation.UID != int64(uid) || mutation.GID != int64(gid) {
+			return errors.New("signed service directory does not match the daemon identity")
+		}
+		if err := finalizeDeferredServiceDirectory(mutation); err != nil {
+			return err
+		}
+	}
 	if err := filepath.Walk(paths.ServiceStateRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -594,8 +606,54 @@ func (e NativeRootEngine) finalizeServiceState(ctx context.Context, plan client.
 	} else {
 		return statErr
 	}
-	_, err = e.Commands.Run(ctx, "/usr/sbin/visudo", "-c", "-f", policyPath)
-	return err
+	if _, err = e.Commands.Run(ctx, "/usr/sbin/visudo", "-c", "-f", policyPath); err != nil {
+		return err
+	}
+	return e.startAndVerifyNodeService(ctx, plan)
+}
+
+// startAndVerifyNodeService is deliberately part of finalization rather than
+// the signed service-enable mutation. The installer retains exclusive access
+// to its 0700/0600 runtime and identity until activation and capacity release
+// are durable; only after finalizeServiceState transfers that private tree to
+// the daemon identity may the daemon be started.
+func (e NativeRootEngine) startAndVerifyNodeService(ctx context.Context, plan client.NodeInstallPlan) error {
+	if plan.NodeService.Manager == "systemd" {
+		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "daemon-reload"); err != nil {
+			return err
+		}
+		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "start", plan.NodeService.UnitName); err != nil {
+			return err
+		}
+		enabled, enabledErr := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-enabled", plan.NodeService.UnitName)
+		active, activeErr := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", plan.NodeService.UnitName)
+		if enabledErr != nil || activeErr != nil || strings.TrimSpace(string(enabled)) != "enabled" || strings.TrimSpace(string(active)) != "active" {
+			return errors.New("finalized systemd service is not enabled and active")
+		}
+		return nil
+	}
+	var target string
+	for _, mutation := range plan.Mutations {
+		if mutation.Kind == "launchd_unit" && mutation.Action == "enable" {
+			target = mutation.Target
+			break
+		}
+	}
+	if target == "" {
+		return errors.New("finalized launchd service lacks its signed enable mutation")
+	}
+	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err == nil {
+		return nil
+	} else if !fixedExit(err, 113) && !fixedExit(err, 3) {
+		return errors.New("finalized launchd service state is ambiguous")
+	}
+	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", target); err != nil {
+		return err
+	}
+	if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err != nil {
+		return errors.New("finalized launchd service is not active")
+	}
+	return nil
 }
 
 func (e NativeRootEngine) removeServiceSupport(plan client.NodeInstallPlan) error {
@@ -906,6 +964,11 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		if m.Action == "adopt_exact" {
 			return verifyExactDirectory(m.Target, os.FileMode(m.Mode), m.UID, m.GID)
 		}
+		if deferred, err := isDeferredServiceDirectory(plan, m); err != nil {
+			return err
+		} else if deferred {
+			return prepareDeferredServiceDirectory(m.Target)
+		}
 		if err := os.MkdirAll(m.Target, os.FileMode(m.Mode)); err != nil {
 			return err
 		}
@@ -934,21 +997,13 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 	case "systemd_unit", "launchd_unit":
 		if m.Action == "enable" {
 			if m.Kind == "systemd_unit" {
-				_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "enable", "--now", plan.NodeService.UnitName)
+				_, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "enable", plan.NodeService.UnitName)
 				return err
 			}
-			paths, pathErr := NodeProductionPaths(plan.Target.Platform)
-			if pathErr != nil {
-				return pathErr
-			}
-			if identityErr := e.ensureMacOSServiceIdentity(ctx, plan.NodeService, paths.ServiceStateRoot); identityErr != nil {
-				return identityErr
-			}
-			if _, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName); err == nil {
-				return nil
-			}
-			_, err := e.Commands.Run(ctx, "/bin/launchctl", "bootstrap", "system", m.Target)
-			return err
+			// Installing the signed plist supplies the durable launch definition.
+			// Do not create the daemon identity, an enable override, or bootstrap
+			// the daemon before private state is transferred during finalization.
+			return nil
 		}
 		content, err := decodeMaterial(material)
 		if err != nil {
@@ -1102,6 +1157,120 @@ func verifyExactDirectory(path string, mode os.FileMode, uid, gid int64) error {
 	}
 	return nil
 }
+
+func deferredServiceDirectory(plan client.NodeInstallPlan) (client.NodeInstallMutation, bool, error) {
+	paths, err := NodeProductionPaths(plan.Target.Platform)
+	if err != nil {
+		return client.NodeInstallMutation{}, false, err
+	}
+	wanted := filepath.Dir(paths.ServiceStateRoot)
+	var found *client.NodeInstallMutation
+	for index := range plan.Mutations {
+		mutation := &plan.Mutations[index]
+		if mutation.Kind != "directory" || mutation.Action != "create" || mutation.Target != wanted {
+			continue
+		}
+		if found != nil {
+			return client.NodeInstallMutation{}, false, errors.New("signed plan repeats the deferred service directory")
+		}
+		found = mutation
+	}
+	if found == nil {
+		return client.NodeInstallMutation{}, false, nil
+	}
+	return *found, true, nil
+}
+
+func isDeferredServiceDirectory(plan client.NodeInstallPlan, mutation client.NodeInstallMutation) (bool, error) {
+	wanted, ok, err := deferredServiceDirectory(plan)
+	if err != nil || !ok {
+		return false, err
+	}
+	return mutation.Ordinal == wanted.Ordinal && mutation.Target == wanted.Target, nil
+}
+
+// prepareDeferredServiceDirectory preserves the authenticated installer's
+// exclusive access until activation is durable. Finalization applies the
+// signed daemon ownership and 0700 mode immediately before the service starts.
+func prepareDeferredServiceDirectory(path string) error {
+	if err := verifyNoSymlinkTraversal(path); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(path, 0711); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("deferred service directory is unsafe")
+	}
+	installerUID, installerGID, err := authenticatedInstallerIdentity()
+	if err != nil {
+		return err
+	}
+	owner, _, ownerOK := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	if !ownerOK || !groupOK || !trustedPreparedDirectoryOwner(owner, group, installerUID, installerGID) {
+		return errors.New("deferred service directory is not owned by the authenticated installer")
+	}
+	return os.Chmod(path, 0711)
+}
+
+func verifyDeferredServiceDirectory(mutation client.NodeInstallMutation) error {
+	info, err := os.Lstat(mutation.Target)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("deferred service directory is not a safe installer boundary")
+	}
+	owner, _, ownerOK := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	if !ownerOK || !groupOK {
+		return errors.New("deferred service directory ownership is unavailable")
+	}
+	if owner == mutation.UID && group == mutation.GID && info.Mode().Perm() == os.FileMode(mutation.Mode).Perm() {
+		return nil
+	}
+	installerUID, installerGID, identityErr := authenticatedInstallerIdentity()
+	if identityErr != nil || info.Mode().Perm() != 0711 || !trustedPreparedDirectoryOwner(owner, group, installerUID, installerGID) {
+		return errors.New("deferred service directory is not a safe installer boundary")
+	}
+	return nil
+}
+
+func finalizeDeferredServiceDirectory(mutation client.NodeInstallMutation) error {
+	if err := verifyDeferredServiceDirectory(mutation); err != nil {
+		return err
+	}
+	info, _ := os.Lstat(mutation.Target)
+	owner, _, _ := fileOwner(info)
+	group, _ := fileGroup(info)
+	if owner == mutation.UID && group == mutation.GID && info.Mode().Perm() == os.FileMode(mutation.Mode).Perm() {
+		return nil
+	}
+	if err := os.Chown(mutation.Target, int(mutation.UID), int(mutation.GID)); err != nil {
+		return err
+	}
+	return os.Chmod(mutation.Target, os.FileMode(mutation.Mode))
+}
+
+func authenticatedInstallerIdentity() (int64, int64, error) {
+	if currentUID() != 0 {
+		return currentUID(), int64(os.Getgid()), nil
+	}
+	uidText, gidText := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID")
+	if uidText == "" && gidText == "" {
+		return 0, 0, nil
+	}
+	uid, uidErr := strconv.ParseInt(uidText, 10, 64)
+	gid, gidErr := strconv.ParseInt(gidText, 10, 64)
+	if uidErr != nil || gidErr != nil || uid <= 0 || gid <= 0 {
+		return 0, 0, errors.New("authenticated installer identity is invalid")
+	}
+	return uid, gid, nil
+}
+
+func trustedPreparedDirectoryOwner(owner, group, installerUID, installerGID int64) bool {
+	return (owner == 0 && group == 0) || (owner == installerUID && group == installerGID)
+}
+
 func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, prior PriorState, backupRoot string, join *RootJoinBinding) error {
 	if err := e.verifyRollbackDesired(ctx, plan, m, join); err != nil {
 		if matches, priorErr := e.matchesCapturedPrior(ctx, plan, m, prior, backupRoot, join); priorErr == nil && matches {
@@ -1364,6 +1533,12 @@ func (e NativeRootEngine) restoreServicePrior(ctx context.Context, plan client.N
 		return errors.New("rollback service metadata is invalid")
 	}
 	if metadata["manager"] == "systemd" {
+		// A preceding reverse-order rollback or a crash-resume may already have
+		// removed the unit. Missing is the exact prior state when the captured
+		// service was disabled and inactive, so do not manufacture a residue.
+		if current, stateErr := e.serviceState(ctx, plan.NodeService); stateErr == nil && current.Service != nil && !enabled && !active && !current.Service.Enabled && !current.Service.Active {
+			return nil
+		}
 		if _, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "daemon-reload"); err != nil {
 			return err
 		}
@@ -1931,6 +2106,11 @@ func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeIn
 	case "user":
 		return e.verifyUser(ctx, mutation)
 	case "directory":
+		if deferred, err := isDeferredServiceDirectory(plan, mutation); err != nil {
+			return err
+		} else if deferred {
+			return verifyDeferredServiceDirectory(mutation)
+		}
 		return verifyExactDirectory(mutation.Target, os.FileMode(mutation.Mode), mutation.UID, mutation.GID)
 	case "file", "certificate":
 		return verifyFileDigestAndMetadata(mutation.Target, stringValue(mutation.Desired["contentSha256"]), os.FileMode(mutation.Mode), mutation.UID, mutation.GID)
@@ -1943,14 +2123,12 @@ func (e NativeRootEngine) verifyMutation(ctx context.Context, plan client.NodeIn
 			if err != nil || strings.TrimSpace(string(enabled)) != "enabled" {
 				return errors.New("systemd service is not enabled")
 			}
-			active, err := e.Commands.Run(ctx, "/usr/bin/systemctl", "is-active", plan.NodeService.UnitName)
-			if err != nil || strings.TrimSpace(string(active)) != "active" {
-				return errors.New("systemd service is not active")
-			}
 			return nil
 		}
-		_, err := e.Commands.Run(ctx, "/bin/launchctl", "print", "system/"+plan.NodeService.UnitName)
-		return err
+		// The launchd job is intentionally not bootstrapped until private state
+		// ownership is finalized. The preceding signed plist mutation supplies
+		// the durable launch definition; finalization performs the live check.
+		return nil
 	case "package":
 		return e.verifyPackage(ctx, mutation, stringValue(mutation.Desired["manager"]))
 	case "image":

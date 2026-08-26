@@ -155,6 +155,26 @@ func PrepareProductionServiceState() error {
 	if err := transitionPrivateStateOwnership(paths.ServiceStateRoot, uid, gid, allowed); err != nil {
 		return err
 	}
+	if paths.ServiceStateRoot == LinuxNodeServiceStateRoot {
+		// The signed service parent is daemon-owned only after activation. A
+		// recovery or repair first returns it to the authenticated sudo caller
+		// so that account remains the sole owner of the 0700/0600 private child.
+		parent := filepath.Dir(paths.ServiceStateRoot)
+		info, statErr := os.Lstat(parent)
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("service-state parent cannot be returned to the authenticated installer")
+		}
+		owner, _, ownerOK := fileOwner(info)
+		if !ownerOK || !allowed[owner] {
+			return errors.New("service-state parent cannot be returned to the authenticated installer")
+		}
+		if err := os.Chown(parent, uid, gid); err != nil {
+			return err
+		}
+		if err := os.Chmod(parent, 0711); err != nil {
+			return err
+		}
+	}
 	source, err := os.Executable()
 	if err != nil {
 		return err
