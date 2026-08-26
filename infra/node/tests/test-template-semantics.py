@@ -122,8 +122,18 @@ for profile_id, mode, platform, architecture in cases:
         expected_user = {"name": "blazn-node", "group": "blazn-node", "uid": service_uid, "gid": service_gid, "home": "/var/lib/blazn", "shell": "/usr/sbin/nologin", "system": True}
         if user["uid"] != service_uid or user["gid"] != service_gid or user["desired"] != expected_user:
             raise AssertionError(f"{profile_id}/{architecture} user allocation is inconsistent")
-        if not any(mutation["target"] == "/var/lib/blazn" for mutation in directories) or any(mutation["uid"] != service_uid or mutation["gid"] != service_gid for mutation in directories):
-            raise AssertionError(f"{profile_id}/{architecture} directory ownership is inconsistent")
+        config_boundary = next((mutation for mutation in directories if mutation["target"] == "/etc/blazn/node"), None)
+        service_directories = [mutation for mutation in directories if mutation["target"] != "/etc/blazn/node"]
+        if not any(mutation["target"] == "/var/lib/blazn" for mutation in service_directories) or any(mutation["uid"] != service_uid or mutation["gid"] != service_gid for mutation in service_directories):
+            raise AssertionError(f"{profile_id}/{architecture} service directory ownership is inconsistent")
+        if profile_id == "ubuntu-26.04-amd64-worker/v1":
+            if config_boundary is None or (config_boundary["mode"], config_boundary["uid"], config_boundary["gid"]) != (0o755, 0, 0):
+                raise AssertionError(f"{profile_id}/{architecture} trusted profile traversal boundary is inconsistent")
+            profile_root = "/etc/blazn/node/profiles"
+            if not profile_root.startswith(config_boundary["target"] + "/") or config_boundary["mode"] & 0o111 != 0o111:
+                raise AssertionError(f"{profile_id}/{architecture} fixed trusted profile path is not traversable across its config boundary")
+        elif config_boundary is not None:
+            raise AssertionError(f"{profile_id}/{architecture} unexpectedly mutates the trusted profile traversal boundary")
     rendered_plans.append({"name": profile_id, "plan": rendered, "wantValid": True})
 
 invalid_semantics = copy.deepcopy(rendered_plans[0]["plan"])

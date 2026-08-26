@@ -118,9 +118,9 @@
             "target": "/etc/blazn/node",
             "desired": {},
             "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-            "mode": 448,
-            "uid": 950,
-            "gid": 950,
+            "mode": 493,
+            "uid": 0,
+            "gid": 0,
             "rollback": "remove_if_owned"
           },
           {
