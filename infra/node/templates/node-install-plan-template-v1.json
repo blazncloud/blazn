@@ -82,13 +82,13 @@
             "target": "blazn-node",
             "desired": {
               "name": "blazn-node",
-              "gid": 991,
+              "gid": 950,
               "system": true
             },
-            "desiredDigest": "sha256:92008edb8be49e37b3a109457ef6478423c92b01b79bd3d131f1fd50e0d63e71",
+            "desiredDigest": "sha256:4393f03189a00bd44ec1a57e870e88f9c0e2e4bf17df9d123c4fffebac2a749b",
             "mode": 0,
             "uid": 0,
-            "gid": 991,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -99,16 +99,16 @@
             "desired": {
               "name": "blazn-node",
               "group": "blazn-node",
-              "uid": 991,
-              "gid": 991,
+              "uid": 950,
+              "gid": 950,
               "home": "/var/lib/blazn",
               "shell": "/usr/sbin/nologin",
               "system": true
             },
-            "desiredDigest": "sha256:cb026245ee602087079ca5f69fe579df42e0fc78edf9788588992d765d3fa019",
+            "desiredDigest": "sha256:f32e5d3c21c1903843b831acf8cc2043d58fe7a9c92a7e49e80c6251dce13b0f",
             "mode": 0,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -119,8 +119,8 @@
             "desired": {},
             "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "mode": 448,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -131,8 +131,8 @@
             "desired": {},
             "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "mode": 448,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -327,13 +327,13 @@
             "target": "blazn-node",
             "desired": {
               "name": "blazn-node",
-              "gid": 991,
+              "gid": 950,
               "system": true
             },
-            "desiredDigest": "sha256:92008edb8be49e37b3a109457ef6478423c92b01b79bd3d131f1fd50e0d63e71",
+            "desiredDigest": "sha256:4393f03189a00bd44ec1a57e870e88f9c0e2e4bf17df9d123c4fffebac2a749b",
             "mode": 0,
             "uid": 0,
-            "gid": 991,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -344,16 +344,16 @@
             "desired": {
               "name": "blazn-node",
               "group": "blazn-node",
-              "uid": 991,
-              "gid": 991,
+              "uid": 950,
+              "gid": 950,
               "home": "/var/lib/blazn",
               "shell": "/usr/sbin/nologin",
               "system": true
             },
-            "desiredDigest": "sha256:cb026245ee602087079ca5f69fe579df42e0fc78edf9788588992d765d3fa019",
+            "desiredDigest": "sha256:f32e5d3c21c1903843b831acf8cc2043d58fe7a9c92a7e49e80c6251dce13b0f",
             "mode": 0,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -364,8 +364,8 @@
             "desired": {},
             "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "mode": 448,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -557,13 +557,13 @@
             "target": "blazn-node",
             "desired": {
               "name": "blazn-node",
-              "gid": 991,
+              "gid": 950,
               "system": true
             },
-            "desiredDigest": "sha256:92008edb8be49e37b3a109457ef6478423c92b01b79bd3d131f1fd50e0d63e71",
+            "desiredDigest": "sha256:4393f03189a00bd44ec1a57e870e88f9c0e2e4bf17df9d123c4fffebac2a749b",
             "mode": 0,
             "uid": 0,
-            "gid": 991,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -574,16 +574,16 @@
             "desired": {
               "name": "blazn-node",
               "group": "blazn-node",
-              "uid": 991,
-              "gid": 991,
+              "uid": 950,
+              "gid": 950,
               "home": "/var/lib/blazn",
               "shell": "/usr/sbin/nologin",
               "system": true
             },
-            "desiredDigest": "sha256:cb026245ee602087079ca5f69fe579df42e0fc78edf9788588992d765d3fa019",
+            "desiredDigest": "sha256:f32e5d3c21c1903843b831acf8cc2043d58fe7a9c92a7e49e80c6251dce13b0f",
             "mode": 0,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {
@@ -594,8 +594,8 @@
             "desired": {},
             "desiredDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "mode": 448,
-            "uid": 991,
-            "gid": 991,
+            "uid": 950,
+            "gid": 950,
             "rollback": "remove_if_owned"
           },
           {

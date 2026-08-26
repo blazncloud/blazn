@@ -81,6 +81,16 @@ for (const id of profileIds) {
   }
   const mac = id === "macos-lima-worker-adopt/v1";
   if ((mac ? profile.nodeService.manager !== "launchd" : profile.nodeService.manager !== "systemd") || (mac ? profile.nodeService.runAsUser !== "_blazn-node" || profile.nodeService.runAsGroup !== "_blazn-node" : profile.nodeService.runAsUser !== "blazn-node" || profile.nodeService.runAsGroup !== "blazn-node")) fail(`${id} service boundary drifted`);
+  if (!mac) {
+    const serviceUID = 950;
+    const serviceGID = 950;
+    const group = profile.mutations.find((mutation) => mutation.kind === "group" && mutation.target === "blazn-node");
+    const user = profile.mutations.find((mutation) => mutation.kind === "user" && mutation.target === "blazn-node");
+    const ownedDirectories = profile.mutations.filter((mutation) => mutation.kind === "directory");
+    if (!group || group.uid !== 0 || group.gid !== serviceGID || group.desired?.name !== "blazn-node" || group.desired?.gid !== serviceGID || group.desired?.system !== true) fail(`${id}/${architecture} group allocation drifted`);
+    if (!user || user.uid !== serviceUID || user.gid !== serviceGID || user.desired?.name !== "blazn-node" || user.desired?.group !== "blazn-node" || user.desired?.uid !== serviceUID || user.desired?.gid !== serviceGID || user.desired?.home !== "/var/lib/blazn" || user.desired?.shell !== "/usr/sbin/nologin" || user.desired?.system !== true) fail(`${id}/${architecture} user allocation drifted`);
+    if (!ownedDirectories.some((mutation) => mutation.target === "/var/lib/blazn") || ownedDirectories.some((mutation) => mutation.uid !== serviceUID || mutation.gid !== serviceGID)) fail(`${id}/${architecture} service directory ownership drifted`);
+  }
   const forbiddenKinds = mac ? ["systemd_unit", "package"] : ["launchd_unit"];
   if (profile.mutations.some((mutation) => forbiddenKinds.includes(mutation.kind))) fail(`${id} contains a cross-platform mutation`);
   if (!mac) {

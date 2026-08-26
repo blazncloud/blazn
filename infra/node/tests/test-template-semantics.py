@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import copy
+import hashlib
 import json
 import os
 import pathlib
@@ -105,6 +106,24 @@ for profile_id, mode, platform, architecture in cases:
     expected_prefix = "/Library/Application Support/BlaznNodeRoot/install-backups/" if platform == "macos" else "/var/lib/blazn-node-root/install-backups/"
     if rendered["rollback"]["backupRootClass"] != expected_class or not rendered["rollback"]["backupRoot"].startswith(expected_prefix):
         raise AssertionError(f"{profile_id}/{architecture} does not use its distinct privileged root-state tree")
+    if platform == "linux":
+        service_uid = 950
+        service_gid = 950
+        group = next(mutation for mutation in rendered["mutations"] if mutation["kind"] == "group" and mutation["target"] == "blazn-node")
+        user = next(mutation for mutation in rendered["mutations"] if mutation["kind"] == "user" and mutation["target"] == "blazn-node")
+        directories = [mutation for mutation in rendered["mutations"] if mutation["kind"] == "directory"]
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"))
+        for mutation in (group, user):
+            expected_digest = "sha256:" + hashlib.sha256(canonical(mutation["desired"]).encode()).hexdigest()
+            if mutation["desiredDigest"] != expected_digest:
+                raise AssertionError(f"{profile_id}/{architecture} service identity digest is not canonical")
+        if group["uid"] != 0 or group["gid"] != service_gid or group["desired"] != {"name": "blazn-node", "gid": service_gid, "system": True}:
+            raise AssertionError(f"{profile_id}/{architecture} group allocation is inconsistent")
+        expected_user = {"name": "blazn-node", "group": "blazn-node", "uid": service_uid, "gid": service_gid, "home": "/var/lib/blazn", "shell": "/usr/sbin/nologin", "system": True}
+        if user["uid"] != service_uid or user["gid"] != service_gid or user["desired"] != expected_user:
+            raise AssertionError(f"{profile_id}/{architecture} user allocation is inconsistent")
+        if not any(mutation["target"] == "/var/lib/blazn" for mutation in directories) or any(mutation["uid"] != service_uid or mutation["gid"] != service_gid for mutation in directories):
+            raise AssertionError(f"{profile_id}/{architecture} directory ownership is inconsistent")
     rendered_plans.append({"name": profile_id, "plan": rendered, "wantValid": True})
 
 invalid_semantics = copy.deepcopy(rendered_plans[0]["plan"])
