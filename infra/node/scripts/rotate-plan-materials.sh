@@ -26,6 +26,9 @@ SOURCE_TEMPLATE=${BLAZN_NODE_PLAN_TEMPLATE_SOURCE:-$SCRIPT_DIR/../templates/node
 SOURCE_TEMPLATES=${BLAZN_NODE_PLAN_SOURCE_TEMPLATES:-$SCRIPT_DIR/../templates}
 CORRELATION=${BLAZN_CORRELATION_ID:-}
 TEST_MODE=${BLAZN_NODE_PLAN_ROTATION_TEST_MODE:-0}
+RELEASE_ID=
+RELEASE_DIGEST=
+RELEASE_RECEIPT_DIGEST=
 
 case "$CORRELATION" in ''|*[!a-zA-Z0-9._-]*) die "Node plan rotation correlation ID is invalid" ;; esac
 for path in "$ROOT" "$JOURNAL" "$MAIN_RECEIPT" "$UPGRADE_RECEIPT" "$HISTORY_ROOT" "$SOURCE_TEMPLATE" "$SOURCE_TEMPLATES"; do
@@ -38,7 +41,17 @@ if [ "$TEST_MODE" != 1 ]; then
   [ "$MAIN_RECEIPT" = /var/lib/blazn/ownership/control-plane.json ] || die "main receipt is outside the reviewed path"
   [ "$UPGRADE_RECEIPT" = /var/lib/blazn/ownership/node-broker-upgrade.json ] || die "upgrade receipt is outside the reviewed path"
   [ "$HISTORY_ROOT" = /var/lib/blazn/ownership/node-plan-material-rotations ] || die "rotation history is outside the reviewed path"
-  case "$SOURCE_TEMPLATE" in /opt/blazn-releases/*/infra/node/templates/node-install-plan-template-v1.json) ;; *) die "source template is outside an immutable release" ;; esac
+  release_tree=$(CDPATH='' cd -- "$SCRIPT_DIR/../../.." && pwd -P)
+  release_id=$(basename -- "$release_tree")
+  [ "$release_tree" = "/opt/blazn-releases/$release_id" ] || die "rotation script is outside a direct managed release child"
+  [ "$SOURCE_TEMPLATE" = "$release_tree/infra/node/templates/node-install-plan-template-v1.json" ] || die "source template differs from the rotation script release"
+  [ "$SOURCE_TEMPLATES" = "$release_tree/infra/node/templates" ] || die "source templates differ from the rotation script release"
+  release_receipt=/var/lib/blazn/ownership/releases/$release_id.json
+  assert_regular_file_owned_mode "$release_receipt" 0 600
+  verify_managed_release "$release_tree" "$release_receipt"
+  RELEASE_ID=$release_id
+  RELEASE_DIGEST=$(jq -er .releaseDigest "$release_receipt")
+  RELEASE_RECEIPT_DIGEST=sha256:$(sha256_file "$release_receipt")
   systemctl is-active --quiet blazn-control-plane.service && die "stop blazn-control-plane.service before rotating Node plan material"
 fi
 
@@ -116,12 +129,13 @@ if [ ! -e "$ROTATION_DIR" ]; then
   sync_path "$temporary_dir/after/upgrade-receipt.json"; sync_path "$temporary_dir/after/main-receipt.json"
   jq -cnS \
     --arg host "$(hostname)" --arg correlationId "$CORRELATION" --arg createdAt "$created_at" \
+    --arg releaseId "$RELEASE_ID" --arg releaseDigest "$RELEASE_DIGEST" --arg releaseReceiptDigest "$RELEASE_RECEIPT_DIGEST" \
     --arg sourceTemplate "$SOURCE_TEMPLATE" --arg root "$ROOT" --arg journal "$JOURNAL" --arg mainReceipt "$MAIN_RECEIPT" --arg upgradeReceipt "$UPGRADE_RECEIPT" \
     --arg beforeTemplate "$(digest "$temporary_dir/before/template.json")" --arg beforeJournal "$(digest "$temporary_dir/before/journal.json")" \
     --arg beforeMain "$(digest "$temporary_dir/before/main-receipt.json")" --arg beforeUpgrade "$(digest "$temporary_dir/before/upgrade-receipt.json")" \
     --arg afterTemplate "$(digest "$temporary_dir/after/template.json")" --arg afterJournal "$(digest "$temporary_dir/after/journal.json")" \
     --arg afterMain "$(digest "$temporary_dir/after/main-receipt.json")" --arg afterUpgrade "$(digest "$temporary_dir/after/upgrade-receipt.json")" \
-    '{schemaVersion:"blazn.dev/node-plan-material-rotation/v1",owner:"blazn-poc",host:$host,correlationId:$correlationId,phase:"initialized",createdAt:$createdAt,updatedAt:$createdAt,paths:{sourceTemplate:$sourceTemplate,root:$root,journal:$journal,mainReceipt:$mainReceipt,upgradeReceipt:$upgradeReceipt},before:{templateDigest:$beforeTemplate,journalDigest:$beforeJournal,mainReceiptDigest:$beforeMain,upgradeReceiptDigest:$beforeUpgrade},after:{templateDigest:$afterTemplate,journalDigest:$afterJournal,mainReceiptDigest:$afterMain,upgradeReceiptDigest:$afterUpgrade}}' >"$temporary_dir/receipt.json"
+    '{schemaVersion:"blazn.dev/node-plan-material-rotation/v1",owner:"blazn-poc",host:$host,correlationId:$correlationId,phase:"initialized",createdAt:$createdAt,updatedAt:$createdAt,release:{id:$releaseId,digest:$releaseDigest,receiptDigest:$releaseReceiptDigest},paths:{sourceTemplate:$sourceTemplate,root:$root,journal:$journal,mainReceipt:$mainReceipt,upgradeReceipt:$upgradeReceipt},before:{templateDigest:$beforeTemplate,journalDigest:$beforeJournal,mainReceiptDigest:$beforeMain,upgradeReceiptDigest:$beforeUpgrade},after:{templateDigest:$afterTemplate,journalDigest:$afterJournal,mainReceiptDigest:$afterMain,upgradeReceiptDigest:$afterUpgrade}}' >"$temporary_dir/receipt.json"
   chown 0:0 "$temporary_dir/receipt.json"; chmod 0600 "$temporary_dir/receipt.json"; sync_path "$temporary_dir/receipt.json"
   sync_path "$temporary_dir/before"; sync_path "$temporary_dir/after"; sync_path "$temporary_dir"
   mv -- "$temporary_dir" "$ROTATION_DIR"; sync_path "$HISTORY_ROOT"
@@ -131,7 +145,8 @@ fi
 assert_directory_owned_mode "$ROTATION_DIR" 0 700
 assert_regular_file_owned_mode "$ROTATION_RECEIPT" 0 600
 jq -e --arg host "$(hostname)" --arg correlation "$CORRELATION" --arg root "$ROOT" --arg journal "$JOURNAL" --arg main "$MAIN_RECEIPT" --arg upgrade "$UPGRADE_RECEIPT" \
-  '.schemaVersion=="blazn.dev/node-plan-material-rotation/v1" and .owner=="blazn-poc" and .host==$host and .correlationId==$correlation and .paths.root==$root and .paths.journal==$journal and .paths.mainReceipt==$main and .paths.upgradeReceipt==$upgrade' "$ROTATION_RECEIPT" >/dev/null || die "Node plan rotation receipt is invalid"
+  --arg releaseId "$RELEASE_ID" --arg releaseDigest "$RELEASE_DIGEST" --arg releaseReceiptDigest "$RELEASE_RECEIPT_DIGEST" \
+  '.schemaVersion=="blazn.dev/node-plan-material-rotation/v1" and .owner=="blazn-poc" and .host==$host and .correlationId==$correlation and .release=={id:$releaseId,digest:$releaseDigest,receiptDigest:$releaseReceiptDigest} and .paths.root==$root and .paths.journal==$journal and .paths.mainReceipt==$main and .paths.upgradeReceipt==$upgrade' "$ROTATION_RECEIPT" >/dev/null || die "Node plan rotation receipt is invalid"
 for relative in before/template.json before/journal.json before/main-receipt.json before/upgrade-receipt.json after/template.json after/journal.json after/main-receipt.json after/upgrade-receipt.json; do
   case "$relative" in */template.json) expected_mode=444 ;; *) expected_mode=600 ;; esac
   assert_regular_file_owned_mode "$ROTATION_DIR/$relative" 0 "$expected_mode"
