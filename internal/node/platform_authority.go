@@ -43,16 +43,12 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	if filepath.Dir(authorization.ProfilePath) != profileRoot {
 		return errors.New("root bootstrap profile is outside the fixed trust root")
 	}
-	profileBytes, err := readTrustedProfile(authorization.ProfilePath)
+	profile, profileBytes, err := loadTrustedProfileForOwner(authorization.ProfilePath, binaryPath, currentBinaryVersion(request.Plan), e.trustedProfileOwner())
 	if err != nil {
 		return err
 	}
 	profileDigest := sha256.Sum256(profileBytes)
 	profileSHA256 := "sha256:" + hex.EncodeToString(profileDigest[:])
-	profile, err := LoadTrustedProfile(authorization.ProfilePath, binaryPath, currentBinaryVersion(request.Plan))
-	if err != nil {
-		return err
-	}
 	if profile.ID != authorization.ProfileID {
 		return errors.New("root bootstrap profile ID differs from expected plan")
 	}
@@ -503,7 +499,7 @@ func (e NativeRootEngine) stageHTTPSPackage(ctx context.Context, plan client.Nod
 	if err != nil {
 		return "", nil, err
 	}
-	profile, _, err := loadAuthorityProfile(profileRoot, binaryPath, authority)
+	profile, _, err := loadAuthorityProfile(profileRoot, binaryPath, authority, e.trustedProfileOwner())
 	if err != nil {
 		return "", nil, err
 	}
@@ -591,7 +587,7 @@ func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request Root
 	if request.Plan.Digest != authority.Plan.Digest || !sameJSON(request.Plan, authority.Plan) {
 		return errors.New("privileged request plan differs from root install authority")
 	}
-	profile, profileSHA256, err := loadAuthorityProfile(profileRoot, binaryPath, authority)
+	profile, profileSHA256, err := loadAuthorityProfile(profileRoot, binaryPath, authority, e.trustedProfileOwner())
 	if err != nil {
 		return err
 	}
@@ -648,8 +644,8 @@ func (e NativeRootEngine) authorityPaths() (string, string, string, error) {
 	return profileRoot, binaryPath, authorityPath, nil
 }
 
-func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority) (client.NodeTrustedInstallProfile, string, error) {
-	if err := ensureTrustedProfileRoot(root); err != nil {
+func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority, profileOwner int64) (client.NodeTrustedInstallProfile, string, error) {
+	if err := ensureTrustedProfileRoot(root, profileOwner); err != nil {
 		return client.NodeTrustedInstallProfile{}, "", err
 	}
 	entries, err := os.ReadDir(root)
@@ -663,18 +659,14 @@ func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthorit
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
-		value, readErr := readTrustedProfile(path)
-		if readErr != nil {
-			return client.NodeTrustedInstallProfile{}, "", readErr
+		profile, value, loadErr := loadTrustedProfileForOwner(path, binaryPath, currentBinaryVersion(authority.Plan), profileOwner)
+		if loadErr != nil {
+			return client.NodeTrustedInstallProfile{}, "", loadErr
 		}
 		sum := sha256.Sum256(value)
 		digest := "sha256:" + hex.EncodeToString(sum[:])
 		if digest != authority.ProfileSHA256 {
 			continue
-		}
-		profile, loadErr := LoadTrustedProfile(path, binaryPath, currentBinaryVersion(authority.Plan))
-		if loadErr != nil {
-			return client.NodeTrustedInstallProfile{}, "", loadErr
 		}
 		if profile.ID == authority.ProfileID && profile.ControlPlaneOrigin == authority.ControlPlaneOrigin {
 			selected = profile
@@ -685,6 +677,13 @@ func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthorit
 		return client.NodeTrustedInstallProfile{}, "", errors.New("root install authority profile is missing or ambiguous")
 	}
 	return selected, authority.ProfileSHA256, nil
+}
+
+func (e NativeRootEngine) trustedProfileOwner() int64 {
+	if currentUID() != 0 {
+		return currentUID()
+	}
+	return e.TrustedProfileOwner
 }
 
 func currentBinaryVersion(plan client.NodeInstallPlan) string {

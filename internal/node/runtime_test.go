@@ -523,24 +523,73 @@ func TestTrustedProfileAccessSupportsPrivateCallerAndPrivilegedDelegation(t *tes
 	for _, test := range []struct {
 		name          string
 		owner         int64
-		uid           int64
+		expectedOwner int64
 		mode          os.FileMode
-		wantPrivate   bool
-		wantDelegated bool
+		want          bool
 	}{
-		{name: "private-caller", owner: 1000, uid: 1000, mode: 0600, wantPrivate: true},
-		{name: "private-caller-read-only", owner: 1000, uid: 1000, mode: 0400, wantPrivate: true},
-		{name: "delegated-to-root", owner: 1000, uid: 0, mode: 0600, wantDelegated: true},
-		{name: "delegated-to-root-read-only", owner: 1000, uid: 0, mode: 0400, wantDelegated: true},
-		{name: "delegated-writable", owner: 1000, uid: 0, mode: 0644},
-		{name: "other-user", owner: 1001, uid: 1000, mode: 0400},
+		{name: "private-caller", owner: 1000, expectedOwner: 1000, mode: 0600, want: true},
+		{name: "private-caller-read-only", owner: 1000, expectedOwner: 1000, mode: 0400, want: true},
+		{name: "delegated-to-root", owner: 1000, expectedOwner: 1000, mode: 0600, want: true},
+		{name: "delegated-writable", owner: 1000, expectedOwner: 1000, mode: 0644},
+		{name: "non-caller-owner", owner: 1001, expectedOwner: 1000, mode: 0400},
+		{name: "direct-root-rejects-user", owner: 1000, expectedOwner: 0, mode: 0400},
+		{name: "direct-root-accepts-root", owner: 0, expectedOwner: 0, mode: 0400, want: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			private, delegated := trustedProfileAccess(test.owner, test.uid, test.mode)
-			if private != test.wantPrivate || delegated != test.wantDelegated {
-				t.Fatalf("private=%v delegated=%v", private, delegated)
+			if got := trustedProfileAccess(test.owner, test.expectedOwner, test.mode); got != test.want {
+				t.Fatalf("allowed=%v", got)
 			}
 		})
+	}
+}
+
+func TestTrustedProfileOwnerBindsSudoCaller(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		uid     int64
+		sudoUID string
+		want    int64
+		wantErr bool
+	}{
+		{name: "non-root", uid: 1000, sudoUID: "2000", want: 1000},
+		{name: "direct-root", uid: 0, want: 0},
+		{name: "sudo-root", uid: 0, sudoUID: "1000", want: 1000},
+		{name: "invalid-sudo-owner", uid: 0, sudoUID: "not-a-uid", wantErr: true},
+		{name: "root-sudo-owner", uid: 0, sudoUID: "0", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := trustedProfileOwnerForInvocation(test.uid, test.sudoUID)
+			if got != test.want || (err != nil) != test.wantErr {
+				t.Fatalf("owner=%d err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestTrustedProfileSnapshotBindsParsedPolicyAndDigestBytes(t *testing.T) {
+	root := testRoot(t)
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "blazn")
+	profilePath := filepath.Join(root, "profile.json")
+	if err := os.WriteFile(binary, []byte("binary"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"schemaVersion":1,"id":"ubuntu-26.04-amd64-worker/v1","controlPlaneOrigin":"https://control.example.test","allowedClusterOrigins":["https://cluster.example.test"],"allowedDownloadOrigins":[],"allowedDownloadHostSuffixes":[],"allowedRegistryOrigins":[],"allowedMutationRoots":["/safe"],"embeddedComponentSha256":{}}`
+	if err := os.WriteFile(profilePath, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	trusted, encoded, err := loadTrustedProfileForOwner(profilePath, binary, "v1", currentUID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := strings.Replace(original, `"/safe"`, `"/unsafe"`, 1)
+	if err := os.WriteFile(profilePath, []byte(replacement), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if len(trusted.AllowedMutationRoots) != 1 || trusted.AllowedMutationRoots[0] != "/safe" || string(encoded) != original {
+		t.Fatalf("snapshot was not internally consistent: profile=%#v encoded=%q", trusted.AllowedMutationRoots, encoded)
 	}
 }
 

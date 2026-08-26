@@ -23,6 +23,10 @@ import (
 const RootPrepareStateSubcommand = "node-root-helper-init"
 
 func RunProductionRootHelper(ctx context.Context, input io.Reader, output io.Writer) error {
+	profileOwner, err := productionTrustedProfileOwner()
+	if err != nil {
+		return err
+	}
 	paths, err := HostProductionNodePaths()
 	if err != nil {
 		return err
@@ -32,11 +36,12 @@ func RunProductionRootHelper(ctx context.Context, input io.Reader, output io.Wri
 		platform = "macos"
 	}
 	engine := NativeRootEngine{
-		Platform:          platform,
-		Commands:          FixedCommandExecutor{},
-		AuthorityPath:     paths.InstallAuthorityPath(),
-		ProfileRoot:       paths.ProfileRoot,
-		CurrentBinaryPath: defaultRootBinaryPath,
+		Platform:            platform,
+		Commands:            FixedCommandExecutor{},
+		AuthorityPath:       paths.InstallAuthorityPath(),
+		ProfileRoot:         paths.ProfileRoot,
+		TrustedProfileOwner: profileOwner,
+		CurrentBinaryPath:   defaultRootBinaryPath,
 	}
 	return RunRootHelper(ctx, input, output, engine)
 }
@@ -44,6 +49,10 @@ func RunProductionRootHelper(ctx context.Context, input io.Reader, output io.Wri
 func RunProductionObservationHelper(ctx context.Context, output io.Writer) error {
 	if currentUID() != 0 {
 		return errors.New("root observation helper requires UID 0")
+	}
+	profileOwner, err := productionTrustedProfileOwner()
+	if err != nil {
+		return err
 	}
 	paths, err := HostProductionNodePaths()
 	if err != nil {
@@ -61,7 +70,7 @@ func RunProductionObservationHelper(ctx context.Context, output io.Writer) error
 	if err != nil {
 		return err
 	}
-	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot, ObservationIdentity: observedIdentity}
+	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, TrustedProfileOwner: profileOwner, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot, ObservationIdentity: observedIdentity}
 	request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootObserve, Platform: platform, Plan: authority.Plan}
 	if err := engine.AuthorizeRootRequest(ctx, request); err != nil {
 		return err
@@ -73,6 +82,24 @@ func RunProductionObservationHelper(ctx context.Context, output io.Writer) error
 	response.SchemaVersion = RootHelperSchema
 	response.OK = true
 	return json.NewEncoder(output).Encode(response)
+}
+
+func productionTrustedProfileOwner() (int64, error) {
+	return trustedProfileOwnerForInvocation(currentUID(), os.Getenv("SUDO_UID"))
+}
+
+func trustedProfileOwnerForInvocation(uid int64, sudoUID string) (int64, error) {
+	if uid != 0 {
+		return uid, nil
+	}
+	if sudoUID == "" {
+		return 0, nil
+	}
+	callerUID, err := strconv.ParseInt(sudoUID, 10, 64)
+	if err != nil || callerUID <= 0 {
+		return 0, errors.New("root helper sudo caller is invalid")
+	}
+	return callerUID, nil
 }
 
 func observedIdentityFromAuthority(authority RootInstallAuthority) (RootObservedIdentity, error) {
