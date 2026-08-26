@@ -231,6 +231,7 @@ type NativeRootEngine struct {
 	allowTestJoinRuntime bool
 	AuthorityPath        string
 	ProfileRoot          string
+	TrustedProfileOwner  int64
 	CurrentBinaryPath    string
 	RootStateRoot        string
 	AuthorityHTTPClient  *http.Client

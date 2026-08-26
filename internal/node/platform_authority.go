@@ -43,16 +43,12 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	if filepath.Dir(authorization.ProfilePath) != profileRoot {
 		return errors.New("root bootstrap profile is outside the fixed trust root")
 	}
-	profileBytes, err := readTrustedProfile(authorization.ProfilePath)
+	profile, profileBytes, err := loadTrustedProfileForOwner(authorization.ProfilePath, binaryPath, currentBinaryVersion(request.Plan), e.trustedProfileOwner())
 	if err != nil {
 		return err
 	}
 	profileDigest := sha256.Sum256(profileBytes)
 	profileSHA256 := "sha256:" + hex.EncodeToString(profileDigest[:])
-	profile, err := LoadTrustedProfile(authorization.ProfilePath, binaryPath, currentBinaryVersion(request.Plan))
-	if err != nil {
-		return err
-	}
 	if profile.ID != authorization.ProfileID {
 		return errors.New("root bootstrap profile ID differs from expected plan")
 	}
@@ -82,7 +78,7 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	if e.Now != nil {
 		now = e.Now()
 	}
-	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: replayed.Plan, Identity: replayed.Identity, PlanSigningKey: bootstrap.PlanSigningKey, NodePublicKey: bootstrap.NodePublicKey, KubernetesBinding: bootstrap.KubernetesBinding, ProfileID: profile.ID, ProfileSHA256: profileSHA256, ControlPlaneOrigin: profile.ControlPlaneOrigin, AuthorizedAt: now.UTC().Format(time.RFC3339Nano)}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: replayed.Plan, Identity: replayed.Identity, PlanSigningKey: bootstrap.PlanSigningKey, NodePublicKey: bootstrap.NodePublicKey, KubernetesBinding: bootstrap.KubernetesBinding, ProfileID: profile.ID, ProfileSHA256: profileSHA256, ProfileOwnerUID: e.trustedProfileOwner(), ControlPlaneOrigin: profile.ControlPlaneOrigin, AuthorizedAt: now.UTC().Format(time.RFC3339Nano)}
 	authority.Digest, err = RootInstallAuthorityDigest(authority)
 	if err != nil {
 		return err
@@ -649,10 +645,11 @@ func (e NativeRootEngine) authorityPaths() (string, string, string, error) {
 }
 
 func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority) (client.NodeTrustedInstallProfile, string, error) {
-	if info, err := os.Lstat(root); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0700 {
-		return client.NodeTrustedInstallProfile{}, "", errors.New("root trusted profile directory is unsafe")
+	profileOwner := authority.ProfileOwnerUID
+	if currentUID() != 0 && profileOwner == 0 {
+		profileOwner = currentUID()
 	}
-	if err := ensurePrivateDirectory(root, currentUID()); err != nil {
+	if err := ensureTrustedProfileRoot(root, profileOwner); err != nil {
 		return client.NodeTrustedInstallProfile{}, "", err
 	}
 	entries, err := os.ReadDir(root)
@@ -666,18 +663,14 @@ func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthorit
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
-		value, readErr := readTrustedProfile(path)
-		if readErr != nil {
-			return client.NodeTrustedInstallProfile{}, "", readErr
+		profile, value, loadErr := loadTrustedProfileForOwner(path, binaryPath, currentBinaryVersion(authority.Plan), profileOwner)
+		if loadErr != nil {
+			return client.NodeTrustedInstallProfile{}, "", loadErr
 		}
 		sum := sha256.Sum256(value)
 		digest := "sha256:" + hex.EncodeToString(sum[:])
 		if digest != authority.ProfileSHA256 {
 			continue
-		}
-		profile, loadErr := LoadTrustedProfile(path, binaryPath, currentBinaryVersion(authority.Plan))
-		if loadErr != nil {
-			return client.NodeTrustedInstallProfile{}, "", loadErr
 		}
 		if profile.ID == authority.ProfileID && profile.ControlPlaneOrigin == authority.ControlPlaneOrigin {
 			selected = profile
@@ -688,6 +681,13 @@ func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthorit
 		return client.NodeTrustedInstallProfile{}, "", errors.New("root install authority profile is missing or ambiguous")
 	}
 	return selected, authority.ProfileSHA256, nil
+}
+
+func (e NativeRootEngine) trustedProfileOwner() int64 {
+	if currentUID() != 0 {
+		return currentUID()
+	}
+	return e.TrustedProfileOwner
 }
 
 func currentBinaryVersion(plan client.NodeInstallPlan) string {
