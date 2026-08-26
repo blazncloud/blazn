@@ -897,10 +897,12 @@ func TestMacServiceIdentityResumesPartialCreation(t *testing.T) {
 	}}
 	notFoundUser := func(string) (*user.User, error) { return nil, user.UnknownUserError("missing") }
 	notFoundGroup := func(string) (*user.Group, error) { return nil, user.UnknownGroupError("missing") }
+	notFoundUserID := func(string) (*user.User, error) { return nil, user.UnknownUserIdError(299) }
+	notFoundGroupID := func(string) (*user.Group, error) { return nil, user.UnknownGroupIdError("299") }
 	engine := NativeRootEngine{
 		Platform: "macos", Commands: commands,
 		LookupUser: notFoundUser, LookupGroup: notFoundGroup,
-		LookupUserID: notFoundUser, LookupGroupID: notFoundGroup,
+		LookupUserID: notFoundUserID, LookupGroupID: notFoundGroupID,
 	}
 	service := client.NodeInstallService{RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node"}
 	if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err != nil {
@@ -914,6 +916,48 @@ func TestMacServiceIdentityResumesPartialCreation(t *testing.T) {
 	}
 	if creates != 4 {
 		t.Fatalf("idempotent retry created attributes: %d", creates)
+	}
+}
+
+func TestMacServiceIdentityLookupFailuresFailClosedBeforeDSCLWrites(t *testing.T) {
+	unknownUser := func(string) (*user.User, error) { return nil, user.UnknownUserError("missing") }
+	unknownGroup := func(string) (*user.Group, error) { return nil, user.UnknownGroupError("missing") }
+	unknownUserID := func(string) (*user.User, error) { return nil, user.UnknownUserIdError(299) }
+	unknownGroupID := func(string) (*user.Group, error) { return nil, user.UnknownGroupIdError("299") }
+	transientUser := func(string) (*user.User, error) { return nil, errors.New("directory service unavailable") }
+	transientGroup := func(string) (*user.Group, error) { return nil, errors.New("directory service unavailable") }
+	tests := []struct {
+		name          string
+		lookupUser    func(string) (*user.User, error)
+		lookupGroup   func(string) (*user.Group, error)
+		lookupUserID  func(string) (*user.User, error)
+		lookupGroupID func(string) (*user.Group, error)
+	}{
+		{"user name", transientUser, unknownGroup, unknownUserID, unknownGroupID},
+		{"group name", unknownUser, transientGroup, unknownUserID, unknownGroupID},
+		{"user id", unknownUser, unknownGroup, transientUser, unknownGroupID},
+		{"group id", unknownUser, unknownGroup, unknownUserID, transientGroup},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+				calls++
+				return nil, nil
+			}}
+			engine := NativeRootEngine{
+				Platform: "macos", Commands: commands,
+				LookupUser: test.lookupUser, LookupGroup: test.lookupGroup,
+				LookupUserID: test.lookupUserID, LookupGroupID: test.lookupGroupID,
+			}
+			service := client.NodeInstallService{RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node"}
+			if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err == nil {
+				t.Fatal("transient identity lookup failure was accepted")
+			}
+			if calls != 0 {
+				t.Fatalf("dscl calls=%d before lookup safety was established", calls)
+			}
+		})
 	}
 }
 

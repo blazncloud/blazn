@@ -729,18 +729,37 @@ func (e NativeRootEngine) ensureMacOSServiceIdentity(ctx context.Context, servic
 	if lookupGroupID == nil {
 		lookupGroupID = user.LookupGroupId
 	}
-	if account, err := lookupUser(service.RunAsUser); err == nil &&
+	account, accountErr := lookupUser(service.RunAsUser)
+	if accountErr != nil {
+		if !unknownUserName(accountErr) {
+			return errors.New("macOS node service account lookup failed")
+		}
+	} else if account == nil ||
 		((account.Username != "" && account.Username != service.RunAsUser) || (account.Uid != "" && account.Uid != "299") || (account.Gid != "" && account.Gid != "299") || (account.HomeDir != "" && account.HomeDir != home)) {
 		return errors.New("existing macOS node service identity differs from the dedicated contract")
 	}
-	if group, err := lookupGroup(service.RunAsGroup); err == nil &&
-		((group.Name != "" && group.Name != service.RunAsGroup) || (group.Gid != "" && group.Gid != "299")) {
+	group, groupErr := lookupGroup(service.RunAsGroup)
+	if groupErr != nil {
+		if !unknownGroupName(groupErr) {
+			return errors.New("macOS node service group lookup failed")
+		}
+	} else if group == nil || ((group.Name != "" && group.Name != service.RunAsGroup) || (group.Gid != "" && group.Gid != "299")) {
 		return errors.New("existing macOS node service identity differs from the dedicated contract")
 	}
-	if account, err := lookupUserID("299"); err == nil && account.Username != service.RunAsUser {
+	accountByID, accountIDErr := lookupUserID("299")
+	if accountIDErr != nil {
+		if !unknownUserID(accountIDErr) {
+			return errors.New("macOS node service UID lookup failed")
+		}
+	} else if accountByID == nil || accountByID.Username != service.RunAsUser {
 		return errors.New("macOS node service UID is already occupied")
 	}
-	if group, err := lookupGroupID("299"); err == nil && group.Name != service.RunAsGroup {
+	groupByID, groupIDErr := lookupGroupID("299")
+	if groupIDErr != nil {
+		if !unknownGroupID(groupIDErr) {
+			return errors.New("macOS node service GID lookup failed")
+		}
+	} else if groupByID == nil || groupByID.Name != service.RunAsGroup {
 		return errors.New("macOS node service GID is already occupied")
 	}
 	attributes := []struct{ record, key, value string }{
@@ -771,6 +790,26 @@ func (e NativeRootEngine) ensureMacOSServiceIdentity(ctx context.Context, servic
 		}
 	}
 	return e.verifyMacOSDSCLIdentity(ctx, home)
+}
+
+func unknownUserName(err error) bool {
+	var target user.UnknownUserError
+	return errors.As(err, &target)
+}
+
+func unknownGroupName(err error) bool {
+	var target user.UnknownGroupError
+	return errors.As(err, &target)
+}
+
+func unknownUserID(err error) bool {
+	var target user.UnknownUserIdError
+	return errors.As(err, &target)
+}
+
+func unknownGroupID(err error) bool {
+	var target user.UnknownGroupIdError
+	return errors.As(err, &target)
 }
 
 func (e NativeRootEngine) macOSDSCLAttributeMatches(ctx context.Context, record, key, expected string) (bool, error) {
