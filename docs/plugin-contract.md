@@ -114,6 +114,12 @@ Plugins are installed below:
 ~/.local/share/blazn/plugins/<name>/versions/<version>/
 ```
 
+The leading home directory follows the operating system's standard user-home
+environment contract. Clean-machine and recovery qualification can therefore
+use an isolated `HOME` without mutating the operator's active plugin store; the
+resolved store path must still be absolute and all ownership and mode checks
+remain enforced.
+
 Directories must be owned by the current user and mode `0700`. Executables and
 receipts are validated as regular, non-symlink, single-link files. The active
 receipt includes the binary digest and prior version for rollback. Plugins run
