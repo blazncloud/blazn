@@ -71,6 +71,15 @@ func (i *Installer) LoadReceipt() (client.NodeInstallReceipt, error) {
 	return i.state.LoadReceipt()
 }
 
+func (i *Installer) BindPlan(plan client.NodeInstallPlan) {
+	if i == nil || i.state == nil {
+		return
+	}
+	if binder, ok := i.state.(interface{ BindPlan(client.NodeInstallPlan) }); ok {
+		binder.BindPlan(plan)
+	}
+}
+
 func (i *Installer) AuthorizeBootstrap(ctx context.Context, authorization BootstrapAuthorization) error {
 	if i.platform == nil {
 		return errors.New("privileged platform is unavailable")
