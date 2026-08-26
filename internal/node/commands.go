@@ -118,9 +118,6 @@ func (c *CommandRuntime) Enroll(ctx context.Context, options CommandEnrollOption
 	return c.Service.Enroll(ctx, EnrollOptions{AccessToken: c.AccessToken, WorkspaceID: options.WorkspaceID, IdempotencyKey: options.RequestID, Name: options.Name, Mode: options.Mode, Platform: platform, Architecture: architecture, MachineFingerprint: options.MachineFingerprint, KubernetesBinding: options.KubernetesBinding, Profile: profile, ProfilePath: options.ProfileFile}, true)
 }
 func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt, error) {
-	if receipt, ok, err := c.resumePendingUninstallCleanup(ctx); ok || err != nil {
-		return receipt, err
-	}
 	if c.State == nil || c.Identities == nil {
 		return client.NodeInstallReceipt{}, errors.New("node recovery dependencies are unavailable")
 	}
@@ -128,6 +125,9 @@ func (c *CommandRuntime) Recover(ctx context.Context) (client.NodeInstallReceipt
 		if err := c.PrepareState(ctx); err != nil {
 			return client.NodeInstallReceipt{}, err
 		}
+	}
+	if receipt, ok, err := c.resumePendingUninstallCleanupPrepared(ctx); ok || err != nil {
+		return receipt, err
 	}
 	state, err := c.State.LoadRuntime()
 	if err != nil {
@@ -217,14 +217,18 @@ func (c *CommandRuntime) beginAndResumeUninstallCleanup(ctx context.Context, pla
 	return c.resumeUninstallCleanup(ctx, store, journal)
 }
 func (c *CommandRuntime) resumePendingUninstallCleanup(ctx context.Context) (client.NodeInstallReceipt, bool, error) {
-	store, ok := c.State.(FileStateStore)
-	if !ok {
-		return client.NodeInstallReceipt{}, false, nil
-	}
 	if c.PrepareState != nil {
 		if err := c.PrepareState(ctx); err != nil {
 			return client.NodeInstallReceipt{}, true, err
 		}
+	}
+	return c.resumePendingUninstallCleanupPrepared(ctx)
+}
+
+func (c *CommandRuntime) resumePendingUninstallCleanupPrepared(ctx context.Context) (client.NodeInstallReceipt, bool, error) {
+	store, ok := c.State.(FileStateStore)
+	if !ok {
+		return client.NodeInstallReceipt{}, false, nil
 	}
 	journal, err := store.LoadUninstallCleanup()
 	if errors.Is(err, os.ErrNotExist) {

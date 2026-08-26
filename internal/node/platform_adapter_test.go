@@ -424,6 +424,12 @@ func TestSystemdPriorRestoreReloadsThenRestoresEnabledAndActive(t *testing.T) {
 	calls := []string{}
 	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
 		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		if args[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
 		return nil, nil
 	}}
 	plan := testJoinPlan("linux")
@@ -433,9 +439,255 @@ func TestSystemdPriorRestoreReloadsThenRestoresEnabledAndActive(t *testing.T) {
 	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).restoreServicePrior(context.Background(), plan, mutation, metadata); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"daemon-reload", "disable blazn-node.service", "stop blazn-node.service"}
+	want := []string{"is-enabled blazn-node.service", "is-active blazn-node.service", "daemon-reload", "disable blazn-node.service", "stop blazn-node.service"}
 	if !sameJSON(calls, want) {
 		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestSystemdPriorRestoreTreatsMissingAsDisabledAndInactive(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return []byte("not-found\n"), &FixedCommandError{ExitCode: 4}
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	metadata := map[string]string{"active": "false", "enabled": "false", "kind": "service", "manager": "systemd", "name": "blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).restoreServicePrior(context.Background(), plan, mutation, metadata); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"is-enabled blazn-node.service", "is-active blazn-node.service"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestSystemdEnableDoesNotStartBeforePrivateStateHandoff(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return nil, nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).apply(context.Background(), plan, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sameJSON(calls, []string{"enable blazn-node.service"}) {
+		t.Fatalf("pre-finalization commands=%#v", calls)
+	}
+}
+
+func TestPreActivationSystemdVerificationDoesNotRequireLiveDaemon(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] != "is-enabled" {
+			return nil, errors.New("service was touched before private-state handoff")
+		}
+		return []byte("enabled\n"), nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	mutation := client.NodeInstallMutation{Kind: "systemd_unit", Action: "enable", Target: "/etc/systemd/system/blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).verifyMutation(context.Background(), plan, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sameJSON(calls, []string{"is-enabled blazn-node.service"}) {
+		t.Fatalf("pre-finalization verification commands=%#v", calls)
+	}
+}
+
+func TestFinalizedSystemdServiceStartsAfterHandoffAndIsVerified(t *testing.T) {
+	calls := []string{}
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		if args[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
+		return nil, nil
+	}}
+	plan := testJoinPlan("linux")
+	plan.NodeService = client.NodeInstallService{Manager: "systemd", UnitName: "blazn-node.service"}
+	if err := (NativeRootEngine{Platform: "linux", Commands: commands}).startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"daemon-reload", "start blazn-node.service", "is-enabled blazn-node.service", "is-active blazn-node.service"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("finalization commands=%#v want=%#v", calls, want)
+	}
+}
+
+func TestDeferredServiceParentPreservesPrivateInstallerStateUntilFinalize(t *testing.T) {
+	parent := filepath.Join(testRoot(t), "blazn")
+	stateRoot := filepath.Join(parent, "node")
+	if err := os.MkdirAll(stateRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	identity := filepath.Join(stateRoot, "identity.json")
+	if err := os.WriteFile(identity, []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeUID, _, ownerOK := fileOwner(before)
+	if !ownerOK {
+		t.Fatal("test parent owner is unavailable")
+	}
+	if err := prepareDeferredServiceDirectory(parent); err != nil {
+		t.Fatal(err)
+	}
+	prepared, _ := os.Lstat(parent)
+	preparedUID, _, preparedOwnerOK := fileOwner(prepared)
+	stateInfo, stateErr := os.Lstat(stateRoot)
+	identityInfo, identityErr := os.Lstat(identity)
+	if !preparedOwnerOK || preparedUID != beforeUID || prepared.Mode().Perm() != 0711 || stateErr != nil || stateInfo.Mode().Perm() != 0700 || identityErr != nil || identityInfo.Mode().Perm() != 0600 {
+		t.Fatalf("prepared parent=%v uid=%d state=%v identity=%v", prepared.Mode(), preparedUID, stateInfo, identityInfo)
+	}
+	mutation := client.NodeInstallMutation{Kind: "directory", Action: "create", Target: parent, Mode: 0700, UID: int64(os.Getuid()), GID: int64(os.Getgid())}
+	if err := finalizeDeferredServiceDirectory(mutation); err != nil {
+		t.Fatal(err)
+	}
+	if err := finalizeDeferredServiceDirectory(mutation); err != nil {
+		t.Fatalf("idempotent finalization: %v", err)
+	}
+	final, _ := os.Lstat(parent)
+	finalUID, _, finalOwnerOK := fileOwner(final)
+	if !finalOwnerOK || finalUID != int64(os.Getuid()) || final.Mode().Perm() != 0700 {
+		t.Fatalf("final parent=%v uid=%d", final.Mode(), finalUID)
+	}
+}
+
+func TestDeferredServiceParentRejectsUnrelatedOwner(t *testing.T) {
+	if trustedPreparedDirectoryOwner(4242, 4242, int64(os.Getuid()), int64(os.Getgid())) {
+		t.Fatal("unrelated local owner was accepted for installer-private state")
+	}
+	if !trustedPreparedDirectoryOwner(0, 0, int64(os.Getuid()), int64(os.Getgid())) {
+		t.Fatal("root-owned prepared boundary was rejected")
+	}
+}
+
+func TestLaunchdEnableDoesNotCreateOverrideOrStartBeforeHandoff(t *testing.T) {
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+		return nil, errors.New("launchd was touched before private-state handoff")
+	}}
+	plan := testJoinPlan("macos")
+	plan.NodeService = client.NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node"}
+	mutation := client.NodeInstallMutation{Kind: "launchd_unit", Action: "enable", Target: "/Library/LaunchDaemons/com.blazn.node.plist"}
+	if err := (NativeRootEngine{Platform: "macos", Commands: commands}).apply(context.Background(), plan, mutation, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLaunchdFinalizationIsIdempotentAfterBootstrap(t *testing.T) {
+	calls := []string{}
+	loaded := false
+	disabled := true
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		if args[0] == "enable" {
+			disabled = false
+			return nil, nil
+		}
+		if args[0] == "print-disabled" {
+			return []byte("disabled services = {\n\t\"com.blazn.node\" => enabled\n}\n"), nil
+		}
+		if args[0] == "print" {
+			if loaded && !disabled {
+				return []byte("service"), nil
+			}
+			return nil, &FixedCommandError{ExitCode: 113}
+		}
+		if args[0] == "bootstrap" {
+			loaded = true
+			return nil, nil
+		}
+		return nil, errors.New("unexpected launchctl command")
+	}}
+	plan := testJoinPlan("macos")
+	plan.NodeService = client.NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node"}
+	plan.Mutations = []client.NodeInstallMutation{{Kind: "launchd_unit", Action: "enable", Target: "/Library/LaunchDaemons/com.blazn.node.plist"}}
+	engine := NativeRootEngine{Platform: "macos", Commands: commands}
+	if err := engine.startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatalf("retry after bootstrap: %v", err)
+	}
+	want := []string{"enable system/com.blazn.node", "print-disabled system", "print system/com.blazn.node", "bootstrap system /Library/LaunchDaemons/com.blazn.node.plist", "print system/com.blazn.node", "enable system/com.blazn.node", "print-disabled system", "print system/com.blazn.node"}
+	if !sameJSON(calls, want) {
+		t.Fatalf("calls=%#v want=%#v", calls, want)
+	}
+}
+
+func TestLaunchdFinalizationClearsDisabledOverrideForLoadedService(t *testing.T) {
+	disabled := true
+	bootstrapCalls := 0
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		switch args[0] {
+		case "enable":
+			disabled = false
+			return nil, nil
+		case "print-disabled":
+			if disabled {
+				return []byte("disabled services = {\n\t\"com.blazn.node\" => disabled\n}\n"), nil
+			}
+			return []byte("disabled services = {\n\t\"com.blazn.node\" => enabled\n}\n"), nil
+		case "print":
+			return []byte("service"), nil
+		case "bootstrap":
+			bootstrapCalls++
+			return nil, nil
+		default:
+			return nil, errors.New("unexpected launchctl command")
+		}
+	}}
+	plan := testJoinPlan("macos")
+	plan.NodeService = client.NodeInstallService{Manager: "launchd", UnitName: "com.blazn.node"}
+	plan.Mutations = []client.NodeInstallMutation{{Kind: "launchd_unit", Action: "enable", Target: "/Library/LaunchDaemons/com.blazn.node.plist"}}
+	if err := (NativeRootEngine{Platform: "macos", Commands: commands}).startAndVerifyNodeService(context.Background(), plan); err != nil {
+		t.Fatal(err)
+	}
+	if disabled || bootstrapCalls != 0 {
+		t.Fatalf("disabled=%v bootstrapCalls=%d", disabled, bootstrapCalls)
+	}
+}
+
+func TestLaunchdOverrideEnabledParsesNativeStatesExactly(t *testing.T) {
+	if !launchdOverrideEnabled([]byte("disabled services = {\n\t\"com.blazn.node\" => enabled\n}\n"), "com.blazn.node") {
+		t.Fatal("native enabled override was rejected")
+	}
+	for _, output := range []string{
+		"disabled services = {\n\t\"com.blazn.node\" => disabled\n}\n",
+		"disabled services = {\n\t\"com.blazn.node.other\" => enabled\n}\n",
+		"disabled services = {\n\tcom.blazn.node => enabled\n}\n",
+	} {
+		if launchdOverrideEnabled([]byte(output), "com.blazn.node") {
+			t.Fatalf("non-matching state was accepted: %q", output)
+		}
+	}
+}
+
+func TestLinuxServiceParentMutationIsDeferred(t *testing.T) {
+	plan := testJoinPlan("linux")
+	mutation := client.NodeInstallMutation{Ordinal: 3, Kind: "directory", Action: "create", Target: "/var/lib/blazn", Mode: 0700, UID: 950, GID: 950}
+	plan.Mutations = []client.NodeInstallMutation{mutation}
+	deferred, err := isDeferredServiceDirectory(plan, mutation)
+	if err != nil || !deferred {
+		t.Fatalf("deferred=%v err=%v", deferred, err)
+	}
+	other := mutation
+	other.Target = "/etc/blazn/node"
+	if deferred, err := isDeferredServiceDirectory(plan, other); err != nil || deferred {
+		t.Fatalf("unrelated deferred=%v err=%v", deferred, err)
 	}
 }
 
@@ -587,6 +839,10 @@ func TestExistingMacServiceIdentityMustMatchEveryDedicatedAttribute(t *testing.T
 			return nil, &FixedCommandError{ExitCode: 1}
 		}
 		if strings.Contains(strings.Join(args, " "), "/Users/_blazn-node") {
+			values := map[string]string{"UniqueID": "299", "PrimaryGroupID": "299", "NFSHomeDirectory": MacOSNodeServiceStateRoot, "UserShell": "/usr/bin/false", "IsHidden": "1"}
+			if len(args) == 4 {
+				return []byte(args[3] + ": " + values[args[3]] + "\n"), nil
+			}
 			return []byte("UniqueID: 299\nPrimaryGroupID: 299\nNFSHomeDirectory: " + MacOSNodeServiceStateRoot + "\nUserShell: /usr/bin/false\nIsHidden: 1\n"), nil
 		}
 		return []byte("PrimaryGroupID: 299\n"), nil
@@ -599,6 +855,109 @@ func TestExistingMacServiceIdentityMustMatchEveryDedicatedAttribute(t *testing.T
 	account.HomeDir = "/Users/shared"
 	if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err == nil {
 		t.Fatal("macOS account with shared home was accepted")
+	}
+}
+
+func TestMacServiceIdentityResumesPartialCreation(t *testing.T) {
+	attributes := map[string]string{
+		"/Groups/_blazn-node/PrimaryGroupID": "299",
+		"/Users/_blazn-node/UniqueID":        "299",
+	}
+	creates := 0
+	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+		if args[1] == "-read" {
+			record := args[2]
+			if len(args) > 4 {
+				lines := make([]string, 0, len(args)-3)
+				for _, key := range args[3:] {
+					value, ok := attributes[record+"/"+key]
+					if !ok {
+						return nil, &FixedCommandError{ExitCode: 1}
+					}
+					lines = append(lines, key+": "+value)
+				}
+				return []byte(strings.Join(lines, "\n") + "\n"), nil
+			}
+			key := args[3]
+			value, ok := attributes[record+"/"+key]
+			if !ok {
+				if key == "NFSHomeDirectory" || key == "GroupMembership" {
+					return nil, nil
+				}
+				return nil, &FixedCommandError{ExitCode: 56}
+			}
+			return []byte(key + ": " + value + "\n"), nil
+		}
+		if args[1] == "-create" {
+			attributes[args[2]+"/"+args[3]] = args[4]
+			creates++
+			return nil, nil
+		}
+		return nil, errors.New("unexpected dscl command")
+	}}
+	notFoundUser := func(string) (*user.User, error) { return nil, user.UnknownUserError("missing") }
+	notFoundGroup := func(string) (*user.Group, error) { return nil, user.UnknownGroupError("missing") }
+	notFoundUserID := func(string) (*user.User, error) { return nil, user.UnknownUserIdError(299) }
+	notFoundGroupID := func(string) (*user.Group, error) { return nil, user.UnknownGroupIdError("299") }
+	engine := NativeRootEngine{
+		Platform: "macos", Commands: commands,
+		LookupUser: notFoundUser, LookupGroup: notFoundGroup,
+		LookupUserID: notFoundUserID, LookupGroupID: notFoundGroupID,
+	}
+	service := client.NodeInstallService{RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node"}
+	if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err != nil {
+		t.Fatal(err)
+	}
+	if creates != 4 {
+		t.Fatalf("creates=%d want=4", creates)
+	}
+	if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err != nil {
+		t.Fatalf("retry after partial creation: %v", err)
+	}
+	if creates != 4 {
+		t.Fatalf("idempotent retry created attributes: %d", creates)
+	}
+}
+
+func TestMacServiceIdentityLookupFailuresFailClosedBeforeDSCLWrites(t *testing.T) {
+	unknownUser := func(string) (*user.User, error) { return nil, user.UnknownUserError("missing") }
+	unknownGroup := func(string) (*user.Group, error) { return nil, user.UnknownGroupError("missing") }
+	unknownUserID := func(string) (*user.User, error) { return nil, user.UnknownUserIdError(299) }
+	unknownGroupID := func(string) (*user.Group, error) { return nil, user.UnknownGroupIdError("299") }
+	transientUser := func(string) (*user.User, error) { return nil, errors.New("directory service unavailable") }
+	transientGroup := func(string) (*user.Group, error) { return nil, errors.New("directory service unavailable") }
+	tests := []struct {
+		name          string
+		lookupUser    func(string) (*user.User, error)
+		lookupGroup   func(string) (*user.Group, error)
+		lookupUserID  func(string) (*user.User, error)
+		lookupGroupID func(string) (*user.Group, error)
+	}{
+		{"user name", transientUser, unknownGroup, unknownUserID, unknownGroupID},
+		{"group name", unknownUser, transientGroup, unknownUserID, unknownGroupID},
+		{"user id", unknownUser, unknownGroup, transientUser, unknownGroupID},
+		{"group id", unknownUser, unknownGroup, unknownUserID, transientGroup},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+				calls++
+				return nil, nil
+			}}
+			engine := NativeRootEngine{
+				Platform: "macos", Commands: commands,
+				LookupUser: test.lookupUser, LookupGroup: test.lookupGroup,
+				LookupUserID: test.lookupUserID, LookupGroupID: test.lookupGroupID,
+			}
+			service := client.NodeInstallService{RunAsUser: "_blazn-node", RunAsGroup: "_blazn-node"}
+			if err := engine.ensureMacOSServiceIdentity(context.Background(), service, MacOSNodeServiceStateRoot); err == nil {
+				t.Fatal("transient identity lookup failure was accepted")
+			}
+			if calls != 0 {
+				t.Fatalf("dscl calls=%d before lookup safety was established", calls)
+			}
+		})
 	}
 }
 
