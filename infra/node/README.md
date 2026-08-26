@@ -79,6 +79,19 @@ and rejects fingerprint or template drift. Upgrade rollback retains the raw
 seed beneath its root-only, receipt-named recovery directory instead of deleting
 it.
 
+To advance the reviewed executable pinned by an existing plan, stop the control
+plane outside its lock, then run `rotate-plan-materials.sh` through
+`with-control-plane-env.sh` and `with-control-plane-lock.sh`. Set
+`BLAZN_CORRELATION_ID` and `BLAZN_NODE_PLAN_TEMPLATE_SOURCE` to the template in
+the immutable promoted release. The crash-resumable rotation retains exact
+before/after images under `/var/lib/blazn/ownership/node-plan-material-rotations`,
+atomically replaces the template, creation journal, upgrade receipt, and main
+receipt in that order, and never replaces the signing key. On failure, rerun the
+same command and correlation ID, or pass `--rollback` before restoring the old
+release. Start systemd only after rotation, release promotion, and deploy
+preflight finish; do not stop or start systemd while holding the control-plane
+lock.
+
 ## MicroK8s worker issuer boundary
 
 `install-worker-issuer.sh` provisions the root helper, distinct HMAC
