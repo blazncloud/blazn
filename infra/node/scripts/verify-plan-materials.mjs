@@ -118,7 +118,7 @@ if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].arm64.no
 const binaryDigests = JSON.parse(binaryDigestsText);
 exact(binaryDigests, ["schemaVersion", "releaseTag", "binaries"], "current binary digest manifest");
 exact(binaryDigests.binaries, ["darwin-arm64", "linux-amd64", "linux-arm64"], "current binary platforms");
-if (binaryDigests.schemaVersion !== "blazn.dev/current-binary-digests/v1" || binaryDigests.releaseTag !== "v0.1.0-poc.108") fail("current binary release identity drifted");
+if (binaryDigests.schemaVersion !== "blazn.dev/current-binary-digests/v1" || binaryDigests.releaseTag !== "v0.1.0-poc.109") fail("current binary release identity drifted");
 for (const [profileId, architecture, platform] of [["ubuntu-26.04-amd64-worker/v1", "amd64", "linux-amd64"], ["existing-linux-worker-adopt/v1", "amd64", "linux-amd64"], ["existing-linux-worker-adopt/v1", "arm64", "linux-arm64"], ["macos-lima-worker-adopt/v1", "arm64", "darwin-arm64"]]) {
   const component = template.profiles[profileId][architecture].components.find((candidate) => candidate.sourceClass === "current_binary");
   if (!component || component.version !== binaryDigests.releaseTag || component.sha256 !== binaryDigests.binaries[platform]) fail(`${profileId}/${architecture} current binary is not bound to the reviewed executable digest`);
