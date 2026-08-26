@@ -59,6 +59,20 @@ test("heartbeat advances opaque Kubernetes resource versions only from the signe
   await assert.rejects(()=>service.heartbeat(unsafe,unsafeProof),(e:unknown)=>e instanceof NodeHttpError&&e.code==="invalid_request");
 });
 
+test("first heartbeat reconciles the same Node after capacity release advances resourceVersion",async()=>{
+  const pair=generateKeyPairSync("ed25519"),publicKey=pair.publicKey.export({format:"jwk"}).x!;
+  const serverBinding={clusterId:"cluster-a",nodeName:"ben3",nodeUid:"uid-a",resourceVersion:"activation-rv"};
+  const releasedBinding={...serverBinding,resourceVersion:"released-rv"};let writes=0;
+  const tx=baseTx({activeIdentity:async()=>({nodeId,workspaceId,generation:1,publicKey,publicKeyFingerprint:"c".repeat(64),signingKeyId:"node/v1",lifecycleState:"active",trustState:"verified",nodeVersion:2}),nodeById:async()=>({id:nodeId,workspaceId,name:"ben3",kind:"shared",platform:"linux",architecture:"amd64",lifecycleState:"active",trustState:"verified",agentEligible:true,version:2,capabilityVersion:null,identity:null,kubernetesBinding:serverBinding,createdAt:"2026-08-22T00:00:00Z",updatedAt:"2026-08-22T00:00:00Z"}),heartbeatState:async()=>undefined,recordHeartbeat:async value=>{assert.equal(value.priorKubernetesResourceVersion,"activation-rv");assert.deepEqual(value.kubernetesBinding,releasedBinding);writes++;}});
+  const service=new NodeService(store(tx),async()=>Buffer.alloc(32),planFactory,()=>new Date("2026-08-22T12:00:00Z"));
+  const capability={version:1,host:{platform:"linux",architecture:"amd64",cpuMillis:1000,memoryBytes:1024,diskBytes:1024,accelerators:[],health:{status:"healthy",reasonCodes:[]}},worker:{platform:"linux",architecture:"amd64",allocatableCpuMillis:1000,allocatableMemoryBytes:1024,allocatableDiskBytes:1024,labels:{},limits:{maxConcurrentSandboxes:2,maxConcurrentAgents:2},health:{status:"healthy",reasonCodes:[]},kubernetesBinding:releasedBinding},sandboxBackends:[],runtimeClasses:[],localModels:[]};
+  const body:HeartbeatInput={nodeId,identityGeneration:1,bootId:"boot-capacity-release",sequence:0,sentAt:"2026-08-22T12:00:00.000Z",priorKubernetesResourceVersion:releasedBinding.resourceVersion,capabilityDigest:renderedDigest("blazn-node-capability-v1",capability),capability};
+  const proof=sign(null,Buffer.from(`blazn-node-heartbeat-v1\n${canonicalJson(body)}`),pair.privateKey).toString("base64url");
+  await service.heartbeat(body,proof);assert.equal(writes,1);
+  const substitutedCapability={...capability,worker:{...capability.worker,kubernetesBinding:{...releasedBinding,nodeUid:"substituted"}}};const substituted={...body,capability:substitutedCapability,capabilityDigest:renderedDigest("blazn-node-capability-v1",substitutedCapability)};const substitutedProof=sign(null,Buffer.from(`blazn-node-heartbeat-v1\n${canonicalJson(substituted)}`),pair.privateKey).toString("base64url");
+  await assert.rejects(()=>service.heartbeat(substituted,substitutedProof),(error:unknown)=>error instanceof NodeHttpError&&error.code==="version_conflict");
+});
+
 test("operation checks version, role, state, and exact destructive binding",async()=>{
   const node={id:nodeId,workspaceId,name:"ben2",kind:"shared" as const,platform:"linux" as const,architecture:"amd64" as const,lifecycleState:"active" as const,trustState:"verified" as const,agentEligible:true,version:4,capabilityVersion:1,identity:null,kubernetesBinding:{clusterId:"cluster-a",nodeName:"ben2",nodeUid:"uid-a",resourceVersion:"9"},createdAt:"2026-08-22T00:00:00Z",updatedAt:"2026-08-22T00:00:00Z"};let inserts=0;
   const tx=baseTx({nodeById:async()=>node,authority:async()=>({workspaceId,role:"operator",workspaceStatus:"active"}),insertOperation:async(v)=>{inserts++;return{id:v.id,nodeId:v.nodeId,type:v.type,status:"pending",expectedNodeVersion:v.expectedVersion,result:null,error:null,receipt:null,createdAt:"2026-08-22T12:00:00Z"};}});
