@@ -509,8 +509,15 @@ func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPla
 	}
 	request := a.request(RootVerify, plan, 0)
 	request.Join = &binding
-	_, err := a.Privileged.Call(ctx, request)
-	return err
+	response, err := a.Privileged.Call(ctx, request)
+	if err != nil {
+		return err
+	}
+	if response.KubernetesBinding == nil || response.KubernetesBinding.ClusterID != binding.ClusterID || response.KubernetesBinding.NodeName != binding.ExpectedNodeName || response.KubernetesBinding.NodeUID != binding.ExpectedNodeUID || response.KubernetesBinding.ResourceVersion == "" {
+		return errors.New("installation verification did not return the root-authorized Node binding")
+	}
+	a.joined.ExpectedResourceVersion = response.KubernetesBinding.ResourceVersion
+	return nil
 }
 
 func (a *PlatformAdapter) ensureJoined(ctx context.Context, plan client.NodeInstallPlan) error {

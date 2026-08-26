@@ -358,7 +358,12 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if request.ActivationGrant != nil {
 			return RootResponse{}, e.verifyActivatedCapacityState(ctx, request.Plan, request.Join)
 		}
-		return RootResponse{}, e.verify(ctx, request.Plan, request.Join)
+		observed, err := e.verify(ctx, request.Plan, request.Join)
+		if err != nil {
+			return RootResponse{}, err
+		}
+		binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
+		return RootResponse{KubernetesBinding: binding}, err
 	case RootFinalizeState:
 		return RootResponse{}, e.finalizeServiceState(ctx, request.Plan)
 	case RootRemoveSupport:
@@ -2128,35 +2133,31 @@ func (e NativeRootEngine) observeNode(ctx context.Context, plan client.NodeInsta
 	}
 	return JoinedNode{Name: value.Metadata.Name, UID: value.Metadata.UID, ResourceVersion: value.Metadata.ResourceVersion}, nil
 }
-func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) error {
-	if binding == nil || binding.ExpectedNodeUID == "" {
-		return errors.New("verification binding is incomplete")
-	}
-	joined, err := e.observeNode(ctx, plan, binding.ExpectedNodeName)
-	if err != nil || joined.UID != binding.ExpectedNodeUID || joined.ResourceVersion != binding.ExpectedResourceVersion {
-		return errors.New("joined node identity or resourceVersion differs from binding")
+func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPlan, binding *RootJoinBinding) (JoinedNode, error) {
+	if binding == nil || binding.ClusterID != plan.Cluster.ID || binding.ExpectedNodeName != plan.Hostname || binding.ExpectedNodeUID == "" || binding.ExpectedResourceVersion == "" {
+		return JoinedNode{}, errors.New("verification binding is incomplete")
 	}
 	output, err := e.kubectl(ctx, plan, "get", "node", binding.ExpectedNodeName, "-o", "json")
 	if err != nil {
-		return err
+		return JoinedNode{}, err
 	}
 	node, err := decodeCapacityNode(output)
-	if err != nil || node.Name != binding.ExpectedNodeName || node.UID != binding.ExpectedNodeUID || node.ResourceVersion != binding.ExpectedResourceVersion {
-		return errors.New("joined node taint response is invalid")
+	if err != nil || node.Name != binding.ExpectedNodeName || node.UID != binding.ExpectedNodeUID || node.ResourceVersion == "" {
+		return JoinedNode{}, errors.New("joined node identity differs from binding")
 	}
 	released, err := validateCapacityState(node)
 	if err != nil {
-		return err
+		return JoinedNode{}, err
 	}
 	for _, mutation := range sortedMutations(plan) {
 		if released && isBootstrapTaintMutation(mutation) {
 			continue
 		}
 		if err := e.verifyMutation(ctx, plan, mutation, node.Labels, node.Taints); err != nil {
-			return fmt.Errorf("verify mutation %d: %w", mutation.Ordinal, err)
+			return JoinedNode{}, fmt.Errorf("verify mutation %d: %w", mutation.Ordinal, err)
 		}
 	}
-	return nil
+	return JoinedNode{Name: node.Name, UID: node.UID, ResourceVersion: node.ResourceVersion}, nil
 }
 
 func isBootstrapTaintMutation(mutation client.NodeInstallMutation) bool {
