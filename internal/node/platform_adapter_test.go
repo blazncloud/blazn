@@ -598,7 +598,7 @@ func TestLaunchdFinalizationIsIdempotentAfterBootstrap(t *testing.T) {
 			return nil, nil
 		}
 		if args[0] == "print-disabled" {
-			return []byte("disabled services = {\n\t\"com.blazn.node\" => false\n}\n"), nil
+			return []byte("disabled services = {\n\t\"com.blazn.node\" => enabled\n}\n"), nil
 		}
 		if args[0] == "print" {
 			if loaded && !disabled {
@@ -638,9 +638,9 @@ func TestLaunchdFinalizationClearsDisabledOverrideForLoadedService(t *testing.T)
 			return nil, nil
 		case "print-disabled":
 			if disabled {
-				return []byte("disabled services = {\n\t\"com.blazn.node\" => true\n}\n"), nil
+				return []byte("disabled services = {\n\t\"com.blazn.node\" => disabled\n}\n"), nil
 			}
-			return []byte("disabled services = {\n\t\"com.blazn.node\" => false\n}\n"), nil
+			return []byte("disabled services = {\n\t\"com.blazn.node\" => enabled\n}\n"), nil
 		case "print":
 			return []byte("service"), nil
 		case "bootstrap":
@@ -658,6 +658,21 @@ func TestLaunchdFinalizationClearsDisabledOverrideForLoadedService(t *testing.T)
 	}
 	if disabled || bootstrapCalls != 0 {
 		t.Fatalf("disabled=%v bootstrapCalls=%d", disabled, bootstrapCalls)
+	}
+}
+
+func TestLaunchdOverrideEnabledParsesNativeStatesExactly(t *testing.T) {
+	if !launchdOverrideEnabled([]byte("disabled services = {\n\t\"com.blazn.node\" => enabled\n}\n"), "com.blazn.node") {
+		t.Fatal("native enabled override was rejected")
+	}
+	for _, output := range []string{
+		"disabled services = {\n\t\"com.blazn.node\" => disabled\n}\n",
+		"disabled services = {\n\t\"com.blazn.node.other\" => enabled\n}\n",
+		"disabled services = {\n\tcom.blazn.node => enabled\n}\n",
+	} {
+		if launchdOverrideEnabled([]byte(output), "com.blazn.node") {
+			t.Fatalf("non-matching state was accepted: %q", output)
+		}
 	}
 }
 
@@ -866,7 +881,10 @@ func TestMacServiceIdentityResumesPartialCreation(t *testing.T) {
 			key := args[3]
 			value, ok := attributes[record+"/"+key]
 			if !ok {
-				return nil, &FixedCommandError{ExitCode: 1}
+				if key == "NFSHomeDirectory" || key == "GroupMembership" {
+					return nil, nil
+				}
+				return nil, &FixedCommandError{ExitCode: 56}
 			}
 			return []byte(key + ": " + value + "\n"), nil
 		}

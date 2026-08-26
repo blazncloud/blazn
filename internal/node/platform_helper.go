@@ -667,9 +667,13 @@ func (e NativeRootEngine) startAndVerifyNodeService(ctx context.Context, plan cl
 }
 
 func launchdOverrideEnabled(output []byte, label string) bool {
-	want := `"` + label + `" => false`
+	wants := map[string]struct{}{
+		`"` + label + `" => enabled`: {},
+		// Older launchd releases render the same state as a disabled boolean.
+		`"` + label + `" => false`: {},
+	}
 	for _, line := range strings.Split(string(output), "\n") {
-		if strings.TrimSpace(strings.TrimSuffix(line, ",")) == want {
+		if _, ok := wants[strings.TrimSpace(strings.TrimSuffix(line, ","))]; ok {
 			return true
 		}
 	}
@@ -772,15 +776,27 @@ func (e NativeRootEngine) ensureMacOSServiceIdentity(ctx context.Context, servic
 func (e NativeRootEngine) macOSDSCLAttributeMatches(ctx context.Context, record, key, expected string) (bool, error) {
 	value, err := e.Commands.Run(ctx, "/usr/bin/dscl", ".", "-read", record, key)
 	if err == nil {
+		// dscl exits successfully but writes only a diagnostic to stderr when a
+		// record exists without the requested attribute. FixedCommandExecutor
+		// deliberately exposes bounded stdout only, so empty stdout is missing.
+		if len(bytes.TrimSpace(value)) == 0 {
+			return false, nil
+		}
 		if !exactDSCLAttributes(value, map[string]string{key: expected}) {
 			return false, errors.New("existing macOS node service identity differs from the dedicated contract")
 		}
 		return true, nil
 	}
-	if fixedExit(err, 1) {
+	if macOSDSCLMissing(err) {
 		return false, nil
 	}
 	return false, errors.New("existing macOS node service identity cannot be inspected")
+}
+
+func macOSDSCLMissing(err error) bool {
+	// Exit 56 is eDSRecordNotFound. Exit 1 is retained for macOS versions that
+	// report a missing attribute as a failing read instead of empty stdout.
+	return fixedExit(err, 56) || fixedExit(err, 1)
 }
 
 func (e NativeRootEngine) verifyMacOSDSCLMembership(ctx context.Context) error {
@@ -789,7 +805,7 @@ func (e NativeRootEngine) verifyMacOSDSCLMembership(ctx context.Context) error {
 		if memberErr == nil && strings.TrimSpace(string(value)) != "" {
 			return errors.New("existing macOS node service group has supplementary members")
 		}
-		if memberErr != nil && !fixedExit(memberErr, 1) {
+		if memberErr != nil && !macOSDSCLMissing(memberErr) {
 			return errors.New("existing macOS node service membership cannot be verified")
 		}
 	}
