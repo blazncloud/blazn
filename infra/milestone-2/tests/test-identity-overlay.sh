@@ -82,6 +82,13 @@ if sudo sh -c ". '$ROOT_DIR/scripts/common.sh'; validate_identity_runtime_secret
 fi
 grep -F 'published identity runtime secret differs' "$top/runtime.err" >/dev/null
 
+sudo mkdir -m 700 "$top/node-source-secrets"
+sudo install -o root -g root -m 0400 /dev/null "$top/node-source-secrets/enrollment-hmac-v1"
+head -c 32 /dev/zero | sudo tee "$top/node-source-secrets/enrollment-hmac-v1" >/dev/null
+sudo sh -c ". '$ROOT_DIR/scripts/common.sh'; publish_node_enrollment_runtime_secret '$top/node-source-secrets' '$top/runtime-parent/runtime-secrets'"
+[ "$(sudo stat -c '%u:%a:%s' "$top/runtime-parent/runtime-secrets/node-enrollment-hmac-v1")" = 0:444:32 ]
+sudo cmp -s "$top/node-source-secrets/enrollment-hmac-v1" "$top/runtime-parent/runtime-secrets/node-enrollment-hmac-v1"
+
 BLAZN_IDENTITY_ENABLED=invalid
 export BLAZN_IDENTITY_ENABLED
 if (control_plane_compose "$top/infra" "$top/control-plane.env" ps api) >"$top/out" 2>"$top/err"; then

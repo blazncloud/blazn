@@ -567,7 +567,7 @@ secrets:
   node_broker_database_url:
     file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/database-url
   node_enrollment_hmac_v1:
-    file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/enrollment-hmac-v1
+    file: /run/blazn/identity-secrets/node-enrollment-hmac-v1
   node_broker_join_credential_v1:
     file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/join-credential-v1
   initial_password:
