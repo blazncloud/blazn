@@ -1228,7 +1228,7 @@ func TestDaemonSignsCanonicalHeartbeatAndAdvancesSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Sequence != 0 || second.Sequence != 1 || first.BootID != second.BootID {
+	if first.Sequence != 0 || second.Sequence != 1 || first.BootID != second.BootID || api.lastHeartbeat.Capability.Version != 2 || state.runtime.CapabilityVersion != 2 {
 		t.Fatalf("first=%#v second=%#v", first, second)
 	}
 	canonical, err := canonicalJSON(api.lastHeartbeat)
@@ -1262,12 +1262,12 @@ func TestDaemonPersistsAndExactlyReplaysHeartbeatAfterAcknowledgmentLoss(t *test
 	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: nextCapability})
 	restarted.now = func() time.Time { return when.Add(time.Minute) }
 	result, err := restarted.Heartbeat(context.Background())
-	if err != nil || api.heartbeatCalls != 2 || !reflect.DeepEqual(api.lastHeartbeat, pending) || result.Sequence != pending.Sequence || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
+	if err != nil || api.heartbeatCalls != 2 || !reflect.DeepEqual(api.lastHeartbeat, pending) || result.Sequence != pending.Sequence || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" || state.runtime.CapabilityVersion != 1 {
 		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
 	}
 	restarted.now = func() time.Time { return when.Add(2 * time.Minute) }
 	next, err := restarted.Heartbeat(context.Background())
-	if err != nil || api.heartbeatCalls != 3 || next.BootID != pending.BootID || next.Sequence != pending.Sequence+1 || api.lastHeartbeat.BootID != pending.BootID || api.lastHeartbeat.Sequence != pending.Sequence+1 || api.lastHeartbeat.PriorKubernetesResourceVersion != "opaque-next" || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-after-replay" {
+	if err != nil || api.heartbeatCalls != 3 || next.BootID != pending.BootID || next.Sequence != pending.Sequence+1 || api.lastHeartbeat.BootID != pending.BootID || api.lastHeartbeat.Sequence != pending.Sequence+1 || api.lastHeartbeat.Capability.Version != 2 || api.lastHeartbeat.PriorKubernetesResourceVersion != "opaque-next" || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-after-replay" || state.runtime.CapabilityVersion != 2 {
 		t.Fatalf("next=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", next, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
 	}
 }
@@ -1294,6 +1294,31 @@ func TestDaemonRefreshesPendingHeartbeatOnlyAfterServerRejectsItsTimestamp(t *te
 	result, err := restarted.Heartbeat(context.Background())
 	if err != nil || api.heartbeatCalls != 3 || result.BootID != original.BootID || result.Sequence != original.Sequence || api.lastHeartbeat.SentAt == original.SentAt || api.lastHeartbeat.SentAt != when.Add(10*time.Minute).Format(time.RFC3339Nano) || state.runtime.PendingHeartbeat != nil || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
 		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.KubernetesBinding, err)
+	}
+}
+
+func TestDaemonAdvancesPersistedCapabilityVersionAfterServerRejectsChangedContent(t *testing.T) {
+	identity := testIdentity(t)
+	plan := installPlan()
+	capability := testCapability()
+	origin := capability.Worker.KubernetesBinding
+	origin.ResourceVersion = "opaque-origin"
+	capability.Worker.KubernetesBinding.ResourceVersion = "opaque-next"
+	state := &memoryState{runtime: RuntimeState{SchemaVersion: 1, Pin: EnrollmentPin{SchemaVersion: 1}, Exchange: client.ExchangeNodeEnrollmentResponse{Plan: plan, Identity: client.NodeEnrollmentIdentity{Generation: 2, SigningKeyID: "node-identity/v2", PublicKeyFingerprint: mustFingerprint(t, identity), IssuedAt: plan.IssuedAt, ExpiresAt: plan.ExpiresAt}}, KubernetesBinding: &origin}}
+	api := &mockAPI{heartbeatResponseLosses: 1}
+	when := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	daemon := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: capability})
+	daemon.now = func() time.Time { return when }
+	if _, err := daemon.Heartbeat(context.Background()); err == nil {
+		t.Fatal("expected injected response loss")
+	}
+	original := *state.runtime.PendingHeartbeat
+	api.heartbeatErrors = []error{&client.APIError{StatusCode: 409, Body: client.ErrorBody{Code: "state_conflict", Message: "capability version cannot roll back or change content"}}}
+	restarted := NewDaemon(api, state, fixedIdentity{identity}, fixedCapability{capability: client.NodeCapability{}})
+	restarted.now = func() time.Time { return when.Add(time.Minute) }
+	result, err := restarted.Heartbeat(context.Background())
+	if err != nil || api.heartbeatCalls != 3 || result.BootID != original.BootID || result.Sequence != original.Sequence || api.lastHeartbeat.Capability.Version != original.Capability.Version+1 || api.lastHeartbeat.CapabilityDigest == original.CapabilityDigest || state.runtime.PendingHeartbeat != nil || state.runtime.CapabilityVersion != 2 || state.runtime.KubernetesBinding.ResourceVersion != "opaque-next" {
+		t.Fatalf("result=%#v calls=%d heartbeat=%#v pending=%#v capabilityVersion=%d binding=%#v err=%v", result, api.heartbeatCalls, api.lastHeartbeat, state.runtime.PendingHeartbeat, state.runtime.CapabilityVersion, state.runtime.KubernetesBinding, err)
 	}
 }
 
