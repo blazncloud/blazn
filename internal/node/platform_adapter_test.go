@@ -1473,6 +1473,76 @@ func TestRootHelperResponseRequiresEOF(t *testing.T) {
 	}
 }
 
+func TestRootVerificationAcceptsOnlyResourceVersionAdvanceForSameNode(t *testing.T) {
+	plan := testJoinPlan("linux")
+	nodeUID := "uid-1"
+	commands := scriptedExecutor{run: func(_ string, _ []string, _ []byte) ([]byte, error) {
+		return []byte(fmt.Sprintf(`{"metadata":{"name":%q,"uid":%q,"resourceVersion":"9","labels":{}},"spec":{"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}]}}`, plan.Hostname, nodeUID)), nil
+	}}
+	engine := NativeRootEngine{Platform: "linux", Commands: commands}
+	binding := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7"}
+	observed, err := engine.verify(context.Background(), plan, binding)
+	if err != nil || observed.Name != plan.Hostname || observed.UID != "uid-1" || observed.ResourceVersion != "9" {
+		t.Fatalf("observed=%#v err=%v", observed, err)
+	}
+	nodeUID = "attacker-uid"
+	if _, err := engine.verify(context.Background(), plan, binding); err == nil {
+		t.Fatal("resourceVersion advance for a different Node UID was accepted")
+	}
+}
+
+func TestRootKubernetesBindingUpdatePersistsAdvancedResourceVersion(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	profile := trustedBootstrapProfile(plan)
+	authority := RootInstallAuthority{
+		SchemaVersion:      RootInstallAuthoritySchema,
+		Plan:               plan,
+		Identity:           authorization.Expected.Identity,
+		PlanSigningKey:     authorization.PlanSigningKey,
+		NodePublicKey:      authorization.NodePublicKey,
+		KubernetesBinding:  authorization.KubernetesBinding,
+		ProfileID:          profile.ID,
+		ProfileSHA256:      "sha256:" + testHash,
+		ProfileOwnerUID:    currentUID(),
+		ControlPlaneOrigin: profile.ControlPlaneOrigin,
+		AuthorizedAt:       plan.IssuedAt,
+	}
+	var err error
+	authority.Digest, err = RootInstallAuthorityDigest(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := testRoot(t)
+	authorityPath := filepath.Join(root, "authority", "install-authority.json")
+	if err := os.Mkdir(filepath.Dir(authorityPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateCreate(authorityPath, encoded); err != nil {
+		t.Fatal(err)
+	}
+	engine := NativeRootEngine{Platform: "linux", AuthorityPath: authorityPath}
+	binding, err := engine.updateRootKubernetesBinding(plan, JoinedNode{Name: plan.Hostname, UID: authorization.KubernetesBinding.NodeUID, ResourceVersion: "9"})
+	if err != nil || binding.ResourceVersion != "9" {
+		t.Fatalf("binding=%#v err=%v", binding, err)
+	}
+	persisted, err := loadRootAuthority(authorityPath)
+	if err != nil || persisted.KubernetesBinding.ResourceVersion != "9" {
+		t.Fatalf("persisted=%#v err=%v", persisted.KubernetesBinding, err)
+	}
+	if _, err := engine.updateRootKubernetesBinding(plan, JoinedNode{Name: plan.Hostname, UID: "attacker-uid", ResourceVersion: "10"}); err == nil {
+		t.Fatal("different Node UID replaced the root authority binding")
+	}
+	persisted, err = loadRootAuthority(authorityPath)
+	if err != nil || persisted.KubernetesBinding.ResourceVersion != "9" {
+		t.Fatalf("failed update changed persisted binding=%#v err=%v", persisted.KubernetesBinding, err)
+	}
+}
+
 func TestDaemonObservationClientRejectsEveryMutationOperation(t *testing.T) {
 	client := PipeObservationClient{HelperPath: DefaultRootHelperPath, Timeout: time.Second}
 	for _, operation := range []RootOperation{RootApply, RootRollback, RootJoin, RootReleaseCapacity, RootLoadReceipt, RootFinalizeState} {
@@ -1493,7 +1563,7 @@ func TestAdoptedWorkerUsesPinnedBindingWithoutIssuingJoinCredential(t *testing.T
 			resourceVersion++
 			return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: strconv.FormatInt(resourceVersion, 10)}}, nil
 		case RootVerify:
-			return RootResponse{OK: true}, nil
+			return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: strconv.FormatInt(resourceVersion, 10)}}, nil
 		default:
 			return RootResponse{}, errors.New("unexpected privileged operation")
 		}
@@ -1734,7 +1804,7 @@ func TestFreshJoinConsumptionUsesFinalDeferredMutationBinding(t *testing.T) {
 			version++
 			return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: strconv.FormatInt(version, 10)}}, nil
 		case RootVerify:
-			return RootResponse{OK: true}, nil
+			return RootResponse{OK: true, KubernetesBinding: &client.KubernetesBinding{ClusterID: plan.Cluster.ID, NodeName: plan.Hostname, NodeUID: "uid-1", ResourceVersion: strconv.FormatInt(version, 10)}}, nil
 		default:
 			return RootResponse{}, errors.New("unexpected operation")
 		}
