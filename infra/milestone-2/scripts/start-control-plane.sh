@@ -23,10 +23,10 @@ case $build_mode in
 esac
 load_control_api_image "$ROOT_DIR"
 "$SCRIPT_DIR/prepare-identity-runtime-secrets.sh"
+"$SCRIPT_DIR/preflight.sh" --deploy
 # File-backed Compose secrets are inode-bound. Recreate the only consumer so
 # an atomic credential rotation cannot restart a container on retired bytes.
 compose up --no-start --no-deps --force-recreate api
-"$SCRIPT_DIR/preflight.sh" --deploy
 compose up --detach --wait --remove-orphans
 verify_control_api_containers "$ROOT_DIR" "$ENV_FILE"
 verify_node_prerequisite_containers "$ROOT_DIR" "$ENV_FILE"

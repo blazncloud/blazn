@@ -224,9 +224,13 @@ grep -F 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-p
 # shellcheck disable=SC2016
 grep -F 'publish_node_enrollment_runtime_secret "$node_source_root" /run/blazn/identity-secrets' "$ROOT_DIR/scripts/prepare-identity-runtime-secrets.sh" >/dev/null
 prepare_identity_line=$(grep -n 'prepare-identity-runtime-secrets.sh' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
+# This intentionally asserts the literal script-directory variable.
+# shellcheck disable=SC2016
+preflight_start_line=$(grep -n '"$SCRIPT_DIR/preflight.sh" --deploy' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 recreate_identity_line=$(grep -n 'compose up --no-start --no-deps --force-recreate api' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
 start_identity_line=$(grep -n 'compose up --detach --wait --remove-orphans' "$ROOT_DIR/scripts/start-control-plane.sh" | cut -d: -f1)
-[ "$prepare_identity_line" -lt "$recreate_identity_line" ]
+[ "$prepare_identity_line" -lt "$preflight_start_line" ]
+[ "$preflight_start_line" -lt "$recreate_identity_line" ]
 [ "$recreate_identity_line" -lt "$start_identity_line" ]
 if grep -F 'if identity_overlay_enabled; then' "$ROOT_DIR/scripts/start-control-plane.sh" >/dev/null; then
   printf 'runtime secret publication is incorrectly conditional on the identity overlay\n' >&2
