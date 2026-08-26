@@ -84,6 +84,22 @@ func (i *Installer) AuthorizeBootstrap(ctx context.Context, authorization Bootst
 	return nil
 }
 
+func (i *Installer) RetireRemovedEnrollment(ctx context.Context, plan client.NodeInstallPlan) error {
+	retirer, ok := i.platform.(interface {
+		RetireRemovedEnrollment(context.Context, client.NodeInstallPlan) error
+	})
+	if !ok {
+		return errors.New("platform removed-enrollment retirer is unavailable")
+	}
+	if err := client.ValidateNodeInstallPlan(plan); err != nil {
+		return fmt.Errorf("validate retired node plan: %w", err)
+	}
+	if err := retirer.RetireRemovedEnrollment(ctx, plan); err != nil {
+		return fmt.Errorf("retire removed privileged enrollment: %w", err)
+	}
+	return nil
+}
+
 type Installer struct {
 	platform        Platform
 	state           StateStore

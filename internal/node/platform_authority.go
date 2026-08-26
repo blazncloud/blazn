@@ -116,11 +116,16 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 
 func retireRemovedRootAuthority(authorityPath string, authorityBytes []byte, authority RootInstallAuthority) error {
 	root := filepath.Dir(authorityPath)
+	if _, err := os.Lstat(filepath.Join(root, "install-wal.json")); err == nil {
+		return errors.New("removed root authority still has recovery WAL state")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("removed root authority WAL state cannot be verified")
+	}
 	receiptPath := filepath.Join(root, "install-receipt.json")
 	archiveReceipt := filepath.Join(root, "retired-"+authority.Plan.PlanID+"-receipt.json")
 	archiveAuthority := filepath.Join(root, "retired-"+authority.Plan.PlanID+"-authority.json")
 	receiptBytes, err := readPrivateFile(receiptPath, 256<<10)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		receiptBytes, err = readPrivateFile(archiveReceipt, 256<<10)
 	}
 	if err != nil {
@@ -138,7 +143,11 @@ func retireRemovedRootAuthority(authorityPath string, authorityBytes []byte, aut
 	nodeKey, keyErr := base64.RawURLEncoding.DecodeString(authority.NodePublicKey)
 	fingerprint, fpErr := client.NodePublicKeyFingerprint(ed25519.PublicKey(nodeKey))
 	trust := client.NodeInstallReceiptTrust{PlanID: authority.Plan.PlanID, PlanDigest: authority.Plan.Digest, NodeID: authority.Plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: authority.Identity.SigningKeyID, Generation: authority.Identity.Generation, Fingerprint: fingerprint, PublicKey: ed25519.PublicKey(nodeKey)}, BackupRoot: authority.Plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
-	if keyErr != nil || fpErr != nil || receipt.State != "removed" || client.VerifyNodeInstallReceipt(receipt, trust) != nil {
+	terminal := receipt.State == "removed" && receipt.CurrentStage == "complete" && len(receipt.Residues) == 0
+	for _, mutation := range receipt.Mutations {
+		terminal = terminal && (mutation.Status == "restored" || mutation.Status == "removed")
+	}
+	if keyErr != nil || fpErr != nil || !terminal || client.VerifyNodeInstallReceipt(receipt, trust) != nil {
 		return errors.New("different root authority is not released by a trusted removed receipt")
 	}
 	if err := archivePrivateExact(archiveReceipt, receiptBytes); err != nil {
@@ -154,6 +163,150 @@ func retireRemovedRootAuthority(authorityPath string, authorityBytes []byte, aut
 		return err
 	}
 	return nil
+}
+
+func (e NativeRootEngine) removedRetirementAuthority(plan client.NodeInstallPlan) (string, []byte, RootInstallAuthority, error) {
+	_, _, authorityPath, err := e.authorityPaths()
+	if err != nil {
+		return "", nil, RootInstallAuthority{}, err
+	}
+	authorityBytes, err := readPrivateFile(authorityPath, 8<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		authorityBytes, err = readPrivateFile(filepath.Join(filepath.Dir(authorityPath), "retired-"+plan.PlanID+"-authority.json"), 8<<20)
+	}
+	if err != nil {
+		return "", nil, RootInstallAuthority{}, errors.New("removed enrollment root authority is unavailable")
+	}
+	authority, err := DecodeRootInstallAuthority(authorityBytes)
+	if err != nil || authority.Plan.Digest != plan.Digest || !sameJSON(authority.Plan, plan) {
+		return "", nil, RootInstallAuthority{}, errors.New("removed enrollment plan differs from root authority")
+	}
+	return authorityPath, authorityBytes, authority, nil
+}
+
+func (e NativeRootEngine) authorizeRemovedEnrollmentRetirement(request RootRequest) error {
+	profileRoot, _, _, err := e.authorityPaths()
+	if err != nil {
+		return err
+	}
+	authorityPath, _, authority, err := e.removedRetirementAuthority(request.Plan)
+	if err != nil {
+		return err
+	}
+	profile, profileSHA256, err := loadHistoricalAuthorityProfile(profileRoot, authority)
+	if err != nil {
+		return err
+	}
+	issuedAt, err := time.Parse(time.RFC3339, authority.Plan.IssuedAt)
+	if err != nil || VerifyRootInstallAuthority(authority, RootInstallAuthorityTrust{Now: issuedAt.Add(time.Nanosecond), Profile: profile, ProfileSHA256: profileSHA256}) != nil {
+		return errors.New("removed enrollment root authority is invalid")
+	}
+	return verifyRemovedRootAuthorityRetirement(authorityPath, authority)
+}
+
+func loadHistoricalAuthorityProfile(root string, authority RootInstallAuthority) (client.NodeTrustedInstallProfile, string, error) {
+	profileOwner := authority.ProfileOwnerUID
+	if currentUID() != 0 && profileOwner == 0 {
+		profileOwner = currentUID()
+	}
+	if err := ensureTrustedProfileRoot(root, profileOwner); err != nil {
+		return client.NodeTrustedInstallProfile{}, "", err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) > 32 {
+		return client.NodeTrustedInstallProfile{}, "", errors.New("historical root profile directory is unavailable or exceeds limit")
+	}
+	version, binarySHA256 := "", ""
+	for _, component := range authority.Plan.Components {
+		if component.SourceClass == "current_binary" && component.ArtifactType == "binary" {
+			if version != "" {
+				return client.NodeTrustedInstallProfile{}, "", errors.New("historical root plan has ambiguous current binary")
+			}
+			version, binarySHA256 = component.Version, component.SHA256
+		}
+	}
+	if version == "" || binarySHA256 == "" {
+		return client.NodeTrustedInstallProfile{}, "", errors.New("historical root plan lacks its signed binary binding")
+	}
+	var selected client.NodeTrustedInstallProfile
+	matches := 0
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		value, readErr := readTrustedProfileForOwner(filepath.Join(root, entry.Name()), profileOwner)
+		if readErr != nil {
+			return client.NodeTrustedInstallProfile{}, "", readErr
+		}
+		sum := sha256.Sum256(value)
+		if "sha256:"+hex.EncodeToString(sum[:]) != authority.ProfileSHA256 {
+			continue
+		}
+		var stored TrustedProfileFile
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&stored) != nil {
+			return client.NodeTrustedInstallProfile{}, "", errors.New("historical root profile is invalid")
+		}
+		if trailing := decoder.Decode(&struct{}{}); !errors.Is(trailing, io.EOF) || stored.SchemaVersion != 1 || stored.ID != authority.ProfileID || stored.ControlPlaneOrigin != authority.ControlPlaneOrigin || !validControlPlaneOrigin(stored.ControlPlaneOrigin) {
+			return client.NodeTrustedInstallProfile{}, "", errors.New("historical root profile binding is invalid")
+		}
+		selected = client.NodeTrustedInstallProfile{ID: stored.ID, ControlPlaneOrigin: stored.ControlPlaneOrigin, AllowedClusterOrigins: stored.AllowedClusterOrigins, AllowedDownloadOrigins: stored.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: stored.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: stored.AllowedRegistryOrigins, AllowedMutationRoots: stored.AllowedMutationRoots, CurrentBinaryVersion: version, CurrentBinarySHA256: binarySHA256, EmbeddedComponentSHA256: stored.EmbeddedComponentSHA256, LimaBinding: stored.LimaBinding, VerifyNoSymlinkTraversal: verifyProfileTargetTraversal}
+		matches++
+	}
+	if matches != 1 {
+		return client.NodeTrustedInstallProfile{}, "", errors.New("historical root profile is missing or ambiguous")
+	}
+	return selected, authority.ProfileSHA256, nil
+}
+
+func verifyRemovedRootAuthorityRetirement(authorityPath string, authority RootInstallAuthority) error {
+	root := filepath.Dir(authorityPath)
+	if _, err := os.Lstat(filepath.Join(root, "install-wal.json")); err == nil {
+		return errors.New("removed root authority still has recovery WAL state")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return errors.New("removed root authority WAL state cannot be verified")
+	}
+	receiptPath := filepath.Join(root, "install-receipt.json")
+	receiptBytes, err := readPrivateFile(receiptPath, 256<<10)
+	if errors.Is(err, os.ErrNotExist) {
+		receiptBytes, err = readPrivateFile(filepath.Join(root, "retired-"+authority.Plan.PlanID+"-receipt.json"), 256<<10)
+	}
+	if err != nil {
+		return errors.New("removed root receipt is unavailable")
+	}
+	var receipt client.NodeInstallReceipt
+	decoder := json.NewDecoder(bytes.NewReader(receiptBytes))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&receipt) != nil {
+		return errors.New("removed root receipt is invalid")
+	}
+	if trailing := decoder.Decode(&struct{}{}); !errors.Is(trailing, io.EOF) {
+		return errors.New("removed root receipt has trailing data")
+	}
+	nodeKey, keyErr := base64.RawURLEncoding.DecodeString(authority.NodePublicKey)
+	fingerprint, fpErr := client.NodePublicKeyFingerprint(ed25519.PublicKey(nodeKey))
+	trust := client.NodeInstallReceiptTrust{PlanID: authority.Plan.PlanID, PlanDigest: authority.Plan.Digest, NodeID: authority.Plan.NodeID, Signer: client.NodeTrustedSigner{Kind: "node_identity", Status: "active", KeyID: authority.Identity.SigningKeyID, Generation: authority.Identity.Generation, Fingerprint: fingerprint, PublicKey: ed25519.PublicKey(nodeKey)}, BackupRoot: authority.Plan.Rollback.BackupRoot, VerifyNoSymlinkTraversal: verifyNoSymlinkTraversal}
+	if keyErr != nil || fpErr != nil || receipt.State != "removed" || receipt.CurrentStage != "complete" || len(receipt.Residues) != 0 || client.VerifyNodeInstallReceipt(receipt, trust) != nil {
+		return errors.New("removed enrollment does not have trusted residue-free terminal evidence")
+	}
+	for _, mutation := range receipt.Mutations {
+		if mutation.Status != "restored" && mutation.Status != "removed" {
+			return errors.New("removed enrollment receipt contains nonterminal mutations")
+		}
+	}
+	return nil
+}
+
+func (e NativeRootEngine) retireRemovedEnrollment(plan client.NodeInstallPlan) error {
+	authorityPath, authorityBytes, authority, err := e.removedRetirementAuthority(plan)
+	if err != nil {
+		return err
+	}
+	if err := verifyRemovedRootAuthorityRetirement(authorityPath, authority); err != nil {
+		return err
+	}
+	return retireRemovedRootAuthority(authorityPath, authorityBytes, authority)
 }
 
 func archivePrivateExact(path string, value []byte) error {
@@ -575,6 +728,9 @@ func (e NativeRootEngine) stageHTTPSPackage(ctx context.Context, plan client.Nod
 func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request RootRequest) error {
 	if request.Bootstrap != nil {
 		return errors.New("bootstrap secret is not accepted for privileged mutations")
+	}
+	if request.Operation == RootRetireRemoved {
+		return e.authorizeRemovedEnrollmentRetirement(request)
 	}
 	profileRoot, binaryPath, authorityPath, err := e.authorityPaths()
 	if err != nil {

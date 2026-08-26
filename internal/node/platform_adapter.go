@@ -34,6 +34,7 @@ type RootOperation string
 const (
 	RootProbe           RootOperation = "probe"
 	RootAuthorize       RootOperation = "authorize_bootstrap"
+	RootRetireRemoved   RootOperation = "retire_removed_enrollment"
 	RootServiceState    RootOperation = "service_state"
 	RootCapture         RootOperation = "capture"
 	RootApply           RootOperation = "apply"
@@ -396,6 +397,10 @@ func (a *PlatformAdapter) AuthorizeBootstrap(ctx context.Context, authorization 
 		binding := *authorization.KubernetesBinding
 		a.bootstrapBinding = &binding
 	}
+	return err
+}
+func (a *PlatformAdapter) RetireRemovedEnrollment(ctx context.Context, plan client.NodeInstallPlan) error {
+	_, err := a.Privileged.Call(ctx, a.request(RootRetireRemoved, plan, 0))
 	return err
 }
 func (a *PlatformAdapter) Preflight(ctx context.Context, plan client.NodeInstallPlan) error {

@@ -852,11 +852,52 @@ func TestRemovedRootAuthorityIsVerifiedAndArchivedForReinstall(t *testing.T) {
 	if err := writePrivateCreate(authorityPath, encoded); err != nil {
 		t.Fatal(err)
 	}
-	if err := (FileStateStore{Root: root}).SaveReceipt(removed); err != nil {
+	store := FileStateStore{Root: root}
+	if err := store.SaveReceipt(active); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err == nil {
+		t.Fatal("active receipt authorized root authority retirement")
+	}
+	recovery := removed
+	recovery.Mutations = append([]client.NodeReceiptMutation(nil), removed.Mutations...)
+	recovery.State = "recovery_required"
+	recovery.CurrentStage = "configure"
+	recovery.Residues = []client.NodeReceiptResidue{{Target: plan.Hostname, ReasonCode: "rollback_residue", SafeMessage: "manual recovery required"}}
+	recovery.Mutations[0].Status = "residue"
+	recovery.Digest, _ = client.NodeInstallReceiptDigest(recovery)
+	recovery.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(identity.PrivateKey, []byte("blazn-node-install-receipt-v1\n"+recovery.Digest)))
+	if err := store.SaveReceipt(recovery); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err == nil {
+		t.Fatal("recovery-required receipt authorized root authority retirement")
+	}
+	tampered := removed
+	tampered.Signature = strings.Repeat("A", 86)
+	if err := store.SaveReceipt(tampered); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err == nil {
+		t.Fatal("unverifiable receipt authorized root authority retirement")
+	}
+	if err := store.SaveReceipt(removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "install-wal.json"), []byte("recovery"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err == nil {
+		t.Fatal("root authority retirement accepted existing WAL")
+	}
+	if err := os.Remove(filepath.Join(root, "install-wal.json")); err != nil {
 		t.Fatal(err)
 	}
 	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err != nil {
 		t.Fatal(err)
+	}
+	if err := retireRemovedRootAuthority(authorityPath, encoded, authority); err != nil {
+		t.Fatalf("idempotent archived retirement failed: %v", err)
 	}
 	for _, path := range []string{authorityPath, filepath.Join(root, "install-receipt.json")} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -869,6 +910,32 @@ func TestRemovedRootAuthorityIsVerifiedAndArchivedForReinstall(t *testing.T) {
 		}
 	}
 	_ = active
+}
+
+func TestHistoricalAuthorityProfileDoesNotDependOnCurrentBinary(t *testing.T) {
+	authorization, _ := validBootstrapAuthorization(t)
+	plan := authorization.Expected.Plan
+	trusted := trustedBootstrapProfile(plan)
+	stored := TrustedProfileFile{SchemaVersion: 1, ID: trusted.ID, ControlPlaneOrigin: trusted.ControlPlaneOrigin, AllowedClusterOrigins: trusted.AllowedClusterOrigins, AllowedDownloadOrigins: trusted.AllowedDownloadOrigins, AllowedDownloadHostSuffixes: trusted.AllowedDownloadHostSuffixes, AllowedRegistryOrigins: trusted.AllowedRegistryOrigins, AllowedMutationRoots: trusted.AllowedMutationRoots, EmbeddedComponentSHA256: trusted.EmbeddedComponentSHA256, LimaBinding: trusted.LimaBinding}
+	profileBytes, _ := json.Marshal(stored)
+	sum := sha256.Sum256(profileBytes)
+	root := filepath.Join(testRoot(t), "profiles")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "trusted.json"), profileBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + hex.EncodeToString(sum[:]), ProfileOwnerUID: currentUID(), ControlPlaneOrigin: trusted.ControlPlaneOrigin, AuthorizedAt: plan.IssuedAt}
+	authority.Digest, _ = RootInstallAuthorityDigest(authority)
+	profile, digest, err := loadHistoricalAuthorityProfile(root, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuedAt, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+	if digest != authority.ProfileSHA256 || VerifyRootInstallAuthority(authority, RootInstallAuthorityTrust{Now: issuedAt.Add(time.Nanosecond), Profile: profile, ProfileSHA256: digest}) != nil {
+		t.Fatal("historical trust could not verify without a current binary")
+	}
 }
 
 func TestInstalledSnapVersionUsesExactRevisionColumn(t *testing.T) {
