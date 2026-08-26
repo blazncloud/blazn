@@ -8,7 +8,7 @@ CREATE TABLE run_messages (
   kind text NOT NULL CHECK (kind IN ('prompt', 'followup', 'steer')),
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'claimed', 'delivered', 'rejected')),
   parent_message_id uuid,
-  content text NOT NULL CHECK (char_length(content) BETWEEN 1 AND 16384 AND position(chr(0) IN content) = 0),
+  content text NOT NULL CHECK (char_length(content) BETWEEN 1 AND 16384),
   content_digest text NOT NULL CHECK (content_digest ~ '^sha256:[0-9a-f]{64}$'),
   created_by uuid NOT NULL REFERENCES users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
