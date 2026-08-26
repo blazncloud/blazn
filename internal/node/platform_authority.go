@@ -78,7 +78,7 @@ func (e NativeRootEngine) authorizeBootstrap(ctx context.Context, request RootRe
 	if e.Now != nil {
 		now = e.Now()
 	}
-	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: replayed.Plan, Identity: replayed.Identity, PlanSigningKey: bootstrap.PlanSigningKey, NodePublicKey: bootstrap.NodePublicKey, KubernetesBinding: bootstrap.KubernetesBinding, ProfileID: profile.ID, ProfileSHA256: profileSHA256, ControlPlaneOrigin: profile.ControlPlaneOrigin, AuthorizedAt: now.UTC().Format(time.RFC3339Nano)}
+	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: replayed.Plan, Identity: replayed.Identity, PlanSigningKey: bootstrap.PlanSigningKey, NodePublicKey: bootstrap.NodePublicKey, KubernetesBinding: bootstrap.KubernetesBinding, ProfileID: profile.ID, ProfileSHA256: profileSHA256, ProfileOwnerUID: e.trustedProfileOwner(), ControlPlaneOrigin: profile.ControlPlaneOrigin, AuthorizedAt: now.UTC().Format(time.RFC3339Nano)}
 	authority.Digest, err = RootInstallAuthorityDigest(authority)
 	if err != nil {
 		return err
@@ -499,7 +499,7 @@ func (e NativeRootEngine) stageHTTPSPackage(ctx context.Context, plan client.Nod
 	if err != nil {
 		return "", nil, err
 	}
-	profile, _, err := loadAuthorityProfile(profileRoot, binaryPath, authority, e.trustedProfileOwner())
+	profile, _, err := loadAuthorityProfile(profileRoot, binaryPath, authority)
 	if err != nil {
 		return "", nil, err
 	}
@@ -587,7 +587,7 @@ func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request Root
 	if request.Plan.Digest != authority.Plan.Digest || !sameJSON(request.Plan, authority.Plan) {
 		return errors.New("privileged request plan differs from root install authority")
 	}
-	profile, profileSHA256, err := loadAuthorityProfile(profileRoot, binaryPath, authority, e.trustedProfileOwner())
+	profile, profileSHA256, err := loadAuthorityProfile(profileRoot, binaryPath, authority)
 	if err != nil {
 		return err
 	}
@@ -644,7 +644,11 @@ func (e NativeRootEngine) authorityPaths() (string, string, string, error) {
 	return profileRoot, binaryPath, authorityPath, nil
 }
 
-func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority, profileOwner int64) (client.NodeTrustedInstallProfile, string, error) {
+func loadAuthorityProfile(root, binaryPath string, authority RootInstallAuthority) (client.NodeTrustedInstallProfile, string, error) {
+	profileOwner := authority.ProfileOwnerUID
+	if currentUID() != 0 && profileOwner == 0 {
+		profileOwner = currentUID()
+	}
 	if err := ensureTrustedProfileRoot(root, profileOwner); err != nil {
 		return client.NodeTrustedInstallProfile{}, "", err
 	}

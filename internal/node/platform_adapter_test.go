@@ -958,10 +958,12 @@ func TestRootBootstrapReplaysExchangeAndPersistsTokenFreeAuthority(t *testing.T)
 		t.Fatal("root authority persisted enrollment token material")
 	}
 	authority, err := DecodeRootInstallAuthority(encoded)
-	if err != nil || authority.PlanSigningKey != authorization.PlanSigningKey || !sameJSON(authority.KubernetesBinding, authorization.KubernetesBinding) {
+	if err != nil || authority.PlanSigningKey != authorization.PlanSigningKey || authority.ProfileOwnerUID != currentUID() || !sameJSON(authority.KubernetesBinding, authorization.KubernetesBinding) {
 		t.Fatalf("authority=%#v err=%v", authority, err)
 	}
-	if err := engine.AuthorizeRootRequest(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: RootVerify, Platform: "linux", Plan: plan}); err != nil {
+	serviceEngine := engine
+	serviceEngine.TrustedProfileOwner = authority.ProfileOwnerUID + 1
+	if err := serviceEngine.AuthorizeRootRequest(context.Background(), RootRequest{SchemaVersion: RootHelperSchema, Operation: RootVerify, Platform: "linux", Plan: plan}); err != nil {
 		t.Fatal(err)
 	}
 	liveResourceVersion = "99"

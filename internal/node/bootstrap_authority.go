@@ -101,6 +101,7 @@ type RootInstallAuthority struct {
 	JoinIntent         *RootJoinIntent               `json:"joinIntent"`
 	ProfileID          string                        `json:"profileId"`
 	ProfileSHA256      string                        `json:"profileSha256"`
+	ProfileOwnerUID    int64                         `json:"profileOwnerUid"`
 	ControlPlaneOrigin string                        `json:"controlPlaneOrigin"`
 	AuthorizedAt       string                        `json:"authorizedAt"`
 	Digest             string                        `json:"digest"`
@@ -121,7 +122,7 @@ type RootInstallAuthorityTrust struct {
 }
 
 func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
-	if authority.SchemaVersion != RootInstallAuthoritySchema || authority.ProfileID == "" || authority.Plan.InstallProfile != authority.ProfileID || !bootstrapDigestPattern.MatchString(authority.ProfileSHA256) || !validControlPlaneOrigin(authority.ControlPlaneOrigin) {
+	if authority.SchemaVersion != RootInstallAuthoritySchema || authority.ProfileID == "" || authority.Plan.InstallProfile != authority.ProfileID || !bootstrapDigestPattern.MatchString(authority.ProfileSHA256) || authority.ProfileOwnerUID < 0 || !validControlPlaneOrigin(authority.ControlPlaneOrigin) {
 		return errors.New("root install authority binding is invalid")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, authority.AuthorizedAt); err != nil {
@@ -176,10 +177,10 @@ func ValidateRootInstallAuthority(authority RootInstallAuthority) error {
 func DecodeRootInstallAuthority(encoded []byte) (RootInstallAuthority, error) {
 	var authority RootInstallAuthority
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 12 {
+	if json.Unmarshal(encoded, &fields) != nil || len(fields) != 13 {
 		return authority, errors.New("root install authority fields are invalid")
 	}
-	for _, name := range []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "joinIntent", "profileId", "profileSha256", "controlPlaneOrigin", "authorizedAt", "digest"} {
+	for _, name := range []string{"schemaVersion", "plan", "identity", "planSigningKey", "nodePublicKey", "kubernetesBinding", "joinIntent", "profileId", "profileSha256", "profileOwnerUid", "controlPlaneOrigin", "authorizedAt", "digest"} {
 		if fields[name] == nil {
 			return RootInstallAuthority{}, errors.New("root install authority fields are incomplete")
 		}

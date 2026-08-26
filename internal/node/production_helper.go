@@ -50,10 +50,6 @@ func RunProductionObservationHelper(ctx context.Context, output io.Writer) error
 	if currentUID() != 0 {
 		return errors.New("root observation helper requires UID 0")
 	}
-	profileOwner, err := productionTrustedProfileOwner()
-	if err != nil {
-		return err
-	}
 	paths, err := HostProductionNodePaths()
 	if err != nil {
 		return err
@@ -70,7 +66,7 @@ func RunProductionObservationHelper(ctx context.Context, output io.Writer) error
 	if err != nil {
 		return err
 	}
-	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, TrustedProfileOwner: profileOwner, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot, ObservationIdentity: observedIdentity}
+	engine := NativeRootEngine{Platform: platform, Commands: FixedCommandExecutor{}, AuthorityPath: paths.InstallAuthorityPath(), ProfileRoot: paths.ProfileRoot, CurrentBinaryPath: defaultRootBinaryPath, RootStateRoot: paths.RootStateRoot, ObservationIdentity: observedIdentity}
 	request := RootRequest{SchemaVersion: RootHelperSchema, Operation: RootObserve, Platform: platform, Plan: authority.Plan}
 	if err := engine.AuthorizeRootRequest(ctx, request); err != nil {
 		return err
