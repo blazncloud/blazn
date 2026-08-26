@@ -76,6 +76,8 @@ for forbidden in MIGRATION_DATABASE_URL_FILE BOOTSTRAP_DATABASE_URL_FILE BLAZN_I
 done
 printf '%s\n' "$runtime_api" | grep -F -- '- workspace_invitation_hmac_v1' >/dev/null
 printf '%s\n' "$runtime_api" | grep -F -- '- node_enrollment_hmac_v1' >/dev/null
+# This intentionally asserts the literal required Compose interpolation.
+# shellcheck disable=SC2016
 grep -F 'file: ${BLAZN_NODE_BROKER_SECRETS_ROOT:?set BLAZN_NODE_BROKER_SECRETS_ROOT}/enrollment-hmac-v1' "$compose" >/dev/null
 for privileged_service in api-migrate api-bootstrap database-role-compat database-role-hardening postgres object object-init object-client; do
   service_block=$(awk -v service="$privileged_service" '
