@@ -86,10 +86,14 @@ for (const id of profileIds) {
     const serviceGID = 950;
     const group = profile.mutations.find((mutation) => mutation.kind === "group" && mutation.target === "blazn-node");
     const user = profile.mutations.find((mutation) => mutation.kind === "user" && mutation.target === "blazn-node");
-    const ownedDirectories = profile.mutations.filter((mutation) => mutation.kind === "directory");
+    const directories = profile.mutations.filter((mutation) => mutation.kind === "directory");
+    const configBoundary = directories.find((mutation) => mutation.target === "/etc/blazn/node");
+    const serviceDirectories = directories.filter((mutation) => mutation.target !== "/etc/blazn/node");
     if (!group || group.uid !== 0 || group.gid !== serviceGID || group.desired?.name !== "blazn-node" || group.desired?.gid !== serviceGID || group.desired?.system !== true) fail(`${id}/${architecture} group allocation drifted`);
     if (!user || user.uid !== serviceUID || user.gid !== serviceGID || user.desired?.name !== "blazn-node" || user.desired?.group !== "blazn-node" || user.desired?.uid !== serviceUID || user.desired?.gid !== serviceGID || user.desired?.home !== "/var/lib/blazn" || user.desired?.shell !== "/usr/sbin/nologin" || user.desired?.system !== true) fail(`${id}/${architecture} user allocation drifted`);
-    if (!ownedDirectories.some((mutation) => mutation.target === "/var/lib/blazn") || ownedDirectories.some((mutation) => mutation.uid !== serviceUID || mutation.gid !== serviceGID)) fail(`${id}/${architecture} service directory ownership drifted`);
+    if (!serviceDirectories.some((mutation) => mutation.target === "/var/lib/blazn") || serviceDirectories.some((mutation) => mutation.uid !== serviceUID || mutation.gid !== serviceGID)) fail(`${id}/${architecture} service directory ownership drifted`);
+    if (id === "ubuntu-26.04-amd64-worker/v1" && (!configBoundary || configBoundary.mode !== 0o755 || configBoundary.uid !== 0 || configBoundary.gid !== 0)) fail(`${id}/${architecture} trusted profile traversal boundary drifted`);
+    if (id !== "ubuntu-26.04-amd64-worker/v1" && configBoundary) fail(`${id}/${architecture} unexpectedly mutates the trusted profile traversal boundary`);
   }
   const forbiddenKinds = mac ? ["systemd_unit", "package"] : ["launchd_unit"];
   if (profile.mutations.some((mutation) => forbiddenKinds.includes(mutation.kind))) fail(`${id} contains a cross-platform mutation`);
