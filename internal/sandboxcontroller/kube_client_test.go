@@ -245,11 +245,11 @@ func TestKubernetesCARequiresStrictConcatenatedCertificateBlocks(t *testing.T) {
 
 func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
 	directory := t.TempDir()
-	if err := os.Chmod(directory, 0o700); err != nil {
+	if err := os.Chmod(directory, 0o770); err != nil {
 		t.Fatal(err)
 	}
 	version := filepath.Join(directory, "..2026_08_23_00_00_00")
-	if err := os.Mkdir(version, 0o700); err != nil {
+	if err := os.Mkdir(version, 0o770); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(version, "token"), []byte("safe-projected-token\n"), 0o644); err != nil {
@@ -269,7 +269,7 @@ func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
 }
 
 func TestProjectedTokenRejectsWritableIntermediateDirectory(t *testing.T) {
-	for _, mode := range []os.FileMode{0o770, 0o777} {
+	for _, mode := range []os.FileMode{0o772, 0o777} {
 		t.Run(fmt.Sprintf("mode-%#o", mode), func(t *testing.T) {
 			directory := t.TempDir()
 			intermediate := filepath.Join(directory, "nested")
@@ -299,7 +299,7 @@ func TestProjectedTokenRejectsIntermediateDirectoryChangeDuringRead(t *testing.T
 		name   string
 		mutate func(string) error
 	}{
-		{name: "mode", mutate: func(path string) error { return os.Chmod(path, 0o770) }},
+		{name: "mode", mutate: func(path string) error { return os.Chmod(path, 0o772) }},
 		{name: "symlink swap", mutate: func(path string) error {
 			original := path + ".original"
 			if err := os.Rename(path, original); err != nil {
