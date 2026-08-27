@@ -31,7 +31,7 @@ workload_identities() { kubectl get workloads.kueue.x-k8s.io -A -o json | jq -S 
 namespace_absent() { discovered=$(kubectl get namespace "$1" --ignore-not-found -o name) || return 2; [ -z "$discovered" ]; }
 both_pod_namespaces_absent() { namespace_absent blazn-poc && namespace_absent blazn-poc-sandboxes; }
 live_config_sha() { kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}' | sha256sum | awk '{print $1}'; }
-live_release_revision() { helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision'; }
+live_release_revision() { helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision' || { printf 'could not determine the live deployed Kueue revision\n' >&2; return 1; }; }
 live_release_description() { helm -n kueue-system status kueue -o json | jq -er '.info.description'; }
 
 if [ ! -e "$transaction" ]; then
@@ -44,7 +44,9 @@ if [ ! -e "$transaction" ]; then
 fi
 if ! { [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' "$transaction")" = 0:700 ]; }; then printf 'Kueue transaction directory is unsafe\n' >&2; exit 1; fi
 sealed_chart=$transaction/upstream-kueue-0.14.3.tgz; sealed_config=$transaction/controller-manager.yaml; sealed_patch=$transaction/webhook-selector.patch
-for sealed_input in "$sealed_chart" "$sealed_config" "$sealed_patch"; do [ "$(stat -c '%u:%a:%h' "$sealed_input")" = 0:400:1 ] || { printf 'sealed Kueue input is unsafe\n' >&2; exit 1; }; done
+for sealed_input in "$sealed_chart" "$sealed_config" "$sealed_patch"; do
+  if [ -L "$sealed_input" ] || [ ! -f "$sealed_input" ] || [ "$(stat -c '%u:%a:%h' "$sealed_input")" != 0:400:1 ]; then printf 'sealed Kueue input is unsafe: %s\n' "$sealed_input" >&2; exit 1; fi
+done
 [ "$(sha256sum "$sealed_chart" | awk '{print $1}')" = "$LIVE_KUEUE_CHART_SHA256" ] || { printf 'Kueue chart checksum mismatch\n' >&2; exit 1; }
 [ "$(sha256sum "$sealed_config" | awk '{print $1}')" = "$LIVE_KUEUE_POD_CONFIG_SHA256" ] || { printf 'Kueue configuration checksum mismatch\n' >&2; exit 1; }
 [ "$(sha256sum "$sealed_patch" | awk '{print $1}')" = "$LIVE_KUEUE_WEBHOOK_PATCH_SHA256" ] || { printf 'Kueue chart patch checksum mismatch\n' >&2; exit 1; }
@@ -96,6 +98,15 @@ revalidate_baseline() {
   cmp "$transaction/prior-manifest.yaml" "$transaction/current-manifest.yaml" || { printf 'Kueue manifest changed before Kueue mutation\n' >&2; return 1; }
   [ "$(live_config_sha)" = "$BLAZN_EXPECTED_KUEUE_CONFIG_SHA256" ] || { printf 'Kueue config changed before Kueue mutation\n' >&2; return 1; }
 }
+reconcile_pending_rollback() {
+  pending_rollback=$(helm -n kueue-system history kueue -o json | jq -er '[.[] | select(.status=="pending-rollback")] | length')
+  [ "$pending_rollback" != 0 ] || return 0
+  pending_rollback_owned=$(helm -n kueue-system history kueue -o json | jq -er --arg description "Rollback to $prior_revision" '[.[] | select(.status=="pending-rollback" and .description==$description)] | length')
+  [ "$pending_rollback_owned" = "$pending_rollback" ] || { printf 'an unowned Kueue rollback is pending\n' >&2; exit 1; }
+  owned_revision=true
+  if helm -n kueue-system rollback kueue "$prior_revision" --wait --timeout 300s >/dev/null && verify_prior_state; then trap - EXIT HUP INT TERM; write_phase rollback-complete; printf 'interrupted Kueue rollback reconciled; use a new transaction\n' >&2; exit 1; fi
+  printf 'interrupted Kueue rollback could not be reconciled\n' >&2; exit 1
+}
 rollback_on_failure() {
   code=$?
   trap - EXIT
@@ -121,6 +132,7 @@ if [ "$phase" = upgrade-intent ]; then
   fi
   pending_any=$(helm -n kueue-system history kueue -o json | jq -er --argjson revision "$expected_upgrade_revision" '[.[] | select(.revision==$revision and .status=="pending-upgrade")] | length')
   [ "$pending_any" = 0 ] || { printf 'an unowned Kueue upgrade is pending\n' >&2; exit 1; }
+  reconcile_pending_rollback
   live_revision=$(live_release_revision)
   if [ "$live_revision" = "$prior_revision" ]; then
     revalidate_baseline || exit 1
@@ -138,6 +150,7 @@ if [ "$phase" = upgrade-intent ]; then
   write_phase upgraded; phase=upgraded; upgraded_verified=true
 fi
 if [ "$phase" = upgraded ] && [ "${upgraded_verified:-false}" != true ]; then
+  reconcile_pending_rollback
   if ! { [ "$(live_release_revision)" = "$expected_upgrade_revision" ] && [ "$(live_release_description)" = "$release_description" ]; }; then printf 'upgraded Kueue revision ownership changed\n' >&2; exit 1; fi
   owned_revision=true
 fi

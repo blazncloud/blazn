@@ -144,6 +144,14 @@ case "$*" in
   '-n kueue-system get manifest kueue') cat "$FAKE_STATE/manifest" ;;
   '-n kueue-system rollback kueue '*)
     target=$5
+    case "${FAKE_HELM_ROLLBACK_MODE:-success}" in
+      fail) printf 'fake helm rollback failure\n' >&2; exit 1 ;;
+      kill)
+        append_revision "$(next_revision)" pending-rollback "Rollback to $target"
+        exit 137 ;;
+      success) : ;;
+      *) printf 'unknown fake rollback mode\n' >&2; exit 2 ;;
+    esac
     revision=$(next_revision)
     supersede
     append_revision "$revision" deployed "Rollback to $target"
@@ -379,7 +387,6 @@ run_upgrade "$transaction" FAKE_WORKLOAD_DRIFT_AFTER_UPGRADE=1
 [ "$last_code" -ne 0 ]
 expect_message 'automatic Kueue rollback or verification failed'
 expect_phase "$transaction" upgraded
-if grep -Fq 'rollback-complete' "$transaction/phase"; then exit 1; fi
 
 # S11: a tampered derived chart package is rejected on resume.
 reset_state
@@ -406,5 +413,41 @@ run_upgrade "$transaction" FAKE_WEBHOOK_DRIFT=1
 [ "$last_code" -ne 0 ]
 expect_phase "$transaction" rollback-complete
 cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
+
+# S14: a failing automatic rollback never journals rollback-complete.
+reset_state
+new_transaction
+run_upgrade "$transaction" FAKE_WEBHOOK_DRIFT=1 FAKE_HELM_ROLLBACK_MODE=fail
+[ "$last_code" -ne 0 ]
+expect_message 'automatic Kueue rollback or verification failed'
+expect_phase "$transaction" upgraded
+
+# S15: a rollback killed mid-flight leaves pending-rollback, and a resume
+# reconciles the owned pending rollback into a verified rollback-complete.
+reset_state
+new_transaction
+run_upgrade "$transaction" FAKE_WEBHOOK_DRIFT=1 FAKE_HELM_ROLLBACK_MODE=kill
+[ "$last_code" -ne 0 ]
+expect_phase "$transaction" upgraded
+jq -e '[.[] | select(.status=="pending-rollback")] | length == 1' "$FAKE_STATE/revisions.json" >/dev/null
+run_upgrade "$transaction"
+[ "$last_code" -eq 1 ]
+expect_message 'interrupted Kueue rollback reconciled'
+expect_phase "$transaction" rollback-complete
+cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
+
+# S16: an unowned pending rollback blocks without any mutation.
+reset_state
+new_transaction
+run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=upgrade-intent BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+jq '. + [{"revision":46,"status":"pending-rollback","description":"Rollback to 12"}]' "$FAKE_STATE/revisions.json" >"$FAKE_STATE/revisions.json.tmp"
+mv "$FAKE_STATE/revisions.json.tmp" "$FAKE_STATE/revisions.json"
+: >"$FAKE_STATE/calls.log"
+run_upgrade "$transaction"
+[ "$last_code" -eq 1 ]
+expect_message 'an unowned Kueue rollback is pending'
+expect_phase "$transaction" upgrade-intent
+if grep -Eq 'helm (upgrade|-n kueue-system rollback)' "$FAKE_STATE/calls.log"; then printf 'unowned pending rollback must not be mutated\n' >&2; exit 1; fi
 
 printf 'Phase 4C Kueue Pod integration transaction proofs passed\n'
