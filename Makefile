@@ -93,7 +93,7 @@ test-infra:
 	shellcheck infra/node/scripts/*.sh infra/node/tests/*.sh
 	./infra/agent-sandbox/test-adapter-static.sh
 	./infra/agent-sandbox/phase5-controller/test-static.sh
-	shellcheck infra/agent-sandbox/*.sh infra/agent-sandbox/phase5-controller/*.sh
+	shellcheck infra/agent-sandbox/*.sh infra/agent-sandbox/phase4c/*.sh infra/agent-sandbox/phase5-controller/*.sh infra/agent-sandbox/phase5-boundary/*.sh
 
 test-sandbox-contract:
 	./scripts/test-sandbox-contract.sh
