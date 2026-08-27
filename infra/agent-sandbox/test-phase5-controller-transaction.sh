@@ -75,9 +75,11 @@ case "$*" in
   'get networkpolicy blazn-sandbox-controller-egress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '55555555-5555-4555-8555-555555555555' ;;
   'get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '66666666-6666-4666-8666-666666666666' ;;
   'get '*' --ignore-not-found -o name')
+    # Match on the exact "kind name" prefix so same-named objects of different
+    # kinds are never conflated (real kubectl scopes by kind).
     for object in deployment/blazn-sandbox-controller:deployment serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny; do
       ref=${object%%:*}; key=${object#*:}
-      case "$*" in *"${ref#*/} "*) present "$key" && printf '%s\n' "$ref" || :; ;; esac
+      case "$* " in "get ${ref%%/*} ${ref#*/} "*) present "$key" && printf '%s\n' "$ref" || :; ;; esac
     done ;;
   'proxy --unix-socket='*)
     socket=$(printf '%s' "$*" | sed 's/.*--unix-socket=\([^ ]*\).*/\1/')
@@ -235,6 +237,18 @@ run_tool teardown-controller.sh
 expect_phase rollback-complete
 # Only the four still-present objects were issued a precondition delete.
 [ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 4 ]
+
+# T6c: a resume that already removed only the same-named Role (its sibling
+# ServiceAccount/RoleBinding/Deployment still present) skips the Role by kind,
+# proving the absence pre-check is kind-scoped, not name-scoped.
+reset_state; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ]
+: >"$FAKE_STATE/deleted-role"; rm -f "$FAKE_STATE/scaled1"; : >"$FAKE_STATE/scaled0"
+run_tool teardown-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 5 ]
 
 # T7: a pre-existing controller Deployment blocks a fresh transaction.
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction
