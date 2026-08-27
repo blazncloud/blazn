@@ -149,6 +149,30 @@ func TestCanceledMaterializationCleansScratchAndRetries(t *testing.T) {
 	}
 }
 
+func TestGitMaterializerPreservesLinuxBackslashFilename(t *testing.T) {
+	name := `systemd/mnt-blazn\x2dpoc.mount`
+	repository, commit := testRepository(t, map[string]testSourceFile{name: {body: "unit\n", mode: 0o644}})
+	destination := t.TempDir()
+	source := Source{Name: "source", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/source", Commit: commit, Writable: true}
+	manifest := SourceManifest{SchemaVersion: SourceManifestVersion, Sources: []Source{source}}
+	canonical, err := MarshalSourceManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializer := GitMaterializer{Fetcher: fixedRepositoryFetcher{repository}, ResolveDestination: func(Source) string { return destination }}
+	receipt, err := materializer.Materialize(context.Background(), manifest, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, err := os.ReadFile(filepath.Join(destination, filepath.FromSlash(name))); err != nil || string(body) != "unit\n" {
+		t.Fatalf("materialized backslash filename body=%q err=%v", body, err)
+	}
+	adopted, err := materializer.Materialize(context.Background(), manifest, canonical)
+	if err != nil || adopted.Digest != receipt.Digest {
+		t.Fatalf("adopted=%#v err=%v", adopted, err)
+	}
+}
+
 func TestGitMaterializerRejectsSymlinkSubstituteAndLFSPointer(t *testing.T) {
 	for name, files := range map[string]map[string]testSourceFile{
 		"symlink":        {"escape": {body: "/etc/passwd", mode: os.ModeSymlink | 0o777}},

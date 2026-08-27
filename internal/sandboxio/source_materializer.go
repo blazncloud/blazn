@@ -315,7 +315,7 @@ func hasSourceMarker(entries []os.DirEntry) bool {
 
 func resetIncompleteSource(root *os.Root, entries []os.DirEntry) error {
 	for _, entry := range entries {
-		if entry.Name() == sourceMarkerName || entry.Name() == "." || entry.Name() == ".." || strings.ContainsAny(entry.Name(), "/\\\x00") {
+		if entry.Name() == sourceMarkerName || entry.Name() == "." || entry.Name() == ".." || strings.ContainsAny(entry.Name(), "/\x00") {
 			return errors.New("incomplete source contains an unsafe entry")
 		}
 		if err := root.RemoveAll(entry.Name()); err != nil {
@@ -449,7 +449,7 @@ func collectTreeFiles(ctx context.Context, repository *git.Repository, tree *obj
 		if budget.entries > budget.maxEntries {
 			return protocolError("source_tree_too_large", nil)
 		}
-		if entry.Name == "" || entry.Name == "." || entry.Name == ".." || strings.ContainsAny(entry.Name, "/\\\x00") {
+		if entry.Name == "" || entry.Name == "." || entry.Name == ".." || strings.ContainsAny(entry.Name, "/\x00") {
 			return protocolError("source_tree_unsafe", nil)
 		}
 		if prefix == "" && (entry.Name == sourceMarkerName || entry.Name == sourceScratchName) {
