@@ -311,6 +311,23 @@ func TestKubernetesBackendObservesAdmittedSourcePodBeforeReady(t *testing.T) {
 	}
 }
 
+func TestSourceBootstrapObservationAllowsOnlyResourceVersionDrift(t *testing.T) {
+	_, _, expected := backendFixture(t)
+	current := expected
+	current.Sandbox.ResourceVersion = "sandbox-ready-rv"
+	current.Pod.ResourceVersion = "pod-ready-rv"
+	current.Workload.ResourceVersion = "workload-ready-rv"
+	current.Workload.Digest = "sha256:" + strings.Repeat("b", 64)
+	current.Digest = "sha256:" + strings.Repeat("c", 64)
+	if !sameSourceBootstrapObservation(expected, current) {
+		t.Fatal("normal readiness resourceVersion drift changed the source bootstrap identity")
+	}
+	current.Pod.UID = "substituted-pod"
+	if sameSourceBootstrapObservation(expected, current) {
+		t.Fatal("Pod substitution was accepted as source bootstrap resourceVersion drift")
+	}
+}
+
 func TestKubernetesBackendCreatesNoIOItemThroughRealAdapter(t *testing.T) {
 	item, _, _ := backendFixture(t)
 	item.Artifacts = nil

@@ -200,6 +200,9 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 
 func sameSourceBootstrapObservation(expected, current sandboxcontrol.AdmissionObservation) bool {
 	expected.Sandbox.ResourceVersion, current.Sandbox.ResourceVersion = "", ""
+	expected.Pod.ResourceVersion, current.Pod.ResourceVersion = "", ""
+	expected.Workload.ResourceVersion, current.Workload.ResourceVersion = "", ""
+	expected.Workload.Digest, current.Workload.Digest = "", ""
 	expected.Digest, current.Digest = "", ""
 	return reflect.DeepEqual(expected, current)
 }

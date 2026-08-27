@@ -191,7 +191,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-9), [
+  assert.deepEqual(migrations.slice(-10), [
     "023_node_activation.sql",
     "024_development_controller.sql",
     "025_development_executor.sql",
@@ -201,7 +201,18 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "029_public_function_hardening_boundary.sql",
     "030_run_messages.sql",
     "031_run_message_digest_authority.sql",
+    "032_sandbox_source_readiness_identity.sql",
   ]);
+});
+
+test("source readiness binding preserves stable bootstrap identity across resourceVersion drift", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/032_sandbox_source_readiness_identity.sql"), "utf8");
+  assert.match(sql, /bootstrap#>>'\{pod,uid\}'<>p_pod_uid/);
+  assert.match(sql, /bootstrap#>>'\{workload,uid\}'<>p_workload_uid/);
+  assert.doesNotMatch(sql, /bootstrap#>>'\{pod,resourceVersion\}'/);
+  assert.doesNotMatch(sql, /bootstrap#>>'\{workload,resourceVersion\}'/);
+  assert.doesNotMatch(sql, /bootstrap#>>'\{workload,digest\}'/);
 });
 
 test("controller privilege hardening closes PUBLIC functions and preserves exact pgcrypto authority", async () => {

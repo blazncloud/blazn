@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontrol"
 	"github.com/blazncloud/blazn/internal/sandboxio"
@@ -169,11 +170,24 @@ func (n *KubernetesSourceNetwork) Restrict(ctx context.Context, item WorkItem, o
 	} else if status != http.StatusNotFound {
 		return fmt.Errorf("bootstrap NetworkPolicy lookup returned HTTP %d", status)
 	}
-	_, status, err = n.get(ctx, bootstrapPolicyName(item))
-	if err != nil || status != http.StatusNotFound {
-		return errors.Join(err, errors.New("bootstrap NetworkPolicy still exists"))
+	for attempt := 0; attempt < 100; attempt++ {
+		_, status, err = n.get(ctx, bootstrapPolicyName(item))
+		if err != nil {
+			return err
+		}
+		if status == http.StatusNotFound {
+			return n.verifyOwnedSet(ctx, item, []string{runtimePolicyName(item)})
+		}
+		if status != http.StatusOK {
+			return fmt.Errorf("bootstrap NetworkPolicy lookup returned HTTP %d", status)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
-	return n.verifyOwnedSet(ctx, item, []string{runtimePolicyName(item)})
+	return errors.New("bootstrap NetworkPolicy still exists")
 }
 
 func (n *KubernetesSourceNetwork) itemSourceCIDRs(item WorkItem) ([]string, error) {
