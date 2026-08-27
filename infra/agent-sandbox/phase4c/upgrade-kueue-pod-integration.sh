@@ -34,6 +34,7 @@ both_pod_namespaces_absent() { namespace_absent blazn-poc && namespace_absent bl
 live_config_sha() { kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}' | sha256sum | awk '{print $1}'; }
 live_release_revision() { helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision' || { printf 'could not determine the live deployed Kueue revision\n' >&2; return 1; }; }
 live_release_description() { helm -n kueue-system status kueue -o json | jq -er '.info.description'; }
+live_controller_image() { kubectl -n kueue-system get deployment kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}'; }
 
 if [ ! -e "$transaction" ]; then
   if ! { [ -f "$chart" ] && [ ! -L "$chart" ] && [ "$(stat -c '%h' "$chart")" = 1 ]; }; then printf 'Kueue chart file is unsafe\n' >&2; exit 1; fi
@@ -64,6 +65,8 @@ if [ "$phase" = sealed ]; then
   workload_identities >"$transaction/prior-workloads.json"; chmod 0400 "$transaction/prior-workloads.json"
   [ "$(jq 'length' "$transaction/prior-workloads.json")" = "$BLAZN_EXPECTED_WORKLOADS" ] || { printf 'Workload baseline changed\n' >&2; exit 1; }
   printf '%s\n' "$current_revision" >"$transaction/prior-revision"; chmod 0400 "$transaction/prior-revision"
+  prior_image=$(live_controller_image); [ -n "$prior_image" ] || { printf 'could not record the prior Kueue controller image\n' >&2; exit 1; }
+  printf '%s\n' "$prior_image" >"$transaction/prior-image"; chmod 0400 "$transaction/prior-image"
   [ ! -L "$transaction/chart-source" ] || { printf 'Kueue chart-source location is unsafe\n' >&2; exit 1; }
   if [ -d "$transaction/chart-source" ]; then find "$transaction/chart-source" -mindepth 1 -xdev -delete; else mkdir -m 0700 "$transaction/chart-source"; fi
   chmod 0700 "$transaction/chart-source"
@@ -77,7 +80,7 @@ if [ "$phase" = sealed ]; then
 fi
 
 derived_chart=$transaction/kueue-0.14.3.tgz
-for derived_artifact in "$derived_chart" "$transaction/derived-chart.sha256" "$transaction/prior-manifest.yaml" "$transaction/prior-workloads.json" "$transaction/prior-revision"; do
+for derived_artifact in "$derived_chart" "$transaction/derived-chart.sha256" "$transaction/prior-manifest.yaml" "$transaction/prior-workloads.json" "$transaction/prior-revision" "$transaction/prior-image"; do
   if [ -L "$derived_artifact" ] || [ ! -f "$derived_artifact" ] || [ "$(stat -c '%u:%a:%h' "$derived_artifact")" != 0:400:1 ]; then printf 'derived Kueue transaction artifact is unsafe: %s\n' "$derived_artifact" >&2; exit 1; fi
 done
 [ "$(sha256sum "$derived_chart" | awk '{print $1}')" = "$(cat "$transaction/derived-chart.sha256")" ] || { printf 'derived Kueue chart changed since preparation\n' >&2; exit 1; }
@@ -89,6 +92,7 @@ verify_prior_state() {
   [ "$(live_config_sha)" = "$BLAZN_EXPECTED_KUEUE_CONFIG_SHA256" ] || return 1
   workload_identities >"$transaction/verified-rollback-workloads.json"
   cmp "$transaction/prior-workloads.json" "$transaction/verified-rollback-workloads.json" || return 1
+  [ "$(live_controller_image)" = "$(cat "$transaction/prior-image")" ] || return 1
   both_pod_namespaces_absent
 }
 revalidate_baseline() {
@@ -157,7 +161,7 @@ if [ "$phase" = upgraded ] && [ "${upgraded_verified:-false}" != true ]; then
 fi
 kubectl wait deployment/kueue-controller-manager -n kueue-system --for=condition=Available --timeout=180s >/dev/null
 [ "$(live_config_sha)" = "$LIVE_KUEUE_DEPLOYED_CONFIG_SHA256" ] || { printf 'deployed Kueue manager config is not the reviewed rendered bytes\n' >&2; exit 1; }
-[ "$(kubectl -n kueue-system get deployment kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$LIVE_KUEUE_CONTROLLER_IMAGE" ] || { printf 'deployed Kueue controller image is not the reviewed digest-pinned reference\n' >&2; exit 1; }
+[ "$(live_controller_image)" = "$LIVE_KUEUE_CONTROLLER_IMAGE" ] || { printf 'deployed Kueue controller image is not the reviewed digest-pinned reference\n' >&2; exit 1; }
 configured=$(kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}')
 printf '%s\n' "$configured" | grep -Eq -- '^[[:space:]]*- pod$'
 printf '%s\n' "$configured" | grep -Eq -- '^[[:space:]]*- blazn-poc$'

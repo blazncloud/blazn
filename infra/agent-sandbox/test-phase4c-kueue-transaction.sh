@@ -168,7 +168,7 @@ case "$*" in
     cp "$FAKE_STATE/baseline-manifest" "$FAKE_STATE/manifest"
     cp "$FAKE_STATE/baseline-config" "$FAKE_STATE/config"
     cp "$FAKE_STATE/baseline-webhooks.json" "$FAKE_STATE/webhooks.json"
-    cp "$FAKE_STATE/baseline-deployment-image" "$FAKE_STATE/deployment-image" ;;
+    [ "${FAKE_ROLLBACK_IMAGE_DRIFT:-0}" = 1 ] || cp "$FAKE_STATE/baseline-deployment-image" "$FAKE_STATE/deployment-image" ;;
   'upgrade kueue '*)
     description=''
     config_file=''
@@ -295,6 +295,7 @@ run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=upgraded BLAZN_PHASE4C_DISPO
 [ "$last_code" -eq 86 ]
 expect_phase "$transaction" rollback-complete
 cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
+cmp -s "$FAKE_STATE/deployment-image" "$FAKE_STATE/baseline-deployment-image" || { printf 'rollback must restore the controller image\n' >&2; exit 1; }
 grep -Fq 'helm -n kueue-system rollback kueue 45' "$FAKE_STATE/calls.log"
 run_upgrade "$transaction"
 [ "$last_code" -eq 1 ]
@@ -321,6 +322,7 @@ run_upgrade "$transaction"
 expect_message 'owned pending Kueue upgrade rolled back'
 expect_phase "$transaction" rollback-complete
 cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
+cmp -s "$FAKE_STATE/deployment-image" "$FAKE_STATE/baseline-deployment-image"
 
 # S4: crash after Helm applied but before the upgraded journal entry; resume
 # adopts the owned deployed revision and completes.
@@ -428,6 +430,16 @@ run_upgrade "$transaction" FAKE_WEBHOOK_DRIFT=1
 [ "$last_code" -ne 0 ]
 expect_phase "$transaction" rollback-complete
 cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
+cmp -s "$FAKE_STATE/deployment-image" "$FAKE_STATE/baseline-deployment-image"
+
+# S13b: a rollback that fails to restore the controller image is never
+# journaled rollback-complete.
+reset_state
+new_transaction
+run_upgrade "$transaction" FAKE_WEBHOOK_DRIFT=1 FAKE_ROLLBACK_IMAGE_DRIFT=1
+[ "$last_code" -ne 0 ]
+expect_message 'automatic Kueue rollback or verification failed'
+expect_phase "$transaction" upgraded
 
 # S14: a failing automatic rollback never journals rollback-complete.
 reset_state
@@ -450,6 +462,7 @@ run_upgrade "$transaction"
 expect_message 'interrupted Kueue rollback reconciled'
 expect_phase "$transaction" rollback-complete
 cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
+cmp -s "$FAKE_STATE/deployment-image" "$FAKE_STATE/baseline-deployment-image"
 
 # S16: an unowned pending rollback blocks without any mutation.
 reset_state
