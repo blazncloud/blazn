@@ -34,6 +34,14 @@ func (f *fakeDevelopmentCommands) Status(_ context.Context, id string) (developm
 }
 
 func TestDevelopmentCommandsMatchFrozenSurface(t *testing.T) {
+	fixture, err := os.ReadFile("../../examples/coding-agent/blazn.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(t.TempDir(), "blazn.yaml")
+	if err := os.WriteFile(manifest, fixture, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	const id = "30000000-0000-4000-8000-000000000001"
 	build, err := developmentpkg.DecodeBuild([]byte(`{"schemaVersion":"blazn.dev/build-status/v1alpha1","id":"` + id + `","status":"queued","version":1,"receiptDigest":null}`))
 	if err != nil {
@@ -46,7 +54,7 @@ func TestDevelopmentCommandsMatchFrozenSurface(t *testing.T) {
 	for _, test := range []struct {
 		args []string
 		call string
-	}{{[]string{"dev", "register", "-f", "../../examples/coding-agent/blazn.yaml", "--request-id", "register-request-1"}, "register:20000000-0000-4000-8000-000000000006:0:register-request-1"}, {[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:" + strings.Repeat("1", 40) + ":request-1"}, {[]string{"dev", "status", id}, "status:" + id}} {
+	}{{[]string{"dev", "register", "-f", manifest, "--request-id", "register-request-1"}, "register:20000000-0000-4000-8000-000000000006:0:register-request-1"}, {[]string{"dev", "build", "--ref", strings.Repeat("1", 40), "--request-id", "request-1"}, "build:" + strings.Repeat("1", 40) + ":request-1"}, {[]string{"dev", "status", id}, "status:" + id}} {
 		stdout.Reset()
 		stderr.Reset()
 		before := len(fake.calls)

@@ -245,6 +245,9 @@ func TestKubernetesCARequiresStrictConcatenatedCertificateBlocks(t *testing.T) {
 
 func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
 	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	version := filepath.Join(directory, "..2026_08_23_00_00_00")
 	if err := os.Mkdir(version, 0o700); err != nil {
 		t.Fatal(err)
@@ -376,6 +379,9 @@ func TestProjectedTokenRejectsInodeOrModeChangeDuringRead(t *testing.T) {
 func tlsKubernetesFixture(t *testing.T, server *httptest.Server) (KubernetesConfig, func(string)) {
 	t.Helper()
 	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	caFile := filepath.Join(directory, "kubernetes-ca.crt")
 	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	if err := os.WriteFile(caFile, certificate, 0o600); err != nil {
