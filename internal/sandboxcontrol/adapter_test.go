@@ -780,6 +780,8 @@ func TestObserveAdmissionAcceptsOnlyExactAPIMaterializedPodDefaults(t *testing.T
 		spec["priority"] = float64(0)
 		spec["serviceAccount"] = ServiceAccountName
 		spec["nodeName"] = "worker-a.example"
+		spec["imagePullSecrets"] = []any{map[string]any{"name": registryPullSecretName}}
+		spec["nodeSelector"].(map[string]any)[agentWorkloadLabel] = "true"
 		spec["tolerations"] = []any{
 			map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
 			map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
@@ -1270,6 +1272,12 @@ func materialPodSpecMutations() map[string]func(map[string]any) {
 		"host network": func(spec map[string]any) { spec["hostNetwork"] = true },
 		"host PID":     func(spec map[string]any) { spec["hostPID"] = true },
 		"DNS policy":   func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
+		"foreign image pull secret": func(spec map[string]any) {
+			spec["imagePullSecrets"] = []any{map[string]any{"name": "foreign-secret"}}
+		},
+		"substituted workload flavor": func(spec map[string]any) {
+			spec["nodeSelector"].(map[string]any)[agentWorkloadLabel] = "false"
+		},
 		"container environment": func(spec map[string]any) {
 			container := spec["containers"].([]any)[0].(map[string]any)
 			container["env"] = []any{map[string]any{"name": "INJECTED", "value": "true"}}

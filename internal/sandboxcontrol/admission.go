@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	podAPIVersion = "v1"
-	podKind       = "Pod"
-	workloadKind  = "Workload"
+	podAPIVersion          = "v1"
+	podKind                = "Pod"
+	workloadKind           = "Workload"
+	registryPullSecretName = "blazn-registry-pull"
+	agentWorkloadLabel     = "frontro.io/agent-workloads"
 )
 
 // ObjectIdentity freezes the apiserver identity of one ownership-chain hop.
@@ -341,6 +343,25 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 	}
 	if !removeExactDefault(observed, "tolerations", defaultTolerations) {
 		return false
+	}
+	if pullSecrets, exists := observed["imagePullSecrets"]; exists {
+		expectedPullSecrets := []any{map[string]any{"name": registryPullSecretName}}
+		if !reflect.DeepEqual(pullSecrets, expectedPullSecrets) {
+			return false
+		}
+		delete(observed, "imagePullSecrets")
+	}
+	if selectors, exists := observed["nodeSelector"]; exists {
+		selectorMap, ok := selectors.(map[string]any)
+		if !ok {
+			return false
+		}
+		if flavor, injected := selectorMap[agentWorkloadLabel]; injected {
+			if flavor != "true" {
+				return false
+			}
+			delete(selectorMap, agentWorkloadLabel)
+		}
 	}
 	for _, field := range []string{"containers", "initContainers"} {
 		containers, exists := observed[field]
