@@ -59,5 +59,6 @@ tar -C "$repo_root" -cf - services/control-api packages/contracts | docker run -
     npm run build
     printf "%s\n" "$MIGRATION_DATABASE_URL" >/tmp/migration-database-url
     MIGRATION_DATABASE_URL_FILE=/tmp/migration-database-url node dist/migrate.js
+    node --input-type=module -e '\''import pg from "pg";const client=new pg.Client({connectionString:process.env.BLAZN_RUN_TEST_ADMIN_DATABASE_URL});await client.connect();await client.query("GRANT EXECUTE ON FUNCTION public.digest(bytea,text), public.digest(text,text) TO blazn_migration");await client.query("REVOKE EXECUTE ON FUNCTION public.digest(bytea,text), public.digest(text,text) FROM PUBLIC, blazn_runtime");await client.end();'\''
     node --test dist/run-store.integration.test.js dist/run-message-store.integration.test.js
   '
