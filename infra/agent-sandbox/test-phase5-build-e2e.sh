@@ -62,6 +62,10 @@ publish() {
     "$ROOT/phase5-build/publish-images.sh" "$tmp/out"
 }
 publish
+for remote_tag in "$commit" "upload-$commit"; do
+  remote_digest=$(curl -fsI http://127.0.0.1:5001/v2/blazn/sandbox-controller/manifests/"$remote_tag" -H 'Accept: application/vnd.oci.image.index.v1+json' | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest" {print $2}')
+  [ "$remote_digest" = "$controller_index" ] || { printf 'tag %s references %s, not the reviewed index\n' "$remote_tag" "$remote_digest" >&2; exit 1; }
+done
 curl -fs http://127.0.0.1:5001/v2/blazn/sandbox-controller/manifests/"$commit" -H 'Accept: application/vnd.oci.image.index.v1+json' -o "$tmp/remote-index.json"
 python3 - "$tmp/remote-index.json" <<'PY'
 import json, sys

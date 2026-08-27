@@ -54,9 +54,23 @@ build_one() {
     "$source_dir" >"$output_dir/$build_name-build.log" 2>&1 || { tail -30 "$output_dir/$build_name-build.log" >&2; printf '%s build failed\n' "$build_name" >&2; exit 1; }
   mkdir "$output_dir/$build_name.oci"
   tar -xf "$output_dir/$build_name.oci.tar" -C "$output_dir/$build_name.oci"
-  "$output_dir/tools/trivy" image --input "$output_dir/$build_name.oci" \
-    --severity CRITICAL --exit-code 1 --no-progress --quiet \
-    --format json --output "$output_dir/$build_name-scan.json" || { printf '%s has CRITICAL findings; see %s-scan.json\n' "$build_name" "$build_name" >&2; exit 1; }
+  # Trivy resolves one platform from a multi-arch layout, so scan each
+  # architecture through its own single-platform view of the shared blobs.
+  for scan_arch in amd64 arm64; do
+    python3 - "$output_dir/$build_name.oci" "$output_dir/$build_name-$scan_arch.oci" "$scan_arch" <<'PY'
+import json, os, shutil, sys
+layout, view, arch = sys.argv[1:4]
+index = json.load(open(os.path.join(layout, "index.json")))
+algo, hexdigest = index["manifests"][0]["digest"].split(":")
+child_index = json.load(open(os.path.join(layout, "blobs", algo, hexdigest)))
+child = next(m for m in child_index["manifests"] if m.get("platform", {}).get("architecture") == arch)
+shutil.copytree(layout, view)
+json.dump({"schemaVersion": 2, "manifests": [child]}, open(os.path.join(view, "index.json"), "w"))
+PY
+    "$output_dir/tools/trivy" image --input "$output_dir/$build_name-$scan_arch.oci" \
+      --severity CRITICAL --exit-code 1 --no-progress --quiet \
+      --format json --output "$output_dir/$build_name-$scan_arch-scan.json" || { printf '%s linux/%s has CRITICAL findings; see %s-%s-scan.json\n' "$build_name" "$scan_arch" "$build_name" "$scan_arch" >&2; exit 1; }
+  done
 }
 build_one sandbox-controller Dockerfile.sandbox-controller
 build_one sandbox-io Dockerfile.sandbox-io

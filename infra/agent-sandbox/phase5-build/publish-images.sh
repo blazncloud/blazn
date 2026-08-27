@@ -80,6 +80,11 @@ publish_one() {
   DOCKER_CONFIG=$docker_config "$work/crane" tag --insecure "$publish_repository@$publish_index" "$BLAZN_EXPECTED_SOURCE_COMMIT" >/dev/null 2>&1 || { printf '%s reviewed index is not present in the registry after upload\n' "$publish_name" >&2; exit 1; }
   pushed=$(DOCKER_CONFIG=$docker_config "$work/crane" digest --insecure "$publish_repository:$BLAZN_EXPECTED_SOURCE_COMMIT")
   [ "$pushed" = "$publish_index" ] || { printf '%s pushed digest %s does not match the reviewed index\n' "$publish_name" "$pushed" >&2; exit 1; }
+  # Repoint the scratch upload tag at the reviewed index so no tag is ever
+  # left referencing crane's unreviewed wrapper.
+  DOCKER_CONFIG=$docker_config "$work/crane" tag --insecure "$publish_repository@$publish_index" "upload-$BLAZN_EXPECTED_SOURCE_COMMIT" >/dev/null 2>&1
+  upload_digest=$(DOCKER_CONFIG=$docker_config "$work/crane" digest --insecure "$publish_repository:upload-$BLAZN_EXPECTED_SOURCE_COMMIT")
+  [ "$upload_digest" = "$publish_index" ] || { printf '%s upload tag still references unreviewed content\n' "$publish_name" >&2; exit 1; }
   DOCKER_CONFIG=$docker_config "$work/crane" manifest --insecure "$publish_repository@$publish_index" >"$work/$publish_name-remote-manifest.json"
   python3 - "$work/$publish_name-remote-manifest.json" <<'PY'
 import json, sys
