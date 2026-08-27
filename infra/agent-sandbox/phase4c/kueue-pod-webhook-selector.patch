@@ -22,3 +22,14 @@
        {{- else }}
        matchExpressions:
          - key: kubernetes.io/metadata.name
+--- a/kueue/templates/manager/manager.yaml
++++ b/kueue/templates/manager/manager.yaml
+@@ -31,7 +31,7 @@
+         {{- include "kueue.featureGates" . | indent 8 }}
+         command:
+         - /manager
+-        image: "{{ .Values.controllerManager.manager.image.repository }}:{{ .Values.controllerManager.manager.image.tag | default .Chart.AppVersion }}"
++        image: "{{ .Values.controllerManager.manager.image.repository }}:{{ .Values.controllerManager.manager.image.tag | default .Chart.AppVersion }}@sha256:2c5b782a2a3954ef72576db22d6bdc752d3604d39f3be734662ab7acfa2f61dc"
+         imagePullPolicy: {{ .Values.controllerManager.manager.image.pullPolicy }}
+         livenessProbe:
+           httpGet:
