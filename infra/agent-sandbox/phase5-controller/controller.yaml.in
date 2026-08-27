@@ -301,7 +301,7 @@ spec:
   ingress:
   - from:
     - ipBlock:
-        cidr: BLAZN_BEN1_POSTGRES_CIDR
+        cidr: BLAZN_ACCESS_SOURCE_CIDR
     ports:
     - protocol: TCP
       port: 8080
