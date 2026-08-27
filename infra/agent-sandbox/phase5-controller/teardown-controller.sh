@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+# UID-fenced teardown of a Phase 5 controller deployment transaction. Scales
+# the controller to zero, then deletes only the recorded controller
+# identities (never the shared namespaces or Secrets) and proves absence.
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck disable=SC1091
+. "$ROOT/../phase4c/lib.sh"
+[ "$(id -u)" -eq 0 ] || { printf 'the controller teardown must run as root\n' >&2; exit 1; }
+[ "$#" -eq 0 ] || { printf 'usage: %s\n' "$0" >&2; exit 64; }
+phase4c_require_mutation_authority
+: "${BLAZN_CONTROLLER_TRANSACTION_DIR:?set the controller transaction directory to tear down}"
+: "${BLAZN_PHASE5_TRANSACTION_ID:?set the transaction UUID}"
+command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 1; }
+transaction=$BLAZN_CONTROLLER_TRANSACTION_DIR
+case "$transaction" in /var/lib/blazn/phase5/controller-*) ;; *) printf 'controller transaction path is outside its reviewed root\n' >&2; exit 1 ;; esac
+transaction_name=${transaction#/var/lib/blazn/phase5/}
+case "$transaction_name" in */*|*..*|'') printf 'controller transaction path must be one clean segment under its reviewed root\n' >&2; exit 1 ;; esac
+if ! { [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' "$transaction")" = 0:700 ]; }; then printf 'controller transaction directory is unsafe\n' >&2; exit 1; fi
+
+write_phase() { phase4c_write_phase "$transaction" "$1"; }
+absent() { discovered=$(kubectl get "$1" "$2" -n "$3" --ignore-not-found -o name) || return 2; [ -z "$discovered" ]; }
+phase=$(cat "$transaction/phase")
+case "$phase" in
+  sealed|apply-intent) write_phase rollback-complete; printf 'controller transaction rolled back before any apply\n'; exit 0 ;;
+  applied|scaled|complete|rollback-intent) ;;
+  rollback-complete) printf 'controller transaction already rolled back\n'; exit 0 ;;
+  *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;
+esac
+uids=$transaction/owned-uids.json
+if [ ! -f "$uids" ] && [ "$phase" != applied ] && [ "$phase" != scaled ]; then printf 'owned controller identities are missing\n' >&2; exit 1; fi
+
+# Scale to zero first so no controller Pod is reconciling while its RBAC and
+# egress are removed.
+if ! absent deployment blazn-sandbox-controller blazn-poc-system; then
+  kubectl scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0 >/dev/null
+  attempt=0
+  until [ "$(kubectl get pods -n blazn-poc-system -l app.kubernetes.io/name=blazn-sandbox-controller --no-headers 2>/dev/null | grep -c . || :)" = 0 ]; do
+    attempt=$((attempt + 1)); [ "$attempt" -le 30 ] || { printf 'controller Pods did not drain\n' >&2; exit 1; }; sleep 2
+  done
+fi
+write_phase rollback-intent
+
+phase4c_start_uid_proxy "$transaction"
+trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+delete_owned() {
+  owned_key=$1; owned_path=$2
+  if [ ! -f "$uids" ]; then return 0; fi
+  owned_uid=$(jq -er --arg key "$owned_key" '.[$key] // empty' "$uids") || return 0
+  [ -n "$owned_uid" ] || return 0
+  phase4c_delete_uid "$owned_path" "$owned_uid" Background
+}
+delete_owned deployment/blazn-sandbox-controller /apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller
+delete_owned networkpolicy/blazn-sandbox-controller-egress /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress
+delete_owned rolebinding/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller
+delete_owned role/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller
+delete_owned serviceaccount/blazn-sandbox-controller /api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller
+# The default-deny NetworkPolicy carries no recorded UID (it is unnamed in the
+# capture set); remove it by name only when the egress policy it pairs with is
+# already gone, so a partial state never strands the deny alone.
+if kubectl get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system --ignore-not-found -o name >/dev/null 2>&1; then
+  kubectl delete networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system --ignore-not-found >/dev/null
+fi
+phase4c_stop_uid_proxy
+trap - EXIT HUP INT TERM
+
+for gone in deployment/blazn-sandbox-controller:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system; do
+  gone_ref=${gone%%:*}; gone_ns=${gone#*:}
+  gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
+  attempt=0
+  until absent "$gone_kind" "$gone_name" "$gone_ns"; do
+    attempt=$((attempt + 1)); [ "$attempt" -le 60 ] || { printf '%s was not removed\n' "$gone" >&2; exit 1; }; sleep 2
+  done
+done
+write_phase rollback-complete
+printf 'Phase 5 sandbox controller torn down to zero residue\n'

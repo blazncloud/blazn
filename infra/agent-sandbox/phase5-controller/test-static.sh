@@ -243,4 +243,13 @@ if grep -E '(^|[[:space:]])(apt|apt-get|apk|dnf|yum|curl|wget)([[:space:]]|$)' "
   exit 1
 fi
 
+# The deployment transaction scripts must parse and stay fail-closed.
+for deploy_script in "$ROOT/install-controller.sh" "$ROOT/teardown-controller.sh" "$ROOT/provision-controller-secrets.sh"; do
+  sh -n "$deploy_script"
+done
+grep -Fq 'replicas: 0' "$ROOT/install-controller.sh"
+grep -Fq 'blazn_sandbox_controller' "$ROOT/provision-controller-secrets.sh"
+grep -Fq '/var/lib/blazn/phase5/controller-' "$ROOT/install-controller.sh"
+grep -Fq '/var/lib/blazn/phase5/controller-' "$ROOT/teardown-controller.sh"
+
 printf 'Phase 5 controller deployment static audit passed\n'
