@@ -709,6 +709,11 @@ func renderPodSpec(request CreateRequest) kubePodSpec {
 			[]string{sandboxio.HelperBinary, "wait-artifact"}, "Always",
 			[]kubeVolumeMount{{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}}))
 	}
+	// A restartable, tokenless helper provides the only file-transfer boundary.
+	// It sees exactly the same workspace volumes and read-only flags as main;
+	// the public access gateway can exec only the reviewed helper operations.
+	initContainers = append(initContainers, helperContainer(sandboxio.AccessContainer, request.HelperImage,
+		[]string{sandboxio.HelperBinary, "wait-access"}, "Always", append([]kubeVolumeMount(nil), mainMounts...)))
 	return kubePodSpec{
 		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
 		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},

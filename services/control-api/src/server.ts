@@ -30,6 +30,7 @@ import { DevelopmentHttpRouter } from "./development-http.js";
 import { DevelopmentService } from "./development-service.js";
 import { PgDevelopmentStore } from "./development-store.js";
 import { SandboxHttpRouter } from "./sandbox-http.js";
+import { SandboxAccessProxy } from "./sandbox-access-proxy.js";
 import { SandboxService } from "./sandbox-service.js";
 import { PgSandboxStore } from "./sandbox-store.js";
 import { routeSandboxRequest } from "./sandbox-server-routing.js";
@@ -49,6 +50,7 @@ const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStor
 const runRouter = new RunHttpRouter(new RunService(new PgRunStore(database)));
 const developmentRouter = new DevelopmentHttpRouter(new DevelopmentService(new PgDevelopmentStore(database)));
 const sandboxRouter = new SandboxHttpRouter(new SandboxService(new PgSandboxStore(database)));
+const sandboxAccessProxy = SandboxAccessProxy.fromEnvironment();
 const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
 const brokerMode = process.env.BLAZN_NODE_BROKER_LOOPBACK ?? "disabled";
@@ -466,6 +468,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return { userId: session.userId, email: session.email, displayName: session.displayName };
     });
   }
+  if (sandboxAccessProxy?.matches(url.pathname)) return sandboxAccessProxy.handle(request,response,url);
   if (await routeSandboxRequest(sandboxRouter, request, response, url, () => authenticate(request))) return;
   if (developmentRouter.matches(url.pathname)) {
     const session = await authenticate(request);

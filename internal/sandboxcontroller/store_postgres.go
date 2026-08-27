@@ -26,6 +26,7 @@ const (
 	retrySQL                  = "SELECT public.sandbox_controller_retry($1,$2,$3,$4,$5,$6,$7)"
 	completeSQL               = "SELECT public.sandbox_controller_complete_v5($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid[],$14::text[],$15,$16,$17)"
 	expirySQL                 = "SELECT count(*) FROM public.sandbox_controller_enqueue_expired($1)"
+	consumeAccessGrantSQL     = "SELECT workspace_id,sandbox_id,requested_by,backend_uid,backend_resource_version FROM public.sandbox_controller_consume_access_grant_v1($1,$2,$3)"
 )
 
 var sha256Pattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -52,6 +53,23 @@ func (e databaseExecutor) Close() error { return e.database.Close() }
 // connection must authenticate as blazn_sandbox_controller; every mutation is
 // performed through the fenced SECURITY DEFINER procedures.
 type PgStore struct{ executor pgExecutor }
+
+type AccessGrantBinding struct {
+	WorkspaceID, SandboxID, RequestedBy, BackendUID, BackendResourceVersion string
+}
+
+func (s *PgStore) ConsumeAccessGrant(ctx context.Context, grantID, tokenHash, kind string) (AccessGrantBinding, bool, error) {
+	var binding AccessGrantBinding
+	err := s.executor.QueryRow(ctx, consumeAccessGrantSQL, grantID, tokenHash, kind).Scan(
+		&binding.WorkspaceID, &binding.SandboxID, &binding.RequestedBy, &binding.BackendUID, &binding.BackendResourceVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AccessGrantBinding{}, false, nil
+	}
+	if err != nil {
+		return AccessGrantBinding{}, false, err
+	}
+	return binding, true, nil
+}
 
 func NewPgStore(database *sql.DB) (*PgStore, error) {
 	if database == nil {

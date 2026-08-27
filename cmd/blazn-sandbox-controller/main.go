@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxcontroller"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -70,8 +74,57 @@ func runWith(ctx context.Context, getenv func(string) string, factories runtimeF
 		log.Printf("sandbox controller initialization failed: %v", err)
 		return 2
 	}
-	if err := controller.Run(ctx); err != nil {
-		log.Printf("sandbox controller execution failed: %v", err)
+	listenAddress := getenv("BLAZN_SANDBOX_ACCESS_LISTEN")
+	if listenAddress == "" {
+		if err := controller.Run(ctx); err != nil {
+			log.Printf("sandbox controller execution failed: %v", err)
+			return 1
+		}
+		return 0
+	}
+	listener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
+		log.Print("sandbox access listener initialization failed")
+		return 2
+	}
+	accessStore, ok := store.(sandboxcontroller.AccessGrantStore)
+	if !ok {
+		_ = listener.Close()
+		log.Print("sandbox access store is unavailable")
+		return 2
+	}
+	accessRuntime, err := sandboxcontroller.NewKubernetesAccessRuntime(config.Kubernetes)
+	if err != nil {
+		_ = listener.Close()
+		log.Printf("sandbox access Kubernetes initialization failed: %v", err)
+		return 2
+	}
+	accessHandler, err := sandboxcontroller.NewAccessHandler(accessStore, accessRuntime)
+	if err != nil {
+		_ = listener.Close()
+		log.Printf("sandbox access initialization failed: %v", err)
+		return 2
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	server := &http.Server{Handler: accessHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 5 * time.Second}
+	controllerErrors, serverErrors := make(chan error, 1), make(chan error, 1)
+	go func() { controllerErrors <- controller.Run(runCtx) }()
+	go func() { serverErrors <- server.Serve(listener) }()
+	var runErr error
+	select {
+	case runErr = <-controllerErrors:
+	case runErr = <-serverErrors:
+		if errors.Is(runErr, http.ErrServerClosed) {
+			runErr = nil
+		}
+	}
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	_ = server.Shutdown(shutdownCtx)
+	if runErr != nil {
+		log.Printf("sandbox controller execution failed: %v", runErr)
 		return 1
 	}
 	return 0

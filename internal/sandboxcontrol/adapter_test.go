@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 const (
@@ -450,13 +452,17 @@ func TestRenderedSandboxIOPodContractIsExactTokenlessAndCredentialFree(t *testin
 	}
 	object := render(request, artifactDigest, intent)
 	pod := object.Spec.PodTemplate.Spec
-	if pod.ServiceAccountName != ServiceAccountName || pod.AutomountServiceAccountToken || len(pod.Containers) != 1 || len(pod.InitContainers) != 2 || len(pod.Volumes) != 4 {
+	if pod.ServiceAccountName != ServiceAccountName || pod.AutomountServiceAccountToken || len(pod.Containers) != 1 || len(pod.InitContainers) != 3 || len(pod.Volumes) != 4 {
 		t.Fatalf("pod contract=%#v", pod)
 	}
 	bootstrap, sidecar := pod.InitContainers[0], pod.InitContainers[1]
+	access := pod.InitContainers[2]
 	if bootstrap.Name != "sandbox-bootstrap" || bootstrap.Image != testHelperImage || !reflect.DeepEqual(bootstrap.Command, []string{"/blazn-sandbox-io", "wait-bootstrap"}) || bootstrap.RestartPolicy != "" ||
 		sidecar.Name != "sandbox-artifact-io" || sidecar.Image != testHelperImage || !reflect.DeepEqual(sidecar.Command, []string{"/blazn-sandbox-io", "wait-artifact"}) || sidecar.RestartPolicy != "Always" {
 		t.Fatalf("helpers bootstrap=%#v sidecar=%#v", bootstrap, sidecar)
+	}
+	if access.Name != sandboxio.AccessContainer || access.Image != testHelperImage || !reflect.DeepEqual(access.Command, []string{sandboxio.HelperBinary, "wait-access"}) || access.RestartPolicy != "Always" || !reflect.DeepEqual(access.VolumeMounts, pod.Containers[0].VolumeMounts) {
+		t.Fatalf("access helper escaped workspace mount contract: %#v", access)
 	}
 	if len(sidecar.VolumeMounts) != 1 || sidecar.VolumeMounts[0] != (kubeVolumeMount{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}) {
 		t.Fatalf("artifact sidecar mount escaped boundary: %#v", sidecar.VolumeMounts)
@@ -542,10 +548,13 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, omitted := range []string{`"initContainers"`, `"volumes"`, `"volumeMounts"`} {
+	for _, omitted := range []string{`"volumes"`, `"volumeMounts"`} {
 		if bytes.Contains(raw, []byte(omitted)) {
 			t.Fatalf("empty optional Pod field %s was rendered: %s", omitted, raw)
 		}
+	}
+	if !bytes.Contains(raw, []byte(`"name":"sandbox-access-io"`)) {
+		t.Fatalf("tokenless access helper is missing: %s", raw)
 	}
 }
 
@@ -1393,7 +1402,7 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 		t.Fatalf("container=%#v", pod.Spec.Containers[0])
 	}
 	resources := pod.Spec.Containers[0].Resources
-	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) || len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Image != testHelperImage {
+	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) || len(pod.Spec.InitContainers) != 2 || pod.Spec.InitContainers[1].Name != sandboxio.AccessContainer || pod.Spec.InitContainers[1].Image != testHelperImage {
 		t.Fatalf("resource or create-intent boundary missing: resources=%#v annotations=%#v", resources, object.Metadata.Annotations)
 	}
 }

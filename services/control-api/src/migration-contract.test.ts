@@ -192,7 +192,6 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
   assert.deepEqual(migrations.slice(-10), [
-    "023_node_activation.sql",
     "024_development_controller.sql",
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
@@ -202,7 +201,19 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "030_run_messages.sql",
     "031_run_message_digest_authority.sql",
     "032_sandbox_source_readiness_identity.sql",
+    "033_sandbox_access_transport.sql",
   ]);
+});
+
+test("sandbox access transport atomically consumes one live grant through controller-only authority",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/033_sandbox_access_transport.sql"),"utf8");
+  assert.match(sql,/CREATE FUNCTION sandbox_controller_consume_access_grant_v1/);
+  assert.match(sql,/FOR UPDATE/);
+  assert.match(sql,/grant_row\.token_hash <> p_token_hash/);
+  assert.match(sql,/sandbox_row\.state NOT IN \('ready','running'\)/);
+  assert.match(sql,/GRANT EXECUTE[\s\S]*TO blazn_sandbox_controller/);
+  assert.match(sql,/REVOKE ALL[\s\S]*FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker/);
 });
 
 test("source readiness binding preserves stable bootstrap identity across resourceVersion drift", async () => {
