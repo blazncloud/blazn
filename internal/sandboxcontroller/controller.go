@@ -116,7 +116,11 @@ func (c *Controller) Run(ctx context.Context) error {
 
 func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	if err := validateWorkItem(item); err != nil {
-		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid", Ambiguous: true, Cause: err})
+		// validateWorkItem emits only bounded category messages and never
+		// includes work-item values. Retain that safe detail in the terminal
+		// receipt so a malformed persisted transition is diagnosable without
+		// database or Kubernetes shell access.
+		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid: " + err.Error(), Ambiguous: true, Cause: err})
 	}
 	if !c.leaseCoversNextRenew(item.LeaseDeadline) {
 		return nil

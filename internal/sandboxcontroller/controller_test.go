@@ -404,6 +404,9 @@ func TestInvalidPartialBackendIdentityNeverCallsBackend(t *testing.T) {
 	if store.completion == nil || store.completion.Status != "recovery_required" {
 		t.Fatalf("partial identity was not rejected: %#v", store.completion)
 	}
+	if store.completion.Error == nil || store.completion.Error.Message != "controller work item is invalid: persisted backend identity is incomplete" {
+		t.Fatalf("invalid work-item category was not retained safely: %#v", store.completion.Error)
+	}
 }
 
 func TestLeaseLossCancelsBackendAndSuppressesTerminalWrites(t *testing.T) {
