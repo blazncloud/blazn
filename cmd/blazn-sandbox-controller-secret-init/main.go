@@ -23,33 +23,33 @@ func main() {
 }
 
 func run(args []string) error {
-	if len(args) != 8 {
-		return errors.New("database, CA, and object credential source and destination paths are required")
+	if len(args) != 10 {
+		return errors.New("database, CA, object credential, and object CA source and destination paths are required")
 	}
 	destinations := map[string]bool{}
-	for _, index := range []int{1, 3, 5, 7} {
+	for _, index := range []int{1, 3, 5, 7, 9} {
 		if destinations[args[index]] {
 			return errors.New("private file destinations must be distinct")
 		}
 		destinations[args[index]] = true
 	}
-	if err := copySecret(args[0], args[1]); err != nil {
-		return err
+	copies := []struct {
+		copy        func() error
+		destination string
+	}{
+		{func() error { return copySecret(args[0], args[1]) }, args[1]},
+		{func() error { return copyExactFile(args[2], args[3], maxCABytes) }, args[3]},
+		{func() error { return copySecret(args[4], args[5]) }, args[5]},
+		{func() error { return copySecret(args[6], args[7]) }, args[7]},
+		{func() error { return copyExactFile(args[8], args[9], maxCABytes) }, args[9]},
 	}
-	if err := copyExactFile(args[2], args[3], maxCABytes); err != nil {
-		_ = os.Remove(args[1])
-		return err
-	}
-	if err := copySecret(args[4], args[5]); err != nil {
-		_ = os.Remove(args[1])
-		_ = os.Remove(args[3])
-		return err
-	}
-	if err := copySecret(args[6], args[7]); err != nil {
-		_ = os.Remove(args[1])
-		_ = os.Remove(args[3])
-		_ = os.Remove(args[5])
-		return err
+	for index, step := range copies {
+		if err := step.copy(); err != nil {
+			for _, completed := range copies[:index] {
+				_ = os.Remove(completed.destination)
+			}
+			return err
+		}
 	}
 	return nil
 }

@@ -102,9 +102,22 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 		}
 	}
 	if config.ArtifactEndpoint != "" {
-		roots, err := x509.SystemCertPool()
-		if err != nil || roots == nil {
-			return nil, errors.New("artifact object system roots are unavailable")
+		var roots *x509.CertPool
+		if config.ArtifactCAFile != "" {
+			// A private object endpoint presents a certificate from a private
+			// CA the image's system roots cannot know; trust exactly that CA,
+			// loaded through the same hardened PEM pool reader as the API CA.
+			pool, err := readKubernetesCA(config.ArtifactCAFile)
+			if err != nil {
+				return nil, errors.New("artifact object CA file is invalid")
+			}
+			roots = pool
+		} else {
+			pool, err := x509.SystemCertPool()
+			if err != nil || pool == nil {
+				return nil, errors.New("artifact object system roots are unavailable")
+			}
+			roots = pool
 		}
 		objects, err := NewS3ArtifactStore(S3ArtifactStoreConfig{Endpoint: config.ArtifactEndpoint, Region: config.ArtifactRegion,
 			Bucket: config.ArtifactBucket, AccessKeyFile: config.ArtifactAccessKeyFile, SecretKeyFile: config.ArtifactSecretKeyFile, RootCAs: roots})

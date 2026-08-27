@@ -120,8 +120,9 @@ func TestCopySecretFailsClosed(t *testing.T) {
 
 func TestRunRequiresExactArguments(t *testing.T) {
 	if run(nil) == nil || run([]string{"one", "two"}) == nil || run([]string{"one", "two", "three", "four"}) == nil ||
-		run([]string{"one", "two", "three", "four", "five", "six", "seven", "two"}) == nil {
-		t.Fatal("invalid argument count accepted")
+		run([]string{"one", "two", "three", "four", "five", "six", "seven", "eight"}) == nil ||
+		run([]string{"one", "two", "three", "four", "five", "six", "seven", "two", "nine", "ten"}) == nil {
+		t.Fatal("invalid argument count or duplicate destination accepted")
 	}
 }
 
@@ -147,11 +148,18 @@ func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
 	if err := os.WriteFile(objectSecretSource, []byte("object-secret-material-123456\n"), 0o440); err != nil {
 		t.Fatal(err)
 	}
+	objectCASource := filepath.Join(directory, "object-ca.crt")
+	objectCAContents := []byte("-----BEGIN CERTIFICATE-----\nobject-exact\n-----END CERTIFICATE-----\n")
+	if err := os.WriteFile(objectCASource, objectCAContents, 0o440); err != nil {
+		t.Fatal(err)
+	}
 	databaseDestination := filepath.Join(private, "database-url")
 	caDestination := filepath.Join(private, "kubernetes-ca.crt")
 	accessDestination, objectSecretDestination := filepath.Join(private, "object-access"), filepath.Join(private, "object-secret")
+	objectCADestination := filepath.Join(private, "object-ca.crt")
 	if err := run([]string{databaseSource, databaseDestination, caSource, caDestination,
-		accessSource, accessDestination, objectSecretSource, objectSecretDestination}); err != nil {
+		accessSource, accessDestination, objectSecretSource, objectSecretDestination,
+		objectCASource, objectCADestination}); err != nil {
 		t.Fatalf("initialize private files: %v", err)
 	}
 	if value, err := os.ReadFile(databaseDestination); err != nil || string(value) != "postgres://controller@10.0.0.1/blazn" {
@@ -166,6 +174,9 @@ func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
 	if value, err := os.ReadFile(objectSecretDestination); err != nil || string(value) != "object-secret-material-123456" {
 		t.Fatal("object secret was not normalized into the private file")
 	}
+	if value, err := os.ReadFile(objectCADestination); err != nil || string(value) != string(objectCAContents) {
+		t.Fatal("object CA was not copied exactly into the private file")
+	}
 
 	secondPrivate := filepath.Join(directory, "private-failure")
 	if err := os.Mkdir(secondPrivate, 0o700); err != nil {
@@ -173,10 +184,26 @@ func TestRunCopiesBothPrivateFilesAndCleansPartialFailure(t *testing.T) {
 	}
 	partialDatabase := filepath.Join(secondPrivate, "database-url")
 	if err := run([]string{databaseSource, partialDatabase, filepath.Join(directory, "missing-ca"), filepath.Join(secondPrivate, "kubernetes-ca.crt"),
-		accessSource, filepath.Join(secondPrivate, "object-access"), objectSecretSource, filepath.Join(secondPrivate, "object-secret")}); err == nil {
+		accessSource, filepath.Join(secondPrivate, "object-access"), objectSecretSource, filepath.Join(secondPrivate, "object-secret"),
+		objectCASource, filepath.Join(secondPrivate, "object-ca.crt")}); err == nil {
 		t.Fatal("missing CA source was accepted")
 	}
 	if _, err := os.Lstat(partialDatabase); !os.IsNotExist(err) {
 		t.Fatal("partial database URL remained after CA copy failure")
+	}
+
+	thirdPrivate := filepath.Join(directory, "private-object-ca-failure")
+	if err := os.Mkdir(thirdPrivate, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{databaseSource, filepath.Join(thirdPrivate, "database-url"), caSource, filepath.Join(thirdPrivate, "kubernetes-ca.crt"),
+		accessSource, filepath.Join(thirdPrivate, "object-access"), objectSecretSource, filepath.Join(thirdPrivate, "object-secret"),
+		filepath.Join(directory, "missing-object-ca"), filepath.Join(thirdPrivate, "object-ca.crt")}); err == nil {
+		t.Fatal("missing object CA source was accepted")
+	}
+	for _, leftover := range []string{"database-url", "kubernetes-ca.crt", "object-access", "object-secret"} {
+		if _, err := os.Lstat(filepath.Join(thirdPrivate, leftover)); !os.IsNotExist(err) {
+			t.Fatalf("partial %s remained after object CA copy failure", leftover)
+		}
 	}
 }
