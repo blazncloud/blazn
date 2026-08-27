@@ -120,7 +120,8 @@ BEGIN
               ('sandbox_controller_enqueue_expired','integer'),
               ('sandbox_controller_record_source_materialization_v1','uuid,text,uuid,text,text,text,text,text,jsonb,jsonb'),
               ('sandbox_controller_record_artifact_v1','uuid,text,uuid,text,text,text,text,text,text,text,text,bigint,text'),
-              ('sandbox_controller_complete_artifact_export_v1','uuid,text,uuid,text,text[]')
+              ('sandbox_controller_complete_artifact_export_v1','uuid,text,uuid,text,text[]'),
+              ('sandbox_controller_consume_access_grant_v1','uuid,character,text')
             )
             WHEN 'blazn_development_controller' THEN (function_row.proname,replace(oidvectortypes(function_row.proargtypes),' ','')) NOT IN (
               ('development_controller_claim','text,integer'),('development_controller_renew','uuid,text,uuid,integer'),('development_controller_resolve','uuid,text,uuid'),
