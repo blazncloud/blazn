@@ -11,6 +11,11 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 for script in "$PHASE4C"/*.sh; do sh -n "$script"; done
+grep -F -- '- pod' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+grep -F -- '- blazn-poc' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+grep -F -- '- blazn-poc-sandboxes' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+grep -F '314d2b21e9a7ea6a31fc7fed1cf7db825e62ce11ad2a849e2b8b450213b9ba09' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'helm -n kueue-system rollback' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 "$PHASE4C/render-install.sh" "$tmp/install.yaml"
 grep -F 'image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.6@sha256:' "$tmp/install.yaml" >/dev/null
 grep -F -- '- --leader-election-namespace=agent-sandbox-system' "$tmp/install.yaml" >/dev/null
