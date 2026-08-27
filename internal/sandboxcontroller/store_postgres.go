@@ -62,6 +62,9 @@ func NewPgStore(database *sql.DB) (*PgStore, error) {
 
 func (s *PgStore) Health(ctx context.Context) error {
 	var authorized bool
+	// This error can surface in logs (Run wraps it and main prints it). A
+	// pgconn connect failure names host/user/database but never the
+	// password: pgx redacts credentials in every error it constructs.
 	if err := s.executor.QueryRow(ctx, "SELECT current_user = 'blazn_sandbox_controller'").Scan(&authorized); err != nil {
 		return err
 	}

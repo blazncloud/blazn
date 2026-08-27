@@ -92,9 +92,11 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 		"BLAZN_SANDBOX_ARTIFACT_BUCKET":                  "blazn-artifacts",
 		"BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE":         "/run/blazn/object-access",
 		"BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE":         "/run/blazn/object-secret",
+		"BLAZN_SANDBOX_ARTIFACT_CA_FILE":                 "/run/blazn/object-ca.crt",
 	}
 	config, err := kubernetesConfigFromEnv(func(key string) string { return valid[key] })
-	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" || len(config.SourceDNSCIDRs) != 1 || len(config.SourceHostCIDRs["github.com"]) != 1 || config.ArtifactEndpoint != "https://s3.example.test:9443" {
+	if err != nil || config.BaseURL != "https://kubernetes.default.svc:443" || len(config.SourceDNSCIDRs) != 1 || len(config.SourceHostCIDRs["github.com"]) != 1 ||
+		config.ArtifactEndpoint != "https://s3.example.test:9443" || config.ArtifactCAFile != "/run/blazn/object-ca.crt" {
 		t.Fatalf("valid endpoint rejected: config=%#v err=%v", config, err)
 	}
 	valid["BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST"] = "fd00::1"
@@ -135,6 +137,16 @@ func TestKubernetesConfigRequiresExactHTTPSHostPortAndPaths(t *testing.T) {
 		func(values map[string]string) { values["BLAZN_SANDBOX_ARTIFACT_BUCKET"] = "" },
 		func(values map[string]string) {
 			values["BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE"] = values["BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE"]
+		},
+		func(values map[string]string) { values["BLAZN_SANDBOX_ARTIFACT_CA_FILE"] = "relative/object-ca.crt" },
+		func(values map[string]string) {
+			values["BLAZN_SANDBOX_ARTIFACT_CA_FILE"] = values["BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE"]
+		},
+		func(values map[string]string) {
+			for _, artifact := range []string{"BLAZN_SANDBOX_ARTIFACT_ENDPOINT", "BLAZN_SANDBOX_ARTIFACT_REGION",
+				"BLAZN_SANDBOX_ARTIFACT_BUCKET", "BLAZN_SANDBOX_ARTIFACT_ACCESS_KEY_FILE", "BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE"} {
+				values[artifact] = ""
+			}
 		},
 	} {
 		values := make(map[string]string, len(valid))

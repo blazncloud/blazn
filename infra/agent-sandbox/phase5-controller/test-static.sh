@@ -34,6 +34,8 @@ render() {
     BLAZN_OBJECT_ENDPOINT_PORT=9443 \
     BLAZN_OBJECT_REGION=us-test-1 \
     BLAZN_OBJECT_BUCKET=blazn-artifacts \
+    BLAZN_OBJECT_CA_KEY=object-ca \
+    BLAZN_REGISTRY_PULL_SECRET_NAME=registry-pull \
     BLAZN_SOURCE_HOST=github.com \
     BLAZN_SOURCE_CIDR=140.82.112.4/32 \
     BLAZN_SOURCE_DNS_CIDR=10.20.30.53/32 \
@@ -73,11 +75,24 @@ grep -F 'command: ["/blazn-sandbox-controller-secret-init"]' "$tmp/ip.yaml" >/de
 [ "$(grep -Fxc '        - /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
 [ "$(grep -Fxc '        - /var/run/blazn-private/object-access' "$tmp/ip.yaml")" -eq 1 ]
 [ "$(grep -Fxc '        - /var/run/blazn-private/object-secret' "$tmp/ip.yaml")" -eq 1 ]
+# Object CA: projected under the rendered key, copied by secret-init, and
+# consumed by the controller through BLAZN_SANDBOX_ARTIFACT_CA_FILE.
+[ "$(grep -Fxc '        - /var/run/blazn-object-projection/object-ca' "$tmp/ip.yaml")" -eq 1 ]
+[ "$(grep -Fxc '        - /var/run/blazn-private/object-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
+[ "$(grep -Fxc '        - name: BLAZN_SANDBOX_ARTIFACT_CA_FILE' "$tmp/ip.yaml")" -eq 1 ]
+grep -A1 -Fx '        - name: BLAZN_SANDBOX_ARTIFACT_CA_FILE' "$tmp/ip.yaml" | grep -Fxq '          value: /var/run/blazn-private/object-ca.crt'
+[ "$(grep -Fxc '              - key: object-ca' "$tmp/ip.yaml")" -eq 1 ]
+# Every projected secret item pins its own mode so a defaultMode change can
+# never silently relax an individual credential file.
+[ "$(grep -Fxc '                mode: 0440' "$tmp/ip.yaml")" -eq 4 ]
+# The ServiceAccount must carry the registry pull secret, or the fenced
+# install recreates it without pull access and the image cannot pull.
+grep -A1 -Fx 'imagePullSecrets:' "$tmp/ip.yaml" | grep -Fxq -- '- name: registry-pull'
 grep -F 'mountPath: /var/run/blazn-private' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '          mountPath: /var/run/blazn-api-ca' "$tmp/ip.yaml")" -eq 1 ]
 [ "$(grep -Fxc '          value: /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
 grep -F 'medium: Memory' "$tmp/ip.yaml" >/dev/null
-grep -F 'sizeLimit: 2Mi' "$tmp/ip.yaml" >/dev/null
+grep -F 'sizeLimit: 4Mi' "$tmp/ip.yaml" >/dev/null
 grep -F 'readOnlyRootFilesystem: true' "$tmp/ip.yaml" >/dev/null
 grep -F 'allowPrivilegeEscalation: false' "$tmp/ip.yaml" >/dev/null
 grep -F 'drop: ["ALL"]' "$tmp/ip.yaml" >/dev/null
@@ -90,7 +105,7 @@ grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 3 ]
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_CA_KEY|BLAZN_REGISTRY_PULL_SECRET_NAME|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
 if grep -E "$placeholder_pattern" "$tmp/ip.yaml" >/dev/null; then
   printf 'render left an unresolved placeholder\n' >&2
   exit 1
@@ -128,6 +143,12 @@ grep -F 'protocol: TCP' "$tmp/hostname.yaml" >/dev/null
 
 expect_fail missing-image BLAZN_CONTROLLER_IMAGE=
 expect_fail missing-helper BLAZN_SANDBOX_IO_IMAGE=
+expect_fail missing-object-ca-key BLAZN_OBJECT_CA_KEY=
+expect_fail object-ca-key-collides-access BLAZN_OBJECT_CA_KEY=access-key
+expect_fail object-ca-key-collides-secret BLAZN_OBJECT_CA_KEY=secret-key
+expect_fail missing-pull-secret BLAZN_REGISTRY_PULL_SECRET_NAME=
+expect_fail invalid-pull-secret BLAZN_REGISTRY_PULL_SECRET_NAME=Registry_Pull
+expect_fail key-value-embeds-token BLAZN_OBJECT_ACCESS_KEY=BLAZN_OBJECT_CA_KEY
 expect_fail tag-only BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller:latest
 expect_fail tag-plus-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller:v1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail empty-repository-segment BLAZN_CONTROLLER_IMAGE=registry.example//blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

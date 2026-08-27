@@ -16,11 +16,17 @@ set -eu
 : "${BLAZN_OBJECT_SECRET_NAME:?set the object credential Secret name}"
 : "${BLAZN_OBJECT_ACCESS_KEY:?set the object access Secret key}"
 : "${BLAZN_OBJECT_SECRET_KEY:?set the object secret Secret key}"
+: "${BLAZN_OBJECT_CA_CERT_FILE:?set a root-only file holding the object endpoint CA certificate}"
+: "${BLAZN_OBJECT_CA_KEY:?set the object CA Secret key}"
 : "${BLAZN_BEN1_POSTGRES_HOST:?set the reachable controller database host}"
 : "${BLAZN_BEN1_POSTGRES_PORT:?set the reachable controller database port}"
 [ "$BLAZN_OBJECT_ACCESS_KEY" != "$BLAZN_OBJECT_SECRET_KEY" ] || { printf 'object credential keys must be distinct\n' >&2; exit 1; }
-for required in kubectl python3; do command -v "$required" >/dev/null 2>&1 || { printf '%s is required\n' "$required" >&2; exit 1; }; done
-for sensitive in "$BLAZN_CONTROLLER_DATABASE_URL_FILE" "$BLAZN_OBJECT_ACCESS_KEY_FILE" "$BLAZN_OBJECT_SECRET_KEY_FILE"; do
+if [ "$BLAZN_OBJECT_CA_KEY" = "$BLAZN_OBJECT_ACCESS_KEY" ] || [ "$BLAZN_OBJECT_CA_KEY" = "$BLAZN_OBJECT_SECRET_KEY" ]; then
+  printf 'object credential keys must be distinct\n' >&2
+  exit 1
+fi
+for required in kubectl python3 openssl; do command -v "$required" >/dev/null 2>&1 || { printf '%s is required\n' "$required" >&2; exit 1; }; done
+for sensitive in "$BLAZN_CONTROLLER_DATABASE_URL_FILE" "$BLAZN_OBJECT_ACCESS_KEY_FILE" "$BLAZN_OBJECT_SECRET_KEY_FILE" "$BLAZN_OBJECT_CA_CERT_FILE"; do
   if ! { [ -f "$sensitive" ] && [ ! -L "$sensitive" ]; }; then printf 'sensitive input is unsafe: %s\n' "$sensitive" >&2; exit 1; fi
 done
 
@@ -57,6 +63,37 @@ PY
 
 install -m 0600 "$BLAZN_OBJECT_ACCESS_KEY_FILE" "$work/object-access"
 install -m 0600 "$BLAZN_OBJECT_SECRET_KEY_FILE" "$work/object-secret"
+install -m 0600 "$BLAZN_OBJECT_CA_CERT_FILE" "$work/object-ca"
+
+# The controller's hardened CA reader accepts only bare, headerless
+# CERTIFICATE PEM blocks; a decorated file (openssl -text preamble,
+# subject=/issuer= lines, bundle comments) or a charset-clean but
+# unparseable block would pass every provisioning step and then
+# crash-loop the controller at startup. Reject both here: shape-check
+# every block, then prove each one parses as an X.509 certificate.
+BLAZN_OBJECT_CA_WORK_FILE="$work/object-ca" python3 - <<'PY'
+import os, re, subprocess, sys
+contents = open(os.environ["BLAZN_OBJECT_CA_WORK_FILE"], "rb").read().decode("ascii", "strict").strip()
+block = re.compile(
+    r"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----")
+remaining, blocks = contents, []
+while remaining:
+    match = block.match(remaining)
+    if not match:
+        sys.stderr.write("object CA file must contain only bare CERTIFICATE PEM blocks\n")
+        sys.exit(1)
+    blocks.append(match.group(0))
+    remaining = remaining[match.end():].strip()
+if not blocks:
+    sys.stderr.write("object CA file holds no certificate\n")
+    sys.exit(1)
+for pem in blocks:
+    parsed = subprocess.run(["openssl", "x509", "-noout"], input=pem.encode(),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if parsed.returncode != 0:
+        sys.stderr.write("object CA file holds an unparseable certificate block\n")
+        sys.exit(1)
+PY
 
 cat >"$work/annotate.py" <<'PY'
 import json, sys
@@ -78,7 +115,8 @@ apply_secret "$work/db-secret.json"
 
 kubectl create secret generic "$BLAZN_OBJECT_SECRET_NAME" -n blazn-poc-system \
   --from-file="$BLAZN_OBJECT_ACCESS_KEY=$work/object-access" \
-  --from-file="$BLAZN_OBJECT_SECRET_KEY=$work/object-secret" --dry-run=client -o json >"$work/object-secret.json"
+  --from-file="$BLAZN_OBJECT_SECRET_KEY=$work/object-secret" \
+  --from-file="$BLAZN_OBJECT_CA_KEY=$work/object-ca" --dry-run=client -o json >"$work/object-secret.json"
 python3 "$work/annotate.py" "$work/object-secret.json" "$BLAZN_PHASE5_TRANSACTION_ID"
 apply_secret "$work/object-secret.json"
 

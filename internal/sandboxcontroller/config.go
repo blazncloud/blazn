@@ -37,6 +37,7 @@ type KubernetesConfig struct {
 	SourceHostCIDRs                                  map[string][]string
 	ArtifactEndpoint, ArtifactRegion, ArtifactBucket string
 	ArtifactAccessKeyFile, ArtifactSecretKeyFile     string
+	ArtifactCAFile                                   string
 }
 
 type RuntimeConfig struct {
@@ -180,11 +181,20 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 			return KubernetesConfig{}, errors.New("sandbox artifact credential paths are invalid")
 		}
 	}
+	artifactCAFile := getenv("BLAZN_SANDBOX_ARTIFACT_CA_FILE")
+	if artifactCAFile != "" {
+		if !artifactConfigured {
+			return KubernetesConfig{}, errors.New("sandbox artifact object configuration is incomplete")
+		}
+		if !validAbsoluteFilePath(artifactCAFile) || artifactCAFile == artifactValues[3] || artifactCAFile == artifactValues[4] {
+			return KubernetesConfig{}, errors.New("sandbox artifact CA path is invalid")
+		}
+	}
 	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
 	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage,
 		SourceDNSCIDRs: dnsCIDRs, SourceHostCIDRs: hostCIDRs,
 		ArtifactEndpoint: artifactValues[0], ArtifactRegion: artifactValues[1], ArtifactBucket: artifactValues[2],
-		ArtifactAccessKeyFile: artifactValues[3], ArtifactSecretKeyFile: artifactValues[4]}, nil
+		ArtifactAccessKeyFile: artifactValues[3], ArtifactSecretKeyFile: artifactValues[4], ArtifactCAFile: artifactCAFile}, nil
 }
 
 func validKubernetesHost(value string) bool {

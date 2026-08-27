@@ -38,6 +38,8 @@ BLAZN_BEN1_POSTGRES_PORT='5432' \
 BLAZN_OBJECT_SECRET_NAME='blazn-sandbox-controller-object-credentials' \
 BLAZN_OBJECT_ACCESS_KEY='access-key' \
 BLAZN_OBJECT_SECRET_KEY='secret-key' \
+BLAZN_OBJECT_CA_KEY='object-ca' \
+BLAZN_REGISTRY_PULL_SECRET_NAME='blazn-registry-pull' \
 BLAZN_OBJECT_ENDPOINT_CIDR='10.0.0.12/32' \
 BLAZN_OBJECT_ENDPOINT_PORT='9443' \
 BLAZN_OBJECT_REGION='us-test-1' \
@@ -111,6 +113,14 @@ digest capture remain deferred to an eligible registry lane with Docker
 Buildx; none is performed by this static preparation.
 
 ## Deployment (Phase 5)
+
+The image, the rendered manifest, and the object Secret move in lockstep:
+secret-init takes exactly the argument pairs its manifest passes (an old
+image rejects a new manifest's ten arguments and vice versa, crash-looping
+the init container), and the projected `BLAZN_OBJECT_CA_KEY` item requires
+that key to exist in the object Secret (a missing key blocks the volume
+mount). Always deploy in this order: re-provision the Secrets, then install
+a manifest rendered against the image digest it names.
 
 Once the boundary and the Agent Sandbox controller are installed and the
 controller Secrets exist, `provision-controller-secrets.sh` creates the

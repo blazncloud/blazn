@@ -7,6 +7,8 @@ metadata:
     app.kubernetes.io/name: blazn-sandbox-controller
     app.kubernetes.io/part-of: blazn-poc
 automountServiceAccountToken: false
+imagePullSecrets:
+- name: BLAZN_REGISTRY_PULL_SECRET_NAME
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -102,6 +104,8 @@ spec:
         - /var/run/blazn-private/object-access
         - /var/run/blazn-object-projection/BLAZN_OBJECT_SECRET_KEY
         - /var/run/blazn-private/object-secret
+        - /var/run/blazn-object-projection/BLAZN_OBJECT_CA_KEY
+        - /var/run/blazn-private/object-ca.crt
         resources:
           requests:
             cpu: 5m
@@ -168,6 +172,8 @@ spec:
           value: /var/run/blazn-private/object-access
         - name: BLAZN_SANDBOX_ARTIFACT_SECRET_KEY_FILE
           value: /var/run/blazn-private/object-secret
+        - name: BLAZN_SANDBOX_ARTIFACT_CA_FILE
+          value: /var/run/blazn-private/object-ca.crt
         resources:
           requests:
             cpu: 50m
@@ -207,7 +213,7 @@ spec:
       - name: database-url-private
         emptyDir:
           medium: Memory
-          sizeLimit: 2Mi
+          sizeLimit: 4Mi
       - name: api-token
         projected:
           defaultMode: 0440
@@ -228,6 +234,9 @@ spec:
                 mode: 0440
               - key: BLAZN_OBJECT_SECRET_KEY
                 path: BLAZN_OBJECT_SECRET_KEY
+                mode: 0440
+              - key: BLAZN_OBJECT_CA_KEY
+                path: BLAZN_OBJECT_CA_KEY
                 mode: 0440
       - name: api-ca
         configMap:

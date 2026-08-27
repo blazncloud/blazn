@@ -18,7 +18,12 @@ valid_dns_label() {
 }
 
 valid_key() {
-  [ "${#1}" -le 253 ] && printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
+  [ "${#1}" -le 253 ] || return 1
+  # A key value that embeds a template token would be rewritten again by a
+  # later sed pass, silently corrupting the rendered manifest while both
+  # placeholder guards stay quiet. No legitimate key contains BLAZN_.
+  case "$1" in *BLAZN_*) return 1 ;; esac
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
 }
 
 valid_port() {
@@ -116,7 +121,9 @@ for name in \
   BLAZN_OBJECT_ENDPOINT_CIDR \
   BLAZN_OBJECT_ENDPOINT_PORT \
   BLAZN_OBJECT_REGION \
-  BLAZN_OBJECT_BUCKET; do
+  BLAZN_OBJECT_BUCKET \
+  BLAZN_OBJECT_CA_KEY \
+  BLAZN_REGISTRY_PULL_SECRET_NAME; do
   require "$name"
 done
 for name in BLAZN_SOURCE_HOST BLAZN_SOURCE_CIDR BLAZN_SOURCE_DNS_CIDR; do require "$name"; done
@@ -148,7 +155,12 @@ valid_key "$BLAZN_DATABASE_URL_SECRET_KEY" || fail "BLAZN_DATABASE_URL_SECRET_KE
 valid_dns_label "$BLAZN_OBJECT_SECRET_NAME" || fail "BLAZN_OBJECT_SECRET_NAME is invalid"
 valid_key "$BLAZN_OBJECT_ACCESS_KEY" || fail "BLAZN_OBJECT_ACCESS_KEY is invalid"
 valid_key "$BLAZN_OBJECT_SECRET_KEY" || fail "BLAZN_OBJECT_SECRET_KEY is invalid"
+valid_key "$BLAZN_OBJECT_CA_KEY" || fail "BLAZN_OBJECT_CA_KEY is invalid"
 [ "$BLAZN_OBJECT_ACCESS_KEY" != "$BLAZN_OBJECT_SECRET_KEY" ] || fail "object credential keys must be distinct"
+if [ "$BLAZN_OBJECT_CA_KEY" = "$BLAZN_OBJECT_ACCESS_KEY" ] || [ "$BLAZN_OBJECT_CA_KEY" = "$BLAZN_OBJECT_SECRET_KEY" ]; then
+  fail "object credential keys must be distinct"
+fi
+valid_dns_label "$BLAZN_REGISTRY_PULL_SECRET_NAME" || fail "BLAZN_REGISTRY_PULL_SECRET_NAME is invalid"
 valid_host_cidr "$BLAZN_KUBERNETES_API_CIDR" || fail "BLAZN_KUBERNETES_API_CIDR must be one exact, usable IPv4 /32"
 valid_host_cidr "$BLAZN_BEN1_POSTGRES_CIDR" || fail "BLAZN_BEN1_POSTGRES_CIDR must be one exact, usable IPv4 /32"
 valid_host_cidr "$BLAZN_OBJECT_ENDPOINT_CIDR" || fail "BLAZN_OBJECT_ENDPOINT_CIDR must be one exact, usable IPv4 /32"
@@ -165,6 +177,9 @@ if [ "${#BLAZN_OBJECT_BUCKET}" -lt 3 ] || [ "${#BLAZN_OBJECT_BUCKET}" -gt 63 ] |
   fail "BLAZN_OBJECT_BUCKET is invalid"
 fi
 printf '%s\n' "$BLAZN_KUBERNETES_API_AUDIENCE" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9./:_-]{0,252}$' || fail "BLAZN_KUBERNETES_API_AUDIENCE is invalid"
+# The audience is the only other substituted value whose charset could embed
+# a later template token; see valid_key for why that corrupts the render.
+case "$BLAZN_KUBERNETES_API_AUDIENCE" in *BLAZN_*) fail "BLAZN_KUBERNETES_API_AUDIENCE is invalid" ;; esac
 
 case "$BLAZN_DATABASE_ENDPOINT_KIND" in
   ip)
@@ -197,6 +212,8 @@ sed \
   -e "s|BLAZN_OBJECT_SECRET_NAME|$BLAZN_OBJECT_SECRET_NAME|g" \
   -e "s|BLAZN_OBJECT_ACCESS_KEY|$BLAZN_OBJECT_ACCESS_KEY|g" \
   -e "s|BLAZN_OBJECT_SECRET_KEY|$BLAZN_OBJECT_SECRET_KEY|g" \
+  -e "s|BLAZN_OBJECT_CA_KEY|$BLAZN_OBJECT_CA_KEY|g" \
+  -e "s|BLAZN_REGISTRY_PULL_SECRET_NAME|$BLAZN_REGISTRY_PULL_SECRET_NAME|g" \
   -e "s|BLAZN_OBJECT_ENDPOINT_HOST|$object_host|g" \
   -e "s|BLAZN_OBJECT_ENDPOINT_CIDR|$BLAZN_OBJECT_ENDPOINT_CIDR|g" \
   -e "s|BLAZN_OBJECT_ENDPOINT_PORT|$BLAZN_OBJECT_ENDPOINT_PORT|g" \
@@ -210,7 +227,7 @@ sed \
 if [ "$BLAZN_DATABASE_ENDPOINT_KIND" = hostname ]; then
   sed "s|BLAZN_DNS_CIDR|$BLAZN_DNS_CIDR|g" "$ROOT/dns-egress.yaml.in" >>"$tmp"
 fi
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_CA_KEY|BLAZN_REGISTRY_PULL_SECRET_NAME|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
 if LC_ALL=C grep -E "$placeholder_pattern" "$tmp" >/dev/null; then
   fail "rendered manifest contains an unresolved placeholder"
 fi

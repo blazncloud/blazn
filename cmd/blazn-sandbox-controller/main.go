@@ -41,7 +41,11 @@ type runtimeFactories struct {
 func runWith(ctx context.Context, getenv func(string) string, factories runtimeFactories) int {
 	config, err := sandboxcontroller.ConfigFromEnv(getenv)
 	if err != nil {
-		log.Print("sandbox controller configuration is invalid")
+		// Configuration, backend, controller, and run errors name only the
+		// offending field, file, or operation (never a secret value), so
+		// surfacing them is safe and makes a failing deployment diagnosable
+		// without a shell in the scratch image.
+		log.Printf("sandbox controller configuration is invalid: %v", err)
 		return 2
 	}
 	if factories.newBackend == nil || factories.openStore == nil || factories.newController == nil {
@@ -50,22 +54,24 @@ func runWith(ctx context.Context, getenv func(string) string, factories runtimeF
 	}
 	backend, err := factories.newBackend(config.Kubernetes)
 	if err != nil {
-		log.Print("sandbox controller Kubernetes backend initialization failed")
+		log.Printf("sandbox controller Kubernetes backend initialization failed: %v", err)
 		return 2
 	}
 	store, err := factories.openStore(config.DatabaseURL)
 	if err != nil {
+		// Deliberately generic: a driver error here can echo the DSN,
+		// which carries the database password.
 		log.Print("sandbox controller store initialization failed")
 		return 1
 	}
 	defer store.Close()
 	controller, err := factories.newController(store, backend, config.Controller)
 	if err != nil {
-		log.Print("sandbox controller initialization failed")
+		log.Printf("sandbox controller initialization failed: %v", err)
 		return 2
 	}
 	if err := controller.Run(ctx); err != nil {
-		log.Print("sandbox controller execution failed")
+		log.Printf("sandbox controller execution failed: %v", err)
 		return 1
 	}
 	return 0
