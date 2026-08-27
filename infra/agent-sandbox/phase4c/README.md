@@ -49,7 +49,11 @@ A checksum-pinned patch to the sealed chart renders the same selector only into
 the `mpod.kb.io` and `vpod.kb.io` Helm-managed webhook entries, so future Helm
 operations retain the boundary while other framework selectors remain
 unchanged. A failed upgrade or post-check rolls
-back to the exact prior Helm revision. It must use the same serialized live
+back to the exact prior Helm revision. The transaction is rooted under
+`/var/lib/blazn/phase4c/kueue-pod-*`, journals `upgrade-intent` before Helm,
+and resumes or rolls back after process or host interruption. It requires both
+managed namespaces to be absent and compares every Workload UID before and
+after the change, including pending Workloads. It must use the same serialized live
 cluster lock and Phase 4C approval boundary as the canary.
 
 ## Runtime gate
