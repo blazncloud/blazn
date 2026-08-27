@@ -43,6 +43,11 @@ integrations:
         values:
         - blazn-poc
         - blazn-poc-sandboxes
+  labelKeysToCopy:
+  - blazn.dev/managed
+  - blazn.dev/workspace
+  - blazn.dev/owner
+  - blazn.dev/sandbox-id
 internalCertManagement:
   enable: true
   webhookServiceName: kueue-webhook-service

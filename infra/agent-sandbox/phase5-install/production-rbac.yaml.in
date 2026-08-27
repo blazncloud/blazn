@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: blazn-agent-sandbox-observer
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: blazn-agent-sandbox-observer
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: blazn-agent-sandbox-observer
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-agent-sandbox-system
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "list", "patch", "update", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-agent-sandbox-system
+  namespace: agent-sandbox-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-agent-sandbox-system
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system

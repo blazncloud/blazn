@@ -198,10 +198,39 @@ def many_sources(doc):
     return doc
 
 
+def minimal(doc):
+    """The no-source, no-artifact adapter shape, optionally on a real image.
+
+    BLAZN_TEST_MAIN_IMAGE and BLAZN_TEST_MAIN_COMMAND (JSON argv) let a live
+    or disposable cluster run the fixture as a real Pod.
+    """
+    import os
+
+    pod = doc["spec"]["podTemplate"]["spec"]
+    del pod["volumes"]
+    del pod["initContainers"]
+    main = pod["containers"][0]
+    del main["volumeMounts"]
+    image = os.environ.get("BLAZN_TEST_MAIN_IMAGE")
+    if image:
+        main["image"] = image
+    command = os.environ.get("BLAZN_TEST_MAIN_COMMAND")
+    if command:
+        main["command"] = json.loads(command)
+    main["resources"] = {
+        "requests": {"cpu": "100m", "memory": "64Mi", "ephemeral-storage": "64Mi"},
+        "limits": {"cpu": "200m", "memory": "128Mi", "ephemeral-storage": "128Mi"},
+    }
+    doc["metadata"]["annotations"]["sandboxes.blazn.dev/artifact-exports"] = "[]"
+    return doc
+
+
 doc = good()
 if len(sys.argv) > 1:
     if sys.argv[1] == "many-sources":
         doc = many_sources(doc)
+    elif sys.argv[1] == "minimal":
+        doc = minimal(doc)
     else:
         doc = mutate(doc, sys.argv[1])
 json.dump(doc, sys.stdout)
