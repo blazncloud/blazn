@@ -40,10 +40,13 @@ does not create or edit ResourceFlavor, ClusterQueue, Kueue controller, Kueue
 CRDs, or shared quota.
 
 Kueue v0.14.x does not enable the Plain Pod integration by default. The
-reviewed `upgrade-kueue-pod-integration.sh` transaction pins the exact v0.14.3
+reviewed `upgrade-kueue-pod-integration.sh` transaction pins and copies into a
+root-only sealed directory the exact v0.14.3
 chart bytes, current Helm revision, rendered-manifest digest, manager-config
 digest, and admitted Workload identities before enabling `pod` only for
-`blazn-poc` and `blazn-poc-sandboxes`. A failed upgrade or post-check rolls
+`blazn-poc` and `blazn-poc-sandboxes` using `podOptions.namespaceSelector`,
+then narrows only the `mpod.kb.io` webhook selector to the same namespaces.
+Other framework selectors remain unchanged. A failed upgrade or post-check rolls
 back to the exact prior Helm revision. It must use the same serialized live
 cluster lock and Phase 4C approval boundary as the canary.
 

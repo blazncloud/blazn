@@ -20,13 +20,6 @@ controller:
 clientConnection:
   qps: 50
   burst: 100
-managedJobsNamespaceSelector:
-  matchExpressions:
-  - key: kubernetes.io/metadata.name
-    operator: In
-    values:
-    - blazn-poc
-    - blazn-poc-sandboxes
 integrations:
   frameworks:
   - batch/job
@@ -42,6 +35,14 @@ integrations:
   - kubeflow.org/jaxjob
   - workload.codeflare.dev/appwrapper
   - pod
+  podOptions:
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: In
+        values:
+        - blazn-poc
+        - blazn-poc-sandboxes
 internalCertManagement:
   enable: true
   webhookServiceName: kueue-webhook-service
