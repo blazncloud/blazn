@@ -182,6 +182,13 @@ func (f *fakeSandboxAdapter) ObserveAbsence(_ context.Context, observation sandb
 	return err
 }
 
+func (f *fakeSandboxAdapter) CleanupOwnedDependents(_ context.Context, observation sandboxcontrol.AdmissionObservation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "cleanup-dependents")
+	return sandboxcontrol.ValidateAdmissionObservation(observation)
+}
+
 func (f *fakeSandboxAdapter) setGetError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -414,7 +421,7 @@ func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "observe", "delete", "get", "finalize", "absence", "absence"}) {
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "observe", "delete", "get", "finalize", "cleanup-dependents", "absence", "cleanup-dependents", "absence"}) {
 		t.Fatalf("cleanup sequence=%v", fake.snapshotCalls())
 	}
 	if !result.CleanupComplete || !result.ArtifactExportComplete || !result.GrantsRevoked || !result.BackendDestroyed {
@@ -436,7 +443,7 @@ func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "absence"}) {
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "cleanup-dependents", "absence"}) {
 		t.Fatalf("already-deleted cleanup leaked or mutated: calls=%v err=%v", fake.snapshotCalls(), err)
 	}
 	if result, err := backend.Finalize(context.Background(), item, state, item.AdmissionObservation); err != nil || !result.BackendDestroyed {
@@ -469,7 +476,7 @@ func TestKubernetesBackendDoesNotUseTransientCleanupEvidenceAsAuthority(t *testi
 	if err != nil || !result.BackendDestroyed {
 		t.Fatalf("persisted absence recovery=%#v err=%v", result, err)
 	}
-	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "absence", "get", "absence", "absence"}
+	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "cleanup-dependents", "absence", "get", "cleanup-dependents", "absence", "cleanup-dependents", "absence"}
 	if !reflect.DeepEqual(fake.snapshotCalls(), wantCalls) {
 		t.Fatalf("same-process recovery sequence=%v", fake.snapshotCalls())
 	}

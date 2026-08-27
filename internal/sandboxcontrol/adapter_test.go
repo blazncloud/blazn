@@ -237,6 +237,24 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			}
 		}
 		writeJSON(response, http.StatusOK, list)
+	case request.Method == http.MethodDelete && request.URL.Path == podCollection+"/sandbox-a-pod":
+		var options map[string]any
+		decodeBody(f.t, request.Body, &options)
+		preconditions := options["preconditions"].(map[string]any)
+		if preconditions["uid"] != "pod-uid-1" || preconditions["resourceVersion"] != "11" || options["propagationPolicy"] != "Foreground" {
+			f.t.Errorf("Pod delete preconditions=%v", options)
+		}
+		f.podsAbsent = true
+		response.WriteHeader(http.StatusOK)
+	case request.Method == http.MethodDelete && request.URL.Path == workloadCollection+"/sandbox-a-workload":
+		var options map[string]any
+		decodeBody(f.t, request.Body, &options)
+		preconditions := options["preconditions"].(map[string]any)
+		if preconditions["uid"] != "workload-uid-1" || preconditions["resourceVersion"] != "21" || options["propagationPolicy"] != "Foreground" {
+			f.t.Errorf("Workload delete preconditions=%v", options)
+		}
+		f.workloadsAbsent = true
+		response.WriteHeader(http.StatusOK)
 	case request.Method == http.MethodGet && request.URL.Path == collection && request.URL.Query().Get("watch") == "true":
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
@@ -870,6 +888,53 @@ func TestObserveAbsenceFindsExactOwnedOrphansWithoutLabels(t *testing.T) {
 	fake.mu.Unlock()
 	if err := adapter.ObserveAbsence(context.Background(), observation); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCleanupOwnedDependentsDeletesOnlyFrozenOwnershipChain(t *testing.T) {
+	fake := newFakeAPI(t)
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	request := testCreate()
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.sandboxAbsent = true
+	if err := adapter.CleanupOwnedDependents(context.Background(), observation); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.ObserveAbsence(context.Background(), observation); err != nil {
+		t.Fatalf("exact dependents remained after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOwnedDependentsRejectsSubstitutedOwners(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeAPI){
+		"Pod owner":      func(fake *fakeAPI) { fake.substitutePodOwner = true },
+		"Workload owner": func(fake *fakeAPI) { fake.substituteWorkloadOwner = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			request := testCreate()
+			record, _, err := adapter.Create(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(fake)
+			assertCode(t, adapter.CleanupOwnedDependents(context.Background(), observation), ErrConflict)
+			if fake.podsAbsent || fake.workloadsAbsent {
+				t.Fatal("identity substitution caused a partial dependent deletion")
+			}
+		})
 	}
 }
 

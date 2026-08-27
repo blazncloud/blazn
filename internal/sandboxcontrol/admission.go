@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 )
 
@@ -46,12 +47,89 @@ type kubeOwnerReference struct {
 }
 
 type observedMetadata struct {
-	Name            string               `json:"name"`
-	Namespace       string               `json:"namespace"`
-	UID             string               `json:"uid"`
-	ResourceVersion string               `json:"resourceVersion"`
-	Labels          map[string]string    `json:"labels"`
-	OwnerReferences []kubeOwnerReference `json:"ownerReferences"`
+	Name              string               `json:"name"`
+	Namespace         string               `json:"namespace"`
+	UID               string               `json:"uid"`
+	ResourceVersion   string               `json:"resourceVersion"`
+	DeletionTimestamp string               `json:"deletionTimestamp,omitempty"`
+	Labels            map[string]string    `json:"labels"`
+	OwnerReferences   []kubeOwnerReference `json:"ownerReferences"`
+}
+
+// CleanupOwnedDependents removes only the exact Pod and Workload identities
+// frozen in an admission observation. This is a bounded fallback for clusters
+// where garbage collection leaves controller-owned dependents behind after the
+// Sandbox has disappeared; replacements and additional owned objects fail
+// closed instead of being deleted by mutable names or labels.
+func (a *Adapter) CleanupOwnedDependents(ctx context.Context, expected AdmissionObservation) error {
+	if err := validateObservation(expected); err != nil {
+		return err
+	}
+	var pods observedPodList
+	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
+		return err
+	}
+	if pods.APIVersion != podAPIVersion || pods.Kind != "PodList" {
+		return adapterError(ErrBackend, 502, "Pod cleanup observation API drifted", nil)
+	}
+	var podToDelete *observedMetadata
+	for _, pod := range pods.Items {
+		if !validObservedListIdentity(pod.APIVersion, pod.Kind, podAPIVersion, podKind, pod.Metadata) {
+			return adapterError(ErrBackend, 502, "Pod cleanup observation contained an invalid identity", nil)
+		}
+		if pod.Metadata.UID != expected.Pod.UID && !hasControllerUID(pod.Metadata.OwnerReferences, expected.Sandbox.UID) {
+			continue
+		}
+		if pod.Metadata.Name != expected.Pod.Name || pod.Metadata.UID != expected.Pod.UID ||
+			!hasExactControllerOwner(pod.Metadata.OwnerReferences, expected.Sandbox.APIVersion, expected.Sandbox.Kind, expected.Sandbox.Name, expected.Sandbox.UID) {
+			return adapterError(ErrConflict, 409, "owned Sandbox Pod cleanup identity changed", nil)
+		}
+		metadata := pod.Metadata
+		podToDelete = &metadata
+	}
+
+	var workloads observedWorkloadList
+	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
+		return err
+	}
+	if workloads.APIVersion != AdmissionAPIVersion || workloads.Kind != "WorkloadList" {
+		return adapterError(ErrBackend, 502, "Workload cleanup observation API drifted", nil)
+	}
+	var workloadToDelete *observedMetadata
+	for _, workload := range workloads.Items {
+		if !validObservedListIdentity(workload.APIVersion, workload.Kind, AdmissionAPIVersion, workloadKind, workload.Metadata) {
+			return adapterError(ErrBackend, 502, "Workload cleanup observation contained an invalid identity", nil)
+		}
+		if workload.Metadata.UID != expected.Workload.UID && !hasControllerUID(workload.Metadata.OwnerReferences, expected.Pod.UID) {
+			continue
+		}
+		if workload.Metadata.Name != expected.Workload.Name || workload.Metadata.UID != expected.Workload.UID ||
+			!hasExactControllerOwner(workload.Metadata.OwnerReferences, expected.Pod.APIVersion, expected.Pod.Kind, expected.Pod.Name, expected.Pod.UID) {
+			return adapterError(ErrConflict, 409, "owned Kueue Workload cleanup identity changed", nil)
+		}
+		metadata := workload.Metadata
+		workloadToDelete = &metadata
+	}
+	if podToDelete != nil {
+		if err := a.deleteObserved(ctx, a.podCollectionPath(), *podToDelete); err != nil {
+			return err
+		}
+	}
+	if workloadToDelete != nil {
+		if err := a.deleteObserved(ctx, a.workloadCollectionPath(), *workloadToDelete); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) deleteObserved(ctx context.Context, collection string, metadata observedMetadata) error {
+	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground",
+		"preconditions": map[string]string{"uid": metadata.UID, "resourceVersion": metadata.ResourceVersion}}
+	if err := a.call(ctx, http.MethodDelete, collection+"/"+url.PathEscape(metadata.Name), nil, options, nil, "application/json"); err != nil {
+		return adapterError(ErrCleanupIncomplete, 502, "owned dependent deletion failed", err)
+	}
+	return nil
 }
 
 type observedPod struct {

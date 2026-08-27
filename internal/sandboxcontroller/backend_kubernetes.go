@@ -22,6 +22,7 @@ type SandboxControlAdapter interface {
 	Delete(context.Context, string, string, string, string, string, string, string) (sandboxcontrol.OperationReceipt, error)
 	Finalize(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, string) (sandboxcontrol.OperationReceipt, error)
 	FinalizePreExported(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, []sandboxcontrol.ArtifactReceipt, string) (sandboxcontrol.OperationReceipt, error)
+	CleanupOwnedDependents(context.Context, sandboxcontrol.AdmissionObservation) error
 	ObserveAbsence(context.Context, sandboxcontrol.AdmissionObservation) error
 }
 
@@ -222,6 +223,9 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 	if err != nil {
 		var adapterErr *sandboxcontrol.AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound {
+			if err := b.adapter.CleanupOwnedDependents(ctx, *expected); err != nil {
+				return BackendState{}, classifyCleanupObservation(err)
+			}
 			if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
 				return BackendState{}, classifyCleanupObservation(err)
 			}
@@ -314,6 +318,9 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 	result := CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
 		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
 	for {
+		if err = b.adapter.CleanupOwnedDependents(ctx, *expected); err != nil {
+			return CleanupResult{}, classifyAdapter("cleanup", err)
+		}
 		err = b.adapter.ObserveAbsence(ctx, *expected)
 		if err == nil {
 			return result, nil
