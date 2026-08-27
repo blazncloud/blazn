@@ -144,7 +144,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	podCandidates := make([]observedPod, 0, 1)
 	relatedPods := 0
 	for _, candidate := range pods.Items {
-		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != podAPIVersion || candidate.Kind != podKind {
+		if !validObservedListIdentity(candidate.APIVersion, candidate.Kind, podAPIVersion, podKind, candidate.Metadata) {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod collection contained an invalid identity", nil)
 		}
 		if hasAdmissionLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
@@ -179,7 +179,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	workloadCandidates := make([]observedWorkload, 0, 1)
 	relatedWorkloads := 0
 	for _, candidate := range workloads.Items {
-		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != AdmissionAPIVersion || candidate.Kind != workloadKind {
+		if !validObservedListIdentity(candidate.APIVersion, candidate.Kind, AdmissionAPIVersion, workloadKind, candidate.Metadata) {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection contained an invalid identity", nil)
 		}
 		if hasWorkloadLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
@@ -221,7 +221,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	}
 
 	identity := WorkloadIdentity{
-		APIVersion: workload.APIVersion, Namespace: workload.Metadata.Namespace, Name: workload.Metadata.Name,
+		APIVersion: AdmissionAPIVersion, Namespace: workload.Metadata.Namespace, Name: workload.Metadata.Name,
 		UID: workload.Metadata.UID, ResourceVersion: workload.Metadata.ResourceVersion,
 		ClusterQueue: workload.Status.Admission.ClusterQueue,
 		Owner:        SandboxOwnerReference{APIVersion: APIVersion, Kind: Kind, Name: request.Name, UID: record.UID, Controller: true},
@@ -231,7 +231,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	identity.Digest = workloadIdentityDigest(identity)
 	observation := AdmissionObservation{
 		Sandbox:  objectIdentity(sandbox.APIVersion, sandbox.Kind, sandbox.Metadata.Name, sandbox.Metadata.Namespace, sandbox.Metadata.UID, sandbox.Metadata.ResourceVersion),
-		Pod:      objectIdentity(pod.APIVersion, pod.Kind, pod.Metadata.Name, pod.Metadata.Namespace, pod.Metadata.UID, pod.Metadata.ResourceVersion),
+		Pod:      objectIdentity(podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.Namespace, pod.Metadata.UID, pod.Metadata.ResourceVersion),
 		Workload: identity,
 	}
 	observation.Digest = admissionObservationDigest(observation)
@@ -266,7 +266,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		return adapterError(ErrBackend, 502, "Pod absence observation API drifted", nil)
 	}
 	for _, pod := range pods.Items {
-		if !validObservedIdentity(pod.APIVersion, pod.Kind, pod.Metadata) || pod.APIVersion != podAPIVersion || pod.Kind != podKind {
+		if !validObservedListIdentity(pod.APIVersion, pod.Kind, podAPIVersion, podKind, pod.Metadata) {
 			return adapterError(ErrBackend, 502, "Pod absence observation contained an invalid identity", nil)
 		}
 		if pod.Metadata.UID == expected.Pod.UID || hasControllerUID(pod.Metadata.OwnerReferences, expected.Sandbox.UID) {
@@ -282,7 +282,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		return adapterError(ErrBackend, 502, "Workload absence observation API drifted", nil)
 	}
 	for _, workload := range workloads.Items {
-		if !validObservedIdentity(workload.APIVersion, workload.Kind, workload.Metadata) || workload.APIVersion != AdmissionAPIVersion || workload.Kind != workloadKind {
+		if !validObservedListIdentity(workload.APIVersion, workload.Kind, AdmissionAPIVersion, workloadKind, workload.Metadata) {
 			return adapterError(ErrBackend, 502, "Workload absence observation contained an invalid identity", nil)
 		}
 		if workload.Metadata.UID == expected.Workload.UID || hasControllerUID(workload.Metadata.OwnerReferences, expected.Pod.UID) {
@@ -306,6 +306,11 @@ func hasWorkloadLabels(labels map[string]string, workspaceID, ownerID, name stri
 
 func validObservedIdentity(apiVersion, kind string, metadata observedMetadata) bool {
 	return apiVersion != "" && kind != "" && metadata.Namespace == Namespace && len(metadata.Name) <= 253 && dnsNamePattern.MatchString(metadata.Name) && objectIDPattern.MatchString(metadata.UID) && objectIDPattern.MatchString(metadata.ResourceVersion)
+}
+
+func validObservedListIdentity(apiVersion, kind, expectedAPIVersion, expectedKind string, metadata observedMetadata) bool {
+	typeMetadataValid := apiVersion == "" && kind == "" || apiVersion == expectedAPIVersion && kind == expectedKind
+	return typeMetadataValid && metadata.Namespace == Namespace && len(metadata.Name) <= 253 && dnsNamePattern.MatchString(metadata.Name) && objectIDPattern.MatchString(metadata.UID) && objectIDPattern.MatchString(metadata.ResourceVersion)
 }
 
 func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool {

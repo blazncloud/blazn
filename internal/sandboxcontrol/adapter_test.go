@@ -307,7 +307,6 @@ func (f *fakeAPI) observedPod() observedPod {
 		ownerUID = "replacement-sandbox-uid"
 	}
 	return observedPod{
-		APIVersion: podAPIVersion, Kind: podKind,
 		Metadata: observedMetadata{Name: "sandbox-a-pod", Namespace: Namespace, UID: "pod-uid-1", ResourceVersion: "11", Labels: cloneMap(f.object.Spec.PodTemplate.Metadata.Labels),
 			OwnerReferences: []kubeOwnerReference{{APIVersion: APIVersion, Kind: Kind, Name: f.object.Metadata.Name, UID: ownerUID, Controller: true}}},
 		Spec: f.object.Spec.PodTemplate.Spec,
@@ -320,7 +319,6 @@ func (f *fakeAPI) observedWorkload() observedWorkload {
 		podUID = "replacement-pod-uid"
 	}
 	value := observedWorkload{
-		APIVersion: AdmissionAPIVersion, Kind: workloadKind,
 		Metadata: observedMetadata{Name: "sandbox-a-workload", Namespace: Namespace, UID: "workload-uid-1", ResourceVersion: "21", Labels: cloneMap(f.object.Spec.PodTemplate.Metadata.Labels),
 			OwnerReferences: []kubeOwnerReference{{APIVersion: podAPIVersion, Kind: podKind, Name: "sandbox-a-pod", UID: podUID, Controller: true}}},
 	}
@@ -713,6 +711,27 @@ func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
 	drifted.Pod.ResourceVersion = "12"
 	if _, err := adapter.ObserveAdmission(context.Background(), request, record, &drifted); err == nil {
 		t.Fatal("resourceVersion drift was accepted")
+	}
+}
+
+func TestObservedListIdentityAcceptsOnlyAbsentOrExactTypeMetadata(t *testing.T) {
+	metadata := observedMetadata{Name: "sandbox-a", Namespace: Namespace, UID: "pod-uid-1", ResourceVersion: "11"}
+	for name, values := range map[string]struct {
+		apiVersion string
+		kind       string
+		want       bool
+	}{
+		"omitted":    {want: true},
+		"exact":      {apiVersion: podAPIVersion, kind: podKind, want: true},
+		"partial":    {apiVersion: podAPIVersion},
+		"wrong API":  {apiVersion: "v2", kind: podKind},
+		"wrong kind": {apiVersion: podAPIVersion, kind: "Deployment"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := validObservedListIdentity(values.apiVersion, values.kind, podAPIVersion, podKind, metadata); got != values.want {
+				t.Fatalf("validObservedListIdentity()=%v want %v", got, values.want)
+			}
+		})
 	}
 }
 
