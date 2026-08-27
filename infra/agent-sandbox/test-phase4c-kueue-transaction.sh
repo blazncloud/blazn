@@ -56,9 +56,9 @@ tar -xzf "$chart_tgz" -C "$tmp/render-orig" --no-same-owner --no-same-permission
 patch -s -f -d "$tmp/render-patched" -p1 <"$ROOT/phase4c/kueue-pod-webhook-selector.patch"
 "$REAL_HELM" template kueue "$tmp/render-patched/kueue" -n kueue-system --set-file managerConfig.controllerManagerConfigYaml="$ROOT/phase4c/kueue-pod-config.yaml" >"$tmp/rendered-patched.yaml"
 "$REAL_HELM" template kueue "$tmp/render-orig/kueue" -n kueue-system --set-file managerConfig.controllerManagerConfigYaml="$ROOT/phase4c/kueue-pod-config.yaml" >"$tmp/rendered-orig.yaml"
-python3 - "$tmp/rendered-patched.yaml" "$tmp/rendered-orig.yaml" "$ROOT/phase4c/kueue-pod-config.yaml" "$ROOT/phase4c/kueue-live-config-baseline.yaml" <<'PY'
+python3 - "$tmp/rendered-patched.yaml" "$tmp/rendered-orig.yaml" "$ROOT/phase4c/kueue-pod-config.yaml" "$ROOT/phase4c/kueue-live-config-baseline.yaml" "$tmp/deployed-config.yaml" <<'PY'
 import copy, json, sys, yaml
-patched_path, orig_path, sealed_path, baseline_path = sys.argv[1:5]
+patched_path, orig_path, sealed_path, baseline_path, deployed_path = sys.argv[1:6]
 selector = {"matchExpressions": [{"key": "kubernetes.io/metadata.name", "operator": "In",
              "values": ["blazn-poc", "blazn-poc-sandboxes"]}]}
 def load(path):
@@ -83,7 +83,9 @@ for k in patched_by:
 assert pod_hooks == 2, f"expected mpod+vpod webhooks, saw {pod_hooks}"
 config = next(d for d in patched if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "kueue-manager-config")
 sealed = open(sealed_path).read()
-assert config["data"]["controller_manager_config.yaml"] == sealed, "rendered manager config is not the sealed bytes"
+deployed = config["data"]["controller_manager_config.yaml"]
+assert yaml.safe_load(deployed) == yaml.safe_load(sealed), "rendered manager config is not semantically the sealed configuration"
+open(deployed_path, "w").write(deployed)
 baseline = yaml.safe_load(open(baseline_path))
 expected = json.loads(json.dumps(baseline))
 expected["integrations"]["frameworks"].append("pod")
@@ -91,6 +93,7 @@ expected["integrations"]["podOptions"] = {"namespaceSelector": selector}
 assert yaml.safe_load(sealed) == expected, "sealed config is not the reviewed live baseline plus the pod integration"
 print("render and baseline equivalence proven")
 PY
+[ "$(sha256sum "$tmp/deployed-config.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_DEPLOYED_CONFIG_SHA256" ] || { printf 'rendered deployed config digest does not match the versions.env pin\n' >&2; exit 1; }
 
 # Fake cluster: kubectl and helm state machines over $FAKE_STATE.
 FAKE_STATE=$tmp/state
@@ -170,9 +173,10 @@ case "$*" in
         printf 'fake atomic upgrade failed and rolled back\n' >&2
         exit 1 ;;
       applied-kill|success)
+        [ -f "$config_file" ] || { printf 'fake helm upgrade config file missing\n' >&2; exit 2; }
         supersede
         append_revision "$revision" deployed "$description"
-        cat "$config_file" >"$FAKE_STATE/config"
+        cat "$FAKE_STATE/deployed-config" >"$FAKE_STATE/config"
         printf 'manifest-for-blazn-pod-integration revision %s\n' "$revision" >"$FAKE_STATE/manifest"
         if [ "${FAKE_WEBHOOK_DRIFT:-0}" = 1 ]; then
           printf '{"matchExpressions":[{"key":"kubernetes.io/metadata.name","operator":"In","values":["wrong-namespace"]}]}\n' >"$FAKE_STATE/webhooks.json"
@@ -202,6 +206,7 @@ reset_state() {
   cp "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
   cp "$FAKE_STATE/webhooks.json" "$FAKE_STATE/baseline-webhooks.json"
   cp "$FAKE_STATE/workloads.json" "$FAKE_STATE/baseline-workloads.json"
+  cp "$tmp/deployed-config.yaml" "$FAKE_STATE/deployed-config"
   : >"$FAKE_STATE/calls.log"
 }
 baseline_manifest_sha=$(printf 'live-kueue-manifest-revision-45\n' | sha256sum | awk '{print $1}')
@@ -209,7 +214,7 @@ baseline_manifest_sha=$(printf 'live-kueue-manifest-revision-45\n' | sha256sum |
 transaction_counter=0
 new_transaction() {
   transaction_counter=$((transaction_counter + 1))
-  printf '%s/%s-%s\n' "$tx_root" "$tx_prefix" "$transaction_counter"
+  transaction=$tx_root/$tx_prefix-$transaction_counter
 }
 run_upgrade() {
   run_transaction=$1
@@ -235,11 +240,11 @@ expect_message() { grep -Fq -- "$1" "$tmp/last-err" || { printf 'missing expecte
 
 # S1: happy path, then idempotent re-run.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction"
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase "$transaction" complete
-cmp -s "$FAKE_STATE/config" "$ROOT/phase4c/kueue-pod-config.yaml" || { printf 'deployed config is not the sealed bytes\n' >&2; exit 1; }
+cmp -s "$FAKE_STATE/config" "$FAKE_STATE/deployed-config" || { printf 'deployed config is not the reviewed rendered bytes\n' >&2; exit 1; }
 jq -e '.matchExpressions[0].values == ["blazn-poc","blazn-poc-sandboxes"]' "$FAKE_STATE/webhooks.json" >/dev/null
 jq -e '([.[] | select(.status=="deployed")][-1]) | .revision == 46' "$FAKE_STATE/revisions.json" >/dev/null
 cmp -s "$FAKE_STATE/workloads.json" "$FAKE_STATE/baseline-workloads.json" || { printf 'happy path must not change Workload identities\n' >&2; exit 1; }
@@ -250,7 +255,7 @@ grep -Fq 'already complete' "$tmp/last-out"
 # S2: crash at each pre-mutation journal boundary, then resume to completion.
 for boundary in sealed prepared upgrade-intent; do
   reset_state
-  transaction=$(new_transaction)
+  new_transaction
   run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER="$boundary" BLAZN_PHASE4C_DISPOSABLE_TEST=true
   [ "$last_code" -eq 86 ] || { printf 'boundary %s: expected 86, got %s\n' "$boundary" "$last_code" >&2; exit 1; }
   expect_phase "$transaction" "$boundary"
@@ -262,7 +267,7 @@ done
 # S2b: crash right after the upgraded journal entry triggers a verified
 # automatic rollback, and the rolled-back transaction refuses reuse.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=upgraded BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase "$transaction" rollback-complete
@@ -274,17 +279,17 @@ expect_message 'was rolled back; use a new transaction'
 
 # S2c: crash after the complete journal entry keeps the release upgraded.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=complete BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase "$transaction" complete
-cmp -s "$FAKE_STATE/config" "$ROOT/phase4c/kueue-pod-config.yaml"
+cmp -s "$FAKE_STATE/config" "$FAKE_STATE/deployed-config"
 if grep -Fq 'rollback kueue' "$FAKE_STATE/calls.log"; then printf 'completed transaction must never roll back\n' >&2; exit 1; fi
 
 # S3: helm process killed mid-upgrade leaves an owned pending revision that a
 # resume reconciles into a verified rollback.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" FAKE_HELM_UPGRADE_MODE=kill
 [ "$last_code" -eq 137 ]
 expect_phase "$transaction" upgrade-intent
@@ -297,7 +302,7 @@ cmp -s "$FAKE_STATE/config" "$FAKE_STATE/baseline-config"
 # S4: crash after Helm applied but before the upgraded journal entry; resume
 # adopts the owned deployed revision and completes.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" FAKE_HELM_UPGRADE_MODE=applied-kill
 [ "$last_code" -eq 137 ]
 expect_phase "$transaction" upgrade-intent
@@ -307,7 +312,7 @@ expect_phase "$transaction" complete
 
 # S5: Helm atomic rollback is recognized, verified, and journaled.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" FAKE_HELM_UPGRADE_MODE=atomic-fail
 [ "$last_code" -eq 1 ]
 expect_phase "$transaction" upgrade-intent
@@ -318,7 +323,7 @@ expect_phase "$transaction" rollback-complete
 
 # S6: an unowned pending revision blocks without any mutation.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=upgrade-intent BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 jq '. + [{"revision":46,"status":"pending-upgrade","description":"someone-else"}]' "$FAKE_STATE/revisions.json" >"$FAKE_STATE/revisions.json.tmp"
@@ -332,7 +337,7 @@ if grep -Eq 'helm (upgrade|-n kueue-system rollback)' "$FAKE_STATE/calls.log"; t
 
 # S7: an unrelated newer deployed revision blocks without any mutation.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=upgrade-intent BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 jq '[.[] | if .status=="deployed" then .status="superseded" else . end] + [{"revision":47,"status":"deployed","description":"unrelated admin change"}]' "$FAKE_STATE/revisions.json" >"$FAKE_STATE/revisions.json.tmp"
@@ -346,7 +351,7 @@ if grep -Eq 'helm (upgrade|-n kueue-system rollback)' "$FAKE_STATE/calls.log"; t
 
 # S8: namespace discovery API errors fail closed before any mutation.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" FAKE_NS_ERROR=1
 [ "$last_code" -eq 1 ]
 expect_message 'could not be verified'
@@ -356,7 +361,7 @@ if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'discovery failu
 # S9: a namespace appearing between journal boundaries blocks the resumed
 # mutation.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=upgrade-intent BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 touch "$FAKE_STATE/ns-blazn-poc"
@@ -369,7 +374,7 @@ if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'namespace appea
 # S10: a Workload created during enablement rolls back, and rollback is never
 # declared complete while the identity set still differs.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" FAKE_WORKLOAD_DRIFT_AFTER_UPGRADE=1
 [ "$last_code" -ne 0 ]
 expect_message 'automatic Kueue rollback or verification failed'
@@ -378,7 +383,7 @@ if grep -Fq 'rollback-complete' "$transaction/phase"; then exit 1; fi
 
 # S11: a tampered derived chart package is rejected on resume.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" BLAZN_PHASE4C_FAIL_AFTER=prepared BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 chmod 0600 "$transaction/kueue-0.14.3.tgz"
@@ -396,7 +401,7 @@ expect_message 'one clean segment'
 
 # S13: a wrong deployed webhook selector rolls back with verification.
 reset_state
-transaction=$(new_transaction)
+new_transaction
 run_upgrade "$transaction" FAKE_WEBHOOK_DRIFT=1
 [ "$last_code" -ne 0 ]
 expect_phase "$transaction" rollback-complete
