@@ -60,6 +60,8 @@ case "$*" in
   'get deployment agent-sandbox-controller -n agent-sandbox-system') present agent-sandbox-controller || { printf 'not found\n' >&2; exit 1; } ;;
   'get secret blazn-controller-database-url -n blazn-poc-system --ignore-not-found -o name') present db-secret && printf 'secret/blazn-controller-database-url\n' || : ;;
   'get secret blazn-controller-object -n blazn-poc-system --ignore-not-found -o name') present object-secret && printf 'secret/blazn-controller-object\n' || : ;;
+  'get secret blazn-registry-pull -n blazn-poc-system --ignore-not-found -o name') present system-pull-secret && printf 'secret/blazn-registry-pull\n' || : ;;
+  'get secret blazn-registry-pull -n blazn-poc-sandboxes --ignore-not-found -o name') present sandbox-pull-secret && printf 'secret/blazn-registry-pull\n' || : ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name') present deployment && [ ! -e "$FAKE_STATE/scaled0" ] && printf 'deployment/blazn-sandbox-controller\n' || { present deployment && printf 'deployment/blazn-sandbox-controller\n' || :; } ;;
   'apply --server-side --field-manager blazn-phase5-controller -f '*) for object_key in deployment serviceaccount role rolebinding egress deny; do : >"$FAKE_STATE/$object_key"; done ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.spec.replicas}') [ -e "$FAKE_STATE/scaled1" ] && printf '1' || printf '0' ;;
@@ -125,6 +127,8 @@ reset_state() {
   : >"$FAKE_STATE/agent-sandbox-controller"
   : >"$FAKE_STATE/db-secret"
   : >"$FAKE_STATE/object-secret"
+  : >"$FAKE_STATE/system-pull-secret"
+  : >"$FAKE_STATE/sandbox-pull-secret"
   : >"$FAKE_STATE/calls.log"
 }
 transaction_counter=0
@@ -143,6 +147,7 @@ run_tool() {
     BLAZN_EXPECTED_CONTROLLER_SHA256="$controller_sha" \
     BLAZN_DATABASE_URL_SECRET_NAME=blazn-controller-database-url \
     BLAZN_OBJECT_SECRET_NAME=blazn-controller-object \
+    BLAZN_REGISTRY_PULL_SECRET_NAME=blazn-registry-pull \
     "$@" \
     "$CONTROLLER/$run_script" $run_arg >"$tmp/last-out" 2>"$tmp/last-err"
   last_code=$?
@@ -185,6 +190,13 @@ reset_state; rm -f "$FAKE_STATE/agent-sandbox-controller"; new_transaction
 run_tool install-controller.sh
 [ "$last_code" -eq 1 ]
 expect_message 'Agent Sandbox controller is not installed'
+
+# T4b: either runtime namespace missing the pull Secret blocks before apply.
+reset_state; rm -f "$FAKE_STATE/sandbox-pull-secret"; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 1 ]
+expect_message 'Sandbox registry pull Secret is not provisioned'
+if grep -Fq 'apply --server-side' "$FAKE_STATE/calls.log"; then printf 'missing pull Secret must block apply\n' >&2; exit 1; fi
 
 # T5: a controller that never becomes Available fails after scaling.
 reset_state; new_transaction

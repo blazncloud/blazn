@@ -134,6 +134,11 @@ controller database URL must authenticate as `blazn_sandbox_controller` (a
 capability role that needs a login credential provisioned on the control-plane
 database).
 
+`provision-registry-pull-secret.sh` copies the separately owned Docker config
+Secret into only `blazn-poc-system` and `blazn-poc-sandboxes`, without writing
+its bytes to disk or stdout. The install transaction verifies that the pull
+Secret exists in both namespaces before applying or scaling the controller.
+
 `install-controller.sh` is a journaled, crash-resumable, UID-fenced
 transaction (`sealed → apply-intent → applied → scaled → complete`): it
 requires the boundary, the Agent Sandbox controller, and both Secrets, seals
