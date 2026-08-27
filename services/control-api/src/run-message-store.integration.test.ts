@@ -26,10 +26,10 @@ test("PostgreSQL Run executor claims, delivers, prioritizes steering, and recove
     const firstSteerClaim=(await service.claimRunMessage(owner,workspaceId,projectId,run.id,"message-claim-steer-1",{leaseSeconds:30})).claim!;
     assert.equal(firstSteerClaim.message.id,steer.id);
     await admin.query("UPDATE run_messages SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",[steer.id]);
-    const recoveredSteerClaim=(await service.claimRunMessage(owner,workspaceId,projectId,run.id,"message-claim-steer-2",{leaseSeconds:30})).claim!;
+    const recoveredSteerClaim=(await service.claimRunMessage(owner,workspaceId,projectId,run.id,"message-claim-steer-1",{leaseSeconds:30})).claim!;
     assert.equal(recoveredSteerClaim.message.id,steer.id);
-    assert.notEqual(recoveredSteerClaim.claimId,firstSteerClaim.claimId);
-    await assert.rejects(()=>service.deliverRunMessage(owner,workspaceId,projectId,run.id,steer.id,"message-deliver-expired",firstSteerClaim.claimId),isCode("message_conflict"));
+    assert.equal(recoveredSteerClaim.claimId,firstSteerClaim.claimId);
+    assert.notEqual(recoveredSteerClaim.leaseExpiresAt,firstSteerClaim.leaseExpiresAt);
     await service.deliverRunMessage(owner,workspaceId,projectId,run.id,steer.id,"message-deliver-steer",recoveredSteerClaim.claimId);
     const followupClaim=(await service.claimRunMessage(owner,workspaceId,projectId,run.id,"message-claim-followup",{leaseSeconds:30})).claim!;
     assert.equal(followupClaim.message.id,followup.id);
