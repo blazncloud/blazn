@@ -202,6 +202,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "031_run_message_digest_authority.sql",
     "032_sandbox_source_readiness_identity.sql",
     "033_sandbox_access_transport.sql",
+    "034_sandbox_terminal_state_events.sql",
   ]);
 });
 
@@ -214,6 +215,18 @@ test("sandbox access transport atomically consumes one live grant through contro
   assert.match(sql,/sandbox_row\.state NOT IN \('ready','running'\)/);
   assert.match(sql,/GRANT EXECUTE[\s\S]*TO blazn_sandbox_controller/);
   assert.match(sql,/REVOKE ALL[\s\S]*FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker/);
+});
+
+test("sandbox completion emits terminal state events for CLI watches",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/034_sandbox_terminal_state_events.sql"),"utf8");
+  assert.match(sql,/CREATE OR REPLACE FUNCTION sandbox_controller_complete_v5/);
+  assert.match(sql,/WHEN 'create' THEN 'sandbox\.ready'/);
+  assert.match(sql,/WHEN 'stop' THEN 'sandbox\.stopped'/);
+  assert.match(sql,/ELSE 'sandbox\.deleted'/);
+  assert.match(sql,/IF completed AND p_status='succeeded'/);
+  assert.match(sql,/CREATE OR REPLACE FUNCTION sandbox_controller_consume_access_grant_v1/);
+  assert.match(sql,/candidate_sandbox\.workspace_id=grant_row\.workspace_id/);
 });
 
 test("source readiness binding preserves stable bootstrap identity across resourceVersion drift", async () => {
