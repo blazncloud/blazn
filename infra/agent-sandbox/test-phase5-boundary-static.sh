@@ -48,7 +48,8 @@ assert policy["spec"]["failurePolicy"] == "Fail"
 selector = policy["spec"]["matchConstraints"]["namespaceSelector"]["matchExpressions"][0]
 assert selector == {"key": "kubernetes.io/metadata.name", "operator": "In", "values": ["blazn-poc-sandboxes"]}
 rules = policy["spec"]["matchConstraints"]["resourceRules"][0]
-assert rules["apiVersions"] == ["v1alpha1", "v1beta1"] and rules["resources"] == ["sandboxes"]
+assert rules["apiVersions"] == ["v1alpha1", "v1beta1"]
+assert rules["resources"] == ["sandboxes", "sandboxes/status", "sandboxes/finalizers"]
 expressions = "\n".join(v["expression"] for v in policy["spec"]["validations"])
 for needle in (
     "blazn-poc-sandboxes",

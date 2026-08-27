@@ -20,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y python3-yaml; }
       - run: infra/agent-sandbox/test-static.sh
       - run: infra/agent-sandbox/test-phase4c-static.sh
       - run: infra/agent-sandbox/test-phase5-boundary-static.sh

@@ -57,7 +57,9 @@ def good():
             "annotations": {
                 "sandboxes.blazn.dev/trust-level": "approved_non_sensitive_poc",
                 "sandboxes.blazn.dev/expires-at": "2026-08-27T23:59:59.000000000Z",
-                "sandboxes.blazn.dev/artifact-exports": "[]",
+                "sandboxes.blazn.dev/artifact-exports": json.dumps(
+                    [{"name": "change.patch", "path": "/workspace/artifacts/change.patch"}]
+                ),
                 "sandboxes.blazn.dev/artifact-contract-digest": "sha256:" + "c" * 64,
                 "sandboxes.blazn.dev/create-intent-digest": "sha256:" + "d" * 64,
             },
@@ -170,6 +172,14 @@ def mutate(doc, mutation):
         doc["spec"]["shutdownPolicy"] = "Retain"
     elif mutation == "wrong-workspace-shape":
         meta["labels"]["blazn.dev/workspace"] = "not-a-uuid"
+    elif mutation == "mount-traversal":
+        main["volumeMounts"][1]["mountPath"] = "/etc"
+    elif mutation == "mount-subpath":
+        main["volumeMounts"][0]["subPath"] = "../escape"
+    elif mutation == "init-ephemeral-oversize":
+        pod["initContainers"][0]["resources"]["limits"]["ephemeral-storage"] = "500Gi"
+    elif mutation == "volume-size-oversize":
+        pod["volumes"][0]["emptyDir"]["sizeLimit"] = "5000Gi"
     else:
         raise SystemExit(f"unknown mutation {mutation}")
     return doc

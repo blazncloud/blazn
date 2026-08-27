@@ -111,7 +111,7 @@ spec:
     - apiGroups: ["agents.x-k8s.io"]
       apiVersions: ["v1alpha1", "v1beta1"]
       operations: ["CREATE", "UPDATE"]
-      resources: ["sandboxes"]
+      resources: ["sandboxes", "sandboxes/status", "sandboxes/finalizers"]
       scope: Namespaced
   variables:
   - name: pod
@@ -145,15 +145,17 @@ spec:
     message: "Sandbox Pods may not share host namespaces or inject ephemeral containers"
   - expression: "variables.pod.securityContext.runAsNonRoot == true && variables.pod.securityContext.runAsUser == 65532 && variables.pod.securityContext.runAsGroup == 65532 && variables.pod.securityContext.fsGroup == 65532 && variables.pod.securityContext.seccompProfile.type == 'RuntimeDefault' && (!has(variables.pod.securityContext.sysctls) || size(variables.pod.securityContext.sysctls) == 0)"
     message: "Sandbox Pods must use the reviewed non-root pod security context"
-  - expression: "!has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir) && v.name.matches('^(source-[0-9]{2}|bootstrap-state|artifacts)$') && !has(v.hostPath) && !has(v.secret) && !has(v.configMap) && !has(v.projected) && !has(v.persistentVolumeClaim) && !has(v.downwardAPI) && !has(v.csi) && !has(v.nfs) && !has(v.image))"
-    message: "Sandbox Pods may mount only the reviewed emptyDir volumes"
+  - expression: "!has(variables.pod.volumes) || (size(variables.pod.volumes) <= 8 && variables.pod.volumes.all(v, has(v.emptyDir) && v.name.matches('^(source-[0-9]{2}|bootstrap-state|artifacts)$') && has(v.emptyDir.sizeLimit) && quantity(string(v.emptyDir.sizeLimit)).compareTo(quantity('20Gi')) <= 0 && !has(v.hostPath) && !has(v.secret) && !has(v.configMap) && !has(v.projected) && !has(v.persistentVolumeClaim) && !has(v.downwardAPI) && !has(v.csi) && !has(v.nfs) && !has(v.image)))"
+    message: "Sandbox Pods may mount only the reviewed size-bounded emptyDir volumes"
+  - expression: "(variables.pod.containers + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])).all(c, !has(c.volumeMounts) || c.volumeMounts.all(m, !has(m.subPath) && !has(m.subPathExpr) && !m.mountPath.contains('..') && (m.mountPath == '/run/blazn-bootstrap' || m.mountPath == '/workspace/artifacts' || m.mountPath.startsWith('/workspace/src/'))))"
+    message: "Sandbox volume mounts must stay inside the reviewed workspace paths without subPaths"
   - expression: "size(variables.pod.containers) == 1 && variables.pod.containers[0].name == 'main'"
     message: "Sandbox Pods must run exactly one main container"
   - expression: "variables.pod.containers[0].image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$')"
     message: "The Sandbox main image must be digest-pinned"
   - expression: "size(variables.pod.containers[0].command) >= 1 && size(variables.pod.containers[0].command) <= 32"
     message: "The Sandbox main command must be an explicit bounded argv"
-  - expression: "!has(variables.pod.initContainers) || (size(variables.pod.initContainers) <= 2 && variables.pod.initContainers.all(c, c.name in variables.helperNames && c.image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$') && c.image != variables.pod.containers[0].image && c.command[0] == '/blazn-sandbox-io' && c.resources.requests['cpu'] == '10m' && c.resources.requests['memory'] == '16Mi' && c.resources.limits['cpu'] == '100m' && c.resources.limits['memory'] == '64Mi'))"
+  - expression: "!has(variables.pod.initContainers) || (size(variables.pod.initContainers) <= 2 && variables.pod.initContainers.all(c, c.name in variables.helperNames && c.image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$') && c.image != variables.pod.containers[0].image && c.command[0] == '/blazn-sandbox-io' && size(c.resources.requests) == 3 && size(c.resources.limits) == 3 && c.resources.requests['cpu'] == '10m' && c.resources.requests['memory'] == '16Mi' && c.resources.requests['ephemeral-storage'] == '16Mi' && c.resources.limits['cpu'] == '100m' && c.resources.limits['memory'] == '64Mi' && c.resources.limits['ephemeral-storage'] == '64Mi'))"
     message: "Sandbox init containers must be the reviewed digest-pinned IO helpers"
   - expression: "(variables.pod.containers + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])).all(c, c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
     message: "Every Sandbox container must use the reviewed restricted security context"

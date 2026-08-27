@@ -36,11 +36,11 @@ are restricted to that identity and the upstream controller with spec,
 labels, and annotations immutable.
 
 `good-sandbox.py` is the executable statement of that contract: it renders
-the adapter-exact object plus nineteen reviewed mutations, and
+the adapter-exact object plus twenty-two reviewed mutations, and
 `test-phase5-boundary-disposable.sh` proves on a disposable kind cluster
 that the good object is admitted while every mutation is denied by the rule
-that owns it, including creator-identity and update-fencing checks through
-impersonated requests. `test-phase5-boundary-transaction.sh` proves the
+that owns it, plus a permitted-but-wrong creator identity, update fencing,
+and status-subresource fencing through impersonated requests. `test-phase5-boundary-transaction.sh` proves the
 install and rollback transactions resume from a crash at every journal
 boundary, fail closed on discovery errors, refuse foreign objects and
 occupied namespaces, and roll back only recorded UIDs through the private
