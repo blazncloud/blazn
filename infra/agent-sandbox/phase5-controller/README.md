@@ -109,3 +109,31 @@ audit and `make test-phase5-controller-secret-init` for the initializer unit
 tests. A real multi-platform image build, OCI inspection, publication, and
 digest capture remain deferred to an eligible registry lane with Docker
 Buildx; none is performed by this static preparation.
+
+## Deployment (Phase 5)
+
+Once the boundary and the Agent Sandbox controller are installed and the
+controller Secrets exist, `provision-controller-secrets.sh` creates the
+`blazn-controller-database-url` and object-credential Secrets in
+`blazn-poc-system` from root-only files, rewriting the database URL authority
+to the reviewed reachable endpoint and never printing any secret value. The
+controller database URL must authenticate as `blazn_sandbox_controller` (a
+capability role that needs a login credential provisioned on the control-plane
+database).
+
+`install-controller.sh` is a journaled, crash-resumable, UID-fenced
+transaction (`sealed → apply-intent → applied → scaled → complete`): it
+requires the boundary, the Agent Sandbox controller, and both Secrets, seals
+the rendered controller manifest, verifies the reviewed digest and that it
+starts at zero replicas, applies it, scales it to one, waits for
+Availability, and records every owned UID. `teardown-controller.sh` scales to
+zero, drains the Pods, deletes only the recorded controller identities (never
+the shared namespaces or Secrets) by UID precondition, and proves absence.
+
+`../test-phase5-controller-transaction.sh` proves crash-resume at every
+journal boundary, fail-closed prerequisites (missing Secret, missing upstream
+controller), the zero-replicas gate, the Available gate, exact
+UID-preconditioned teardown, pre-existing-Deployment refusal, and path-root
+confinement, against a fake kubectl state machine. The live reconcile of a
+`blazn sandbox create` into a running Pod is proven against the control-plane
+database at deploy time.
