@@ -150,6 +150,72 @@ func TestSyntheticRunClientRoutesProgressCompletionAndBinaryUpload(t *testing.T)
 	}
 }
 
+func TestRunMessageClientListsQueuesClaimsAndDelivers(t *testing.T) {
+	requestNumber := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestNumber++
+		w.Header().Set("Content-Type", "application/json")
+		basePath := "/v1/workspaces/" + runTestWorkspaceID + "/projects/" + runTestProjectID + "/runs/" + runTestRunID + "/messages"
+		switch requestNumber {
+		case 1:
+			if r.URL.Path != basePath {
+				t.Fatalf("list path=%s", r.URL.Path)
+			}
+			if r.Method != http.MethodGet || r.URL.Query().Get("cursor") != "1" {
+				t.Fatalf("list=%s", r.URL.String())
+			}
+			_, _ = w.Write([]byte(`{"items":[],"nextCursor":null}`))
+		case 2:
+			if r.URL.Path != basePath || r.Method != http.MethodPost || r.Header.Get("Idempotency-Key") != "message-steer-1" {
+				t.Fatalf("send path=%s headers=%v", r.URL.Path, r.Header)
+			}
+			var request SendRunMessageRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Kind != RunMessageKindSteer || request.ParentMessageID != runTestArtifactID || len([]rune(request.Content)) != 6000 {
+				t.Fatalf("request=%#v err=%v", request, err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(runMessageEnvelopeJSON()))
+		case 3:
+			if r.URL.Path != basePath+"/claim" || r.Header.Get("Idempotency-Key") != "message-claim-1" {
+				t.Fatalf("claim path=%s headers=%v", r.URL.Path, r.Header)
+			}
+			var request ClaimRunMessageRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.LeaseSeconds != 45 {
+				t.Fatalf("claim=%#v err=%v", request, err)
+			}
+			_, _ = w.Write([]byte(runMessageClaimEnvelopeJSON()))
+		case 4:
+			if r.URL.Path != basePath+"/"+runTestArtifactID+"/deliver" || r.Header.Get("Idempotency-Key") != "message-deliver-1" {
+				t.Fatalf("deliver path=%s headers=%v", r.URL.Path, r.Header)
+			}
+			var request DeliverRunMessageRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ClaimID != "00000000-0000-4000-8000-000000000006" {
+				t.Fatalf("deliver=%#v err=%v", request, err)
+			}
+			_, _ = w.Write([]byte(runDeliveredMessageEnvelopeJSON()))
+		default:
+			t.Fatalf("unexpected request %d", requestNumber)
+		}
+	}))
+	defer server.Close()
+	api, _ := New(server.URL, server.Client())
+	if _, err := api.ListRunMessages(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "1"); err != nil {
+		t.Fatal(err)
+	}
+	message, err := api.SendRunMessage(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "message-steer-1", SendRunMessageRequest{Kind: RunMessageKindSteer, Content: repeat("界", 6000), ParentMessageID: runTestArtifactID})
+	if err != nil || message.Message.Ordinal != 2 || message.Message.Content != "Only update documentation" {
+		t.Fatalf("message=%#v err=%v", message, err)
+	}
+	claim, err := api.ClaimRunMessage(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "message-claim-1", ClaimRunMessageRequest{LeaseSeconds: 45})
+	if err != nil || claim.Claim == nil || claim.Claim.Message.Status != "claimed" {
+		t.Fatalf("claim=%#v err=%v", claim, err)
+	}
+	delivered, err := api.DeliverRunMessage(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, runTestArtifactID, "message-deliver-1", DeliverRunMessageRequest{ClaimID: claim.Claim.ClaimID})
+	if err != nil || delivered.Message.Status != "delivered" {
+		t.Fatalf("delivered=%#v err=%v", delivered, err)
+	}
+}
+
 func TestRunClientRejectsInvalidInputsBeforeNetwork(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
@@ -166,6 +232,18 @@ func TestRunClientRejectsInvalidInputsBeforeNetwork(t *testing.T) {
 	}
 	if _, err := api.CancelRun(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "run-cancel-1", CancelRunRequest{}); err == nil {
 		t.Fatal("zero version passed")
+	}
+	if _, err := api.ListRunMessages(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "zero"); err == nil {
+		t.Fatal("invalid message cursor passed")
+	}
+	if _, err := api.SendRunMessage(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "message-send-1", SendRunMessageRequest{Kind: "unknown", Content: "x"}); err == nil {
+		t.Fatal("invalid message kind passed")
+	}
+	if _, err := api.ClaimRunMessage(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, "message-claim-1", ClaimRunMessageRequest{LeaseSeconds: 4}); err == nil {
+		t.Fatal("invalid message lease passed")
+	}
+	if _, err := api.DeliverRunMessage(ctx, "token", runTestWorkspaceID, runTestProjectID, runTestRunID, runTestArtifactID, "message-deliver-1", DeliverRunMessageRequest{ClaimID: "bad"}); err == nil {
+		t.Fatal("invalid message claim ID passed")
 	}
 	if _, err := api.GetArtifact(ctx, "token", runTestWorkspaceID, runTestProjectID, "bad"); err == nil {
 		t.Fatal("invalid Artifact ID passed")
@@ -213,6 +291,15 @@ func succeededRunEnvelopeJSON() string {
 }
 func artifactEnvelopeJSON() string {
 	return `{"artifact":{"id":"` + runTestArtifactID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","sourceRunId":"` + runTestRunID + `","kind":"content.video","mediaType":"video","name":"preview.mp4","status":"ready","version":1,"digest":"sha256:` + repeat("b", 64) + `","sizeBytes":12,"createdBy":"00000000-0000-4000-8000-000000000005","createdAt":"2026-08-22T00:00:00Z","updatedAt":"2026-08-22T00:00:00Z","downloadAvailable":true}}`
+}
+func runMessageEnvelopeJSON() string {
+	return `{"message":{"id":"` + runTestArtifactID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","runId":"` + runTestRunID + `","ordinal":2,"role":"user","kind":"steer","status":"queued","parentMessageId":"` + runTestArtifactID + `","content":"Only update documentation","contentDigest":"sha256:` + repeat("c", 64) + `","createdBy":"00000000-0000-4000-8000-000000000005","createdAt":"2026-08-22T00:00:00Z"}}`
+}
+func runMessageClaimEnvelopeJSON() string {
+	return `{"claim":{"message":{"id":"` + runTestArtifactID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","runId":"` + runTestRunID + `","ordinal":2,"role":"user","kind":"steer","status":"claimed","content":"Only update documentation","contentDigest":"sha256:` + repeat("c", 64) + `","createdBy":"00000000-0000-4000-8000-000000000005","createdAt":"2026-08-22T00:00:00Z"},"claimId":"00000000-0000-4000-8000-000000000006","leaseExpiresAt":"2026-08-22T00:00:30Z"}}`
+}
+func runDeliveredMessageEnvelopeJSON() string {
+	return `{"message":{"id":"` + runTestArtifactID + `","workspaceId":"` + runTestWorkspaceID + `","projectId":"` + runTestProjectID + `","runId":"` + runTestRunID + `","ordinal":2,"role":"user","kind":"steer","status":"delivered","content":"Only update documentation","contentDigest":"sha256:` + repeat("c", 64) + `","createdBy":"00000000-0000-4000-8000-000000000005","createdAt":"2026-08-22T00:00:00Z"}}`
 }
 func repeat(value string, count int) string {
 	result := ""

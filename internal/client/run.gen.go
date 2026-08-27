@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/runs.openapi.json; DO NOT EDIT.
-// Contract SHA256: d645f49884e02f886a5875116e78afaed6e8847cda7df6d759fe7a9086a7b9b8
+// Contract SHA256: 18c4fbeeaf7c9c716682a82bb3f8647e661339a8f03f7cd15ef07a535dcd37c1
 
 package client
 
@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"unicode/utf8"
 )
 
 type ProofClass string
@@ -59,6 +60,14 @@ const (
 	ArtifactMediaTypeDocument ArtifactMediaType = "document"
 	ArtifactMediaTypeData     ArtifactMediaType = "data"
 	ArtifactMediaTypeOther    ArtifactMediaType = "other"
+)
+
+type RunMessageKind string
+
+const (
+	RunMessageKindPrompt   RunMessageKind = "prompt"
+	RunMessageKindFollowup RunMessageKind = "followup"
+	RunMessageKindSteer    RunMessageKind = "steer"
 )
 
 type RunPlacement struct {
@@ -113,6 +122,47 @@ type CreateRunRequest struct {
 }
 type CancelRunRequest struct {
 	ExpectedVersion int `json:"expectedVersion"`
+}
+type RunMessage struct {
+	ID              string         `json:"id"`
+	WorkspaceID     string         `json:"workspaceId"`
+	ProjectID       string         `json:"projectId"`
+	RunID           string         `json:"runId"`
+	Ordinal         int            `json:"ordinal"`
+	Role            string         `json:"role"`
+	Kind            RunMessageKind `json:"kind"`
+	Status          string         `json:"status"`
+	ParentMessageID string         `json:"parentMessageId,omitempty"`
+	Content         string         `json:"content"`
+	ContentDigest   string         `json:"contentDigest"`
+	CreatedBy       string         `json:"createdBy"`
+	CreatedAt       string         `json:"createdAt"`
+}
+type SendRunMessageRequest struct {
+	Kind            RunMessageKind `json:"kind"`
+	Content         string         `json:"content"`
+	ParentMessageID string         `json:"parentMessageId,omitempty"`
+}
+type RunMessageEnvelope struct {
+	Message RunMessage `json:"message"`
+}
+type RunMessageList struct {
+	Items      []RunMessage `json:"items"`
+	NextCursor *string      `json:"nextCursor"`
+}
+type ClaimRunMessageRequest struct {
+	LeaseSeconds int `json:"leaseSeconds"`
+}
+type DeliverRunMessageRequest struct {
+	ClaimID string `json:"claimId"`
+}
+type RunMessageClaim struct {
+	Message        RunMessage `json:"message"`
+	ClaimID        string     `json:"claimId"`
+	LeaseExpiresAt string     `json:"leaseExpiresAt"`
+}
+type RunMessageClaimEnvelope struct {
+	Claim *RunMessageClaim `json:"claim"`
 }
 type SyntheticRunProgressRequest struct {
 	Sequence int    `json:"sequence"`
@@ -170,6 +220,7 @@ var runKind = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,95}$`)
 var runDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var runOutputName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var runPhase = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,95}$`)
+var runMessageCursor = regexp.MustCompile(`^[1-9][0-9]*$`)
 
 func (c *Client) CreateRun(ctx context.Context, accessToken, workspaceID, projectID, idempotencyKey string, request CreateRunRequest) (RunEnvelope, error) {
 	var output RunEnvelope
@@ -224,6 +275,59 @@ func (c *Client) CancelRun(ctx context.Context, accessToken, workspaceID, projec
 		return output, fmt.Errorf("Run cancel request is invalid")
 	}
 	err = c.workspaceDo(ctx, http.MethodPost, path+"/cancel", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) ListRunMessages(ctx context.Context, accessToken, workspaceID, projectID, runID, cursor string) (RunMessageList, error) {
+	var output RunMessageList
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if len(cursor) > 512 || (cursor != "" && !runMessageCursor.MatchString(cursor)) {
+		return output, fmt.Errorf("Run message cursor is invalid")
+	}
+	query := make(url.Values)
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path+"/messages", accessToken, "", query, nil, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) SendRunMessage(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request SendRunMessageRequest) (RunMessageEnvelope, error) {
+	var output RunMessageEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	characters := utf8.RuneCountInString(request.Content)
+	if !validRunMessageKind(request.Kind) || !utf8.ValidString(request.Content) || characters < 1 || characters > 16384 || request.ParentMessageID != "" && !runUUID.MatchString(request.ParentMessageID) {
+		return output, fmt.Errorf("Run message request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages", accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)
+	return output, err
+}
+func (c *Client) ClaimRunMessage(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request ClaimRunMessageRequest) (RunMessageClaimEnvelope, error) {
+	var output RunMessageClaimEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if request.LeaseSeconds < 5 || request.LeaseSeconds > 300 {
+		return output, fmt.Errorf("Run message claim request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages/claim", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) DeliverRunMessage(ctx context.Context, accessToken, workspaceID, projectID, runID, messageID, idempotencyKey string, request DeliverRunMessageRequest) (RunMessageEnvelope, error) {
+	var output RunMessageEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if !runUUID.MatchString(messageID) || !runUUID.MatchString(request.ClaimID) {
+		return output, fmt.Errorf("Run message delivery request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages/"+url.PathEscape(messageID)+"/deliver", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
 	return output, err
 }
 func (c *Client) RecordSyntheticRunProgress(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request SyntheticRunProgressRequest) (ProgressAck, error) {
@@ -379,6 +483,9 @@ func validArtifactStatus(value string, all bool) bool {
 }
 func validArtifactMediaType(value ArtifactMediaType) bool {
 	return value == ArtifactMediaTypeImage || value == ArtifactMediaTypeVideo || value == ArtifactMediaTypeAudio || value == ArtifactMediaTypeDocument || value == ArtifactMediaTypeData || value == ArtifactMediaTypeOther
+}
+func validRunMessageKind(value RunMessageKind) bool {
+	return value == RunMessageKindPrompt || value == RunMessageKindFollowup || value == RunMessageKindSteer
 }
 func runProjectPath(workspaceID, projectID string) (string, error) {
 	if !runUUID.MatchString(workspaceID) {
