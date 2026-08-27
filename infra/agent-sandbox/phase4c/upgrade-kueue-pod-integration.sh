@@ -19,6 +19,7 @@ phase4c_require_mutation_authority
 : "${BLAZN_EXPECTED_KUEUE_MANIFEST_SHA256:?set reviewed Helm manifest digest}"
 : "${BLAZN_EXPECTED_KUEUE_CONFIG_SHA256:?set reviewed Kueue config digest}"
 : "${BLAZN_EXPECTED_WORKLOADS:?set reviewed total Workload count}"
+: "${BLAZN_EXPECTED_KUEUE_PRIOR_IMAGE:?set the reviewed prior Kueue controller image reference}"
 case "$BLAZN_EXPECTED_KUEUE_REVISION:$BLAZN_EXPECTED_WORKLOADS" in *[!0-9:]*) printf 'reviewed Kueue counters must be numeric\n' >&2; exit 1 ;; esac
 for required in helm jq patch; do command -v "$required" >/dev/null 2>&1 || { printf '%s is required\n' "$required" >&2; exit 1; }; done
 transaction=$BLAZN_KUEUE_TRANSACTION_DIR
@@ -65,7 +66,7 @@ if [ "$phase" = sealed ]; then
   workload_identities >"$transaction/prior-workloads.json"; chmod 0400 "$transaction/prior-workloads.json"
   [ "$(jq 'length' "$transaction/prior-workloads.json")" = "$BLAZN_EXPECTED_WORKLOADS" ] || { printf 'Workload baseline changed\n' >&2; exit 1; }
   printf '%s\n' "$current_revision" >"$transaction/prior-revision"; chmod 0400 "$transaction/prior-revision"
-  prior_image=$(live_controller_image); [ -n "$prior_image" ] || { printf 'could not record the prior Kueue controller image\n' >&2; exit 1; }
+  prior_image=$(live_controller_image); [ "$prior_image" = "$BLAZN_EXPECTED_KUEUE_PRIOR_IMAGE" ] || { printf 'live Kueue controller image differs from the reviewed prior reference\n' >&2; exit 1; }
   printf '%s\n' "$prior_image" >"$transaction/prior-image"; chmod 0400 "$transaction/prior-image"
   [ ! -L "$transaction/chart-source" ] || { printf 'Kueue chart-source location is unsafe\n' >&2; exit 1; }
   if [ -d "$transaction/chart-source" ]; then find "$transaction/chart-source" -mindepth 1 -xdev -delete; else mkdir -m 0700 "$transaction/chart-source"; fi

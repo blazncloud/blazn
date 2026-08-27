@@ -253,6 +253,7 @@ run_upgrade() {
     BLAZN_EXPECTED_KUEUE_MANIFEST_SHA256="$baseline_manifest_sha" \
     BLAZN_EXPECTED_KUEUE_CONFIG_SHA256="$LIVE_KUEUE_PRIOR_CONFIG_SHA256" \
     BLAZN_EXPECTED_WORKLOADS=2 \
+    BLAZN_EXPECTED_KUEUE_PRIOR_IMAGE=registry.k8s.io/kueue/kueue@sha256:2c5b782a2a3954ef72576db22d6bdc752d3604d39f3be734662ab7acfa2f61dc \
     "$@" \
     "$ROOT/phase4c/upgrade-kueue-pod-integration.sh" "$chart_tgz" >"$tmp/last-out" 2>"$tmp/last-err"
   last_code=$?
@@ -416,6 +417,17 @@ chmod 0400 "$transaction/kueue-0.14.3.tgz"
 run_upgrade "$transaction"
 [ "$last_code" -eq 1 ]
 expect_message 'derived Kueue chart changed since preparation'
+
+# S11b: an out-of-band controller image drift at seal time fails closed
+# before any state is recorded as the rollback baseline.
+reset_state
+new_transaction
+printf 'registry.k8s.io/kueue/kueue@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' >"$FAKE_STATE/deployment-image"
+run_upgrade "$transaction"
+[ "$last_code" -eq 1 ]
+expect_message 'differs from the reviewed prior reference'
+expect_phase "$transaction" sealed
+if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'image drift at seal must block mutation\n' >&2; exit 1; fi
 
 # S12: path traversal outside the reviewed transaction root is rejected.
 reset_state
