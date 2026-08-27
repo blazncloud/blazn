@@ -117,7 +117,7 @@ spec:
   - name: pod
     expression: "object.spec.podTemplate.spec"
   - name: helperNames
-    expression: "['sandbox-bootstrap', 'sandbox-artifact-io']"
+    expression: "['sandbox-bootstrap', 'sandbox-artifact-io', 'sandbox-access-io']"
   validations:
   - expression: "object.metadata.namespace == 'blazn-poc-sandboxes'"
     message: "Blazn-managed Sandboxes are permitted only in blazn-poc-sandboxes"
@@ -155,7 +155,7 @@ spec:
     message: "The Sandbox main image must be digest-pinned"
   - expression: "size(variables.pod.containers[0].command) >= 1 && size(variables.pod.containers[0].command) <= 32"
     message: "The Sandbox main command must be an explicit bounded argv"
-  - expression: "!has(variables.pod.initContainers) || (size(variables.pod.initContainers) <= 2 && variables.pod.initContainers.all(c, c.name in variables.helperNames && c.image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$') && c.image != variables.pod.containers[0].image && c.command[0] == '/blazn-sandbox-io' && size(c.resources.requests) == 3 && size(c.resources.limits) == 3 && c.resources.requests['cpu'] == '10m' && c.resources.requests['memory'] == '16Mi' && c.resources.requests['ephemeral-storage'] == '16Mi' && c.resources.limits['cpu'] == '100m' && c.resources.limits['memory'] == '64Mi' && c.resources.limits['ephemeral-storage'] == '64Mi'))"
+  - expression: "!has(variables.pod.initContainers) || (size(variables.pod.initContainers) <= 3 && variables.pod.initContainers.all(c, c.name in variables.helperNames && c.image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$') && c.image != variables.pod.containers[0].image && size(c.command) == 2 && c.command[0] == '/blazn-sandbox-io' && ((c.name == 'sandbox-bootstrap' && c.command[1] == 'wait-bootstrap' && !has(c.restartPolicy)) || (c.name == 'sandbox-artifact-io' && c.command[1] == 'wait-artifact' && c.restartPolicy == 'Always') || (c.name == 'sandbox-access-io' && c.command[1] == 'wait-access' && c.restartPolicy == 'Always')) && size(c.resources.requests) == 3 && size(c.resources.limits) == 3 && c.resources.requests['cpu'] == '10m' && c.resources.requests['memory'] == '16Mi' && c.resources.requests['ephemeral-storage'] == '16Mi' && c.resources.limits['cpu'] == '100m' && c.resources.limits['memory'] == '64Mi' && c.resources.limits['ephemeral-storage'] == '64Mi'))"
     message: "Sandbox init containers must be the reviewed digest-pinned IO helpers"
   - expression: "(variables.pod.containers + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])).all(c, c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
     message: "Every Sandbox container must use the reviewed restricted security context"
