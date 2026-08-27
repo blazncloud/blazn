@@ -71,6 +71,8 @@ grep -F "          value: \"$HELPER_IMAGE\"" "$tmp/ip.yaml" >/dev/null
 grep -A1 -Fx '        - name: BLAZN_SANDBOX_IO_IMAGE' "$tmp/ip.yaml" | grep -Fxq "          value: \"$HELPER_IMAGE\""
 grep -F 'expirationSeconds: 600' "$tmp/ip.yaml" >/dev/null
 grep -F 'audience: https://kubernetes.default.svc' "$tmp/ip.yaml" >/dev/null
+render "$tmp/source-cidrs.yaml" BLAZN_SOURCE_CIDR='140.82.112.3/32,140.82.112.4/32'
+grep -F 'value: '\''{"github.com":["140.82.112.3/32","140.82.112.4/32"]}'\''' "$tmp/source-cidrs.yaml" >/dev/null
 grep -F 'command: ["/blazn-sandbox-controller-secret-init"]' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '        - /var/run/blazn-api-ca/ca.crt' "$tmp/ip.yaml")" -eq 1 ]
 [ "$(grep -Fxc '        - /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
@@ -191,6 +193,8 @@ expect_fail bad-secret-name BLAZN_DATABASE_URL_SECRET_NAME=Bad_Name
 expect_fail missing-source-host BLAZN_SOURCE_HOST=
 expect_fail uppercase-source-host BLAZN_SOURCE_HOST=GitHub.com
 expect_fail broad-source-cidr BLAZN_SOURCE_CIDR=140.82.112.0/24
+expect_fail duplicate-source-cidr BLAZN_SOURCE_CIDR=140.82.112.4/32,140.82.112.4/32
+expect_fail empty-source-cidr BLAZN_SOURCE_CIDR=140.82.112.4/32,
 expect_fail broad-source-dns BLAZN_SOURCE_DNS_CIDR=10.20.30.0/24
 expect_fail missing-object-secret BLAZN_OBJECT_SECRET_NAME=
 expect_fail same-object-keys BLAZN_OBJECT_ACCESS_KEY=credential BLAZN_OBJECT_SECRET_KEY=credential

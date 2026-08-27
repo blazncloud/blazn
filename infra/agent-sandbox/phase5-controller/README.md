@@ -50,8 +50,10 @@ BLAZN_SOURCE_DNS_CIDR='10.0.0.53/32' \
 ./infra/agent-sandbox/phase5-controller/render-install.sh ./controller-install.yaml
 ```
 
-Both network destinations must be exact, usable IPv4 `/32` values; broad
-CIDRs, wildcard ports, absent values, and mutable image tags fail closed. The
+Every network destination must be an exact, usable IPv4 `/32`; the source
+boundary accepts a comma-separated, duplicate-free set of at most 64 exact
+addresses for a reviewed rotating frontend. Broad CIDRs, wildcard ports,
+absent values, and mutable image tags fail closed. The
 API host passed to the process is derived from the exact API `/32`, so it does
 not need DNS. The database URL in the pre-existing Secret must name the exact
 ben1 IP and port above when `BLAZN_DATABASE_ENDPOINT_KIND=ip`.

@@ -166,7 +166,21 @@ valid_host_cidr "$BLAZN_BEN1_POSTGRES_CIDR" || fail "BLAZN_BEN1_POSTGRES_CIDR mu
 valid_host_cidr "$BLAZN_OBJECT_ENDPOINT_CIDR" || fail "BLAZN_OBJECT_ENDPOINT_CIDR must be one exact, usable IPv4 /32"
 valid_dns_label "${BLAZN_SOURCE_HOST%%.*}" || fail "BLAZN_SOURCE_HOST is invalid"
 valid_registry_host "$BLAZN_SOURCE_HOST" || fail "BLAZN_SOURCE_HOST is invalid"
-valid_host_cidr "$BLAZN_SOURCE_CIDR" || fail "BLAZN_SOURCE_CIDR must be one exact, usable IPv4 /32"
+case "$BLAZN_SOURCE_CIDR" in ,*|*,|*,,*) fail "BLAZN_SOURCE_CIDR contains an empty entry" ;; esac
+old_ifs=$IFS
+IFS=,
+# shellcheck disable=SC2086
+set -- $BLAZN_SOURCE_CIDR
+IFS=$old_ifs
+[ "$#" -ge 1 ] && [ "$#" -le 64 ] || fail "BLAZN_SOURCE_CIDR must contain 1-64 exact IPv4 /32 values"
+source_cidrs_seen=,
+source_cidrs_rendered=
+for source_cidr in "$@"; do
+  valid_host_cidr "$source_cidr" || fail "every BLAZN_SOURCE_CIDR entry must be one exact, usable IPv4 /32"
+  case "$source_cidrs_seen" in *,"$source_cidr",*) fail "BLAZN_SOURCE_CIDR entries must be unique" ;; esac
+  source_cidrs_seen=$source_cidrs_seen$source_cidr,
+  if [ -z "$source_cidrs_rendered" ]; then source_cidrs_rendered=$source_cidr; else source_cidrs_rendered=$source_cidrs_rendered'","'$source_cidr; fi
+done
 valid_host_cidr "$BLAZN_SOURCE_DNS_CIDR" || fail "BLAZN_SOURCE_DNS_CIDR must be one exact, usable IPv4 /32"
 valid_port "$BLAZN_KUBERNETES_API_PORT" || fail "BLAZN_KUBERNETES_API_PORT is invalid"
 valid_port "$BLAZN_BEN1_POSTGRES_PORT" || fail "BLAZN_BEN1_POSTGRES_PORT is invalid"
@@ -220,7 +234,7 @@ sed \
   -e "s|BLAZN_OBJECT_REGION|$BLAZN_OBJECT_REGION|g" \
   -e "s|BLAZN_OBJECT_BUCKET|$BLAZN_OBJECT_BUCKET|g" \
   -e "s|BLAZN_SOURCE_HOST|$BLAZN_SOURCE_HOST|g" \
-  -e "s|BLAZN_SOURCE_CIDR|$BLAZN_SOURCE_CIDR|g" \
+  -e "s|BLAZN_SOURCE_CIDR|$source_cidrs_rendered|g" \
   -e "s|BLAZN_SOURCE_DNS_CIDR|$BLAZN_SOURCE_DNS_CIDR|g" \
   "$ROOT/controller.yaml.in" >"$tmp"
 
