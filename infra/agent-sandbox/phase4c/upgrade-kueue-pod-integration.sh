@@ -73,6 +73,13 @@ fi
 if [ "$phase" = upgrade-intent ]; then
   live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')
   if [ "$live_revision" = "$prior_revision" ]; then helm upgrade kueue "$transaction/kueue-0.14.3.tgz" -n kueue-system --reuse-values --set-file managerConfig.controllerManagerConfigYaml="$sealed_config" --description "$release_description" --atomic --wait --timeout 300s >/dev/null; live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')
+  elif [ "$live_revision" -gt "$expected_upgrade_revision" ]; then
+    helm -n kueue-system get manifest kueue >"$transaction/rollback-manifest.yaml"
+    rollback_description=$(helm -n kueue-system status kueue -o json | jq -er '.info.description')
+    rollback_config=$(kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}')
+    workload_identities >"$transaction/rollback-workloads.json"
+    if [ "$rollback_description" = "Rollback to $prior_revision" ] && cmp "$transaction/prior-manifest.yaml" "$transaction/rollback-manifest.yaml" && [ "$(printf '%s' "$rollback_config" | sha256sum | awk '{print $1}')" = "$BLAZN_EXPECTED_KUEUE_CONFIG_SHA256" ] && cmp "$transaction/prior-workloads.json" "$transaction/rollback-workloads.json"; then write_phase rollback-complete; printf 'Kueue atomic rollback reconciled; use a new transaction\n' >&2; trap - EXIT HUP INT TERM; exit 1; fi
+    printf 'Kueue revision cannot be reconciled with the transaction\n' >&2; exit 1
   elif [ "$live_revision" != "$expected_upgrade_revision" ]; then printf 'Kueue revision cannot be reconciled with the transaction\n' >&2; exit 1; fi
   [ "$live_revision" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ] || { printf 'live Kueue revision is not owned by this transaction\n' >&2; exit 1; }
   owned_revision=true
