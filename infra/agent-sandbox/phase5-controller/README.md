@@ -68,7 +68,8 @@ The output assumes the separately owned namespaces `blazn-poc-system` and
 `blazn-poc-sandboxes` already exist. It creates a tokenless ServiceAccount and
 uses only a 600-second projected API token with an explicit audience. Its Role
 can create/delete/patch and read Sandboxes only in `blazn-poc-sandboxes`; Pod
-access is get/list, Kueue Workload access is list-only, `pods/exec` is create-only,
+access is get/list, Kueue Workload access is list-only, and `pods/exec` is get-only
+for the WebSocket v5 handshake,
 and NetworkPolicy access is create/delete/get/list there. The controller accepts
 only its pinned helper command, verifies the exact Pod and Sandbox UIDs before
 and after each WebSocket v5 exchange, creates an exact temporary DNS/HTTPS
