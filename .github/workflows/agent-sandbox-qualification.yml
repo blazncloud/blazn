@@ -25,6 +25,7 @@ jobs:
       - run: infra/agent-sandbox/test-phase4c-static.sh
       - run: infra/agent-sandbox/test-phase5-boundary-static.sh
       - run: infra/agent-sandbox/test-phase5-install-static.sh
+      - run: infra/agent-sandbox/phase5-controller/test-static.sh
       - run: shellcheck infra/agent-sandbox/*.sh
       - run: shellcheck infra/agent-sandbox/phase4c/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-boundary/*.sh

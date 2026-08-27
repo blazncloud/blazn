@@ -60,6 +60,12 @@ grep -F '  namespace: blazn-poc-system' "$tmp/ip.yaml" >/dev/null
 grep -F '  namespace: blazn-poc-sandboxes' "$tmp/ip.yaml" >/dev/null
 grep -F 'automountServiceAccountToken: false' "$tmp/ip.yaml" >/dev/null
 grep -F "          value: \"$HELPER_IMAGE\"" "$tmp/ip.yaml" >/dev/null
+# Regression: the helper-image placeholder token must not collide with the env
+# var name, or the render rewrites the name too and the controller sees no
+# BLAZN_SANDBOX_IO_IMAGE (config rejected at startup). Pin name presence and
+# name->value adjacency.
+[ "$(grep -Fxc '        - name: BLAZN_SANDBOX_IO_IMAGE' "$tmp/ip.yaml")" -eq 1 ]
+grep -A1 -Fx '        - name: BLAZN_SANDBOX_IO_IMAGE' "$tmp/ip.yaml" | grep -Fxq "          value: \"$HELPER_IMAGE\""
 grep -F 'expirationSeconds: 600' "$tmp/ip.yaml" >/dev/null
 grep -F 'audience: https://kubernetes.default.svc' "$tmp/ip.yaml" >/dev/null
 grep -F 'command: ["/blazn-sandbox-controller-secret-init"]' "$tmp/ip.yaml" >/dev/null
@@ -84,7 +90,7 @@ grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 3 ]
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
 if grep -E "$placeholder_pattern" "$tmp/ip.yaml" >/dev/null; then
   printf 'render left an unresolved placeholder\n' >&2
   exit 1
