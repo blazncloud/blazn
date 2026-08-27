@@ -30,7 +30,26 @@ CREATE TABLE run_messages (
 
 CREATE INDEX run_messages_run_ordinal_idx ON run_messages(workspace_id, project_id, run_id, ordinal);
 
+CREATE FUNCTION validate_run_message_completion() RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF NEW.status = 'succeeded' AND EXISTS (
+    SELECT 1 FROM public.run_messages WHERE run_id = NEW.id AND status <> 'delivered'
+  ) THEN
+    RAISE EXCEPTION 'successful Run requires every accepted message to be delivered' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE CONSTRAINT TRIGGER runs_message_completion
+AFTER INSERT OR UPDATE OF status ON runs DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_run_message_completion();
+
 GRANT SELECT, INSERT ON TABLE run_messages TO blazn_runtime;
 GRANT UPDATE (status, claimed_by, claim_id, lease_expires_at, delivered_at) ON TABLE run_messages TO blazn_runtime;
 REVOKE DELETE ON TABLE run_messages FROM blazn_runtime;
+REVOKE ALL ON FUNCTION validate_run_message_completion() FROM PUBLIC, blazn_runtime, blazn_bootstrap;
 REVOKE ALL ON TABLE run_messages FROM blazn_bootstrap;
