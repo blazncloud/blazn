@@ -153,7 +153,7 @@ spec:
         - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_TOKEN_FILE
           value: /var/run/blazn-api-token/token
         - name: BLAZN_SANDBOX_IO_IMAGE
-          value: "BLAZN_SANDBOX_IO_IMAGE"
+          value: "BLAZN_SANDBOX_IO_IMAGE_REF"
         - name: BLAZN_SANDBOX_SOURCE_DNS_CIDRS
           value: "BLAZN_SOURCE_DNS_CIDR"
         - name: BLAZN_SANDBOX_SOURCE_HOST_CIDRS_JSON
