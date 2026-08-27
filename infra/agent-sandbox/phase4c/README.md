@@ -39,6 +39,27 @@ preferring `v1beta2`; every other Kueue API surface fails closed. This change
 does not create or edit ResourceFlavor, ClusterQueue, Kueue controller, Kueue
 CRDs, or shared quota.
 
+Kueue v0.14.x does not enable the Plain Pod integration by default. The
+reviewed `upgrade-kueue-pod-integration.sh` transaction pins and copies into a
+root-only sealed directory the exact v0.14.3
+chart bytes, current Helm revision, rendered-manifest digest, manager-config
+digest, and admitted Workload identities before enabling `pod` only for
+`blazn-poc` and `blazn-poc-sandboxes` using `podOptions.namespaceSelector`.
+The chart, sealed-config, patch, and reviewed prior-live-config digests are
+pinned in `../versions.env`; `kueue-live-config-baseline.yaml` records the
+reviewed live manager configuration, and executable tests prove the sealed
+configuration is exactly that baseline plus the Pod integration.
+A checksum-pinned patch to the sealed chart renders the same selector only into
+the `mpod.kb.io` and `vpod.kb.io` Helm-managed webhook entries, so future Helm
+operations retain the boundary while other framework selectors remain
+unchanged. A failed upgrade or post-check rolls
+back to the exact prior Helm revision. The transaction is rooted under
+`/var/lib/blazn/phase4c/kueue-pod-*`, journals `upgrade-intent` before Helm,
+and resumes or rolls back after process or host interruption. It requires both
+managed namespaces to be absent and compares every Workload UID before and
+after the change, including pending Workloads. It must use the same serialized live
+cluster lock and Phase 4C approval boundary as the canary.
+
 ## Runtime gate
 
 `render-fixtures.sh` accepts a RuntimeClass only when its live handler equals
@@ -93,18 +114,28 @@ declaring zero residue; lookup failures other than explicit NotFound abort.
 4. Obtain the separate Phase 4C live-change approval. Set the exact reviewed
    context and kube-system UID, plus
    `BLAZN_PHASE4C_CHANGE_APPROVED=approved-phase4c-live-canary`.
-5. On the control-plane host, execute `canary.sh TRANSACTION` only through
+5. Before any foundation apply, and while `blazn-poc` and
+   `blazn-poc-sandboxes` are still absent, enable the Kueue Pod integration:
+   verify the pulled chart against `LIVE_KUEUE_CHART_SHA256`, export a fresh
+   `BLAZN_KUEUE_TRANSACTION_DIR` under `/var/lib/blazn/phase4c/kueue-pod-*`
+   plus the reviewed `BLAZN_EXPECTED_KUEUE_REVISION`,
+   `BLAZN_EXPECTED_KUEUE_MANIFEST_SHA256`, `BLAZN_EXPECTED_KUEUE_CONFIG_SHA256`,
+   and `BLAZN_EXPECTED_WORKLOADS`, then run
+   `sudo phase4c/with-live-lock.sh env ... phase4c/upgrade-kueue-pod-integration.sh KUEUE_CHART_TGZ`.
+   The canary's Kueue admission gate depends on this transaction being
+   `complete`; the transaction refuses to run once either namespace exists.
+6. On the control-plane host, execute `canary.sh TRANSACTION` only through
    `sudo phase4c/with-live-lock.sh .../phase4c/canary.sh TRANSACTION`.
    The launcher holds `/run/lock/blazn/live-cluster-mutation.lock` on inherited
    FD 9 for the complete foreground operation, binds authority to that FD's
    device/inode rather than its replaceable pathname, and atomically increments the
    root-owned fencing counter. Scripts reject a forged FD, unsafe metadata,
    stale token, context drift, or cluster-UID drift.
-6. Review controller RBAC evidence, bootstrap privilege removal, the denied outside-namespace server dry
+7. Review controller RBAC evidence, bootstrap privilege removal, the denied outside-namespace server dry
    run, Ready/Running state, Kueue admission, exact 100m/64Mi reservation, and
    canary deletion. Stop on any mismatch; do not broaden RBAC or fall back to an
    unmanaged Pod.
-7. After interruption, rerun `canary.sh TRANSACTION` under a fresh lock token;
+8. After interruption, rerun `canary.sh TRANSACTION` under a fresh lock token;
    it resumes the durable phase. To unwind, run `rollback.sh TRANSACTION` under
    a fresh lock token.
    It stops the controller, removes the uniquely owned namespace and Phase 4C

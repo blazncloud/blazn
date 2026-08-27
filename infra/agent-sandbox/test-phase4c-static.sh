@@ -11,6 +11,26 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 for script in "$PHASE4C"/*.sh; do sh -n "$script"; done
+grep -F -- '- pod' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+grep -F -- '- blazn-poc' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+grep -F -- '- blazn-poc-sandboxes' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+grep -F '  podOptions:' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
+if grep -E '^managedJobsNamespaceSelector:' "$PHASE4C/kueue-pod-config.yaml" >/dev/null; then exit 1; fi
+# shellcheck disable=SC1091
+. "$ROOT/versions.env"
+[ "$LIVE_KUEUE_CHART_SHA256" = 314d2b21e9a7ea6a31fc7fed1cf7db825e62ce11ad2a849e2b8b450213b9ba09 ]
+grep -F 'LIVE_KUEUE_CHART_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'LIVE_KUEUE_POD_CONFIG_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'LIVE_KUEUE_WEBHOOK_PATCH_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'LIVE_KUEUE_DEPLOYED_CONFIG_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+[ "$(sha256sum "$PHASE4C/kueue-pod-config.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_POD_CONFIG_SHA256" ]
+[ "$(sha256sum "$PHASE4C/kueue-pod-webhook-selector.patch" | awk '{print $1}')" = "$LIVE_KUEUE_WEBHOOK_PATCH_SHA256" ]
+[ "$(sha256sum "$PHASE4C/kueue-live-config-baseline.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_PRIOR_CONFIG_SHA256" ]
+grep -F 'helm -n kueue-system rollback' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'mpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'vpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+# shellcheck disable=SC2016 # literal yq path, not a shell expansion
+grep -F '$integrationsConfig.podOptions.namespaceSelector' "$PHASE4C/kueue-pod-webhook-selector.patch" >/dev/null
 BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 "$PHASE4C/render-install.sh" "$tmp/install.yaml"
 grep -F 'image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.6@sha256:' "$tmp/install.yaml" >/dev/null
 grep -F -- '- --leader-election-namespace=agent-sandbox-system' "$tmp/install.yaml" >/dev/null
