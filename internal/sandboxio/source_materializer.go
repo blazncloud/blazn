@@ -491,7 +491,13 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 	if err != nil {
 		return protocolError("source_materialization_changed", err)
 	}
-	hash := sha256.New()
+	type verifiedFile struct {
+		name string
+		mode filemode.FileMode
+		size int64
+		sha  string
+	}
+	files := make([]verifiedFile, 0, receipt.FileCount)
 	count, total := 0, int64(0)
 	var walk func(string) error
 	walk = func(directory string) error {
@@ -548,17 +554,25 @@ func verifyMaterializedFiles(ctx context.Context, root *os.Root, receipt SourceM
 			if info.Mode().Perm()&0o100 != 0 {
 				mode = filemode.Executable
 			}
-			writeDigestField(hash, name)
-			writeDigestField(hash, mode.String())
-			writeDigestField(hash, fmt.Sprintf("%d", info.Size()))
-			writeDigestField(hash, hex.EncodeToString(contentHash.Sum(nil)))
+			files = append(files, verifiedFile{name: name, mode: mode, size: info.Size(), sha: hex.EncodeToString(contentHash.Sum(nil))})
 			count++
 			total += info.Size()
 		}
 		return nil
 	}
-	if err := walk("."); err != nil || count != receipt.FileCount || total != receipt.TotalBytes || "sha256:"+hex.EncodeToString(hash.Sum(nil)) != receipt.ContentDigest {
+	if err := walk("."); err != nil || count != receipt.FileCount || total != receipt.TotalBytes {
 		return protocolError("source_materialization_changed", err)
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
+	hash := sha256.New()
+	for _, file := range files {
+		writeDigestField(hash, file.name)
+		writeDigestField(hash, file.mode.String())
+		writeDigestField(hash, fmt.Sprintf("%d", file.size))
+		writeDigestField(hash, file.sha)
+	}
+	if "sha256:"+hex.EncodeToString(hash.Sum(nil)) != receipt.ContentDigest {
+		return protocolError("source_materialization_changed", nil)
 	}
 	return nil
 }

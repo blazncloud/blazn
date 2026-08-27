@@ -173,6 +173,29 @@ func TestGitMaterializerPreservesLinuxBackslashFilename(t *testing.T) {
 	}
 }
 
+func TestGitMaterializerVerifiesCanonicalGlobalPathOrder(t *testing.T) {
+	repository, commit := testRepository(t, map[string]testSourceFile{
+		"foo/bar": {body: "nested\n", mode: 0o644},
+		"foo.txt": {body: "sibling\n", mode: 0o644},
+	})
+	destination := t.TempDir()
+	source := Source{Name: "source", URL: "https://example.test/owner/repo.git", Destination: "/workspace/src/source", Commit: commit}
+	manifest := SourceManifest{SchemaVersion: SourceManifestVersion, Sources: []Source{source}}
+	canonical, err := MarshalSourceManifest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materializer := GitMaterializer{Fetcher: fixedRepositoryFetcher{repository: repository}, ResolveDestination: func(Source) string { return destination }}
+	receipt, err := materializer.Materialize(context.Background(), manifest, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := materializer.Materialize(context.Background(), manifest, canonical)
+	if err != nil || adopted.Digest != receipt.Digest {
+		t.Fatalf("adopted=%#v err=%v", adopted, err)
+	}
+}
+
 func TestGitMaterializerRejectsSymlinkSubstituteAndLFSPointer(t *testing.T) {
 	for name, files := range map[string]map[string]testSourceFile{
 		"symlink":        {"escape": {body: "/etc/passwd", mode: os.ModeSymlink | 0o777}},
