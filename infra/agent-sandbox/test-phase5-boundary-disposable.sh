@@ -103,6 +103,8 @@ until ! k create --dry-run=server --as="$controller" -f "$tmp/activation-probe.j
 done
 
 k create --dry-run=server --as="$controller" -f "$tmp/good.json" >/dev/null 2>"$tmp/good.err" || { printf 'adapter-shaped Sandbox was denied:\n' >&2; cat "$tmp/good.err" >&2; exit 1; }
+python3 "$BOUNDARY/good-sandbox.py" many-sources >"$tmp/many.json"
+k create --dry-run=server --as="$controller" -f "$tmp/many.json" >/dev/null 2>"$tmp/many.err" || { printf 'wide legal source shape was denied:\n' >&2; cat "$tmp/many.err" >&2; exit 1; }
 
 expect_denied() {
   denied_case=$1; denied_pattern=$2; denied_as=$3

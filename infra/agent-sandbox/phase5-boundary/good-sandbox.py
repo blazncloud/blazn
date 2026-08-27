@@ -185,7 +185,23 @@ def mutate(doc, mutation):
     return doc
 
 
+def many_sources(doc):
+    """The adapter contract permits up to 32 sources; render a wide legal shape."""
+    pod = doc["spec"]["podTemplate"]["spec"]
+    bootstrap = pod["initContainers"][0]
+    for index in range(1, 8):
+        name = f"source-{index:02d}"
+        destination = f"/workspace/src/extra-{index}"
+        pod["volumes"].insert(index, {"name": name, "emptyDir": {"sizeLimit": "2Gi"}})
+        bootstrap["volumeMounts"].insert(index, {"name": name, "mountPath": destination})
+        pod["containers"][0]["volumeMounts"].insert(index, {"name": name, "mountPath": destination})
+    return doc
+
+
 doc = good()
 if len(sys.argv) > 1:
-    doc = mutate(doc, sys.argv[1])
+    if sys.argv[1] == "many-sources":
+        doc = many_sources(doc)
+    else:
+        doc = mutate(doc, sys.argv[1])
 json.dump(doc, sys.stdout)
