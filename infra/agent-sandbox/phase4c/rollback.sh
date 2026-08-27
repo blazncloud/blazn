@@ -94,7 +94,14 @@ delete_if_owned() {
 # Remove an active canary while its controller can still clear finalizers. A
 # rollback from canary-intent/canary-ready must not strand the workload
 # namespace by stopping reconciliation first.
-canary_existed=$(get_optional_name sandbox phase4c-canary blazn-poc) || { printf 'canary rollback lookup failed\n' >&2; exit 1; }
+canary_existed=''
+sandbox_crd=$(kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name) || {
+  printf 'Sandbox CRD rollback discovery failed\n' >&2
+  exit 1
+}
+if [ -n "$sandbox_crd" ]; then
+  canary_existed=$(get_optional_name sandbox phase4c-canary blazn-poc) || { printf 'canary rollback lookup failed\n' >&2; exit 1; }
+fi
 if [ -n "$canary_existed" ]; then
   delete_if_owned canary-sandbox sandbox phase4c-canary blazn-poc '/apis/agents.x-k8s.io/v1beta1/namespaces/blazn-poc/sandboxes/phase4c-canary' Background
   phase4c_stop_uid_proxy

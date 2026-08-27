@@ -26,6 +26,9 @@ cat >"$tmp/bin/kubectl" <<'EOF'
 #!/bin/sh
 case "$*" in
   *'get runtimeclass blazn-qualified'*) printf 'runsc' ;;
+  *'get crd localqueues.kueue.x-k8s.io -o json'*)
+    if [ -n "${FAKE_LOCAL_QUEUE_VERSIONS:-}" ]; then printf '%s' "$FAKE_LOCAL_QUEUE_VERSIONS"
+    else printf '{"spec":{"versions":[{"name":"v1beta1","served":true,"storage":true}]}}'; fi ;;
   *'get clusterqueue.kueue.x-k8s.io'*) printf 'True' ;;
   *'get nodes -l blazn.dev/sandbox-eligible=true'*) printf 'node/node-a' ;;
   *'auth whoami'*) printf 'phase4c-reviewer' ;;
@@ -40,6 +43,7 @@ PATH="$tmp/bin:$PATH" \
   BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 \
   "$PHASE4C/render-fixtures.sh" "$tmp/orchestration-only" >/dev/null
 grep -F 'blazn.dev/runtime-trust: orchestration-only' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null
+grep -F 'apiVersion: kueue.x-k8s.io/v1beta1' "$tmp/orchestration-only/blazn-poc.yaml" >/dev/null
 if grep -F 'runtimeClassName:' "$tmp/orchestration-only/synthetic-canary.yaml" >/dev/null; then exit 1; fi
 grep -F "object.metadata.labels['blazn.dev/runtime-trust'] == 'orchestration-only'" "$tmp/orchestration-only/controller-boundary.yaml" >/dev/null
 [ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/blazn-poc.yaml")" -eq 4 ]
@@ -47,12 +51,14 @@ grep -F "object.metadata.labels['blazn.dev/runtime-trust'] == 'orchestration-onl
 [ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/controller-boundary.yaml")" -eq 8 ]
 [ "$(grep -c 'blazn.dev/phase4c-transaction: 77777777-7777-4777-8777-777777777777' "$tmp/orchestration-only/synthetic-canary.yaml")" -eq 2 ]
 PATH="$tmp/bin:$PATH" \
+  FAKE_LOCAL_QUEUE_VERSIONS='{"spec":{"versions":[{"name":"v1beta1","served":true},{"name":"v1beta2","served":true,"storage":true}]}}' \
   BLAZN_EXISTING_CLUSTER_QUEUE=shared-capacity \
   BLAZN_SYNTHETIC_IMAGE='example.invalid/synthetic@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   BLAZN_RUNTIME_CLASS=blazn-qualified \
   BLAZN_EXPECTED_RUNTIME_HANDLER=runsc \
   BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 \
   "$PHASE4C/render-fixtures.sh" "$tmp/qualified-runtime" >/dev/null
+grep -F 'apiVersion: kueue.x-k8s.io/v1beta2' "$tmp/qualified-runtime/blazn-poc.yaml" >/dev/null
 grep -F 'blazn.dev/runtime-trust: qualified-runtime' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
 grep -F 'runtimeClassName: blazn-qualified' "$tmp/qualified-runtime/synthetic-canary.yaml" >/dev/null
 grep -F "object.spec.podTemplate.spec.runtimeClassName == 'blazn-qualified'" "$tmp/qualified-runtime/controller-boundary.yaml" >/dev/null
@@ -80,10 +86,14 @@ if grep -F 'verbs: ["get", "patch", "update"]' "$PHASE4C/bootstrap.yaml.in" >/de
 grep -F 'readOnlyRootFilesystem: true' "$tmp/install.yaml" >/dev/null
 grep -F 'secretName: agent-sandbox-webhook-certs' "$tmp/install.yaml" >/dev/null
 grep -F 'clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE' "$PHASE4C/blazn-poc.yaml.in" >/dev/null
+grep -F 'apiVersion: kueue.x-k8s.io/BLAZN_LOCAL_QUEUE_API_VERSION' "$PHASE4C/blazn-poc.yaml.in" >/dev/null
+grep -F 'kubectl get crd localqueues.kueue.x-k8s.io -o json' "$PHASE4C/render-fixtures.sh" >/dev/null
 grep -F "approved-non-sensitive-phase4c-canary" "$PHASE4C/render-fixtures.sh" >/dev/null
 grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
 grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
 grep -F 'delete_if_owned canary-sandbox sandbox phase4c-canary' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'Sandbox CRD rollback discovery failed' "$PHASE4C/rollback.sh" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'kubectl wait --for=delete "$target"' "$PHASE4C/rollback.sh" >/dev/null
 grep -F 'admission.json' "$PHASE4C/inventory.sh" >/dev/null
