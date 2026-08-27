@@ -270,6 +270,10 @@ func (s *Service) Exec(ctx context.Context, id string, command []string) (ExecRe
 	output := ExecResult{SandboxID: id, GrantID: grant.Grant.ID, RemoteExitCode: result.RemoteExitCode, StdoutBase64: result.StdoutBase64, StderrBase64: result.StderrBase64, Truncated: result.Truncated}
 	grant.AccessToken = ""
 	if err != nil {
+		// The grant is single-use and the transport did not return a complete,
+		// validated result. Mark the receipt truncated so JSON callers cannot
+		// mistake Go zero values for a successful command with empty output.
+		output.Truncated = true
 		return output, &PartialError{Cause: err}
 	}
 	if err := validateExecResult(result); err != nil {

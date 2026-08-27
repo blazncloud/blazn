@@ -296,6 +296,11 @@ func TestMalformedGrantAndExecResponsesFailClosed(t *testing.T) {
 	if !IsPartial(err) || !result.Truncated || result.StdoutBase64 != "" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
+	api = &fakeAPI{grant: grant(client.SandboxGrantExec, id), execErr: errors.New("transport failed")}
+	result, err = newFakeService(api).Exec(context.Background(), id, []string{"true"})
+	if !IsPartial(err) || !result.Truncated || result.GrantID == "" {
+		t.Fatalf("transport partial result=%#v err=%v", result, err)
+	}
 }
 
 func TestStopBindsCurrentVersion(t *testing.T) {
