@@ -33,7 +33,14 @@ a bounded argv and fully declared bounded resources, the two digest-pinned
 Creation is restricted to
 `system:serviceaccount:blazn-poc-system:blazn-sandbox-controller`; updates
 are restricted to that identity and the upstream controller with spec,
-labels, and annotations immutable.
+labels, and Blazn annotations immutable. The upstream controller alone may
+maintain its reserved `agents.x-k8s.io/pod-name` annotation.
+
+For an in-place policy or RBAC update, render the complete successor boundary
+with a new transaction UUID and run `upgrade-boundary.sh` under
+`phase4c/with-live-lock.sh`, naming the completed prior transaction directory.
+The upgrade verifies every prior UID, preserves namespaces and Secrets, and
+records the successor before marking the prior journal superseded.
 
 `good-sandbox.py` is the executable statement of that contract: it renders
 the adapter-exact object plus twenty-two reviewed mutations, and
