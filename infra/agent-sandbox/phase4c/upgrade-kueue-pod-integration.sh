@@ -21,16 +21,18 @@ release_description="blazn-phase4c:$transaction_name"
 
 write_phase() { next=$1; temporary=$(mktemp "$transaction/.phase.XXXXXX"); printf '%s\n' "$next" >"$temporary"; chmod 0600 "$temporary"; sync -f "$temporary"; mv "$temporary" "$transaction/phase"; sync -f "$transaction"; }
 workload_identities() { kubectl get workloads.kueue.x-k8s.io -A -o json | jq -S '[.items[] | {uid:.metadata.uid,namespace:.metadata.namespace,name:.metadata.name}] | sort_by(.uid)'; }
+namespace_absent() { discovered=$(kubectl get namespace "$1" --ignore-not-found -o name) || return 2; [ -z "$discovered" ]; }
+both_pod_namespaces_absent() { namespace_absent blazn-poc && namespace_absent blazn-poc-sandboxes; }
 
 if [ ! -e "$transaction" ]; then
-  [ -f "$chart" ] && [ ! -L "$chart" ] && [ "$(stat -c '%h' "$chart")" = 1 ] || { printf 'Kueue chart file is unsafe\n' >&2; exit 1; }
+  if ! { [ -f "$chart" ] && [ ! -L "$chart" ] && [ "$(stat -c '%h' "$chart")" = 1 ]; }; then printf 'Kueue chart file is unsafe\n' >&2; exit 1; fi
   install -d -o root -g root -m 0700 "$transaction"
   install -o root -g root -m 0400 "$chart" "$transaction/upstream-kueue-0.14.3.tgz"
   install -o root -g root -m 0400 "$ROOT/kueue-pod-config.yaml" "$transaction/controller-manager.yaml"
   install -o root -g root -m 0400 "$ROOT/kueue-pod-webhook-selector.patch" "$transaction/webhook-selector.patch"
   write_phase sealed
 fi
-[ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' "$transaction")" = 0:700 ] || { printf 'Kueue transaction directory is unsafe\n' >&2; exit 1; }
+if ! { [ -d "$transaction" ] && [ ! -L "$transaction" ] && [ "$(stat -c '%u:%a' "$transaction")" = 0:700 ]; }; then printf 'Kueue transaction directory is unsafe\n' >&2; exit 1; fi
 sealed_chart=$transaction/upstream-kueue-0.14.3.tgz; sealed_config=$transaction/controller-manager.yaml; sealed_patch=$transaction/webhook-selector.patch
 for sealed_input in "$sealed_chart" "$sealed_config" "$sealed_patch"; do [ "$(stat -c '%u:%a:%h' "$sealed_input")" = 0:400:1 ] || { printf 'sealed Kueue input is unsafe\n' >&2; exit 1; }; done
 [ "$(sha256sum "$sealed_chart" | awk '{print $1}')" = 314d2b21e9a7ea6a31fc7fed1cf7db825e62ce11ad2a849e2b8b450213b9ba09 ] || { printf 'Kueue chart checksum mismatch\n' >&2; exit 1; }
@@ -40,7 +42,7 @@ phase=$(cat "$transaction/phase")
 case "$phase" in complete) printf 'Kueue Pod integration transaction is already complete\n'; exit 0 ;; rollback-complete) printf 'Kueue Pod integration transaction was rolled back; use a new transaction\n' >&2; exit 1 ;; sealed|prepared|upgrade-intent|upgraded) ;; *) printf 'Kueue transaction phase is invalid\n' >&2; exit 1 ;; esac
 
 if [ "$phase" = sealed ]; then
-  [ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] && [ -z "$(kubectl get namespace blazn-poc-sandboxes --ignore-not-found -o name)" ] || { printf 'reviewed Pod namespaces must be absent before Kueue integration changes\n' >&2; exit 1; }
+  if ! both_pod_namespaces_absent; then printf 'reviewed Pod namespaces are present or could not be verified before Kueue integration changes\n' >&2; exit 1; fi
   current_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0] | select(.chart=="kueue-0.14.3" and .app_version=="v0.14.3" and .status=="deployed") | .revision')
   [ "$current_revision" = "$BLAZN_EXPECTED_KUEUE_REVISION" ] || { printf 'Kueue Helm revision changed\n' >&2; exit 1; }
   helm -n kueue-system get manifest kueue >"$transaction/prior-manifest.yaml"; chmod 0400 "$transaction/prior-manifest.yaml"
@@ -66,13 +68,13 @@ verify_prior_state() {
   [ "$(printf '%s' "$verified_config" | sha256sum | awk '{print $1}')" = "$BLAZN_EXPECTED_KUEUE_CONFIG_SHA256" ] || return 1
   workload_identities >"$transaction/verified-rollback-workloads.json"
   cmp "$transaction/prior-workloads.json" "$transaction/verified-rollback-workloads.json" || return 1
-  [ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] && [ -z "$(kubectl get namespace blazn-poc-sandboxes --ignore-not-found -o name)" ]
+  both_pod_namespaces_absent
 }
 rollback_on_failure() { code=$?; trap - EXIT HUP INT TERM; if [ "$code" -ne 0 ] && [ "$owned_revision" = true ]; then if helm -n kueue-system rollback kueue "$prior_revision" --wait --timeout 300s >/dev/null && verify_prior_state; then write_phase rollback-complete; else printf 'automatic Kueue rollback or verification failed\n' >&2; fi; fi; exit "$code"; }
 trap rollback_on_failure EXIT
 trap 'exit 130' HUP INT TERM
 if [ "$phase" = prepared ]; then
-  [ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] && [ -z "$(kubectl get namespace blazn-poc-sandboxes --ignore-not-found -o name)" ] || { printf 'reviewed Pod namespaces appeared after preparation\n' >&2; exit 1; }
+  if ! both_pod_namespaces_absent; then printf 'reviewed Pod namespaces appeared or could not be verified after preparation\n' >&2; exit 1; fi
   workload_identities >"$transaction/current-workloads.json"; cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" || { printf 'Workload identities changed after preparation\n' >&2; exit 1; }
   live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision'); [ "$live_revision" = "$prior_revision" ] || { printf 'Kueue revision changed after preparation\n' >&2; exit 1; }
   helm -n kueue-system get manifest kueue >"$transaction/current-manifest.yaml"; cmp "$transaction/prior-manifest.yaml" "$transaction/current-manifest.yaml" || { printf 'Kueue manifest changed after preparation\n' >&2; exit 1; }
@@ -98,12 +100,12 @@ if [ "$phase" = upgrade-intent ]; then
     if [ "$rollback_description" = "Rollback to $prior_revision" ] && cmp "$transaction/prior-manifest.yaml" "$transaction/rollback-manifest.yaml" && [ "$(printf '%s' "$rollback_config" | sha256sum | awk '{print $1}')" = "$BLAZN_EXPECTED_KUEUE_CONFIG_SHA256" ] && cmp "$transaction/prior-workloads.json" "$transaction/rollback-workloads.json" && verify_prior_state; then write_phase rollback-complete; printf 'Kueue atomic rollback reconciled; use a new transaction\n' >&2; trap - EXIT HUP INT TERM; exit 1; fi
     printf 'Kueue revision cannot be reconciled with the transaction\n' >&2; exit 1
   elif [ "$live_revision" != "$expected_upgrade_revision" ]; then printf 'Kueue revision cannot be reconciled with the transaction\n' >&2; exit 1; fi
-  [ "$live_revision" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ] || { printf 'live Kueue revision is not owned by this transaction\n' >&2; exit 1; }
+  if ! { [ "$live_revision" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ]; }; then printf 'live Kueue revision is not owned by this transaction\n' >&2; exit 1; fi
   owned_revision=true
   write_phase upgraded; phase=upgraded
 fi
 if [ "$phase" = upgraded ]; then
-  [ "$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ] || { printf 'upgraded Kueue revision ownership changed\n' >&2; exit 1; }
+  if ! { [ "$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ]; }; then printf 'upgraded Kueue revision ownership changed\n' >&2; exit 1; fi
   owned_revision=true
 fi
 kubectl wait deployment/kueue-controller-manager -n kueue-system --for=condition=Available --timeout=180s >/dev/null
@@ -115,7 +117,7 @@ kubectl get validatingwebhookconfiguration kueue-validating-webhook-configuratio
 attempt=0
 while [ "$attempt" -lt 10 ]; do workload_identities >"$transaction/current-workloads.json"; cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" && break; attempt=$((attempt + 1)); sleep 1; done
 cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" || { printf 'Kueue created or replaced a Workload during integration enablement\n' >&2; exit 1; }
-[ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] && [ -z "$(kubectl get namespace blazn-poc-sandboxes --ignore-not-found -o name)" ] || { printf 'reviewed Pod namespaces appeared during Kueue integration change\n' >&2; exit 1; }
+if ! both_pod_namespaces_absent; then printf 'reviewed Pod namespaces appeared or could not be verified during Kueue integration change\n' >&2; exit 1; fi
 write_phase complete
 trap - EXIT HUP INT TERM
 printf 'Kueue Pod integration enabled only for the two reviewed Blazn namespaces\n'
