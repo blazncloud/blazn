@@ -83,6 +83,7 @@ case "$*" in
       case "$* " in "get ${ref%%/*} ${ref#*/} "*) present "$key" && printf '%s\n' "$ref" || :; ;; esac
     done ;;
   'proxy --unix-socket='*)
+	[ ! -e /proc/$$/fd/9 ] || { printf 'kubectl proxy inherited the live-cluster lock descriptor\n' >&2; exit 1; }
     socket=$(printf '%s' "$*" | sed 's/.*--unix-socket=\([^ ]*\).*/\1/')
     exec python3 - "$socket" "$FAKE_STATE" <<'PY'
 import http.server, json, os, socketserver, sys

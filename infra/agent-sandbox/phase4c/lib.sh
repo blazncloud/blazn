@@ -93,7 +93,11 @@ phase4c_start_uid_proxy() {
   phase4c_proxy_dir=$(mktemp -d "$transaction/.api-proxy.XXXXXX")
   chmod 0700 "$phase4c_proxy_dir"
   phase4c_proxy_socket=$phase4c_proxy_dir/kubernetes-api.sock
-  kubectl proxy --unix-socket="$phase4c_proxy_socket" --api-prefix=/ --accept-hosts='^localhost$' >"$phase4c_proxy_dir/kubectl-proxy.log" 2>&1 &
+  # The proxy is a background descendant and must never inherit the
+  # authoritative mutation-lock descriptor. Snap and other command wrappers
+  # can leave a kubectl child behind after the wrapper is terminated; closing
+  # fd 9 here prevents such an orphan from fencing every later transaction.
+  kubectl proxy --unix-socket="$phase4c_proxy_socket" --api-prefix=/ --accept-hosts='^localhost$' 9>&- >"$phase4c_proxy_dir/kubectl-proxy.log" 2>&1 &
   phase4c_proxy_pid=$!
   attempt=0
   while [ ! -S "$phase4c_proxy_socket" ]; do
