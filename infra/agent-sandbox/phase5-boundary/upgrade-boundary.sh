@@ -66,7 +66,7 @@ record_uids() {
     printf '"validatingadmissionpolicybinding/blazn-sandbox-boundary":"%s"' "$(live_uid validatingadmissionpolicybinding blazn-sandbox-boundary)"
     printf '}\n'
   } >"$output"
-  jq -e 'length == 8 and to_entries | all(.value | test("^[0-9a-f-]{36}$"))' "$output" >/dev/null || { printf 'upgraded owned identities are incomplete\n' >&2; exit 1; }
+  jq -e 'length == 8 and (to_entries | all(.value | test("^[0-9a-f-]{36}$")))' "$output" >/dev/null || { printf 'upgraded owned identities are incomplete\n' >&2; exit 1; }
   mv "$output" "$transaction/owned-uids.json"
   chmod 0600 "$transaction/owned-uids.json"
 }
