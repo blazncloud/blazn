@@ -15,6 +15,7 @@ test("PostgreSQL Run executor claims, delivers, prioritizes steering, and recove
     await admin.query("INSERT INTO workspaces(id,slug,name,created_by) VALUES($1,$2,'Message Claim Test',$3)",[workspaceId,`message-${owner.userId.slice(0,8)}`,owner.userId]);
     await admin.query("INSERT INTO workspace_memberships(workspace_id,user_id,role) VALUES($1,$2,'owner')",[workspaceId,owner.userId]);
     await admin.query("INSERT INTO projects(id,workspace_id,slug,kind,name,created_by) VALUES($1,$2,'agent','agent','Agent',$3)",[projectId,workspaceId,owner.userId]);
+    const authority=await admin.query<{direct:boolean;bounded:boolean}>("SELECT has_function_privilege('blazn_runtime','public.digest(bytea,text)','EXECUTE') AS direct,has_function_privilege('blazn_runtime','public.run_message_digest_matches(text,text)','EXECUTE') AS bounded");assert.deepEqual(authority.rows,[{direct:false,bounded:true}]);
     const service=new RunService(new PgRunStore(runtime)),planDigest=`sha256:${"a".repeat(64)}`;
     const sandbox=(await service.createRun(owner,workspaceId,projectId,"message-sandbox-create",{kind:"agent.task",proofClass:"sandbox",planDigest,inputArtifactIds:[],outputNames:[]})).run;
     const sandboxPrompt=(await service.sendRunMessage(owner,workspaceId,projectId,sandbox.id,"message-sandbox-prompt",{kind:"prompt",content:"Clone the repository"})).message;
