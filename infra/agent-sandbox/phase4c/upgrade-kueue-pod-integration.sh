@@ -16,6 +16,8 @@ case "$BLAZN_EXPECTED_KUEUE_REVISION:$BLAZN_EXPECTED_WORKLOADS" in *[!0-9:]*) pr
 for required in helm jq patch; do command -v "$required" >/dev/null 2>&1 || { printf '%s is required\n' "$required" >&2; exit 1; }; done
 transaction=$BLAZN_KUEUE_TRANSACTION_DIR
 case "$transaction" in /var/lib/blazn/phase4c/kueue-pod-*) ;; *) printf 'Kueue transaction path is outside its reviewed root\n' >&2; exit 1 ;; esac
+transaction_name=$(basename "$transaction")
+release_description="blazn-phase4c:$transaction_name"
 
 write_phase() { next=$1; temporary=$(mktemp "$transaction/.phase.XXXXXX"); printf '%s\n' "$next" >"$temporary"; chmod 0600 "$temporary"; sync -f "$temporary"; mv "$temporary" "$transaction/phase"; sync -f "$transaction"; }
 workload_identities() { kubectl get workloads.kueue.x-k8s.io -A -o json | jq -S '[.items[] | {uid:.metadata.uid,namespace:.metadata.namespace,name:.metadata.name}] | sort_by(.uid)'; }
@@ -48,22 +50,37 @@ if [ "$phase" = sealed ]; then
   workload_identities >"$transaction/prior-workloads.json"; chmod 0400 "$transaction/prior-workloads.json"
   [ "$(jq 'length' "$transaction/prior-workloads.json")" = "$BLAZN_EXPECTED_WORKLOADS" ] || { printf 'Workload baseline changed\n' >&2; exit 1; }
   printf '%s\n' "$current_revision" >"$transaction/prior-revision"; chmod 0400 "$transaction/prior-revision"
+  if [ -d "$transaction/chart-source" ]; then find "$transaction/chart-source" -xdev -type f -delete; find "$transaction/chart-source" -xdev -depth -type d -empty -delete; fi
+  [ ! -e "$transaction/kueue-0.14.3.tgz" ] || find "$transaction/kueue-0.14.3.tgz" -type f -delete
   mkdir -m 0700 "$transaction/chart-source"; tar -xzf "$sealed_chart" -C "$transaction/chart-source" --no-same-owner --no-same-permissions
   patch -s -f -d "$transaction/chart-source" -p1 <"$sealed_patch"
   helm package "$transaction/chart-source/kueue" --destination "$transaction" >/dev/null; chmod 0400 "$transaction/kueue-0.14.3.tgz"
   write_phase prepared; phase=prepared
 fi
 
-prior_revision=$(cat "$transaction/prior-revision"); expected_upgrade_revision=$((prior_revision + 1))
-rollback_on_failure() { code=$?; trap - EXIT HUP INT TERM; if [ "$code" -ne 0 ]; then live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision' 2>/dev/null || printf 0); if [ "$live_revision" != "$prior_revision" ]; then if helm -n kueue-system rollback kueue "$prior_revision" --wait --timeout 300s >/dev/null; then write_phase rollback-complete; else printf 'automatic Kueue rollback failed\n' >&2; fi; fi; fi; exit "$code"; }
+prior_revision=$(cat "$transaction/prior-revision"); expected_upgrade_revision=$((prior_revision + 1)); owned_revision=false
+rollback_on_failure() { code=$?; trap - EXIT HUP INT TERM; if [ "$code" -ne 0 ] && [ "$owned_revision" = true ]; then if helm -n kueue-system rollback kueue "$prior_revision" --wait --timeout 300s >/dev/null; then write_phase rollback-complete; else printf 'automatic Kueue rollback failed\n' >&2; fi; fi; exit "$code"; }
 trap rollback_on_failure EXIT
 trap 'exit 130' HUP INT TERM
-if [ "$phase" = prepared ]; then write_phase upgrade-intent; phase=upgrade-intent; fi
+if [ "$phase" = prepared ]; then
+  [ -z "$(kubectl get namespace blazn-poc --ignore-not-found -o name)" ] && [ -z "$(kubectl get namespace blazn-poc-sandboxes --ignore-not-found -o name)" ] || { printf 'reviewed Pod namespaces appeared after preparation\n' >&2; exit 1; }
+  workload_identities >"$transaction/current-workloads.json"; cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" || { printf 'Workload identities changed after preparation\n' >&2; exit 1; }
+  live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision'); [ "$live_revision" = "$prior_revision" ] || { printf 'Kueue revision changed after preparation\n' >&2; exit 1; }
+  helm -n kueue-system get manifest kueue >"$transaction/current-manifest.yaml"; cmp "$transaction/prior-manifest.yaml" "$transaction/current-manifest.yaml" || { printf 'Kueue manifest changed after preparation\n' >&2; exit 1; }
+  current_config=$(kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}'); [ "$(printf '%s' "$current_config" | sha256sum | awk '{print $1}')" = "$BLAZN_EXPECTED_KUEUE_CONFIG_SHA256" ] || { printf 'Kueue config changed after preparation\n' >&2; exit 1; }
+  write_phase upgrade-intent; phase=upgrade-intent
+fi
 if [ "$phase" = upgrade-intent ]; then
   live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')
-  if [ "$live_revision" = "$prior_revision" ]; then helm upgrade kueue "$transaction/kueue-0.14.3.tgz" -n kueue-system --reuse-values --set-file managerConfig.controllerManagerConfigYaml="$sealed_config" --atomic --wait --timeout 300s >/dev/null
+  if [ "$live_revision" = "$prior_revision" ]; then helm upgrade kueue "$transaction/kueue-0.14.3.tgz" -n kueue-system --reuse-values --set-file managerConfig.controllerManagerConfigYaml="$sealed_config" --description "$release_description" --atomic --wait --timeout 300s >/dev/null; live_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')
   elif [ "$live_revision" != "$expected_upgrade_revision" ]; then printf 'Kueue revision cannot be reconciled with the transaction\n' >&2; exit 1; fi
+  [ "$live_revision" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ] || { printf 'live Kueue revision is not owned by this transaction\n' >&2; exit 1; }
+  owned_revision=true
   write_phase upgraded; phase=upgraded
+fi
+if [ "$phase" = upgraded ]; then
+  [ "$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision')" = "$expected_upgrade_revision" ] && [ "$(helm -n kueue-system status kueue -o json | jq -er '.info.description')" = "$release_description" ] || { printf 'upgraded Kueue revision ownership changed\n' >&2; exit 1; }
+  owned_revision=true
 fi
 kubectl wait deployment/kueue-controller-manager -n kueue-system --for=condition=Available --timeout=180s >/dev/null
 configured=$(kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}')
