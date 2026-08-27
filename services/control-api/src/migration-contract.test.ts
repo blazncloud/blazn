@@ -191,7 +191,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-10), [
+  assert.deepEqual(migrations.slice(-12), [
     "024_development_controller.sql",
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
@@ -203,7 +203,18 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "032_sandbox_source_readiness_identity.sql",
     "033_sandbox_access_transport.sql",
     "034_sandbox_terminal_state_events.sql",
+    "035_sandbox_empty_artifact_warnings.sql",
   ]);
+});
+
+test("warning-free artifact cleanup is canonical at the database boundary",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/035_sandbox_empty_artifact_warnings.sql"),"utf8");
+  assert.match(sql,/canonical_warnings text\[\] := coalesce\(p_warning_codes,'\{\}'::text\[\]\)/);
+  assert.match(sql,/warning_codes,canonical_warnings/);
+  assert.match(sql,/receipt\.warning_codes=canonical_warnings/);
+  assert.match(sql,/sandbox_controller_complete_v4\([\s\S]*canonical_warnings/);
+  assert.match(sql,/WHEN 'create' THEN 'sandbox\.ready'/);
 });
 
 test("sandbox access transport atomically consumes one live grant through controller-only authority",async()=>{
