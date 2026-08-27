@@ -242,7 +242,7 @@ grep -F 'resources: ["workloads"]' "$ROOT/controller.yaml.in" >/dev/null
 grep -F 'resources: ["networkpolicies"]' "$ROOT/controller.yaml.in" >/dev/null
 [ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list", "patch"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["get", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -Fxc '  verbs: ["get"]' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -Fxc '  verbs: ["create", "get"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 5 ]

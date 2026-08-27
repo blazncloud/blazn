@@ -27,7 +27,7 @@ rules:
   verbs: ["get", "list"]
 - apiGroups: [""]
   resources: ["pods/exec"]
-  verbs: ["get"]
+  verbs: ["create", "get"]
 - apiGroups: ["kueue.x-k8s.io"]
   resources: ["workloads"]
   verbs: ["list"]
