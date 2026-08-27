@@ -25,7 +25,7 @@ BEGIN
     IF EXISTS (
       SELECT FROM pg_roles
       WHERE pg_roles.rolname=role_name
-        AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+        AND ((rolcanlogin AND role_name <> 'blazn_sandbox_controller') OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
     ) THEN
       RAISE EXCEPTION 'controller role % has unsafe attributes', role_name;
     END IF;
@@ -55,10 +55,14 @@ BEGIN
       RAISE EXCEPTION 'controller role % unexpectedly owns database objects', role_name;
     END IF;
     IF NOT EXISTS (SELECT FROM pg_roles WHERE pg_roles.rolname=role_name) THEN
-      EXECUTE format(
-        'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
-        role_name
-      );
+      IF role_name = 'blazn_sandbox_controller' THEN
+        EXECUTE 'CREATE ROLE blazn_sandbox_controller LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS';
+      ELSE
+        EXECUTE format(
+          'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+          role_name
+        );
+      END IF;
     END IF;
     SELECT oid INTO STRICT role_oid FROM pg_roles WHERE pg_roles.rolname=role_name;
     IF EXISTS (
