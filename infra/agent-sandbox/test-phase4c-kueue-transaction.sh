@@ -99,7 +99,7 @@ baseline = yaml.safe_load(open(baseline_path))
 expected = json.loads(json.dumps(baseline))
 expected["integrations"]["frameworks"].append("pod")
 expected["integrations"]["podOptions"] = {"namespaceSelector": selector}
-expected["labelKeysToCopy"] = ["blazn.dev/managed", "blazn.dev/workspace", "blazn.dev/owner", "blazn.dev/sandbox-id"]
+expected["integrations"]["labelKeysToCopy"] = ["blazn.dev/managed", "blazn.dev/workspace", "blazn.dev/owner", "blazn.dev/sandbox-id"]
 assert yaml.safe_load(sealed) == expected, "sealed config is not the reviewed live baseline plus the pod integration"
 print("render and baseline equivalence proven")
 PY

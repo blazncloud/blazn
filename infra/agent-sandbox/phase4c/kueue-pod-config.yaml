@@ -20,11 +20,6 @@ controller:
 clientConnection:
   qps: 50
   burst: 100
-labelKeysToCopy:
-- blazn.dev/managed
-- blazn.dev/workspace
-- blazn.dev/owner
-- blazn.dev/sandbox-id
 integrations:
   frameworks:
   - batch/job
@@ -48,6 +43,11 @@ integrations:
         values:
         - blazn-poc
         - blazn-poc-sandboxes
+  labelKeysToCopy:
+  - blazn.dev/managed
+  - blazn.dev/workspace
+  - blazn.dev/owner
+  - blazn.dev/sandbox-id
 internalCertManagement:
   enable: true
   webhookServiceName: kueue-webhook-service
