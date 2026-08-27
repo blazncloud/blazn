@@ -182,7 +182,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != AdmissionAPIVersion || candidate.Kind != workloadKind {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection contained an invalid identity", nil)
 		}
-		if hasAdmissionLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
+		if hasWorkloadLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
 			relatedWorkloads++
 		}
 		if hasControllerUID(candidate.Metadata.OwnerReferences, pod.Metadata.UID) {
@@ -201,7 +201,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	workload := workloadCandidates[0]
 	condition, admitted := exactAdmittedCondition(workload.Status.Conditions)
 	if !hasExactControllerOwner(workload.Metadata.OwnerReferences, podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.UID) ||
-		!hasAdmissionLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Spec.QueueName != QueueName {
+		!hasWorkloadLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Spec.QueueName != QueueName {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload did not preserve the exact admitted Pod ownership chain", nil)
 	}
 	if workload.Status.Admission == nil || !admitted {
@@ -297,7 +297,11 @@ func admissionSelector(workspaceID, ownerID, name string) string {
 }
 
 func hasAdmissionLabels(labels map[string]string, workspaceID, ownerID, name string) bool {
-	return labels[ManagedLabel] == "true" && labels[WorkspaceLabel] == workspaceID && labels[OwnerLabel] == ownerID && labels[SandboxIDLabel] == name && labels[QueueLabel] == QueueName
+	return hasWorkloadLabels(labels, workspaceID, ownerID, name) && labels[QueueLabel] == QueueName
+}
+
+func hasWorkloadLabels(labels map[string]string, workspaceID, ownerID, name string) bool {
+	return labels[ManagedLabel] == "true" && labels[WorkspaceLabel] == workspaceID && labels[OwnerLabel] == ownerID && labels[SandboxIDLabel] == name
 }
 
 func validObservedIdentity(apiVersion, kind string, metadata observedMetadata) bool {

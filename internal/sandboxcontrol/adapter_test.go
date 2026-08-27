@@ -132,6 +132,7 @@ type fakeAPI struct {
 	substituteWorkloadOwner     bool
 	driftAdmissionAPI           bool
 	wrongWorkloadQueue          bool
+	omitWorkloadQueueLabel      bool
 	sandboxAbsent               bool
 	podsAbsent                  bool
 	workloadsAbsent             bool
@@ -328,6 +329,9 @@ func (f *fakeAPI) observedWorkload() observedWorkload {
 	}{ClusterQueue: "poc-cluster"}
 	value.Status.Conditions = []kubeCondition{{Type: "Admitted", Status: "True"}}
 	value.Spec.QueueName = QueueName
+	if f.omitWorkloadQueueLabel {
+		delete(value.Metadata.Labels, QueueLabel)
+	}
 	if f.wrongWorkloadQueue {
 		value.Spec.QueueName = "other-queue"
 	}
@@ -709,6 +713,20 @@ func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
 	drifted.Pod.ResourceVersion = "12"
 	if _, err := adapter.ObserveAdmission(context.Background(), request, record, &drifted); err == nil {
 		t.Fatal("resourceVersion drift was accepted")
+	}
+}
+
+func TestObserveAdmissionAcceptsKueueWorkloadWithoutPropagatedQueueLabel(t *testing.T) {
+	fake := newFakeAPI(t)
+	fake.omitWorkloadQueueLabel = true
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ObserveAdmission(context.Background(), request, record, nil); err != nil {
+		t.Fatalf("Kueue Workload without propagated queue label was rejected: %v", err)
 	}
 }
 
