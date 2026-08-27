@@ -30,7 +30,8 @@ case "$phase" in
 esac
 for populated_crd in sandboxes.agents.x-k8s.io sandboxclaims.extensions.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do
   if ! absent crd "$populated_crd"; then
-    remaining=$(kubectl get "$populated_crd" -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if ! listing=$(kubectl get "$populated_crd" -A --no-headers 2>/dev/null); then printf '%s instance discovery failed; refusing rollback\n' "$populated_crd" >&2; exit 1; fi
+    remaining=$(printf '%s' "$listing" | grep -c . || :)
     [ "$remaining" = 0 ] || { printf '%s objects still exist; refusing rollback\n' "$populated_crd" >&2; exit 1; }
   fi
 done

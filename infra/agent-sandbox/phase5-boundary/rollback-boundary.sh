@@ -51,9 +51,16 @@ if ! absent validatingadmissionpolicybinding blazn-sandbox-boundary; then delete
 if ! absent validatingadmissionpolicy blazn-sandbox-boundary; then delete_owned validatingadmissionpolicy/blazn-sandbox-boundary /apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/blazn-sandbox-boundary; fi
 for doomed_namespace in blazn-poc-sandboxes blazn-poc-system; do
   if ! absent namespace "$doomed_namespace"; then
-    remaining_pods=$(kubectl get pods -n "$doomed_namespace" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if ! pod_listing=$(kubectl get pods -n "$doomed_namespace" --no-headers 2>/dev/null); then printf 'Pod discovery in %s failed; refusing rollback\n' "$doomed_namespace" >&2; exit 1; fi
+    remaining_pods=$(printf '%s' "$pod_listing" | grep -c . || :)
     [ "$remaining_pods" = 0 ] || { printf 'namespace %s still runs Pods; refusing rollback\n' "$doomed_namespace" >&2; exit 1; }
-    remaining_sandboxes=$(kubectl get sandboxes.agents.x-k8s.io -n "$doomed_namespace" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if sandbox_listing=$(kubectl get sandboxes.agents.x-k8s.io -n "$doomed_namespace" --no-headers 2>/dev/null); then
+      remaining_sandboxes=$(printf '%s' "$sandbox_listing" | grep -c . || :)
+    elif absent crd sandboxes.agents.x-k8s.io; then
+      remaining_sandboxes=0
+    else
+      printf 'Sandbox discovery in %s failed; refusing rollback\n' "$doomed_namespace" >&2; exit 1
+    fi
     [ "$remaining_sandboxes" = 0 ] || { printf 'namespace %s still holds Sandboxes; refusing rollback\n' "$doomed_namespace" >&2; exit 1; }
     delete_owned "namespace/$doomed_namespace" "/api/v1/namespaces/$doomed_namespace"
   fi
