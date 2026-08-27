@@ -63,7 +63,7 @@ case "$*" in
   'get secret blazn-registry-pull -n blazn-poc-system --ignore-not-found -o name') present system-pull-secret && printf 'secret/blazn-registry-pull\n' || : ;;
   'get secret blazn-registry-pull -n blazn-poc-sandboxes --ignore-not-found -o name') present sandbox-pull-secret && printf 'secret/blazn-registry-pull\n' || : ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name') present deployment && [ ! -e "$FAKE_STATE/scaled0" ] && printf 'deployment/blazn-sandbox-controller\n' || { present deployment && printf 'deployment/blazn-sandbox-controller\n' || :; } ;;
-  'apply --server-side --field-manager blazn-phase5-controller -f '*) for object_key in deployment serviceaccount role rolebinding egress deny; do : >"$FAKE_STATE/$object_key"; done ;;
+  'apply --server-side --field-manager blazn-phase5-controller -f '*) for object_key in deployment service access-ingress serviceaccount role rolebinding egress deny; do : >"$FAKE_STATE/$object_key"; done ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.spec.replicas}') [ -e "$FAKE_STATE/scaled1" ] && printf '1' || printf '0' ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1') : >"$FAKE_STATE/scaled1" ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0') : >"$FAKE_STATE/scaled0"; rm -f "$FAKE_STATE/scaled1" ;;
@@ -75,12 +75,14 @@ case "$*" in
   'get role blazn-sandbox-controller -n blazn-poc-sandboxes -o jsonpath={.metadata.uid}') printf '22222222-2222-4222-8222-222222222222' ;;
   'get rolebinding blazn-sandbox-controller -n blazn-poc-sandboxes -o jsonpath={.metadata.uid}') printf '33333333-3333-4333-8333-333333333333' ;;
   'get serviceaccount blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '44444444-4444-4444-8444-444444444444' ;;
+  'get service blazn-sandbox-access -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '77777777-7777-4777-8777-777777777777' ;;
+  'get networkpolicy blazn-sandbox-controller-access-ingress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '88888888-8888-4888-8888-888888888888' ;;
   'get networkpolicy blazn-sandbox-controller-egress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '55555555-5555-4555-8555-555555555555' ;;
   'get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '66666666-6666-4666-8666-666666666666' ;;
   'get '*' --ignore-not-found -o name')
     # Match on the exact "kind name" prefix so same-named objects of different
     # kinds are never conflated (real kubectl scopes by kind).
-    for object in deployment/blazn-sandbox-controller:deployment serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny; do
+    for object in deployment/blazn-sandbox-controller:deployment service/blazn-sandbox-access:service networkpolicy/blazn-sandbox-controller-access-ingress:access-ingress serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny; do
       ref=${object%%:*}; key=${object#*:}
       case "$* " in "get ${ref%%/*} ${ref#*/} "*) present "$key" && printf '%s\n' "$ref" || :; ;; esac
     done ;;
@@ -92,6 +94,8 @@ import http.server, json, os, socketserver, sys
 socket_path, state = sys.argv[1], sys.argv[2]
 targets = {
     "/apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller": ("deployment", "11111111-1111-4111-8111-111111111111"),
+    "/api/v1/namespaces/blazn-poc-system/services/blazn-sandbox-access": ("service", "77777777-7777-4777-8777-777777777777"),
+    "/apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-access-ingress": ("access-ingress", "88888888-8888-4888-8888-888888888888"),
     "/apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress": ("egress", "55555555-5555-4555-8555-555555555555"),
     "/apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller": ("rolebinding", "33333333-3333-4333-8333-333333333333"),
     "/apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller": ("role", "22222222-2222-4222-8222-222222222222"),
@@ -162,7 +166,7 @@ run_tool install-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
 [ -e "$FAKE_STATE/scaled1" ]
-jq -e 'length == 6' "$transaction/owned-uids.json" >/dev/null
+jq -e 'length == 8' "$transaction/owned-uids.json" >/dev/null
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ]
 grep -Fq 'already complete' "$tmp/last-out"

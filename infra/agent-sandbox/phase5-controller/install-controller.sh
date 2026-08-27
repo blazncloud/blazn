@@ -71,6 +71,8 @@ if [ "$phase" = apply-intent ]; then
     printf '"role/blazn-sandbox-controller":"%s",' "$(live_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
     printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
     printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(live_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
+    printf '"service/blazn-sandbox-access":"%s",' "$(live_uid service blazn-sandbox-access blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-access-ingress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system)"
     printf '"networkpolicy/blazn-sandbox-controller-egress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
     printf '"networkpolicy/blazn-sandbox-controller-default-deny":"%s"' "$(live_uid networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system)"
     printf '}\n'

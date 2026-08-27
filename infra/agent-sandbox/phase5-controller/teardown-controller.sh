@@ -56,6 +56,8 @@ delete_owned() {
   phase4c_delete_uid "$owned_path" "$owned_uid" Background
 }
 delete_owned deployment blazn-sandbox-controller blazn-poc-system deployment/blazn-sandbox-controller /apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller
+delete_owned service blazn-sandbox-access blazn-poc-system service/blazn-sandbox-access /api/v1/namespaces/blazn-poc-system/services/blazn-sandbox-access
+delete_owned networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system networkpolicy/blazn-sandbox-controller-access-ingress /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-access-ingress
 delete_owned networkpolicy blazn-sandbox-controller-egress blazn-poc-system networkpolicy/blazn-sandbox-controller-egress /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress
 delete_owned networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-default-deny
 delete_owned rolebinding blazn-sandbox-controller blazn-poc-sandboxes rolebinding/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller
@@ -64,7 +66,7 @@ delete_owned serviceaccount blazn-sandbox-controller blazn-poc-system serviceacc
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
-for gone in deployment/blazn-sandbox-controller:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
   gone_ref=${gone%%:*}; gone_ns=${gone#*:}
   gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
   attempt=0
