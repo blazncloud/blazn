@@ -190,6 +190,10 @@ printf '%s' "$workload" | jq -e '.items[0].status.conditions[] | select(.type=="
 printf '%s' "$workload" | jq -e '.items[0].status.admission.clusterQueue == "m1-light"' >/dev/null
 printf '%s' "$workload" | jq -e '.items[0].spec.podSets[0].template.spec.containers[0].resources.requests == {"cpu":"100m","memory":"64Mi","ephemeral-storage":"64Mi"}' >/dev/null
 printf '%s' "$workload" | jq -e --arg name "$sandbox_name" '.items[0].metadata.labels["blazn.dev/sandbox-id"] == $name' >/dev/null
+printf '%s' "$workload" | jq -e '.items[0].metadata.labels["blazn.dev/managed"] == "true"' >/dev/null
+printf '%s' "$workload" | jq -e '.items[0].metadata.labels["blazn.dev/workspace"] == "32000000-0000-4000-8000-000000000002"' >/dev/null
+printf '%s' "$workload" | jq -e '.items[0].metadata.labels["blazn.dev/owner"] == "33000000-0000-4000-8000-000000000003"' >/dev/null
+printf '%s' "$workload" | jq -e '.items[0].status.admission.podSetAssignments[0].resourceUsage == {"cpu":"100m","memory":"64Mi","ephemeral-storage":"64Mi"}' >/dev/null
 sandbox_uid=$(k get sandbox.agents.x-k8s.io "$sandbox_name" -n blazn-poc-sandboxes -o jsonpath='{.metadata.uid}')
 pod_uid=$(k get pods -n blazn-poc-sandboxes -l "blazn.dev/sandbox-id=$sandbox_name" -o jsonpath='{.items[0].metadata.uid}')
 workload_uid=$(printf '%s' "$workload" | jq -r '.items[0].metadata.uid')

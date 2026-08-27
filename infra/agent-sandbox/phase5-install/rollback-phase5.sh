@@ -28,10 +28,12 @@ case "$phase" in
   rollback-complete) printf 'installation already rolled back\n'; exit 0 ;;
   *) printf 'install transaction phase is invalid\n' >&2; exit 1 ;;
 esac
-if ! absent crd sandboxes.agents.x-k8s.io; then
-  remaining_sandboxes=$(kubectl get sandboxes.agents.x-k8s.io -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  [ "$remaining_sandboxes" = 0 ] || { printf 'Sandbox objects still exist; refusing rollback\n' >&2; exit 1; }
-fi
+for populated_crd in sandboxes.agents.x-k8s.io sandboxclaims.extensions.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do
+  if ! absent crd "$populated_crd"; then
+    remaining=$(kubectl get "$populated_crd" -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    [ "$remaining" = 0 ] || { printf '%s objects still exist; refusing rollback\n' "$populated_crd" >&2; exit 1; }
+  fi
+done
 write_phase rollback-intent
 
 phase4c_start_uid_proxy "$transaction"
@@ -42,6 +44,8 @@ delete_if_owned() {
   target_uid=$(kubectl get "$target_kind" "$target_name" -o json | jq -er --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" 'select(.metadata.annotations["blazn.dev/phase5-transaction"] == $tx) | .metadata.uid') || { printf '%s/%s exists without this transaction identity; refusing\n' "$target_kind" "$target_name" >&2; exit 1; }
   phase4c_delete_uid "$target_path" "$target_uid"
 }
+delete_if_owned clusterrolebinding blazn-agent-sandbox-ca-bootstrap /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-agent-sandbox-ca-bootstrap
+delete_if_owned clusterrole blazn-agent-sandbox-ca-bootstrap /apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-agent-sandbox-ca-bootstrap
 delete_if_owned clusterrolebinding blazn-agent-sandbox-observer /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-agent-sandbox-observer
 delete_if_owned clusterrole blazn-agent-sandbox-observer /apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-agent-sandbox-observer
 delete_if_owned namespace agent-sandbox-system /api/v1/namespaces/agent-sandbox-system
@@ -51,7 +55,7 @@ done
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
-for gone in namespace/agent-sandbox-system clusterrole/blazn-agent-sandbox-observer clusterrolebinding/blazn-agent-sandbox-observer crd/sandboxes.agents.x-k8s.io crd/sandboxclaims.extensions.agents.x-k8s.io crd/sandboxtemplates.extensions.agents.x-k8s.io crd/sandboxwarmpools.extensions.agents.x-k8s.io; do
+for gone in namespace/agent-sandbox-system clusterrole/blazn-agent-sandbox-observer clusterrolebinding/blazn-agent-sandbox-observer clusterrole/blazn-agent-sandbox-ca-bootstrap clusterrolebinding/blazn-agent-sandbox-ca-bootstrap crd/sandboxes.agents.x-k8s.io crd/sandboxclaims.extensions.agents.x-k8s.io crd/sandboxtemplates.extensions.agents.x-k8s.io crd/sandboxwarmpools.extensions.agents.x-k8s.io; do
   gone_kind=${gone%%/*}; gone_name=${gone#*/}
   attempt=0
   until absent "$gone_kind" "$gone_name"; do

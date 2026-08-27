@@ -54,8 +54,9 @@ done
 sed -e "s|BLAZN_TLS_CERT|$cert_b64|g" -e "s|BLAZN_TLS_KEY|$key_b64|g" -e "s|BLAZN_TRANSACTION_ID|$BLAZN_PHASE5_TRANSACTION_ID|g" "$PHASE4C/bootstrap.yaml.in" |
   awk -v init="$init_containers" '$0 == "BLAZN_BOOTSTRAP_INIT_CONTAINERS" { while ((getline line < init) > 0) print line; close(init); next } { print }' >"$tmp/bootstrap.yaml"
 
-# Every rendered document carries this transaction's identity for UID fencing.
-for rendered in "$tmp/install.yaml" "$tmp/production-rbac.yaml" "$tmp/bootstrap.yaml"; do
+# Every rendered document carries this transaction's identity for UID
+# fencing; production-rbac.yaml.in already bakes the annotation in.
+for rendered in "$tmp/install.yaml" "$tmp/bootstrap.yaml"; do
   BLAZN_PHASE5_TRANSACTION_ID=$BLAZN_PHASE5_TRANSACTION_ID awk '
     $0 == "metadata:" { inmeta=1; has_annotations=0; print; next }
     inmeta && $0 == "  annotations:" { has_annotations=1; print; print "    blazn.dev/phase5-transaction: " ENVIRON["BLAZN_PHASE5_TRANSACTION_ID"]; next }

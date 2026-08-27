@@ -104,15 +104,24 @@ if [ "$phase" = bootstrap-applied ]; then
   for patched_crd in sandboxes.agents.x-k8s.io sandboxclaims.extensions.agents.x-k8s.io sandboxtemplates.extensions.agents.x-k8s.io sandboxwarmpools.extensions.agents.x-k8s.io; do
     [ "$(kubectl get crd "$patched_crd" -o jsonpath='{.spec.conversion.webhook.clientConfig.caBundle}')" = "$expected_ca" ] || { printf 'crd %s does not trust the sealed CA\n' "$patched_crd" >&2; exit 1; }
   done
-  # The bootstrap privilege is single-use: remove it by recorded UID.
+  # The bootstrap privilege is single-use: remove it by recorded UID. Each
+  # target is looked up and deleted independently so a crash between the
+  # deletes resumes past the already-removed objects.
   phase4c_start_uid_proxy "$transaction"
-  bootstrap_cr_uid=$(owned_uid clusterrole blazn-agent-sandbox-ca-bootstrap)
-  bootstrap_crb_uid=$(owned_uid clusterrolebinding blazn-agent-sandbox-ca-bootstrap)
-  bootstrap_sa_uid=$(owned_uid serviceaccount blazn-agent-sandbox-ca-bootstrap agent-sandbox-system)
-  phase4c_delete_uid /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-agent-sandbox-ca-bootstrap "$bootstrap_crb_uid"
-  phase4c_delete_uid /apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-agent-sandbox-ca-bootstrap "$bootstrap_cr_uid"
-  phase4c_delete_uid /api/v1/namespaces/agent-sandbox-system/serviceaccounts/blazn-agent-sandbox-ca-bootstrap "$bootstrap_sa_uid"
+  trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+  remove_bootstrap_privilege() {
+    privilege_kind=$1; privilege_name=$2; privilege_path=$3
+    if [ "$#" -eq 4 ]; then privilege_present=$(kubectl get "$privilege_kind" "$privilege_name" -n "$4" --ignore-not-found -o name) || { printf 'bootstrap privilege discovery failed\n' >&2; exit 1; }
+    else privilege_present=$(kubectl get "$privilege_kind" "$privilege_name" --ignore-not-found -o name) || { printf 'bootstrap privilege discovery failed\n' >&2; exit 1; }; fi
+    [ -n "$privilege_present" ] || return 0
+    if [ "$#" -eq 4 ]; then privilege_uid=$(owned_uid "$privilege_kind" "$privilege_name" "$4"); else privilege_uid=$(owned_uid "$privilege_kind" "$privilege_name"); fi
+    phase4c_delete_uid "$privilege_path" "$privilege_uid"
+  }
+  remove_bootstrap_privilege clusterrolebinding blazn-agent-sandbox-ca-bootstrap /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/blazn-agent-sandbox-ca-bootstrap
+  remove_bootstrap_privilege clusterrole blazn-agent-sandbox-ca-bootstrap /apis/rbac.authorization.k8s.io/v1/clusterroles/blazn-agent-sandbox-ca-bootstrap
+  remove_bootstrap_privilege serviceaccount blazn-agent-sandbox-ca-bootstrap /api/v1/namespaces/agent-sandbox-system/serviceaccounts/blazn-agent-sandbox-ca-bootstrap agent-sandbox-system
   phase4c_stop_uid_proxy
+  trap - EXIT HUP INT TERM
   write_phase bootstrap-complete; phase=bootstrap-complete
 fi
 if [ "$phase" = bootstrap-complete ]; then
