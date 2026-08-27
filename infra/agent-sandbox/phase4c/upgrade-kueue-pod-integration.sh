@@ -13,6 +13,7 @@ phase4c_require_mutation_authority
 : "${LIVE_KUEUE_POD_CONFIG_SHA256:?versions.env must pin the reviewed Kueue Pod config digest}"
 : "${LIVE_KUEUE_WEBHOOK_PATCH_SHA256:?versions.env must pin the reviewed webhook patch digest}"
 : "${LIVE_KUEUE_DEPLOYED_CONFIG_SHA256:?versions.env must pin the reviewed deployed config digest}"
+: "${LIVE_KUEUE_CONTROLLER_IMAGE:?versions.env must pin the reviewed Kueue controller image}"
 : "${BLAZN_KUEUE_TRANSACTION_DIR:?set a durable transaction directory}"
 : "${BLAZN_EXPECTED_KUEUE_REVISION:?set reviewed Helm revision}"
 : "${BLAZN_EXPECTED_KUEUE_MANIFEST_SHA256:?set reviewed Helm manifest digest}"
@@ -156,6 +157,7 @@ if [ "$phase" = upgraded ] && [ "${upgraded_verified:-false}" != true ]; then
 fi
 kubectl wait deployment/kueue-controller-manager -n kueue-system --for=condition=Available --timeout=180s >/dev/null
 [ "$(live_config_sha)" = "$LIVE_KUEUE_DEPLOYED_CONFIG_SHA256" ] || { printf 'deployed Kueue manager config is not the reviewed rendered bytes\n' >&2; exit 1; }
+[ "$(kubectl -n kueue-system get deployment kueue-controller-manager -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$LIVE_KUEUE_CONTROLLER_IMAGE" ] || { printf 'deployed Kueue controller image is not the reviewed digest-pinned reference\n' >&2; exit 1; }
 configured=$(kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}')
 printf '%s\n' "$configured" | grep -Eq -- '^[[:space:]]*- pod$'
 printf '%s\n' "$configured" | grep -Eq -- '^[[:space:]]*- blazn-poc$'

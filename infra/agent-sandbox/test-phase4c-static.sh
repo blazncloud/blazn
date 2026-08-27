@@ -23,6 +23,9 @@ grep -F 'LIVE_KUEUE_CHART_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/
 grep -F 'LIVE_KUEUE_POD_CONFIG_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'LIVE_KUEUE_WEBHOOK_PATCH_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'LIVE_KUEUE_DEPLOYED_CONFIG_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'LIVE_KUEUE_CONTROLLER_IMAGE' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+case "$LIVE_KUEUE_CONTROLLER_IMAGE" in registry.k8s.io/kueue/kueue:v0.14.3@sha256:????????????????????????????????????????????????????????????????) ;; *) exit 1 ;; esac
+grep -F "${LIVE_KUEUE_CONTROLLER_IMAGE#*@}" "$PHASE4C/kueue-pod-webhook-selector.patch" >/dev/null
 [ "$(sha256sum "$PHASE4C/kueue-pod-config.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_POD_CONFIG_SHA256" ]
 [ "$(sha256sum "$PHASE4C/kueue-pod-webhook-selector.patch" | awk '{print $1}')" = "$LIVE_KUEUE_WEBHOOK_PATCH_SHA256" ]
 [ "$(sha256sum "$PHASE4C/kueue-live-config-baseline.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_PRIOR_CONFIG_SHA256" ]

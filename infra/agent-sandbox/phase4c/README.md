@@ -52,7 +52,9 @@ configuration is exactly that baseline plus the Pod integration.
 A checksum-pinned patch to the sealed chart renders the same selector only into
 the `mpod.kb.io` and `vpod.kb.io` Helm-managed webhook entries, so future Helm
 operations retain the boundary while other framework selectors remain
-unchanged. A failed upgrade or post-check rolls
+unchanged. The same sealed patch pins the manager image to the reviewed
+digest recorded as `LIVE_KUEUE_CONTROLLER_IMAGE`, keeping the pin
+Helm-managed instead of relying on an out-of-band chart edit. A failed upgrade or post-check rolls
 back to the exact prior Helm revision. The transaction is rooted under
 `/var/lib/blazn/phase4c/kueue-pod-*`, journals `upgrade-intent` before Helm,
 and resumes or rolls back after process or host interruption. It requires both

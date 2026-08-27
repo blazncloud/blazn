@@ -56,9 +56,9 @@ tar -xzf "$chart_tgz" -C "$tmp/render-orig" --no-same-owner --no-same-permission
 patch -s -f -d "$tmp/render-patched" -p1 <"$ROOT/phase4c/kueue-pod-webhook-selector.patch"
 "$REAL_HELM" template kueue "$tmp/render-patched/kueue" -n kueue-system --set-file managerConfig.controllerManagerConfigYaml="$ROOT/phase4c/kueue-pod-config.yaml" >"$tmp/rendered-patched.yaml"
 "$REAL_HELM" template kueue "$tmp/render-orig/kueue" -n kueue-system --set-file managerConfig.controllerManagerConfigYaml="$ROOT/phase4c/kueue-pod-config.yaml" >"$tmp/rendered-orig.yaml"
-python3 - "$tmp/rendered-patched.yaml" "$tmp/rendered-orig.yaml" "$ROOT/phase4c/kueue-pod-config.yaml" "$ROOT/phase4c/kueue-live-config-baseline.yaml" "$tmp/deployed-config.yaml" <<'PY'
+python3 - "$tmp/rendered-patched.yaml" "$tmp/rendered-orig.yaml" "$ROOT/phase4c/kueue-pod-config.yaml" "$ROOT/phase4c/kueue-live-config-baseline.yaml" "$tmp/deployed-config.yaml" "$LIVE_KUEUE_CONTROLLER_IMAGE" <<'PY'
 import copy, json, sys, yaml
-patched_path, orig_path, sealed_path, baseline_path, deployed_path = sys.argv[1:6]
+patched_path, orig_path, sealed_path, baseline_path, deployed_path, pinned_image = sys.argv[1:7]
 selector = {"matchExpressions": [{"key": "kubernetes.io/metadata.name", "operator": "In",
              "values": ["blazn-poc", "blazn-poc-sandboxes"]}]}
 def load(path):
@@ -69,6 +69,7 @@ def key(doc):
 patched_by, orig_by = {key(d): d for d in patched}, {key(d): d for d in orig}
 assert set(patched_by) == set(orig_by), "patched render changed the document set"
 pod_hooks = 0
+pinned_images = 0
 for k in patched_by:
     p, o = copy.deepcopy(patched_by[k]), copy.deepcopy(orig_by[k])
     if k[0] in ("MutatingWebhookConfiguration", "ValidatingWebhookConfiguration"):
@@ -79,8 +80,16 @@ for k in patched_by:
                 assert pw["failurePolicy"] == "Fail", f'{pw["name"]} failurePolicy {pw["failurePolicy"]}'
                 pod_hooks += 1
                 pw["namespaceSelector"] = ow["namespaceSelector"]
-    assert p == o, f"patched render changed more than the pod selectors in {k}"
+    if k == ("Deployment", "kueue-controller-manager"):
+        pc = p["spec"]["template"]["spec"]["containers"][0]
+        oc = o["spec"]["template"]["spec"]["containers"][0]
+        assert pc["image"] == pinned_image, f'manager image {pc["image"]} is not the reviewed pin'
+        assert pinned_image.startswith(oc["image"] + "@sha256:"), "pin must be the upstream reference plus a digest"
+        pinned_images += 1
+        pc["image"] = oc["image"]
+    assert p == o, f"patched render changed more than the pod selectors and manager image in {k}"
 assert pod_hooks == 2, f"expected mpod+vpod webhooks, saw {pod_hooks}"
+assert pinned_images == 1, "expected exactly one digest-pinned manager image"
 config = next(d for d in patched if d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "kueue-manager-config")
 sealed = open(sealed_path).read()
 deployed = config["data"]["controller_manager_config.yaml"]
@@ -114,6 +123,7 @@ case "$*" in
   'get workloads.kueue.x-k8s.io -A -o json') cat "$FAKE_STATE/workloads.json" ;;
   '-n kueue-system get configmap kueue-manager-config -o jsonpath='*) cat "$FAKE_STATE/config" ;;
   'wait deployment/kueue-controller-manager -n kueue-system '*) : ;;
+  '-n kueue-system get deployment kueue-controller-manager -o jsonpath='*) cat "$FAKE_STATE/deployment-image" ;;
   'get mutatingwebhookconfiguration kueue-mutating-webhook-configuration -o json')
     jq -n --slurpfile s "$FAKE_STATE/webhooks.json" '{webhooks:[{name:"mpod.kb.io",failurePolicy:"Fail",namespaceSelector:$s[0]}]}' ;;
   'get validatingwebhookconfiguration kueue-validating-webhook-configuration -o json')
@@ -157,7 +167,8 @@ case "$*" in
     append_revision "$revision" deployed "Rollback to $target"
     cp "$FAKE_STATE/baseline-manifest" "$FAKE_STATE/manifest"
     cp "$FAKE_STATE/baseline-config" "$FAKE_STATE/config"
-    cp "$FAKE_STATE/baseline-webhooks.json" "$FAKE_STATE/webhooks.json" ;;
+    cp "$FAKE_STATE/baseline-webhooks.json" "$FAKE_STATE/webhooks.json"
+    cp "$FAKE_STATE/baseline-deployment-image" "$FAKE_STATE/deployment-image" ;;
   'upgrade kueue '*)
     description=''
     config_file=''
@@ -185,6 +196,7 @@ case "$*" in
         supersede
         append_revision "$revision" deployed "$description"
         cat "$FAKE_STATE/deployed-config" >"$FAKE_STATE/config"
+        cat "$FAKE_STATE/pinned-image" >"$FAKE_STATE/deployment-image"
         printf 'manifest-for-blazn-pod-integration revision %s\n' "$revision" >"$FAKE_STATE/manifest"
         if [ "${FAKE_WEBHOOK_DRIFT:-0}" = 1 ]; then
           printf '{"matchExpressions":[{"key":"kubernetes.io/metadata.name","operator":"In","values":["wrong-namespace"]}]}\n' >"$FAKE_STATE/webhooks.json"
@@ -215,6 +227,9 @@ reset_state() {
   cp "$FAKE_STATE/webhooks.json" "$FAKE_STATE/baseline-webhooks.json"
   cp "$FAKE_STATE/workloads.json" "$FAKE_STATE/baseline-workloads.json"
   cp "$tmp/deployed-config.yaml" "$FAKE_STATE/deployed-config"
+  printf '%s\n' "$LIVE_KUEUE_CONTROLLER_IMAGE" >"$FAKE_STATE/pinned-image"
+  printf 'registry.k8s.io/kueue/kueue@sha256:2c5b782a2a3954ef72576db22d6bdc752d3604d39f3be734662ab7acfa2f61dc\n' >"$FAKE_STATE/deployment-image"
+  cp "$FAKE_STATE/deployment-image" "$FAKE_STATE/baseline-deployment-image"
   : >"$FAKE_STATE/calls.log"
 }
 baseline_manifest_sha=$(printf 'live-kueue-manifest-revision-45\n' | sha256sum | awk '{print $1}')
