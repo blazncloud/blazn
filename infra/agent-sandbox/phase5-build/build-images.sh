@@ -54,7 +54,7 @@ build_one() {
     "$source_dir" >"$output_dir/$build_name-build.log" 2>&1 || { tail -30 "$output_dir/$build_name-build.log" >&2; printf '%s build failed\n' "$build_name" >&2; exit 1; }
   mkdir "$output_dir/$build_name.oci"
   tar -xf "$output_dir/$build_name.oci.tar" -C "$output_dir/$build_name.oci"
-  "$output_dir/tools/trivy" image --input "$output_dir/$build_name.oci.tar" \
+  "$output_dir/tools/trivy" image --input "$output_dir/$build_name.oci" \
     --severity CRITICAL --exit-code 1 --no-progress --quiet \
     --format json --output "$output_dir/$build_name-scan.json" || { printf '%s has CRITICAL findings; see %s-scan.json\n' "$build_name" "$build_name" >&2; exit 1; }
 }
