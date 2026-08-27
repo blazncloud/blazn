@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"unicode/utf8"
 )
 
 type ProofClass string
@@ -284,7 +285,8 @@ func (c *Client) SendRunMessage(ctx context.Context, accessToken, workspaceID, p
 	if err != nil {
 		return output, err
 	}
-	if !validRunMessageKind(request.Kind) || len(request.Content) < 1 || len(request.Content) > 16384 || request.ParentMessageID != "" && !runUUID.MatchString(request.ParentMessageID) {
+	characters := utf8.RuneCountInString(request.Content)
+	if !validRunMessageKind(request.Kind) || !utf8.ValidString(request.Content) || characters < 1 || characters > 16384 || request.ParentMessageID != "" && !runUUID.MatchString(request.ParentMessageID) {
 		return output, fmt.Errorf("Run message request is invalid")
 	}
 	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages", accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)

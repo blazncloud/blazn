@@ -169,7 +169,7 @@ func TestRunMessageClientListsAndQueuesSteering(t *testing.T) {
 			t.Fatalf("send headers=%v", r.Header)
 		}
 		var request SendRunMessageRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Kind != RunMessageKindSteer || request.ParentMessageID != runTestArtifactID {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Kind != RunMessageKindSteer || request.ParentMessageID != runTestArtifactID || len([]rune(request.Content)) != 6000 {
 			t.Fatalf("request=%#v err=%v", request, err)
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -180,7 +180,7 @@ func TestRunMessageClientListsAndQueuesSteering(t *testing.T) {
 	if _, err := api.ListRunMessages(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "1"); err != nil {
 		t.Fatal(err)
 	}
-	message, err := api.SendRunMessage(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "message-steer-1", SendRunMessageRequest{Kind: RunMessageKindSteer, Content: "Only update documentation", ParentMessageID: runTestArtifactID})
+	message, err := api.SendRunMessage(context.Background(), "access-token", runTestWorkspaceID, runTestProjectID, runTestRunID, "message-steer-1", SendRunMessageRequest{Kind: RunMessageKindSteer, Content: repeat("界", 6000), ParentMessageID: runTestArtifactID})
 	if err != nil || message.Message.Ordinal != 2 || message.Message.Content != "Only update documentation" {
 		t.Fatalf("message=%#v err=%v", message, err)
 	}
