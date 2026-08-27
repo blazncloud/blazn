@@ -44,9 +44,11 @@ reviewed `upgrade-kueue-pod-integration.sh` transaction pins and copies into a
 root-only sealed directory the exact v0.14.3
 chart bytes, current Helm revision, rendered-manifest digest, manager-config
 digest, and admitted Workload identities before enabling `pod` only for
-`blazn-poc` and `blazn-poc-sandboxes` using `podOptions.namespaceSelector`,
-then narrows only the `mpod.kb.io` webhook selector to the same namespaces.
-Other framework selectors remain unchanged. A failed upgrade or post-check rolls
+`blazn-poc` and `blazn-poc-sandboxes` using `podOptions.namespaceSelector`.
+A checksum-pinned patch to the sealed chart renders the same selector only into
+the `mpod.kb.io` and `vpod.kb.io` Helm-managed webhook entries, so future Helm
+operations retain the boundary while other framework selectors remain
+unchanged. A failed upgrade or post-check rolls
 back to the exact prior Helm revision. It must use the same serialized live
 cluster lock and Phase 4C approval boundary as the canary.
 

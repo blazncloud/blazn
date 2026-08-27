@@ -18,8 +18,11 @@ grep -F '  podOptions:' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
 if grep -E '^managedJobsNamespaceSelector:' "$PHASE4C/kueue-pod-config.yaml" >/dev/null; then exit 1; fi
 grep -F '314d2b21e9a7ea6a31fc7fed1cf7db825e62ce11ad2a849e2b8b450213b9ba09' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F '0f26fd3a1097b6f879504931d14757f3fd8f81f6996ef58c5c59ed0b09aab9e0' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'ad232c225899a6b53015213ea9c552eb77e9a4c552d51721dc813cfce16f12b7' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'helm -n kueue-system rollback' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'mpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'vpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F '$integrationsConfig.podOptions.namespaceSelector' "$PHASE4C/kueue-pod-webhook-selector.patch" >/dev/null
 BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 "$PHASE4C/render-install.sh" "$tmp/install.yaml"
 grep -F 'image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.6@sha256:' "$tmp/install.yaml" >/dev/null
 grep -F -- '- --leader-election-namespace=agent-sandbox-system' "$tmp/install.yaml" >/dev/null
