@@ -177,6 +177,9 @@ if [ "${#BLAZN_OBJECT_BUCKET}" -lt 3 ] || [ "${#BLAZN_OBJECT_BUCKET}" -gt 63 ] |
   fail "BLAZN_OBJECT_BUCKET is invalid"
 fi
 printf '%s\n' "$BLAZN_KUBERNETES_API_AUDIENCE" | LC_ALL=C grep -Eq '^[A-Za-z0-9][A-Za-z0-9./:_-]{0,252}$' || fail "BLAZN_KUBERNETES_API_AUDIENCE is invalid"
+# The audience is the only other substituted value whose charset could embed
+# a later template token; see valid_key for why that corrupts the render.
+case "$BLAZN_KUBERNETES_API_AUDIENCE" in *BLAZN_*) fail "BLAZN_KUBERNETES_API_AUDIENCE is invalid" ;; esac
 
 case "$BLAZN_DATABASE_ENDPOINT_KIND" in
   ip)
