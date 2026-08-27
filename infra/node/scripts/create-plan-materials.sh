@@ -62,7 +62,10 @@ if [ ! -e "$JOURNAL" ]; then
   chmod 0600 "$tmp"; sync_path "$tmp"; ln -- "$tmp" "$JOURNAL" || { rm -f -- "$tmp"; die "plan material journal target appeared"; }; rm -f -- "$tmp"; sync_path "$(dirname -- "$JOURNAL")"; fault initialized
 fi
 if [ ! -f "$JOURNAL" ] || [ -L "$JOURNAL" ] || [ "$(stat -c '%u:%a' "$JOURNAL")" != 0:600 ]; then die "plan material journal is unsafe"; fi
-journal_source=$(jq -er .source "$JOURNAL"); [ "$journal_source" = "$SOURCE_TEMPLATE" ] || die "plan template source changed during recovery"
+# Immutable releases intentionally relocate the reviewed template on every
+# promotion. Recovery is bound to its recorded bytes, not to the retired
+# release's absolute path.
+jq -er .source "$JOURNAL" >/dev/null
 [ "$(jq -er .sourceDigest "$JOURNAL")" = "sha256:$(sha256sum "$SOURCE_TEMPLATE"|awk '{print $1}')" ] || die "plan template source digest changed during recovery"
 stage=$(jq -er .stage "$JOURNAL"); case "$stage" in "$(dirname -- "$ROOT")"/.node-plan-create-*) ;; *) die "plan material staging path escaped" ;; esac
 phase=$(jq -er .phase "$JOURNAL"); case "$phase" in initialized|tree-created|key-written|metadata-written|template-written|published) ;; *) die "plan material phase is invalid" ;; esac

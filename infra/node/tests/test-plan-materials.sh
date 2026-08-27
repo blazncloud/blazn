@@ -47,6 +47,11 @@ for fault in initialized tree-created key-written metadata-written template-writ
   done
 done
 
+relocated=$top/template-relocated; mkdir "$relocated"; cp "$TEMPLATE" "$relocated/source-a.json"; cp "$TEMPLATE" "$relocated/source-b.json"
+if run_create "$relocated" metadata-written "$relocated/source-a.json" >"$relocated/first.out" 2>"$relocated/first.err"; then printf 'template-relocation setup unexpectedly completed\n' >&2; exit 1; fi
+run_create "$relocated" '' "$relocated/source-b.json" >"$relocated/retry.out"
+sudo cmp "$relocated/source-b.json" "$relocated/material/node-install-plan-template-v1.json"
+
 drift=$top/template-drift; mkdir "$drift"; cp "$TEMPLATE" "$drift/source.json"
 if run_create "$drift" metadata-written "$drift/source.json" >"$drift/first.out" 2>"$drift/first.err"; then printf 'template-drift setup unexpectedly completed\n' >&2; exit 1; fi
 printf '\n' >>"$drift/source.json"
