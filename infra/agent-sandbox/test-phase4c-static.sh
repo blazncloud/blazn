@@ -93,6 +93,7 @@ grep -F "stat -Lc '%d:%i'" "$PHASE4C/lib.sh" >/dev/null
 grep -F 'preconditions' "$PHASE4C/lib.sh" >/dev/null
 grep -F 'delete_if_owned canary-sandbox sandbox phase4c-canary' "$PHASE4C/rollback.sh" >/dev/null
 grep -F 'kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found' "$PHASE4C/rollback.sh" >/dev/null
+grep -F 'Sandbox CRD rollback discovery failed' "$PHASE4C/rollback.sh" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'kubectl wait --for=delete "$target"' "$PHASE4C/rollback.sh" >/dev/null
 grep -F 'admission.json' "$PHASE4C/inventory.sh" >/dev/null

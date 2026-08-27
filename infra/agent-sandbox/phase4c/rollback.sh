@@ -95,7 +95,11 @@ delete_if_owned() {
 # rollback from canary-intent/canary-ready must not strand the workload
 # namespace by stopping reconciliation first.
 canary_existed=''
-if [ -n "$(kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name)" ]; then
+sandbox_crd=$(kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name) || {
+  printf 'Sandbox CRD rollback discovery failed\n' >&2
+  exit 1
+}
+if [ -n "$sandbox_crd" ]; then
   canary_existed=$(get_optional_name sandbox phase4c-canary blazn-poc) || { printf 'canary rollback lookup failed\n' >&2; exit 1; }
 fi
 if [ -n "$canary_existed" ]; then
