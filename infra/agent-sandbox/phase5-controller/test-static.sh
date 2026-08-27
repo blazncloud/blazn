@@ -54,7 +54,8 @@ expect_fail() {
 
 for script in "$ROOT"/*.sh; do sh -n "$script"; done
 render "$tmp/ip.yaml"
-[ "$(stat -c '%a' "$tmp/ip.yaml")" = 400 ]
+manifest_mode=$(stat -c '%a' "$tmp/ip.yaml" 2>/dev/null || stat -f '%Lp' "$tmp/ip.yaml")
+[ "$manifest_mode" = 400 ]
 [ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 6 ]
 [ "$(grep -Fxc "        image: $IMAGE" "$tmp/ip.yaml")" -eq 2 ]
 grep -F '  replicas: 0' "$tmp/ip.yaml" >/dev/null

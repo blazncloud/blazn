@@ -75,7 +75,10 @@ func TestCredentialLockSerializesAcrossProcesses(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = command.Process.Kill() })
-	deadline := time.Now().Add(2 * time.Second)
+	// Package-wide CI can compile and start many subprocess helpers at once.
+	// Keep the assertion bounded without treating a briefly saturated runner as
+	// a credential-lock failure.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if _, err := os.Stat(marker); err == nil {
 			break

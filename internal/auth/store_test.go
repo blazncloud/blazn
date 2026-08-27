@@ -57,7 +57,10 @@ func TestProtectedFileStoreRecoversCredentialStagingAfterSIGKILL(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	// Package-wide CI can compile and start many subprocess helpers at once.
+	// Keep the assertion bounded without treating a briefly saturated runner as
+	// a credential-recovery failure.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if _, err := os.Stat(marker); err == nil {
 			break

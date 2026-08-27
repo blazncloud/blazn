@@ -18,6 +18,13 @@ key_file="${tmp_root}/release-key"
 allowed_signers="${tmp_root}/allowed_signers"
 output_dir="${tmp_root}/dist"
 
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64) native_archive=darwin_arm64 ;;
+  Linux:x86_64) native_archive=linux_amd64 ;;
+  Linux:aarch64|Linux:arm64) native_archive=linux_arm64 ;;
+  *) echo "release execution test does not support this host" >&2; exit 1 ;;
+esac
+
 ssh-keygen -q -t ed25519 -N '' -C release-test -f "$key_file"
 printf 'blazn-release namespaces="blazn-release" %s\n' "$(cat "${key_file}.pub")" >"$allowed_signers"
 
@@ -70,7 +77,7 @@ ssh-keygen -q -Y verify -f "$allowed_signers" -I blazn-release \
   <"${output_dir}/SHA256SUMS"
 
 mkdir -p "${tmp_root}/extract"
-tar -C "${tmp_root}/extract" -xzf "${output_dir}/blazn_1.2.3_linux_amd64.tar.gz"
+tar -C "${tmp_root}/extract" -xzf "${output_dir}/blazn_1.2.3_${native_archive}.tar.gz"
 metadata=$("${tmp_root}/extract/blazn")
 [ "$metadata" = 'v1.2.3 0123456789abcdef0123456789abcdef01234567 2024-08-21T00:00:00Z' ] || {
   echo "unexpected embedded metadata: $metadata" >&2
@@ -94,7 +101,7 @@ if tar --version 2>/dev/null | grep -q 'GNU tar'; then
     cmp "$archive" "$real_two/$name"
   done
   mkdir -p "${tmp_root}/real-extract"
-  tar -C "${tmp_root}/real-extract" -xzf "$real_one/blazn_9.9.9-test_linux_amd64.tar.gz"
+  tar -C "${tmp_root}/real-extract" -xzf "$real_one/blazn_9.9.9-test_${native_archive}.tar.gz"
   "${tmp_root}/real-extract/blazn" version --output=json | grep -F '"version":"v9.9.9-test"' >/dev/null
   mkdir -p "${tmp_root}/darwin-extract"
   tar -C "${tmp_root}/darwin-extract" -xzf "$real_one/blazn_9.9.9-test_darwin_arm64.tar.gz"

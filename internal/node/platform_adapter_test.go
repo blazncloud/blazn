@@ -1291,6 +1291,13 @@ func TestHistoricalAuthorityProfileDoesNotDependOnCurrentBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if profile.VerifyNoSymlinkTraversal == nil {
+		t.Fatal("historical profile omitted its traversal verifier")
+	}
+	// This test proves that the historical profile reconstructs the signed
+	// current-binary binding. Host path traversal is covered separately and a
+	// Darwin host maps /etc through /private/etc, unlike the Linux target plan.
+	profile.VerifyNoSymlinkTraversal = func(string) error { return nil }
 	issuedAt, _ := time.Parse(time.RFC3339, plan.IssuedAt)
 	if digest != authority.ProfileSHA256 || VerifyRootInstallAuthority(authority, RootInstallAuthorityTrust{Now: issuedAt.Add(time.Nanosecond), Profile: profile, ProfileSHA256: digest}) != nil {
 		t.Fatal("historical trust could not verify without a current binary")
