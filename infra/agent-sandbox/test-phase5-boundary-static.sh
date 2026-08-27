@@ -66,6 +66,7 @@ for needle in (
     "system:serviceaccount:blazn-poc-system:blazn-sandbox-controller",
     "system:serviceaccount:agent-sandbox-system:agent-sandbox-controller",
     "object.spec == oldObject.spec",
+    "annotations.filter(k, k != 'agents.x-k8s.io/pod-name')",
     "sandboxes.blazn.dev/trust-level",
 ):
     assert needle in expressions, f"policy lost required rule: {needle}"
