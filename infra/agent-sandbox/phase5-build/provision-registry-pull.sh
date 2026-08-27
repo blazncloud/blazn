@@ -28,7 +28,10 @@ done
 for attach in blazn-poc-sandboxes/blazn-sandbox-runner blazn-poc-system/blazn-sandbox-controller; do
   attach_namespace=${attach%%/*}; attach_name=${attach#*/}
   if kubectl get serviceaccount "$attach_name" -n "$attach_namespace" >/dev/null 2>&1; then
-    kubectl patch serviceaccount "$attach_name" -n "$attach_namespace" --type strategic -p '{"imagePullSecrets":[{"name":"blazn-registry-pull"}]}' >/dev/null
+    # imagePullSecrets is an atomic list, so merge with the existing entries
+    # explicitly instead of relying on any patch strategy.
+    merged=$(kubectl get serviceaccount "$attach_name" -n "$attach_namespace" -o json | jq -c '[(.imagePullSecrets // [])[], {"name": "blazn-registry-pull"}] | unique_by(.name)')
+    kubectl patch serviceaccount "$attach_name" -n "$attach_namespace" --type merge -p "{\"imagePullSecrets\":$merged}" >/dev/null
     printf 'attached blazn-registry-pull to %s\n' "$attach"
   else
     printf 'serviceaccount %s absent; attach later after its install\n' "$attach"
