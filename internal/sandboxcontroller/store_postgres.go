@@ -239,8 +239,11 @@ func (s *PgStore) CompleteArtifactExport(ctx context.Context, operationID, worke
 	if err != nil {
 		return false, err
 	}
-	if warnings == nil || len(warnings) > 32 {
+	if len(warnings) > 32 {
 		return false, errors.New("artifact export warnings are invalid")
+	}
+	if warnings == nil {
+		warnings = []string{}
 	}
 	for index, warning := range warnings {
 		if !artifactWarningPattern.MatchString(warning) || index > 0 && warnings[index-1] >= warning {

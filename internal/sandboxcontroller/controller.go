@@ -372,7 +372,9 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.AdmissionObservation == nil {
 		return &Failure{Code: "missing_backend_identity", SafeMessage: "cleanup lacks exact backend identity", Ambiguous: true}
 	}
-	warningCodes := append([]string(nil), item.ArtifactWarningCodes...)
+	// PostgreSQL distinguishes a NULL text[] from an empty text[]. Keep the
+	// no-warning case canonical so both cleanup receipts remain admissible.
+	warningCodes := append([]string{}, item.ArtifactWarningCodes...)
 	if !item.ArtifactExportComplete && len(item.Artifacts) != 0 {
 		artifactBackend, ok := c.backend.(ArtifactBackend)
 		if !ok {
@@ -407,7 +409,7 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 			exported.Artifacts[index] = persisted
 		}
 		item.PersistedArtifacts = exported.Artifacts
-		warningCodes = append([]string(nil), exported.WarningCodes...)
+		warningCodes = append([]string{}, exported.WarningCodes...)
 	}
 	if !item.ArtifactExportComplete {
 		sort.Strings(warningCodes)

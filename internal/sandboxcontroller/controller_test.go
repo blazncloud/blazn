@@ -13,18 +13,19 @@ import (
 )
 
 type fakeStore struct {
-	bound           bool
-	claims          int
-	bindObservation sandboxcontrol.AdmissionObservation
-	sourceReceipt   *sandboxio.SourceMaterializationReceipt
-	completion      *Completion
-	retry           *SafeError
-	renewResponses  chan renewResponse
-	renewStarted    chan struct{}
-	retryCalls      int
-	completionCalls int
-	artifactRecords int
-	artifactPhases  int
+	bound               bool
+	claims              int
+	bindObservation     sandboxcontrol.AdmissionObservation
+	sourceReceipt       *sandboxio.SourceMaterializationReceipt
+	completion          *Completion
+	retry               *SafeError
+	renewResponses      chan renewResponse
+	renewStarted        chan struct{}
+	retryCalls          int
+	completionCalls     int
+	artifactRecords     int
+	artifactPhases      int
+	artifactWarningsNil bool
 }
 
 type renewResponse struct {
@@ -76,6 +77,7 @@ func (s *fakeStore) RecordArtifact(_ context.Context, _, _, _ string, _ sandboxc
 }
 func (s *fakeStore) CompleteArtifactExport(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, warnings []string) (bool, error) {
 	s.artifactPhases++
+	s.artifactWarningsNil = warnings == nil
 	return true, nil
 }
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
@@ -345,7 +347,7 @@ func TestCleanupExportsAndPersistsArtifactsBeforeBackendDelete(t *testing.T) {
 	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 || store.artifactPhases != 1 ||
+	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 || store.artifactPhases != 1 || store.artifactWarningsNil ||
 		store.completion == nil || !reflect.DeepEqual(store.completion.ArtifactIDs, []string{"80000000-0000-4000-8000-000000000001"}) {
 		t.Fatalf("order=%v records=%d phases=%d completion=%#v", backend.order, store.artifactRecords, store.artifactPhases, store.completion)
 	}
