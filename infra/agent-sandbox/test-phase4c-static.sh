@@ -22,6 +22,7 @@ grep -F 'ad232c225899a6b53015213ea9c552eb77e9a4c552d51721dc813cfce16f12b7' "$PHA
 grep -F 'helm -n kueue-system rollback' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'mpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'vpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+# shellcheck disable=SC2016 # literal yq path, not a shell expansion
 grep -F '$integrationsConfig.podOptions.namespaceSelector' "$PHASE4C/kueue-pod-webhook-selector.patch" >/dev/null
 BLAZN_PHASE4C_TRANSACTION_ID=77777777-7777-4777-8777-777777777777 "$PHASE4C/render-install.sh" "$tmp/install.yaml"
 grep -F 'image: registry.k8s.io/agent-sandbox/agent-sandbox-controller:v0.5.6@sha256:' "$tmp/install.yaml" >/dev/null
