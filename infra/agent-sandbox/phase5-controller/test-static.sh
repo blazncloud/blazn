@@ -84,7 +84,7 @@ grep -A1 -Fx '        - name: BLAZN_SANDBOX_ARTIFACT_CA_FILE' "$tmp/ip.yaml" | g
 [ "$(grep -Fxc '              - key: object-ca' "$tmp/ip.yaml")" -eq 1 ]
 # The ServiceAccount must carry the registry pull secret, or the fenced
 # install recreates it without pull access and the image cannot pull.
-grep -A1 -Fx 'imagePullSecrets:' "$tmp/ip.yaml" | grep -Fxq '- name: registry-pull'
+grep -A1 -Fx 'imagePullSecrets:' "$tmp/ip.yaml" | grep -Fxq -- '- name: registry-pull'
 grep -F 'mountPath: /var/run/blazn-private' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '          mountPath: /var/run/blazn-api-ca' "$tmp/ip.yaml")" -eq 1 ]
 [ "$(grep -Fxc '          value: /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
