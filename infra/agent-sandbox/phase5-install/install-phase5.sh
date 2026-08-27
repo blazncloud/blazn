@@ -56,7 +56,7 @@ case "$phase" in
   *) printf 'install transaction phase is invalid\n' >&2; exit 1 ;;
 esac
 
-boundary_owner=$(kubectl get namespace blazn-poc-sandboxes -o jsonpath='{.metadata.annotations.blazn\.dev/phase5-transaction}')
+boundary_owner=$(kubectl get namespace blazn-poc-sandboxes --ignore-not-found -o jsonpath='{.metadata.annotations.blazn\.dev/phase5-transaction}') || { printf 'boundary namespace discovery failed\n' >&2; exit 1; }
 [ -n "$boundary_owner" ] || { printf 'the Phase 5 boundary is not installed\n' >&2; exit 1; }
 pod_selector='{"matchExpressions":[{"key":"kubernetes.io/metadata.name","operator":"In","values":["blazn-poc","blazn-poc-sandboxes"]}]}'
 kubectl get mutatingwebhookconfiguration kueue-mutating-webhook-configuration -o json | jq -e --argjson selector "$pod_selector" '.webhooks[] | select(.name=="mpod.kb.io") | .namespaceSelector==$selector' >/dev/null || { printf 'the Kueue Pod integration is not live for the reviewed namespaces\n' >&2; exit 1; }
