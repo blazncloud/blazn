@@ -73,8 +73,8 @@ if [ "$phase" = install-intent ]; then
   if ! object_absent namespace agent-sandbox-system; then
     owned_uid namespace agent-sandbox-system >/dev/null || { printf 'agent-sandbox-system exists without this transaction identity\n' >&2; exit 1; }
   fi
-  kubectl apply --server-side --field-manager blazn-phase5-install -f "$transaction/install.yaml" >/dev/null
   kubectl apply --server-side --field-manager blazn-phase5-install -f "$transaction/production-rbac.yaml" >/dev/null
+  kubectl apply --server-side --field-manager blazn-phase5-install -f "$transaction/install.yaml" >/dev/null
   write_phase install-applied; phase=install-applied
 fi
 if [ "$phase" = install-applied ]; then

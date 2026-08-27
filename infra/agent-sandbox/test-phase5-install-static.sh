@@ -36,11 +36,14 @@ for doc in install:
 rbac = [d for d in yaml.safe_load_all(open(f"{render}/production-rbac.yaml")) if d]
 by = {(d["kind"], d["metadata"]["name"]): d for d in rbac}
 assert set(by) == {
+    ("Namespace", "agent-sandbox-system"),
     ("ClusterRole", "blazn-agent-sandbox-observer"),
     ("ClusterRoleBinding", "blazn-agent-sandbox-observer"),
     ("Role", "blazn-agent-sandbox-system"),
     ("RoleBinding", "blazn-agent-sandbox-system"),
 }
+namespace = by[("Namespace", "agent-sandbox-system")]
+assert namespace["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "restricted"
 observer = by[("ClusterRole", "blazn-agent-sandbox-observer")]
 for rule in observer["rules"]:
     assert set(rule["verbs"]) <= {"get", "list", "watch"}, "observer must stay read-only"
