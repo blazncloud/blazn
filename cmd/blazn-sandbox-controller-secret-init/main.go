@@ -17,7 +17,10 @@ const (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "sandbox controller private file initialization failed")
+		// Every step error is a static message naming a file role, never a
+		// credential value, so surfacing it identifies which of the five
+		// copies failed without leaking anything.
+		fmt.Fprintf(os.Stderr, "sandbox controller private file initialization failed: %v\n", err)
 		os.Exit(1)
 	}
 }

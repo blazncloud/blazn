@@ -18,7 +18,12 @@ valid_dns_label() {
 }
 
 valid_key() {
-  [ "${#1}" -le 253 ] && printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
+  [ "${#1}" -le 253 ] || return 1
+  # A key value that embeds a template token would be rewritten again by a
+  # later sed pass, silently corrupting the rendered manifest while both
+  # placeholder guards stay quiet. No legitimate key contains BLAZN_.
+  case "$1" in *BLAZN_*) return 1 ;; esac
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
 }
 
 valid_port() {

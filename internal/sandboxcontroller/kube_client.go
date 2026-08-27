@@ -107,6 +107,9 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 			// A private object endpoint presents a certificate from a private
 			// CA the image's system roots cannot know; trust exactly that CA,
 			// loaded through the same hardened PEM pool reader as the API CA.
+			if !validAbsoluteFilePath(config.ArtifactCAFile) {
+				return nil, errors.New("artifact object CA path is invalid")
+			}
 			pool, err := readKubernetesCA(config.ArtifactCAFile)
 			if err != nil {
 				return nil, errors.New("artifact object CA file is invalid")

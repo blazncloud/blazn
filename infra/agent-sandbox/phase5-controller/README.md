@@ -114,6 +114,14 @@ Buildx; none is performed by this static preparation.
 
 ## Deployment (Phase 5)
 
+The image, the rendered manifest, and the object Secret move in lockstep:
+secret-init takes exactly the argument pairs its manifest passes (an old
+image rejects a new manifest's ten arguments and vice versa, crash-looping
+the init container), and the projected `BLAZN_OBJECT_CA_KEY` item requires
+that key to exist in the object Secret (a missing key blocks the volume
+mount). Always deploy in this order: re-provision the Secrets, then install
+a manifest rendered against the image digest it names.
+
 Once the boundary and the Agent Sandbox controller are installed and the
 controller Secrets exist, `provision-controller-secrets.sh` creates the
 `blazn-controller-database-url` and object-credential Secrets in

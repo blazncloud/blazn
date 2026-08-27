@@ -82,6 +82,9 @@ grep -F 'command: ["/blazn-sandbox-controller-secret-init"]' "$tmp/ip.yaml" >/de
 [ "$(grep -Fxc '        - name: BLAZN_SANDBOX_ARTIFACT_CA_FILE' "$tmp/ip.yaml")" -eq 1 ]
 grep -A1 -Fx '        - name: BLAZN_SANDBOX_ARTIFACT_CA_FILE' "$tmp/ip.yaml" | grep -Fxq '          value: /var/run/blazn-private/object-ca.crt'
 [ "$(grep -Fxc '              - key: object-ca' "$tmp/ip.yaml")" -eq 1 ]
+# Every projected secret item pins its own mode so a defaultMode change can
+# never silently relax an individual credential file.
+[ "$(grep -Fxc '                mode: 0440' "$tmp/ip.yaml")" -eq 4 ]
 # The ServiceAccount must carry the registry pull secret, or the fenced
 # install recreates it without pull access and the image cannot pull.
 grep -A1 -Fx 'imagePullSecrets:' "$tmp/ip.yaml" | grep -Fxq -- '- name: registry-pull'
@@ -89,7 +92,7 @@ grep -F 'mountPath: /var/run/blazn-private' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '          mountPath: /var/run/blazn-api-ca' "$tmp/ip.yaml")" -eq 1 ]
 [ "$(grep -Fxc '          value: /var/run/blazn-private/kubernetes-ca.crt' "$tmp/ip.yaml")" -eq 1 ]
 grep -F 'medium: Memory' "$tmp/ip.yaml" >/dev/null
-grep -F 'sizeLimit: 2Mi' "$tmp/ip.yaml" >/dev/null
+grep -F 'sizeLimit: 4Mi' "$tmp/ip.yaml" >/dev/null
 grep -F 'readOnlyRootFilesystem: true' "$tmp/ip.yaml" >/dev/null
 grep -F 'allowPrivilegeEscalation: false' "$tmp/ip.yaml" >/dev/null
 grep -F 'drop: ["ALL"]' "$tmp/ip.yaml" >/dev/null
@@ -145,6 +148,7 @@ expect_fail object-ca-key-collides-access BLAZN_OBJECT_CA_KEY=access-key
 expect_fail object-ca-key-collides-secret BLAZN_OBJECT_CA_KEY=secret-key
 expect_fail missing-pull-secret BLAZN_REGISTRY_PULL_SECRET_NAME=
 expect_fail invalid-pull-secret BLAZN_REGISTRY_PULL_SECRET_NAME=Registry_Pull
+expect_fail key-value-embeds-token BLAZN_OBJECT_ACCESS_KEY=BLAZN_OBJECT_CA_KEY
 expect_fail tag-only BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller:latest
 expect_fail tag-plus-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller:v1@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 expect_fail empty-repository-segment BLAZN_CONTROLLER_IMAGE=registry.example//blazn/sandbox-controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

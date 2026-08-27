@@ -65,6 +65,28 @@ install -m 0600 "$BLAZN_OBJECT_ACCESS_KEY_FILE" "$work/object-access"
 install -m 0600 "$BLAZN_OBJECT_SECRET_KEY_FILE" "$work/object-secret"
 install -m 0600 "$BLAZN_OBJECT_CA_CERT_FILE" "$work/object-ca"
 
+# The controller's hardened CA reader accepts only bare, headerless
+# CERTIFICATE PEM blocks; a decorated file (openssl -text preamble,
+# subject=/issuer= lines, bundle comments) would pass every provisioning
+# step and then crash-loop the controller at startup. Reject it here.
+BLAZN_OBJECT_CA_WORK_FILE="$work/object-ca" python3 - <<'PY'
+import os, re, sys
+contents = open(os.environ["BLAZN_OBJECT_CA_WORK_FILE"], "rb").read().decode("ascii", "strict").strip()
+block = re.compile(
+    r"-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----")
+remaining, certificates = contents, 0
+while remaining:
+    match = block.match(remaining)
+    if not match:
+        sys.stderr.write("object CA file must contain only bare CERTIFICATE PEM blocks\n")
+        sys.exit(1)
+    certificates += 1
+    remaining = remaining[match.end():].strip()
+if certificates == 0:
+    sys.stderr.write("object CA file holds no certificate\n")
+    sys.exit(1)
+PY
+
 cat >"$work/annotate.py" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
