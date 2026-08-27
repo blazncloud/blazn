@@ -129,7 +129,8 @@ case "$*" in
     [ "${FAKE_NS_PODS:-0}" = 0 ] || printf 'stray-pod 1/1 Running\n' ;;
   'get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name')
     [ ! -e "$FAKE_STATE/sandbox-crd" ] || printf 'customresourcedefinition.apiextensions.k8s.io/sandboxes.agents.x-k8s.io\n' ;;
-  'get sandboxes.agents.x-k8s.io -n blazn-poc --no-headers'|'get sandboxes.agents.x-k8s.io -n blazn-poc-sandboxes --no-headers') : ;;
+  'get sandboxes.agents.x-k8s.io -n blazn-poc --no-headers'|'get sandboxes.agents.x-k8s.io -n blazn-poc-sandboxes --no-headers')
+    [ "${FAKE_NS_SANDBOXES:-0}" = 0 ] || printf 'stray-sandbox 10s\n' ;;
   'get workloads.kueue.x-k8s.io -A -o json') cat "$FAKE_STATE/workloads.json" ;;
   '-n kueue-system get configmap kueue-manager-config -o jsonpath='*) cat "$FAKE_STATE/config" ;;
   'wait deployment/kueue-controller-manager -n kueue-system '*) : ;;
@@ -407,19 +408,41 @@ run_upgrade "$transaction"
 expect_message 'quiescent or could not be verified before Kueue mutation'
 if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'namespace appearance must block mutation\n' >&2; exit 1; fi
 
-# S9b: boundary-owned, quiescent namespaces permit a configuration update.
+# S9b: boundary-owned, quiescent namespaces permit a configuration update,
+# exercising the Sandbox-CRD branch with zero Sandboxes.
 reset_state
 new_transaction
-touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned" "$FAKE_STATE/ns-blazn-poc-sandboxes" "$FAKE_STATE/ns-blazn-poc-sandboxes-owned"
-run_upgrade "$transaction"
+touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned" "$FAKE_STATE/ns-blazn-poc-sandboxes" "$FAKE_STATE/ns-blazn-poc-sandboxes-owned" "$FAKE_STATE/sandbox-crd"
+run_upgrade "$transaction" BLAZN_EXPECTED_BOUNDARY_TRANSACTION=99999999-9999-4999-8999-999999999999
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase "$transaction" complete
+
+# S9b2: an owned namespace without the reviewed boundary transaction value,
+# or with no reviewed value supplied, blocks the update.
+reset_state
+new_transaction
+touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned"
+run_upgrade "$transaction" BLAZN_EXPECTED_BOUNDARY_TRANSACTION=11111111-1111-4111-8111-111111111111
+[ "$last_code" -eq 1 ]
+expect_message 'not quiescent'
+run_upgrade "$transaction"
+[ "$last_code" -eq 1 ]
+expect_message 'set BLAZN_EXPECTED_BOUNDARY_TRANSACTION'
+
+# S9d: a lingering Sandbox object blocks the update even with zero Pods.
+reset_state
+new_transaction
+touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned" "$FAKE_STATE/sandbox-crd"
+run_upgrade "$transaction" BLAZN_EXPECTED_BOUNDARY_TRANSACTION=99999999-9999-4999-8999-999999999999 FAKE_NS_SANDBOXES=1
+[ "$last_code" -eq 1 ]
+expect_message 'not quiescent'
+if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'lingering Sandboxes must block mutation\n' >&2; exit 1; fi
 
 # S9c: an owned namespace that is running Pods blocks the update.
 reset_state
 new_transaction
 touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned"
-run_upgrade "$transaction" FAKE_NS_PODS=1
+run_upgrade "$transaction" BLAZN_EXPECTED_BOUNDARY_TRANSACTION=99999999-9999-4999-8999-999999999999 FAKE_NS_PODS=1
 [ "$last_code" -eq 1 ]
 expect_message 'not quiescent'
 expect_phase "$transaction" sealed

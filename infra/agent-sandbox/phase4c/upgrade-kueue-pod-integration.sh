@@ -31,12 +31,14 @@ release_description="blazn-phase4c:$transaction_name"
 write_phase() { phase4c_write_phase "$transaction" "$1"; }
 workload_identities() { kubectl get workloads.kueue.x-k8s.io -A -o json | jq -S '[.items[] | {uid:.metadata.uid,namespace:.metadata.namespace,name:.metadata.name}] | sort_by(.uid)'; }
 # A managed namespace must be absent (first enablement) or owned by the
-# Phase 5 boundary and empty of Pods and Sandboxes (configuration update).
+# reviewed Phase 5 boundary transaction and empty of Pods and Sandboxes
+# (configuration update).
 namespace_quiescent() {
   discovered=$(kubectl get namespace "$1" --ignore-not-found -o name) || return 2
   [ -n "$discovered" ] || return 0
+  [ -n "${BLAZN_EXPECTED_BOUNDARY_TRANSACTION:-}" ] || { printf 'namespace %s exists; set BLAZN_EXPECTED_BOUNDARY_TRANSACTION to the reviewed boundary transaction\n' "$1" >&2; return 3; }
   quiescent_owner=$(kubectl get namespace "$1" -o jsonpath='{.metadata.annotations.blazn\.dev/phase5-transaction}') || return 2
-  [ -n "$quiescent_owner" ] || return 3
+  [ "$quiescent_owner" = "$BLAZN_EXPECTED_BOUNDARY_TRANSACTION" ] || return 3
   quiescent_pods=$(kubectl get pods -n "$1" --no-headers 2>/dev/null) || return 2
   [ "$(printf '%s' "$quiescent_pods" | grep -c . || :)" = 0 ] || return 4
   quiescent_crd=$(kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name) || return 2
