@@ -121,6 +121,15 @@ case "$*" in
   'get namespace blazn-poc-sandboxes --ignore-not-found -o name')
     [ "${FAKE_NS_ERROR:-0}" = 0 ] || { printf 'fake API discovery error\n' >&2; exit 1; }
     [ ! -e "$FAKE_STATE/ns-blazn-poc-sandboxes" ] || printf 'namespace/blazn-poc-sandboxes\n' ;;
+  'get namespace blazn-poc -o jsonpath={.metadata.annotations.blazn\.dev/phase5-transaction}')
+    [ ! -e "$FAKE_STATE/ns-blazn-poc-owned" ] || printf '99999999-9999-4999-8999-999999999999' ;;
+  'get namespace blazn-poc-sandboxes -o jsonpath={.metadata.annotations.blazn\.dev/phase5-transaction}')
+    [ ! -e "$FAKE_STATE/ns-blazn-poc-sandboxes-owned" ] || printf '99999999-9999-4999-8999-999999999999' ;;
+  'get pods -n blazn-poc --no-headers'|'get pods -n blazn-poc-sandboxes --no-headers')
+    [ "${FAKE_NS_PODS:-0}" = 0 ] || printf 'stray-pod 1/1 Running\n' ;;
+  'get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name')
+    [ ! -e "$FAKE_STATE/sandbox-crd" ] || printf 'customresourcedefinition.apiextensions.k8s.io/sandboxes.agents.x-k8s.io\n' ;;
+  'get sandboxes.agents.x-k8s.io -n blazn-poc --no-headers'|'get sandboxes.agents.x-k8s.io -n blazn-poc-sandboxes --no-headers') : ;;
   'get workloads.kueue.x-k8s.io -A -o json') cat "$FAKE_STATE/workloads.json" ;;
   '-n kueue-system get configmap kueue-manager-config -o jsonpath='*) cat "$FAKE_STATE/config" ;;
   'wait deployment/kueue-controller-manager -n kueue-system '*) : ;;
@@ -395,8 +404,26 @@ touch "$FAKE_STATE/ns-blazn-poc"
 : >"$FAKE_STATE/calls.log"
 run_upgrade "$transaction"
 [ "$last_code" -eq 1 ]
-expect_message 'appeared or could not be verified before Kueue mutation'
+expect_message 'quiescent or could not be verified before Kueue mutation'
 if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'namespace appearance must block mutation\n' >&2; exit 1; fi
+
+# S9b: boundary-owned, quiescent namespaces permit a configuration update.
+reset_state
+new_transaction
+touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned" "$FAKE_STATE/ns-blazn-poc-sandboxes" "$FAKE_STATE/ns-blazn-poc-sandboxes-owned"
+run_upgrade "$transaction"
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase "$transaction" complete
+
+# S9c: an owned namespace that is running Pods blocks the update.
+reset_state
+new_transaction
+touch "$FAKE_STATE/ns-blazn-poc" "$FAKE_STATE/ns-blazn-poc-owned"
+run_upgrade "$transaction" FAKE_NS_PODS=1
+[ "$last_code" -eq 1 ]
+expect_message 'not quiescent'
+expect_phase "$transaction" sealed
+if grep -Fq 'helm upgrade' "$FAKE_STATE/calls.log"; then printf 'occupied namespace must block mutation\n' >&2; exit 1; fi
 
 # S10: a Workload created during enablement rolls back, and rollback is never
 # declared complete while the identity set still differs.

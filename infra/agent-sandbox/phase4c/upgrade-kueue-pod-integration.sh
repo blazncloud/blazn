@@ -30,8 +30,21 @@ release_description="blazn-phase4c:$transaction_name"
 
 write_phase() { phase4c_write_phase "$transaction" "$1"; }
 workload_identities() { kubectl get workloads.kueue.x-k8s.io -A -o json | jq -S '[.items[] | {uid:.metadata.uid,namespace:.metadata.namespace,name:.metadata.name}] | sort_by(.uid)'; }
-namespace_absent() { discovered=$(kubectl get namespace "$1" --ignore-not-found -o name) || return 2; [ -z "$discovered" ]; }
-both_pod_namespaces_absent() { namespace_absent blazn-poc && namespace_absent blazn-poc-sandboxes; }
+# A managed namespace must be absent (first enablement) or owned by the
+# Phase 5 boundary and empty of Pods and Sandboxes (configuration update).
+namespace_quiescent() {
+  discovered=$(kubectl get namespace "$1" --ignore-not-found -o name) || return 2
+  [ -n "$discovered" ] || return 0
+  quiescent_owner=$(kubectl get namespace "$1" -o jsonpath='{.metadata.annotations.blazn\.dev/phase5-transaction}') || return 2
+  [ -n "$quiescent_owner" ] || return 3
+  quiescent_pods=$(kubectl get pods -n "$1" --no-headers 2>/dev/null) || return 2
+  [ "$(printf '%s' "$quiescent_pods" | grep -c . || :)" = 0 ] || return 4
+  quiescent_crd=$(kubectl get crd sandboxes.agents.x-k8s.io --ignore-not-found -o name) || return 2
+  [ -n "$quiescent_crd" ] || return 0
+  quiescent_sandboxes=$(kubectl get sandboxes.agents.x-k8s.io -n "$1" --no-headers 2>/dev/null) || return 2
+  [ "$(printf '%s' "$quiescent_sandboxes" | grep -c . || :)" = 0 ] || return 4
+}
+both_pod_namespaces_quiescent() { namespace_quiescent blazn-poc && namespace_quiescent blazn-poc-sandboxes; }
 live_config_sha() { kubectl -n kueue-system get configmap kueue-manager-config -o jsonpath='{.data.controller_manager_config\.yaml}' | sha256sum | awk '{print $1}'; }
 live_release_revision() { helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0].revision' || { printf 'could not determine the live deployed Kueue revision\n' >&2; return 1; }; }
 live_release_description() { helm -n kueue-system status kueue -o json | jq -er '.info.description'; }
@@ -57,7 +70,7 @@ phase=$(cat "$transaction/phase")
 case "$phase" in complete) printf 'Kueue Pod integration transaction is already complete\n'; exit 0 ;; rollback-complete) printf 'Kueue Pod integration transaction was rolled back; use a new transaction\n' >&2; exit 1 ;; sealed|prepared|upgrade-intent|upgraded) ;; *) printf 'Kueue transaction phase is invalid\n' >&2; exit 1 ;; esac
 
 if [ "$phase" = sealed ]; then
-  if ! both_pod_namespaces_absent; then printf 'reviewed Pod namespaces are present or could not be verified before Kueue integration changes\n' >&2; exit 1; fi
+  if ! both_pod_namespaces_quiescent; then printf 'reviewed Pod namespaces are not quiescent or could not be verified before Kueue integration changes\n' >&2; exit 1; fi
   current_revision=$(helm -n kueue-system list -f '^kueue$' -o json | jq -er '.[0] | select(.chart=="kueue-0.14.3" and .app_version=="v0.14.3" and .status=="deployed") | .revision')
   [ "$current_revision" = "$BLAZN_EXPECTED_KUEUE_REVISION" ] || { printf 'Kueue Helm revision changed\n' >&2; exit 1; }
   helm -n kueue-system get manifest kueue >"$transaction/prior-manifest.yaml"; chmod 0400 "$transaction/prior-manifest.yaml"
@@ -94,10 +107,10 @@ verify_prior_state() {
   workload_identities >"$transaction/verified-rollback-workloads.json"
   cmp "$transaction/prior-workloads.json" "$transaction/verified-rollback-workloads.json" || return 1
   [ "$(live_controller_image)" = "$(cat "$transaction/prior-image")" ] || return 1
-  both_pod_namespaces_absent
+  both_pod_namespaces_quiescent
 }
 revalidate_baseline() {
-  if ! both_pod_namespaces_absent; then printf 'reviewed Pod namespaces appeared or could not be verified before Kueue mutation\n' >&2; return 1; fi
+  if ! both_pod_namespaces_quiescent; then printf 'reviewed Pod namespaces stopped being quiescent or could not be verified before Kueue mutation\n' >&2; return 1; fi
   workload_identities >"$transaction/current-workloads.json"
   cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" || { printf 'Workload identities changed before Kueue mutation\n' >&2; return 1; }
   helm -n kueue-system get manifest kueue >"$transaction/current-manifest.yaml"
@@ -175,7 +188,7 @@ kubectl get validatingwebhookconfiguration kueue-validating-webhook-configuratio
 attempt=0
 while [ "$attempt" -lt 10 ]; do workload_identities >"$transaction/current-workloads.json"; cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" && break; attempt=$((attempt + 1)); sleep 1; done
 cmp "$transaction/prior-workloads.json" "$transaction/current-workloads.json" || { printf 'Kueue created or replaced a Workload during integration enablement\n' >&2; exit 1; }
-if ! both_pod_namespaces_absent; then printf 'reviewed Pod namespaces appeared or could not be verified during Kueue integration change\n' >&2; exit 1; fi
+if ! both_pod_namespaces_quiescent; then printf 'reviewed Pod namespaces stopped being quiescent or could not be verified during Kueue integration change\n' >&2; exit 1; fi
 trap - EXIT HUP INT TERM
 write_phase complete
 printf 'Kueue Pod integration enabled only for the two reviewed Blazn namespaces\n'

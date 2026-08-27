@@ -58,8 +58,10 @@ Helm-managed instead of relying on an out-of-band chart edit. A failed upgrade o
 back to the exact prior Helm revision. The transaction is rooted under
 `/var/lib/blazn/phase4c/kueue-pod-*`, journals `upgrade-intent` before Helm,
 and resumes or rolls back after process or host interruption. It requires both
-managed namespaces to be absent and compares every Workload UID before and
-after the change, including pending Workloads. It must use the same serialized live
+managed namespaces to be quiescent — absent for the first enablement, or
+owned by the Phase 5 boundary with zero Pods and zero Sandboxes for a
+configuration update — and compares every Workload UID before and after the
+change, including pending Workloads. It must use the same serialized live
 cluster lock and Phase 4C approval boundary as the canary.
 
 ## Runtime gate
