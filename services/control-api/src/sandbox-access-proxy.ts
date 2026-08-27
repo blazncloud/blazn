@@ -1,7 +1,11 @@
 import type { IncomingMessage,ServerResponse } from "node:http";
 
 const route=/^\/v1\/sandbox-access-grants\/([0-9a-f-]{36})\/(exec|file)$/;
-const maximum=8*1024*1024+64*1024;
+const maximumRequest=8*1024*1024+64*1024;
+// Exec may return independently bounded stdout and stderr streams, both base64
+// encoded inside JSON. Keep the public proxy's response ceiling above that
+// frozen wire shape without widening upload requests.
+const maximumResponse=24*1024*1024+64*1024;
 
 export class SandboxAccessProxy {
   private constructor(private readonly origin:string){}
@@ -24,7 +28,7 @@ export class SandboxAccessProxy {
     catch{response.writeHead(503,{"content-type":"application/json","cache-control":"no-store"});response.end(JSON.stringify({code:"sandbox_access_unavailable",message:"sandbox access is unavailable"}));return;}
     finally{clearTimeout(timer);}
     const payload=Buffer.from(await upstream.arrayBuffer());
-    if(payload.length>maximum){response.writeHead(502,{"content-type":"application/json","cache-control":"no-store"});response.end(JSON.stringify({code:"sandbox_access_invalid",message:"sandbox access response exceeded its bound"}));return;}
+    if(payload.length>maximumResponse){response.writeHead(502,{"content-type":"application/json","cache-control":"no-store"});response.end(JSON.stringify({code:"sandbox_access_invalid",message:"sandbox access response exceeded its bound"}));return;}
     const returned:Record<string,string>={"cache-control":"no-store"};
     for(const name of ["content-type","x-content-size","x-content-sha256"]){const value=upstream.headers.get(name);if(value)returned[name]=value;}
     returned["content-length"]=String(payload.length);
@@ -38,6 +42,6 @@ function privateHost(host:string){
 
 async function boundedBody(request:IncomingMessage){
   const chunks:Buffer[]=[];let size=0;
-  for await(const chunk of request){const value=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=value.length;if(size>maximum)throw new Error("sandbox access request exceeded its bound");chunks.push(value);}
+  for await(const chunk of request){const value=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=value.length;if(size>maximumRequest)throw new Error("sandbox access request exceeded its bound");chunks.push(value);}
   return Buffer.concat(chunks,size);
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -118,6 +119,7 @@ func (h *AccessHandler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	case "exec":
 		result, err := h.exec.Execute(ctx, binding, "main", command, nil)
 		if err != nil {
+			log.Printf("sandbox access exec failed: %v", err)
 			accessError(response, http.StatusBadGateway, "sandbox_exec_failed")
 			return
 		}
@@ -125,6 +127,9 @@ func (h *AccessHandler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	case "upload":
 		result, err := h.exec.Execute(ctx, binding, sandboxio.AccessContainer, []string{sandboxio.HelperBinary, "access-upload", path, strconv.FormatInt(size, 10), digest}, io.LimitReader(request.Body, sandboxio.MaxAccessFileBytes+1))
 		if err != nil || result.ExitCode != 0 || len(result.Stdout) != 0 || len(result.Stderr) != 0 || result.StdoutTruncated || result.StderrTruncated {
+			if err != nil {
+				log.Printf("sandbox access upload failed: %v", err)
+			}
 			accessError(response, http.StatusBadGateway, "sandbox_upload_failed")
 			return
 		}
@@ -132,6 +137,9 @@ func (h *AccessHandler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	case "download":
 		result, err := h.exec.Execute(ctx, binding, sandboxio.AccessContainer, []string{sandboxio.HelperBinary, "access-download", path}, nil)
 		if err != nil || result.ExitCode != 0 || len(result.Stderr) != 0 || result.StdoutTruncated || result.StderrTruncated {
+			if err != nil {
+				log.Printf("sandbox access download failed: %v", err)
+			}
 			accessError(response, http.StatusBadGateway, "sandbox_download_failed")
 			return
 		}
