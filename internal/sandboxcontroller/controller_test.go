@@ -104,6 +104,7 @@ type fakeBackend struct {
 	artifactExports                              int
 	artifactResult                               ArtifactExportResult
 	order                                        []string
+	observedItems                                []WorkItem
 }
 
 type blockingBackend struct {
@@ -140,9 +141,10 @@ func (b *fakeBackend) EnsureCreated(context.Context, WorkItem) (BackendState, er
 	b.order = append(b.order, "create")
 	return b.created, b.err
 }
-func (b *fakeBackend) Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
+func (b *fakeBackend) Observe(_ context.Context, item WorkItem, _ *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	b.calls++
 	b.order = append(b.order, "observe")
+	b.observedItems = append(b.observedItems, item)
 	if len(b.observedStates) != 0 {
 		state := b.observedStates[0]
 		b.observedStates = b.observedStates[1:]
@@ -224,6 +226,10 @@ func TestCreatePersistsSourcesBeforeRuntimeRestrictionAndRelease(t *testing.T) {
 	}
 	if store.completion == nil || store.completion.Status != "succeeded" {
 		t.Fatalf("source create did not complete: %#v", store.completion)
+	}
+	lastObserved := backend.observedItems[len(backend.observedItems)-1]
+	if lastObserved.SourceMaterialization == nil || lastObserved.SourceBootstrapObservation == nil {
+		t.Fatalf("in-attempt source evidence was not propagated to observation: %#v", lastObserved)
 	}
 }
 

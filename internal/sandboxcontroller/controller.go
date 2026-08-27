@@ -308,6 +308,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 				return nil
 			}
 			receipt = &materialized
+			item.SourceMaterialization = receipt
 			item.SourceBootstrapObservation = state.AdmissionObservation
 		}
 		if err := sourceBackend.RestrictSourceRuntime(ctx, item, *state.AdmissionObservation, *receipt); err != nil {
