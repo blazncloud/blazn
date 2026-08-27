@@ -45,6 +45,22 @@
         "responses": {"201": {"description": "Message durably queued for the Run", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunMessageEnvelope"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
       }
     },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/messages/claim": {
+      "post": {
+        "operationId": "claimRunMessage",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClaimRunMessageRequest"}}}},
+        "responses": {"200": {"description": "Next message claim or an empty queue", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunMessageClaimEnvelope"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/messages/{messageId}/deliver": {
+      "post": {
+        "operationId": "deliverRunMessage",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"name": "messageId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}, {"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeliverRunMessageRequest"}}}},
+        "responses": {"200": {"description": "Claimed message marked delivered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunMessageEnvelope"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      }
+    },
     "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/synthetic/progress": {
       "post": {
         "operationId": "recordSyntheticRunProgress",
@@ -157,7 +173,7 @@
         "properties": {
           "id": {"type": "string", "format": "uuid"}, "workspaceId": {"type": "string", "format": "uuid"}, "projectId": {"type": "string", "format": "uuid"}, "runId": {"type": "string", "format": "uuid"},
           "ordinal": {"type": "integer", "minimum": 1}, "role": {"type": "string", "enum": ["user", "assistant", "tool"]}, "kind": {"$ref": "#/components/schemas/RunMessageKind"},
-          "status": {"type": "string", "enum": ["queued", "claimed", "delivered", "rejected"]}, "parentMessageId": {"type": "string", "format": "uuid"},
+          "status": {"type": "string", "enum": ["queued", "claimed", "delivered"]}, "parentMessageId": {"type": "string", "format": "uuid"},
           "content": {"type": "string", "minLength": 1, "maxLength": 16384}, "contentDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
           "createdBy": {"type": "string", "format": "uuid"}, "createdAt": {"type": "string", "format": "date-time"}
         }
@@ -165,6 +181,10 @@
       "SendRunMessageRequest": {"type": "object", "additionalProperties": false, "required": ["kind", "content"], "properties": {"kind": {"$ref": "#/components/schemas/RunMessageKind"}, "content": {"type": "string", "minLength": 1, "maxLength": 16384}, "parentMessageId": {"type": "string", "format": "uuid"}}},
       "RunMessageEnvelope": {"type": "object", "additionalProperties": false, "required": ["message"], "properties": {"message": {"$ref": "#/components/schemas/RunMessage"}}},
       "RunMessageList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/RunMessage"}}, "nextCursor": {"type": ["string", "null"], "pattern": "^[1-9][0-9]*$"}}},
+      "ClaimRunMessageRequest": {"type": "object", "additionalProperties": false, "required": ["leaseSeconds"], "properties": {"leaseSeconds": {"type": "integer", "minimum": 5, "maximum": 300}}},
+      "DeliverRunMessageRequest": {"type": "object", "additionalProperties": false, "required": ["claimId"], "properties": {"claimId": {"type": "string", "format": "uuid"}}},
+      "RunMessageClaim": {"type": "object", "additionalProperties": false, "required": ["message", "claimId", "leaseExpiresAt"], "properties": {"message": {"$ref": "#/components/schemas/RunMessage"}, "claimId": {"type": "string", "format": "uuid"}, "leaseExpiresAt": {"type": "string", "format": "date-time"}}},
+      "RunMessageClaimEnvelope": {"type": "object", "additionalProperties": false, "required": ["claim"], "properties": {"claim": {"oneOf": [{"$ref": "#/components/schemas/RunMessageClaim"}, {"type": "null"}]}}},
       "SyntheticRunProgressRequest": {"type": "object", "additionalProperties": false, "required": ["sequence", "phase", "percent"], "properties": {"sequence": {"type": "integer", "minimum": 0}, "phase": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,95}$"}, "percent": {"type": "integer", "minimum": 0, "maximum": 100}, "message": {"type": "string", "maxLength": 512}}},
       "ProgressAck": {"type": "object", "additionalProperties": false, "required": ["runId", "sequence", "runVersion", "status"], "properties": {"runId": {"type": "string", "format": "uuid"}, "sequence": {"type": "integer", "minimum": 0}, "runVersion": {"type": "integer", "minimum": 1}, "status": {"const": "running"}}},
       "CompleteSyntheticRunRequest": {"type": "object", "additionalProperties": false, "required": ["expectedVersion", "planDigest", "artifactIds", "summary"], "properties": {"expectedVersion": {"type": "integer", "minimum": 1}, "planDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "artifactIds": {"type": "array", "maxItems": 1000, "uniqueItems": true, "items": {"type": "string", "format": "uuid"}}, "summary": {"$ref": "#/components/schemas/RunReceiptSummary"}}},

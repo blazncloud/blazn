@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
@@ -14,6 +15,8 @@ import (
 type runCommands interface {
 	ListMessages(context.Context, string, string) (client.RunMessageList, error)
 	SendMessage(context.Context, string, string, client.SendRunMessageRequest) (client.RunMessageEnvelope, error)
+	ClaimMessage(context.Context, string, string, int) (client.RunMessageClaimEnvelope, error)
+	DeliverMessage(context.Context, string, string, string, string) (client.RunMessageEnvelope, error)
 }
 
 func (a *App) runRun(format OutputFormat, args []string) int {
@@ -59,6 +62,45 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 			return a.writeJSON(result)
 		}
 		fmt.Fprintf(a.stdout, "queued %s message %s at ordinal %d\n", result.Message.Kind, result.Message.ID, result.Message.Ordinal)
+		return ExitSuccess
+	case "claim":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"lease": true, "request-id": false})
+		if err != nil || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run claim requires RUN, --request-id, and optional --lease 5..300"))
+		}
+		lease := 30
+		if flags["lease"] != "" {
+			lease, err = strconv.Atoi(flags["lease"])
+			if err != nil || lease < 5 || lease > 300 {
+				return a.runUsage(format, errors.New("run claim --lease must be 5 through 300 seconds"))
+			}
+		}
+		result, err := commands.ClaimMessage(ctx, positionals[0], flags["request-id"], lease)
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		if result.Claim == nil {
+			fmt.Fprintln(a.stdout, "no queued Run messages")
+			return ExitSuccess
+		}
+		fmt.Fprintf(a.stdout, "claimed message %s until %s\n%s\n", result.Claim.Message.ID, result.Claim.LeaseExpiresAt, result.Claim.Message.Content)
+		return ExitSuccess
+	case "deliver":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"message": false, "claim": false, "request-id": false})
+		if err != nil || flags["message"] == "" || flags["claim"] == "" || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run deliver requires RUN, --message, --claim, and --request-id"))
+		}
+		result, err := commands.DeliverMessage(ctx, positionals[0], flags["message"], flags["claim"], flags["request-id"])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "delivered message %s at ordinal %d\n", result.Message.ID, result.Message.Ordinal)
 		return ExitSuccess
 	default:
 		return a.runUsage(format, fmt.Errorf("unknown run command %q", args[0]))

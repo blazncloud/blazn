@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/runs.openapi.json; DO NOT EDIT.
-// Contract SHA256: b8b0537470f593afe2a52c75cc411d9de14aa80458d43e7f53b2dc242fd1f1f2
+// Contract SHA256: 18c4fbeeaf7c9c716682a82bb3f8647e661339a8f03f7cd15ef07a535dcd37c1
 
 package client
 
@@ -150,6 +150,20 @@ type RunMessageList struct {
 	Items      []RunMessage `json:"items"`
 	NextCursor *string      `json:"nextCursor"`
 }
+type ClaimRunMessageRequest struct {
+	LeaseSeconds int `json:"leaseSeconds"`
+}
+type DeliverRunMessageRequest struct {
+	ClaimID string `json:"claimId"`
+}
+type RunMessageClaim struct {
+	Message        RunMessage `json:"message"`
+	ClaimID        string     `json:"claimId"`
+	LeaseExpiresAt string     `json:"leaseExpiresAt"`
+}
+type RunMessageClaimEnvelope struct {
+	Claim *RunMessageClaim `json:"claim"`
+}
 type SyntheticRunProgressRequest struct {
 	Sequence int    `json:"sequence"`
 	Phase    string `json:"phase"`
@@ -290,6 +304,30 @@ func (c *Client) SendRunMessage(ctx context.Context, accessToken, workspaceID, p
 		return output, fmt.Errorf("Run message request is invalid")
 	}
 	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages", accessToken, idempotencyKey, nil, request, &output, http.StatusCreated)
+	return output, err
+}
+func (c *Client) ClaimRunMessage(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request ClaimRunMessageRequest) (RunMessageClaimEnvelope, error) {
+	var output RunMessageClaimEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if request.LeaseSeconds < 5 || request.LeaseSeconds > 300 {
+		return output, fmt.Errorf("Run message claim request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages/claim", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) DeliverRunMessage(ctx context.Context, accessToken, workspaceID, projectID, runID, messageID, idempotencyKey string, request DeliverRunMessageRequest) (RunMessageEnvelope, error) {
+	var output RunMessageEnvelope
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if !runUUID.MatchString(messageID) || !runUUID.MatchString(request.ClaimID) {
+		return output, fmt.Errorf("Run message delivery request is invalid")
+	}
+	err = c.workspaceDo(ctx, http.MethodPost, path+"/messages/"+url.PathEscape(messageID)+"/deliver", accessToken, idempotencyKey, nil, request, &output, http.StatusOK)
 	return output, err
 }
 func (c *Client) RecordSyntheticRunProgress(ctx context.Context, accessToken, workspaceID, projectID, runID, idempotencyKey string, request SyntheticRunProgressRequest) (ProgressAck, error) {

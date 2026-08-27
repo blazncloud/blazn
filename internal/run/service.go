@@ -2,7 +2,6 @@ package run
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"time"
 
@@ -14,6 +13,8 @@ import (
 type API interface {
 	ListRunMessages(context.Context, string, string, string, string, string) (client.RunMessageList, error)
 	SendRunMessage(context.Context, string, string, string, string, string, client.SendRunMessageRequest) (client.RunMessageEnvelope, error)
+	ClaimRunMessage(context.Context, string, string, string, string, string, client.ClaimRunMessageRequest) (client.RunMessageClaimEnvelope, error)
+	DeliverRunMessage(context.Context, string, string, string, string, string, string, client.DeliverRunMessageRequest) (client.RunMessageEnvelope, error)
 }
 
 type Service struct {
@@ -62,6 +63,26 @@ func (s *Service) SendMessage(ctx context.Context, runID, requestID string, requ
 	})
 }
 
+func (s *Service) ClaimMessage(ctx context.Context, runID, requestID string, leaseSeconds int) (client.RunMessageClaimEnvelope, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunMessageClaimEnvelope{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunMessageClaimEnvelope, error) {
+		return s.api.ClaimRunMessage(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, requestID, client.ClaimRunMessageRequest{LeaseSeconds: leaseSeconds})
+	})
+}
+
+func (s *Service) DeliverMessage(ctx context.Context, runID, messageID, claimID, requestID string) (client.RunMessageEnvelope, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunMessageEnvelope{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunMessageEnvelope, error) {
+		return s.api.DeliverRunMessage(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, messageID, requestID, client.DeliverRunMessageRequest{ClaimID: claimID})
+	})
+}
+
 func (s *Service) selection(ctx context.Context) (workspacepkg.Selection, workspacepkg.Session, error) {
 	session, err := s.sessions.Session(ctx, false)
 	if err != nil {
@@ -89,5 +110,3 @@ func withSession[T any](ctx context.Context, sessions workspacepkg.SessionProvid
 	}
 	return result, err
 }
-
-var ErrNoContext = errors.New("Run commands require a selected Workspace and Project")

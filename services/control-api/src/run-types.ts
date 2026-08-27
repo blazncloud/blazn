@@ -7,7 +7,7 @@ export type ArtifactStatus = "pending" | "ready" | "failed" | "deleted";
 export type ArtifactMediaType = "image" | "video" | "audio" | "document" | "data" | "other";
 export type RunMessageRole = "user" | "assistant" | "tool";
 export type RunMessageKind = "prompt" | "followup" | "steer";
-export type RunMessageStatus = "queued" | "claimed" | "delivered" | "rejected";
+export type RunMessageStatus = "queued" | "claimed" | "delivered";
 
 export interface RunPlacement { nodeId?: string; sandboxId?: string; modelRouteId?: string }
 export interface RunReceipt {
@@ -40,6 +40,8 @@ export interface RunMessage {
   createdBy:string;createdAt:string;
 }
 export interface SendRunMessageInput { kind:RunMessageKind;content:string;parentMessageId?:string }
+export interface ClaimRunMessageInput { leaseSeconds:number }
+export interface RunMessageClaim { message:RunMessage;claimId:string;leaseExpiresAt:string }
 export interface RunAccess { workspaceStatus: "active" | "archived"; role: WorkspaceRole; projectStatus?: "active" | "archived" }
 
 export type RunErrorCode = "run_not_found" | "run_terminal" | "run_sequence_conflict" | "message_conflict" | "message_parent_not_found" | "artifact_not_found" | "artifact_name_conflict" | "artifact_digest_mismatch" | "artifact_size_mismatch" | "upload_too_large" | "project_not_found" | "workspace_not_found" | "membership_required" | "permission_denied" | "version_conflict" | "idempotency_conflict" | "invalid_request" | "method_not_allowed";
