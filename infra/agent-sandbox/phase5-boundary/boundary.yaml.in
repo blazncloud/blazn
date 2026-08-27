@@ -1,0 +1,179 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: blazn-poc-system
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+    blazn.dev/phase5-boundary: BLAZN_PHASE5_TRANSACTION_ID
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+    blazn.dev/phase5-boundary: BLAZN_PHASE5_TRANSACTION_ID
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: blazn-sandbox-runner
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+automountServiceAccountToken: false
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: blazn-poc
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+spec:
+  clusterQueue: BLAZN_EXISTING_CLUSTER_QUEUE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: blazn-agent-sandbox-controller
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+rules:
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims", "pods", "services"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["", "events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["agents.x-k8s.io"]
+  resources: ["sandboxes/finalizers", "sandboxes/status"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blazn-agent-sandbox-controller
+  namespace: blazn-poc-sandboxes
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: blazn-agent-sandbox-controller
+subjects:
+- kind: ServiceAccount
+  name: agent-sandbox-controller
+  namespace: agent-sandbox-system
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: blazn-sandbox-boundary
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: In
+        values: ["blazn-poc-sandboxes"]
+    resourceRules:
+    - apiGroups: ["agents.x-k8s.io"]
+      apiVersions: ["v1alpha1", "v1beta1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["sandboxes"]
+      scope: Namespaced
+  variables:
+  - name: pod
+    expression: "object.spec.podTemplate.spec"
+  - name: helperNames
+    expression: "['sandbox-bootstrap', 'sandbox-artifact-io']"
+  validations:
+  - expression: "object.metadata.namespace == 'blazn-poc-sandboxes'"
+    message: "Blazn-managed Sandboxes are permitted only in blazn-poc-sandboxes"
+  - expression: "object.metadata.name.matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')"
+    message: "Sandbox names must be canonical lowercase UUIDs"
+  - expression: "object.metadata.labels['blazn.dev/managed'] == 'true' && object.metadata.labels['blazn.dev/sandbox-id'] == object.metadata.name && object.metadata.labels['blazn.dev/workspace'].matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') && size(object.metadata.labels['blazn.dev/owner']) > 0"
+    message: "Sandbox must carry the managed, workspace, owner, and sandbox-id labels"
+  - expression: "object.spec.podTemplate.metadata.labels['kueue.x-k8s.io/queue-name'] == 'blazn-poc' && object.spec.podTemplate.metadata.labels['blazn.dev/managed'] == 'true' && object.spec.podTemplate.metadata.labels['blazn.dev/workspace'] == object.metadata.labels['blazn.dev/workspace'] && object.spec.podTemplate.metadata.labels['blazn.dev/owner'] == object.metadata.labels['blazn.dev/owner'] && object.spec.podTemplate.metadata.labels['blazn.dev/sandbox-id'] == object.metadata.name"
+    message: "Sandbox podTemplate must mirror the object identity labels and target the blazn-poc LocalQueue"
+  - expression: "object.metadata.annotations['sandboxes.blazn.dev/trust-level'] == 'approved_non_sensitive_poc' && size(object.metadata.annotations['sandboxes.blazn.dev/expires-at']) > 0 && object.metadata.annotations['sandboxes.blazn.dev/create-intent-digest'].matches('^sha256:[0-9a-f]{64}$') && object.metadata.annotations['sandboxes.blazn.dev/artifact-contract-digest'].matches('^sha256:[0-9a-f]{64}$')"
+    message: "Sandbox must carry the reviewed trust, expiry, and intent-digest annotations"
+  - expression: "object.spec.shutdownPolicy == 'Delete'"
+    message: "Sandbox shutdownPolicy must be Delete"
+  - expression: "variables.pod.serviceAccountName == 'blazn-sandbox-runner' && variables.pod.automountServiceAccountToken == false"
+    message: "Sandbox Pods must use the tokenless blazn-sandbox-runner identity"
+  - expression: "variables.pod.restartPolicy == 'Never'"
+    message: "Sandbox Pods must not restart in place"
+  - expression: "!has(variables.pod.runtimeClassName) || variables.pod.runtimeClassName == ''"
+    message: "Sandbox Pods may not select a RuntimeClass until one is separately qualified"
+  - expression: "variables.pod.nodeSelector['blazn.dev/sandbox-eligible'] == 'true' && size(variables.pod.nodeSelector) == 2 && variables.pod.nodeSelector['kubernetes.io/arch'] in ['amd64', 'arm64']"
+    message: "Sandbox scheduling must use exactly the eligibility selector and one reviewed architecture"
+  - expression: "(!has(variables.pod.nodeName) || variables.pod.nodeName == '') && (!has(variables.pod.tolerations) || size(variables.pod.tolerations) == 0) && (!has(variables.pod.affinity)) && (!has(variables.pod.priorityClassName) || variables.pod.priorityClassName == '') && (!has(variables.pod.schedulerName) || variables.pod.schedulerName == '')"
+    message: "Sandbox Pods may not override scheduling"
+  - expression: "(!has(variables.pod.hostNetwork) || variables.pod.hostNetwork == false) && (!has(variables.pod.hostPID) || variables.pod.hostPID == false) && (!has(variables.pod.hostIPC) || variables.pod.hostIPC == false) && (!has(variables.pod.shareProcessNamespace) || variables.pod.shareProcessNamespace == false) && (!has(variables.pod.hostAliases) || size(variables.pod.hostAliases) == 0) && (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0)"
+    message: "Sandbox Pods may not share host namespaces or inject ephemeral containers"
+  - expression: "variables.pod.securityContext.runAsNonRoot == true && variables.pod.securityContext.runAsUser == 65532 && variables.pod.securityContext.runAsGroup == 65532 && variables.pod.securityContext.fsGroup == 65532 && variables.pod.securityContext.seccompProfile.type == 'RuntimeDefault' && (!has(variables.pod.securityContext.sysctls) || size(variables.pod.securityContext.sysctls) == 0)"
+    message: "Sandbox Pods must use the reviewed non-root pod security context"
+  - expression: "!has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir) && v.name.matches('^(source-[0-9]{2}|bootstrap-state|artifacts)$') && !has(v.hostPath) && !has(v.secret) && !has(v.configMap) && !has(v.projected) && !has(v.persistentVolumeClaim) && !has(v.downwardAPI) && !has(v.csi) && !has(v.nfs) && !has(v.image))"
+    message: "Sandbox Pods may mount only the reviewed emptyDir volumes"
+  - expression: "size(variables.pod.containers) == 1 && variables.pod.containers[0].name == 'main'"
+    message: "Sandbox Pods must run exactly one main container"
+  - expression: "variables.pod.containers[0].image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$')"
+    message: "The Sandbox main image must be digest-pinned"
+  - expression: "size(variables.pod.containers[0].command) >= 1 && size(variables.pod.containers[0].command) <= 32"
+    message: "The Sandbox main command must be an explicit bounded argv"
+  - expression: "!has(variables.pod.initContainers) || (size(variables.pod.initContainers) <= 2 && variables.pod.initContainers.all(c, c.name in variables.helperNames && c.image.matches('^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$') && c.image != variables.pod.containers[0].image && c.command[0] == '/blazn-sandbox-io' && c.resources.requests['cpu'] == '10m' && c.resources.requests['memory'] == '16Mi' && c.resources.limits['cpu'] == '100m' && c.resources.limits['memory'] == '64Mi'))"
+    message: "Sandbox init containers must be the reviewed digest-pinned IO helpers"
+  - expression: "(variables.pod.containers + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])).all(c, c.securityContext.allowPrivilegeEscalation == false && c.securityContext.readOnlyRootFilesystem == true && (!has(c.securityContext.privileged) || c.securityContext.privileged == false) && (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') && (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) && c.securityContext.capabilities.drop.exists(x, x == 'ALL'))"
+    message: "Every Sandbox container must use the reviewed restricted security context"
+  - expression: "(variables.pod.containers + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])).all(c, (!has(c.env) || size(c.env) == 0) && (!has(c.envFrom) || size(c.envFrom) == 0) && (!has(c.args) || size(c.args) == 0) && (!has(c.ports) || size(c.ports) == 0) && (!has(c.lifecycle)) && (!has(c.livenessProbe)) && (!has(c.readinessProbe)) && (!has(c.startupProbe)) && (!has(c.stdin) || c.stdin == false) && (!has(c.tty) || c.tty == false) && (!has(c.volumeDevices) || size(c.volumeDevices) == 0))"
+    message: "Sandbox containers may not widen their execution surface"
+  - expression: "variables.pod.containers.all(c, size(c.resources.requests) == 3 && size(c.resources.limits) == 3 && quantity(c.resources.limits['cpu']).compareTo(quantity('4')) <= 0 && quantity(c.resources.limits['memory']).compareTo(quantity('8Gi')) <= 0 && quantity(c.resources.limits['ephemeral-storage']).compareTo(quantity('20Gi')) <= 0 && quantity(c.resources.requests['cpu']).compareTo(quantity(c.resources.limits['cpu'])) <= 0 && quantity(c.resources.requests['memory']).compareTo(quantity(c.resources.limits['memory'])) <= 0 && quantity(c.resources.requests['ephemeral-storage']).compareTo(quantity(c.resources.limits['ephemeral-storage'])) <= 0)"
+    message: "Sandbox resources must be fully declared and inside the reviewed bounds"
+  - expression: "request.operation != 'CREATE' || request.userInfo.username == 'system:serviceaccount:blazn-poc-system:blazn-sandbox-controller'"
+    message: "Only the Blazn sandbox controller may create managed Sandboxes"
+  - expression: "request.operation != 'UPDATE' || ((request.userInfo.username == 'system:serviceaccount:blazn-poc-system:blazn-sandbox-controller' || request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller') && object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && object.metadata.annotations == oldObject.metadata.annotations)"
+    message: "Sandbox spec, labels, and annotations are immutable after admission"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: blazn-sandbox-boundary
+  labels:
+    app.kubernetes.io/part-of: blazn-phase5
+  annotations:
+    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
+spec:
+  policyName: blazn-sandbox-boundary
+  validationActions: [Deny]

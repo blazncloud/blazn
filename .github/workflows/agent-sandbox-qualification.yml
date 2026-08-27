@@ -22,8 +22,10 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - run: infra/agent-sandbox/test-static.sh
       - run: infra/agent-sandbox/test-phase4c-static.sh
+      - run: infra/agent-sandbox/test-phase5-boundary-static.sh
       - run: shellcheck infra/agent-sandbox/*.sh
       - run: shellcheck infra/agent-sandbox/phase4c/*.sh
+      - run: shellcheck infra/agent-sandbox/phase5-boundary/*.sh
 
   transaction:
     runs-on: ubuntu-latest
@@ -38,6 +40,22 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y python3-yaml; }
       - run: infra/agent-sandbox/test-phase4c-kueue-transaction.sh
+
+  boundary-transaction:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y python3-yaml; }
+      - run: infra/agent-sandbox/test-phase5-boundary-transaction.sh
+
+  boundary-disposable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y python3-yaml; }
+      - run: infra/agent-sandbox/test-phase5-boundary-disposable.sh
 
   disposable:
     runs-on: ubuntu-latest
