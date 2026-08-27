@@ -16,9 +16,15 @@ grep -F -- '- blazn-poc' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
 grep -F -- '- blazn-poc-sandboxes' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
 grep -F '  podOptions:' "$PHASE4C/kueue-pod-config.yaml" >/dev/null
 if grep -E '^managedJobsNamespaceSelector:' "$PHASE4C/kueue-pod-config.yaml" >/dev/null; then exit 1; fi
-grep -F '314d2b21e9a7ea6a31fc7fed1cf7db825e62ce11ad2a849e2b8b450213b9ba09' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
-grep -F '0f26fd3a1097b6f879504931d14757f3fd8f81f6996ef58c5c59ed0b09aab9e0' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
-grep -F 'ad232c225899a6b53015213ea9c552eb77e9a4c552d51721dc813cfce16f12b7' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+# shellcheck disable=SC1091
+. "$ROOT/versions.env"
+[ "$LIVE_KUEUE_CHART_SHA256" = 314d2b21e9a7ea6a31fc7fed1cf7db825e62ce11ad2a849e2b8b450213b9ba09 ]
+grep -F 'LIVE_KUEUE_CHART_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'LIVE_KUEUE_POD_CONFIG_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+grep -F 'LIVE_KUEUE_WEBHOOK_PATCH_SHA256' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
+[ "$(sha256sum "$PHASE4C/kueue-pod-config.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_POD_CONFIG_SHA256" ]
+[ "$(sha256sum "$PHASE4C/kueue-pod-webhook-selector.patch" | awk '{print $1}')" = "$LIVE_KUEUE_WEBHOOK_PATCH_SHA256" ]
+[ "$(sha256sum "$PHASE4C/kueue-live-config-baseline.yaml" | awk '{print $1}')" = "$LIVE_KUEUE_PRIOR_CONFIG_SHA256" ]
 grep -F 'helm -n kueue-system rollback' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'mpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
 grep -F 'vpod.kb.io' "$PHASE4C/upgrade-kueue-pod-integration.sh" >/dev/null
