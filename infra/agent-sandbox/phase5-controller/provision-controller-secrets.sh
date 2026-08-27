@@ -45,10 +45,11 @@ match = re.match(r"^(?P<scheme>postgres(?:ql)?)://(?P<userinfo>[^@/]+)@(?P<autho
 if not match:
     sys.stderr.write("controller database URL is not a parseable postgres URL\n")
     sys.exit(1)
-rewritten = f'{match.group("scheme")}://{match.group("userinfo")}@{host}:{port}{match.group("rest") or "/"}'
-if "blazn_sandbox_controller" not in match.group("userinfo"):
+username = match.group("userinfo").split(":", 1)[0]
+if username != "blazn_sandbox_controller":
     sys.stderr.write("controller database URL must authenticate as blazn_sandbox_controller\n")
     sys.exit(1)
+rewritten = f'{match.group("scheme")}://{match.group("userinfo")}@{host}:{port}{match.group("rest") or "/"}'
 out = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 os.write(out, rewritten.encode())
 os.close(out)

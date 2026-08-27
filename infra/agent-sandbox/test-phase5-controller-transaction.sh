@@ -73,12 +73,12 @@ case "$*" in
   'get rolebinding blazn-sandbox-controller -n blazn-poc-sandboxes -o jsonpath={.metadata.uid}') printf '33333333-3333-4333-8333-333333333333' ;;
   'get serviceaccount blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '44444444-4444-4444-8444-444444444444' ;;
   'get networkpolicy blazn-sandbox-controller-egress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '55555555-5555-4555-8555-555555555555' ;;
+  'get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '66666666-6666-4666-8666-666666666666' ;;
   'get '*' --ignore-not-found -o name')
     for object in deployment/blazn-sandbox-controller:deployment serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny; do
       ref=${object%%:*}; key=${object#*:}
       case "$*" in *"${ref#*/} "*) present "$key" && printf '%s\n' "$ref" || :; ;; esac
     done ;;
-  'delete networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system --ignore-not-found') : >"$FAKE_STATE/deleted-deny" ;;
   'proxy --unix-socket='*)
     socket=$(printf '%s' "$*" | sed 's/.*--unix-socket=\([^ ]*\).*/\1/')
     exec python3 - "$socket" "$FAKE_STATE" <<'PY'
@@ -90,6 +90,7 @@ targets = {
     "/apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller": ("rolebinding", "33333333-3333-4333-8333-333333333333"),
     "/apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller": ("role", "22222222-2222-4222-8222-222222222222"),
     "/api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller": ("serviceaccount", "44444444-4444-4444-8444-444444444444"),
+    "/apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-default-deny": ("deny", "66666666-6666-4666-8666-666666666666"),
 }
 class Server(socketserver.UnixStreamServer): allow_reuse_address = True
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -151,7 +152,7 @@ run_tool install-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
 [ -e "$FAKE_STATE/scaled1" ]
-jq -e 'length == 5' "$transaction/owned-uids.json" >/dev/null
+jq -e 'length == 6' "$transaction/owned-uids.json" >/dev/null
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ]
 grep -Fq 'already complete' "$tmp/last-out"
@@ -195,8 +196,31 @@ run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
 [ -e "$FAKE_STATE/scaled0" ]
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 5 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 6 ]
 grep -Fq '"uid": "11111111-1111-4111-8111-111111111111"' "$FAKE_STATE/delete-requests.log"
+
+# T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
+# were recorded at apply-intent, before scaling).
+reset_state; new_transaction
+run_tool install-controller.sh FAKE_UNAVAILABLE=1
+[ "$last_code" -eq 1 ]
+expect_phase scaled
+[ -f "$transaction/owned-uids.json" ]
+run_tool teardown-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 6 ]
+
+# T5c: a resume after the scale succeeded but before its journal entry
+# completes instead of failing on the sealed zero replicas.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase applied
+: >"$FAKE_STATE/scaled1"
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase complete
 
 # T7: a pre-existing controller Deployment blocks a fresh transaction.
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction

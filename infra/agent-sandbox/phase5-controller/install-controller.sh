@@ -53,15 +53,34 @@ if ! object_present secret "$BLAZN_DATABASE_URL_SECRET_NAME" blazn-poc-system; t
 if ! object_present secret "$BLAZN_OBJECT_SECRET_NAME" blazn-poc-system; then printf 'the controller object Secret is not provisioned\n' >&2; exit 1; fi
 
 if [ "$phase" = sealed ]; then
-  if object_present deployment blazn-sandbox-controller blazn-poc-system; then printf 'a controller Deployment already exists; use its own transaction or roll it back first\n' >&2; exit 1; fi
+  deployment_state=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name) || { printf 'controller Deployment discovery failed\n' >&2; exit 1; }
+  [ -z "$deployment_state" ] || { printf 'a controller Deployment already exists; use its own transaction or roll it back first\n' >&2; exit 1; }
   write_phase apply-intent; phase=apply-intent
 fi
+uids=$transaction/owned-uids.json
 if [ "$phase" = apply-intent ]; then
   kubectl apply --server-side --field-manager blazn-phase5-controller -f "$sealed" >/dev/null
+  # Record every owned identity immediately after apply so a crash before
+  # completion still leaves a UID-fenced teardown path.
+  {
+    printf '{'
+    printf '"deployment/blazn-sandbox-controller":"%s",' "$(live_uid deployment blazn-sandbox-controller blazn-poc-system)"
+    printf '"role/blazn-sandbox-controller":"%s",' "$(live_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
+    printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
+    printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(live_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-egress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-default-deny":"%s"' "$(live_uid networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system)"
+    printf '}\n'
+  } >"$uids.tmp"
+  jq -e 'to_entries | all(.value | test("^[0-9a-f-]{36}$"))' "$uids.tmp" >/dev/null || { printf 'owned controller identities are incomplete\n' >&2; exit 1; }
+  mv "$uids.tmp" "$uids"; chmod 0600 "$uids"
   write_phase applied; phase=applied
 fi
 if [ "$phase" = applied ]; then
-  [ "$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath='{.spec.replicas}')" = 0 ] || { printf 'controller Deployment is not at the sealed zero replicas\n' >&2; exit 1; }
+  # Idempotent across a crash between the scale and its journal entry: the
+  # scale target is 1, so re-running scale is a no-op, and the recorded UID
+  # proves the Deployment is still the one this transaction applied.
+  [ "$(jq -er '."deployment/blazn-sandbox-controller"' "$uids")" = "$(live_uid deployment blazn-sandbox-controller blazn-poc-system)" ] || { printf 'controller Deployment identity changed since apply\n' >&2; exit 1; }
   kubectl scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1 >/dev/null
   write_phase scaled; phase=scaled
 fi
@@ -72,18 +91,6 @@ if [ "$phase" = scaled ]; then
     [ "$attempt" -le 60 ] || { printf 'the controller never became Available\n' >&2; kubectl get pods -n blazn-poc-system -o wide >&2 || :; exit 1; }
     sleep 3
   done
-  uids=$transaction/owned-uids.json
-  {
-    printf '{'
-    printf '"deployment/blazn-sandbox-controller":"%s",' "$(live_uid deployment blazn-sandbox-controller blazn-poc-system)"
-    printf '"role/blazn-sandbox-controller":"%s",' "$(live_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
-    printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
-    printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(live_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-egress":"%s"' "$(live_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
-    printf '}\n'
-  } >"$uids.tmp"
-  jq -e 'to_entries | all(.value | test("^[0-9a-f-]{36}$"))' "$uids.tmp" >/dev/null || { printf 'owned controller identities are incomplete\n' >&2; exit 1; }
-  mv "$uids.tmp" "$uids"; chmod 0600 "$uids"
   write_phase complete
 fi
 printf 'Phase 5 sandbox controller deployed and Available\n'

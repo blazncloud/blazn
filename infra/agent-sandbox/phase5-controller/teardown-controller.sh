@@ -29,7 +29,9 @@ case "$phase" in
   *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;
 esac
 uids=$transaction/owned-uids.json
-if [ ! -f "$uids" ] && [ "$phase" != applied ] && [ "$phase" != scaled ]; then printf 'owned controller identities are missing\n' >&2; exit 1; fi
+# The install transaction records every owned UID immediately after apply, so
+# any post-apply phase must carry the identity file.
+[ -f "$uids" ] || { printf 'owned controller identities are missing; reconcile the transaction by hand\n' >&2; exit 1; }
 
 # Scale to zero first so no controller Pod is reconciling while its RBAC and
 # egress are removed.
@@ -46,26 +48,20 @@ phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
 delete_owned() {
   owned_key=$1; owned_path=$2
-  if [ ! -f "$uids" ]; then return 0; fi
   owned_uid=$(jq -er --arg key "$owned_key" '.[$key] // empty' "$uids") || return 0
   [ -n "$owned_uid" ] || return 0
   phase4c_delete_uid "$owned_path" "$owned_uid" Background
 }
 delete_owned deployment/blazn-sandbox-controller /apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller
 delete_owned networkpolicy/blazn-sandbox-controller-egress /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress
+delete_owned networkpolicy/blazn-sandbox-controller-default-deny /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-default-deny
 delete_owned rolebinding/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller
 delete_owned role/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller
 delete_owned serviceaccount/blazn-sandbox-controller /api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller
-# The default-deny NetworkPolicy carries no recorded UID (it is unnamed in the
-# capture set); remove it by name only when the egress policy it pairs with is
-# already gone, so a partial state never strands the deny alone.
-if kubectl get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system --ignore-not-found -o name >/dev/null 2>&1; then
-  kubectl delete networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system --ignore-not-found >/dev/null
-fi
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
-for gone in deployment/blazn-sandbox-controller:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system; do
+for gone in deployment/blazn-sandbox-controller:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
   gone_ref=${gone%%:*}; gone_ns=${gone#*:}
   gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
   attempt=0
