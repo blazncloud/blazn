@@ -33,7 +33,9 @@ namespace-scoped**:
   already exists. This is required because the upstream informer reads are not
   namespace-scoped. Its read-only access remains a known upstream limitation.
 
-The LocalQueue targets an already reviewed, Active ClusterQueue. This change
+The LocalQueue targets an already reviewed, Active ClusterQueue. Fixture
+rendering selects only a live served `v1beta2` or `v1beta1` LocalQueue API,
+preferring `v1beta2`; every other Kueue API surface fails closed. This change
 does not create or edit ResourceFlavor, ClusterQueue, Kueue controller, Kueue
 CRDs, or shared quota.
 
@@ -109,7 +111,9 @@ declaring zero residue; lookup failures other than explicit NotFound abort.
    objects with recorded UID preconditions, proves every exact target absent, and byte-compares normalized
    CRD/admission/RuntimeClass/Kueue inventories to the preinstall snapshot.
 
-An uncertain holder, stale lock, unexpected namespace content, preexisting
+Rollback also supports a foundation apply that stopped before the Sandbox CRD
+existed by checking CRD discovery before namespaced Sandbox lookup. An
+uncertain holder, stale lock, unexpected namespace content, preexisting
 Sandbox, finalizer, or rollback difference requires reconciliation and human
 review. Never force-delete, remove finalizers, reuse an old inventory, or take
 a broader cleanup action.

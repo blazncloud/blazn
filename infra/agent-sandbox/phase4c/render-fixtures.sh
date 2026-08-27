@@ -28,6 +28,15 @@ runtime_admission=''
 create_principal=$(kubectl auth whoami -o jsonpath='{.status.userInfo.username}')
 [ -n "$create_principal" ] || { printf 'authenticated creator principal is required\n' >&2; exit 1; }
 case "$create_principal" in *[!A-Za-z0-9_:@./-]*) printf 'creator principal cannot be safely rendered\n' >&2; exit 1 ;; esac
+local_queue_versions=$(kubectl get crd localqueues.kueue.x-k8s.io -o json)
+local_queue_api_version=$(printf '%s' "$local_queue_versions" | jq -er '
+  [.spec.versions[] | select(.served == true) | .name] as $served |
+  if ($served | index("v1beta2")) then "v1beta2"
+  elif ($served | index("v1beta1")) then "v1beta1"
+  else error("no reviewed LocalQueue API version is served") end') || {
+    printf 'live Kueue does not serve reviewed LocalQueue v1beta1 or v1beta2\n' >&2
+    exit 1
+  }
 if [ -n "${BLAZN_RUNTIME_CLASS:-}" ]; then
   case "$BLAZN_RUNTIME_CLASS" in *[!a-z0-9.-]*|'') printf 'invalid RuntimeClass name\n' >&2; exit 1 ;; esac
   : "${BLAZN_EXPECTED_RUNTIME_HANDLER:?set the reviewed RuntimeClass handler}"
@@ -80,7 +89,9 @@ for crd in sandboxclaims.extensions.agents.x-k8s.io sandboxes.agents.x-k8s.io sa
     "          privileged: false" \
     "          readOnlyRootFilesystem: true" >>"$init_containers"
 done
-sed "s|BLAZN_EXISTING_CLUSTER_QUEUE|$BLAZN_EXISTING_CLUSTER_QUEUE|g" "$ROOT/blazn-poc.yaml.in" >"$output/blazn-poc.yaml"
+sed -e "s|BLAZN_EXISTING_CLUSTER_QUEUE|$BLAZN_EXISTING_CLUSTER_QUEUE|g" \
+  -e "s|BLAZN_LOCAL_QUEUE_API_VERSION|$local_queue_api_version|g" \
+  "$ROOT/blazn-poc.yaml.in" >"$output/blazn-poc.yaml"
 sed -e "s|BLAZN_RUNTIME_ADMISSION_EXPRESSION|$runtime_admission|g" \
   -e "s|BLAZN_SYNTHETIC_IMAGE|$BLAZN_SYNTHETIC_IMAGE|g" \
   -e "s|BLAZN_CREATE_PRINCIPAL|$create_principal|g" \
