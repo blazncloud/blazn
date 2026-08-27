@@ -85,10 +85,12 @@ if [ "$phase" = applied ]; then
   write_phase scaled; phase=scaled
 fi
 if [ "$phase" = scaled ]; then
+  available_attempts=${BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS:-60}
+  case "$available_attempts" in ''|*[!0-9]*) available_attempts=60 ;; esac
   attempt=0
   until [ "$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)" = True ]; do
     attempt=$((attempt + 1))
-    [ "$attempt" -le 60 ] || { printf 'the controller never became Available\n' >&2; kubectl get pods -n blazn-poc-system -o wide >&2 || :; exit 1; }
+    [ "$attempt" -le "$available_attempts" ] || { printf 'the controller never became Available\n' >&2; kubectl get pods -n blazn-poc-system -o wide >&2 || :; exit 1; }
     sleep 3
   done
   write_phase complete

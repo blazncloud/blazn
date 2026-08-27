@@ -21,7 +21,7 @@ set -eu
 [ "$BLAZN_OBJECT_ACCESS_KEY" != "$BLAZN_OBJECT_SECRET_KEY" ] || { printf 'object credential keys must be distinct\n' >&2; exit 1; }
 for required in kubectl python3; do command -v "$required" >/dev/null 2>&1 || { printf '%s is required\n' "$required" >&2; exit 1; }; done
 for sensitive in "$BLAZN_CONTROLLER_DATABASE_URL_FILE" "$BLAZN_OBJECT_ACCESS_KEY_FILE" "$BLAZN_OBJECT_SECRET_KEY_FILE"; do
-  [ -f "$sensitive" ] && [ ! -L "$sensitive" ] || { printf 'sensitive input is unsafe: %s\n' "$sensitive" >&2; exit 1; }
+  if ! { [ -f "$sensitive" ] && [ ! -L "$sensitive" ]; }; then printf 'sensitive input is unsafe: %s\n' "$sensitive" >&2; exit 1; fi
 done
 
 kubectl get namespace blazn-poc-system >/dev/null

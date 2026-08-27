@@ -60,7 +60,7 @@ case "$*" in
   'get secret blazn-controller-database-url -n blazn-poc-system --ignore-not-found -o name') present db-secret && printf 'secret/blazn-controller-database-url\n' || : ;;
   'get secret blazn-controller-object -n blazn-poc-system --ignore-not-found -o name') present object-secret && printf 'secret/blazn-controller-object\n' || : ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name') present deployment && [ ! -e "$FAKE_STATE/scaled0" ] && printf 'deployment/blazn-sandbox-controller\n' || { present deployment && printf 'deployment/blazn-sandbox-controller\n' || :; } ;;
-  'apply --server-side --field-manager blazn-phase5-controller -f '*) : >"$FAKE_STATE/deployment" ;;
+  'apply --server-side --field-manager blazn-phase5-controller -f '*) for object_key in deployment serviceaccount role rolebinding egress deny; do : >"$FAKE_STATE/$object_key"; done ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.spec.replicas}') [ -e "$FAKE_STATE/scaled1" ] && printf '1' || printf '0' ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1') : >"$FAKE_STATE/scaled1" ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0') : >"$FAKE_STATE/scaled0"; rm -f "$FAKE_STATE/scaled1" ;;
@@ -97,10 +97,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_DELETE(self):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
         key, uid = targets.get(self.path, (None, None))
-        ok = key is not None and body.get("preconditions", {}).get("uid") == uid
         with open(os.path.join(state, "delete-requests.log"), "a") as log:
             log.write(f"{self.path} {json.dumps(body)}\n")
-        if ok:
+        if key is not None and os.path.exists(os.path.join(state, f"deleted-{key}")):
+            self.send_response(404)
+        elif key is not None and body.get("preconditions", {}).get("uid") == uid:
             open(os.path.join(state, f"deleted-{key}"), "w").close()
             self.send_response(200)
         else:
@@ -183,7 +184,7 @@ expect_message 'Agent Sandbox controller is not installed'
 
 # T5: a controller that never becomes Available fails after scaling.
 reset_state; new_transaction
-run_tool install-controller.sh FAKE_UNAVAILABLE=1
+run_tool install-controller.sh FAKE_UNAVAILABLE=1 BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS=2
 [ "$last_code" -eq 1 ]
 expect_message 'never became Available'
 expect_phase scaled
@@ -202,7 +203,7 @@ grep -Fq '"uid": "11111111-1111-4111-8111-111111111111"' "$FAKE_STATE/delete-req
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
 # were recorded at apply-intent, before scaling).
 reset_state; new_transaction
-run_tool install-controller.sh FAKE_UNAVAILABLE=1
+run_tool install-controller.sh FAKE_UNAVAILABLE=1 BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS=2
 [ "$last_code" -eq 1 ]
 expect_phase scaled
 [ -f "$transaction/owned-uids.json" ]
@@ -221,6 +222,19 @@ expect_phase applied
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
+
+# T6b: a teardown that has already removed some objects resumes cleanly
+# instead of aborting on a 404 for the already-deleted ones.
+reset_state; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ]
+# Pre-mark the Deployment and egress policy as already deleted, then tear down.
+: >"$FAKE_STATE/deleted-deployment"; : >"$FAKE_STATE/deleted-egress"; rm -f "$FAKE_STATE/scaled1"; : >"$FAKE_STATE/scaled0"
+run_tool teardown-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+# Only the four still-present objects were issued a precondition delete.
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 4 ]
 
 # T7: a pre-existing controller Deployment blocks a fresh transaction.
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction

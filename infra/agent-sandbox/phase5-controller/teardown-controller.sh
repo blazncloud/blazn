@@ -46,18 +46,21 @@ write_phase rollback-intent
 
 phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+# Each delete is guarded by an absence pre-check so a resume after a partial
+# teardown skips the already-removed objects instead of aborting on a 404.
 delete_owned() {
-  owned_key=$1; owned_path=$2
+  owned_kind=$1; owned_name=$2; owned_ns=$3; owned_key=$4; owned_path=$5
+  absent "$owned_kind" "$owned_name" "$owned_ns" && return 0
   owned_uid=$(jq -er --arg key "$owned_key" '.[$key] // empty' "$uids") || return 0
   [ -n "$owned_uid" ] || return 0
   phase4c_delete_uid "$owned_path" "$owned_uid" Background
 }
-delete_owned deployment/blazn-sandbox-controller /apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller
-delete_owned networkpolicy/blazn-sandbox-controller-egress /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress
-delete_owned networkpolicy/blazn-sandbox-controller-default-deny /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-default-deny
-delete_owned rolebinding/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller
-delete_owned role/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller
-delete_owned serviceaccount/blazn-sandbox-controller /api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller
+delete_owned deployment blazn-sandbox-controller blazn-poc-system deployment/blazn-sandbox-controller /apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller
+delete_owned networkpolicy blazn-sandbox-controller-egress blazn-poc-system networkpolicy/blazn-sandbox-controller-egress /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress
+delete_owned networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny /apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-default-deny
+delete_owned rolebinding blazn-sandbox-controller blazn-poc-sandboxes rolebinding/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller
+delete_owned role blazn-sandbox-controller blazn-poc-sandboxes role/blazn-sandbox-controller /apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller
+delete_owned serviceaccount blazn-sandbox-controller blazn-poc-system serviceaccount/blazn-sandbox-controller /api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
