@@ -74,7 +74,10 @@ publish_one() {
   publish_name=$1; publish_repository=$2; publish_index=$3
   mkdir "$work/$publish_name.oci"
   tar -xf "$build_dir/$publish_name.oci.tar" -C "$work/$publish_name.oci"
-  DOCKER_CONFIG=$docker_config "$work/crane" push --insecure --index "$work/$publish_name.oci" "$publish_repository:$BLAZN_EXPECTED_SOURCE_COMMIT" >/dev/null
+  # crane push --index uploads every blob and manifest but tags a wrapper
+  # index of its own; retag the exact reviewed index digest afterwards.
+  DOCKER_CONFIG=$docker_config "$work/crane" push --insecure --index "$work/$publish_name.oci" "$publish_repository:upload-$BLAZN_EXPECTED_SOURCE_COMMIT" >/dev/null 2>&1
+  DOCKER_CONFIG=$docker_config "$work/crane" tag --insecure "$publish_repository@$publish_index" "$BLAZN_EXPECTED_SOURCE_COMMIT" >/dev/null 2>&1 || { printf '%s reviewed index is not present in the registry after upload\n' "$publish_name" >&2; exit 1; }
   pushed=$(DOCKER_CONFIG=$docker_config "$work/crane" digest --insecure "$publish_repository:$BLAZN_EXPECTED_SOURCE_COMMIT")
   [ "$pushed" = "$publish_index" ] || { printf '%s pushed digest %s does not match the reviewed index\n' "$publish_name" "$pushed" >&2; exit 1; }
   DOCKER_CONFIG=$docker_config "$work/crane" manifest --insecure "$publish_repository@$publish_index" >"$work/$publish_name-remote-manifest.json"
