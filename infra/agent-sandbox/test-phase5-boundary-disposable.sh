@@ -78,7 +78,12 @@ export KUBECONFIG="$tmp/kubeconfig"
 k() { "$tmp/kubectl" "$@"; }
 
 k apply -f "$tmp/crds.yaml" >/dev/null
-k wait --for=condition=Established crd/sandboxes.agents.x-k8s.io crd/localqueues.kueue.x-k8s.io --timeout=90s >/dev/null
+attempt=0
+until k wait --for=condition=Established crd/sandboxes.agents.x-k8s.io crd/localqueues.kueue.x-k8s.io --timeout=90s >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  [ "$attempt" -le 30 ] || { printf 'CRDs never became Established\n' >&2; exit 1; }
+  sleep 2
+done
 
 BLAZN_PHASE5_TRANSACTION_ID=99999999-9999-4999-8999-999999999999 BLAZN_EXISTING_CLUSTER_QUEUE=m1-light "$BOUNDARY/render-boundary.sh" "$tmp/boundary.yaml" >/dev/null
 k apply --server-side --field-manager blazn-phase5-boundary -f "$tmp/boundary.yaml" >/dev/null
