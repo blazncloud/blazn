@@ -109,6 +109,8 @@ test-development-contract:
 
 test-development-sandbox-static:
 	shellcheck examples/blazn-development-sandbox/*.sh
+	grep -F 'ln -s /usr/local/go/bin/go /usr/local/bin/go' examples/blazn-development-sandbox/Dockerfile >/dev/null
+	grep -F 'ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt' examples/blazn-development-sandbox/Dockerfile >/dev/null
 	go run ./cmd/blazn --output json template validate -f examples/coding-agent/sandbox-template-dev.yaml | jq -e '.valid == true and (.errors | length == 0) and (.warnings | length == 0)' >/dev/null
 
 test-harness-contract:

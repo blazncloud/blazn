@@ -1253,6 +1253,22 @@ func TestArtifactSuppressionCannotSatisfyTrustedFinalizePrecondition(t *testing.
 	}
 }
 
+func TestArtifactContractDigestMatchesThePublicItemsEnvelope(t *testing.T) {
+	for _, testCase := range []struct {
+		required bool
+		digest   string
+	}{
+		{required: true, digest: "sha256:d139b2eb8bb329f61b85f95b4983c028fbbadcfd36fd73cdbb05d143a4ac0729"},
+		{required: false, digest: "sha256:78731d6ad08767a09aebbd0d91a6f865d43f6bad4d80aa4385f4788ccf89d567"},
+	} {
+		artifacts := []ArtifactExport{{Name: "patch", Path: "/workspace/artifacts/change.patch", MediaType: "text/plain", Required: testCase.required}}
+		canonical, digest, err := CanonicalArtifactContract(artifacts)
+		if err != nil || len(canonical) != 1 || canonical[0] != artifacts[0] || digest != testCase.digest {
+			t.Fatalf("required=%v canonical=%#v digest=%s err=%v", testCase.required, canonical, digest, err)
+		}
+	}
+}
+
 func TestArtifactReorderingUsesCanonicalTrustedSet(t *testing.T) {
 	fake := newFakeAPI(t)
 	request := testCreate()
