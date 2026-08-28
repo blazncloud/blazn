@@ -102,9 +102,21 @@ fi
   --request-id "$request_prefix-create" >"$work/create.json"
 sandbox_id=$(jq -er '.sandbox.id' "$work/create.json")
 
+ready_attempt=0
+while [ "$ready_attempt" -lt 120 ]; do
+  ready_attempt=$((ready_attempt + 1))
+  "$blazn" --output json sandbox get "$sandbox_id" >"$work/ready.json"
+  state=$(jq -er '.state' "$work/ready.json")
+  [ "$state" = ready ] && break
+  case $state in failed|recovery_required|deleted) printf 'Sandbox entered terminal create state: %s\n' "$state" >&2; exit 1 ;; esac
+  sleep 5
+done
+[ "${state:-}" = ready ] || { printf 'Sandbox did not reach ready state within ten minutes\n' >&2; exit 1; }
+jq -e '.desiredState == "ready"' "$work/ready.json" >/dev/null
+# Replay the complete event stream after readiness so even clients with a
+# short per-request deadline exercise and verify the terminal watch contract.
 "$blazn" sandbox watch "$sandbox_id" >"$work/watch.jsonl"
-"$blazn" --output json sandbox get "$sandbox_id" >"$work/ready.json"
-jq -e '.state == "ready" and .desiredState == "ready"' "$work/ready.json" >/dev/null
+jq -e 'select(.type == "sandbox.ready")' "$work/watch.jsonl" >/dev/null
 
 "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
   'go version && node --version && npm --version && git --version && test -w /workspace/src/blazn && test -w /workspace/artifacts' >"$work/toolchains.json"
