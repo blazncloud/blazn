@@ -3,7 +3,7 @@ WORKDIR /opt/blazn-source
 COPY go.mod go.sum ./
 RUN go mod download
 
-FROM docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9 AS dependencies
+FROM docker.io/library/node@sha256:afff6d8c97964a438d2e6a9c96509367e45d8bf93f790ad561a1eaea926303d9 AS dependencies
 COPY --from=go-dependencies /usr/local/go /usr/local/go
 COPY --from=go-dependencies /go/pkg/mod /go/pkg/mod
 ENV PATH=/usr/local/go/bin:$PATH
