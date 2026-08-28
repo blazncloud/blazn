@@ -566,13 +566,10 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, omitted := range []string{`"volumes"`, `"volumeMounts"`} {
+	for _, omitted := range []string{`"volumes"`, `"volumeMounts"`, `"initContainers"`} {
 		if bytes.Contains(raw, []byte(omitted)) {
 			t.Fatalf("empty optional Pod field %s was rendered: %s", omitted, raw)
 		}
-	}
-	if !bytes.Contains(raw, []byte(`"name":"sandbox-access-io"`)) {
-		t.Fatalf("tokenless access helper is missing: %s", raw)
 	}
 }
 
