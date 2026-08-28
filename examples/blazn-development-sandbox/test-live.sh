@@ -35,9 +35,12 @@ decode_base64() {
   if [ "$base64_mode" = long ]; then base64 --decode; else base64 -D; fi
 }
 
+stage() { printf 'Blazn development E2E: %s\n' "$1"; }
+
 run_remote_job() {
   job_name=$1
   local_script=$2
+  stage "running $job_name test job"
   remote_root=/workspace/artifacts/e2e-$job_name
   "$blazn" --output json sandbox upload "$sandbox_id" "$local_script" "$remote_root.sh" >"$work/$job_name-upload.json"
   "$blazn" --output json sandbox exec "$sandbox_id" -- sh -c \
@@ -85,12 +88,15 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+stage 'validating development template'
 "$blazn" --output json template validate -f "$template_file" | jq -e '.valid == true' >"$work/template-validation.json"
 if [ "${BLAZN_SKIP_TEMPLATE_PUBLISH:-0}" != 1 ]; then
+  stage 'publishing development template'
   "$blazn" --output json template publish -f "$template_file" --workspace "$workspace" --request-id "$request_prefix-publish" >"$work/template-publish.json"
   jq -e '.template.id and .version.id' "$work/template-publish.json" >/dev/null
 fi
 
+stage 'creating development Sandbox'
 "$blazn" --output json sandbox create \
   --template "$template_reference" \
   --arch "$architecture" \
@@ -103,6 +109,7 @@ fi
 sandbox_id=$(jq -er '.sandbox.id' "$work/create.json")
 
 ready_attempt=0
+stage 'waiting for Sandbox readiness and replaying watch'
 while [ "$ready_attempt" -lt 120 ]; do
   ready_attempt=$((ready_attempt + 1))
   "$blazn" --output json sandbox get "$sandbox_id" >"$work/ready.json"
@@ -118,6 +125,7 @@ jq -e '.desiredState == "ready"' "$work/ready.json" >/dev/null
 "$blazn" sandbox watch "$sandbox_id" >"$work/watch.jsonl"
 jq -e 'select(.type == "sandbox.ready")' "$work/watch.jsonl" >/dev/null
 
+stage 'verifying development toolchains'
 "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
   'go version && node --version && npm --version && git --version && test -w /workspace/src/blazn && test -w /workspace/artifacts' >"$work/toolchains.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/toolchains.json" >/dev/null
@@ -142,14 +150,19 @@ printf '%s\n' '#!/bin/sh' 'set +e' \
 run_remote_job node "$work/node-job.sh"
 
 printf 'blazn development upload/download acceptance\n' >"$work/upload.txt"
+stage 'verifying upload and download'
 "$blazn" --output json sandbox upload "$sandbox_id" "$work/upload.txt" /workspace/artifacts/e2e-upload.txt >"$work/upload.json"
 "$blazn" --output json sandbox download "$sandbox_id" /workspace/artifacts/e2e-upload.txt "$work/download.txt" >"$work/download.json"
 cmp "$work/upload.txt" "$work/download.txt"
 
+stage 'generating patch artifact from the materialized source snapshot'
+# The command expands $code inside the Sandbox, not in this runner.
+# shellcheck disable=SC2016
 "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
-  'cd /workspace/src/blazn && printf "\n<!-- blazn-development-e2e -->\n" >> README.md && git diff --binary -- README.md > /workspace/artifacts/change.patch && test -s /workspace/artifacts/change.patch' >"$work/artifact.json"
+  'cd /workspace/src/blazn || exit; cp README.md README.md.before || exit; printf "\n<!-- blazn-development-e2e -->\n" >> README.md || exit; set +e; git diff --no-index --binary -- README.md.before README.md > /workspace/artifacts/change.patch; code=$?; set -e; rm -f README.md.before; test "$code" -eq 1; sed -i "s|a/README.md.before|a/README.md|g" /workspace/artifacts/change.patch; test -s /workspace/artifacts/change.patch' >"$work/artifact.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/artifact.json" >/dev/null
 
+stage 'deleting Sandbox and proving terminal state'
 "$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-delete" >"$work/delete.json"
 delete_requested=1
 
