@@ -3,12 +3,17 @@ WORKDIR /opt/blazn-source
 COPY go.mod go.sum ./
 RUN go mod download
 
-FROM docker.io/library/node@sha256:afff6d8c97964a438d2e6a9c96509367e45d8bf93f790ad561a1eaea926303d9 AS dependencies
+FROM docker.io/library/node@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90 AS dependencies
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=go-dependencies /usr/local/go /usr/local/go
 COPY --from=go-dependencies /go/pkg/mod /go/pkg/mod
 ENV PATH=/usr/local/go/bin:$PATH
 COPY services/control-api/package.json services/control-api/package-lock.json /opt/blazn-control-api/
 RUN npm ci --prefix /opt/blazn-control-api --ignore-scripts --no-audit --no-fund && \
+    npm install --prefix /usr/local/lib/node_modules/npm --ignore-scripts --no-audit --no-fund tar@7.5.19 && \
     rm -rf /root/.npm
 
 FROM dependencies
