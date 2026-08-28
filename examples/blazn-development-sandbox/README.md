@@ -30,7 +30,9 @@ The test publishes the template, creates and watches an exact-commit Sandbox,
 checks both toolchains, runs the Go and Node suites, verifies upload/download,
 creates the patch artifact, stops the Sandbox, then deletes it and waits for
 both terminal states. Stop-to-delete requires database migration 036 or later. Set `BLAZN_SKIP_TEMPLATE_PUBLISH=1` only when the exact
-immutable version has already been published.
+immutable version has already been published. Set `BLAZN_E2E_KEEP_EVIDENCE=1`
+to retain the printed temporary evidence directory, including complete failing
+test logs, after cleanup.
 
 The live Sandbox Go matrix excludes `internal/node`, whose installer tests
 deliberately require root-owned private host-directory ancestry, and

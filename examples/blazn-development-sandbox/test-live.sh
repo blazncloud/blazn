@@ -78,10 +78,14 @@ cleanup() {
     "$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-cleanup" >/dev/null 2>&1 || \
       printf 'warning: automatic Sandbox cleanup failed for %s\n' "$sandbox_id" >&2
   fi
-  case $work in
-    "${TMPDIR:-/tmp}"/blazn-development-live.*) rm -r -- "$work" ;;
-    *) printf 'refusing to remove unexpected test directory: %s\n' "$work" >&2 ;;
-  esac
+  if [ "${BLAZN_E2E_KEEP_EVIDENCE:-0}" = 1 ]; then
+    printf 'Blazn development E2E evidence retained at %s\n' "$work"
+  else
+    case $work in
+      "${TMPDIR:-/tmp}"/blazn-development-live.*) rm -r -- "$work" ;;
+      *) printf 'refusing to remove unexpected test directory: %s\n' "$work" >&2 ;;
+    esac
+  fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP

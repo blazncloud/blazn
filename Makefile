@@ -155,4 +155,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-node-generated check-sandbox-generated test test-identity test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-node-generated check-sandbox-generated test test-control-api test-identity test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-release test-install
