@@ -211,7 +211,7 @@ test("warning-free artifact cleanup is canonical at the database boundary",async
   const here=path.dirname(fileURLToPath(import.meta.url));
   const sql=await readFile(path.resolve(here,"../migrations/035_sandbox_empty_artifact_warnings.sql"),"utf8");
   assert.match(sql,/canonical_warnings text\[\] := coalesce\(p_warning_codes,'\{\}'::text\[\]\)/);
-  assert.match(sql,/warning_codes,canonical_warnings/);
+  assert.match(sql,/warning_codes\)\s*VALUES\([^;]*canonical_warnings\)/);
   assert.match(sql,/receipt\.warning_codes=canonical_warnings/);
   assert.match(sql,/sandbox_controller_complete_v4\([\s\S]*canonical_warnings/);
   assert.match(sql,/WHEN 'create' THEN 'sandbox\.ready'/);
