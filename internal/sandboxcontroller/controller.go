@@ -477,7 +477,7 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	if len(result.WarningCodes) != 0 {
 		return &Failure{Code: "cleanup_warning_mismatch", SafeMessage: "cleanup returned warnings outside the durable artifact export receipt", Ambiguous: true}
 	}
-	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: warningCodes})
+	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string{}, result.ArtifactIDs...), WarningCodes: warningCodes})
 	if err != nil {
 		return err
 	}

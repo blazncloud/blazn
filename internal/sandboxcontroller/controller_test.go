@@ -372,6 +372,7 @@ func TestCleanupRestartAdoptsCompletedArtifactPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if backend.artifactExports != 0 || store.artifactPhases != 0 || store.completion == nil ||
+		store.completion.ArtifactIDs == nil || len(store.completion.ArtifactIDs) != 0 ||
 		!reflect.DeepEqual(store.completion.WarningCodes, item.ArtifactWarningCodes) {
 		t.Fatalf("restart repeated export or lost receipt: exports=%d phases=%d completion=%#v", backend.artifactExports, store.artifactPhases, store.completion)
 	}
