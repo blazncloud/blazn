@@ -3,7 +3,7 @@
   "kind": "SandboxTemplate",
   "metadata": {"name": "coding-agent"},
   "spec": {
-    "version": "go-1.26.2-node-22.19.0-poc-dev-1",
+    "version": "go-1.26.2-node-22.19.0-poc-dev-2",
     "description": "Long-running non-sensitive Blazn CLI development template",
     "policyProfile": "poc-restricted-v1",
     "isolation": "approved-non-sensitive-poc",
@@ -32,6 +32,6 @@
       }
     ],
     "repositories": [{"name": "source", "url": "https://github.com/blazncloud/blazn.git", "destination": "/workspace/src/blazn", "writable": true}],
-    "artifacts": [{"name": "patch", "path": "/workspace/artifacts/change.patch", "mediaType": "text/plain", "required": true}]
+    "artifacts": [{"name": "patch", "path": "/workspace/artifacts/change.patch", "mediaType": "text/plain", "required": false}]
   }
 }
