@@ -672,6 +672,11 @@ func TestKubernetesBackendClassifiesTransportIdentityAndResidueWithoutLeaks(t *t
 	if !ok || !failure.Retryable || failure.Ambiguous || strings.Contains(failure.Error(), secret) {
 		t.Fatalf("safe artifact retry classification=%#v", failure)
 	}
+	cleanupErr := &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: secret}
+	failure, ok = BackendFailure(classifyAdapter("cleanup", cleanupErr))
+	if !ok || !failure.Retryable || failure.Ambiguous || strings.Contains(failure.Error(), secret) {
+		t.Fatalf("visible cleanup residue classification=%#v", failure)
+	}
 }
 
 func TestKubernetesBackendHonorsCancellationAndHealthIsReadOnly(t *testing.T) {

@@ -125,7 +125,10 @@ func NewDefaultService() (*Service, error) {
 	if apiURL == "" {
 		apiURL = sessions.Origin()
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	// Access exec is bounded to ten minutes by the controller. Keep the
+	// client deadline above that boundary while retaining one finite timeout
+	// for every Sandbox API operation.
+	httpClient := &http.Client{Timeout: 11 * time.Minute}
 	generated, err := client.New(apiURL, httpClient)
 	if err != nil {
 		return nil, err

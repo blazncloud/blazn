@@ -20,6 +20,11 @@ import (
 	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
+const (
+	accessExecTimeout = 10 * time.Minute
+	accessFileTimeout = 55 * time.Second
+)
+
 var accessGrantPath = regexp.MustCompile(`^/internal/v1/sandbox-access-grants/([0-9a-f-]{36})/(exec|file)$`)
 
 type AccessGrantStore interface {
@@ -113,7 +118,11 @@ func (h *AccessHandler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		accessError(response, http.StatusGone, "grant_invalid")
 		return
 	}
-	ctx, cancel := context.WithTimeout(request.Context(), 55*time.Second)
+	timeout := accessFileTimeout
+	if kind == "exec" {
+		timeout = accessExecTimeout
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), timeout)
 	defer cancel()
 	switch kind {
 	case "exec":

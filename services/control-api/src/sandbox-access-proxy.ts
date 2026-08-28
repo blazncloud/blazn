@@ -21,7 +21,8 @@ export class SandboxAccessProxy {
     const body=request.method==="GET"?undefined:await boundedBody(request);
     const headers:Record<string,string>={};
     for(const name of ["authorization","content-type","accept","x-blazn-sandbox-path","x-content-size","x-content-sha256"]){const value=request.headers[name];if(typeof value==="string")headers[name]=value;}
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60_000);
+    const timeout=match[2]==="exec"?605_000:60_000;
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
     let upstream:Response;
     const init:RequestInit={method:request.method??"GET",headers,signal:controller.signal};if(body!==undefined)init.body=body;
     try{upstream=await fetch(`${this.origin}/internal/v1/sandbox-access-grants/${match[1]}/${match[2]}`,init);}

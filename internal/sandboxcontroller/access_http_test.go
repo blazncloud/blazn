@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeAccessStore struct {
@@ -30,10 +31,12 @@ type fakeAccessExecutor struct {
 	container string
 	command   []string
 	input     []byte
+	deadline  time.Time
 }
 
-func (e *fakeAccessExecutor) Execute(_ context.Context, _ AccessGrantBinding, container string, command []string, input io.Reader) (AccessCommandResult, error) {
+func (e *fakeAccessExecutor) Execute(ctx context.Context, _ AccessGrantBinding, container string, command []string, input io.Reader) (AccessCommandResult, error) {
 	e.container, e.command = container, append([]string(nil), command...)
+	e.deadline, _ = ctx.Deadline()
 	if input != nil {
 		e.input, _ = io.ReadAll(input)
 	}
@@ -51,6 +54,9 @@ func TestAccessHandlerConsumesGrantAndPreservesExecOutput(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || store.kind != "exec" || executor.container != "main" {
 		t.Fatalf("status=%d store=%#v executor=%#v", response.Code, store, executor)
+	}
+	if remaining := time.Until(executor.deadline); remaining < 9*time.Minute+50*time.Second || remaining > accessExecTimeout {
+		t.Fatalf("exec deadline remaining=%s", remaining)
 	}
 	digest := sha256.Sum256([]byte(token))
 	if store.hash != hex.EncodeToString(digest[:]) {
@@ -88,5 +94,8 @@ func TestAccessHandlerValidatesBeforeConsumingAndBindsUploadHelper(t *testing.T)
 	handler.ServeHTTP(reply, upload)
 	if reply.Code != http.StatusOK || store.kind != "upload" || executor.container != "sandbox-access-io" || !bytes.Equal(executor.input, body) {
 		t.Fatalf("status=%d store=%#v executor=%#v", reply.Code, store, executor)
+	}
+	if remaining := time.Until(executor.deadline); remaining < 50*time.Second || remaining > accessFileTimeout {
+		t.Fatalf("file deadline remaining=%s", remaining)
 	}
 }

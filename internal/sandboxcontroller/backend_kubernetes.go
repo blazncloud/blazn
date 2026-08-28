@@ -629,7 +629,7 @@ func classifyAdapter(operation string, err error) error {
 	case sandboxcontrol.ErrArtifactExport:
 		return backendFailure("cleanup_incomplete", "sandbox artifact export did not complete", operation == "cleanup", false, err)
 	case sandboxcontrol.ErrCleanupIncomplete:
-		return backendFailure("cleanup_incomplete", "sandbox cleanup could not be proven complete", operation == "cleanup", true, err)
+		return backendFailure("cleanup_incomplete", "sandbox cleanup could not be proven complete", operation == "cleanup", false, err)
 	case sandboxcontrol.ErrNotFound:
 		return backendFailure("backend_not_found", "sandbox backend identity is absent", operation != "cleanup", operation == "cleanup", err)
 	case sandboxcontrol.ErrAdmissionPending:

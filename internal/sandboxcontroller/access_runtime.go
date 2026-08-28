@@ -131,7 +131,7 @@ func (t *kubernetesExecTransport) executeAccess(ctx context.Context, target sand
 	if connection.Config() == nil || len(connection.Config().Protocol) != 1 || connection.Config().Protocol[0] != kubernetesExecProtocol {
 		return AccessCommandResult{}, errors.New("sandbox access did not negotiate v5.channel.k8s.io")
 	}
-	deadline := time.Now().Add(55 * time.Second)
+	deadline := time.Now().Add(accessExecTimeout)
 	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
 		deadline = value
 	}
