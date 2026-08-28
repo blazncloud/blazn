@@ -476,14 +476,12 @@ func TestKubernetesBackendCleanupContinuesAfterFinalizerResponseLoss(t *testing.
 	fake := &fakeSandboxAdapter{record: record, observation: observation,
 		absenceErrs: []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "foreground deletion remains"}, nil}}
 	backend := newTestKubernetesBackend(t, fake, true)
-	if _, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation); err == nil {
-		t.Fatal("visible foreground deletion did not request a retry")
-	} else if failure, ok := BackendFailure(err); !ok || !failure.Retryable || failure.Ambiguous {
-		t.Fatalf("foreground deletion classification=%#v err=%v", failure, err)
-	}
 	state, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
 	if err != nil || !state.AbsenceObserved || state.Exists || state.AdmissionObservation != item.AdmissionObservation {
 		t.Fatalf("response-loss cleanup state=%#v err=%v", state, err)
+	}
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "cleanup-dependents", "absence", "cleanup-dependents", "absence"}) {
+		t.Fatalf("response-loss cleanup did not poll exact absence: %v", fake.snapshotCalls())
 	}
 }
 

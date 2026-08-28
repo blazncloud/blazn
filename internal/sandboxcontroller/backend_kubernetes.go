@@ -224,11 +224,8 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 	if err != nil {
 		var adapterErr *sandboxcontrol.AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound {
-			if err := b.adapter.CleanupOwnedDependents(ctx, *expected); err != nil {
-				return BackendState{}, classifyCleanupObservation(err)
-			}
-			if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
-				return BackendState{}, classifyCleanupObservation(err)
+			if err := b.waitForOwnedAbsence(ctx, *expected); err != nil {
+				return BackendState{}, err
 			}
 			return BackendState{AdmissionObservation: expected, AbsenceObserved: true}, nil
 		}
@@ -242,11 +239,8 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		// its response while Kubernetes foreground deletion was still
 		// draining dependents. The immutable observation remains authority;
 		// continue only through exact owned-dependent and absence proofs.
-		if err := b.adapter.CleanupOwnedDependents(ctx, *expected); err != nil {
-			return BackendState{}, classifyCleanupObservation(err)
-		}
-		if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
-			return BackendState{}, classifyCleanupObservation(err)
+		if err := b.waitForOwnedAbsence(ctx, *expected); err != nil {
+			return BackendState{}, err
 		}
 		return BackendState{AdmissionObservation: expected, AbsenceObserved: true}, nil
 	}
@@ -353,20 +347,27 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 	}
 	result := CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
 		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
+	if err := b.waitForOwnedAbsence(ctx, *expected); err != nil {
+		return CleanupResult{}, err
+	}
+	return result, nil
+}
+
+func (b *KubernetesBackend) waitForOwnedAbsence(ctx context.Context, expected sandboxcontrol.AdmissionObservation) error {
 	for {
-		if err = b.adapter.CleanupOwnedDependents(ctx, *expected); err != nil {
-			return CleanupResult{}, classifyAdapter("cleanup", err)
+		if err := b.adapter.CleanupOwnedDependents(ctx, expected); err != nil {
+			return classifyAdapter("cleanup", err)
 		}
-		err = b.adapter.ObserveAbsence(ctx, *expected)
+		err := b.adapter.ObserveAbsence(ctx, expected)
 		if err == nil {
-			return result, nil
+			return nil
 		}
 		var adapterErr *sandboxcontrol.AdapterError
 		if !errors.As(err, &adapterErr) || adapterErr.Code != sandboxcontrol.ErrCleanupIncomplete {
-			return CleanupResult{}, classifyAdapter("cleanup", err)
+			return classifyAdapter("cleanup", err)
 		}
 		if !wait(ctx, b.absencePollInterval) {
-			return CleanupResult{}, ctx.Err()
+			return ctx.Err()
 		}
 	}
 }
