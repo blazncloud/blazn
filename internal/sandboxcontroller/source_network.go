@@ -79,7 +79,9 @@ type networkPolicyEgress struct {
 	Ports []networkPolicyPort `json:"ports"`
 }
 type networkPolicyPeer struct {
-	IPBlock networkPolicyIPBlock `json:"ipBlock"`
+	IPBlock           *networkPolicyIPBlock  `json:"ipBlock,omitempty"`
+	NamespaceSelector *networkPolicySelector `json:"namespaceSelector,omitempty"`
+	PodSelector       *networkPolicySelector `json:"podSelector,omitempty"`
 }
 type networkPolicyIPBlock struct {
 	CIDR string `json:"cidr"`
@@ -124,13 +126,17 @@ func (n *KubernetesSourceNetwork) Prepare(ctx context.Context, item WorkItem, ob
 	}
 	deny := n.policy(item, observation, runtimePolicyName(item), nil)
 	allow := n.policy(item, observation, bootstrapPolicyName(item), []networkPolicyEgress{
+		{To: dnsPeers(), Ports: []networkPolicyPort{{Protocol: "UDP", Port: 53}, {Protocol: "TCP", Port: 53}}},
+		{To: cidrPeers(sourceCIDRs), Ports: []networkPolicyPort{{Protocol: "TCP", Port: 443}}},
+	})
+	legacyAllow := n.policy(item, observation, bootstrapPolicyName(item), []networkPolicyEgress{
 		{To: cidrPeers(n.dnsCIDRs), Ports: []networkPolicyPort{{Protocol: "UDP", Port: 53}, {Protocol: "TCP", Port: 53}}},
 		{To: cidrPeers(sourceCIDRs), Ports: []networkPolicyPort{{Protocol: "TCP", Port: 443}}},
 	})
 	if _, err := n.ensure(ctx, deny); err != nil {
 		return err
 	}
-	createdAllow, err := n.ensure(ctx, allow)
+	createdAllow, err := n.ensureBootstrap(ctx, allow, legacyAllow)
 	if err != nil {
 		return err
 	}
@@ -158,10 +164,14 @@ func (n *KubernetesSourceNetwork) Restrict(ctx context.Context, item WorkItem, o
 	}
 	if status == http.StatusOK {
 		wanted := n.policy(item, observation, bootstrapPolicyName(item), []networkPolicyEgress{
+			{To: dnsPeers(), Ports: []networkPolicyPort{{Protocol: "UDP", Port: 53}, {Protocol: "TCP", Port: 53}}},
+			{To: cidrPeers(sourceCIDRs), Ports: []networkPolicyPort{{Protocol: "TCP", Port: 443}}},
+		})
+		legacy := n.policy(item, observation, bootstrapPolicyName(item), []networkPolicyEgress{
 			{To: cidrPeers(n.dnsCIDRs), Ports: []networkPolicyPort{{Protocol: "UDP", Port: 53}, {Protocol: "TCP", Port: 53}}},
 			{To: cidrPeers(sourceCIDRs), Ports: []networkPolicyPort{{Protocol: "TCP", Port: 443}}},
 		})
-		if !sameNetworkPolicy(allow, wanted) || allow.Metadata.UID == "" || allow.Metadata.ResourceVersion == "" {
+		if (!sameNetworkPolicy(allow, wanted) && !sameNetworkPolicy(allow, legacy)) || allow.Metadata.UID == "" || allow.Metadata.ResourceVersion == "" {
 			return errors.New("bootstrap NetworkPolicy identity changed")
 		}
 		if err := n.delete(ctx, allow); err != nil {
@@ -248,6 +258,43 @@ func (n *KubernetesSourceNetwork) ensure(ctx context.Context, wanted networkPoli
 		return networkPolicy{}, errors.Join(err, errors.New("NetworkPolicy creation did not return exact identity"))
 	}
 	return created, nil
+}
+
+func (n *KubernetesSourceNetwork) ensureBootstrap(ctx context.Context, wanted, legacy networkPolicy) (networkPolicy, error) {
+	current, status, err := n.get(ctx, wanted.Metadata.Name)
+	if err != nil || status != http.StatusOK {
+		return n.ensure(ctx, wanted)
+	}
+	if sameNetworkPolicy(current, wanted) && current.Metadata.UID != "" && current.Metadata.ResourceVersion != "" {
+		return current, nil
+	}
+	if !sameNetworkPolicy(current, legacy) || current.Metadata.UID == "" || current.Metadata.ResourceVersion == "" {
+		return networkPolicy{}, errors.New("owned bootstrap NetworkPolicy differs from the exact current or legacy intent")
+	}
+	// The runtime default-deny policy remains in force throughout this
+	// migration, so replacing the obsolete allow policy creates a closed
+	// egress interval rather than an unbounded one.
+	if err := n.delete(ctx, current); err != nil {
+		return networkPolicy{}, err
+	}
+	for attempt := 0; attempt < 100; attempt++ {
+		_, status, err = n.get(ctx, wanted.Metadata.Name)
+		if err != nil {
+			return networkPolicy{}, err
+		}
+		if status == http.StatusNotFound {
+			return n.ensure(ctx, wanted)
+		}
+		if status != http.StatusOK {
+			return networkPolicy{}, fmt.Errorf("legacy bootstrap NetworkPolicy lookup returned HTTP %d", status)
+		}
+		select {
+		case <-ctx.Done():
+			return networkPolicy{}, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return networkPolicy{}, errors.New("legacy bootstrap NetworkPolicy still exists")
 }
 
 func (n *KubernetesSourceNetwork) get(ctx context.Context, name string) (networkPolicy, int, error) {
@@ -380,9 +427,16 @@ func canonicalCIDRs(values []string) ([]string, error) {
 func cidrPeers(values []string) []networkPolicyPeer {
 	peers := make([]networkPolicyPeer, len(values))
 	for index, value := range values {
-		peers[index] = networkPolicyPeer{IPBlock: networkPolicyIPBlock{CIDR: value}}
+		peers[index] = networkPolicyPeer{IPBlock: &networkPolicyIPBlock{CIDR: value}}
 	}
 	return peers
+}
+
+func dnsPeers() []networkPolicyPeer {
+	return []networkPolicyPeer{{
+		NamespaceSelector: &networkPolicySelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}},
+		PodSelector:       &networkPolicySelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}},
+	}}
 }
 
 func runtimePolicyName(item WorkItem) string   { return "blazn-runtime-deny-" + item.SandboxID }
