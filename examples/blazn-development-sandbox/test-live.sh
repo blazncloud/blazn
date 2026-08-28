@@ -35,6 +35,36 @@ decode_base64() {
   if [ "$base64_mode" = long ]; then base64 --decode; else base64 -D; fi
 }
 
+run_remote_job() {
+  job_name=$1
+  local_script=$2
+  remote_root=/workspace/artifacts/e2e-$job_name
+  "$blazn" --output json sandbox upload "$sandbox_id" "$local_script" "$remote_root.sh" >"$work/$job_name-upload.json"
+  "$blazn" --output json sandbox exec "$sandbox_id" -- sh -c \
+    "rm -f '$remote_root.status' '$remote_root.status.tmp'; nohup sh '$remote_root.sh' >'$remote_root.log' 2>&1 </dev/null &" >"$work/$job_name-launch.json"
+  jq -e '.remoteExitCode == 0 and .truncated == false' "$work/$job_name-launch.json" >/dev/null
+  job_attempt=0
+  while [ "$job_attempt" -lt 120 ]; do
+    job_attempt=$((job_attempt + 1))
+    "$blazn" --output json sandbox exec "$sandbox_id" -- sh -c \
+      "if test -f '$remote_root.status'; then cat '$remote_root.status'; else printf running; fi" >"$work/$job_name-status.json"
+    jq -er '.stdoutBase64' "$work/$job_name-status.json" | decode_base64 >"$work/$job_name-status.txt"
+    job_status=$(tr -d '\r\n' <"$work/$job_name-status.txt")
+    case $job_status in
+      running) sleep 5 ;;
+      0) break ;;
+      *)
+        "$blazn" --output json sandbox download "$sandbox_id" "$remote_root.log" "$work/$job_name.log" >/dev/null || true
+        tail -40 "$work/$job_name.log" >&2 || true
+        printf '%s job failed with status %s\n' "$job_name" "$job_status" >&2
+        exit 1
+        ;;
+    esac
+  done
+  [ "${job_status:-}" = 0 ] || { printf '%s job did not finish within ten minutes\n' "$job_name" >&2; exit 1; }
+  "$blazn" --output json sandbox download "$sandbox_id" "$remote_root.log" "$work/$job_name.log" >"$work/$job_name-download.json"
+}
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/blazn-development-live.XXXXXX")
 sandbox_id=
 delete_requested=0
@@ -80,23 +110,24 @@ jq -e '.state == "ready" and .desiredState == "ready"' "$work/ready.json" >/dev/
   'go version && node --version && npm --version && git --version && test -w /workspace/src/blazn && test -w /workspace/artifacts' >"$work/toolchains.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/toolchains.json" >/dev/null
 
-"$blazn" --output json sandbox exec "$sandbox_id" -- \
-  go -C /workspace/src/blazn list ./... >"$work/go-list.json"
-jq -e '.remoteExitCode == 0 and .truncated == false' "$work/go-list.json" >/dev/null
-jq -er '.stdoutBase64' "$work/go-list.json" | decode_base64 >"$work/go-packages.txt"
-[ -s "$work/go-packages.txt" ] || { printf 'Go package discovery returned no packages\n' >&2; exit 1; }
-package_index=0
-while IFS= read -r package; do
-  [ -n "$package" ] || continue
-  package_index=$((package_index + 1))
-  "$blazn" --output json sandbox exec "$sandbox_id" -- \
-    go -C /workspace/src/blazn test "$package" >"$work/go-test-$package_index.json"
-  jq -e '.remoteExitCode == 0 and .truncated == false' "$work/go-test-$package_index.json" >/dev/null
-done <"$work/go-packages.txt"
+# The generated job scripts expand $code inside the Sandbox, not here.
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh' 'set +e' \
+  'cd /workspace/src/blazn && go test ./...' \
+  'code=$?' \
+  'printf "%s\n" "$code" > /workspace/artifacts/e2e-go.status.tmp' \
+  'mv /workspace/artifacts/e2e-go.status.tmp /workspace/artifacts/e2e-go.status' \
+  'exit "$code"' >"$work/go-job.sh"
+run_remote_job go "$work/go-job.sh"
 
-"$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
-  'cd /workspace/src/blazn/services/control-api && npm run build && npm test && cd /workspace/src/blazn/examples/coding-agent && npm test' >"$work/node-tests.json"
-jq -e '.remoteExitCode == 0 and .truncated == false' "$work/node-tests.json" >/dev/null
+# shellcheck disable=SC2016
+printf '%s\n' '#!/bin/sh' 'set +e' \
+  'cd /workspace/src/blazn/services/control-api && npm run build && npm test && cd /workspace/src/blazn/examples/coding-agent && npm test' \
+  'code=$?' \
+  'printf "%s\n" "$code" > /workspace/artifacts/e2e-node.status.tmp' \
+  'mv /workspace/artifacts/e2e-node.status.tmp /workspace/artifacts/e2e-node.status' \
+  'exit "$code"' >"$work/node-job.sh"
+run_remote_job node "$work/node-job.sh"
 
 printf 'blazn development upload/download acceptance\n' >"$work/upload.txt"
 "$blazn" --output json sandbox upload "$sandbox_id" "$work/upload.txt" /workspace/artifacts/e2e-upload.txt >"$work/upload.json"
