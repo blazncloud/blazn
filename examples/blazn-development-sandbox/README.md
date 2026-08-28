@@ -22,7 +22,7 @@ from an authenticated workstation:
 examples/blazn-development-sandbox/test-live.sh \
   /path/to/blazn WORKSPACE_ID \
   examples/coding-agent/sandbox-template-dev.yaml \
-  coding-agent@go-1.26.2-node-22.19.0-poc-dev-3 \
+  coding-agent@go-1.26.2-node-22.19.0-poc-dev-4 \
   EXACT_SOURCE_COMMIT amd64
 ```
 
