@@ -1,13 +1,10 @@
-FROM golang@sha256:47ce5636e9936b2c5cbf708925578ef386b4f8872aec74a67bd13a627d242b19 AS go-dependencies
+FROM golang@sha256:f85330846cde1e57ca9ec309382da3b8e6ae3ab943d2739500e08c86393a21b1 AS go-dependencies
 WORKDIR /opt/blazn-source
 COPY go.mod go.sum ./
 RUN go mod download
 
-FROM docker.io/library/node@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90 AS dependencies
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+FROM docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9 AS dependencies
+RUN apk upgrade --no-cache && apk add --no-cache git ca-certificates
 COPY --from=go-dependencies /usr/local/go /usr/local/go
 COPY --from=go-dependencies /go/pkg/mod /go/pkg/mod
 ENV PATH=/usr/local/go/bin:$PATH
