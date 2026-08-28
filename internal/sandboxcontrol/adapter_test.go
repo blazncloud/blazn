@@ -280,7 +280,7 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		var options map[string]any
 		decodeBody(f.t, request.Body, &options)
 		preconditions := options["preconditions"].(map[string]any)
-		if preconditions["uid"] != "uid-1" || preconditions["resourceVersion"] != f.object.Metadata.ResourceVersion || options["propagationPolicy"] != "Foreground" {
+		if preconditions["uid"] != "uid-1" || preconditions["resourceVersion"] != f.object.Metadata.ResourceVersion || options["propagationPolicy"] != "Background" {
 			f.t.Errorf("delete preconditions=%v", options)
 		}
 		f.object.Metadata.DeletionTimestamp = "2026-08-22T12:00:00Z"
