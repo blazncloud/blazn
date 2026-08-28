@@ -65,7 +65,7 @@ func (a *Adapter) CleanupOwnedDependents(ctx context.Context, expected Admission
 	if err := validateObservation(expected); err != nil {
 		return err
 	}
-	var pods observedPodList
+	var pods observedIdentityList
 	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func (a *Adapter) CleanupOwnedDependents(ctx context.Context, expected Admission
 		podToDelete = &metadata
 	}
 
-	var workloads observedWorkloadList
+	var workloads observedIdentityList
 	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
 		return err
 	}
@@ -138,6 +138,18 @@ type observedPod struct {
 	Metadata   observedMetadata `json:"metadata"`
 	Spec       kubePodSpec      `json:"spec"`
 	RawSpec    json.RawMessage  `json:"-"`
+}
+
+type observedIdentity struct {
+	APIVersion string           `json:"apiVersion"`
+	Kind       string           `json:"kind"`
+	Metadata   observedMetadata `json:"metadata"`
+}
+
+type observedIdentityList struct {
+	APIVersion string             `json:"apiVersion"`
+	Kind       string             `json:"kind"`
+	Items      []observedIdentity `json:"items"`
 }
 
 func (pod *observedPod) UnmarshalJSON(data []byte) error {
@@ -336,7 +348,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		return err
 	}
 
-	var pods observedPodList
+	var pods observedIdentityList
 	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
 		return err
 	}
@@ -352,7 +364,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		}
 	}
 
-	var workloads observedWorkloadList
+	var workloads observedIdentityList
 	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
 		return err
 	}
