@@ -21,7 +21,19 @@ case $source_commit in
 esac
 case ${#source_commit} in 40|64) ;; *) printf 'source commit must contain 40 or 64 hexadecimal characters\n' >&2; exit 1 ;; esac
 case $architecture in amd64|arm64) ;; *) printf 'architecture must be amd64 or arm64\n' >&2; exit 1 ;; esac
-for command in jq cmp date mktemp; do command -v "$command" >/dev/null 2>&1 || { printf '%s is required\n' "$command" >&2; exit 1; }; done
+for command in jq cmp date mktemp base64; do command -v "$command" >/dev/null 2>&1 || { printf '%s is required\n' "$command" >&2; exit 1; }; done
+if printf 'Zg==\n' | base64 --decode >/dev/null 2>&1; then
+  base64_mode=long
+elif printf 'Zg==\n' | base64 -D >/dev/null 2>&1; then
+  base64_mode=darwin
+else
+  printf 'base64 decoder is unavailable\n' >&2
+  exit 1
+fi
+
+decode_base64() {
+  if [ "$base64_mode" = long ]; then base64 --decode; else base64 -D; fi
+}
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/blazn-development-live.XXXXXX")
 sandbox_id=
@@ -68,9 +80,19 @@ jq -e '.state == "ready" and .desiredState == "ready"' "$work/ready.json" >/dev/
   'go version && node --version && npm --version && git --version && test -w /workspace/src/blazn && test -w /workspace/artifacts' >"$work/toolchains.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/toolchains.json" >/dev/null
 
-"$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
-  'cd /workspace/src/blazn && go test ./...' >"$work/go-tests.json"
-jq -e '.remoteExitCode == 0 and .truncated == false' "$work/go-tests.json" >/dev/null
+"$blazn" --output json sandbox exec "$sandbox_id" -- \
+  go -C /workspace/src/blazn list ./... >"$work/go-list.json"
+jq -e '.remoteExitCode == 0 and .truncated == false' "$work/go-list.json" >/dev/null
+jq -er '.stdoutBase64' "$work/go-list.json" | decode_base64 >"$work/go-packages.txt"
+[ -s "$work/go-packages.txt" ] || { printf 'Go package discovery returned no packages\n' >&2; exit 1; }
+package_index=0
+while IFS= read -r package; do
+  [ -n "$package" ] || continue
+  package_index=$((package_index + 1))
+  "$blazn" --output json sandbox exec "$sandbox_id" -- \
+    go -C /workspace/src/blazn test "$package" >"$work/go-test-$package_index.json"
+  jq -e '.remoteExitCode == 0 and .truncated == false' "$work/go-test-$package_index.json" >/dev/null
+done <"$work/go-packages.txt"
 
 "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
   'cd /workspace/src/blazn/services/control-api && npm run build && npm test && cd /workspace/src/blazn/examples/coding-agent && npm test' >"$work/node-tests.json"

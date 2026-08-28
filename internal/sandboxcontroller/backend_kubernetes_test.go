@@ -453,6 +453,26 @@ func TestKubernetesBackendCleanupAllowsResourceVersionDrift(t *testing.T) {
 	}
 }
 
+func TestKubernetesBackendCleanupContinuesAfterFinalizerResponseLoss(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	bindBackendIdentity(&item, record, observation)
+	record.Deleting = true
+	record.State = sandboxcontrol.StateStopping
+	record.Finalizers = nil
+	fake := &fakeSandboxAdapter{record: record, observation: observation,
+		absenceErrs: []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "foreground deletion remains"}, nil}}
+	backend := newTestKubernetesBackend(t, fake, true)
+	if _, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation); err == nil {
+		t.Fatal("visible foreground deletion did not request a retry")
+	} else if failure, ok := BackendFailure(err); !ok || !failure.Retryable || failure.Ambiguous {
+		t.Fatalf("foreground deletion classification=%#v err=%v", failure, err)
+	}
+	state, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
+	if err != nil || !state.AbsenceObserved || state.Exists || state.AdmissionObservation != item.AdmissionObservation {
+		t.Fatalf("response-loss cleanup state=%#v err=%v", state, err)
+	}
+}
+
 func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	bindBackendIdentity(&item, record, observation)

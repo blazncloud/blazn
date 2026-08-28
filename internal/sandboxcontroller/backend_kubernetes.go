@@ -234,8 +234,24 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		}
 		return BackendState{}, classifyCleanupObservation(err)
 	}
-	if err := verifyLiveRecord(item, request, record, nil, false, true); err != nil {
+	if err := verifyLiveRecord(item, request, record, nil, false, false); err != nil {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
+	}
+	if record.Deleting && !hasFinalizer(record.Finalizers) {
+		// A prior attempt may have removed the Blazn finalizer and then lost
+		// its response while Kubernetes foreground deletion was still
+		// draining dependents. The immutable observation remains authority;
+		// continue only through exact owned-dependent and absence proofs.
+		if err := b.adapter.CleanupOwnedDependents(ctx, *expected); err != nil {
+			return BackendState{}, classifyCleanupObservation(err)
+		}
+		if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
+			return BackendState{}, classifyCleanupObservation(err)
+		}
+		return BackendState{AdmissionObservation: expected, AbsenceObserved: true}, nil
+	}
+	if !hasFinalizer(record.Finalizers) {
+		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup finalizer disappeared before deletion", false, true, nil)
 	}
 	if record.Deleting {
 		return BackendState{Record: record, AdmissionObservation: expected,
