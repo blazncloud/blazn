@@ -72,8 +72,8 @@ PY
 suffix=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
 cluster=blazn-p5b-$suffix
 if "$tmp/kind" get clusters 2>/dev/null | grep -Fxq "$cluster"; then printf 'cluster name collision\n' >&2; cluster=''; exit 1; fi
-"$tmp/kind" create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --wait 180s >/dev/null 2>&1
 export KUBECONFIG="$tmp/kubeconfig"
+"$tmp/kind" create cluster --name "$cluster" --image "$KIND_NODE_IMAGE" --wait 180s >/dev/null 2>&1
 "$tmp/kind" export kubeconfig --name "$cluster" --kubeconfig "$KUBECONFIG" >/dev/null
 k() { "$tmp/kubectl" "$@"; }
 
@@ -150,23 +150,40 @@ name=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["metadata"
 if k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$controller" --type=merge -p '{"metadata":{"labels":{"blazn.dev/owner":"34000000-0000-4000-8000-000000000004"}},"spec":{"podTemplate":{"metadata":{"labels":{"blazn.dev/owner":"34000000-0000-4000-8000-000000000004"}}}}}' >/dev/null 2>"$tmp/update.err"; then
   printf 'label mutation was admitted\n' >&2; exit 1
 fi
-grep -Fq 'immutable after admission' "$tmp/update.err"
+grep -Fq 'Sandbox spec, labels, and Blazn annotations are immutable' "$tmp/update.err"
 if k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$upstream" --type=merge -p '{"spec":{"shutdownPolicy":"Retain"}}' >/dev/null 2>"$tmp/update2.err"; then
   printf 'spec mutation was admitted\n' >&2; exit 1
 fi
-grep -Eq 'immutable after admission|shutdownPolicy must be Delete' "$tmp/update2.err"
+grep -Eq 'Sandbox spec, labels, and Blazn annotations are immutable|shutdownPolicy must be Delete' "$tmp/update2.err"
 if k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$attacker" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>"$tmp/update3.err"; then
   printf 'attacker finalizer removal was admitted\n' >&2; exit 1
 fi
-grep -Fq 'immutable after admission' "$tmp/update3.err"
+grep -Fq 'Sandbox spec, labels, and Blazn annotations are immutable' "$tmp/update3.err"
 k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$controller" --type=merge -p '{"metadata":{"finalizers":[]}}' >/dev/null
+
+# Map iteration order must not affect admission, and protected values must
+# remain equal even when the annotation key set has not changed.
+for patch in \
+  '{"metadata":{"annotations":{"sandboxes.blazn.dev/expires-at":"2099-01-01T00:00:00Z"}}}' \
+  '{"metadata":{"annotations":{"sandboxes.blazn.dev/artifact-exports":null}}}' \
+  '{"metadata":{"annotations":{"blazn.dev/unreviewed":"injected"}}}'; do
+  if k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$upstream" --type=merge -p "$patch" >/dev/null 2>"$tmp/annotation.err"; then
+    printf 'upstream protected annotation mutation was admitted\n' >&2; exit 1
+  fi
+  grep -Fq 'Sandbox spec, labels, and Blazn annotations are immutable' "$tmp/annotation.err"
+done
+k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$upstream" --type=merge -p '{"metadata":{"annotations":{"agents.x-k8s.io/pod-name":"owned-pod"}}}' >/dev/null
+if k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --dry-run=server --as="$controller" --type=merge -p '{"metadata":{"annotations":{"agents.x-k8s.io/pod-name":"owned-pod"}}}' >/dev/null 2>"$tmp/pod-name.err"; then
+  printf 'Blazn controller changed upstream-only pod-name annotation\n' >&2; exit 1
+fi
+grep -Fq 'Sandbox spec, labels, and Blazn annotations are immutable' "$tmp/pod-name.err"
 
 # The status subresource is inside the boundary: the upstream controller may
 # manage status, and every other identity is denied.
 if k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --subresource=status --dry-run=server --as="$attacker" --type=merge -p '{"status":{"conditions":[{"type":"Ready","status":"True","reason":"Forged","message":"forged","lastTransitionTime":"2026-08-27T00:00:00Z"}]}}' >/dev/null 2>"$tmp/status.err"; then
   printf 'forged status update was admitted\n' >&2; exit 1
 fi
-grep -Fq 'immutable after admission' "$tmp/status.err"
+grep -Fq 'Sandbox spec, labels, and Blazn annotations are immutable' "$tmp/status.err"
 k patch sandbox.agents.x-k8s.io "$name" -n blazn-poc-sandboxes --subresource=status --dry-run=server --as="$upstream" --type=merge -p '{"status":{"conditions":[{"type":"Ready","status":"True","reason":"Provisioned","message":"ok","lastTransitionTime":"2026-08-27T00:00:00Z"}]}}' >/dev/null 2>"$tmp/status2.err" || { printf 'upstream status update was denied:\n' >&2; cat "$tmp/status2.err" >&2; exit 1; }
 
 printf 'Phase 5 boundary admission matrix passed\n'
