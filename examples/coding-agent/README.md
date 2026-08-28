@@ -32,10 +32,12 @@ before API submission. The bootstrap declaration runs only `node --version`;
 the later Gate 6 build replaces that image identity with the separately
 qualified coding-agent output before publication.
 
-For interactive CLI development, `sandbox-template-dev.yaml` retains the same
-pinned images and policy but runs a long-lived direct Node argv. Publish that
-version and create a Sandbox from it before using `sandbox exec`, `upload`, or
-`download`; the bootstrap template is intentionally a short-lived image proof.
+For interactive CLI development, `sandbox-template-dev.yaml` pins the reviewed
+multi-architecture development image. It contains exact Go and Node toolchains,
+Git, preloaded Go modules and control-API npm dependencies, writable caches, and
+a long-running entrypoint. Publish that version and create a source-commit-pinned
+Sandbox before using `sandbox exec`, `upload`, or `download`; the bootstrap
+template is intentionally a short-lived image proof.
 
 `fixtures/base-image.json` is an unqualified offline declaration, not trusted
 registry evidence: this slice does not include raw OCI index bytes or a signed

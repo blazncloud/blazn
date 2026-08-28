@@ -3,8 +3,8 @@
   "kind": "SandboxTemplate",
   "metadata": {"name": "coding-agent"},
   "spec": {
-    "version": "bootstrap-node-22.19.0-poc-dev-1",
-    "description": "Long-running non-sensitive coding-agent development template",
+    "version": "go-1.26.2-node-22.19.0-poc-dev-1",
+    "description": "Long-running non-sensitive Blazn CLI development template",
     "policyProfile": "poc-restricted-v1",
     "isolation": "approved-non-sensitive-poc",
     "expiresInSeconds": 900,
@@ -14,9 +14,9 @@
         "name": "linux-amd64",
         "platform": "linux",
         "architecture": "amd64",
-        "imageIndex": "docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9",
-        "imageDigest": "docker.io/library/node@sha256:704b199e36b5c1bc505da773f742299dc1ee5a4c70b86d1eb406c334f63253c6",
-        "command": ["node", "-e", "setInterval(() => {}, 2147483647)"],
+        "imageIndex": "registry.blaze.internal:5000/blazn/development-sandbox@sha256:f1119d52b1572fd29a23bf6577415b9f5ba1586d5c4c6427409b337522783abb",
+        "imageDigest": "registry.blaze.internal:5000/blazn/development-sandbox@sha256:f15d85b4f9521b5a58cd945b472548e245eda0b941e152d470118337974f055a",
+        "command": ["/usr/local/bin/blazn-development-sandbox"],
         "resources": {"requests": {"cpu": "100m", "memory": "128Mi", "ephemeralStorage": "1Gi"}, "limits": {"cpu": "1", "memory": "1Gi", "ephemeralStorage": "2Gi"}},
         "placementProfile": "poc-linux-amd64-v1"
       },
@@ -24,9 +24,9 @@
         "name": "linux-arm64",
         "platform": "linux",
         "architecture": "arm64",
-        "imageIndex": "docker.io/library/node@sha256:d2166de198f26e17e5a442f537754dd616ab069c47cc57b889310a717e0abbf9",
-        "imageDigest": "docker.io/library/node@sha256:e6c1046051434cd96938528fae1d2faa0ec25dd543e313bb178d7368349e8d9e",
-        "command": ["node", "-e", "setInterval(() => {}, 2147483647)"],
+        "imageIndex": "registry.blaze.internal:5000/blazn/development-sandbox@sha256:f1119d52b1572fd29a23bf6577415b9f5ba1586d5c4c6427409b337522783abb",
+        "imageDigest": "registry.blaze.internal:5000/blazn/development-sandbox@sha256:6af5be18539b35a896a85ddd6b80f1e1bce7a2c68e9c98b78c8044b1cb67c10c",
+        "command": ["/usr/local/bin/blazn-development-sandbox"],
         "resources": {"requests": {"cpu": "100m", "memory": "128Mi", "ephemeralStorage": "1Gi"}, "limits": {"cpu": "1", "memory": "1Gi", "ephemeralStorage": "2Gi"}},
         "placementProfile": "poc-mac-arm64-v1"
       }
