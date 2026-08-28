@@ -1,0 +1,28 @@
+[Unit]
+Description=Blazn identity ngrok tunnel
+After=network-online.target blazn-control-plane.service
+Wants=network-online.target
+Requires=blazn-control-plane.service
+ConditionPathExists=/etc/blazn/ngrok/ngrok.yml
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ngrok http 127.0.0.1:58081 --url https://auth.blazn.benpelo.com --config /etc/blazn/ngrok/ngrok.yml --inspect=false --log stdout --log-format json
+Restart=always
+RestartSec=5
+User=blazn-ngrok
+Group=blazn-ngrok
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
