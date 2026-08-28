@@ -640,6 +640,9 @@ func classifyAdapter(operation string, err error) error {
 	case sandboxcontrol.ErrBackend:
 		return backendFailure("backend_transport_failure", "sandbox backend request failed", true, false, err)
 	case sandboxcontrol.ErrConflict, sandboxcontrol.ErrIdentityBoundary, sandboxcontrol.ErrResourceVersionStale:
+		if operation == "observe" {
+			return backendFailure("backend_identity_mismatch", "sandbox backend identity could not be proven", true, false, err)
+		}
 		return backendFailure("backend_identity_mismatch", "sandbox backend identity could not be proven", false, true, err)
 	case sandboxcontrol.ErrArtifactExport:
 		return backendFailure("cleanup_incomplete", "sandbox artifact export did not complete", operation == "cleanup", false, err)
