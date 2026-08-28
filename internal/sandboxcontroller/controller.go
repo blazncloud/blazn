@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"path"
@@ -123,11 +124,13 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid: " + err.Error(), Ambiguous: true, Cause: err})
 	}
 	if !c.leaseCoversNextRenew(item.LeaseDeadline) {
+		log.Print("sandbox controller claim lease requires an initial refresh")
 		window, ok, err := c.refreshClaimLease(parent, item)
 		if err != nil {
 			return fmt.Errorf("sandbox initial lease renewal failed: %w", err)
 		}
 		if !ok || !c.leaseCoversNextRenew(window.Deadline) {
+			log.Print("sandbox controller initial lease refresh was rejected or too short")
 			return nil
 		}
 		item.LeaseExpiresAt, item.LeaseRemaining, item.LeaseDeadline = window.ExpiresAt, window.Remaining, window.Deadline
@@ -184,10 +187,12 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 			done <- heartbeatResult{kind: heartbeatStopped}
 			return
 		case <-watchdog.C:
+			log.Print("sandbox controller lease watchdog expired")
 			done <- heartbeatResult{kind: heartbeatLeaseLost}
 			cancel()
 			return
 		case <-ticker.C:
+			log.Print("sandbox controller lease heartbeat started")
 			result := make(chan renewResult, 1)
 			renewCtx, renewCancel := context.WithTimeout(ctx, c.leaseSafetyDelay(item.LeaseDeadline))
 			go func() {
@@ -222,11 +227,13 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 					return
 				}
 				if !renewed.ok || !c.leaseCoversNextRenew(renewed.window.Deadline) {
+					log.Print("sandbox controller lease heartbeat was rejected or too short")
 					done <- heartbeatResult{kind: heartbeatLeaseLost}
 					cancel()
 					return
 				}
 				item.LeaseExpiresAt = renewed.window.ExpiresAt
+				log.Print("sandbox controller lease heartbeat renewed")
 				item.LeaseRemaining = renewed.window.Remaining
 				item.LeaseDeadline = renewed.window.Deadline
 				resetTimer(watchdog, c.leaseSafetyDelay(item.LeaseDeadline))

@@ -460,7 +460,7 @@ func TestLeaseRenewStoreErrorCancelsBackendAndReturnsError(t *testing.T) {
 func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
 	t.Run("delayed claim is renewed before backend work", func(t *testing.T) {
 		item, state := createFixture(t)
-		item.LeaseRemaining = defaultLeaseSafetyMargin + 5*time.Millisecond
+		item.LeaseRemaining = defaultLeaseSafetyMargin + 100*time.Millisecond
 		item.LeaseDeadline = time.Now().Add(item.LeaseRemaining)
 		store := &fakeStore{}
 		backend := &fakeBackend{created: state}
