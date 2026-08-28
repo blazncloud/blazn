@@ -162,6 +162,20 @@ stage 'generating patch artifact from the materialized source snapshot'
   'cd /workspace/src/blazn || exit; cp README.md README.md.before || exit; printf "\n<!-- blazn-development-e2e -->\n" >> README.md || exit; set +e; git diff --no-index --binary -- README.md.before README.md > /workspace/artifacts/change.patch; code=$?; set -e; rm -f README.md.before; test "$code" -eq 1; sed -i "s|a/README.md.before|a/README.md|g" /workspace/artifacts/change.patch; test -s /workspace/artifacts/change.patch' >"$work/artifact.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/artifact.json" >/dev/null
 
+stage 'stopping Sandbox and proving terminal state'
+"$blazn" --output json sandbox stop "$sandbox_id" --request-id "$request_prefix-stop" >"$work/stop.json"
+stop_attempt=0
+while [ "$stop_attempt" -lt 120 ]; do
+  stop_attempt=$((stop_attempt + 1))
+  "$blazn" --output json sandbox get "$sandbox_id" >"$work/stopped.json"
+  state=$(jq -er '.state' "$work/stopped.json")
+  [ "$state" = stopped ] && break
+  case $state in failed|recovery_required|deleted) printf 'Sandbox entered unexpected stop state: %s\n' "$state" >&2; exit 1 ;; esac
+  sleep 2
+done
+[ "${state:-}" = stopped ] || { printf 'Sandbox did not reach stopped state\n' >&2; exit 1; }
+jq -e '.desiredState == "stopped"' "$work/stopped.json" >/dev/null
+
 stage 'deleting Sandbox and proving terminal state'
 "$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-delete" >"$work/delete.json"
 delete_requested=1
