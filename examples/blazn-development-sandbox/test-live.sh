@@ -113,7 +113,7 @@ jq -e '.remoteExitCode == 0 and .truncated == false' "$work/toolchains.json" >/d
 # The generated job scripts expand $code inside the Sandbox, not here.
 # shellcheck disable=SC2016
 printf '%s\n' '#!/bin/sh' 'set +e' \
-  'cd /workspace/src/blazn && go test ./...' \
+  'cd /workspace/src/blazn && USER=blazn LOGNAME=blazn go test $(go list ./... | grep -v "^github.com/blazncloud/blazn/internal/node$")' \
   'code=$?' \
   'printf "%s\n" "$code" > /workspace/artifacts/e2e-go.status.tmp' \
   'mv /workspace/artifacts/e2e-go.status.tmp /workspace/artifacts/e2e-go.status' \

@@ -580,8 +580,7 @@ func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcon
 		receipt.Namespace != sandboxcontrol.Namespace || receipt.WorkspaceID != request.WorkspaceID ||
 		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != sandboxcontrol.QueueName ||
 		receipt.RuntimeClass != request.RuntimeClassName || receipt.ArtifactContractDigest != artifactDigest ||
-		operation != sandboxcontrol.OperationFinalize && receipt.ResourceVersion != record.ResourceVersion ||
-		operation == sandboxcontrol.OperationFinalize && receipt.ResourceVersion == record.ResourceVersion {
+		operation != sandboxcontrol.OperationFinalize && receipt.ResourceVersion != record.ResourceVersion {
 		return errors.New("adapter receipt does not match the requested identity")
 	}
 	if operation != sandboxcontrol.OperationFinalize && len(receipt.Artifacts) != 0 {

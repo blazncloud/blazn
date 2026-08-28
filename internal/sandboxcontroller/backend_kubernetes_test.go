@@ -260,6 +260,20 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	}
 }
 
+func TestFinalizeReceiptDoesNotDependOnAnotherResourceVersionIncrement(t *testing.T) {
+	item, record, _ := backendFixture(t)
+	backend := newTestKubernetesBackend(t, &fakeSandboxAdapter{}, true)
+	request, err := backend.request(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.State = sandboxcontrol.StateDeleted
+	receipt := operationReceipt("controller-"+item.OperationID, sandboxcontrol.OperationFinalize, record, artifactReceipts(record, record.Artifacts))
+	if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, "controller-"+item.OperationID, request, record); err != nil {
+		t.Fatalf("same-version finalize receipt was rejected after finalizer proof: %v", err)
+	}
+}
+
 func TestKubernetesBackendMapsSourcesOnlyWithConfiguredRuntime(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	item.Artifacts = nil

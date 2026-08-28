@@ -18,6 +18,8 @@ RUN npm ci --prefix /opt/blazn-control-api --ignore-scripts --no-audit --no-fund
 FROM dependencies
 COPY examples/blazn-development-sandbox/start.sh /usr/local/bin/blazn-development-sandbox
 ENV HOME=/workspace/artifacts/home \
+    USER=blazn \
+    LOGNAME=blazn \
     TMPDIR=/workspace/artifacts/tmp \
     GOCACHE=/workspace/artifacts/cache/go-build \
     GOMODCACHE=/go/pkg/mod \

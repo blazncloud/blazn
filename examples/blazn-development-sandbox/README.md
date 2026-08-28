@@ -31,3 +31,8 @@ checks both toolchains, runs the Go and Node suites, verifies upload/download,
 creates the required patch artifact, deletes the Sandbox, and waits for its
 terminal deleted state. Set `BLAZN_SKIP_TEMPLATE_PUBLISH=1` only when the exact
 immutable version has already been published.
+
+The live Sandbox Go matrix excludes `internal/node`, whose installer tests
+deliberately require root-owned private host-directory ancestry. That host-only
+package remains covered by the full Linux CI lane. The Sandbox runs every other
+Go package plus the complete control-API and coding-agent Node suites.
