@@ -13,6 +13,7 @@ import (
 const (
 	BootstrapContainer = "sandbox-bootstrap"
 	ArtifactContainer  = "sandbox-artifact-io"
+	AccessContainer    = "sandbox-access-io"
 	HelperBinary       = "/blazn-sandbox-io"
 )
 

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type Installer interface {
@@ -159,7 +160,12 @@ func releaseViewArgs(definition Definition, requestedTag string) ([]string, erro
 }
 
 func smokeTestCandidate(ctx context.Context, binary string, expected Manifest) error {
-	command := exec.CommandContext(ctx, binary, "__plugin", "describe", "--json")
+	// A signed executable is still untrusted until this handshake succeeds. Do
+	// not let a candidate that never exits wedge installation indefinitely.
+	handshakeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(handshakeCtx, binary, "__plugin", "describe", "--json")
+	command.WaitDelay = 2 * time.Second
 	command.Env = pluginEnvironment(os.Environ())
 	var stdout bytes.Buffer
 	command.Stdout = &stdout

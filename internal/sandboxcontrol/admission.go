@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"reflect"
 )
 
 const (
-	podAPIVersion = "v1"
-	podKind       = "Pod"
-	workloadKind  = "Workload"
+	podAPIVersion          = "v1"
+	podKind                = "Pod"
+	workloadKind           = "Workload"
+	registryPullSecretName = "blazn-registry-pull"
+	agentWorkloadLabel     = "frontro.io/agent-workloads"
 )
 
 // ObjectIdentity freezes the apiserver identity of one ownership-chain hop.
@@ -44,12 +47,89 @@ type kubeOwnerReference struct {
 }
 
 type observedMetadata struct {
-	Name            string               `json:"name"`
-	Namespace       string               `json:"namespace"`
-	UID             string               `json:"uid"`
-	ResourceVersion string               `json:"resourceVersion"`
-	Labels          map[string]string    `json:"labels"`
-	OwnerReferences []kubeOwnerReference `json:"ownerReferences"`
+	Name              string               `json:"name"`
+	Namespace         string               `json:"namespace"`
+	UID               string               `json:"uid"`
+	ResourceVersion   string               `json:"resourceVersion"`
+	DeletionTimestamp string               `json:"deletionTimestamp,omitempty"`
+	Labels            map[string]string    `json:"labels"`
+	OwnerReferences   []kubeOwnerReference `json:"ownerReferences"`
+}
+
+// CleanupOwnedDependents removes only the exact Pod and Workload identities
+// frozen in an admission observation. This is a bounded fallback for clusters
+// where garbage collection leaves controller-owned dependents behind after the
+// Sandbox has disappeared; replacements and additional owned objects fail
+// closed instead of being deleted by mutable names or labels.
+func (a *Adapter) CleanupOwnedDependents(ctx context.Context, expected AdmissionObservation) error {
+	if err := validateObservation(expected); err != nil {
+		return err
+	}
+	var pods observedIdentityList
+	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
+		return err
+	}
+	if pods.APIVersion != podAPIVersion || pods.Kind != "PodList" {
+		return adapterError(ErrBackend, 502, "Pod cleanup observation API drifted", nil)
+	}
+	var podToDelete *observedMetadata
+	for _, pod := range pods.Items {
+		if !validObservedListIdentity(pod.APIVersion, pod.Kind, podAPIVersion, podKind, pod.Metadata) {
+			return adapterError(ErrBackend, 502, "Pod cleanup observation contained an invalid identity", nil)
+		}
+		if pod.Metadata.UID != expected.Pod.UID && !hasControllerUID(pod.Metadata.OwnerReferences, expected.Sandbox.UID) {
+			continue
+		}
+		if pod.Metadata.Name != expected.Pod.Name || pod.Metadata.UID != expected.Pod.UID ||
+			!hasExactControllerOwner(pod.Metadata.OwnerReferences, expected.Sandbox.APIVersion, expected.Sandbox.Kind, expected.Sandbox.Name, expected.Sandbox.UID) {
+			return adapterError(ErrConflict, 409, "owned Sandbox Pod cleanup identity changed", nil)
+		}
+		metadata := pod.Metadata
+		podToDelete = &metadata
+	}
+
+	var workloads observedIdentityList
+	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
+		return err
+	}
+	if workloads.APIVersion != AdmissionAPIVersion || workloads.Kind != "WorkloadList" {
+		return adapterError(ErrBackend, 502, "Workload cleanup observation API drifted", nil)
+	}
+	var workloadToDelete *observedMetadata
+	for _, workload := range workloads.Items {
+		if !validObservedListIdentity(workload.APIVersion, workload.Kind, AdmissionAPIVersion, workloadKind, workload.Metadata) {
+			return adapterError(ErrBackend, 502, "Workload cleanup observation contained an invalid identity", nil)
+		}
+		if workload.Metadata.UID != expected.Workload.UID && !hasControllerUID(workload.Metadata.OwnerReferences, expected.Pod.UID) {
+			continue
+		}
+		if workload.Metadata.Name != expected.Workload.Name || workload.Metadata.UID != expected.Workload.UID ||
+			!hasExactControllerOwner(workload.Metadata.OwnerReferences, expected.Pod.APIVersion, expected.Pod.Kind, expected.Pod.Name, expected.Pod.UID) {
+			return adapterError(ErrConflict, 409, "owned Kueue Workload cleanup identity changed", nil)
+		}
+		metadata := workload.Metadata
+		workloadToDelete = &metadata
+	}
+	if podToDelete != nil {
+		if err := a.deleteObserved(ctx, a.podCollectionPath(), *podToDelete); err != nil {
+			return err
+		}
+	}
+	if workloadToDelete != nil {
+		if err := a.deleteObserved(ctx, a.workloadCollectionPath(), *workloadToDelete); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) deleteObserved(ctx context.Context, collection string, metadata observedMetadata) error {
+	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground",
+		"preconditions": map[string]string{"uid": metadata.UID, "resourceVersion": metadata.ResourceVersion}}
+	if err := a.call(ctx, http.MethodDelete, collection+"/"+url.PathEscape(metadata.Name), nil, options, nil, "application/json"); err != nil {
+		return adapterError(ErrCleanupIncomplete, 502, "owned dependent deletion failed", err)
+	}
+	return nil
 }
 
 type observedPod struct {
@@ -58,6 +138,18 @@ type observedPod struct {
 	Metadata   observedMetadata `json:"metadata"`
 	Spec       kubePodSpec      `json:"spec"`
 	RawSpec    json.RawMessage  `json:"-"`
+}
+
+type observedIdentity struct {
+	APIVersion string           `json:"apiVersion"`
+	Kind       string           `json:"kind"`
+	Metadata   observedMetadata `json:"metadata"`
+}
+
+type observedIdentityList struct {
+	APIVersion string             `json:"apiVersion"`
+	Kind       string             `json:"kind"`
+	Items      []observedIdentity `json:"items"`
 }
 
 func (pod *observedPod) UnmarshalJSON(data []byte) error {
@@ -142,7 +234,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	podCandidates := make([]observedPod, 0, 1)
 	relatedPods := 0
 	for _, candidate := range pods.Items {
-		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != podAPIVersion || candidate.Kind != podKind {
+		if !validObservedListIdentity(candidate.APIVersion, candidate.Kind, podAPIVersion, podKind, candidate.Metadata) {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Pod collection contained an invalid identity", nil)
 		}
 		if hasAdmissionLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
@@ -177,10 +269,10 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	workloadCandidates := make([]observedWorkload, 0, 1)
 	relatedWorkloads := 0
 	for _, candidate := range workloads.Items {
-		if !validObservedIdentity(candidate.APIVersion, candidate.Kind, candidate.Metadata) || candidate.APIVersion != AdmissionAPIVersion || candidate.Kind != workloadKind {
+		if !validObservedListIdentity(candidate.APIVersion, candidate.Kind, AdmissionAPIVersion, workloadKind, candidate.Metadata) {
 			return AdmissionObservation{}, adapterError(ErrConflict, 409, "admission Workload collection contained an invalid identity", nil)
 		}
-		if hasAdmissionLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
+		if hasWorkloadLabels(candidate.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) {
 			relatedWorkloads++
 		}
 		if hasControllerUID(candidate.Metadata.OwnerReferences, pod.Metadata.UID) {
@@ -199,7 +291,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	workload := workloadCandidates[0]
 	condition, admitted := exactAdmittedCondition(workload.Status.Conditions)
 	if !hasExactControllerOwner(workload.Metadata.OwnerReferences, podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.UID) ||
-		!hasAdmissionLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Spec.QueueName != QueueName {
+		!hasWorkloadLabels(workload.Metadata.Labels, request.WorkspaceID, request.OwnerID, request.Name) || workload.Spec.QueueName != QueueName {
 		return AdmissionObservation{}, adapterError(ErrConflict, 409, "Workload did not preserve the exact admitted Pod ownership chain", nil)
 	}
 	if workload.Status.Admission == nil || !admitted {
@@ -219,7 +311,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	}
 
 	identity := WorkloadIdentity{
-		APIVersion: workload.APIVersion, Namespace: workload.Metadata.Namespace, Name: workload.Metadata.Name,
+		APIVersion: AdmissionAPIVersion, Namespace: workload.Metadata.Namespace, Name: workload.Metadata.Name,
 		UID: workload.Metadata.UID, ResourceVersion: workload.Metadata.ResourceVersion,
 		ClusterQueue: workload.Status.Admission.ClusterQueue,
 		Owner:        SandboxOwnerReference{APIVersion: APIVersion, Kind: Kind, Name: request.Name, UID: record.UID, Controller: true},
@@ -229,7 +321,7 @@ func (a *Adapter) ObserveAdmission(ctx context.Context, request CreateRequest, r
 	identity.Digest = workloadIdentityDigest(identity)
 	observation := AdmissionObservation{
 		Sandbox:  objectIdentity(sandbox.APIVersion, sandbox.Kind, sandbox.Metadata.Name, sandbox.Metadata.Namespace, sandbox.Metadata.UID, sandbox.Metadata.ResourceVersion),
-		Pod:      objectIdentity(pod.APIVersion, pod.Kind, pod.Metadata.Name, pod.Metadata.Namespace, pod.Metadata.UID, pod.Metadata.ResourceVersion),
+		Pod:      objectIdentity(podAPIVersion, podKind, pod.Metadata.Name, pod.Metadata.Namespace, pod.Metadata.UID, pod.Metadata.ResourceVersion),
 		Workload: identity,
 	}
 	observation.Digest = admissionObservationDigest(observation)
@@ -256,7 +348,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		return err
 	}
 
-	var pods observedPodList
+	var pods observedIdentityList
 	if err := a.call(ctx, http.MethodGet, a.podCollectionPath(), nil, nil, &pods, ""); err != nil {
 		return err
 	}
@@ -264,7 +356,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		return adapterError(ErrBackend, 502, "Pod absence observation API drifted", nil)
 	}
 	for _, pod := range pods.Items {
-		if !validObservedIdentity(pod.APIVersion, pod.Kind, pod.Metadata) || pod.APIVersion != podAPIVersion || pod.Kind != podKind {
+		if !validObservedListIdentity(pod.APIVersion, pod.Kind, podAPIVersion, podKind, pod.Metadata) {
 			return adapterError(ErrBackend, 502, "Pod absence observation contained an invalid identity", nil)
 		}
 		if pod.Metadata.UID == expected.Pod.UID || hasControllerUID(pod.Metadata.OwnerReferences, expected.Sandbox.UID) {
@@ -272,7 +364,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		}
 	}
 
-	var workloads observedWorkloadList
+	var workloads observedIdentityList
 	if err := a.call(ctx, http.MethodGet, a.workloadCollectionPath(), nil, nil, &workloads, ""); err != nil {
 		return err
 	}
@@ -280,7 +372,7 @@ func (a *Adapter) ObserveAbsence(ctx context.Context, expected AdmissionObservat
 		return adapterError(ErrBackend, 502, "Workload absence observation API drifted", nil)
 	}
 	for _, workload := range workloads.Items {
-		if !validObservedIdentity(workload.APIVersion, workload.Kind, workload.Metadata) || workload.APIVersion != AdmissionAPIVersion || workload.Kind != workloadKind {
+		if !validObservedListIdentity(workload.APIVersion, workload.Kind, AdmissionAPIVersion, workloadKind, workload.Metadata) {
 			return adapterError(ErrBackend, 502, "Workload absence observation contained an invalid identity", nil)
 		}
 		if workload.Metadata.UID == expected.Workload.UID || hasControllerUID(workload.Metadata.OwnerReferences, expected.Pod.UID) {
@@ -295,11 +387,20 @@ func admissionSelector(workspaceID, ownerID, name string) string {
 }
 
 func hasAdmissionLabels(labels map[string]string, workspaceID, ownerID, name string) bool {
-	return labels[ManagedLabel] == "true" && labels[WorkspaceLabel] == workspaceID && labels[OwnerLabel] == ownerID && labels[SandboxIDLabel] == name && labels[QueueLabel] == QueueName
+	return hasWorkloadLabels(labels, workspaceID, ownerID, name) && labels[QueueLabel] == QueueName
+}
+
+func hasWorkloadLabels(labels map[string]string, workspaceID, ownerID, name string) bool {
+	return labels[ManagedLabel] == "true" && labels[WorkspaceLabel] == workspaceID && labels[OwnerLabel] == ownerID && labels[SandboxIDLabel] == name
 }
 
 func validObservedIdentity(apiVersion, kind string, metadata observedMetadata) bool {
 	return apiVersion != "" && kind != "" && metadata.Namespace == Namespace && len(metadata.Name) <= 253 && dnsNamePattern.MatchString(metadata.Name) && objectIDPattern.MatchString(metadata.UID) && objectIDPattern.MatchString(metadata.ResourceVersion)
+}
+
+func validObservedListIdentity(apiVersion, kind, expectedAPIVersion, expectedKind string, metadata observedMetadata) bool {
+	typeMetadataValid := apiVersion == "" && kind == "" || apiVersion == expectedAPIVersion && kind == expectedKind
+	return typeMetadataValid && metadata.Namespace == Namespace && len(metadata.Name) <= 253 && dnsNamePattern.MatchString(metadata.Name) && objectIDPattern.MatchString(metadata.UID) && objectIDPattern.MatchString(metadata.ResourceVersion)
 }
 
 func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool {
@@ -341,6 +442,25 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 	}
 	if !removeExactDefault(observed, "tolerations", defaultTolerations) {
 		return false
+	}
+	if pullSecrets, exists := observed["imagePullSecrets"]; exists {
+		expectedPullSecrets := []any{map[string]any{"name": registryPullSecretName}}
+		if !reflect.DeepEqual(pullSecrets, expectedPullSecrets) {
+			return false
+		}
+		delete(observed, "imagePullSecrets")
+	}
+	if selectors, exists := observed["nodeSelector"]; exists {
+		selectorMap, ok := selectors.(map[string]any)
+		if !ok {
+			return false
+		}
+		if flavor, injected := selectorMap[agentWorkloadLabel]; injected {
+			if flavor != "true" {
+				return false
+			}
+			delete(selectorMap, agentWorkloadLabel)
+		}
 	}
 	for _, field := range []string{"containers", "initContainers"} {
 		containers, exists := observed[field]

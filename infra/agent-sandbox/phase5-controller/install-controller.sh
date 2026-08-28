@@ -17,6 +17,7 @@ phase4c_require_mutation_authority
 : "${BLAZN_EXPECTED_CONTROLLER_SHA256:?set the reviewed rendered controller digest}"
 : "${BLAZN_DATABASE_URL_SECRET_NAME:?set the database URL Secret name}"
 : "${BLAZN_OBJECT_SECRET_NAME:?set the object credential Secret name}"
+: "${BLAZN_REGISTRY_PULL_SECRET_NAME:?set the registry pull Secret name}"
 command -v jq >/dev/null 2>&1 || { printf 'jq is required\n' >&2; exit 1; }
 transaction=$BLAZN_CONTROLLER_TRANSACTION_DIR
 case "$transaction" in /var/lib/blazn/phase5/controller-*) ;; *) printf 'controller transaction path is outside its reviewed root\n' >&2; exit 1 ;; esac
@@ -51,6 +52,8 @@ kubectl get namespace blazn-poc-system >/dev/null
 kubectl get deployment agent-sandbox-controller -n agent-sandbox-system >/dev/null 2>&1 || { printf 'the Agent Sandbox controller is not installed\n' >&2; exit 1; }
 if ! object_present secret "$BLAZN_DATABASE_URL_SECRET_NAME" blazn-poc-system; then printf 'the controller database Secret is not provisioned\n' >&2; exit 1; fi
 if ! object_present secret "$BLAZN_OBJECT_SECRET_NAME" blazn-poc-system; then printf 'the controller object Secret is not provisioned\n' >&2; exit 1; fi
+if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-system; then printf 'the controller registry pull Secret is not provisioned\n' >&2; exit 1; fi
+if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-sandboxes; then printf 'the Sandbox registry pull Secret is not provisioned\n' >&2; exit 1; fi
 
 if [ "$phase" = sealed ]; then
   deployment_state=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name) || { printf 'controller Deployment discovery failed\n' >&2; exit 1; }
@@ -68,6 +71,8 @@ if [ "$phase" = apply-intent ]; then
     printf '"role/blazn-sandbox-controller":"%s",' "$(live_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
     printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
     printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(live_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
+    printf '"service/blazn-sandbox-access":"%s",' "$(live_uid service blazn-sandbox-access blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-access-ingress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system)"
     printf '"networkpolicy/blazn-sandbox-controller-egress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
     printf '"networkpolicy/blazn-sandbox-controller-default-deny":"%s"' "$(live_uid networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system)"
     printf '}\n'

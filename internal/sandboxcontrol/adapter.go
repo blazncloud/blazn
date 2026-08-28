@@ -404,7 +404,7 @@ func (a *Adapter) rejectCreatedMetadata(ctx context.Context, expectedName string
 		!objectIDPattern.MatchString(metadata.UID) || !objectIDPattern.MatchString(metadata.ResourceVersion) {
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox identity cannot be cleaned safely", original)
 	}
-	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": metadata.UID, "resourceVersion": metadata.ResourceVersion}}
+	options := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background", "preconditions": map[string]string{"uid": metadata.UID, "resourceVersion": metadata.ResourceVersion}}
 	if err := a.call(ctx, http.MethodDelete, a.resourcePath(metadata.Name), nil, options, nil, "application/json"); err != nil {
 		return adapterError(ErrCleanupIncomplete, 502, "rejected Sandbox deletion failed", err)
 	}
@@ -595,7 +595,7 @@ func (a *Adapter) Delete(ctx context.Context, requestID, workspaceID, ownerID, n
 	if record.ArtifactContractDigest != artifactContractDigest {
 		return OperationReceipt{}, adapterError(ErrConflict, 409, "artifact contract precondition does not match", nil)
 	}
-	body := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground", "preconditions": map[string]string{"uid": uid, "resourceVersion": resourceVersion}}
+	body := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Background", "preconditions": map[string]string{"uid": uid, "resourceVersion": resourceVersion}}
 	if err := a.call(ctx, http.MethodDelete, a.resourcePath(name), nil, body, nil, "application/json"); err != nil {
 		return OperationReceipt{}, err
 	}
@@ -708,6 +708,13 @@ func renderPodSpec(request CreateRequest) kubePodSpec {
 		initContainers = append(initContainers, helperContainer(sandboxio.ArtifactContainer, request.HelperImage,
 			[]string{sandboxio.HelperBinary, "wait-artifact"}, "Always",
 			[]kubeVolumeMount{{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}}))
+	}
+	// A restartable, tokenless helper provides the only file-transfer boundary.
+	// It sees exactly the same workspace volumes and read-only flags as main;
+	// the public access gateway can exec only the reviewed helper operations.
+	if request.HelperImage != "" {
+		initContainers = append(initContainers, helperContainer(sandboxio.AccessContainer, request.HelperImage,
+			[]string{sandboxio.HelperBinary, "wait-access"}, "Always", append([]kubeVolumeMount(nil), mainMounts...)))
 	}
 	return kubePodSpec{
 		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,

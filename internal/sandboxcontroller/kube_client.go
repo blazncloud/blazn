@@ -415,7 +415,19 @@ func safeKubernetesOwner(info os.FileInfo) bool {
 }
 
 func safeKubernetesDirectory(info os.FileInfo) bool {
-	return info != nil && info.IsDir() && info.Mode().Perm()&0o022 == 0 && safeKubernetesOwner(info)
+	if info == nil || !info.IsDir() || info.Mode().Perm()&0o002 != 0 || !safeKubernetesOwner(info) {
+		return false
+	}
+	if info.Mode().Perm()&0o020 == 0 {
+		return true
+	}
+	// Kubernetes applies the Pod fsGroup to projected-volume directories and
+	// may add group write permission while doing so. Accept that standard
+	// projection only for this process's own primary group. The file remains
+	// non-writable, and the caller verifies every directory and inode again
+	// after the no-follow read, so a same-group substitution still fails.
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return ok && uint64(stat.Gid) == uint64(os.Getgid())
 }
 
 func inspectKubernetesDirectoryChain(root, target string, lstat func(string) (os.FileInfo, error)) ([]kubernetesDirectoryIdentity, error) {

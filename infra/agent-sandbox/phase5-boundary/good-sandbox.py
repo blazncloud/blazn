@@ -106,6 +106,15 @@ def good():
                             [{"name": "artifacts", "mountPath": "/workspace/artifacts", "readOnly": True}],
                             sidecar=True,
                         ),
+                        helper(
+                            "sandbox-access-io",
+                            "wait-access",
+                            [
+                                {"name": "source-00", "mountPath": "/workspace/src/blazn"},
+                                {"name": "artifacts", "mountPath": "/workspace/artifacts"},
+                            ],
+                            sidecar=True,
+                        ),
                     ],
                     "containers": [
                         {
@@ -189,11 +198,13 @@ def many_sources(doc):
     """The adapter contract permits up to 32 sources; render a wide legal shape."""
     pod = doc["spec"]["podTemplate"]["spec"]
     bootstrap = pod["initContainers"][0]
+    access = pod["initContainers"][2]
     for index in range(1, 8):
         name = f"source-{index:02d}"
         destination = f"/workspace/src/extra-{index}"
         pod["volumes"].insert(index, {"name": name, "emptyDir": {"sizeLimit": "2Gi"}})
         bootstrap["volumeMounts"].insert(index, {"name": name, "mountPath": destination})
+        access["volumeMounts"].insert(index, {"name": name, "mountPath": destination})
         pod["containers"][0]["volumeMounts"].insert(index, {"name": name, "mountPath": destination})
     return doc
 

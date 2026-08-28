@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-sandbox-contract test-project-contract test-run-contract test-development-contract test-harness-contract test-project-postgres test-run-postgres test-development-postgres test-sandbox-postgres test-sandbox-controller-postgres test-phase5-controller-deployment-static test-phase5-controller-secret-init test-sandbox-io-static release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-proxy-contract check-proxy-generated generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-project-postgres test-run-postgres test-development-postgres test-sandbox-postgres test-sandbox-controller-postgres test-phase5-controller-deployment-static test-phase5-controller-secret-init test-sandbox-io-static release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -68,6 +68,10 @@ test-identity-root:
 	./infra/identity/test-secret-generation.sh
 	./infra/identity/test-path-and-repair.sh
 
+test-runtime-persistence:
+	./infra/runtime-persistence/test-static.sh
+	shellcheck infra/runtime-persistence/*.sh
+
 test-infra:
 	./infra/milestone-2/tests/test-preflight.sh
 	./infra/milestone-2/tests/test-contract.sh
@@ -107,6 +111,13 @@ test-run-contract:
 test-development-contract:
 	./scripts/test-development-contract.sh
 
+test-development-sandbox-static:
+	shellcheck examples/blazn-development-sandbox/*.sh
+	shellcheck examples/coding-agent/scripts/*.sh
+	grep -F 'ln -s /usr/local/go/bin/go /usr/local/bin/go' examples/blazn-development-sandbox/Dockerfile >/dev/null
+	grep -F 'ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt' examples/blazn-development-sandbox/Dockerfile >/dev/null
+	go run ./cmd/blazn --output json template validate -f examples/coding-agent/sandbox-template-dev.yaml | jq -e '.valid == true and (.errors | length == 0) and (.warnings | length == 0)' >/dev/null
+
 test-harness-contract:
 	./scripts/test-harness-contract.sh
 
@@ -144,4 +155,4 @@ test-release:
 test-install:
 	./scripts/test-install.sh
 
-ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-node-generated check-sandbox-generated test test-identity test-sandbox-contract test-project-contract test-run-contract test-development-contract test-harness-contract test-release test-install
+ci: fmt-check check-generated check-workspace-generated check-project-generated check-run-generated check-proxy-generated check-node-generated check-sandbox-generated test test-control-api test-identity test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-release test-install

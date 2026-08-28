@@ -2,12 +2,12 @@
 
 set -eu
 
-test_root=$(mktemp -d "${TMPDIR:-/tmp}/blazn-installer-test.XXXXXX")
+test_root=$(mktemp -d /tmp/blazn-installer-test.XXXXXX)
 test_repo_root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd)
 
 cleanup() {
   case "$test_root" in
-    "${TMPDIR:-/tmp}"/blazn-installer-test.*) rm -rf "$test_root" ;;
+    /tmp/blazn-installer-test.*) rm -rf "$test_root" ;;
     *) printf 'refusing to remove unexpected test path: %s\n' "$test_root" >&2 ;;
   esac
 }
@@ -191,7 +191,10 @@ process_start_of() {
 }
 
 write_manifest
-run_installer_with_progress >"$test_root/progress.out" 2>&1
+if ! run_installer_with_progress >"$test_root/progress.out" 2>&1; then
+  cat "$test_root/progress.out" >&2
+  fail "initial signed installer run failed"
+fi
 [ -x "$test_install/blazn" ] || fail "signed archive installs executable"
 [ "$("$test_install/blazn")" = "blazn test v1.2.3" ] || fail "installed binary runs"
 grep -q '^version=v1.2.3$' "$test_install/.blazn-install-receipt" || fail "receipt records version"

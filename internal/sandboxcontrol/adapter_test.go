@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/blazncloud/blazn/internal/sandboxio"
 )
 
 const (
@@ -132,6 +134,7 @@ type fakeAPI struct {
 	substituteWorkloadOwner     bool
 	driftAdmissionAPI           bool
 	wrongWorkloadQueue          bool
+	omitWorkloadQueueLabel      bool
 	sandboxAbsent               bool
 	podsAbsent                  bool
 	workloadsAbsent             bool
@@ -234,6 +237,24 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 			}
 		}
 		writeJSON(response, http.StatusOK, list)
+	case request.Method == http.MethodDelete && request.URL.Path == podCollection+"/sandbox-a-pod":
+		var options map[string]any
+		decodeBody(f.t, request.Body, &options)
+		preconditions := options["preconditions"].(map[string]any)
+		if preconditions["uid"] != "pod-uid-1" || preconditions["resourceVersion"] != "11" || options["propagationPolicy"] != "Foreground" {
+			f.t.Errorf("Pod delete preconditions=%v", options)
+		}
+		f.podsAbsent = true
+		response.WriteHeader(http.StatusOK)
+	case request.Method == http.MethodDelete && request.URL.Path == workloadCollection+"/sandbox-a-workload":
+		var options map[string]any
+		decodeBody(f.t, request.Body, &options)
+		preconditions := options["preconditions"].(map[string]any)
+		if preconditions["uid"] != "workload-uid-1" || preconditions["resourceVersion"] != "21" || options["propagationPolicy"] != "Foreground" {
+			f.t.Errorf("Workload delete preconditions=%v", options)
+		}
+		f.workloadsAbsent = true
+		response.WriteHeader(http.StatusOK)
 	case request.Method == http.MethodGet && request.URL.Path == collection && request.URL.Query().Get("watch") == "true":
 		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
@@ -259,7 +280,7 @@ func (f *fakeAPI) serveHTTP(response http.ResponseWriter, request *http.Request)
 		var options map[string]any
 		decodeBody(f.t, request.Body, &options)
 		preconditions := options["preconditions"].(map[string]any)
-		if preconditions["uid"] != "uid-1" || preconditions["resourceVersion"] != f.object.Metadata.ResourceVersion || options["propagationPolicy"] != "Foreground" {
+		if preconditions["uid"] != "uid-1" || preconditions["resourceVersion"] != f.object.Metadata.ResourceVersion || options["propagationPolicy"] != "Background" {
 			f.t.Errorf("delete preconditions=%v", options)
 		}
 		f.object.Metadata.DeletionTimestamp = "2026-08-22T12:00:00Z"
@@ -306,7 +327,6 @@ func (f *fakeAPI) observedPod() observedPod {
 		ownerUID = "replacement-sandbox-uid"
 	}
 	return observedPod{
-		APIVersion: podAPIVersion, Kind: podKind,
 		Metadata: observedMetadata{Name: "sandbox-a-pod", Namespace: Namespace, UID: "pod-uid-1", ResourceVersion: "11", Labels: cloneMap(f.object.Spec.PodTemplate.Metadata.Labels),
 			OwnerReferences: []kubeOwnerReference{{APIVersion: APIVersion, Kind: Kind, Name: f.object.Metadata.Name, UID: ownerUID, Controller: true}}},
 		Spec: f.object.Spec.PodTemplate.Spec,
@@ -319,7 +339,6 @@ func (f *fakeAPI) observedWorkload() observedWorkload {
 		podUID = "replacement-pod-uid"
 	}
 	value := observedWorkload{
-		APIVersion: AdmissionAPIVersion, Kind: workloadKind,
 		Metadata: observedMetadata{Name: "sandbox-a-workload", Namespace: Namespace, UID: "workload-uid-1", ResourceVersion: "21", Labels: cloneMap(f.object.Spec.PodTemplate.Metadata.Labels),
 			OwnerReferences: []kubeOwnerReference{{APIVersion: podAPIVersion, Kind: podKind, Name: "sandbox-a-pod", UID: podUID, Controller: true}}},
 	}
@@ -328,6 +347,9 @@ func (f *fakeAPI) observedWorkload() observedWorkload {
 	}{ClusterQueue: "poc-cluster"}
 	value.Status.Conditions = []kubeCondition{{Type: "Admitted", Status: "True"}}
 	value.Spec.QueueName = QueueName
+	if f.omitWorkloadQueueLabel {
+		delete(value.Metadata.Labels, QueueLabel)
+	}
 	if f.wrongWorkloadQueue {
 		value.Spec.QueueName = "other-queue"
 	}
@@ -448,13 +470,17 @@ func TestRenderedSandboxIOPodContractIsExactTokenlessAndCredentialFree(t *testin
 	}
 	object := render(request, artifactDigest, intent)
 	pod := object.Spec.PodTemplate.Spec
-	if pod.ServiceAccountName != ServiceAccountName || pod.AutomountServiceAccountToken || len(pod.Containers) != 1 || len(pod.InitContainers) != 2 || len(pod.Volumes) != 4 {
+	if pod.ServiceAccountName != ServiceAccountName || pod.AutomountServiceAccountToken || len(pod.Containers) != 1 || len(pod.InitContainers) != 3 || len(pod.Volumes) != 4 {
 		t.Fatalf("pod contract=%#v", pod)
 	}
 	bootstrap, sidecar := pod.InitContainers[0], pod.InitContainers[1]
+	access := pod.InitContainers[2]
 	if bootstrap.Name != "sandbox-bootstrap" || bootstrap.Image != testHelperImage || !reflect.DeepEqual(bootstrap.Command, []string{"/blazn-sandbox-io", "wait-bootstrap"}) || bootstrap.RestartPolicy != "" ||
 		sidecar.Name != "sandbox-artifact-io" || sidecar.Image != testHelperImage || !reflect.DeepEqual(sidecar.Command, []string{"/blazn-sandbox-io", "wait-artifact"}) || sidecar.RestartPolicy != "Always" {
 		t.Fatalf("helpers bootstrap=%#v sidecar=%#v", bootstrap, sidecar)
+	}
+	if access.Name != sandboxio.AccessContainer || access.Image != testHelperImage || !reflect.DeepEqual(access.Command, []string{sandboxio.HelperBinary, "wait-access"}) || access.RestartPolicy != "Always" || !reflect.DeepEqual(access.VolumeMounts, pod.Containers[0].VolumeMounts) {
+		t.Fatalf("access helper escaped workspace mount contract: %#v", access)
 	}
 	if len(sidecar.VolumeMounts) != 1 || sidecar.VolumeMounts[0] != (kubeVolumeMount{Name: "artifacts", MountPath: "/workspace/artifacts", ReadOnly: true}) {
 		t.Fatalf("artifact sidecar mount escaped boundary: %#v", sidecar.VolumeMounts)
@@ -540,7 +566,7 @@ func TestSandboxIOPodContractRejectsMissingHelperAndUnsafeSources(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, omitted := range []string{`"initContainers"`, `"volumes"`, `"volumeMounts"`} {
+	for _, omitted := range []string{`"volumes"`, `"volumeMounts"`, `"initContainers"`} {
 		if bytes.Contains(raw, []byte(omitted)) {
 			t.Fatalf("empty optional Pod field %s was rendered: %s", omitted, raw)
 		}
@@ -712,6 +738,41 @@ func TestObserveAdmissionRequiresExactWorkloadPodSandboxChain(t *testing.T) {
 	}
 }
 
+func TestObservedListIdentityAcceptsOnlyAbsentOrExactTypeMetadata(t *testing.T) {
+	metadata := observedMetadata{Name: "sandbox-a", Namespace: Namespace, UID: "pod-uid-1", ResourceVersion: "11"}
+	for name, values := range map[string]struct {
+		apiVersion string
+		kind       string
+		want       bool
+	}{
+		"omitted":    {want: true},
+		"exact":      {apiVersion: podAPIVersion, kind: podKind, want: true},
+		"partial":    {apiVersion: podAPIVersion},
+		"wrong API":  {apiVersion: "v2", kind: podKind},
+		"wrong kind": {apiVersion: podAPIVersion, kind: "Deployment"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := validObservedListIdentity(values.apiVersion, values.kind, podAPIVersion, podKind, metadata); got != values.want {
+				t.Fatalf("validObservedListIdentity()=%v want %v", got, values.want)
+			}
+		})
+	}
+}
+
+func TestObserveAdmissionAcceptsKueueWorkloadWithoutPropagatedQueueLabel(t *testing.T) {
+	fake := newFakeAPI(t)
+	fake.omitWorkloadQueueLabel = true
+	request := testCreate()
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ObserveAdmission(context.Background(), request, record, nil); err != nil {
+		t.Fatalf("Kueue Workload without propagated queue label was rejected: %v", err)
+	}
+}
+
 func TestObserveAdmissionRejectsDuplicatesSubstitutionsAndAPIDrift(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -780,6 +841,8 @@ func TestObserveAdmissionAcceptsOnlyExactAPIMaterializedPodDefaults(t *testing.T
 		spec["priority"] = float64(0)
 		spec["serviceAccount"] = ServiceAccountName
 		spec["nodeName"] = "worker-a.example"
+		spec["imagePullSecrets"] = []any{map[string]any{"name": registryPullSecretName}}
+		spec["nodeSelector"].(map[string]any)[agentWorkloadLabel] = "true"
 		spec["tolerations"] = []any{
 			map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
 			map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
@@ -822,6 +885,53 @@ func TestObserveAbsenceFindsExactOwnedOrphansWithoutLabels(t *testing.T) {
 	fake.mu.Unlock()
 	if err := adapter.ObserveAbsence(context.Background(), observation); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCleanupOwnedDependentsDeletesOnlyFrozenOwnershipChain(t *testing.T) {
+	fake := newFakeAPI(t)
+	adapter := testAdapter(t, fake, &fakeExporter{})
+	request := testCreate()
+	record, _, err := adapter.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.sandboxAbsent = true
+	if err := adapter.CleanupOwnedDependents(context.Background(), observation); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.ObserveAbsence(context.Background(), observation); err != nil {
+		t.Fatalf("exact dependents remained after cleanup: %v", err)
+	}
+}
+
+func TestCleanupOwnedDependentsRejectsSubstitutedOwners(t *testing.T) {
+	for name, mutate := range map[string]func(*fakeAPI){
+		"Pod owner":      func(fake *fakeAPI) { fake.substitutePodOwner = true },
+		"Workload owner": func(fake *fakeAPI) { fake.substituteWorkloadOwner = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			request := testCreate()
+			record, _, err := adapter.Create(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, err := adapter.ObserveAdmission(context.Background(), request, record, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(fake)
+			assertCode(t, adapter.CleanupOwnedDependents(context.Background(), observation), ErrConflict)
+			if fake.podsAbsent || fake.workloadsAbsent {
+				t.Fatal("identity substitution caused a partial dependent deletion")
+			}
+		})
 	}
 }
 
@@ -1140,6 +1250,22 @@ func TestArtifactSuppressionCannotSatisfyTrustedFinalizePrecondition(t *testing.
 	}
 }
 
+func TestArtifactContractDigestMatchesThePublicItemsEnvelope(t *testing.T) {
+	for _, testCase := range []struct {
+		required bool
+		digest   string
+	}{
+		{required: true, digest: "sha256:d139b2eb8bb329f61b85f95b4983c028fbbadcfd36fd73cdbb05d143a4ac0729"},
+		{required: false, digest: "sha256:78731d6ad08767a09aebbd0d91a6f865d43f6bad4d80aa4385f4788ccf89d567"},
+	} {
+		artifacts := []ArtifactExport{{Name: "patch", Path: "/workspace/artifacts/change.patch", MediaType: "text/plain", Required: testCase.required}}
+		canonical, digest, err := CanonicalArtifactContract(artifacts)
+		if err != nil || len(canonical) != 1 || canonical[0] != artifacts[0] || digest != testCase.digest {
+			t.Fatalf("required=%v canonical=%#v digest=%s err=%v", testCase.required, canonical, digest, err)
+		}
+	}
+}
+
 func TestArtifactReorderingUsesCanonicalTrustedSet(t *testing.T) {
 	fake := newFakeAPI(t)
 	request := testCreate()
@@ -1270,6 +1396,12 @@ func materialPodSpecMutations() map[string]func(map[string]any) {
 		"host network": func(spec map[string]any) { spec["hostNetwork"] = true },
 		"host PID":     func(spec map[string]any) { spec["hostPID"] = true },
 		"DNS policy":   func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
+		"foreign image pull secret": func(spec map[string]any) {
+			spec["imagePullSecrets"] = []any{map[string]any{"name": "foreign-secret"}}
+		},
+		"substituted workload flavor": func(spec map[string]any) {
+			spec["nodeSelector"].(map[string]any)[agentWorkloadLabel] = "false"
+		},
 		"container environment": func(spec map[string]any) {
 			container := spec["containers"].([]any)[0].(map[string]any)
 			container["env"] = []any{map[string]any{"name": "INJECTED", "value": "true"}}
@@ -1348,7 +1480,7 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 		t.Fatalf("container=%#v", pod.Spec.Containers[0])
 	}
 	resources := pod.Spec.Containers[0].Resources
-	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) || len(pod.Spec.InitContainers) != 1 || pod.Spec.InitContainers[0].Image != testHelperImage {
+	if resources["requests"]["ephemeral-storage"] != "1Gi" || resources["limits"]["ephemeral-storage"] != "6Gi" || !digestPattern.MatchString(object.Metadata.Annotations[CreateIntentAnnotation]) || len(pod.Spec.InitContainers) != 2 || pod.Spec.InitContainers[1].Name != sandboxio.AccessContainer || pod.Spec.InitContainers[1].Image != testHelperImage {
 		t.Fatalf("resource or create-intent boundary missing: resources=%#v annotations=%#v", resources, object.Metadata.Annotations)
 	}
 }

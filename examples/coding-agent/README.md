@@ -32,8 +32,26 @@ before API submission. The bootstrap declaration runs only `node --version`;
 the later Gate 6 build replaces that image identity with the separately
 qualified coding-agent output before publication.
 
+For interactive CLI development, `sandbox-template-dev.yaml` pins the reviewed
+multi-architecture development image. It contains exact Go and Node toolchains,
+Git, preloaded Go modules and control-API npm dependencies, writable caches, and
+a long-running entrypoint. Publish that version and create a source-commit-pinned
+Sandbox before using `sandbox exec`, `upload`, or `download`; the bootstrap
+template is intentionally a short-lived image proof.
+
 `fixtures/base-image.json` is an unqualified offline declaration, not trusted
 registry evidence: this slice does not include raw OCI index bytes or a signed
 inspection receipt and therefore does not prove its child-platform mapping.
 Gate 6 must re-resolve and verify the index plus exact AMD64/ARM64 descriptors
 through the approved registry boundary before any build or template promotion.
+
+Once the development template is published, the live acceptance runner executes
+the immutable coding task through the Blazn CLI, downloads and verifies the
+exact patch, deletes the Sandbox, and requires successful Artifact export:
+
+```text
+examples/coding-agent/scripts/test-live.sh \
+  /path/to/blazn WORKSPACE \
+  coding-agent@go-1.26.2-node-22.19.0-poc-dev-5 \
+  SOURCE_COMMIT /absolute/path/change.patch
+```

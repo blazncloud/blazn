@@ -28,6 +28,7 @@ case "$phase" in
   sealed|apply-intent) write_phase rollback-complete; printf 'boundary transaction rolled back before any apply\n'; exit 0 ;;
   applied|complete|rollback-intent) ;;
   rollback-complete) printf 'boundary transaction already rolled back\n'; exit 0 ;;
+  superseded) printf 'boundary transaction was superseded; use its recorded successor\n' >&2; exit 1 ;;
   *) printf 'boundary transaction phase is invalid\n' >&2; exit 1 ;;
 esac
 uids=$transaction/owned-uids.json

@@ -144,12 +144,28 @@ func TestKubernetesClientBoundsHeadersBodiesContentTypeAndStalls(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		if err := kubernetesAPIHealth(ctx, client, config.BaseURL); err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.Fatalf("stalled request was not canceled: %v", err)
+		result := make(chan error, 1)
+		go func() { result <- kubernetesAPIHealth(ctx, client, config.BaseURL) }()
+		// Cancel an established request, not a TLS handshake that may take
+		// longer than an arbitrary short deadline on a CPU-limited worker.
+		select {
+		case <-started:
+		case err := <-result:
+			t.Fatalf("request ended before reaching the stall handler: %v", err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("request did not reach the stall handler")
 		}
-		<-started
+		cancel()
+		select {
+		case err := <-result:
+			if err == nil || !errors.Is(ctx.Err(), context.Canceled) {
+				t.Fatalf("stalled request was not canceled: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("stalled request did not return after cancellation")
+		}
 	})
 }
 
@@ -245,8 +261,11 @@ func TestKubernetesCARequiresStrictConcatenatedCertificateBlocks(t *testing.T) {
 
 func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
 	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o770); err != nil {
+		t.Fatal(err)
+	}
 	version := filepath.Join(directory, "..2026_08_23_00_00_00")
-	if err := os.Mkdir(version, 0o700); err != nil {
+	if err := os.Mkdir(version, 0o770); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(version, "token"), []byte("safe-projected-token\n"), 0o644); err != nil {
@@ -266,7 +285,7 @@ func TestProjectedTokenAcceptsSafeKubernetesDataProjection(t *testing.T) {
 }
 
 func TestProjectedTokenRejectsWritableIntermediateDirectory(t *testing.T) {
-	for _, mode := range []os.FileMode{0o770, 0o777} {
+	for _, mode := range []os.FileMode{0o772, 0o777} {
 		t.Run(fmt.Sprintf("mode-%#o", mode), func(t *testing.T) {
 			directory := t.TempDir()
 			intermediate := filepath.Join(directory, "nested")
@@ -296,7 +315,7 @@ func TestProjectedTokenRejectsIntermediateDirectoryChangeDuringRead(t *testing.T
 		name   string
 		mutate func(string) error
 	}{
-		{name: "mode", mutate: func(path string) error { return os.Chmod(path, 0o770) }},
+		{name: "mode", mutate: func(path string) error { return os.Chmod(path, 0o772) }},
 		{name: "symlink swap", mutate: func(path string) error {
 			original := path + ".original"
 			if err := os.Rename(path, original); err != nil {
@@ -376,6 +395,9 @@ func TestProjectedTokenRejectsInodeOrModeChangeDuringRead(t *testing.T) {
 func tlsKubernetesFixture(t *testing.T, server *httptest.Server) (KubernetesConfig, func(string)) {
 	t.Helper()
 	directory := t.TempDir()
+	if err := os.Chmod(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	caFile := filepath.Join(directory, "kubernetes-ca.crt")
 	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
 	if err := os.WriteFile(caFile, certificate, 0o600); err != nil {

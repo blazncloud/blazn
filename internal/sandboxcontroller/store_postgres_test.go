@@ -89,7 +89,7 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	if persisted, recorded, err := store.RecordArtifact(context.Background(), "operation", "worker", "lease", artifactObservation, artifact); err != nil || !recorded || persisted.ID != "80000000-0000-4000-8000-000000000001" || persisted.ExportedAt != "2026-08-24T12:00:00Z" {
 		t.Fatalf("record artifact: persisted=%#v recorded=%v err=%v", persisted, recorded, err)
 	}
-	if completed, err := store.CompleteArtifactExport(context.Background(), "operation", "worker", "lease", artifactObservation, []string{}); err != nil || !completed {
+	if completed, err := store.CompleteArtifactExport(context.Background(), "operation", "worker", "lease", artifactObservation, nil); err != nil || !completed {
 		t.Fatalf("complete artifact export: completed=%v err=%v", completed, err)
 	}
 	if outcome, err := store.Retry(context.Background(), "operation", "worker", "lease", 10,
@@ -119,6 +119,9 @@ func TestPgStoreUsesOnlyFencedProcedures(t *testing.T) {
 	}
 	if got := executor.calls[1].args[5]; got != observation.Digest[7:] {
 		t.Fatalf("source observation digest was not normalized: %v", got)
+	}
+	if got, ok := executor.calls[3].args[4].([]string); !ok || got == nil || len(got) != 0 {
+		t.Fatalf("empty artifact warnings were not canonicalized: %#v", executor.calls[3].args[4])
 	}
 }
 

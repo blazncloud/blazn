@@ -45,7 +45,9 @@ for marker in \
 done
 grep -F 'node.k8s.io/v1/runtimeclasses/' "$ROOT/internal/sandboxcontrol/adapter.go" >/dev/null
 grep -F 'application/merge-patch+json' "$ROOT/internal/sandboxcontrol/adapter.go" >/dev/null
-grep -F 'propagationPolicy": "Foreground"' "$ROOT/internal/sandboxcontrol/adapter.go" >/dev/null
+# The Sandbox is deleted in the background; the controller explicitly drains
+# exact owned Pod/Workload orphans before accepting its cleanup receipt.
+grep -F 'propagationPolicy": "Background"' "$ROOT/internal/sandboxcontrol/adapter.go" >/dev/null
 if grep -R -E 'queue-name.*(optional|fallback)|unmanaged.*fallback' "$ROOT/internal/sandboxcontrol" >/dev/null; then
   printf 'adapter contains an unmanaged queue fallback\n' >&2
   exit 1

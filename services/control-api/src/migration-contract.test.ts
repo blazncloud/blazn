@@ -191,8 +191,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-9), [
-    "023_node_activation.sql",
+  assert.deepEqual(migrations.slice(-13), [
     "024_development_controller.sql",
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
@@ -201,7 +200,55 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "029_public_function_hardening_boundary.sql",
     "030_run_messages.sql",
     "031_run_message_digest_authority.sql",
+    "032_sandbox_source_readiness_identity.sql",
+    "033_sandbox_access_transport.sql",
+    "034_sandbox_terminal_state_events.sql",
+    "035_sandbox_empty_artifact_warnings.sql",
+    "036_sandbox_delete_after_stop.sql",
   ]);
+});
+
+test("warning-free artifact cleanup is canonical at the database boundary",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/035_sandbox_empty_artifact_warnings.sql"),"utf8");
+  assert.match(sql,/canonical_warnings text\[\] := coalesce\(p_warning_codes,'\{\}'::text\[\]\)/);
+  assert.match(sql,/warning_codes\)\s*VALUES\([^;]*canonical_warnings\)/);
+  assert.match(sql,/receipt\.warning_codes=canonical_warnings/);
+  assert.match(sql,/sandbox_controller_complete_v4\([\s\S]*canonical_warnings/);
+  assert.match(sql,/WHEN 'create' THEN 'sandbox\.ready'/);
+});
+
+test("sandbox access transport atomically consumes one live grant through controller-only authority",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/033_sandbox_access_transport.sql"),"utf8");
+  assert.match(sql,/CREATE FUNCTION sandbox_controller_consume_access_grant_v1/);
+  assert.match(sql,/FOR UPDATE/);
+  assert.match(sql,/grant_row\.token_hash <> p_token_hash/);
+  assert.match(sql,/sandbox_row\.state NOT IN \('ready','running'\)/);
+  assert.match(sql,/GRANT EXECUTE[\s\S]*TO blazn_sandbox_controller/);
+  assert.match(sql,/REVOKE ALL[\s\S]*FROM PUBLIC, blazn_runtime, blazn_bootstrap, blazn_node_broker/);
+});
+
+test("sandbox completion emits terminal state events for CLI watches",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/034_sandbox_terminal_state_events.sql"),"utf8");
+  assert.match(sql,/CREATE OR REPLACE FUNCTION sandbox_controller_complete_v5/);
+  assert.match(sql,/WHEN 'create' THEN 'sandbox\.ready'/);
+  assert.match(sql,/WHEN 'stop' THEN 'sandbox\.stopped'/);
+  assert.match(sql,/ELSE 'sandbox\.deleted'/);
+  assert.match(sql,/IF completed AND p_status='succeeded'/);
+  assert.match(sql,/CREATE OR REPLACE FUNCTION sandbox_controller_consume_access_grant_v1/);
+  assert.match(sql,/candidate_sandbox\.workspace_id=grant_row\.workspace_id/);
+});
+
+test("source readiness binding preserves stable bootstrap identity across resourceVersion drift", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const sql = await readFile(path.resolve(here, "../migrations/032_sandbox_source_readiness_identity.sql"), "utf8");
+  assert.match(sql, /bootstrap#>>'\{pod,uid\}'<>p_pod_uid/);
+  assert.match(sql, /bootstrap#>>'\{workload,uid\}'<>p_workload_uid/);
+  assert.doesNotMatch(sql, /bootstrap#>>'\{pod,resourceVersion\}'/);
+  assert.doesNotMatch(sql, /bootstrap#>>'\{workload,resourceVersion\}'/);
+  assert.doesNotMatch(sql, /bootstrap#>>'\{workload,digest\}'/);
 });
 
 test("controller privilege hardening closes PUBLIC functions and preserves exact pgcrypto authority", async () => {

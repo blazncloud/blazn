@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/blazncloud/blazn/internal/sandboxio"
+	"github.com/gowebpki/jcs"
 )
 
 const (
@@ -580,11 +581,17 @@ func CanonicalArtifactContract(artifacts []ArtifactExport) ([]ArtifactExport, st
 		return nil, "", err
 	}
 	sort.Slice(canonical, func(i, j int) bool { return canonical[i].Name < canonical[j].Name })
-	encoded, err := json.Marshal(canonical)
+	encoded, err := json.Marshal(struct {
+		Items []ArtifactExport `json:"items"`
+	}{Items: canonical})
 	if err != nil {
 		return nil, "", err
 	}
-	digest := sha256.Sum256(encoded)
+	canonicalJSON, err := jcs.Transform(encoded)
+	if err != nil {
+		return nil, "", fmt.Errorf("canonicalize sandbox artifact contract: %w", err)
+	}
+	digest := sha256.Sum256(canonicalJSON)
 	return canonical, "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 

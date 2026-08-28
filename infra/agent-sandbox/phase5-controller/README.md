@@ -35,6 +35,8 @@ BLAZN_KUBERNETES_API_PORT='16443' \
 BLAZN_KUBERNETES_API_AUDIENCE='https://kubernetes.default.svc' \
 BLAZN_BEN1_POSTGRES_CIDR='10.0.0.11/32' \
 BLAZN_BEN1_POSTGRES_PORT='5432' \
+BLAZN_ACCESS_SERVICE_CLUSTER_IP='10.152.183.207' \
+BLAZN_ACCESS_SOURCE_CIDR='10.0.0.13/32' \
 BLAZN_OBJECT_SECRET_NAME='blazn-sandbox-controller-object-credentials' \
 BLAZN_OBJECT_ACCESS_KEY='access-key' \
 BLAZN_OBJECT_SECRET_KEY='secret-key' \
@@ -50,8 +52,10 @@ BLAZN_SOURCE_DNS_CIDR='10.0.0.53/32' \
 ./infra/agent-sandbox/phase5-controller/render-install.sh ./controller-install.yaml
 ```
 
-Both network destinations must be exact, usable IPv4 `/32` values; broad
-CIDRs, wildcard ports, absent values, and mutable image tags fail closed. The
+Every network destination must be an exact, usable IPv4 `/32`; the source
+boundary accepts a comma-separated, duplicate-free set of at most 64 exact
+addresses for a reviewed rotating frontend. Broad CIDRs, wildcard ports,
+absent values, and mutable image tags fail closed. The
 API host passed to the process is derived from the exact API `/32`, so it does
 not need DNS. The database URL in the pre-existing Secret must name the exact
 ben1 IP and port above when `BLAZN_DATABASE_ENDPOINT_KIND=ip`.
@@ -68,7 +72,8 @@ The output assumes the separately owned namespaces `blazn-poc-system` and
 `blazn-poc-sandboxes` already exist. It creates a tokenless ServiceAccount and
 uses only a 600-second projected API token with an explicit audience. Its Role
 can create/delete/patch and read Sandboxes only in `blazn-poc-sandboxes`; Pod
-access is get/list, Kueue Workload access is list-only, `pods/exec` is create-only,
+access is get/list, Kueue Workload access is list-only, and `pods/exec` has only
+the create/get connect verbs required by the WebSocket v5 handshake,
 and NetworkPolicy access is create/delete/get/list there. The controller accepts
 only its pinned helper command, verifies the exact Pod and Sandbox UIDs before
 and after each WebSocket v5 exchange, creates an exact temporary DNS/HTTPS
@@ -130,6 +135,12 @@ to the reviewed reachable endpoint and never printing any secret value. The
 controller database URL must authenticate as `blazn_sandbox_controller` (a
 capability role that needs a login credential provisioned on the control-plane
 database).
+
+`../phase5-build/provision-registry-pull.sh` copies the separately owned Docker
+config Secret into only `blazn-poc-system` and `blazn-poc-sandboxes`, without
+writing its bytes to disk or stdout. The install transaction verifies that the
+rendered pull Secret exists in both namespaces before applying or scaling the
+controller.
 
 `install-controller.sh` is a journaled, crash-resumable, UID-fenced
 transaction (`sealed → apply-intent → applied → scaled → complete`): it

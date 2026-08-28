@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"path"
@@ -116,10 +117,24 @@ func (c *Controller) Run(ctx context.Context) error {
 
 func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	if err := validateWorkItem(item); err != nil {
-		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid", Ambiguous: true, Cause: err})
+		log.Printf("sandbox controller rejected claimed work item: %v", err)
+		// validateWorkItem emits only bounded category messages and never
+		// includes work-item values. Retain that safe detail in the terminal
+		// receipt so a malformed persisted transition is diagnosable without
+		// database or Kubernetes shell access.
+		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid: " + err.Error(), Ambiguous: true, Cause: err})
 	}
 	if !c.leaseCoversNextRenew(item.LeaseDeadline) {
-		return nil
+		log.Print("sandbox controller claim lease requires an initial refresh")
+		window, ok, err := c.refreshClaimLease(parent, item)
+		if err != nil {
+			return fmt.Errorf("sandbox initial lease renewal failed: %w", err)
+		}
+		if !ok || !c.leaseCoversNextRenew(window.Deadline) {
+			log.Print("sandbox controller initial lease refresh was rejected or too short")
+			return nil
+		}
+		item.LeaseExpiresAt, item.LeaseRemaining, item.LeaseDeadline = window.ExpiresAt, window.Remaining, window.Deadline
 	}
 	ctx, cancel := context.WithTimeout(parent, c.config.OperationTimeout)
 	defer cancel()
@@ -144,6 +159,24 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	return c.finishFailure(parent, item, failure)
 }
 
+// refreshClaimLease repairs a claim whose safe local deadline no longer spans
+// the first heartbeat interval. The database lease and token remain the sole
+// authority: a refresh that cannot complete before the claim's safety deadline
+// performs no backend work.
+func (c *Controller) refreshClaimLease(parent context.Context, item WorkItem) (LeaseWindow, bool, error) {
+	delay := c.leaseSafetyDelay(item.LeaseDeadline)
+	if delay <= 0 {
+		return LeaseWindow{}, false, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, delay)
+	defer cancel()
+	window, ok, err := c.store.Renew(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, int(c.config.Lease/time.Second))
+	if err != nil && ctx.Err() != nil {
+		return LeaseWindow{}, false, nil
+	}
+	return window, ok, err
+}
+
 func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, item WorkItem, done chan<- heartbeatResult) {
 	ticker := time.NewTicker(c.config.RenewEvery)
 	defer ticker.Stop()
@@ -155,10 +188,12 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 			done <- heartbeatResult{kind: heartbeatStopped}
 			return
 		case <-watchdog.C:
+			log.Print("sandbox controller lease watchdog expired")
 			done <- heartbeatResult{kind: heartbeatLeaseLost}
 			cancel()
 			return
 		case <-ticker.C:
+			log.Print("sandbox controller lease heartbeat started")
 			result := make(chan renewResult, 1)
 			renewCtx, renewCancel := context.WithTimeout(ctx, c.leaseSafetyDelay(item.LeaseDeadline))
 			go func() {
@@ -193,11 +228,13 @@ func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, i
 					return
 				}
 				if !renewed.ok || !c.leaseCoversNextRenew(renewed.window.Deadline) {
+					log.Print("sandbox controller lease heartbeat was rejected or too short")
 					done <- heartbeatResult{kind: heartbeatLeaseLost}
 					cancel()
 					return
 				}
 				item.LeaseExpiresAt = renewed.window.ExpiresAt
+				log.Print("sandbox controller lease heartbeat renewed")
 				item.LeaseRemaining = renewed.window.Remaining
 				item.LeaseDeadline = renewed.window.Deadline
 				resetTimer(watchdog, c.leaseSafetyDelay(item.LeaseDeadline))
@@ -304,6 +341,7 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 				return nil
 			}
 			receipt = &materialized
+			item.SourceMaterialization = receipt
 			item.SourceBootstrapObservation = state.AdmissionObservation
 		}
 		if err := sourceBackend.RestrictSourceRuntime(ctx, item, *state.AdmissionObservation, *receipt); err != nil {
@@ -367,7 +405,9 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	if item.BackendUID == nil || item.BackendResourceVersion == nil || item.AdmissionObservation == nil {
 		return &Failure{Code: "missing_backend_identity", SafeMessage: "cleanup lacks exact backend identity", Ambiguous: true}
 	}
-	warningCodes := append([]string(nil), item.ArtifactWarningCodes...)
+	// PostgreSQL distinguishes a NULL text[] from an empty text[]. Keep the
+	// no-warning case canonical so both cleanup receipts remain admissible.
+	warningCodes := append([]string{}, item.ArtifactWarningCodes...)
 	if !item.ArtifactExportComplete && len(item.Artifacts) != 0 {
 		artifactBackend, ok := c.backend.(ArtifactBackend)
 		if !ok {
@@ -402,7 +442,7 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 			exported.Artifacts[index] = persisted
 		}
 		item.PersistedArtifacts = exported.Artifacts
-		warningCodes = append([]string(nil), exported.WarningCodes...)
+		warningCodes = append([]string{}, exported.WarningCodes...)
 	}
 	if !item.ArtifactExportComplete {
 		sort.Strings(warningCodes)
@@ -437,7 +477,7 @@ func (c *Controller) cleanup(ctx context.Context, item WorkItem) error {
 	if len(result.WarningCodes) != 0 {
 		return &Failure{Code: "cleanup_warning_mismatch", SafeMessage: "cleanup returned warnings outside the durable artifact export receipt", Ambiguous: true}
 	}
-	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string(nil), result.ArtifactIDs...), WarningCodes: warningCodes})
+	ok, err := c.store.Complete(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, Completion{Status: "succeeded", ExpectedBackendUID: &uid, ExpectedBackendResourceVersion: &rv, ExpectedWorkloadDigest: &workloadDigest, ExpectedObservationDigest: &observationDigest, CleanupComplete: true, ArtifactExportComplete: true, GrantsRevoked: result.GrantsRevoked, BackendDestroyed: true, ArtifactIDs: append([]string{}, result.ArtifactIDs...), WarningCodes: warningCodes})
 	if err != nil {
 		return err
 	}

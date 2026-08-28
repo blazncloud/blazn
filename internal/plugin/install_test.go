@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReleaseViewArgsCanPinExactPluginVersion(t *testing.T) {
@@ -42,6 +43,23 @@ func TestCandidateHandshakeMustMatchSignedManifest(t *testing.T) {
 	expected.Version = "v1.1.0"
 	if err := smokeTestCandidate(context.Background(), binary, expected); err == nil {
 		t.Fatal("candidate whose handshake differs from signed manifest was accepted")
+	}
+}
+
+func TestCandidateHandshakeHonorsBoundedContext(t *testing.T) {
+	directory := t.TempDir()
+	binary := filepath.Join(directory, "blazn-social")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if err := smokeTestCandidate(ctx, binary, validManifest("v1.0.0")); err == nil {
+		t.Fatal("nonterminating candidate handshake succeeded")
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatal("candidate handshake ignored its context deadline")
 	}
 }
 

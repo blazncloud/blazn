@@ -182,6 +182,13 @@ func (f *fakeSandboxAdapter) ObserveAbsence(_ context.Context, observation sandb
 	return err
 }
 
+func (f *fakeSandboxAdapter) CleanupOwnedDependents(_ context.Context, observation sandboxcontrol.AdmissionObservation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "cleanup-dependents")
+	return sandboxcontrol.ValidateAdmissionObservation(observation)
+}
+
 func (f *fakeSandboxAdapter) setGetError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -219,7 +226,7 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantArtifacts := []sandboxcontrol.ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.json", MediaType: "application/json", Required: true}}
-	want := sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
+	want := sandboxcontrol.CreateRequest{RequestID: "controller-create-" + item.SandboxID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
 		HelperImage: testSandboxIOImage,
 		Command:     []string{"true"}, Architecture: "amd64", RuntimeClassName: "",
@@ -229,6 +236,12 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 		ExpiresAt: item.ExpiresAt, Artifacts: wantArtifacts}
 	if !reflect.DeepEqual(fake.request, want) {
 		t.Fatalf("create mapping mismatch:\n got %#v\nwant %#v", fake.request, want)
+	}
+	deleteItem := item
+	deleteItem.OperationID = "different-delete-operation"
+	deleteRequest, err := backend.request(deleteItem)
+	if err != nil || deleteRequest.RequestID != want.RequestID {
+		t.Fatalf("backend create intent changed across operations: request=%#v err=%v", deleteRequest, err)
 	}
 	if !state.Exists || state.Ready || state.AdmissionObservation != nil {
 		t.Fatalf("creation claimed admission before observation: %#v", state)
@@ -244,6 +257,20 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 	if observed.Record.ResourceVersion != ready.ResourceVersion || observed.Record.ArtifactContractDigest != record.ArtifactContractDigest ||
 		!reflect.DeepEqual(fake.snapshotCalls(), []string{"ensure", "get", "get", "observe"}) {
 		t.Fatalf("create evidence was not retained exactly: state=%#v calls=%v", observed, fake.snapshotCalls())
+	}
+}
+
+func TestFinalizeReceiptDoesNotDependOnAnotherResourceVersionIncrement(t *testing.T) {
+	item, record, _ := backendFixture(t)
+	backend := newTestKubernetesBackend(t, &fakeSandboxAdapter{}, true)
+	request, err := backend.request(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.State = sandboxcontrol.StateDeleted
+	receipt := operationReceipt("controller-"+item.OperationID, sandboxcontrol.OperationFinalize, record, artifactReceipts(record, record.Artifacts))
+	if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, "controller-"+item.OperationID, request, record); err != nil {
+		t.Fatalf("same-version finalize receipt was rejected after finalizer proof: %v", err)
 	}
 }
 
@@ -308,6 +335,23 @@ func TestKubernetesBackendObservesAdmittedSourcePodBeforeReady(t *testing.T) {
 	state, err := backend.Observe(context.Background(), item, nil)
 	if err != nil || state.Ready || state.AdmissionObservation == nil || state.AdmissionObservation.Pod.UID != observation.Pod.UID {
 		t.Fatalf("pre-ready observation=%#v err=%v", state, err)
+	}
+}
+
+func TestSourceBootstrapObservationAllowsOnlyResourceVersionDrift(t *testing.T) {
+	_, _, expected := backendFixture(t)
+	current := expected
+	current.Sandbox.ResourceVersion = "sandbox-ready-rv"
+	current.Pod.ResourceVersion = "pod-ready-rv"
+	current.Workload.ResourceVersion = "workload-ready-rv"
+	current.Workload.Digest = "sha256:" + strings.Repeat("b", 64)
+	current.Digest = "sha256:" + strings.Repeat("c", 64)
+	if !sameSourceBootstrapObservation(expected, current) {
+		t.Fatal("normal readiness resourceVersion drift changed the source bootstrap identity")
+	}
+	current.Pod.UID = "substituted-pod"
+	if sameSourceBootstrapObservation(expected, current) {
+		t.Fatal("Pod substitution was accepted as source bootstrap resourceVersion drift")
 	}
 }
 
@@ -397,11 +441,47 @@ func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "observe", "delete", "get", "finalize", "absence", "absence"}) {
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "observe", "delete", "get", "finalize", "cleanup-dependents", "absence", "cleanup-dependents", "absence"}) {
 		t.Fatalf("cleanup sequence=%v", fake.snapshotCalls())
 	}
 	if !result.CleanupComplete || !result.ArtifactExportComplete || !result.GrantsRevoked || !result.BackendDestroyed {
 		t.Fatalf("incomplete cleanup result: %#v", result)
+	}
+}
+
+func TestKubernetesBackendCleanupAllowsResourceVersionDrift(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	bindBackendIdentity(&item, record, observation)
+	bindPersistedArtifact(t, &item)
+	record.ResourceVersion = "resource-version-ready-later"
+	observation.Sandbox.ResourceVersion = record.ResourceVersion
+	observation.Digest = sandboxcontrol.AdmissionObservationDigest(observation)
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	backend := newTestKubernetesBackend(t, fake, true)
+	state, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AdmissionObservation != item.AdmissionObservation || state.Record.ResourceVersion != "resource-version-delete" {
+		t.Fatalf("cleanup did not retain frozen authority with a fresh mutation precondition: %#v", state)
+	}
+}
+
+func TestKubernetesBackendCleanupContinuesAfterFinalizerResponseLoss(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	bindBackendIdentity(&item, record, observation)
+	record.Deleting = true
+	record.State = sandboxcontrol.StateStopping
+	record.Finalizers = nil
+	fake := &fakeSandboxAdapter{record: record, observation: observation,
+		absenceErrs: []error{&sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: "foreground deletion remains"}, nil}}
+	backend := newTestKubernetesBackend(t, fake, true)
+	state, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
+	if err != nil || !state.AbsenceObserved || state.Exists || state.AdmissionObservation != item.AdmissionObservation {
+		t.Fatalf("response-loss cleanup state=%#v err=%v", state, err)
+	}
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "cleanup-dependents", "absence", "cleanup-dependents", "absence"}) {
+		t.Fatalf("response-loss cleanup did not poll exact absence: %v", fake.snapshotCalls())
 	}
 }
 
@@ -419,7 +499,7 @@ func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "absence"}) {
+	if !reflect.DeepEqual(fake.snapshotCalls(), []string{"get", "cleanup-dependents", "absence"}) {
 		t.Fatalf("already-deleted cleanup leaked or mutated: calls=%v err=%v", fake.snapshotCalls(), err)
 	}
 	if result, err := backend.Finalize(context.Background(), item, state, item.AdmissionObservation); err != nil || !result.BackendDestroyed {
@@ -452,7 +532,7 @@ func TestKubernetesBackendDoesNotUseTransientCleanupEvidenceAsAuthority(t *testi
 	if err != nil || !result.BackendDestroyed {
 		t.Fatalf("persisted absence recovery=%#v err=%v", result, err)
 	}
-	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "absence", "get", "absence", "absence"}
+	wantCalls := []string{"get", "observe", "delete", "get", "finalize", "cleanup-dependents", "absence", "get", "cleanup-dependents", "absence", "cleanup-dependents", "absence"}
 	if !reflect.DeepEqual(fake.snapshotCalls(), wantCalls) {
 		t.Fatalf("same-process recovery sequence=%v", fake.snapshotCalls())
 	}
@@ -623,6 +703,16 @@ func TestKubernetesBackendClassifiesTransportIdentityAndResidueWithoutLeaks(t *t
 	failure, ok := BackendFailure(classifyAdapter("cleanup", artifactErr))
 	if !ok || !failure.Retryable || failure.Ambiguous || strings.Contains(failure.Error(), secret) {
 		t.Fatalf("safe artifact retry classification=%#v", failure)
+	}
+	observationConflict := &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrConflict, Status: 409, SafeDetail: secret}
+	failure, ok = BackendFailure(classifyAdapter("observe", observationConflict))
+	if !ok || !failure.Retryable || failure.Ambiguous || strings.Contains(failure.Error(), secret) {
+		t.Fatalf("admission observation retry classification=%#v", failure)
+	}
+	cleanupErr := &sandboxcontrol.AdapterError{Code: sandboxcontrol.ErrCleanupIncomplete, Status: 409, SafeDetail: secret}
+	failure, ok = BackendFailure(classifyAdapter("cleanup", cleanupErr))
+	if !ok || !failure.Retryable || failure.Ambiguous || strings.Contains(failure.Error(), secret) {
+		t.Fatalf("visible cleanup residue classification=%#v", failure)
 	}
 }
 

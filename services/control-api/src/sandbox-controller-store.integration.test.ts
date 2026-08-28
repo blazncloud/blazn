@@ -25,7 +25,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
           'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
           'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
           'sandbox_controller_record_source_materialization_v1','sandbox_controller_claim_v5',
-          'sandbox_controller_record_artifact_v1','sandbox_controller_complete_artifact_export_v1','sandbox_controller_complete_v5')`, [role]);
+          'sandbox_controller_record_artifact_v1','sandbox_controller_complete_artifact_export_v1','sandbox_controller_complete_v5',
+          'sandbox_controller_finalize_stopped_delete_v1')`, [role]);
       assert.equal(privilege.rows[0]?.allowed, false, `${role} can execute a controller function`);
     }
     const publicPrivilege = await admin.query<{ count: string }>(`SELECT count(*)::text AS count FROM pg_proc p,
@@ -34,7 +35,8 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
         'sandbox_controller_claim_v3','sandbox_controller_bind_backend_v3','sandbox_controller_complete_v3',
         'sandbox_controller_claim_v4','sandbox_controller_bind_backend_v4','sandbox_controller_complete_v4',
         'sandbox_controller_record_source_materialization_v1','sandbox_controller_claim_v5',
-        'sandbox_controller_record_artifact_v1','sandbox_controller_complete_artifact_export_v1','sandbox_controller_complete_v5')
+        'sandbox_controller_record_artifact_v1','sandbox_controller_complete_artifact_export_v1','sandbox_controller_complete_v5',
+          'sandbox_controller_finalize_stopped_delete_v1')
         AND acl.grantee=0 AND acl.privilege_type='EXECUTE'`);
     assert.equal(publicPrivilege.rows[0]?.count, "0", "PUBLIC can execute a controller v2 function");
     for (const signature of [
@@ -239,6 +241,57 @@ test("PostgreSQL sandbox controller claims, fences, retries, completes, and enqu
     assert.equal(await first.complete(stopOperationId, "controller-stop", stop!.leaseToken, stopCompletion), true);
     const stopped = await admin.query("SELECT state,backend_uid,admission_id,stopped_at FROM sandboxes WHERE id=$1", [stopSandboxId]);
     assert.equal(stopped.rows[0]?.state, "stopped"); assert.equal(stopped.rows[0]?.backend_uid, null); assert.equal(stopped.rows[0]?.admission_id, null); assert.ok(stopped.rows[0]?.stopped_at);
+
+    // A stopped Sandbox has no live IDs, but retains its immutable admission.
+    // Deletion must consume the prior cleanup proof without returning a live
+    // work item that the Go controller would reject as inconsistent.
+    await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=version+1 WHERE id=$1", [stopSandboxId]);
+    const stoppedDeleteId = await insertOperation(admin, workspaceId, stopSandboxId, userId, "delete", 3);
+    assert.equal(await first.claim("controller-delete-stopped", 30), undefined);
+    const deletedAfterStop = await admin.query(`SELECT s.state,r.status,r.cleanup_complete,r.artifact_export_complete,
+      r.grants_revoked,r.backend_destroyed,r.result,r.admission_digest
+      FROM sandboxes s JOIN sandbox_operations o ON o.sandbox_id=s.id
+      JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id WHERE o.id=$1`, [stoppedDeleteId]);
+    assert.deepEqual(deletedAfterStop.rows[0], { state: "deleted", status: "succeeded", cleanup_complete: true,
+      artifact_export_complete: true, grants_revoked: true, backend_destroyed: true,
+      result: { artifactIds: [artifactId!], warnings: artifactWarnings },
+      admission_digest: stop!.admissionObservation!.workload.digest.slice(7) });
+    assert.equal((await admin.query("SELECT count(*)::int AS count FROM sandbox_events WHERE sandbox_id=$1 AND type='sandbox.deleted'", [stopSandboxId])).rows[0]?.count, 1);
+    assert.equal(await first.claim("controller-delete-replay", 30), undefined);
+
+    const unprovenDeleteSandbox = await seedSandbox(admin, workspaceId, userId, { state: "requested" });
+    await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=2 WHERE id=$1", [unprovenDeleteSandbox]);
+    const unprovenDeleteId = await insertOperation(admin, workspaceId, unprovenDeleteSandbox, userId, "delete", 1);
+    assert.equal(await first.claim("controller-delete-unproven", 30), undefined);
+    const refusedDelete = await admin.query(`SELECT r.status,r.cleanup_complete,r.error->>'code' AS code
+      FROM sandbox_operations o JOIN sandbox_operation_terminal_receipts r ON r.id=o.terminal_receipt_id WHERE o.id=$1`, [unprovenDeleteId]);
+    assert.deepEqual(refusedDelete.rows[0], { status: "recovery_required", cleanup_complete: false, code: "prior_cleanup_unverified" });
+    assert.equal((await admin.query("SELECT has_function_privilege('blazn_sandbox_controller','sandbox_controller_finalize_stopped_delete_v1(uuid,text,uuid)','EXECUTE') AS allowed")).rows[0]?.allowed, false);
+
+    // Recover the pre-fix failure mode: the old controller exhausts its claim
+    // lease while decoding delete-after-stop, then a fresh delete retries it.
+    const retryStoppedSandbox = await seedSandbox(admin, workspaceId, userId, { state: "stopping", desiredState: "stopped", version: 2,
+      backend: ["backend-retry-stop", "resource-retry-stop", "admission-retry-stop"] });
+    const retryStopId = await insertOperation(admin, workspaceId, retryStoppedSandbox, userId, "stop", 1);
+    const retryStop = await first.claim("controller-retry-stop", 30);
+    assert.equal(retryStop?.operationId, retryStopId);
+    assert.equal(await first.completeArtifactExport(retryStopId, "controller-retry-stop", retryStop!.leaseToken, retryStop!.admissionObservation!, []), true);
+    assert.equal(await first.complete(retryStopId, "controller-retry-stop", retryStop!.leaseToken, {
+      ...stopCompletion, expectedBackendUid: "backend-retry-stop", expectedBackendResourceVersion: "resource-retry-stop",
+      expectedWorkloadDigest: retryStop!.admissionObservation!.workload.digest,
+      expectedObservationDigest: retryStop!.admissionObservation!.digest, artifactIds: [], warningCodes: [],
+    }), true);
+    await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=version+1 WHERE id=$1", [retryStoppedSandbox]);
+    const oldDeleteId = await insertOperation(admin, workspaceId, retryStoppedSandbox, userId, "delete", 3);
+    await admin.query("SELECT * FROM sandbox_controller_claim_v4('pre-fix-controller',30)");
+    await admin.query("UPDATE sandbox_reconcile_jobs SET attempt_count=5,lease_expires_at=clock_timestamp()-interval '1 second' WHERE operation_id=$1", [oldDeleteId]);
+    assert.equal(await first.claim("controller-exhausted-delete", 30), undefined);
+    assert.equal((await admin.query("SELECT status FROM sandbox_operations WHERE id=$1", [oldDeleteId])).rows[0]?.status, "recovery_required");
+    const retryVersion = await admin.query("UPDATE sandboxes SET state='deleting',desired_state='deleted',version=version+1 WHERE id=$1 RETURNING version-1 AS expected", [retryStoppedSandbox]);
+    const newDeleteId = await insertOperation(admin, workspaceId, retryStoppedSandbox, userId, "delete", Number(retryVersion.rows[0].expected));
+    assert.equal(await first.claim("controller-recovered-delete", 30), undefined);
+    assert.equal((await admin.query("SELECT status FROM sandbox_operations WHERE id=$1", [newDeleteId])).rows[0]?.status, "succeeded");
+    assert.equal((await admin.query("SELECT state FROM sandboxes WHERE id=$1", [retryStoppedSandbox])).rows[0]?.state, "deleted");
 
     const legacySandboxId = await seedSandbox(admin, workspaceId, userId,
       { state: "stopping", desiredState: "stopped", version: 2, backend: ["backend-legacy", "resource-legacy", "admission-legacy"] });

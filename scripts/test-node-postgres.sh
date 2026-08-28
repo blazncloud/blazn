@@ -112,7 +112,7 @@ DECLARE unsafe_count integer;
 BEGIN
   SELECT count(*) INTO unsafe_count FROM pg_roles
     WHERE rolname IN ('blazn_sandbox_controller','blazn_development_controller')
-      AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls);
+      AND (rolcanlogin <> (rolname='blazn_sandbox_controller') OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls);
   IF unsafe_count <> 0 THEN RAISE EXCEPTION 'controller compatibility created unsafe roles'; END IF;
   IF NOT has_database_privilege('blazn_sandbox_controller','blazn','CONNECT')
      OR NOT has_database_privilege('blazn_development_controller','blazn','CONNECT')

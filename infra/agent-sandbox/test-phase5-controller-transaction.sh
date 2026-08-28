@@ -39,6 +39,7 @@ BLAZN_DATABASE_URL_SECRET_NAME=blazn-controller-database-url BLAZN_DATABASE_URL_
 BLAZN_DATABASE_ENDPOINT_KIND=ip \
 BLAZN_KUBERNETES_API_CIDR=10.152.183.1/32 BLAZN_KUBERNETES_API_PORT=443 BLAZN_KUBERNETES_API_AUDIENCE=https://kubernetes.default.svc \
 BLAZN_BEN1_POSTGRES_CIDR=192.168.0.100/32 BLAZN_BEN1_POSTGRES_PORT=5432 \
+BLAZN_ACCESS_SERVICE_CLUSTER_IP=10.152.183.207 BLAZN_ACCESS_SOURCE_CIDR=192.168.0.108/32 \
 BLAZN_OBJECT_SECRET_NAME=blazn-controller-object BLAZN_OBJECT_ACCESS_KEY=access-key BLAZN_OBJECT_SECRET_KEY=secret-key \
 BLAZN_OBJECT_CA_KEY=object-ca BLAZN_REGISTRY_PULL_SECRET_NAME=blazn-registry-pull \
 BLAZN_OBJECT_ENDPOINT_CIDR=192.168.0.100/32 BLAZN_OBJECT_ENDPOINT_PORT=9000 BLAZN_OBJECT_REGION=us-east-1 BLAZN_OBJECT_BUCKET=blazn-sandbox-artifacts \
@@ -60,8 +61,10 @@ case "$*" in
   'get deployment agent-sandbox-controller -n agent-sandbox-system') present agent-sandbox-controller || { printf 'not found\n' >&2; exit 1; } ;;
   'get secret blazn-controller-database-url -n blazn-poc-system --ignore-not-found -o name') present db-secret && printf 'secret/blazn-controller-database-url\n' || : ;;
   'get secret blazn-controller-object -n blazn-poc-system --ignore-not-found -o name') present object-secret && printf 'secret/blazn-controller-object\n' || : ;;
+  'get secret blazn-registry-pull -n blazn-poc-system --ignore-not-found -o name') present system-pull-secret && printf 'secret/blazn-registry-pull\n' || : ;;
+  'get secret blazn-registry-pull -n blazn-poc-sandboxes --ignore-not-found -o name') present sandbox-pull-secret && printf 'secret/blazn-registry-pull\n' || : ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name') present deployment && [ ! -e "$FAKE_STATE/scaled0" ] && printf 'deployment/blazn-sandbox-controller\n' || { present deployment && printf 'deployment/blazn-sandbox-controller\n' || :; } ;;
-  'apply --server-side --field-manager blazn-phase5-controller -f '*) for object_key in deployment serviceaccount role rolebinding egress deny; do : >"$FAKE_STATE/$object_key"; done ;;
+  'apply --server-side --field-manager blazn-phase5-controller -f '*) for object_key in deployment service access-ingress serviceaccount role rolebinding egress deny; do : >"$FAKE_STATE/$object_key"; done ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.spec.replicas}') [ -e "$FAKE_STATE/scaled1" ] && printf '1' || printf '0' ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1') : >"$FAKE_STATE/scaled1" ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0') : >"$FAKE_STATE/scaled0"; rm -f "$FAKE_STATE/scaled1" ;;
@@ -73,22 +76,27 @@ case "$*" in
   'get role blazn-sandbox-controller -n blazn-poc-sandboxes -o jsonpath={.metadata.uid}') printf '22222222-2222-4222-8222-222222222222' ;;
   'get rolebinding blazn-sandbox-controller -n blazn-poc-sandboxes -o jsonpath={.metadata.uid}') printf '33333333-3333-4333-8333-333333333333' ;;
   'get serviceaccount blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '44444444-4444-4444-8444-444444444444' ;;
+  'get service blazn-sandbox-access -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '77777777-7777-4777-8777-777777777777' ;;
+  'get networkpolicy blazn-sandbox-controller-access-ingress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '88888888-8888-4888-8888-888888888888' ;;
   'get networkpolicy blazn-sandbox-controller-egress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '55555555-5555-4555-8555-555555555555' ;;
   'get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '66666666-6666-4666-8666-666666666666' ;;
   'get '*' --ignore-not-found -o name')
     # Match on the exact "kind name" prefix so same-named objects of different
     # kinds are never conflated (real kubectl scopes by kind).
-    for object in deployment/blazn-sandbox-controller:deployment serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny; do
+    for object in deployment/blazn-sandbox-controller:deployment service/blazn-sandbox-access:service networkpolicy/blazn-sandbox-controller-access-ingress:access-ingress serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny; do
       ref=${object%%:*}; key=${object#*:}
       case "$* " in "get ${ref%%/*} ${ref#*/} "*) present "$key" && printf '%s\n' "$ref" || :; ;; esac
     done ;;
   'proxy --unix-socket='*)
+	[ ! -e /proc/$$/fd/9 ] || { printf 'kubectl proxy inherited the live-cluster lock descriptor\n' >&2; exit 1; }
     socket=$(printf '%s' "$*" | sed 's/.*--unix-socket=\([^ ]*\).*/\1/')
     exec python3 - "$socket" "$FAKE_STATE" <<'PY'
 import http.server, json, os, socketserver, sys
 socket_path, state = sys.argv[1], sys.argv[2]
 targets = {
     "/apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller": ("deployment", "11111111-1111-4111-8111-111111111111"),
+    "/api/v1/namespaces/blazn-poc-system/services/blazn-sandbox-access": ("service", "77777777-7777-4777-8777-777777777777"),
+    "/apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-access-ingress": ("access-ingress", "88888888-8888-4888-8888-888888888888"),
     "/apis/networking.k8s.io/v1/namespaces/blazn-poc-system/networkpolicies/blazn-sandbox-controller-egress": ("egress", "55555555-5555-4555-8555-555555555555"),
     "/apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/rolebindings/blazn-sandbox-controller": ("rolebinding", "33333333-3333-4333-8333-333333333333"),
     "/apis/rbac.authorization.k8s.io/v1/namespaces/blazn-poc-sandboxes/roles/blazn-sandbox-controller": ("role", "22222222-2222-4222-8222-222222222222"),
@@ -124,6 +132,8 @@ reset_state() {
   : >"$FAKE_STATE/agent-sandbox-controller"
   : >"$FAKE_STATE/db-secret"
   : >"$FAKE_STATE/object-secret"
+  : >"$FAKE_STATE/system-pull-secret"
+  : >"$FAKE_STATE/sandbox-pull-secret"
   : >"$FAKE_STATE/calls.log"
 }
 transaction_counter=0
@@ -142,6 +152,7 @@ run_tool() {
     BLAZN_EXPECTED_CONTROLLER_SHA256="$controller_sha" \
     BLAZN_DATABASE_URL_SECRET_NAME=blazn-controller-database-url \
     BLAZN_OBJECT_SECRET_NAME=blazn-controller-object \
+    BLAZN_REGISTRY_PULL_SECRET_NAME=blazn-registry-pull \
     "$@" \
     "$CONTROLLER/$run_script" $run_arg >"$tmp/last-out" 2>"$tmp/last-err"
   last_code=$?
@@ -156,7 +167,7 @@ run_tool install-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
 [ -e "$FAKE_STATE/scaled1" ]
-jq -e 'length == 6' "$transaction/owned-uids.json" >/dev/null
+jq -e 'length == 8' "$transaction/owned-uids.json" >/dev/null
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ]
 grep -Fq 'already complete' "$tmp/last-out"
@@ -185,6 +196,13 @@ run_tool install-controller.sh
 [ "$last_code" -eq 1 ]
 expect_message 'Agent Sandbox controller is not installed'
 
+# T4b: either runtime namespace missing the pull Secret blocks before apply.
+reset_state; rm -f "$FAKE_STATE/sandbox-pull-secret"; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 1 ]
+expect_message 'Sandbox registry pull Secret is not provisioned'
+if grep -Fq 'apply --server-side' "$FAKE_STATE/calls.log"; then printf 'missing pull Secret must block apply\n' >&2; exit 1; fi
+
 # T5: a controller that never becomes Available fails after scaling.
 reset_state; new_transaction
 run_tool install-controller.sh FAKE_UNAVAILABLE=1 BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS=2
@@ -200,8 +218,10 @@ run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
 [ -e "$FAKE_STATE/scaled0" ]
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 6 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 8 ]
 grep -Fq '"uid": "11111111-1111-4111-8111-111111111111"' "$FAKE_STATE/delete-requests.log"
+grep -Fq '"uid": "77777777-7777-4777-8777-777777777777"' "$FAKE_STATE/delete-requests.log"
+grep -Fq '"uid": "88888888-8888-4888-8888-888888888888"' "$FAKE_STATE/delete-requests.log"
 
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
 # were recorded at apply-intent, before scaling).
@@ -213,7 +233,7 @@ expect_phase scaled
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 6 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 8 ]
 
 # T5c: a resume after the scale succeeded but before its journal entry
 # completes instead of failing on the sealed zero replicas.
@@ -236,8 +256,8 @@ run_tool install-controller.sh
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-# Only the four still-present objects were issued a precondition delete.
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 4 ]
+# Only the six still-present objects were issued a precondition delete.
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 6 ]
 
 # T6c: a resume that already removed only the same-named Role (its sibling
 # ServiceAccount/RoleBinding/Deployment still present) skips the Role by kind,
@@ -249,7 +269,7 @@ run_tool install-controller.sh
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 5 ]
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 7 ]
 
 # T7: a pre-existing controller Deployment blocks a fresh transaction.
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction

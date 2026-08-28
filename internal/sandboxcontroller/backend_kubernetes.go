@@ -3,6 +3,7 @@ package sandboxcontroller
 import (
 	"context"
 	"errors"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ type SandboxControlAdapter interface {
 	Delete(context.Context, string, string, string, string, string, string, string) (sandboxcontrol.OperationReceipt, error)
 	Finalize(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, string) (sandboxcontrol.OperationReceipt, error)
 	FinalizePreExported(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, []sandboxcontrol.ArtifactReceipt, string) (sandboxcontrol.OperationReceipt, error)
+	CleanupOwnedDependents(context.Context, sandboxcontrol.AdmissionObservation) error
 	ObserveAbsence(context.Context, sandboxcontrol.AdmissionObservation) error
 }
 
@@ -142,7 +144,7 @@ func (b *KubernetesBackend) EnsureCreated(ctx context.Context, item WorkItem) (B
 	if err != nil {
 		return BackendState{}, classifyAdapter("create", err)
 	}
-	if err := verifyReceipt(receipt, sandboxcontrol.OperationCreate, request, record); err != nil {
+	if err := verifyReceipt(receipt, sandboxcontrol.OperationCreate, request.RequestID, request, record); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "sandbox create receipt identity changed", false, true, err)
 	}
 	if err := verifyLiveRecord(item, request, record, retainedRecord(retained, trusted), false, true); err != nil {
@@ -200,6 +202,9 @@ func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected
 
 func sameSourceBootstrapObservation(expected, current sandboxcontrol.AdmissionObservation) bool {
 	expected.Sandbox.ResourceVersion, current.Sandbox.ResourceVersion = "", ""
+	expected.Pod.ResourceVersion, current.Pod.ResourceVersion = "", ""
+	expected.Workload.ResourceVersion, current.Workload.ResourceVersion = "", ""
+	expected.Workload.Digest, current.Workload.Digest = "", ""
 	expected.Digest, current.Digest = "", ""
 	return reflect.DeepEqual(expected, current)
 }
@@ -219,25 +224,39 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 	if err != nil {
 		var adapterErr *sandboxcontrol.AdapterError
 		if errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound {
-			if err := b.adapter.ObserveAbsence(ctx, *expected); err != nil {
-				return BackendState{}, classifyCleanupObservation(err)
+			if err := b.waitForOwnedAbsence(ctx, *expected); err != nil {
+				return BackendState{}, err
 			}
 			return BackendState{AdmissionObservation: expected, AbsenceObserved: true}, nil
 		}
 		return BackendState{}, classifyCleanupObservation(err)
 	}
-	if err := verifyLiveRecord(item, request, record, nil, !record.Deleting, true); err != nil {
+	if err := verifyLiveRecord(item, request, record, nil, false, false); err != nil {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
+	}
+	if record.Deleting && !hasFinalizer(record.Finalizers) {
+		// A prior attempt may have removed the Blazn finalizer and then lost
+		// its response while Kubernetes foreground deletion was still
+		// draining dependents. The immutable observation remains authority;
+		// continue only through exact owned-dependent and absence proofs.
+		if err := b.waitForOwnedAbsence(ctx, *expected); err != nil {
+			return BackendState{}, err
+		}
+		return BackendState{AdmissionObservation: expected, AbsenceObserved: true}, nil
+	}
+	if !hasFinalizer(record.Finalizers) {
+		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup finalizer disappeared before deletion", false, true, nil)
 	}
 	if record.Deleting {
 		return BackendState{Record: record, AdmissionObservation: expected,
 			Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(record.Finalizers)}, nil
 	}
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, expected)
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, nil)
 	if err != nil {
+		log.Print("sandbox cleanup admission observation was rejected")
 		return BackendState{}, classifyCleanupObservation(err)
 	}
-	if err := verifyObservation(item, observation); err != nil {
+	if err := verifyCleanupObservation(item, *expected, observation); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
 	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
@@ -248,11 +267,12 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		return BackendState{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
 	}
 	deleteReceipt, err := b.adapter.Delete(ctx, "controller-"+item.OperationID, item.WorkspaceID, item.RequestedBy,
-		item.SandboxID, *item.BackendUID, *item.BackendResourceVersion, digest)
+		item.SandboxID, *item.BackendUID, record.ResourceVersion, digest)
 	if err != nil {
+		log.Print("sandbox cleanup delete mutation was rejected")
 		return BackendState{}, classifyAdapter("cleanup", err)
 	}
-	if err := verifyReceipt(deleteReceipt, sandboxcontrol.OperationDelete, request, record); err != nil {
+	if err := verifyReceipt(deleteReceipt, sandboxcontrol.OperationDelete, "controller-"+item.OperationID, request, record); err != nil {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup delete receipt identity changed", false, true, err)
 	}
 	live, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
@@ -264,8 +284,25 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		live.ArtifactContractDigest != digest || !reflect.DeepEqual(live.Artifacts, artifacts) {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, nil)
 	}
-	return BackendState{Record: live, AdmissionObservation: &observation,
+	return BackendState{Record: live, AdmissionObservation: expected,
 		Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(live.Finalizers)}, nil
+}
+
+// verifyCleanupObservation keeps immutable UIDs and the complete controller
+// owner chain frozen while allowing Kubernetes resourceVersions (and their
+// derived digests) to advance after admission. The subsequent mutation still
+// uses the freshly observed resourceVersion as an atomic delete precondition.
+func verifyCleanupObservation(item WorkItem, expected, current sandboxcontrol.AdmissionObservation) error {
+	if err := verifyObservation(item, expected); err != nil {
+		return err
+	}
+	if err := sandboxcontrol.ValidateAdmissionObservation(current); err != nil {
+		return err
+	}
+	if !sameSourceBootstrapObservation(expected, current) {
+		return errors.New("admission ownership identity changed")
+	}
+	return nil
 }
 
 func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state BackendState, expected *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {
@@ -302,7 +339,7 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 		if err != nil {
 			return CleanupResult{}, classifyAdapter("cleanup", err)
 		}
-		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
+		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, "controller-"+item.OperationID, request, state.Record); err != nil {
 			return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
 		}
 	} else if !state.AbsenceObserved {
@@ -310,17 +347,27 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 	}
 	result := CleanupResult{ArtifactIDs: ids, WarningCodes: []string{}, CleanupComplete: true,
 		ArtifactExportComplete: true, GrantsRevoked: true, BackendDestroyed: true}
+	if err := b.waitForOwnedAbsence(ctx, *expected); err != nil {
+		return CleanupResult{}, err
+	}
+	return result, nil
+}
+
+func (b *KubernetesBackend) waitForOwnedAbsence(ctx context.Context, expected sandboxcontrol.AdmissionObservation) error {
 	for {
-		err = b.adapter.ObserveAbsence(ctx, *expected)
+		if err := b.adapter.CleanupOwnedDependents(ctx, expected); err != nil {
+			return classifyAdapter("cleanup", err)
+		}
+		err := b.adapter.ObserveAbsence(ctx, expected)
 		if err == nil {
-			return result, nil
+			return nil
 		}
 		var adapterErr *sandboxcontrol.AdapterError
 		if !errors.As(err, &adapterErr) || adapterErr.Code != sandboxcontrol.ErrCleanupIncomplete {
-			return CleanupResult{}, classifyAdapter("cleanup", err)
+			return classifyAdapter("cleanup", err)
 		}
 		if !wait(ctx, b.absencePollInterval) {
-			return CleanupResult{}, ctx.Err()
+			return ctx.Err()
 		}
 	}
 }
@@ -476,7 +523,7 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 	if len(item.Sources) != 0 || len(artifacts) != 0 {
 		helperImage = b.helperImage
 	}
-	return sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
+	return sandboxcontrol.CreateRequest{RequestID: "controller-create-" + item.SandboxID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
 		HelperImage: helperImage,
 		Command:     append([]string(nil), item.Command...), Architecture: item.Architecture,
@@ -522,7 +569,7 @@ func verifyObservation(item WorkItem, observation sandboxcontrol.AdmissionObserv
 	return nil
 }
 
-func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcontrol.Operation, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord) error {
+func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcontrol.Operation, receiptRequestID string, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord) error {
 	if err := sandboxcontrol.ValidateReceipt(receipt); err != nil {
 		return err
 	}
@@ -530,12 +577,11 @@ func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcon
 	if err != nil {
 		return err
 	}
-	if receipt.Operation != operation || receipt.RequestID != request.RequestID || receipt.Name != request.Name ||
+	if receipt.Operation != operation || receipt.RequestID != receiptRequestID || receipt.Name != request.Name ||
 		receipt.Namespace != sandboxcontrol.Namespace || receipt.WorkspaceID != request.WorkspaceID ||
 		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != sandboxcontrol.QueueName ||
 		receipt.RuntimeClass != request.RuntimeClassName || receipt.ArtifactContractDigest != artifactDigest ||
-		operation != sandboxcontrol.OperationFinalize && receipt.ResourceVersion != record.ResourceVersion ||
-		operation == sandboxcontrol.OperationFinalize && receipt.ResourceVersion == record.ResourceVersion {
+		operation != sandboxcontrol.OperationFinalize && receipt.ResourceVersion != record.ResourceVersion {
 		return errors.New("adapter receipt does not match the requested identity")
 	}
 	if operation != sandboxcontrol.OperationFinalize && len(receipt.Artifacts) != 0 {
@@ -595,11 +641,14 @@ func classifyAdapter(operation string, err error) error {
 	case sandboxcontrol.ErrBackend:
 		return backendFailure("backend_transport_failure", "sandbox backend request failed", true, false, err)
 	case sandboxcontrol.ErrConflict, sandboxcontrol.ErrIdentityBoundary, sandboxcontrol.ErrResourceVersionStale:
+		if operation == "observe" {
+			return backendFailure("backend_identity_mismatch", "sandbox backend identity could not be proven", true, false, err)
+		}
 		return backendFailure("backend_identity_mismatch", "sandbox backend identity could not be proven", false, true, err)
 	case sandboxcontrol.ErrArtifactExport:
 		return backendFailure("cleanup_incomplete", "sandbox artifact export did not complete", operation == "cleanup", false, err)
 	case sandboxcontrol.ErrCleanupIncomplete:
-		return backendFailure("cleanup_incomplete", "sandbox cleanup could not be proven complete", operation == "cleanup", true, err)
+		return backendFailure("cleanup_incomplete", "sandbox cleanup could not be proven complete", operation == "cleanup", false, err)
 	case sandboxcontrol.ErrNotFound:
 		return backendFailure("backend_not_found", "sandbox backend identity is absent", operation != "cleanup", operation == "cleanup", err)
 	case sandboxcontrol.ErrAdmissionPending:

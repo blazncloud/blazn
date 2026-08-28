@@ -59,9 +59,38 @@ grep -F 'Authenticated as ' "$work/login.out" >/dev/null
 jq -e '.authenticated == true and .user.status == "active" and .device.status == "active"' "$work/status.json" >/dev/null
 device_id=$(jq -r '.device.id' "$work/status.json")
 
-credential=$work/data/blazn/credentials/session.v1
-if [ ! -f "$credential" ] || [ "$(stat -c '%a' "$credential")" != 600 ]; then
-  printf 'credential file is missing or unsafe\n' >&2
+# The CLI resolves the credential directory from user.Current().HomeDir (which
+# with the CGO_ENABLED=0 release binary is $HOME), not XDG_DATA_HOME, and names
+# the file session-<origin digest>.json. Glob for it instead of guessing the
+# digest.
+cred_dir=$HOME/.local/share/blazn/credentials
+credential=
+for candidate in "$cred_dir"/session-*.json; do
+  [ -e "$candidate" ] || continue
+  if [ -n "$credential" ]; then
+    printf 'multiple credential files present in %s\n' "$cred_dir" >&2
+    exit 1
+  fi
+  credential=$candidate
+done
+if [ -z "$credential" ]; then
+  # The protected file may be legitimately absent when the Linux Secret Service
+  # backend was selected; distinguish that from a genuine failure.
+  backend=
+  for receipt in "$cred_dir"/session-*.backend; do
+    [ -e "$receipt" ] || continue
+    backend=$(tr -d '\r\n' <"$receipt")
+    break
+  done
+  if [ "$backend" = secret-service ]; then
+    printf 'credential is stored via the Secret Service backend, so no protected file exists; this live check requires the protected-file backend (run it without an active Secret Service / secret-tool)\n' >&2
+    exit 2
+  fi
+  printf 'credential file is missing\n' >&2
+  exit 1
+fi
+if [ ! -f "$credential" ] || [ -L "$credential" ] || [ "$(stat -c '%a' "$credential")" != 600 ]; then
+  printf 'credential file is unsafe\n' >&2
   exit 1
 fi
 access_token=$(jq -r '.accessToken' "$credential")

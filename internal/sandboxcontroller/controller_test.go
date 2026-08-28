@@ -13,18 +13,19 @@ import (
 )
 
 type fakeStore struct {
-	bound           bool
-	claims          int
-	bindObservation sandboxcontrol.AdmissionObservation
-	sourceReceipt   *sandboxio.SourceMaterializationReceipt
-	completion      *Completion
-	retry           *SafeError
-	renewResponses  chan renewResponse
-	renewStarted    chan struct{}
-	retryCalls      int
-	completionCalls int
-	artifactRecords int
-	artifactPhases  int
+	bound               bool
+	claims              int
+	bindObservation     sandboxcontrol.AdmissionObservation
+	sourceReceipt       *sandboxio.SourceMaterializationReceipt
+	completion          *Completion
+	retry               *SafeError
+	renewResponses      chan renewResponse
+	renewStarted        chan struct{}
+	retryCalls          int
+	completionCalls     int
+	artifactRecords     int
+	artifactPhases      int
+	artifactWarningsNil bool
 }
 
 type renewResponse struct {
@@ -76,6 +77,7 @@ func (s *fakeStore) RecordArtifact(_ context.Context, _, _, _ string, _ sandboxc
 }
 func (s *fakeStore) CompleteArtifactExport(_ context.Context, _, _, _ string, _ sandboxcontrol.AdmissionObservation, warnings []string) (bool, error) {
 	s.artifactPhases++
+	s.artifactWarningsNil = warnings == nil
 	return true, nil
 }
 func (s *fakeStore) Retry(_ context.Context, _, _, _ string, _ int, safe SafeError) (RetryOutcome, error) {
@@ -104,6 +106,7 @@ type fakeBackend struct {
 	artifactExports                              int
 	artifactResult                               ArtifactExportResult
 	order                                        []string
+	observedItems                                []WorkItem
 }
 
 type blockingBackend struct {
@@ -140,9 +143,10 @@ func (b *fakeBackend) EnsureCreated(context.Context, WorkItem) (BackendState, er
 	b.order = append(b.order, "create")
 	return b.created, b.err
 }
-func (b *fakeBackend) Observe(context.Context, WorkItem, *sandboxcontrol.AdmissionObservation) (BackendState, error) {
+func (b *fakeBackend) Observe(_ context.Context, item WorkItem, _ *sandboxcontrol.AdmissionObservation) (BackendState, error) {
 	b.calls++
 	b.order = append(b.order, "observe")
+	b.observedItems = append(b.observedItems, item)
 	if len(b.observedStates) != 0 {
 		state := b.observedStates[0]
 		b.observedStates = b.observedStates[1:]
@@ -224,6 +228,10 @@ func TestCreatePersistsSourcesBeforeRuntimeRestrictionAndRelease(t *testing.T) {
 	}
 	if store.completion == nil || store.completion.Status != "succeeded" {
 		t.Fatalf("source create did not complete: %#v", store.completion)
+	}
+	lastObserved := backend.observedItems[len(backend.observedItems)-1]
+	if lastObserved.SourceMaterialization == nil || lastObserved.SourceBootstrapObservation == nil {
+		t.Fatalf("in-attempt source evidence was not propagated to observation: %#v", lastObserved)
 	}
 }
 
@@ -339,7 +347,7 @@ func TestCleanupExportsAndPersistsArtifactsBeforeBackendDelete(t *testing.T) {
 	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 || store.artifactPhases != 1 ||
+	if !reflect.DeepEqual(backend.order, []string{"export", "delete", "finalize"}) || store.artifactRecords != 1 || store.artifactPhases != 1 || store.artifactWarningsNil ||
 		store.completion == nil || !reflect.DeepEqual(store.completion.ArtifactIDs, []string{"80000000-0000-4000-8000-000000000001"}) {
 		t.Fatalf("order=%v records=%d phases=%d completion=%#v", backend.order, store.artifactRecords, store.artifactPhases, store.completion)
 	}
@@ -364,6 +372,7 @@ func TestCleanupRestartAdoptsCompletedArtifactPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	if backend.artifactExports != 0 || store.artifactPhases != 0 || store.completion == nil ||
+		store.completion.ArtifactIDs == nil || len(store.completion.ArtifactIDs) != 0 ||
 		!reflect.DeepEqual(store.completion.WarningCodes, item.ArtifactWarningCodes) {
 		t.Fatalf("restart repeated export or lost receipt: exports=%d phases=%d completion=%#v", backend.artifactExports, store.artifactPhases, store.completion)
 	}
@@ -403,6 +412,9 @@ func TestInvalidPartialBackendIdentityNeverCallsBackend(t *testing.T) {
 	}
 	if store.completion == nil || store.completion.Status != "recovery_required" {
 		t.Fatalf("partial identity was not rejected: %#v", store.completion)
+	}
+	if store.completion.Error == nil || store.completion.Error.Message != "controller work item is invalid: persisted backend identity is incomplete" {
+		t.Fatalf("invalid work-item category was not retained safely: %#v", store.completion.Error)
 	}
 }
 
@@ -447,9 +459,9 @@ func TestLeaseRenewStoreErrorCancelsBackendAndReturnsError(t *testing.T) {
 }
 
 func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
-	t.Run("delayed claim", func(t *testing.T) {
+	t.Run("delayed claim is renewed before backend work", func(t *testing.T) {
 		item, state := createFixture(t)
-		item.LeaseRemaining = defaultLeaseSafetyMargin + 5*time.Millisecond
+		item.LeaseRemaining = defaultLeaseSafetyMargin + 100*time.Millisecond
 		item.LeaseDeadline = time.Now().Add(item.LeaseRemaining)
 		store := &fakeStore{}
 		backend := &fakeBackend{created: state}
@@ -457,8 +469,8 @@ func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
 		if err := controller.reconcile(context.Background(), item); err != nil {
 			t.Fatal(err)
 		}
-		if store.bound || store.completionCalls != 0 || store.retryCalls != 0 {
-			t.Fatal("unsafe claimed lease performed a fenced write")
+		if !store.bound || store.completionCalls != 1 || store.retryCalls != 0 {
+			t.Fatal("renewed claim did not complete backend work")
 		}
 	})
 	t.Run("renew", func(t *testing.T) {
