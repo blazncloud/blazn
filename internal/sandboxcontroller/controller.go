@@ -117,6 +117,7 @@ func (c *Controller) Run(ctx context.Context) error {
 
 func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 	if err := validateWorkItem(item); err != nil {
+		log.Printf("sandbox controller rejected claimed work item: %v", err)
 		// validateWorkItem emits only bounded category messages and never
 		// includes work-item values. Retain that safe detail in the terminal
 		// receipt so a malformed persisted transition is diagnosable without
