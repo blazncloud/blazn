@@ -13,8 +13,12 @@ RUN ln -s /usr/local/go/bin/go /usr/local/bin/go && \
 COPY services/control-api/package.json services/control-api/package-lock.json /opt/blazn-control-api/
 RUN npm ci --prefix /opt/blazn-control-api --ignore-scripts --no-audit --no-fund && \
     npm install --prefix /tmp/npm-tar-patch --ignore-scripts --no-audit --no-fund tar@7.5.19 && \
-    rm -rf /usr/local/lib/node_modules/npm/node_modules/tar && \
-    mv /tmp/npm-tar-patch/node_modules/tar /usr/local/lib/node_modules/npm/node_modules/tar && \
+    find /usr/local/lib/node_modules/npm -type d -path '*/node_modules/tar' -print | while read -r target; do \
+      rm -rf "$target"; \
+      cp -a /tmp/npm-tar-patch/node_modules/tar "$target"; \
+    done && \
+    find /usr/local/lib/node_modules/npm -type d -path '*/node_modules/tar' -exec \
+      sh -c 'for target; do grep -Eq '\''"version": "7[.]5[.]19"'\'' "$target/package.json" || exit 1; done' sh {} + && \
     rm -rf /tmp/npm-tar-patch /root/.npm
 
 FROM dependencies
