@@ -233,18 +233,18 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		}
 		return BackendState{}, classifyCleanupObservation(err)
 	}
-	if err := verifyLiveRecord(item, request, record, nil, !record.Deleting, true); err != nil {
+	if err := verifyLiveRecord(item, request, record, nil, false, true); err != nil {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
 	if record.Deleting {
 		return BackendState{Record: record, AdmissionObservation: expected,
 			Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(record.Finalizers)}, nil
 	}
-	observation, err := b.adapter.ObserveAdmission(ctx, request, record, expected)
+	observation, err := b.adapter.ObserveAdmission(ctx, request, record, nil)
 	if err != nil {
 		return BackendState{}, classifyCleanupObservation(err)
 	}
-	if err := verifyObservation(item, observation); err != nil {
+	if err := verifyCleanupObservation(item, *expected, observation); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "cleanup backend identity changed", false, true, err)
 	}
 	if observation.Sandbox.UID != record.UID || observation.Sandbox.ResourceVersion != record.ResourceVersion {
@@ -255,7 +255,7 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		return BackendState{}, backendFailure("invalid_work_item", "sandbox artifact contract is invalid", false, true, err)
 	}
 	deleteReceipt, err := b.adapter.Delete(ctx, "controller-"+item.OperationID, item.WorkspaceID, item.RequestedBy,
-		item.SandboxID, *item.BackendUID, *item.BackendResourceVersion, digest)
+		item.SandboxID, *item.BackendUID, record.ResourceVersion, digest)
 	if err != nil {
 		return BackendState{}, classifyAdapter("cleanup", err)
 	}
@@ -271,8 +271,25 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		live.ArtifactContractDigest != digest || !reflect.DeepEqual(live.Artifacts, artifacts) {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup backend identity changed", false, true, nil)
 	}
-	return BackendState{Record: live, AdmissionObservation: &observation,
+	return BackendState{Record: live, AdmissionObservation: expected,
 		Exists: true, Deleting: true, CleanupFinalizerPresent: hasFinalizer(live.Finalizers)}, nil
+}
+
+// verifyCleanupObservation keeps immutable UIDs and the complete controller
+// owner chain frozen while allowing Kubernetes resourceVersions (and their
+// derived digests) to advance after admission. The subsequent mutation still
+// uses the freshly observed resourceVersion as an atomic delete precondition.
+func verifyCleanupObservation(item WorkItem, expected, current sandboxcontrol.AdmissionObservation) error {
+	if err := verifyObservation(item, expected); err != nil {
+		return err
+	}
+	if err := sandboxcontrol.ValidateAdmissionObservation(current); err != nil {
+		return err
+	}
+	if !sameSourceBootstrapObservation(expected, current) {
+		return errors.New("admission ownership identity changed")
+	}
+	return nil
 }
 
 func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state BackendState, expected *sandboxcontrol.AdmissionObservation) (CleanupResult, error) {

@@ -429,6 +429,24 @@ func TestKubernetesBackendCleanupDeletesFinalizesAndProvesExactAbsence(t *testin
 	}
 }
 
+func TestKubernetesBackendCleanupAllowsResourceVersionDrift(t *testing.T) {
+	item, record, observation := backendFixture(t)
+	bindBackendIdentity(&item, record, observation)
+	bindPersistedArtifact(t, &item)
+	record.ResourceVersion = "resource-version-ready-later"
+	observation.Sandbox.ResourceVersion = record.ResourceVersion
+	observation.Digest = sandboxcontrol.AdmissionObservationDigest(observation)
+	fake := &fakeSandboxAdapter{record: record, observation: observation}
+	backend := newTestKubernetesBackend(t, fake, true)
+	state, err := backend.BeginDelete(context.Background(), item, item.AdmissionObservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AdmissionObservation != item.AdmissionObservation || state.Record.ResourceVersion != "resource-version-delete" {
+		t.Fatalf("cleanup did not retain frozen authority with a fresh mutation precondition: %#v", state)
+	}
+}
+
 func TestKubernetesBackendCleanupRestartAndAlreadyDeletedFailClosed(t *testing.T) {
 	item, record, observation := backendFixture(t)
 	bindBackendIdentity(&item, record, observation)
