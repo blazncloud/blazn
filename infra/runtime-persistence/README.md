@@ -18,3 +18,9 @@ sudo ./infra/runtime-persistence/install.sh
 
 The installer replaces the two transient units with enabled persistent units;
 it does not read, copy, print, or modify credentials.
+
+The helpers start before the control plane and are enabled in its wants directory.
+They must not require or start after the control plane: API startup checks the
+identity provider through the tunnel, and that reverse dependency deadlocks
+startup. The helpers stay available while the control plane restarts. The static
+unit transaction includes this health dependency so a reversed ordering fails.

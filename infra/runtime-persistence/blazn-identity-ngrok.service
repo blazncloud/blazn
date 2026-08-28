@@ -1,8 +1,8 @@
 [Unit]
 Description=Blazn identity ngrok tunnel
-After=network-online.target blazn-control-plane.service
+After=network-online.target
+Before=blazn-control-plane.service
 Wants=network-online.target
-Requires=blazn-control-plane.service
 ConditionPathExists=/etc/blazn/ngrok/ngrok.yml
 
 [Service]
@@ -25,4 +25,4 @@ LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target blazn-control-plane.service

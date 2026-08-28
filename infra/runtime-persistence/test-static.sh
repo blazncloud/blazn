@@ -9,7 +9,7 @@ trap cleanup EXIT HUP INT TERM
 for unit in blazn-controller-relay.service blazn-identity-ngrok.service; do
   sed 's|^ExecStart=.*|ExecStart=/usr/bin/true|' "$ROOT/$unit" >"$verify_dir/$unit"
 done
-printf '[Unit]\nDescription=Static verification placeholder\n[Service]\nExecStart=/usr/bin/true\n' >"$verify_dir/blazn-control-plane.service"
+printf '[Unit]\nDescription=Control plane requiring healthy runtime helpers\nWants=blazn-controller-relay.service blazn-identity-ngrok.service\nAfter=blazn-controller-relay.service blazn-identity-ngrok.service\n[Service]\nExecStart=/usr/bin/true\n' >"$verify_dir/blazn-control-plane.service"
 systemd-analyze verify "$verify_dir/blazn-control-plane.service" "$verify_dir/blazn-controller-relay.service" "$verify_dir/blazn-identity-ngrok.service"
 cleanup
 trap - EXIT HUP INT TERM
