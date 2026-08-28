@@ -12,8 +12,10 @@ RUN ln -s /usr/local/go/bin/go /usr/local/bin/go && \
     ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 COPY services/control-api/package.json services/control-api/package-lock.json /opt/blazn-control-api/
 RUN npm ci --prefix /opt/blazn-control-api --ignore-scripts --no-audit --no-fund && \
-    npm install --prefix /usr/local/lib/node_modules/npm --ignore-scripts --no-audit --no-fund tar@7.5.19 && \
-    rm -rf /root/.npm
+    npm install --prefix /tmp/npm-tar-patch --ignore-scripts --no-audit --no-fund tar@7.5.19 && \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/tar && \
+    mv /tmp/npm-tar-patch/node_modules/tar /usr/local/lib/node_modules/npm/node_modules/tar && \
+    rm -rf /tmp/npm-tar-patch /root/.npm
 
 FROM dependencies
 COPY examples/blazn-development-sandbox/start.sh /usr/local/bin/blazn-development-sandbox
