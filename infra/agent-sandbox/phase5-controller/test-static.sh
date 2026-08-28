@@ -27,6 +27,7 @@ render() {
     BLAZN_KUBERNETES_API_AUDIENCE=https://kubernetes.default.svc \
     BLAZN_BEN1_POSTGRES_CIDR=10.20.30.41/32 \
     BLAZN_BEN1_POSTGRES_PORT=5432 \
+    BLAZN_ACCESS_SERVICE_CLUSTER_IP=10.152.183.207 \
     BLAZN_ACCESS_SOURCE_CIDR=10.20.30.44/32 \
     BLAZN_OBJECT_SECRET_NAME=controller-object-credentials \
     BLAZN_OBJECT_ACCESS_KEY=access-key \
@@ -57,9 +58,11 @@ for script in "$ROOT"/*.sh; do sh -n "$script"; done
 render "$tmp/ip.yaml"
 manifest_mode=$(stat -c '%a' "$tmp/ip.yaml" 2>/dev/null || stat -f '%Lp' "$tmp/ip.yaml")
 [ "$manifest_mode" = 400 ]
-[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 6 ]
+[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 8 ]
 [ "$(grep -Fxc "        image: $IMAGE" "$tmp/ip.yaml")" -eq 2 ]
 grep -F '  replicas: 0' "$tmp/ip.yaml" >/dev/null
+grep -F '  clusterIP: 10.152.183.207' "$tmp/ip.yaml" >/dev/null
+grep -F '  clusterIPs: [10.152.183.207]' "$tmp/ip.yaml" >/dev/null
 grep -F '  namespace: blazn-poc-system' "$tmp/ip.yaml" >/dev/null
 grep -F '  namespace: blazn-poc-sandboxes' "$tmp/ip.yaml" >/dev/null
 grep -F 'automountServiceAccountToken: false' "$tmp/ip.yaml" >/dev/null
@@ -108,8 +111,8 @@ grep -F 'value: "https://10.20.30.42:9443"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
-[ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 3 ]
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_ACCESS_SOURCE_CIDR|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_CA_KEY|BLAZN_REGISTRY_PULL_SECRET_NAME|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
+[ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 4 ]
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_ACCESS_SERVICE_CLUSTER_IP|BLAZN_ACCESS_SOURCE_CIDR|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_CA_KEY|BLAZN_REGISTRY_PULL_SECRET_NAME|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
 if grep -E "$placeholder_pattern" "$tmp/ip.yaml" >/dev/null; then
   printf 'render left an unresolved placeholder\n' >&2
   exit 1
@@ -141,7 +144,7 @@ render "$tmp/repository-255.yaml" BLAZN_CONTROLLER_IMAGE="$repository_255_image"
 render "$tmp/hostname.yaml" BLAZN_DATABASE_ENDPOINT_KIND=hostname BLAZN_DNS_CIDR=10.20.30.53/32
 grep -F 'cidr: 10.20.30.53/32' "$tmp/hostname.yaml" >/dev/null
 [ "$(grep -Fc 'port: 53' "$tmp/hostname.yaml")" -eq 2 ]
-[ "$(grep -c 'cidr: ' "$tmp/hostname.yaml")" -eq 4 ]
+[ "$(grep -c 'cidr: ' "$tmp/hostname.yaml")" -eq 5 ]
 grep -F 'protocol: UDP' "$tmp/hostname.yaml" >/dev/null
 grep -F 'protocol: TCP' "$tmp/hostname.yaml" >/dev/null
 
@@ -185,6 +188,7 @@ expect_fail broad-database BLAZN_BEN1_POSTGRES_CIDR=10.20.30.0/24
 expect_fail unspecified-api BLAZN_KUBERNETES_API_CIDR=0.0.0.0/32
 expect_fail loopback-database BLAZN_BEN1_POSTGRES_CIDR=127.0.0.1/32
 expect_fail broad-access-source BLAZN_ACCESS_SOURCE_CIDR=10.20.30.0/24
+expect_fail invalid-access-service-ip BLAZN_ACCESS_SERVICE_CLUSTER_IP=10.152.183.0/24
 expect_fail bad-api-port BLAZN_KUBERNETES_API_PORT=0
 expect_fail broad-database-port BLAZN_BEN1_POSTGRES_PORT=1-65535
 expect_fail overflow-port BLAZN_BEN1_POSTGRES_PORT=65536

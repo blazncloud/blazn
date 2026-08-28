@@ -263,6 +263,8 @@ metadata:
     app.kubernetes.io/part-of: blazn-poc
 spec:
   type: ClusterIP
+  clusterIP: BLAZN_ACCESS_SERVICE_CLUSTER_IP
+  clusterIPs: [BLAZN_ACCESS_SERVICE_CLUSTER_IP]
   selector:
     app.kubernetes.io/name: blazn-sandbox-controller
   ports:
