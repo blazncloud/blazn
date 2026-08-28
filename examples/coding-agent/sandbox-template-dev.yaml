@@ -7,7 +7,7 @@
     "description": "Long-running non-sensitive Blazn CLI development template",
     "policyProfile": "poc-restricted-v1",
     "isolation": "approved-non-sensitive-poc",
-    "expiresInSeconds": 900,
+    "expiresInSeconds": 7200,
     "networkProfile": "default-deny-v1",
     "variants": [
       {
