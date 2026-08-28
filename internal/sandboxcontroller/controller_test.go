@@ -458,7 +458,7 @@ func TestLeaseRenewStoreErrorCancelsBackendAndReturnsError(t *testing.T) {
 }
 
 func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
-	t.Run("delayed claim", func(t *testing.T) {
+	t.Run("delayed claim is renewed before backend work", func(t *testing.T) {
 		item, state := createFixture(t)
 		item.LeaseRemaining = defaultLeaseSafetyMargin + 5*time.Millisecond
 		item.LeaseDeadline = time.Now().Add(item.LeaseRemaining)
@@ -468,8 +468,8 @@ func TestClaimAndRenewRequireLeaseThroughNextHeartbeat(t *testing.T) {
 		if err := controller.reconcile(context.Background(), item); err != nil {
 			t.Fatal(err)
 		}
-		if store.bound || store.completionCalls != 0 || store.retryCalls != 0 {
-			t.Fatal("unsafe claimed lease performed a fenced write")
+		if !store.bound || store.completionCalls != 1 || store.retryCalls != 0 {
+			t.Fatal("renewed claim did not complete backend work")
 		}
 	})
 	t.Run("renew", func(t *testing.T) {

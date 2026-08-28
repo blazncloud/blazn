@@ -123,7 +123,14 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 		return c.finishFailure(parent, item, &Failure{Code: "invalid_work_item", SafeMessage: "controller work item is invalid: " + err.Error(), Ambiguous: true, Cause: err})
 	}
 	if !c.leaseCoversNextRenew(item.LeaseDeadline) {
-		return nil
+		window, ok, err := c.refreshClaimLease(parent, item)
+		if err != nil {
+			return fmt.Errorf("sandbox initial lease renewal failed: %w", err)
+		}
+		if !ok || !c.leaseCoversNextRenew(window.Deadline) {
+			return nil
+		}
+		item.LeaseExpiresAt, item.LeaseRemaining, item.LeaseDeadline = window.ExpiresAt, window.Remaining, window.Deadline
 	}
 	ctx, cancel := context.WithTimeout(parent, c.config.OperationTimeout)
 	defer cancel()
@@ -146,6 +153,24 @@ func (c *Controller) reconcile(parent context.Context, item WorkItem) error {
 		failure = &Failure{Code: "backend_failure", SafeMessage: "sandbox backend operation failed", Retryable: true, Cause: err}
 	}
 	return c.finishFailure(parent, item, failure)
+}
+
+// refreshClaimLease repairs a claim whose safe local deadline no longer spans
+// the first heartbeat interval. The database lease and token remain the sole
+// authority: a refresh that cannot complete before the claim's safety deadline
+// performs no backend work.
+func (c *Controller) refreshClaimLease(parent context.Context, item WorkItem) (LeaseWindow, bool, error) {
+	delay := c.leaseSafetyDelay(item.LeaseDeadline)
+	if delay <= 0 {
+		return LeaseWindow{}, false, nil
+	}
+	ctx, cancel := context.WithTimeout(parent, delay)
+	defer cancel()
+	window, ok, err := c.store.Renew(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, int(c.config.Lease/time.Second))
+	if err != nil && ctx.Err() != nil {
+		return LeaseWindow{}, false, nil
+	}
+	return window, ok, err
 }
 
 func (c *Controller) heartbeat(ctx context.Context, cancel context.CancelFunc, item WorkItem, done chan<- heartbeatResult) {
