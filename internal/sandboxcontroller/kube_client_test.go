@@ -144,12 +144,28 @@ func TestKubernetesClientBoundsHeadersBodiesContentTypeAndStalls(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		if err := kubernetesAPIHealth(ctx, client, config.BaseURL); err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.Fatalf("stalled request was not canceled: %v", err)
+		result := make(chan error, 1)
+		go func() { result <- kubernetesAPIHealth(ctx, client, config.BaseURL) }()
+		// Cancel an established request, not a TLS handshake that may take
+		// longer than an arbitrary short deadline on a CPU-limited worker.
+		select {
+		case <-started:
+		case err := <-result:
+			t.Fatalf("request ended before reaching the stall handler: %v", err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("request did not reach the stall handler")
 		}
-		<-started
+		cancel()
+		select {
+		case err := <-result:
+			if err == nil || !errors.Is(ctx.Err(), context.Canceled) {
+				t.Fatalf("stalled request was not canceled: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("stalled request did not return after cancellation")
+		}
 	})
 }
 

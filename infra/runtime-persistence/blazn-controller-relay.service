@@ -1,8 +1,8 @@
 [Unit]
 Description=Blazn controller database and object-store relay
-After=network-online.target blazn-control-plane.service
+After=network-online.target
+Before=blazn-control-plane.service
 Wants=network-online.target
-Requires=blazn-control-plane.service
 ConditionPathExists=/etc/blazn/control-plane/secrets/object-relay-tls.crt
 ConditionPathExists=/etc/blazn/control-plane/secrets/object-relay-tls.key
 
@@ -27,4 +27,4 @@ LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target blazn-control-plane.service

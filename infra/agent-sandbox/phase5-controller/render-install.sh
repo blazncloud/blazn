@@ -176,7 +176,9 @@ IFS=,
 # shellcheck disable=SC2086
 set -- $BLAZN_SOURCE_CIDR
 IFS=$old_ifs
-[ "$#" -ge 1 ] && [ "$#" -le 64 ] || fail "BLAZN_SOURCE_CIDR must contain 1-64 exact IPv4 /32 values"
+if [ "$#" -lt 1 ] || [ "$#" -gt 64 ]; then
+  fail "BLAZN_SOURCE_CIDR must contain 1-64 exact IPv4 /32 values"
+fi
 source_cidrs_seen=,
 source_cidrs_rendered=
 for source_cidr in "$@"; do

@@ -165,7 +165,7 @@ spec:
     message: "Sandbox resources must be fully declared and inside the reviewed bounds"
   - expression: "request.operation != 'CREATE' || request.userInfo.username == 'system:serviceaccount:blazn-poc-system:blazn-sandbox-controller'"
     message: "Only the Blazn sandbox controller may create managed Sandboxes"
-  - expression: "request.operation != 'UPDATE' || (object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && ((request.userInfo.username == 'system:serviceaccount:blazn-poc-system:blazn-sandbox-controller' && object.metadata.annotations == oldObject.metadata.annotations) || (request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller' && object.metadata.annotations.filter(k, k != 'agents.x-k8s.io/pod-name') == oldObject.metadata.annotations.filter(k, k != 'agents.x-k8s.io/pod-name'))))"
+  - expression: "request.operation != 'UPDATE' || (object.spec == oldObject.spec && object.metadata.labels == oldObject.metadata.labels && ((request.userInfo.username == 'system:serviceaccount:blazn-poc-system:blazn-sandbox-controller' && object.metadata.annotations == oldObject.metadata.annotations) || (request.userInfo.username == 'system:serviceaccount:agent-sandbox-system:agent-sandbox-controller' && object.metadata.annotations.all(k, k == 'agents.x-k8s.io/pod-name' || (k in oldObject.metadata.annotations && object.metadata.annotations[k] == oldObject.metadata.annotations[k])) && oldObject.metadata.annotations.all(k, k == 'agents.x-k8s.io/pod-name' || k in object.metadata.annotations))))"
     message: "Sandbox spec, labels, and Blazn annotations are immutable; only the upstream controller may maintain its pod-name annotation"
 ---
 apiVersion: admissionregistration.k8s.io/v1

@@ -252,9 +252,21 @@ if ! $docker_cmd run --rm --network kind \
   kctl logs deployment/agent-sandbox-controller -n agent-sandbox-system --tail=200 >&2 || true
   exit 1
 fi
-[ "$(kctl get sandbox -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
-[ "$(kctl get pod -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
-[ "$(kctl get workload -n blazn-poc-sandboxes --no-headers 2>/dev/null | wc -l)" -eq 0 ]
+# Background deletion completes the Sandbox before its owned Pod/Workload
+# garbage collection necessarily finishes. Require eventual absence of all
+# three kinds, without forcing deletion or weakening the zero-residue gate.
+attempt=0
+while :; do
+  adapter_residue=$(kctl get sandbox,pod,workload -n blazn-poc-sandboxes -o json)
+  adapter_residue_count=$(printf '%s\n' "$adapter_residue" | jq -er '.items | length')
+  [ "$adapter_residue_count" -eq 0 ] && break
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 60 ]; then
+    printf 'adapter cleanup did not reach zero residue:\n%s\n' "$adapter_residue" >&2
+    exit 1
+  fi
+  sleep 2
+done
 kctl delete namespace blazn-poc-sandboxes --wait=true --timeout=120s >/dev/null
 kctl delete clusterqueue "blazn-adapter-$cluster_suffix" --wait=true --timeout=120s >/dev/null
 kctl delete resourceflavor "blazn-adapter-$cluster_suffix" --wait=true --timeout=120s >/dev/null

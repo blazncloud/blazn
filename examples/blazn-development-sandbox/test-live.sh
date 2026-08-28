@@ -78,10 +78,14 @@ cleanup() {
     "$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-cleanup" >/dev/null 2>&1 || \
       printf 'warning: automatic Sandbox cleanup failed for %s\n' "$sandbox_id" >&2
   fi
-  case $work in
-    "${TMPDIR:-/tmp}"/blazn-development-live.*) rm -r -- "$work" ;;
-    *) printf 'refusing to remove unexpected test directory: %s\n' "$work" >&2 ;;
-  esac
+  if [ "${BLAZN_E2E_KEEP_EVIDENCE:-0}" = 1 ]; then
+    printf 'Blazn development E2E evidence retained at %s\n' "$work"
+  else
+    case $work in
+      "${TMPDIR:-/tmp}"/blazn-development-live.*) rm -r -- "$work" ;;
+      *) printf 'refusing to remove unexpected test directory: %s\n' "$work" >&2 ;;
+    esac
+  fi
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -133,7 +137,7 @@ jq -e '.remoteExitCode == 0 and .truncated == false' "$work/toolchains.json" >/d
 # The generated job scripts expand $code inside the Sandbox, not here.
 # shellcheck disable=SC2016
 printf '%s\n' '#!/bin/sh' 'set +e' \
-  'cd /workspace/src/blazn && USER=blazn LOGNAME=blazn go test $(go list ./... | grep -Ev "^github.com/blazncloud/blazn/internal/(node|workspace)$")' \
+  'cd /workspace/src/blazn && USER=blazn LOGNAME=blazn go test -timeout 2m $(go list ./... | grep -Ev "^github.com/blazncloud/blazn/internal/(node|workspace)$")' \
   'code=$?' \
   'printf "%s\n" "$code" > /workspace/artifacts/e2e-go.status.tmp' \
   'mv /workspace/artifacts/e2e-go.status.tmp /workspace/artifacts/e2e-go.status' \
@@ -161,6 +165,20 @@ stage 'generating patch artifact from the materialized source snapshot'
 "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc \
   'cd /workspace/src/blazn || exit; cp README.md README.md.before || exit; printf "\n<!-- blazn-development-e2e -->\n" >> README.md || exit; set +e; git diff --no-index --binary -- README.md.before README.md > /workspace/artifacts/change.patch; code=$?; set -e; rm -f README.md.before; test "$code" -eq 1; sed -i "s|a/README.md.before|a/README.md|g" /workspace/artifacts/change.patch; test -s /workspace/artifacts/change.patch' >"$work/artifact.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/artifact.json" >/dev/null
+
+stage 'stopping Sandbox and proving terminal state'
+"$blazn" --output json sandbox stop "$sandbox_id" --request-id "$request_prefix-stop" >"$work/stop.json"
+stop_attempt=0
+while [ "$stop_attempt" -lt 120 ]; do
+  stop_attempt=$((stop_attempt + 1))
+  "$blazn" --output json sandbox get "$sandbox_id" >"$work/stopped.json"
+  state=$(jq -er '.state' "$work/stopped.json")
+  [ "$state" = stopped ] && break
+  case $state in failed|recovery_required|deleted) printf 'Sandbox entered unexpected stop state: %s\n' "$state" >&2; exit 1 ;; esac
+  sleep 2
+done
+[ "${state:-}" = stopped ] || { printf 'Sandbox did not reach stopped state\n' >&2; exit 1; }
+jq -e '.desiredState == "stopped"' "$work/stopped.json" >/dev/null
 
 stage 'deleting Sandbox and proving terminal state'
 "$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-delete" >"$work/delete.json"
