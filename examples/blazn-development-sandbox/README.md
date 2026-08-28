@@ -33,6 +33,8 @@ terminal deleted state. Set `BLAZN_SKIP_TEMPLATE_PUBLISH=1` only when the exact
 immutable version has already been published.
 
 The live Sandbox Go matrix excludes `internal/node`, whose installer tests
-deliberately require root-owned private host-directory ancestry. That host-only
-package remains covered by the full Linux CI lane. The Sandbox runs every other
-Go package plus the complete control-API and coding-agent Node suites.
+deliberately require root-owned private host-directory ancestry, and
+`internal/workspace`, whose default-home test requires the host libc account
+resolver rather than Go's pure-Go container fallback. Those host-only packages
+remain covered by the full Linux CI lane. The Sandbox runs every other Go
+package plus the complete control-API and coding-agent Node suites.
