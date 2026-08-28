@@ -226,7 +226,7 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantArtifacts := []sandboxcontrol.ArtifactExport{{Name: "result", Path: "/workspace/artifacts/result.json", MediaType: "application/json", Required: true}}
-	want := sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
+	want := sandboxcontrol.CreateRequest{RequestID: "controller-create-" + item.SandboxID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
 		HelperImage: testSandboxIOImage,
 		Command:     []string{"true"}, Architecture: "amd64", RuntimeClassName: "",
@@ -236,6 +236,12 @@ func TestKubernetesBackendMapsExactApprovedCreateRequest(t *testing.T) {
 		ExpiresAt: item.ExpiresAt, Artifacts: wantArtifacts}
 	if !reflect.DeepEqual(fake.request, want) {
 		t.Fatalf("create mapping mismatch:\n got %#v\nwant %#v", fake.request, want)
+	}
+	deleteItem := item
+	deleteItem.OperationID = "different-delete-operation"
+	deleteRequest, err := backend.request(deleteItem)
+	if err != nil || deleteRequest.RequestID != want.RequestID {
+		t.Fatalf("backend create intent changed across operations: request=%#v err=%v", deleteRequest, err)
 	}
 	if !state.Exists || state.Ready || state.AdmissionObservation != nil {
 		t.Fatalf("creation claimed admission before observation: %#v", state)

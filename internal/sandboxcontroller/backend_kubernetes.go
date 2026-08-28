@@ -144,7 +144,7 @@ func (b *KubernetesBackend) EnsureCreated(ctx context.Context, item WorkItem) (B
 	if err != nil {
 		return BackendState{}, classifyAdapter("create", err)
 	}
-	if err := verifyReceipt(receipt, sandboxcontrol.OperationCreate, request, record); err != nil {
+	if err := verifyReceipt(receipt, sandboxcontrol.OperationCreate, request.RequestID, request, record); err != nil {
 		return BackendState{}, backendFailure("backend_identity_mismatch", "sandbox create receipt identity changed", false, true, err)
 	}
 	if err := verifyLiveRecord(item, request, record, retainedRecord(retained, trusted), false, true); err != nil {
@@ -262,7 +262,7 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 		log.Print("sandbox cleanup delete mutation was rejected")
 		return BackendState{}, classifyAdapter("cleanup", err)
 	}
-	if err := verifyReceipt(deleteReceipt, sandboxcontrol.OperationDelete, request, record); err != nil {
+	if err := verifyReceipt(deleteReceipt, sandboxcontrol.OperationDelete, "controller-"+item.OperationID, request, record); err != nil {
 		return BackendState{}, backendFailure("cleanup_identity_mismatch", "cleanup delete receipt identity changed", false, true, err)
 	}
 	live, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
@@ -329,7 +329,7 @@ func (b *KubernetesBackend) Finalize(ctx context.Context, item WorkItem, state B
 		if err != nil {
 			return CleanupResult{}, classifyAdapter("cleanup", err)
 		}
-		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, request, state.Record); err != nil {
+		if err := verifyReceipt(receipt, sandboxcontrol.OperationFinalize, "controller-"+item.OperationID, request, state.Record); err != nil {
 			return CleanupResult{}, backendFailure("cleanup_identity_mismatch", "cleanup receipt identity changed", false, true, err)
 		}
 	} else if !state.AbsenceObserved {
@@ -506,7 +506,7 @@ func (b *KubernetesBackend) request(item WorkItem) (sandboxcontrol.CreateRequest
 	if len(item.Sources) != 0 || len(artifacts) != 0 {
 		helperImage = b.helperImage
 	}
-	return sandboxcontrol.CreateRequest{RequestID: "controller-" + item.OperationID, Name: item.SandboxID,
+	return sandboxcontrol.CreateRequest{RequestID: "controller-create-" + item.SandboxID, Name: item.SandboxID,
 		WorkspaceID: item.WorkspaceID, OwnerID: item.RequestedBy, Image: item.ImageDigest,
 		HelperImage: helperImage,
 		Command:     append([]string(nil), item.Command...), Architecture: item.Architecture,
@@ -552,7 +552,7 @@ func verifyObservation(item WorkItem, observation sandboxcontrol.AdmissionObserv
 	return nil
 }
 
-func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcontrol.Operation, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord) error {
+func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcontrol.Operation, receiptRequestID string, request sandboxcontrol.CreateRequest, record sandboxcontrol.SandboxRecord) error {
 	if err := sandboxcontrol.ValidateReceipt(receipt); err != nil {
 		return err
 	}
@@ -560,7 +560,7 @@ func verifyReceipt(receipt sandboxcontrol.OperationReceipt, operation sandboxcon
 	if err != nil {
 		return err
 	}
-	if receipt.Operation != operation || receipt.RequestID != request.RequestID || receipt.Name != request.Name ||
+	if receipt.Operation != operation || receipt.RequestID != receiptRequestID || receipt.Name != request.Name ||
 		receipt.Namespace != sandboxcontrol.Namespace || receipt.WorkspaceID != request.WorkspaceID ||
 		receipt.OwnerID != request.OwnerID || receipt.UID != record.UID || receipt.QueueName != sandboxcontrol.QueueName ||
 		receipt.RuntimeClass != request.RuntimeClassName || receipt.ArtifactContractDigest != artifactDigest ||
