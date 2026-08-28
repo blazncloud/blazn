@@ -3,6 +3,7 @@ package sandboxcontroller
 import (
 	"context"
 	"errors"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -242,6 +243,7 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 	}
 	observation, err := b.adapter.ObserveAdmission(ctx, request, record, nil)
 	if err != nil {
+		log.Print("sandbox cleanup admission observation was rejected")
 		return BackendState{}, classifyCleanupObservation(err)
 	}
 	if err := verifyCleanupObservation(item, *expected, observation); err != nil {
@@ -257,6 +259,7 @@ func (b *KubernetesBackend) BeginDelete(ctx context.Context, item WorkItem, expe
 	deleteReceipt, err := b.adapter.Delete(ctx, "controller-"+item.OperationID, item.WorkspaceID, item.RequestedBy,
 		item.SandboxID, *item.BackendUID, record.ResourceVersion, digest)
 	if err != nil {
+		log.Print("sandbox cleanup delete mutation was rejected")
 		return BackendState{}, classifyAdapter("cleanup", err)
 	}
 	if err := verifyReceipt(deleteReceipt, sandboxcontrol.OperationDelete, request, record); err != nil {
