@@ -25,8 +25,8 @@ Install the current public release with:
 
 ```bash
 curl -fL --progress-bar --show-error \
-  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.3/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.3 sh
+  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.113/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.113 sh
 ```
 
 `BLAZN_VERSION` is intentionally required for Milestone 1 so every install resolves an immutable release.
@@ -104,7 +104,7 @@ Native qualification records the candidate workflow run ID, source SHA, version,
 
 ## End-to-end qualification
 
-The signed candidate was installed through a curl pipe into an isolated prefix, executed, reinstalled idempotently, diagnosed, uninstalled through its receipt, verified to preserve configuration, and reinstalled on:
+Earlier Milestone 1 candidates were installed through a curl pipe into an isolated prefix, executed, reinstalled idempotently, diagnosed, uninstalled through its receipt, verified to preserve configuration, and reinstalled on:
 
 - `ben1`
 - `ben2`

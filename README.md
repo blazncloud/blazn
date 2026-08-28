@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/blazncloud/blazn/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/blazncloud/blazn/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/blazncloud/blazn/releases/tag/v0.1.0-poc.3"><img alt="Release v0.1.0-poc.3" src="https://img.shields.io/badge/release-v0.1.0--poc.3-f97316.svg"></a>
+  <a href="https://github.com/blazncloud/blazn/releases/tag/v0.1.0-poc.113"><img alt="Release v0.1.0-poc.113" src="https://img.shields.io/badge/release-v0.1.0--poc.113-f97316.svg"></a>
   <img alt="Go 1.26.2 or newer" src="https://img.shields.io/badge/go-%3E%3D1.26.2-101010.svg">
 </p>
 
@@ -37,8 +37,8 @@ The installer requires an immutable version and verifies the signed checksum man
 
 ```bash
 curl -fL --progress-bar --show-error \
-  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.3/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.3 sh
+  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.113/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.113 sh
 ```
 
 The default destination is `~/.local/bin`. When needed, the installer adds that
@@ -130,6 +130,12 @@ blazn uninstall  Remove a receipt-owned direct installation
 ```
 
 Run `blazn help <command>` for the exact options supported by your installed release.
+
+## Remote development
+
+Use `blazn sandbox` for source-pinned remote builds, tests, file transfers, and patch artifacts. An operator must first publish an approved template with the required toolchains and locked dependencies.
+
+See [the development Sandbox example](examples/blazn-development-sandbox/README.md) for the tested lifecycle. This is a restricted POC workflow; general Agent/Harness execution remains a separate milestone.
 
 ## Development
 
