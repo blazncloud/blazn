@@ -4,15 +4,29 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { buildContextIdentity } from "../scripts/context-identity.mjs";
+import { buildContextIdentity, contextFiles } from "../scripts/context-identity.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-async function copyContext() { const target=await mkdtemp(path.join(os.tmpdir(),"blazn-context-"));await cp(root,target,{recursive:true});return target; }
+async function copyContext() {
+  const target=await mkdtemp(path.join(os.tmpdir(),"blazn-context-"));
+  await cp(root,target,{recursive:true});
+  const directories=new Set(contextFiles.flatMap((name) => {
+    const parts=path.dirname(name).split(path.sep), parents=[];
+    for (let index=1;index<=parts.length;index+=1) if (parts[0] !== ".") parents.push(parts.slice(0,index).join(path.sep));
+    return parents;
+  }));
+  await Promise.all([...directories].map((name)=>chmod(path.join(target,name),0o755)));
+  await Promise.all(contextFiles.map((name)=>chmod(path.join(target,name),0o644)));
+  return target;
+}
 
 test("the effective Docker context is closed and reproducible", async () => {
-  assert.equal(await buildContextIdentity(root), await buildContextIdentity(root));
   const target=await copyContext();
-  try { await writeFile(path.join(target,"src/unbound.mjs"),"export default true;\n");await assert.rejects(()=>buildContextIdentity(target),/unexpected file/); }
+  try {
+    assert.equal(await buildContextIdentity(target), await buildContextIdentity(target));
+    await writeFile(path.join(target,"src/unbound.mjs"),"export default true;\n");
+    await assert.rejects(()=>buildContextIdentity(target),/unexpected file/);
+  }
   finally { await rm(target,{recursive:true,force:true}); }
 });
 
