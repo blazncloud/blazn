@@ -68,6 +68,17 @@ non-secret broker issuance ID and reconcile issue, host join, root binding,
 broker consumption, verification, and receipt publication. An exact joined UID
 that cannot be removed remains bootstrap-tainted and is reported as a
 `recovery_required` quarantine residue.
+If an exchange created the control-plane Node but the host lost all local
+identity, pin, runtime, root-authority, WAL, and receipt state before any join,
+operation, heartbeat, or activation, a new authenticated enrollment may recover
+that same unactivated Node after its prior install plan expires. Recovery is
+selected only by the exact Workspace, name, platform, architecture, machine
+fingerprint, Kubernetes cluster/name/UID, and a fresh resourceVersion. The
+transaction locks the existing Node, refuses any current plan or execution
+evidence, expires the old plan, revokes its unused identity, advances the
+identity generation, and issues the new plan against the original Node ID. It
+never creates a duplicate Node or reuses this path for an active, joined, or
+partially installed host.
 Residues are cumulative WAL evidence and survive every recovery retry. Before
 reporting an uninstall or rolled-back install as removed, the runtime writes a
 token-free service-state cleanup journal containing the verified plan and
