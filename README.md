@@ -131,6 +131,11 @@ blazn uninstall  Remove a receipt-owned direct installation
 
 Run `blazn help <command>` for the exact options supported by your installed release.
 
+Synthetic fixture executors can use `blazn run synthetic-progress` and
+`blazn run synthetic-complete` to prove the Run and Message transport lifecycle.
+These commands accept only requester-owned `synthetic` Runs and are never live
+Node, Sandbox, provider, Agent, or production execution evidence.
+
 ## Remote development
 
 Use `blazn sandbox` for source-pinned remote builds, tests, file transfers, and patch artifacts. An operator must first publish an approved template with the required toolchains and locked dependencies.

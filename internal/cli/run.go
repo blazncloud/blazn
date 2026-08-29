@@ -20,6 +20,8 @@ type runCommands interface {
 	SendMessage(context.Context, string, string, client.SendRunMessageRequest) (client.RunMessageEnvelope, error)
 	ClaimMessage(context.Context, string, string, int) (client.RunMessageClaimEnvelope, error)
 	DeliverMessage(context.Context, string, string, string, string) (client.RunMessageEnvelope, error)
+	RecordSyntheticProgress(context.Context, string, string, client.SyntheticRunProgressRequest) (client.ProgressAck, error)
+	CompleteSynthetic(context.Context, string, string, client.CompleteSyntheticRunRequest) (client.RunEnvelope, error)
 	Create(context.Context, string, client.CreateRunRequest) (client.RunEnvelope, error)
 	List(context.Context, string, string) (client.RunList, error)
 	Get(context.Context, string) (client.RunEnvelope, error)
@@ -111,6 +113,48 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 			return a.writeJSON(result)
 		}
 		fmt.Fprintf(a.stdout, "delivered message %s at ordinal %d\n", result.Message.ID, result.Message.Ordinal)
+		return ExitSuccess
+	case "synthetic-progress":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"sequence": false, "phase": false, "percent": false, "message": true, "request-id": false})
+		if err != nil || flags["sequence"] == "" || flags["phase"] == "" || flags["percent"] == "" || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run synthetic-progress requires RUN, --sequence, --phase, --percent, --request-id, and optional --message"))
+		}
+		sequence, sequenceErr := strconv.Atoi(flags["sequence"])
+		percent, percentErr := strconv.Atoi(flags["percent"])
+		if sequenceErr != nil || sequence < 0 || percentErr != nil || percent < 0 || percent > 100 {
+			return a.runUsage(format, errors.New("run synthetic-progress requires a non-negative --sequence and --percent from 0 through 100"))
+		}
+		result, err := commands.RecordSyntheticProgress(ctx, positionals[0], flags["request-id"], client.SyntheticRunProgressRequest{Sequence: sequence, Phase: flags["phase"], Percent: percent, Message: flags["message"]})
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "run %s synthetic progress %d %s %d%%\n", result.RunID, result.Sequence, flags["phase"], percent)
+		return ExitSuccess
+	case "synthetic-complete":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"expected-version": false, "plan-digest": false, "artifacts": true, "steps": true, "warnings": true, "request-id": false})
+		if err != nil || flags["expected-version"] == "" || flags["plan-digest"] == "" || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run synthetic-complete requires RUN, --expected-version, --plan-digest, --request-id, and optional comma-separated --artifacts/--warnings and --steps"))
+		}
+		expectedVersion, versionErr := strconv.Atoi(flags["expected-version"])
+		steps := 0
+		var stepsErr error
+		if flags["steps"] != "" {
+			steps, stepsErr = strconv.Atoi(flags["steps"])
+		}
+		if versionErr != nil || expectedVersion < 1 || stepsErr != nil || steps < 0 {
+			return a.runUsage(format, errors.New("run synthetic-complete requires a positive --expected-version and non-negative --steps"))
+		}
+		result, err := commands.CompleteSynthetic(ctx, positionals[0], flags["request-id"], client.CompleteSyntheticRunRequest{ExpectedVersion: expectedVersion, PlanDigest: flags["plan-digest"], ArtifactIDs: commaList(flags["artifacts"]), Summary: client.RunReceiptSummary{Steps: steps, Warnings: commaList(flags["warnings"])}})
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "run %s %s synthetic receipt recorded\n", result.Run.ID, result.Run.Status)
 		return ExitSuccess
 	case "create":
 		_, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"kind": false, "proof-class": false, "plan-digest": false, "inputs": true, "outputs": true, "request-id": false})
