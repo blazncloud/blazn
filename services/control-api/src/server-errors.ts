@@ -5,8 +5,9 @@ import { SandboxHttpError } from "./sandbox-types.js";
 import { RunHttpError } from "./run-types.js";
 import { WorkspaceHttpError } from "./workspace-types.js";
 import { DevelopmentHttpError } from "./development-types.js";
+import { AgentHarnessHttpError } from "./agent-harness-types.js";
 
-export type ControlHttpError = HttpError | WorkspaceHttpError | NodeHttpError | ProjectHttpError | SandboxHttpError | RunHttpError | DevelopmentHttpError;
+export type ControlHttpError = HttpError | WorkspaceHttpError | NodeHttpError | ProjectHttpError | SandboxHttpError | RunHttpError | DevelopmentHttpError | AgentHarnessHttpError;
 
 export function isControlHttpError(error: unknown): error is ControlHttpError {
   return error instanceof HttpError
@@ -15,7 +16,8 @@ export function isControlHttpError(error: unknown): error is ControlHttpError {
     || error instanceof ProjectHttpError
     || error instanceof RunHttpError
     || error instanceof DevelopmentHttpError
-    || error instanceof SandboxHttpError;
+    || error instanceof SandboxHttpError
+    || error instanceof AgentHarnessHttpError;
 }
 
 export function normalizeControlHttpError(error: unknown): ControlHttpError {

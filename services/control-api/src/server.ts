@@ -24,6 +24,10 @@ import { ProjectHttpRouter } from "./project-http.js";
 import { ProjectService } from "./project-service.js";
 import { PgProjectStore } from "./project-store.js";
 import { RunHttpRouter } from "./run-http.js";
+import { AgentHarnessHttpRouter } from "./agent-harness-http.js";
+import { AgentHarnessService } from "./agent-harness-service.js";
+import { PgAgentHarnessStore } from "./agent-harness-store.js";
+import { AgentHarnessHttpError } from "./agent-harness-types.js";
 import { RunService } from "./run-service.js";
 import { PgRunStore } from "./run-store.js";
 import { DevelopmentHttpRouter } from "./development-http.js";
@@ -48,6 +52,7 @@ const oidcKey = config.zitadel ? oidcCookieKey(config.zitadel.cookieKey) : undef
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
 const runRouter = new RunHttpRouter(new RunService(new PgRunStore(database)));
+const agentHarnessRouter = new AgentHarnessHttpRouter(new AgentHarnessService(new PgAgentHarnessStore(database)));
 const developmentRouter = new DevelopmentHttpRouter(new DevelopmentService(new PgDevelopmentStore(database)));
 const sandboxRouter = new SandboxHttpRouter(new SandboxService(new PgSandboxStore(database)));
 const sandboxAccessProxy = SandboxAccessProxy.fromEnvironment();
@@ -474,6 +479,10 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
     const session = await authenticate(request);
     return developmentRouter.handle(request, response, url, { userId: session.userId, sessionId: session.sessionId, accessToken: session.accessToken, email: session.email, displayName: session.displayName });
   }
+  if (agentHarnessRouter.matches(url.pathname)) {
+    const session = await authenticate(request);
+    return agentHarnessRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
+  }
   if (runRouter.matches(url.pathname)) {
     const session = await authenticate(request);
     return runRouter.handle(request, response, url, { userId: session.userId, email: session.email, displayName: session.displayName });
@@ -503,7 +512,7 @@ const server = createServer((request, response) => {
     const httpError = normalizeControlHttpError(error);
     if (!response.headersSent) {
       if ("retryAfter" in httpError && httpError.retryAfter) response.setHeader("retry-after", String(httpError.retryAfter));
-      sendJson(response, httpError.status, httpError instanceof NodeHttpError ? nodeErrorBody(httpError, requestId) : { code: httpError.code, message: httpError.message, requestId });
+      sendJson(response, httpError.status, httpError instanceof NodeHttpError ? nodeErrorBody(httpError, requestId) : httpError instanceof AgentHarnessHttpError && httpError.violations.length ? { code: httpError.code, message: httpError.message, violations: httpError.violations, requestId } : { code: httpError.code, message: httpError.message, requestId });
     }
     else response.end();
     if (!isControlHttpError(error) && process.env.NODE_ENV !== "test") console.error("control-api request failed", { method: request.method, path: request.url?.split("?")[0], error: error instanceof Error ? error.name : "unknown" });

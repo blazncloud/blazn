@@ -38,23 +38,28 @@ export function harnessSecretViolations(value: unknown, path = "$", output: stri
   return output;
 }
 
-export function verifyHarnessBundle(value: unknown): string[] {
-  const errors = harnessSecretViolations(value), bundle = record(value), definition = record(bundle.definition), version = record(bundle.version), profile = record(bundle.profile);
+export function verifyHarnessVersion(definitionValue: unknown, versionValue: unknown): string[] {
+  const errors: string[] = [], definition = record(definitionValue), version = record(versionValue);
   if (version.definitionId !== definition.id) errors.push("HarnessVersion does not belong to HarnessDefinition");
   if(version.digest!==harnessVersionDigest(version))errors.push("HarnessVersion semantic digest is invalid");
-  if(profile.digest!==harnessProfileDigest(profile))errors.push("HarnessProfile semantic digest is invalid");
   const implementation=record(version.implementation),provenance=record(version.provenance),implementationDigest=text(implementation.digest),artifactDigest=text(provenance.artifactDigest);if(implementation.kind==="package"?implementationDigest!==artifactDigest:!implementationDigest.endsWith(`@${artifactDigest}`))errors.push("HarnessVersion implementation digest is not bound to provenance Artifact digest");
+  if (strings(version.capabilities).some((item) => !capabilities.has(item))) errors.push("HarnessVersion contains an unknown capability");
+  const executable = record(version.executable), executablePath = text(executable.path), argv = strings(executable.fixedArgv), approvedExecutable = approvedExecutables[text(definition.kind)];
+  if (!approvedExecutable || executable.identity!==approvedExecutable.identity || executablePath!==approvedExecutable.path || argv.some((arg) => /(?:^|[=\s])(?:token|password|secret|authorization|api[_-]?key)(?:[=:]|$)/i.test(decode(arg)) || /[;&|`$<>\r\n]/.test(arg))) errors.push("Harness executable contract is unsafe: only the reviewed adapter identity and path are allowed; interpreters, aliases, network clients, shell syntax, redirection, and credential argv are prohibited");
+  return errors;
+}
+
+export function verifyHarnessBundle(value: unknown): string[] {
+  const errors = harnessSecretViolations(value), bundle = record(value), definition = record(bundle.definition), version = record(bundle.version), profile = record(bundle.profile);
+  errors.push(...verifyHarnessVersion(bundle.definition, bundle.version));
+  if(profile.digest!==harnessProfileDigest(profile))errors.push("HarnessProfile semantic digest is invalid");
   if (profile.harnessVersionId !== version.id) errors.push("HarnessProfile does not select HarnessVersion");
   if (definition.status !== "approved" || profile.status !== "approved") errors.push("Harness definition and profile must be approved");
-  const available = strings(version.capabilities);
-  if (available.some((item) => !capabilities.has(item))) errors.push("HarnessVersion contains an unknown capability");
   const credentialCapabilities = new Set(strings(version.credentialCapabilities)),declaredCredentials=Array.isArray(profile.credentials)?profile.credentials.map(record):[],declaredIdentities=declaredCredentials.map(credentialIdentity);
   if(new Set(declaredIdentities).size!==declaredIdentities.length)errors.push("HarnessProfile credential capability and scope declarations must be unique");
   for (const credential of declaredCredentials) { const capability=text(credential.capability),scope=text(credential.scope),prefix=capability.startsWith("model.")?"route:":capability==="repository.read"?"repo:":"tool:";if(!credentialCapabilities.has(capability))errors.push("HarnessProfile requests an undeclared credential capability");if(!scope.startsWith(prefix))errors.push("HarnessProfile credential scope does not match its capability"); }
   const proxyProtocols = new Set(strings(record(version.compatibility).proxyProtocols));
   if (!proxyProtocols.has(text(record(profile.model).protocol))) errors.push("HarnessProfile model protocol is unsupported");
-  const executable = record(version.executable), executablePath=text(executable.path), argv = strings(executable.fixedArgv), approvedExecutable=approvedExecutables[text(definition.kind)];
-  if (!approvedExecutable || executable.identity!==approvedExecutable.identity || executablePath!==approvedExecutable.path || argv.some((arg) => /(?:^|[=\s])(?:token|password|secret|authorization|api[_-]?key)(?:[=:]|$)/i.test(decode(arg)) || /[;&|`$<>\r\n]/.test(arg))) errors.push("Harness executable contract is unsafe: only the reviewed adapter identity and path are allowed; interpreters, aliases, network clients, shell syntax, redirection, and credential argv are prohibited");
   for(const override of Object.values(record(profile.overrides)))if(typeof override==="string"&&/^[A-Za-z0-9_-]{32,}$/.test(override))errors.push("HarnessProfile override resembles raw credential material");
   const modelCredentials=(Array.isArray(profile.credentials)?profile.credentials.map(record):[]).filter((item)=>text(item.capability).startsWith("model.")),providerCredentials=modelCredentials.filter((item)=>item.capability!=="model.proxy"),directAuthorization=profile.directProviderAuthorization===null?null:record(profile.directProviderAuthorization);if(modelCredentials.length!==1)errors.push("HarnessProfile must declare exactly one model credential capability");
   if(providerCredentials.length){const credential=providerCredentials[0]!,capability=text(credential.capability),protocol=text(record(profile.model).protocol),expectedProvider=capability==="model.openai"?"openai":capability==="model.anthropic"?"anthropic":"",protocolMatches=expectedProvider==="openai"?protocol.startsWith("openai-"):expectedProvider==="anthropic"&&protocol==="anthropic-messages";if(providerCredentials.length!==1||!directAuthorization||!text(directAuthorization.id)||directAuthorization.workspaceId!==profile.workspaceId||directAuthorization.profileId!==profile.id||directAuthorization.routeId!==record(profile.model).routeId||directAuthorization.routeVersion!==record(profile.model).routeVersion||directAuthorization.capability!==capability||directAuthorization.provider!==expectedProvider||directAuthorization.status!=="approved"||!protocolMatches)errors.push("provider credential requires resolved same-workspace approved DIRECT authorization");}else if(directAuthorization!==null)errors.push("proxy-routed HarnessProfile cannot carry DIRECT authorization");
