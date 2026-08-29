@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/runs.openapi.json; DO NOT EDIT.
-// Contract SHA256: 18c4fbeeaf7c9c716682a82bb3f8647e661339a8f03f7cd15ef07a535dcd37c1
+// Contract SHA256: 2a3a7c32f37de19a31928751a3cebf4e144c0274189bf14ef53056f1a8bc6d84
 
 package client
 
@@ -213,6 +213,26 @@ type ArtifactList struct {
 	Items      []Artifact `json:"items"`
 	NextCursor *string    `json:"nextCursor"`
 }
+type RunEvent struct {
+	Sequence  int            `json:"sequence"`
+	Type      string         `json:"type"`
+	Payload   map[string]any `json:"payload"`
+	CreatedAt string         `json:"createdAt"`
+}
+type RunEventList struct {
+	Items      []RunEvent `json:"items"`
+	NextCursor *string    `json:"nextCursor"`
+}
+type RunProgressEntry struct {
+	Sequence  int    `json:"sequence"`
+	Phase     string `json:"phase"`
+	Percent   int    `json:"percent"`
+	Message   string `json:"message,omitempty"`
+	CreatedAt string `json:"createdAt"`
+}
+type RunProgressList struct {
+	Items []RunProgressEntry `json:"items"`
+}
 type RunError = ErrorBody
 
 var runUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$`)
@@ -221,6 +241,7 @@ var runDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 var runOutputName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var runPhase = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,95}$`)
 var runMessageCursor = regexp.MustCompile(`^[1-9][0-9]*$`)
+var runEventCursor = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
 
 func (c *Client) CreateRun(ctx context.Context, accessToken, workspaceID, projectID, idempotencyKey string, request CreateRunRequest) (RunEnvelope, error) {
 	var output RunEnvelope
@@ -389,6 +410,40 @@ func (c *Client) UploadSyntheticRunArtifact(ctx context.Context, accessToken, wo
 		return output, fmt.Errorf("decode synthetic Artifact response: %w", err)
 	}
 	return output, nil
+}
+func (c *Client) ListRunEvents(ctx context.Context, accessToken, workspaceID, projectID, runID, cursor string) (RunEventList, error) {
+	var output RunEventList
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	if len(cursor) > 32 || (cursor != "" && !runEventCursor.MatchString(cursor)) {
+		return output, fmt.Errorf("Run event cursor is invalid")
+	}
+	query := make(url.Values)
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path+"/events", accessToken, "", query, nil, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) ListRunProgress(ctx context.Context, accessToken, workspaceID, projectID, runID string) (RunProgressList, error) {
+	var output RunProgressList
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path+"/progress", accessToken, "", nil, nil, &output, http.StatusOK)
+	return output, err
+}
+func (c *Client) ListRunArtifacts(ctx context.Context, accessToken, workspaceID, projectID, runID string) (ArtifactList, error) {
+	var output ArtifactList
+	path, err := runResourcePath(workspaceID, projectID, runID)
+	if err != nil {
+		return output, err
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path+"/artifacts", accessToken, "", nil, nil, &output, http.StatusOK)
+	return output, err
 }
 func (c *Client) ListArtifacts(ctx context.Context, accessToken, workspaceID, projectID, status, cursor string) (ArtifactList, error) {
 	var output ArtifactList

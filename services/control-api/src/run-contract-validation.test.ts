@@ -20,9 +20,9 @@ const messageDigestMigration = path.resolve(here, "../migrations/031_run_message
 
 test("Run and Artifact OpenAPI exposes only Project-scoped routes", async () => {
   const document = await SwaggerParser.validate(contract) as unknown as { paths: Record<string, Record<string, { operationId?: string }>> };
-  assert.equal(Object.keys(document.paths).length, 11);
+  assert.equal(Object.keys(document.paths).length, 13);
   const operations = Object.values(document.paths).flatMap((route) => Object.values(route).map((operation) => operation.operationId)).sort();
-  assert.deepEqual(operations, ["cancelRun", "claimRunMessage", "completeSyntheticRun", "createRun", "deliverRunMessage", "getArtifact", "getRun", "listArtifacts", "listRunMessages", "listRuns", "recordSyntheticRunProgress", "sendRunMessage", "uploadSyntheticRunArtifact"]);
+  assert.deepEqual(operations, ["cancelRun", "claimRunMessage", "completeSyntheticRun", "createRun", "deliverRunMessage", "getArtifact", "getRun", "listArtifacts", "listRunArtifacts", "listRunEvents", "listRunMessages", "listRunProgress", "listRuns", "recordSyntheticRunProgress", "sendRunMessage", "uploadSyntheticRunArtifact"]);
   assert.equal(Object.keys(document.paths).every((route) => route.startsWith("/v1/workspaces/{workspaceId}/projects/{projectId}/")), true);
 });
 
