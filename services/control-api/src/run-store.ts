@@ -1,7 +1,7 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import type { Database } from "./db.js";
 import type { IdempotencyReceipt } from "./workspace-store.js";
-import type { Artifact, ArtifactStatus, CompleteSyntheticRunInput, Run, RunAccess, RunMessage, RunMessageClaim, RunMessageKind, RunReceipt, RunStatus, SyntheticArtifactUploadMetadata, SyntheticRunProgressAck, SyntheticRunProgressInput } from "./run-types.js";
+import type { Artifact, ArtifactStatus, CompleteSyntheticRunInput, Run, RunAccess, RunEvent, RunMessage, RunMessageClaim, RunMessageKind, RunProgressEntry, RunReceipt, RunStatus, SyntheticArtifactUploadMetadata, SyntheticRunProgressAck, SyntheticRunProgressInput } from "./run-types.js";
 
 export interface RunTransaction {
   lockIdempotency(principalId:string,operation:string,key:string):Promise<void>;
@@ -24,6 +24,9 @@ export interface RunTransaction {
   completeSyntheticRun(run:Run,input:CompleteSyntheticRunInput):Promise<Run|undefined>;
   getArtifact(workspaceId:string,projectId:string,artifactId:string):Promise<Artifact|undefined>;
   listArtifacts(workspaceId:string,projectId:string,status:ArtifactStatus|"all",cursor?:string):Promise<{items:Artifact[];nextCursor:string|null}>;
+  listRunEvents(workspaceId:string,projectId:string,runId:string,cursor:string):Promise<{items:RunEvent[];nextCursor:string|null}>;
+  listRunProgress(runId:string):Promise<RunProgressEntry[]>;
+  listRunArtifacts(workspaceId:string,projectId:string,runId:string,cursor:string):Promise<{items:Artifact[];nextCursor:string|null}>;
   insertAudit(id:string,workspaceId:string,actorUserId:string,type:string,payload:unknown):Promise<void>;
 }
 export interface RunStore { transaction<T>(action:(transaction:RunTransaction)=>Promise<T>):Promise<T> }
@@ -80,6 +83,9 @@ class PgRunTransaction implements RunTransaction {
   }
   async getArtifact(workspaceId:string,projectId:string,artifactId:string){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND id=$3",[workspaceId,projectId,artifactId]);return result.rows[0]?artifactRow(result.rows[0]):undefined;}
   async listArtifacts(workspaceId:string,projectId:string,status:ArtifactStatus|"all",cursor=""){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND ($3='all' OR status=$3) AND ($4='' OR id::text>$4) ORDER BY id LIMIT 101",[workspaceId,projectId,status,cursor]);const items=result.rows.slice(0,100).map(artifactRow);return{items,nextCursor:result.rows.length>100?items.at(-1)?.id??null:null};}
+  async listRunEvents(workspaceId:string,projectId:string,runId:string,cursor=""){const after=cursor===""?-1:Number(cursor);const result=await this.client.query("SELECT sequence,type,payload,created_at FROM run_events WHERE workspace_id=$1 AND project_id=$2 AND run_id=$3 AND sequence>$4 ORDER BY sequence LIMIT 1001",[workspaceId,projectId,runId,after]);const items=result.rows.slice(0,1000).map(eventRow);return{items,nextCursor:result.rows.length>1000?String(items.at(-1)?.sequence??""):null};}
+  async listRunProgress(runId:string){const result=await this.client.query("SELECT sequence,phase,percent,created_at FROM run_synthetic_progress WHERE run_id=$1 ORDER BY sequence LIMIT 10000",[runId]);return result.rows.map(progressRow);}
+  async listRunArtifacts(workspaceId:string,projectId:string,runId:string,cursor=""){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND source_run_id=$3 AND ($4='' OR id::text>$4) ORDER BY id LIMIT 101",[workspaceId,projectId,runId,cursor]);const items=result.rows.slice(0,100).map(artifactRow);return{items,nextCursor:result.rows.length>100?items.at(-1)?.id??null:null};}
   async insertAudit(id:string,workspaceId:string,actorUserId:string,type:string,payload:unknown){await this.client.query("INSERT INTO workspace_audit_events(id,workspace_id,actor_user_id,event_type,payload) VALUES($1,$2,$3,$4,$5)",[id,workspaceId,actorUserId,type,payload]);}
   private async insertEvent(runId:string,workspaceId:string,projectId:string,type:string,payload:unknown){await this.client.query("INSERT INTO run_events(run_id,workspace_id,project_id,sequence,type,payload) SELECT $1,$2,$3,coalesce(max(sequence)+1,0),$4,$5 FROM run_events WHERE run_id=$1",[runId,workspaceId,projectId,type,payload]);}
 }
@@ -92,4 +98,6 @@ const runSelect=`SELECT r.*,rr.receipt,coalesce(array_agg(ri.artifact_id ORDER B
 function runRow(row:QueryResultRow,inputIds?:string[],receipt?:RunReceipt|null):Run{const placement:Record<string,string>={};if(row.node_id)placement.nodeId=row.node_id;if(row.sandbox_id)placement.sandboxId=row.sandbox_id;if(row.model_route_id)placement.modelRouteId=row.model_route_id;const value:Run={id:row.id,workspaceId:row.workspace_id,projectId:row.project_id,kind:row.kind,proofClass:row.proof_class,status:row.status,version:Number(row.version),planDigest:row.plan_digest,inputArtifactIds:inputIds??row.input_artifact_ids??[],outputNames:row.output_names,requestedBy:row.requested_by,placement:Object.keys(placement).length?placement:null,receipt:receipt===undefined?(row.receipt??null):receipt,createdAt:timestamp(row.created_at)};if(row.started_at)value.startedAt=timestamp(row.started_at);if(row.completed_at)value.completedAt=timestamp(row.completed_at);if(row.error_code)value.errorCode=row.error_code;return value;}
 function artifactRow(row:QueryResultRow):Artifact{const value:Artifact={id:row.id,workspaceId:row.workspace_id,projectId:row.project_id,kind:row.kind,mediaType:row.media_type,name:row.name,status:row.status,version:Number(row.version),createdBy:row.created_by,createdAt:timestamp(row.created_at),updatedAt:timestamp(row.updated_at),downloadAvailable:row.status==="ready"};if(row.source_run_id)value.sourceRunId=row.source_run_id;if(row.digest)value.digest=row.digest;if(row.size_bytes!==null&&row.size_bytes!==undefined)value.sizeBytes=Number(row.size_bytes);return value;}
 function messageRow(row:QueryResultRow):RunMessage{const value:RunMessage={id:row.id,workspaceId:row.workspace_id,projectId:row.project_id,runId:row.run_id,ordinal:Number(row.ordinal),role:row.role,kind:row.kind,status:row.status,content:row.content,contentDigest:row.content_digest,createdBy:row.created_by,createdAt:timestamp(row.created_at)};if(row.parent_message_id)value.parentMessageId=row.parent_message_id;return value;}
+function eventRow(row:QueryResultRow):RunEvent{return{sequence:Number(row.sequence),type:row.type,payload:row.payload??{},createdAt:timestamp(row.created_at)};}
+function progressRow(row:QueryResultRow):RunProgressEntry{return{sequence:Number(row.sequence),phase:row.phase,percent:Number(row.percent),createdAt:timestamp(row.created_at)};}
 function timestamp(value:Date|string):string{return value instanceof Date?value.toISOString():new Date(value).toISOString();}

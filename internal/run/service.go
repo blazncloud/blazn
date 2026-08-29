@@ -15,6 +15,13 @@ type API interface {
 	SendRunMessage(context.Context, string, string, string, string, string, client.SendRunMessageRequest) (client.RunMessageEnvelope, error)
 	ClaimRunMessage(context.Context, string, string, string, string, string, client.ClaimRunMessageRequest) (client.RunMessageClaimEnvelope, error)
 	DeliverRunMessage(context.Context, string, string, string, string, string, string, client.DeliverRunMessageRequest) (client.RunMessageEnvelope, error)
+	CreateRun(context.Context, string, string, string, string, client.CreateRunRequest) (client.RunEnvelope, error)
+	ListRuns(context.Context, string, string, string, string, string) (client.RunList, error)
+	GetRun(context.Context, string, string, string, string) (client.RunEnvelope, error)
+	CancelRun(context.Context, string, string, string, string, string, client.CancelRunRequest) (client.RunEnvelope, error)
+	ListRunEvents(context.Context, string, string, string, string, string) (client.RunEventList, error)
+	ListRunProgress(context.Context, string, string, string, string) (client.RunProgressList, error)
+	ListRunArtifacts(context.Context, string, string, string, string, string) (client.ArtifactList, error)
 }
 
 type Service struct {
@@ -80,6 +87,76 @@ func (s *Service) DeliverMessage(ctx context.Context, runID, messageID, claimID,
 	}
 	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunMessageEnvelope, error) {
 		return s.api.DeliverRunMessage(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, messageID, requestID, client.DeliverRunMessageRequest{ClaimID: claimID})
+	})
+}
+
+func (s *Service) Create(ctx context.Context, requestID string, request client.CreateRunRequest) (client.RunEnvelope, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunEnvelope{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunEnvelope, error) {
+		return s.api.CreateRun(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, requestID, request)
+	})
+}
+
+func (s *Service) List(ctx context.Context, status, cursor string) (client.RunList, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunList{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunList, error) {
+		return s.api.ListRuns(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, status, cursor)
+	})
+}
+
+func (s *Service) Get(ctx context.Context, runID string) (client.RunEnvelope, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunEnvelope{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunEnvelope, error) {
+		return s.api.GetRun(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID)
+	})
+}
+
+func (s *Service) Cancel(ctx context.Context, runID, requestID string, expectedVersion int) (client.RunEnvelope, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunEnvelope{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunEnvelope, error) {
+		return s.api.CancelRun(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, requestID, client.CancelRunRequest{ExpectedVersion: expectedVersion})
+	})
+}
+
+func (s *Service) Events(ctx context.Context, runID, cursor string) (client.RunEventList, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunEventList{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunEventList, error) {
+		return s.api.ListRunEvents(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, cursor)
+	})
+}
+
+func (s *Service) Progress(ctx context.Context, runID string) (client.RunProgressList, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunProgressList{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunProgressList, error) {
+		return s.api.ListRunProgress(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID)
+	})
+}
+
+func (s *Service) Artifacts(ctx context.Context, runID, cursor string) (client.ArtifactList, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.ArtifactList{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ArtifactList, error) {
+		return s.api.ListRunArtifacts(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, cursor)
 	})
 }
 

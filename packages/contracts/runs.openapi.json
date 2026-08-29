@@ -77,7 +77,26 @@
         "responses": {"200": {"description": "Synthetic Run completed with an immutable receipt", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunEnvelope"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
       }
     },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/events": {
+      "get": {
+        "operationId": "listRunEvents",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Ordered Run events after the cursor", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunEventList"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      }
+    },
+    "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/progress": {
+      "get": {
+        "operationId": "listRunProgress",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}],
+        "responses": {"200": {"description": "Recorded Run progress entries", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunProgressList"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      }
+    },
     "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/artifacts": {
+      "get": {
+        "operationId": "listRunArtifacts",
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/Cursor"}],
+        "responses": {"200": {"description": "Artifacts exported by this Run", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactList"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
+      },
       "post": {
         "operationId": "uploadSyntheticRunArtifact",
         "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/IdempotencyKey"}, {"$ref": "#/components/parameters/ArtifactMetadata"}],
@@ -207,6 +226,10 @@
       },
       "ArtifactEnvelope": {"type": "object", "additionalProperties": false, "required": ["artifact"], "properties": {"artifact": {"$ref": "#/components/schemas/Artifact"}}},
       "ArtifactList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/Artifact"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 512}}},
+      "RunEvent": {"type": "object", "additionalProperties": false, "required": ["createdAt", "payload", "sequence", "type"], "properties": {"sequence": {"type": "integer", "minimum": 0}, "type": {"type": "string", "minLength": 1, "maxLength": 96}, "payload": {"type": "object"}, "createdAt": {"type": "string", "format": "date-time"}}},
+      "RunEventList": {"type": "object", "additionalProperties": false, "required": ["items", "nextCursor"], "properties": {"items": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/components/schemas/RunEvent"}}, "nextCursor": {"type": ["string", "null"], "maxLength": 32}}},
+      "RunProgressEntry": {"type": "object", "additionalProperties": false, "required": ["createdAt", "percent", "phase", "sequence"], "properties": {"sequence": {"type": "integer", "minimum": 0}, "phase": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,95}$"}, "percent": {"type": "integer", "minimum": 0, "maximum": 100}, "message": {"type": "string", "maxLength": 512}, "createdAt": {"type": "string", "format": "date-time"}}},
+      "RunProgressList": {"type": "object", "additionalProperties": false, "required": ["items"], "properties": {"items": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/components/schemas/RunProgressEntry"}}}},
       "RunError": {"type": "object", "additionalProperties": false, "required": ["code", "message", "requestId"], "properties": {"code": {"type": "string", "enum": ["run_not_found", "run_terminal", "run_sequence_conflict", "message_conflict", "message_parent_not_found", "artifact_not_found", "artifact_name_conflict", "artifact_digest_mismatch", "artifact_size_mismatch", "upload_too_large", "project_not_found", "workspace_not_found", "membership_required", "permission_denied", "version_conflict", "idempotency_conflict", "invalid_request", "method_not_allowed", "rate_limited", "access_expired", "session_revoked", "unauthorized", "internal_error"]}, "message": {"type": "string", "minLength": 1, "maxLength": 1024}, "requestId": {"type": "string", "minLength": 1, "maxLength": 128}}, "x-blazn-error-status": {"run_not_found": 404, "run_terminal": 409, "run_sequence_conflict": 409, "message_conflict": 409, "message_parent_not_found": 404, "artifact_not_found": 404, "artifact_name_conflict": 409, "artifact_digest_mismatch": 400, "artifact_size_mismatch": 400, "upload_too_large": 413, "project_not_found": 404, "workspace_not_found": 404, "membership_required": 403, "permission_denied": 403, "version_conflict": 409, "idempotency_conflict": 409, "invalid_request": 400, "method_not_allowed": 405, "rate_limited": 429, "access_expired": 401, "session_revoked": 401, "unauthorized": 401, "internal_error": 500}}
     }
   }

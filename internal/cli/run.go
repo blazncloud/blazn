@@ -2,9 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
@@ -17,6 +20,13 @@ type runCommands interface {
 	SendMessage(context.Context, string, string, client.SendRunMessageRequest) (client.RunMessageEnvelope, error)
 	ClaimMessage(context.Context, string, string, int) (client.RunMessageClaimEnvelope, error)
 	DeliverMessage(context.Context, string, string, string, string) (client.RunMessageEnvelope, error)
+	Create(context.Context, string, client.CreateRunRequest) (client.RunEnvelope, error)
+	List(context.Context, string, string) (client.RunList, error)
+	Get(context.Context, string) (client.RunEnvelope, error)
+	Cancel(context.Context, string, string, int) (client.RunEnvelope, error)
+	Events(context.Context, string, string) (client.RunEventList, error)
+	Progress(context.Context, string) (client.RunProgressList, error)
+	Artifacts(context.Context, string, string) (client.ArtifactList, error)
 }
 
 func (a *App) runRun(format OutputFormat, args []string) int {
@@ -102,9 +112,214 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		}
 		fmt.Fprintf(a.stdout, "delivered message %s at ordinal %d\n", result.Message.ID, result.Message.Ordinal)
 		return ExitSuccess
+	case "create":
+		_, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"kind": false, "proof-class": false, "plan-digest": false, "inputs": true, "outputs": true, "request-id": false})
+		if err != nil || flags["kind"] == "" || flags["proof-class"] == "" || flags["plan-digest"] == "" || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run create requires --kind, --proof-class, --plan-digest, --request-id, and optional comma-separated --inputs/--outputs"))
+		}
+		result, err := commands.Create(ctx, flags["request-id"], client.CreateRunRequest{Kind: flags["kind"], ProofClass: client.ProofClass(flags["proof-class"]), PlanDigest: flags["plan-digest"], InputArtifactIDs: commaList(flags["inputs"]), OutputNames: commaList(flags["outputs"])})
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "run %s %s\n", result.Run.ID, result.Run.Status)
+		return ExitSuccess
+	case "list":
+		_, flags, _, err := projectPositionalsAndFlags(args[1:], 0, map[string]bool{"status": true, "cursor": true})
+		if err != nil {
+			return a.runUsage(format, errors.New("run list accepts optional --status and --cursor"))
+		}
+		result, err := commands.List(ctx, flags["status"], flags["cursor"])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		for _, run := range result.Items {
+			fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\n", run.ID, run.Kind, run.ProofClass, run.Status)
+		}
+		if result.NextCursor != nil {
+			fmt.Fprintf(a.stdout, "next cursor: %s\n", *result.NextCursor)
+		}
+		return ExitSuccess
+	case "get":
+		positionals, _, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{})
+		if err != nil {
+			return a.runUsage(format, errors.New("run get requires RUN"))
+		}
+		result, err := commands.Get(ctx, positionals[0])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "run %s %s version %d\n", result.Run.ID, result.Run.Status, result.Run.Version)
+		return ExitSuccess
+	case "cancel":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"expected-version": false, "request-id": false})
+		if err != nil || flags["expected-version"] == "" || flags["request-id"] == "" {
+			return a.runUsage(format, errors.New("run cancel requires RUN, --expected-version, and --request-id"))
+		}
+		expectedVersion, versionErr := strconv.Atoi(flags["expected-version"])
+		if versionErr != nil || expectedVersion < 1 {
+			return a.runUsage(format, errors.New("run cancel --expected-version must be a positive integer"))
+		}
+		result, err := commands.Cancel(ctx, positionals[0], flags["request-id"], expectedVersion)
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		fmt.Fprintf(a.stdout, "run %s %s\n", result.Run.ID, result.Run.Status)
+		return ExitSuccess
+	case "watch":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"cursor": true, "interval-seconds": true})
+		if err != nil {
+			return a.runUsage(format, errors.New("run watch requires RUN and optional --cursor/--interval-seconds"))
+		}
+		interval := 2 * time.Second
+		if flags["interval-seconds"] != "" {
+			seconds, intervalErr := strconv.Atoi(flags["interval-seconds"])
+			if intervalErr != nil || seconds < 1 || seconds > 60 {
+				return a.runUsage(format, errors.New("run watch --interval-seconds must be 1 through 60"))
+			}
+			interval = time.Duration(seconds) * time.Second
+		}
+		cursor := flags["cursor"]
+		failures := 0
+		for {
+			next, drainErr := a.drainRunEvents(ctx, format, commands, positionals[0], cursor)
+			cursor = next
+			if drainErr == nil {
+				current, getErr := commands.Get(ctx, positionals[0])
+				if getErr != nil {
+					drainErr = getErr
+				} else {
+					failures = 0
+					if current.Run.Status != client.RunStatusQueued && current.Run.Status != client.RunStatusRunning {
+						if _, finalErr := a.drainRunEvents(ctx, format, commands, positionals[0], cursor); finalErr != nil {
+							return a.writeRunError(format, finalErr)
+						}
+						if format == OutputJSON {
+							encoded, encodeErr := json.Marshal(current)
+							if encodeErr != nil {
+								return a.writeError(format, ExitFailure, "encode_failed", encodeErr.Error())
+							}
+							fmt.Fprintln(a.stdout, string(encoded))
+						} else {
+							fmt.Fprintf(a.stdout, "run %s %s\n", current.Run.ID, current.Run.Status)
+						}
+						return ExitSuccess
+					}
+				}
+			}
+			if drainErr != nil {
+				failures++
+				if failures >= 3 {
+					return a.writeRunError(format, drainErr)
+				}
+			}
+			time.Sleep(interval)
+		}
+	case "logs":
+		positionals, _, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{})
+		if err != nil {
+			return a.runUsage(format, errors.New("run logs requires RUN"))
+		}
+		result, err := commands.Progress(ctx, positionals[0])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		for _, entry := range result.Items {
+			fmt.Fprintf(a.stdout, "%d\t%s\t%d%%\n", entry.Sequence, entry.Phase, entry.Percent)
+		}
+		return ExitSuccess
+	case "result":
+		positionals, _, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{})
+		if err != nil {
+			return a.runUsage(format, errors.New("run result requires RUN"))
+		}
+		result, err := commands.Get(ctx, positionals[0])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if result.Run.Receipt == nil {
+			return a.writeError(format, ExitFailure, "run_not_terminal", "Run has no terminal receipt yet")
+		}
+		if format == OutputJSON {
+			return a.writeJSON(map[string]any{"runId": result.Run.ID, "status": result.Run.Status, "receipt": result.Run.Receipt})
+		}
+		fmt.Fprintf(a.stdout, "run %s %s outcome %s artifacts %d\n", result.Run.ID, result.Run.Status, result.Run.Receipt.Outcome, len(result.Run.Receipt.ArtifactIDs))
+		return ExitSuccess
+	case "artifacts":
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"cursor": true})
+		if err != nil {
+			return a.runUsage(format, errors.New("run artifacts requires RUN and optional --cursor"))
+		}
+		result, err := commands.Artifacts(ctx, positionals[0], flags["cursor"])
+		if err != nil {
+			return a.writeRunError(format, err)
+		}
+		if format == OutputJSON {
+			return a.writeJSON(result)
+		}
+		for _, artifact := range result.Items {
+			fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\n", artifact.ID, artifact.Name, artifact.Status, artifact.Digest)
+		}
+		if result.NextCursor != nil {
+			fmt.Fprintf(a.stdout, "next cursor: %s\n", *result.NextCursor)
+		}
+		return ExitSuccess
 	default:
 		return a.runUsage(format, fmt.Errorf("unknown run command %q", args[0]))
 	}
+}
+
+func (a *App) drainRunEvents(ctx context.Context, format OutputFormat, commands runCommands, runID, cursor string) (string, error) {
+	for {
+		events, err := commands.Events(ctx, runID, cursor)
+		if err != nil {
+			return cursor, err
+		}
+		for _, event := range events.Items {
+			if format == OutputJSON {
+				encoded, encodeErr := json.Marshal(event)
+				if encodeErr != nil {
+					return cursor, encodeErr
+				}
+				fmt.Fprintln(a.stdout, string(encoded))
+			} else {
+				fmt.Fprintf(a.stdout, "%d\t%s\n", event.Sequence, event.Type)
+			}
+			cursor = strconv.Itoa(event.Sequence)
+		}
+		if events.NextCursor == nil || len(events.Items) == 0 {
+			return cursor, nil
+		}
+	}
+}
+
+func commaList(value string) []string {
+	if value == "" {
+		return []string{}
+	}
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
 }
 
 func (a *App) runUsage(format OutputFormat, err error) int {
