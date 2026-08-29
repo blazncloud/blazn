@@ -96,7 +96,7 @@ validate_install_inputs() {
   if [ "$BLAZN_QUALIFICATION_PROFILE" = lxd-ubuntu-26.04 ]; then
     [[ "$BLAZN_QUALIFICATION_INSTALL_PROFILE" =~ ^/etc/blazn/node/profiles/[a-zA-Z0-9_.-]+\.json$ ]] || qual_die 'Linux install profile must be one JSON file under the frozen profile root'
   else
-    [[ "$BLAZN_QUALIFICATION_INSTALL_PROFILE" =~ ^/Library/Application\ Support/BlaznNodeRoot/profiles/[a-zA-Z0-9_.-]+\.json$ ]] || qual_die 'Mac install profile must be one JSON file under the frozen profile root'
+    [[ "$BLAZN_QUALIFICATION_INSTALL_PROFILE" =~ ^/Library/Application\ Support/BlaznNodeProfiles/[a-zA-Z0-9_.-]+\.json$ ]] || qual_die 'Mac install profile must be one JSON file under the frozen profile root'
     for name in BLAZN_QUALIFICATION_KUBE_NODE BLAZN_QUALIFICATION_EXPECTED_NODE_UID BLAZN_QUALIFICATION_EXPECTED_RESOURCE_VERSION; do
       [ -n "${!name:-}" ] || qual_die "${name} is required for native adoption"
     done

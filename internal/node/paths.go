@@ -16,7 +16,7 @@ const (
 
 	MacOSNodeServiceStateRoot = "/Library/Application Support/Blazn/Node"
 	MacOSNodeRootStateRoot    = "/Library/Application Support/BlaznNodeRoot"
-	MacOSNodeProfileRoot      = "/Library/Application Support/BlaznNodeRoot/profiles"
+	MacOSNodeProfileRoot      = "/Library/Application Support/BlaznNodeProfiles"
 )
 
 type ProductionNodePaths struct {

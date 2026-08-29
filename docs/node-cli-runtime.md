@@ -85,6 +85,9 @@ Linux privileged state is rooted at `/var/lib/blazn-node-root`; macOS privileged
 state is rooted at `/Library/Application Support/BlaznNodeRoot`. Both are
 root-owned mode `0700` and contain authority, install WAL/receipts, and rollback
 backups. Daemon identity/runtime state remains in the separate service-owned
-platform path. The privileged helper is the hidden `node-root-helper` subcommand
+platform path. macOS trusted install profiles use the separate installer-owned
+mode-`0700` `/Library/Application Support/BlaznNodeProfiles` root so an
+unprivileged authenticated installer can read a reviewed profile without making
+the privileged receipt root traversable. The privileged helper is the hidden `node-root-helper` subcommand
 of the receipt-owned `/usr/local/bin/blazn` executable, so the supported path
 does not depend on a second undistributed binary.
