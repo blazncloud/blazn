@@ -22,9 +22,9 @@
             "name": "blazn-linux-amd64",
             "artifactType": "binary",
             "sourceClass": "current_binary",
-            "version": "v0.1.0-poc.112",
+            "version": "v0.1.0-poc.117",
             "publisher": "blazncloud/blazn",
-            "sha256": "7a9c04658452d24a85bf64514e99069a8469ec7ac87b4a2b51549c209e4a8729",
+            "sha256": "4c6050cdf32182e5d6666d968c73171f5b2fe2d240cc9ac2f09c75cb60c7c9ed",
             "ownership": "adopt_exact"
           },
           {
@@ -158,9 +158,9 @@
             "target": "/usr/local/bin/blazn",
             "desired": {
               "sourceComponent": "blazn-linux-amd64",
-              "contentSha256": "7a9c04658452d24a85bf64514e99069a8469ec7ac87b4a2b51549c209e4a8729"
+              "contentSha256": "4c6050cdf32182e5d6666d968c73171f5b2fe2d240cc9ac2f09c75cb60c7c9ed"
             },
-            "desiredDigest": "sha256:7a9c04658452d24a85bf64514e99069a8469ec7ac87b4a2b51549c209e4a8729",
+            "desiredDigest": "sha256:4c6050cdf32182e5d6666d968c73171f5b2fe2d240cc9ac2f09c75cb60c7c9ed",
             "mode": 493,
             "uid": 0,
             "gid": 0,
@@ -267,9 +267,9 @@
             "name": "blazn-linux-amd64",
             "artifactType": "binary",
             "sourceClass": "current_binary",
-            "version": "v0.1.0-poc.112",
+            "version": "v0.1.0-poc.117",
             "publisher": "blazncloud/blazn",
-            "sha256": "7a9c04658452d24a85bf64514e99069a8469ec7ac87b4a2b51549c209e4a8729",
+            "sha256": "4c6050cdf32182e5d6666d968c73171f5b2fe2d240cc9ac2f09c75cb60c7c9ed",
             "ownership": "adopt_exact"
           },
           {
@@ -391,9 +391,9 @@
             "target": "/usr/local/bin/blazn",
             "desired": {
               "sourceComponent": "blazn-linux-amd64",
-              "contentSha256": "7a9c04658452d24a85bf64514e99069a8469ec7ac87b4a2b51549c209e4a8729"
+              "contentSha256": "4c6050cdf32182e5d6666d968c73171f5b2fe2d240cc9ac2f09c75cb60c7c9ed"
             },
-            "desiredDigest": "sha256:7a9c04658452d24a85bf64514e99069a8469ec7ac87b4a2b51549c209e4a8729",
+            "desiredDigest": "sha256:4c6050cdf32182e5d6666d968c73171f5b2fe2d240cc9ac2f09c75cb60c7c9ed",
             "mode": 493,
             "uid": 0,
             "gid": 0,
@@ -497,9 +497,9 @@
             "name": "blazn-linux-arm64",
             "artifactType": "binary",
             "sourceClass": "current_binary",
-            "version": "v0.1.0-poc.112",
+            "version": "v0.1.0-poc.117",
             "publisher": "blazncloud/blazn",
-            "sha256": "a225873adcb4282de1ca5c68cc64cd4ebd58f346bc643a6b3f285e048ec2a70a",
+            "sha256": "dd99ab075d3d5037fc69fe543411f05cb9c42d8a70379f5ea5b4115a42909069",
             "ownership": "adopt_exact"
           },
           {
@@ -621,9 +621,9 @@
             "target": "/usr/local/bin/blazn",
             "desired": {
               "sourceComponent": "blazn-linux-arm64",
-              "contentSha256": "a225873adcb4282de1ca5c68cc64cd4ebd58f346bc643a6b3f285e048ec2a70a"
+              "contentSha256": "dd99ab075d3d5037fc69fe543411f05cb9c42d8a70379f5ea5b4115a42909069"
             },
-            "desiredDigest": "sha256:a225873adcb4282de1ca5c68cc64cd4ebd58f346bc643a6b3f285e048ec2a70a",
+            "desiredDigest": "sha256:dd99ab075d3d5037fc69fe543411f05cb9c42d8a70379f5ea5b4115a42909069",
             "mode": 493,
             "uid": 0,
             "gid": 0,
@@ -729,9 +729,9 @@
             "name": "blazn-darwin-arm64",
             "artifactType": "binary",
             "sourceClass": "current_binary",
-            "version": "v0.1.0-poc.112",
+            "version": "v0.1.0-poc.117",
             "publisher": "blazncloud/blazn",
-            "sha256": "48cb30ab73f3dd5e6df18ddee854cb297e83987075f26340724ed37befbe536a",
+            "sha256": "8e3a79d60b9a5f2db99f4cc978394b739bef6d70331df8574ec8e6780b40705b",
             "ownership": "adopt_exact"
           },
           {
@@ -801,9 +801,9 @@
             "target": "/usr/local/bin/blazn",
             "desired": {
               "sourceComponent": "blazn-darwin-arm64",
-              "contentSha256": "48cb30ab73f3dd5e6df18ddee854cb297e83987075f26340724ed37befbe536a"
+              "contentSha256": "8e3a79d60b9a5f2db99f4cc978394b739bef6d70331df8574ec8e6780b40705b"
             },
-            "desiredDigest": "sha256:48cb30ab73f3dd5e6df18ddee854cb297e83987075f26340724ed37befbe536a",
+            "desiredDigest": "sha256:8e3a79d60b9a5f2db99f4cc978394b739bef6d70331df8574ec8e6780b40705b",
             "mode": 493,
             "uid": 0,
             "gid": 0,
