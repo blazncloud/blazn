@@ -154,6 +154,55 @@ func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 	}
 }
 
+func TestDarwinExplicitProtectedBackendPersistsInReceipt(t *testing.T) {
+	home := t.TempDir()
+	runner := &fakeRunner{paths: map[string]bool{"security": true}}
+	t.Setenv(darwinCredentialBackendEnvName, backendProtectedFile)
+	first, err := newSystemStoreForOriginAtHome("darwin", runner, "https://example.test", home)
+	if err != nil || first.Description() != "protected credential file" {
+		t.Fatalf("first=%T description=%q err=%v", first, first.Description(), err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("explicit protected backend touched Keychain: %#v", runner.calls)
+	}
+	if err := first.Put([]byte("headless-darwin-session")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(darwinCredentialBackendEnvName, "")
+	second, err := newSystemStoreForOriginAtHome("darwin", runner, "https://example.test", home)
+	if err != nil || second.Description() != "protected credential file" {
+		t.Fatalf("second=%T description=%q err=%v", second, second.Description(), err)
+	}
+	got, err := second.Get()
+	if err != nil || string(got) != "headless-darwin-session" {
+		t.Fatalf("Get=%q err=%v", got, err)
+	}
+	receipt := filepath.Join(home, ".local", "share", "blazn", "credentials", credentialAccountForOrigin("https://example.test")+".backend")
+	info, err := os.Stat(receipt)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("receipt mode=%v err=%v", info.Mode(), err)
+	}
+}
+
+func TestDarwinProtectedBackendReceiptRejectsConflictingOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(darwinCredentialBackendEnvName, backendProtectedFile)
+	if _, err := newSystemStoreForOriginAtHome("darwin", &fakeRunner{}, "https://example.test", home); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(darwinCredentialBackendEnvName, "keychain")
+	if _, err := newSystemStoreForOriginAtHome("darwin", &fakeRunner{paths: map[string]bool{"security": true}}, "https://example.test", home); err == nil || !strings.Contains(err.Error(), "receipt selects") {
+		t.Fatalf("conflicting override error=%v", err)
+	}
+}
+
+func TestDarwinCredentialBackendRejectsUnsupportedOverride(t *testing.T) {
+	t.Setenv(darwinCredentialBackendEnvName, "keychain")
+	if _, err := newSystemStoreForOriginAtHome("darwin", &fakeRunner{paths: map[string]bool{"security": true}}, "https://example.test", t.TempDir()); err == nil || !strings.Contains(err.Error(), "must be") {
+		t.Fatalf("unsupported override error=%v", err)
+	}
+}
+
 func TestLinuxWithoutSecretServiceUsesProtectedStandaloneStore(t *testing.T) {
 	store, err := newSystemStoreForOriginAtHome("linux", &fakeRunner{}, defaultAPIURL, t.TempDir())
 	if err != nil || store.Description() != "protected credential file" {
