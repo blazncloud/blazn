@@ -15,6 +15,8 @@ type fakeRunCommands struct {
 	runID, cursor, requestID, messageID, claimID, status string
 	leaseSeconds, expectedVersion                        int
 	request                                              client.SendRunMessageRequest
+	progressRequest                                      client.SyntheticRunProgressRequest
+	completeRequest                                      client.CompleteSyntheticRunRequest
 	createRequest                                        client.CreateRunRequest
 	getStatus                                            client.RunStatus
 	receipt                                              *client.RunReceipt
@@ -35,6 +37,14 @@ func (f *fakeRunCommands) ClaimMessage(_ context.Context, runID, requestID strin
 func (f *fakeRunCommands) DeliverMessage(_ context.Context, runID, messageID, claimID, requestID string) (client.RunMessageEnvelope, error) {
 	f.runID, f.messageID, f.claimID, f.requestID = runID, messageID, claimID, requestID
 	return client.RunMessageEnvelope{Message: client.RunMessage{ID: messageID, RunID: runID, Ordinal: 2, Kind: client.RunMessageKindSteer, Status: "delivered", Content: "Only update docs"}}, nil
+}
+func (f *fakeRunCommands) RecordSyntheticProgress(_ context.Context, runID, requestID string, request client.SyntheticRunProgressRequest) (client.ProgressAck, error) {
+	f.runID, f.requestID, f.progressRequest = runID, requestID, request
+	return client.ProgressAck{RunID: runID, Sequence: request.Sequence, RunVersion: 2, Status: client.RunStatusRunning}, nil
+}
+func (f *fakeRunCommands) CompleteSynthetic(_ context.Context, runID, requestID string, request client.CompleteSyntheticRunRequest) (client.RunEnvelope, error) {
+	f.runID, f.requestID, f.completeRequest = runID, requestID, request
+	return client.RunEnvelope{Run: client.Run{ID: runID, Status: client.RunStatusSucceeded, Version: request.ExpectedVersion + 1}}, nil
 }
 
 func (f *fakeRunCommands) Create(_ context.Context, requestID string, request client.CreateRunRequest) (client.RunEnvelope, error) {
@@ -112,8 +122,21 @@ func TestRunClaimAndDeliverCommands(t *testing.T) {
 	}
 }
 
+func TestRunSyntheticExecutorCommands(t *testing.T) {
+	fake := &fakeRunCommands{}
+	app, stdout, stderr := runCommandApp(fake)
+	if code := app.Run([]string{"run", "synthetic-progress", cliRunID, "--sequence", "0", "--phase", "transport.claimed", "--percent", "25", "--message", "fixture only", "--request-id", "progress-fixture-1"}); code != ExitSuccess || stderr.Len() != 0 || fake.progressRequest.Sequence != 0 || fake.progressRequest.Phase != "transport.claimed" || fake.progressRequest.Percent != 25 || fake.progressRequest.Message != "fixture only" || !strings.Contains(stdout.String(), "synthetic progress") {
+		t.Fatalf("code=%d stdout=%q stderr=%q fake=%#v", code, stdout.String(), stderr.String(), fake)
+	}
+	digest := "sha256:" + strings.Repeat("b", 64)
+	app, stdout, stderr = runCommandApp(fake)
+	if code := app.Run([]string{"run", "synthetic-complete", cliRunID, "--expected-version", "2", "--plan-digest", digest, "--steps", "1", "--warnings", "fixture-only", "--request-id", "complete-fixture-1", "--output=json"}); code != ExitSuccess || stderr.Len() != 0 || fake.completeRequest.ExpectedVersion != 2 || fake.completeRequest.PlanDigest != digest || fake.completeRequest.Summary.Steps != 1 || len(fake.completeRequest.Summary.Warnings) != 1 || !strings.Contains(stdout.String(), `"status":"succeeded"`) {
+		t.Fatalf("code=%d stdout=%q stderr=%q fake=%#v", code, stdout.String(), stderr.String(), fake)
+	}
+}
+
 func TestRunSendRejectsIncompleteOrUnknownMessageKind(t *testing.T) {
-	for _, args := range [][]string{{"run", "send", cliRunID, "--kind", "prompt"}, {"run", "send", cliRunID, "--kind", "replace", "--content", "x", "--request-id", "message-send-1"}, {"run", "claim", cliRunID, "--lease", "4", "--request-id", "message-claim-1"}, {"run", "deliver", cliRunID, "--message", "missing"}} {
+	for _, args := range [][]string{{"run", "send", cliRunID, "--kind", "prompt"}, {"run", "send", cliRunID, "--kind", "replace", "--content", "x", "--request-id", "message-send-1"}, {"run", "claim", cliRunID, "--lease", "4", "--request-id", "message-claim-1"}, {"run", "deliver", cliRunID, "--message", "missing"}, {"run", "synthetic-progress", cliRunID, "--sequence", "-1", "--phase", "bad", "--percent", "10", "--request-id", "progress-fixture-1"}, {"run", "synthetic-complete", cliRunID, "--expected-version", "0", "--plan-digest", "invalid", "--request-id", "complete-fixture-1"}} {
 		fake := &fakeRunCommands{}
 		app, _, stderr := runCommandApp(fake)
 		if code := app.Run(args); code != ExitUsage || stderr.Len() == 0 || fake.runID != "" {

@@ -15,6 +15,8 @@ type API interface {
 	SendRunMessage(context.Context, string, string, string, string, string, client.SendRunMessageRequest) (client.RunMessageEnvelope, error)
 	ClaimRunMessage(context.Context, string, string, string, string, string, client.ClaimRunMessageRequest) (client.RunMessageClaimEnvelope, error)
 	DeliverRunMessage(context.Context, string, string, string, string, string, string, client.DeliverRunMessageRequest) (client.RunMessageEnvelope, error)
+	RecordSyntheticRunProgress(context.Context, string, string, string, string, string, client.SyntheticRunProgressRequest) (client.ProgressAck, error)
+	CompleteSyntheticRun(context.Context, string, string, string, string, string, client.CompleteSyntheticRunRequest) (client.RunEnvelope, error)
 	CreateRun(context.Context, string, string, string, string, client.CreateRunRequest) (client.RunEnvelope, error)
 	ListRuns(context.Context, string, string, string, string, string) (client.RunList, error)
 	GetRun(context.Context, string, string, string, string) (client.RunEnvelope, error)
@@ -87,6 +89,26 @@ func (s *Service) DeliverMessage(ctx context.Context, runID, messageID, claimID,
 	}
 	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunMessageEnvelope, error) {
 		return s.api.DeliverRunMessage(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, messageID, requestID, client.DeliverRunMessageRequest{ClaimID: claimID})
+	})
+}
+
+func (s *Service) RecordSyntheticProgress(ctx context.Context, runID, requestID string, request client.SyntheticRunProgressRequest) (client.ProgressAck, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.ProgressAck{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ProgressAck, error) {
+		return s.api.RecordSyntheticRunProgress(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, requestID, request)
+	})
+}
+
+func (s *Service) CompleteSynthetic(ctx context.Context, runID, requestID string, request client.CompleteSyntheticRunRequest) (client.RunEnvelope, error) {
+	selection, session, err := s.selection(ctx)
+	if err != nil {
+		return client.RunEnvelope{}, err
+	}
+	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.RunEnvelope, error) {
+		return s.api.CompleteSyntheticRun(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, requestID, request)
 	})
 }
 
