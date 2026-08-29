@@ -10,10 +10,10 @@ CREATE TABLE harness_definitions (
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (workspace_id, kind),
   UNIQUE (id, workspace_id),
-  CHECK ((document ->> 'id')::uuid = id),
-  CHECK (document ->> 'kind' = kind),
-  CHECK (document ->> 'status' = status),
-  CHECK ((document ->> 'resourceVersion')::bigint = resource_version)
+  CHECK ((document ->> 'id') IS NOT NULL AND (document ->> 'id')::uuid = id),
+  CHECK (document ->> 'kind' IS NOT NULL AND document ->> 'kind' = kind),
+  CHECK (document ->> 'status' IS NOT NULL AND document ->> 'status' = status),
+  CHECK ((document ->> 'resourceVersion') IS NOT NULL AND (document ->> 'resourceVersion')::bigint = resource_version)
 );
 
 CREATE INDEX harness_definitions_workspace_idx ON harness_definitions(workspace_id, kind);
@@ -31,10 +31,10 @@ CREATE TABLE harness_versions (
   UNIQUE (definition_id, digest),
   UNIQUE (id, workspace_id),
   FOREIGN KEY (definition_id, workspace_id) REFERENCES harness_definitions(id, workspace_id) ON DELETE CASCADE,
-  CHECK ((document ->> 'id')::uuid = id),
-  CHECK ((document ->> 'definitionId')::uuid = definition_id),
-  CHECK (document ->> 'version' = version),
-  CHECK (document ->> 'digest' = digest)
+  CHECK ((document ->> 'id') IS NOT NULL AND (document ->> 'id')::uuid = id),
+  CHECK ((document ->> 'definitionId') IS NOT NULL AND (document ->> 'definitionId')::uuid = definition_id),
+  CHECK (document ->> 'version' IS NOT NULL AND document ->> 'version' = version),
+  CHECK (document ->> 'digest' IS NOT NULL AND document ->> 'digest' = digest)
 );
 
 CREATE INDEX harness_versions_workspace_idx ON harness_versions(workspace_id, definition_id, created_at);
@@ -54,13 +54,13 @@ CREATE TABLE harness_profiles (
   UNIQUE (workspace_id, name),
   UNIQUE (id, workspace_id),
   FOREIGN KEY (harness_version_id, workspace_id) REFERENCES harness_versions(id, workspace_id),
-  CHECK ((document ->> 'id')::uuid = id),
-  CHECK ((document ->> 'workspaceId')::uuid = workspace_id),
-  CHECK (document ->> 'name' = name),
-  CHECK ((document ->> 'harnessVersionId')::uuid = harness_version_id),
-  CHECK (document ->> 'status' = status),
-  CHECK ((document ->> 'resourceVersion')::bigint = resource_version),
-  CHECK (document ->> 'digest' = digest)
+  CHECK ((document ->> 'id') IS NOT NULL AND (document ->> 'id')::uuid = id),
+  CHECK ((document ->> 'workspaceId') IS NOT NULL AND (document ->> 'workspaceId')::uuid = workspace_id),
+  CHECK (document ->> 'name' IS NOT NULL AND document ->> 'name' = name),
+  CHECK ((document ->> 'harnessVersionId') IS NOT NULL AND (document ->> 'harnessVersionId')::uuid = harness_version_id),
+  CHECK (document ->> 'status' IS NOT NULL AND document ->> 'status' = status),
+  CHECK ((document ->> 'resourceVersion') IS NOT NULL AND (document ->> 'resourceVersion')::bigint = resource_version),
+  CHECK (document ->> 'digest' IS NOT NULL AND document ->> 'digest' = digest)
 );
 
 CREATE TABLE harness_profile_revisions (
@@ -74,8 +74,8 @@ CREATE TABLE harness_profile_revisions (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (profile_id, resource_version),
   FOREIGN KEY (profile_id, workspace_id) REFERENCES harness_profiles(id, workspace_id) ON DELETE CASCADE,
-  CHECK ((document ->> 'resourceVersion')::bigint = resource_version),
-  CHECK (document ->> 'digest' = digest)
+  CHECK ((document ->> 'resourceVersion') IS NOT NULL AND (document ->> 'resourceVersion')::bigint = resource_version),
+  CHECK (document ->> 'digest' IS NOT NULL AND document ->> 'digest' = digest)
 );
 
 CREATE TABLE agents (
@@ -109,11 +109,11 @@ CREATE TABLE agent_versions (
   UNIQUE (agent_id, digest),
   UNIQUE (id, workspace_id),
   FOREIGN KEY (agent_id, workspace_id) REFERENCES agents(id, workspace_id) ON DELETE CASCADE,
-  CHECK ((document ->> 'id')::uuid = id),
-  CHECK ((document ->> 'agentId')::uuid = agent_id),
-  CHECK ((document ->> 'workspaceId')::uuid = workspace_id),
-  CHECK ((document ->> 'version')::bigint = version),
-  CHECK (document ->> 'digest' = digest)
+  CHECK ((document ->> 'id') IS NOT NULL AND (document ->> 'id')::uuid = id),
+  CHECK ((document ->> 'agentId') IS NOT NULL AND (document ->> 'agentId')::uuid = agent_id),
+  CHECK ((document ->> 'workspaceId') IS NOT NULL AND (document ->> 'workspaceId')::uuid = workspace_id),
+  CHECK ((document ->> 'version') IS NOT NULL AND (document ->> 'version')::bigint = version),
+  CHECK (document ->> 'digest' IS NOT NULL AND document ->> 'digest' = digest)
 );
 
 ALTER TABLE agent_versions ADD CONSTRAINT agent_versions_id_agent_unique UNIQUE (id, agent_id);

@@ -19,25 +19,25 @@ export interface AgentHarnessTransaction {
 
   createAgent(input: { id: string; workspaceId: string; ownerId: string; name: string; tags: string[]; createdBy: string }): Promise<Agent>;
   getAgent(workspaceId: string, agentId: string, lock?: boolean): Promise<Agent | undefined>;
-  listAgents(workspaceId: string): Promise<Agent[]>;
+  listAgents(workspaceId: string, cursor: string): Promise<{ items: Agent[]; nextCursor: string | null }>;
   insertAgentVersion(input: { id: string; agentId: string; workspaceId: string; version: number; digest: string; document: JsonDocument; createdBy: string }): Promise<AgentVersion>;
   setAgentCurrentVersion(agent: Agent, versionId: string): Promise<Agent | undefined>;
   getAgentVersion(workspaceId: string, agentId: string, versionId: string): Promise<AgentVersion | undefined>;
-  listAgentVersions(workspaceId: string, agentId: string): Promise<AgentVersion[]>;
+  listAgentVersions(workspaceId: string, agentId: string, cursor: string): Promise<{ items: AgentVersion[]; nextCursor: string | null }>;
   maxAgentVersionNumber(agentId: string): Promise<number>;
 
   createHarnessDefinition(input: { id: string; workspaceId: string; kind: string; status: string; resourceVersion: number; document: JsonDocument; createdBy: string }): Promise<HarnessDefinition>;
   getHarnessDefinition(workspaceId: string, definitionId: string, lock?: boolean): Promise<HarnessDefinition | undefined>;
-  listHarnessDefinitions(workspaceId: string): Promise<HarnessDefinition[]>;
+  listHarnessDefinitions(workspaceId: string, cursor: string): Promise<{ items: HarnessDefinition[]; nextCursor: string | null }>;
   insertHarnessVersion(input: { id: string; definitionId: string; workspaceId: string; version: string; digest: string; document: JsonDocument; createdBy: string }): Promise<HarnessVersion>;
   getHarnessVersion(workspaceId: string, versionId: string): Promise<HarnessVersion | undefined>;
-  listHarnessVersions(workspaceId: string, definitionId: string): Promise<HarnessVersion[]>;
+  listHarnessVersions(workspaceId: string, definitionId: string, cursor: string): Promise<{ items: HarnessVersion[]; nextCursor: string | null }>;
 
   createHarnessProfile(input: { id: string; workspaceId: string; name: string; harnessVersionId: string; status: string; resourceVersion: number; digest: string; document: JsonDocument; createdBy: string }): Promise<HarnessProfile>;
   reviseHarnessProfile(profile: HarnessProfile, input: { name: string; harnessVersionId: string; status: string; resourceVersion: number; digest: string; document: JsonDocument; revisedBy: string }): Promise<HarnessProfile | undefined>;
   insertHarnessProfileRevision(input: { id: string; profileId: string; workspaceId: string; resourceVersion: number; digest: string; document: JsonDocument; createdBy: string }): Promise<void>;
   getHarnessProfile(workspaceId: string, profileId: string, lock?: boolean): Promise<HarnessProfile | undefined>;
-  listHarnessProfiles(workspaceId: string): Promise<HarnessProfile[]>;
+  listHarnessProfiles(workspaceId: string, cursor: string): Promise<{ items: HarnessProfile[]; nextCursor: string | null }>;
 
   getTemplateVersionDigest(workspaceId: string, templateVersionId: string): Promise<string | undefined>;
   insertAudit(id: string, workspaceId: string, actorUserId: string, type: string, payload: unknown): Promise<void>;
@@ -88,9 +88,10 @@ class PgAgentHarnessTransaction implements AgentHarnessTransaction {
     const result = await this.client.query(`SELECT ${agentColumns} FROM agents WHERE workspace_id=$1 AND id=$2${lock ? " FOR UPDATE" : ""}`, [workspaceId, agentId]);
     return result.rows[0] ? agentRow(result.rows[0]) : undefined;
   }
-  async listAgents(workspaceId: string): Promise<Agent[]> {
-    const result = await this.client.query(`SELECT ${agentColumns} FROM agents WHERE workspace_id=$1 ORDER BY created_at,id`, [workspaceId]);
-    return result.rows.map(agentRow);
+  async listAgents(workspaceId: string, cursor = ""): Promise<{ items: Agent[]; nextCursor: string | null }> {
+    const result = await this.client.query(`SELECT ${agentColumns} FROM agents WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101`, [workspaceId, cursor]);
+    const items = result.rows.slice(0, 100).map(agentRow);
+    return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.id ?? null : null };
   }
   async insertAgentVersion(input: { id: string; agentId: string; workspaceId: string; version: number; digest: string; document: JsonDocument; createdBy: string }): Promise<AgentVersion> {
     try {
@@ -106,9 +107,11 @@ class PgAgentHarnessTransaction implements AgentHarnessTransaction {
     const result = await this.client.query(`SELECT ${agentVersionColumns} FROM agent_versions WHERE workspace_id=$1 AND agent_id=$2 AND id=$3`, [workspaceId, agentId, versionId]);
     return result.rows[0] ? agentVersionRow(result.rows[0]) : undefined;
   }
-  async listAgentVersions(workspaceId: string, agentId: string): Promise<AgentVersion[]> {
-    const result = await this.client.query(`SELECT ${agentVersionColumns} FROM agent_versions WHERE workspace_id=$1 AND agent_id=$2 ORDER BY version`, [workspaceId, agentId]);
-    return result.rows.map(agentVersionRow);
+  async listAgentVersions(workspaceId: string, agentId: string, cursor = ""): Promise<{ items: AgentVersion[]; nextCursor: string | null }> {
+    const after = cursor === "" ? 0 : Number(cursor);
+    const result = await this.client.query(`SELECT ${agentVersionColumns} FROM agent_versions WHERE workspace_id=$1 AND agent_id=$2 AND version>$3 ORDER BY version LIMIT 101`, [workspaceId, agentId, after]);
+    const items = result.rows.slice(0, 100).map(agentVersionRow);
+    return { items, nextCursor: result.rows.length > 100 ? String(items.at(-1)?.version ?? "") : null };
   }
   async maxAgentVersionNumber(agentId: string): Promise<number> {
     const result = await this.client.query("SELECT COALESCE(MAX(version),0) AS max FROM agent_versions WHERE agent_id=$1", [agentId]);
@@ -125,9 +128,10 @@ class PgAgentHarnessTransaction implements AgentHarnessTransaction {
     const result = await this.client.query(`SELECT ${definitionColumns} FROM harness_definitions WHERE workspace_id=$1 AND id=$2${lock ? " FOR SHARE" : ""}`, [workspaceId, definitionId]);
     return result.rows[0] ? definitionRow(result.rows[0]) : undefined;
   }
-  async listHarnessDefinitions(workspaceId: string): Promise<HarnessDefinition[]> {
-    const result = await this.client.query(`SELECT ${definitionColumns} FROM harness_definitions WHERE workspace_id=$1 ORDER BY created_at,id`, [workspaceId]);
-    return result.rows.map(definitionRow);
+  async listHarnessDefinitions(workspaceId: string, cursor = ""): Promise<{ items: HarnessDefinition[]; nextCursor: string | null }> {
+    const result = await this.client.query(`SELECT ${definitionColumns} FROM harness_definitions WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101`, [workspaceId, cursor]);
+    const items = result.rows.slice(0, 100).map(definitionRow);
+    return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.id ?? null : null };
   }
   async insertHarnessVersion(input: { id: string; definitionId: string; workspaceId: string; version: string; digest: string; document: JsonDocument; createdBy: string }): Promise<HarnessVersion> {
     try {
@@ -139,9 +143,10 @@ class PgAgentHarnessTransaction implements AgentHarnessTransaction {
     const result = await this.client.query(`SELECT ${harnessVersionColumns} FROM harness_versions WHERE workspace_id=$1 AND id=$2`, [workspaceId, versionId]);
     return result.rows[0] ? harnessVersionRow(result.rows[0]) : undefined;
   }
-  async listHarnessVersions(workspaceId: string, definitionId: string): Promise<HarnessVersion[]> {
-    const result = await this.client.query(`SELECT ${harnessVersionColumns} FROM harness_versions WHERE workspace_id=$1 AND definition_id=$2 ORDER BY created_at,id`, [workspaceId, definitionId]);
-    return result.rows.map(harnessVersionRow);
+  async listHarnessVersions(workspaceId: string, definitionId: string, cursor = ""): Promise<{ items: HarnessVersion[]; nextCursor: string | null }> {
+    const result = await this.client.query(`SELECT ${harnessVersionColumns} FROM harness_versions WHERE workspace_id=$1 AND definition_id=$2 AND ($3='' OR id::text>$3) ORDER BY id LIMIT 101`, [workspaceId, definitionId, cursor]);
+    const items = result.rows.slice(0, 100).map(harnessVersionRow);
+    return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.id ?? null : null };
   }
 
   async createHarnessProfile(input: { id: string; workspaceId: string; name: string; harnessVersionId: string; status: string; resourceVersion: number; digest: string; document: JsonDocument; createdBy: string }): Promise<HarnessProfile> {
@@ -165,9 +170,10 @@ class PgAgentHarnessTransaction implements AgentHarnessTransaction {
     const result = await this.client.query(`SELECT ${profileColumns} FROM harness_profiles WHERE workspace_id=$1 AND id=$2${lock ? " FOR UPDATE" : ""}`, [workspaceId, profileId]);
     return result.rows[0] ? profileRow(result.rows[0]) : undefined;
   }
-  async listHarnessProfiles(workspaceId: string): Promise<HarnessProfile[]> {
-    const result = await this.client.query(`SELECT ${profileColumns} FROM harness_profiles WHERE workspace_id=$1 ORDER BY created_at,id`, [workspaceId]);
-    return result.rows.map(profileRow);
+  async listHarnessProfiles(workspaceId: string, cursor = ""): Promise<{ items: HarnessProfile[]; nextCursor: string | null }> {
+    const result = await this.client.query(`SELECT ${profileColumns} FROM harness_profiles WHERE workspace_id=$1 AND ($2='' OR id::text>$2) ORDER BY id LIMIT 101`, [workspaceId, cursor]);
+    const items = result.rows.slice(0, 100).map(profileRow);
+    return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.id ?? null : null };
   }
 
   async getTemplateVersionDigest(workspaceId: string, templateVersionId: string): Promise<string | undefined> {

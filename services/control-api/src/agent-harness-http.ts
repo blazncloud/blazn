@@ -15,7 +15,7 @@ export class AgentHarnessHttpRouter {
     let match = path.match(/^\/v1\/workspaces\/([^/]+)\/agents$/);
     if (match) {
       const workspaceId = uuid(match[1]!, "workspaceId");
-      if (request.method === "GET") return sendJson(response, 200, await this.service.listAgents(principal, workspaceId));
+      if (request.method === "GET") return sendJson(response, 200, await this.service.listAgents(principal, workspaceId, cursor(url)));
       if (request.method === "POST") {
         const body = await jsonBody(request);
         exact(body, ["name", "tags"]);
@@ -31,9 +31,9 @@ export class AgentHarnessHttpRouter {
     match = path.match(/^\/v1\/workspaces\/([^/]+)\/agents\/([^/]+)\/versions$/);
     if (match) {
       const workspaceId = uuid(match[1]!, "workspaceId"), agentId = uuid(match[2]!, "agentId");
-      if (request.method === "GET") return sendJson(response, 200, await this.service.listAgentVersions(principal, workspaceId, agentId));
+      if (request.method === "GET") return sendJson(response, 200, await this.service.listAgentVersions(principal, workspaceId, agentId, cursor(url)));
       if (request.method === "POST") {
-        const body = await jsonBody(request);
+        const body = await jsonBody(request, 512 * 1024);
         exact(body, ["version"]);
         return sendJson(response, 201, await this.service.publishAgentVersion(principal, workspaceId, agentId, idempotency(request), { version: document(body.version, "version") }));
       }
@@ -47,9 +47,9 @@ export class AgentHarnessHttpRouter {
     match = path.match(/^\/v1\/workspaces\/([^/]+)\/harness\/definitions$/);
     if (match) {
       const workspaceId = uuid(match[1]!, "workspaceId");
-      if (request.method === "GET") return sendJson(response, 200, await this.service.listHarnessDefinitions(principal, workspaceId));
+      if (request.method === "GET") return sendJson(response, 200, await this.service.listHarnessDefinitions(principal, workspaceId, cursor(url)));
       if (request.method === "POST") {
-        const body = await jsonBody(request);
+        const body = await jsonBody(request, 512 * 1024);
         exact(body, ["definition"]);
         return sendJson(response, 201, await this.service.createHarnessDefinition(principal, workspaceId, idempotency(request), { definition: document(body.definition, "definition") }));
       }
@@ -63,9 +63,9 @@ export class AgentHarnessHttpRouter {
     match = path.match(/^\/v1\/workspaces\/([^/]+)\/harness\/definitions\/([^/]+)\/versions$/);
     if (match) {
       const workspaceId = uuid(match[1]!, "workspaceId"), definitionId = uuid(match[2]!, "definitionId");
-      if (request.method === "GET") return sendJson(response, 200, await this.service.listHarnessVersions(principal, workspaceId, definitionId));
+      if (request.method === "GET") return sendJson(response, 200, await this.service.listHarnessVersions(principal, workspaceId, definitionId, cursor(url)));
       if (request.method === "POST") {
-        const body = await jsonBody(request);
+        const body = await jsonBody(request, 512 * 1024);
         exact(body, ["version"]);
         return sendJson(response, 201, await this.service.publishHarnessVersion(principal, workspaceId, definitionId, idempotency(request), { version: document(body.version, "version") }));
       }
@@ -79,9 +79,9 @@ export class AgentHarnessHttpRouter {
     match = path.match(/^\/v1\/workspaces\/([^/]+)\/harness\/profiles$/);
     if (match) {
       const workspaceId = uuid(match[1]!, "workspaceId");
-      if (request.method === "GET") return sendJson(response, 200, await this.service.listHarnessProfiles(principal, workspaceId));
+      if (request.method === "GET") return sendJson(response, 200, await this.service.listHarnessProfiles(principal, workspaceId, cursor(url)));
       if (request.method === "POST") {
-        const body = await jsonBody(request);
+        const body = await jsonBody(request, 512 * 1024);
         exact(body, ["profile"]);
         return sendJson(response, 201, await this.service.createHarnessProfile(principal, workspaceId, idempotency(request), { profile: document(body.profile, "profile") }));
       }
@@ -95,7 +95,7 @@ export class AgentHarnessHttpRouter {
     match = path.match(/^\/v1\/workspaces\/([^/]+)\/harness\/profiles\/([^/]+)\/revisions$/);
     if (match) {
       if (request.method !== "POST") throw methodNotAllowed();
-      const body = await jsonBody(request);
+      const body = await jsonBody(request, 512 * 1024);
       exact(body, ["profile", "expectedResourceVersion"]);
       return sendJson(response, 200, await this.service.reviseHarnessProfile(principal, uuid(match[1]!, "workspaceId"), uuid(match[2]!, "profileId"), idempotency(request), { profile: document(body.profile, "profile"), expectedResourceVersion: integer(body.expectedResourceVersion, "expectedResourceVersion") }));
     }
@@ -103,6 +103,11 @@ export class AgentHarnessHttpRouter {
   }
 }
 
+function cursor(url: URL): string {
+  const values = url.searchParams.getAll("cursor");
+  if (values.length > 1 || (values[0]?.length ?? 0) > 128) throw new AgentHarnessHttpError("invalid_request", "cursor is invalid");
+  return values[0] ?? "";
+}
 function uuid(value: string, field: string): string { if (!UUID.test(value)) throw new AgentHarnessHttpError("invalid_request", `${field} must be a UUID`); return value; }
 function idempotency(request: IncomingMessage): string {
   const values = request.headersDistinct["idempotency-key"] ?? [];
