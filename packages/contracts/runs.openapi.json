@@ -94,7 +94,7 @@
     "/v1/workspaces/{workspaceId}/projects/{projectId}/runs/{runId}/artifacts": {
       "get": {
         "operationId": "listRunArtifacts",
-        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}],
+        "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ProjectId"}, {"$ref": "#/components/parameters/RunId"}, {"$ref": "#/components/parameters/Cursor"}],
         "responses": {"200": {"description": "Artifacts exported by this Run", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactList"}}}}, "default": {"$ref": "#/components/responses/RunError"}}
       },
       "post": {

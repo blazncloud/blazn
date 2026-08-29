@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/runs.openapi.json; DO NOT EDIT.
-// Contract SHA256: 2a3a7c32f37de19a31928751a3cebf4e144c0274189bf14ef53056f1a8bc6d84
+// Contract SHA256: 6a1b91ddc98d937e812f32d79234a4cd367c669ec1ad778e69f8c8f6d1d10919
 
 package client
 
@@ -436,13 +436,20 @@ func (c *Client) ListRunProgress(ctx context.Context, accessToken, workspaceID, 
 	err = c.workspaceDo(ctx, http.MethodGet, path+"/progress", accessToken, "", nil, nil, &output, http.StatusOK)
 	return output, err
 }
-func (c *Client) ListRunArtifacts(ctx context.Context, accessToken, workspaceID, projectID, runID string) (ArtifactList, error) {
+func (c *Client) ListRunArtifacts(ctx context.Context, accessToken, workspaceID, projectID, runID, cursor string) (ArtifactList, error) {
 	var output ArtifactList
 	path, err := runResourcePath(workspaceID, projectID, runID)
 	if err != nil {
 		return output, err
 	}
-	err = c.workspaceDo(ctx, http.MethodGet, path+"/artifacts", accessToken, "", nil, nil, &output, http.StatusOK)
+	if len(cursor) > 512 {
+		return output, fmt.Errorf("Run artifact cursor is invalid")
+	}
+	query := make(url.Values)
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	err = c.workspaceDo(ctx, http.MethodGet, path+"/artifacts", accessToken, "", query, nil, &output, http.StatusOK)
 	return output, err
 }
 func (c *Client) ListArtifacts(ctx context.Context, accessToken, workspaceID, projectID, status, cursor string) (ArtifactList, error) {

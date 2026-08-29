@@ -62,17 +62,22 @@ func (f *fakeRunCommands) Cancel(_ context.Context, runID, requestID string, exp
 }
 func (f *fakeRunCommands) Events(_ context.Context, runID, cursor string) (client.RunEventList, error) {
 	f.runID = runID
-	if cursor != "" {
+	page := "0"
+	switch cursor {
+	case "":
+		return client.RunEventList{Items: []client.RunEvent{{Sequence: 0, Type: "run.queued", Payload: map[string]any{}, CreatedAt: "2026-08-29T00:00:00Z"}}, NextCursor: &page}, nil
+	case "0":
+		return client.RunEventList{Items: []client.RunEvent{{Sequence: 1, Type: "run.succeeded", Payload: map[string]any{}, CreatedAt: "2026-08-29T00:00:01Z"}}}, nil
+	default:
 		return client.RunEventList{Items: []client.RunEvent{}}, nil
 	}
-	return client.RunEventList{Items: []client.RunEvent{{Sequence: 0, Type: "run.queued", Payload: map[string]any{}, CreatedAt: "2026-08-29T00:00:00Z"}, {Sequence: 1, Type: "run.succeeded", Payload: map[string]any{}, CreatedAt: "2026-08-29T00:00:01Z"}}}, nil
 }
 func (f *fakeRunCommands) Progress(_ context.Context, runID string) (client.RunProgressList, error) {
 	f.runID = runID
 	return client.RunProgressList{Items: []client.RunProgressEntry{{Sequence: 0, Phase: "render.plan", Percent: 25, CreatedAt: "2026-08-29T00:00:00Z"}}}, nil
 }
-func (f *fakeRunCommands) Artifacts(_ context.Context, runID string) (client.ArtifactList, error) {
-	f.runID = runID
+func (f *fakeRunCommands) Artifacts(_ context.Context, runID, cursor string) (client.ArtifactList, error) {
+	f.runID, f.cursor = runID, cursor
 	return client.ArtifactList{Items: []client.Artifact{{ID: "00000000-0000-4000-8000-000000000007", Name: "change.patch", Status: client.ArtifactStatusReady, Digest: "sha256:" + strings.Repeat("a", 64)}}}, nil
 }
 

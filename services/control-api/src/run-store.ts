@@ -26,7 +26,7 @@ export interface RunTransaction {
   listArtifacts(workspaceId:string,projectId:string,status:ArtifactStatus|"all",cursor?:string):Promise<{items:Artifact[];nextCursor:string|null}>;
   listRunEvents(workspaceId:string,projectId:string,runId:string,cursor:string):Promise<{items:RunEvent[];nextCursor:string|null}>;
   listRunProgress(runId:string):Promise<RunProgressEntry[]>;
-  listRunArtifacts(workspaceId:string,projectId:string,runId:string):Promise<{items:Artifact[];nextCursor:string|null}>;
+  listRunArtifacts(workspaceId:string,projectId:string,runId:string,cursor:string):Promise<{items:Artifact[];nextCursor:string|null}>;
   insertAudit(id:string,workspaceId:string,actorUserId:string,type:string,payload:unknown):Promise<void>;
 }
 export interface RunStore { transaction<T>(action:(transaction:RunTransaction)=>Promise<T>):Promise<T> }
@@ -84,8 +84,8 @@ class PgRunTransaction implements RunTransaction {
   async getArtifact(workspaceId:string,projectId:string,artifactId:string){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND id=$3",[workspaceId,projectId,artifactId]);return result.rows[0]?artifactRow(result.rows[0]):undefined;}
   async listArtifacts(workspaceId:string,projectId:string,status:ArtifactStatus|"all",cursor=""){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND ($3='all' OR status=$3) AND ($4='' OR id::text>$4) ORDER BY id LIMIT 101",[workspaceId,projectId,status,cursor]);const items=result.rows.slice(0,100).map(artifactRow);return{items,nextCursor:result.rows.length>100?items.at(-1)?.id??null:null};}
   async listRunEvents(workspaceId:string,projectId:string,runId:string,cursor=""){const after=cursor===""?-1:Number(cursor);const result=await this.client.query("SELECT sequence,type,payload,created_at FROM run_events WHERE workspace_id=$1 AND project_id=$2 AND run_id=$3 AND sequence>$4 ORDER BY sequence LIMIT 1001",[workspaceId,projectId,runId,after]);const items=result.rows.slice(0,1000).map(eventRow);return{items,nextCursor:result.rows.length>1000?String(items.at(-1)?.sequence??""):null};}
-  async listRunProgress(runId:string){const result=await this.client.query("SELECT sequence,phase,percent,created_at FROM run_synthetic_progress WHERE run_id=$1 ORDER BY sequence",[runId]);return result.rows.map(progressRow);}
-  async listRunArtifacts(workspaceId:string,projectId:string,runId:string){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND source_run_id=$3 ORDER BY id",[workspaceId,projectId,runId]);return{items:result.rows.map(artifactRow),nextCursor:null};}
+  async listRunProgress(runId:string){const result=await this.client.query("SELECT sequence,phase,percent,created_at FROM run_synthetic_progress WHERE run_id=$1 ORDER BY sequence LIMIT 10000",[runId]);return result.rows.map(progressRow);}
+  async listRunArtifacts(workspaceId:string,projectId:string,runId:string,cursor=""){const result=await this.client.query("SELECT * FROM artifacts WHERE workspace_id=$1 AND project_id=$2 AND source_run_id=$3 AND ($4='' OR id::text>$4) ORDER BY id LIMIT 101",[workspaceId,projectId,runId,cursor]);const items=result.rows.slice(0,100).map(artifactRow);return{items,nextCursor:result.rows.length>100?items.at(-1)?.id??null:null};}
   async insertAudit(id:string,workspaceId:string,actorUserId:string,type:string,payload:unknown){await this.client.query("INSERT INTO workspace_audit_events(id,workspace_id,actor_user_id,event_type,payload) VALUES($1,$2,$3,$4,$5)",[id,workspaceId,actorUserId,type,payload]);}
   private async insertEvent(runId:string,workspaceId:string,projectId:string,type:string,payload:unknown){await this.client.query("INSERT INTO run_events(run_id,workspace_id,project_id,sequence,type,payload) SELECT $1,$2,$3,coalesce(max(sequence)+1,0),$4,$5 FROM run_events WHERE run_id=$1",[runId,workspaceId,projectId,type,payload]);}
 }

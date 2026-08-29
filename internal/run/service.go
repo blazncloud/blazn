@@ -21,7 +21,7 @@ type API interface {
 	CancelRun(context.Context, string, string, string, string, string, client.CancelRunRequest) (client.RunEnvelope, error)
 	ListRunEvents(context.Context, string, string, string, string, string) (client.RunEventList, error)
 	ListRunProgress(context.Context, string, string, string, string) (client.RunProgressList, error)
-	ListRunArtifacts(context.Context, string, string, string, string) (client.ArtifactList, error)
+	ListRunArtifacts(context.Context, string, string, string, string, string) (client.ArtifactList, error)
 }
 
 type Service struct {
@@ -150,13 +150,13 @@ func (s *Service) Progress(ctx context.Context, runID string) (client.RunProgres
 	})
 }
 
-func (s *Service) Artifacts(ctx context.Context, runID string) (client.ArtifactList, error) {
+func (s *Service) Artifacts(ctx context.Context, runID, cursor string) (client.ArtifactList, error) {
 	selection, session, err := s.selection(ctx)
 	if err != nil {
 		return client.ArtifactList{}, err
 	}
 	return withSession(ctx, s.sessions, session, func(current workspacepkg.Session) (client.ArtifactList, error) {
-		return s.api.ListRunArtifacts(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID)
+		return s.api.ListRunArtifacts(ctx, current.AccessToken, selection.WorkspaceID, selection.ProjectID, runID, cursor)
 	})
 }
 

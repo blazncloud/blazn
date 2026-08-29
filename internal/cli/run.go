@@ -26,7 +26,7 @@ type runCommands interface {
 	Cancel(context.Context, string, string, int) (client.RunEnvelope, error)
 	Events(context.Context, string, string) (client.RunEventList, error)
 	Progress(context.Context, string) (client.RunProgressList, error)
-	Artifacts(context.Context, string) (client.ArtifactList, error)
+	Artifacts(context.Context, string, string) (client.ArtifactList, error)
 }
 
 func (a *App) runRun(format OutputFormat, args []string) int {
@@ -141,6 +141,9 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		for _, run := range result.Items {
 			fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\n", run.ID, run.Kind, run.ProofClass, run.Status)
 		}
+		if result.NextCursor != nil {
+			fmt.Fprintf(a.stdout, "next cursor: %s\n", *result.NextCursor)
+		}
 		return ExitSuccess
 	case "get":
 		positionals, _, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{})
@@ -188,24 +191,38 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 			interval = time.Duration(seconds) * time.Second
 		}
 		cursor := flags["cursor"]
+		failures := 0
 		for {
-			var exit int
-			cursor, exit = a.drainRunEvents(format, commands, ctx, positionals[0], cursor)
-			if exit >= 0 {
-				return exit
-			}
-			current, err := commands.Get(ctx, positionals[0])
-			if err != nil {
-				return a.writeRunError(format, err)
-			}
-			if current.Run.Status != client.RunStatusQueued && current.Run.Status != client.RunStatusRunning {
-				if _, exit = a.drainRunEvents(format, commands, ctx, positionals[0], cursor); exit >= 0 {
-					return exit
+			next, drainErr := a.drainRunEvents(ctx, format, commands, positionals[0], cursor)
+			cursor = next
+			if drainErr == nil {
+				current, getErr := commands.Get(ctx, positionals[0])
+				if getErr != nil {
+					drainErr = getErr
+				} else {
+					failures = 0
+					if current.Run.Status != client.RunStatusQueued && current.Run.Status != client.RunStatusRunning {
+						if _, finalErr := a.drainRunEvents(ctx, format, commands, positionals[0], cursor); finalErr != nil {
+							return a.writeRunError(format, finalErr)
+						}
+						if format == OutputJSON {
+							encoded, encodeErr := json.Marshal(current)
+							if encodeErr != nil {
+								return a.writeError(format, ExitFailure, "encode_failed", encodeErr.Error())
+							}
+							fmt.Fprintln(a.stdout, string(encoded))
+						} else {
+							fmt.Fprintf(a.stdout, "run %s %s\n", current.Run.ID, current.Run.Status)
+						}
+						return ExitSuccess
+					}
 				}
-				if format != OutputJSON {
-					fmt.Fprintf(a.stdout, "run %s %s\n", current.Run.ID, current.Run.Status)
+			}
+			if drainErr != nil {
+				failures++
+				if failures >= 3 {
+					return a.writeRunError(format, drainErr)
 				}
-				return ExitSuccess
 			}
 			time.Sleep(interval)
 		}
@@ -243,11 +260,11 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		fmt.Fprintf(a.stdout, "run %s %s outcome %s artifacts %d\n", result.Run.ID, result.Run.Status, result.Run.Receipt.Outcome, len(result.Run.Receipt.ArtifactIDs))
 		return ExitSuccess
 	case "artifacts":
-		positionals, _, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{})
+		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"cursor": true})
 		if err != nil {
-			return a.runUsage(format, errors.New("run artifacts requires RUN"))
+			return a.runUsage(format, errors.New("run artifacts requires RUN and optional --cursor"))
 		}
-		result, err := commands.Artifacts(ctx, positionals[0])
+		result, err := commands.Artifacts(ctx, positionals[0], flags["cursor"])
 		if err != nil {
 			return a.writeRunError(format, err)
 		}
@@ -257,30 +274,37 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		for _, artifact := range result.Items {
 			fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\n", artifact.ID, artifact.Name, artifact.Status, artifact.Digest)
 		}
+		if result.NextCursor != nil {
+			fmt.Fprintf(a.stdout, "next cursor: %s\n", *result.NextCursor)
+		}
 		return ExitSuccess
 	default:
 		return a.runUsage(format, fmt.Errorf("unknown run command %q", args[0]))
 	}
 }
 
-func (a *App) drainRunEvents(format OutputFormat, commands runCommands, ctx context.Context, runID, cursor string) (string, int) {
-	events, err := commands.Events(ctx, runID, cursor)
-	if err != nil {
-		return cursor, a.writeRunError(format, err)
-	}
-	for _, event := range events.Items {
-		if format == OutputJSON {
-			encoded, encodeErr := json.Marshal(event)
-			if encodeErr != nil {
-				return cursor, a.writeError(format, ExitFailure, "encode_failed", encodeErr.Error())
-			}
-			fmt.Fprintln(a.stdout, string(encoded))
-		} else {
-			fmt.Fprintf(a.stdout, "%d\t%s\n", event.Sequence, event.Type)
+func (a *App) drainRunEvents(ctx context.Context, format OutputFormat, commands runCommands, runID, cursor string) (string, error) {
+	for {
+		events, err := commands.Events(ctx, runID, cursor)
+		if err != nil {
+			return cursor, err
 		}
-		cursor = strconv.Itoa(event.Sequence)
+		for _, event := range events.Items {
+			if format == OutputJSON {
+				encoded, encodeErr := json.Marshal(event)
+				if encodeErr != nil {
+					return cursor, encodeErr
+				}
+				fmt.Fprintln(a.stdout, string(encoded))
+			} else {
+				fmt.Fprintf(a.stdout, "%d\t%s\n", event.Sequence, event.Type)
+			}
+			cursor = strconv.Itoa(event.Sequence)
+		}
+		if events.NextCursor == nil || len(events.Items) == 0 {
+			return cursor, nil
+		}
 	}
-	return cursor, -1
 }
 
 func commaList(value string) []string {
