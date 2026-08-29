@@ -30,7 +30,7 @@ func TestProductionNodePathsSeparateServiceAndPrivilegedState(t *testing.T) {
 		t.Fatalf("linux=%#v err=%v", linux, err)
 	}
 	mac, err := NodeProductionPaths(client.NodePlatformMacOS)
-	if err != nil || mac.ServiceStateRoot != "/Library/Application Support/Blazn/Node" || mac.RootStateRoot != "/Library/Application Support/BlaznNodeRoot" || mac.ProfileRoot != "/Library/Application Support/BlaznNodeRoot/profiles" {
+	if err != nil || mac.ServiceStateRoot != "/Library/Application Support/Blazn/Node" || mac.RootStateRoot != "/Library/Application Support/BlaznNodeRoot" || mac.ProfileRoot != "/Library/Application Support/BlaznNodeProfiles" {
 		t.Fatalf("mac=%#v err=%v", mac, err)
 	}
 	if linux.ServiceStateRoot == linux.RootStateRoot || mac.ServiceStateRoot == mac.RootStateRoot {
@@ -1402,6 +1402,18 @@ func TestEnrollmentPinsSignerBeforeRejectingUntrustedPlan(t *testing.T) {
 	}
 	if state.pin.PlanSigningKey.KeyID != "plan/v1" || state.runtime.SchemaVersion != 0 {
 		t.Fatalf("pin=%#v runtime=%#v", state.pin, state.runtime)
+	}
+}
+
+func TestEnrollmentRejectsInvalidMachineFingerprintBeforeIdentityOrAPI(t *testing.T) {
+	identityCalled := false
+	service := NewService(&mockAPI{}, identityStoreFunc(func() (Identity, error) {
+		identityCalled = true
+		return Identity{}, errors.New("identity must not be loaded")
+	}), &memoryState{}, nil)
+	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: "workspace-a", IdempotencyKey: "request-1", Name: "node-a", Mode: client.NodeModeFresh, Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, MachineFingerprint: "sha256:" + strings.Repeat("a", 64), Profile: client.NodeTrustedInstallProfile{ID: "ubuntu-26.04-amd64-worker/v1"}}, false)
+	if err == nil || err.Error() != "machine fingerprint must be 64 lowercase hexadecimal characters" || identityCalled {
+		t.Fatalf("err=%v identityCalled=%t", err, identityCalled)
 	}
 }
 

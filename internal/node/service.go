@@ -61,6 +61,9 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if options.AccessToken == "" || options.WorkspaceID == "" || len(options.IdempotencyKey) < 8 || options.Name == "" || options.MachineFingerprint == "" || options.Profile.ID == "" {
 		return EnrollResult{}, errors.New("node enrollment inputs are incomplete")
 	}
+	if !validMachineFingerprint(options.MachineFingerprint) {
+		return EnrollResult{}, errors.New("machine fingerprint must be 64 lowercase hexadecimal characters")
+	}
 	if install && s.installer == nil {
 		return EnrollResult{}, errors.New("privileged installer is unavailable")
 	}
@@ -184,6 +187,18 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 		}
 	}
 	return result, nil
+}
+
+func validMachineFingerprint(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Service) retireRemovedEnrollment(ctx context.Context, options EnrollOptions) error {
