@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { requestDigest } from "./workspace-crypto.js";
 import type { IdempotencyReceipt } from "./workspace-store.js";
 import { roleAllows } from "./workspace-types.js";
-import { agentVersionDigest, harnessProfileDigest, harnessSecretViolations, harnessVersionDigest, verifyAgentCompatibility, verifyHarnessBundle, verifyHarnessVersion } from "./harness-contract.js";
-import { validateAgentBundleSchema, validateHarnessBundleSchema, validateHarnessDefinitionSchema, validateHarnessProfileSchema, validateHarnessVersionSchema } from "./agent-harness-validation.js";
+import { agentVersionDigest, harnessSecretViolations, verifyAgentCompatibility, verifyHarnessBundle, verifyHarnessVersion } from "./harness-contract.js";
+import { validateAgentBundleSchema, validateHarnessDefinitionSchema, validateHarnessProfileSchema, validateHarnessVersionSchema } from "./agent-harness-validation.js";
 import { AgentNameConflictError, AgentVersionConflictError, DefinitionKindConflictError, HarnessVersionConflictError, IdentityConflictError, ProfileNameConflictError, ProfileRevisionConflictError, type AgentHarnessStore, type AgentHarnessTransaction } from "./agent-harness-store.js";
 import { AgentHarnessHttpError, type Agent, type AgentHarnessPrincipal, type CreateAgentInput, type CreateHarnessDefinitionInput, type CreateHarnessProfileInput, type HarnessProfile, type JsonDocument, type PublishAgentVersionInput, type PublishHarnessVersionInput, type ReviseHarnessProfileInput } from "./agent-harness-types.js";
 
@@ -23,8 +23,8 @@ export class AgentHarnessService {
       return { agent };
     }, 201);
   }
-  async listAgents(principal: AgentHarnessPrincipal, workspaceId: string) {
-    return this.store.transaction(async (tx) => { await this.authorize(tx, principal, workspaceId, "read"); return { items: await tx.listAgents(workspaceId) }; });
+  async listAgents(principal: AgentHarnessPrincipal, workspaceId: string, cursor = "") {
+    return this.store.transaction(async (tx) => { await this.authorize(tx, principal, workspaceId, "read"); return tx.listAgents(workspaceId, cursor); });
   }
   async getAgent(principal: AgentHarnessPrincipal, workspaceId: string, agentId: string) {
     return this.store.transaction(async (tx) => {
@@ -46,6 +46,8 @@ export class AgentHarnessService {
       if (!UUID.test(id)) invalid("AgentVersion id must be a UUID");
       if (document.agentId !== agentId || document.workspaceId !== workspaceId) throw new AgentHarnessHttpError("identity_conflict", "AgentVersion identity does not match the addressed Agent");
       if (document.createdBy !== principal.userId) invalid("AgentVersion createdBy must be the publishing principal");
+      const createdAtMs = Date.parse(text(document.createdAt));
+      if (!Number.isFinite(createdAtMs) || createdAtMs > Date.now() + 300_000) invalid("AgentVersion createdAt must be a valid timestamp not in the future");
       const nextVersion = await tx.maxAgentVersionNumber(agentId) + 1;
       if (declaredVersion !== nextVersion) throw new AgentHarnessHttpError("agent_version_sequence_conflict", `AgentVersion version must be the next sequence value ${nextVersion}`);
       if (document.digest !== agentVersionDigest(document)) throw new AgentHarnessHttpError("contract_violation", "AgentVersion semantic digest is invalid");
@@ -64,11 +66,11 @@ export class AgentHarnessService {
       return { agent: updated, version };
     }, 201);
   }
-  async listAgentVersions(principal: AgentHarnessPrincipal, workspaceId: string, agentId: string) {
+  async listAgentVersions(principal: AgentHarnessPrincipal, workspaceId: string, agentId: string, cursor = "") {
     return this.store.transaction(async (tx) => {
       await this.authorize(tx, principal, workspaceId, "read");
       if (!await tx.getAgent(workspaceId, agentId)) throw new AgentHarnessHttpError("agent_not_found", "Agent was not found");
-      return { items: await tx.listAgentVersions(workspaceId, agentId) };
+      return tx.listAgentVersions(workspaceId, agentId, cursor);
     });
   }
   async getAgentVersion(principal: AgentHarnessPrincipal, workspaceId: string, agentId: string, versionId: string) {
@@ -96,8 +98,8 @@ export class AgentHarnessService {
       return { definition };
     }, 201);
   }
-  async listHarnessDefinitions(principal: AgentHarnessPrincipal, workspaceId: string) {
-    return this.store.transaction(async (tx) => { await this.authorize(tx, principal, workspaceId, "read"); return { items: await tx.listHarnessDefinitions(workspaceId) }; });
+  async listHarnessDefinitions(principal: AgentHarnessPrincipal, workspaceId: string, cursor = "") {
+    return this.store.transaction(async (tx) => { await this.authorize(tx, principal, workspaceId, "read"); return tx.listHarnessDefinitions(workspaceId, cursor); });
   }
   async getHarnessDefinition(principal: AgentHarnessPrincipal, workspaceId: string, definitionId: string) {
     return this.store.transaction(async (tx) => {
@@ -125,18 +127,17 @@ export class AgentHarnessService {
       const definitionPlatforms = new Set(stringList(definition.document.supportedPlatforms));
       const platformErrors = stringList(document.supportedPlatforms).filter((platform) => !definitionPlatforms.has(platform));
       const contractErrors = [...verifyHarnessVersion(definition.document, document), ...platformErrors.map((platform) => `HarnessVersion platform ${platform} exceeds HarnessDefinition`)];
-      if (document.digest !== harnessVersionDigest(document)) contractErrors.push("HarnessVersion semantic digest is invalid");
-      if (contractErrors.length) throw new AgentHarnessHttpError("contract_violation", "HarnessVersion violates the Harness contract", [...new Set(contractErrors)]);
+      if (contractErrors.length) throw new AgentHarnessHttpError("contract_violation", "HarnessVersion violates the Harness contract", contractErrors);
       const version = await mapped(() => tx.insertHarnessVersion({ id, definitionId, workspaceId, version: text(document.version), digest: text(document.digest), document, createdBy: principal.userId }));
       await tx.insertAudit(randomUUID(), workspaceId, principal.userId, "harness.version_published", { definitionId, harnessVersionId: id, version: version.version, digest: version.digest });
       return { version };
     }, 201);
   }
-  async listHarnessVersions(principal: AgentHarnessPrincipal, workspaceId: string, definitionId: string) {
+  async listHarnessVersions(principal: AgentHarnessPrincipal, workspaceId: string, definitionId: string, cursor = "") {
     return this.store.transaction(async (tx) => {
       await this.authorize(tx, principal, workspaceId, "read");
       if (!await tx.getHarnessDefinition(workspaceId, definitionId)) throw new AgentHarnessHttpError("definition_not_found", "HarnessDefinition was not found");
-      return { items: await tx.listHarnessVersions(workspaceId, definitionId) };
+      return tx.listHarnessVersions(workspaceId, definitionId, cursor);
     });
   }
   async getHarnessVersion(principal: AgentHarnessPrincipal, workspaceId: string, definitionId: string, versionId: string) {
@@ -158,7 +159,7 @@ export class AgentHarnessService {
       if (document.resourceVersion !== 1) invalid("HarnessProfile resourceVersion must start at 1");
       await this.validateProfileDocument(tx, workspaceId, document);
       const profile = await mapped(() => tx.createHarnessProfile({ id, workspaceId, name: text(document.name), harnessVersionId: text(document.harnessVersionId), status: text(document.status), resourceVersion: 1, digest: text(document.digest), document, createdBy: principal.userId }));
-      await tx.insertHarnessProfileRevision({ id: randomUUID(), profileId: id, workspaceId, resourceVersion: 1, digest: profile.digest, document, createdBy: principal.userId });
+      await mapped(() => tx.insertHarnessProfileRevision({ id: randomUUID(), profileId: id, workspaceId, resourceVersion: 1, digest: profile.digest, document, createdBy: principal.userId }));
       await tx.insertAudit(randomUUID(), workspaceId, principal.userId, "harness.profile_created", { profileId: id, name: profile.name, digest: profile.digest });
       return { profile };
     }, 201);
@@ -176,13 +177,13 @@ export class AgentHarnessService {
       await this.validateProfileDocument(tx, workspaceId, document);
       const profile = await mapped(() => tx.reviseHarnessProfile(current, { name: text(document.name), harnessVersionId: text(document.harnessVersionId), status: text(document.status), resourceVersion: current.resourceVersion + 1, digest: text(document.digest), document, revisedBy: principal.userId }));
       if (!profile) throw new AgentHarnessHttpError("profile_revision_conflict", "HarnessProfile resourceVersion changed");
-      await tx.insertHarnessProfileRevision({ id: randomUUID(), profileId, workspaceId, resourceVersion: profile.resourceVersion, digest: profile.digest, document, createdBy: principal.userId });
+      await mapped(() => tx.insertHarnessProfileRevision({ id: randomUUID(), profileId, workspaceId, resourceVersion: profile.resourceVersion, digest: profile.digest, document, createdBy: principal.userId }));
       await tx.insertAudit(randomUUID(), workspaceId, principal.userId, "harness.profile_revised", { profileId, resourceVersion: profile.resourceVersion, digest: profile.digest });
       return { profile };
     }, 200);
   }
-  async listHarnessProfiles(principal: AgentHarnessPrincipal, workspaceId: string) {
-    return this.store.transaction(async (tx) => { await this.authorize(tx, principal, workspaceId, "read"); return { items: await tx.listHarnessProfiles(workspaceId) }; });
+  async listHarnessProfiles(principal: AgentHarnessPrincipal, workspaceId: string, cursor = "") {
+    return this.store.transaction(async (tx) => { await this.authorize(tx, principal, workspaceId, "read"); return tx.listHarnessProfiles(workspaceId, cursor); });
   }
   async getHarnessProfile(principal: AgentHarnessPrincipal, workspaceId: string, profileId: string) {
     return this.store.transaction(async (tx) => {
@@ -196,12 +197,15 @@ export class AgentHarnessService {
   private async validateProfileDocument(tx: AgentHarnessTransaction, workspaceId: string, document: JsonDocument): Promise<void> {
     const schemaErrors = validateHarnessProfileSchema(document);
     if (schemaErrors.length) throw new AgentHarnessHttpError("contract_violation", "HarnessProfile document does not satisfy the Harness schema", schemaErrors);
-    if (document.digest !== harnessProfileDigest(document)) throw new AgentHarnessHttpError("contract_violation", "HarnessProfile semantic digest is invalid");
     const version = await tx.getHarnessVersion(workspaceId, text(document.harnessVersionId));
     if (!version) throw new AgentHarnessHttpError("harness_version_not_found", "HarnessProfile selects an unknown HarnessVersion");
     const definition = await tx.getHarnessDefinition(workspaceId, version.definitionId);
     if (!definition) throw new AgentHarnessHttpError("definition_not_found", "HarnessVersion definition was not found");
-    const bundleErrors = verifyHarnessBundle({ definition: definition.document, version: version.document, profile: document });
+    let bundleErrors = verifyHarnessBundle({ definition: definition.document, version: version.document, profile: document });
+    // A disabled profile is deliberately not executable; the bundle verifier's approval
+    // check guards Run selection, not persistence, so disabling stays writable as long as
+    // the definition itself is still approved.
+    if (document.status === "disabled" && definition.status === "approved") bundleErrors = bundleErrors.filter((error) => error !== "Harness definition and profile must be approved");
     if (bundleErrors.length) throw new AgentHarnessHttpError("contract_violation", "HarnessProfile violates the Harness contract", bundleErrors);
   }
   private async resolveAllowedProfiles(tx: AgentHarnessTransaction, workspaceId: string, document: JsonDocument): Promise<JsonDocument[]> {
@@ -255,12 +259,13 @@ export class AgentHarnessService {
 function validateCreateAgent(input: CreateAgentInput): CreateAgentInput {
   if (!NAME.test(input.name)) invalid("Agent name is invalid");
   if (!Array.isArray(input.tags) || input.tags.length > 32 || input.tags.some((tag) => !NAME.test(tag)) || new Set(input.tags).size !== input.tags.length) invalid("Agent tags are invalid");
+  if (harnessSecretViolations({ name: input.name, tags: input.tags }).length) invalid("Agent name and tags must not resemble credential material");
   return { name: input.name, tags: [...input.tags] };
 }
 function documentInput(value: unknown, field: string): JsonDocument {
   if (!value || typeof value !== "object" || Array.isArray(value)) invalid(`${field} document is invalid`);
   const serialized = JSON.stringify(value);
-  if (serialized.length > 262144) invalid(`${field} document exceeds 262144 bytes`);
+  if (Buffer.byteLength(serialized, "utf8") > 262144) invalid(`${field} document exceeds 262144 bytes`);
   return value as JsonDocument;
 }
 async function mapped<T>(action: () => Promise<T>): Promise<T> {

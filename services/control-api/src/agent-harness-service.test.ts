@@ -49,7 +49,7 @@ class FakeTransaction implements AgentHarnessTransaction {
     return agent;
   }
   async getAgent(_: string, agentId: string) { return this.state.agents.get(agentId); }
-  async listAgents() { return [...this.state.agents.values()]; }
+  async listAgents() { return { items: [...this.state.agents.values()], nextCursor: null }; }
   async insertAgentVersion(input: { id: string; agentId: string; workspaceId: string; version: number; digest: string; document: JsonDocument; createdBy: string }) {
     const version: AgentVersion = { ...input, createdAt: new Date().toISOString() };
     this.state.agentVersions.set(input.id, version);
@@ -63,7 +63,7 @@ class FakeTransaction implements AgentHarnessTransaction {
     return updated;
   }
   async getAgentVersion(_: string, agentId: string, versionId: string) { const version = this.state.agentVersions.get(versionId); return version && version.agentId === agentId ? version : undefined; }
-  async listAgentVersions(_: string, agentId: string) { return [...this.state.agentVersions.values()].filter((version) => version.agentId === agentId); }
+  async listAgentVersions(_: string, agentId: string) { return { items: [...this.state.agentVersions.values()].filter((version) => version.agentId === agentId), nextCursor: null }; }
   async maxAgentVersionNumber(agentId: string) { return Math.max(0, ...[...this.state.agentVersions.values()].filter((version) => version.agentId === agentId).map((version) => version.version)); }
   async createHarnessDefinition(input: { id: string; workspaceId: string; kind: string; status: string; resourceVersion: number; document: JsonDocument; createdBy: string }) {
     const definition: HarnessDefinition = { id: input.id, workspaceId: input.workspaceId, kind: input.kind as HarnessDefinition["kind"], status: input.status as HarnessDefinition["status"], resourceVersion: input.resourceVersion, document: input.document, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -71,14 +71,14 @@ class FakeTransaction implements AgentHarnessTransaction {
     return definition;
   }
   async getHarnessDefinition(_: string, definitionId: string) { return this.state.definitions.get(definitionId); }
-  async listHarnessDefinitions() { return [...this.state.definitions.values()]; }
+  async listHarnessDefinitions() { return { items: [...this.state.definitions.values()], nextCursor: null }; }
   async insertHarnessVersion(input: { id: string; definitionId: string; workspaceId: string; version: string; digest: string; document: JsonDocument; createdBy: string }) {
     const version: HarnessVersion = { ...input, createdAt: new Date().toISOString() };
     this.state.versions.set(input.id, version);
     return version;
   }
   async getHarnessVersion(_: string, versionId: string) { return this.state.versions.get(versionId); }
-  async listHarnessVersions(_: string, definitionId: string) { return [...this.state.versions.values()].filter((version) => version.definitionId === definitionId); }
+  async listHarnessVersions(_: string, definitionId: string) { return { items: [...this.state.versions.values()].filter((version) => version.definitionId === definitionId), nextCursor: null }; }
   async createHarnessProfile(input: { id: string; workspaceId: string; name: string; harnessVersionId: string; status: string; resourceVersion: number; digest: string; document: JsonDocument; createdBy: string }) {
     if ([...this.state.profiles.values()].some((profile) => profile.name === input.name)) throw new ProfileNameConflictError();
     const profile: HarnessProfile = { id: input.id, workspaceId: input.workspaceId, name: input.name, harnessVersionId: input.harnessVersionId, status: input.status as HarnessProfile["status"], resourceVersion: input.resourceVersion, digest: input.digest, document: input.document, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -96,7 +96,7 @@ class FakeTransaction implements AgentHarnessTransaction {
     this.state.revisions.push({ profileId: input.profileId, resourceVersion: input.resourceVersion });
   }
   async getHarnessProfile(_: string, profileId: string) { return this.state.profiles.get(profileId); }
-  async listHarnessProfiles() { return [...this.state.profiles.values()]; }
+  async listHarnessProfiles() { return { items: [...this.state.profiles.values()], nextCursor: null }; }
   async getTemplateVersionDigest(_: string, templateVersionId: string) { return this.state.templates.get(templateVersionId); }
   async insertAudit(_: string, __: string, ___: string, type: string) { this.state.audits.push(type); }
 }
@@ -201,4 +201,10 @@ test("Harness profile revision enforces optimistic resourceVersion and recorded 
   assert.notEqual(updated.profile.digest, profile.digest, "a Profile edit must change its semantic identity");
   assert.deepEqual(store.state.revisions, [{ profileId: profile.id, resourceVersion: 1 }, { profileId: profile.id, resourceVersion: 2 }]);
   await assert.rejects(() => service.reviseHarnessProfile(publisher, workspaceId, profile.id, "revise-key-2", { profile: revised, expectedResourceVersion: 1 }), isCode("profile_revision_conflict"));
+  const disabled = structuredClone(revised) as JsonDocument;
+  disabled.status = "disabled";
+  disabled.resourceVersion = 3;
+  disabled.digest = contract.harnessProfileDigest(disabled);
+  const takenOut = await service.reviseHarnessProfile(publisher, workspaceId, profile.id, "revise-key-3", { profile: disabled, expectedResourceVersion: 2 });
+  assert.equal(takenOut.profile.status, "disabled");
 });
