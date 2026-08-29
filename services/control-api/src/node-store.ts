@@ -8,6 +8,7 @@ export interface ActiveNodeIdentity { nodeId: string; workspaceId: string; gener
 export interface NodeActivationAuthority extends ActiveNodeIdentity { planId: string; planDigest: string; planStatus: string; planExpiresAt: Date; controlPlaneNow: Date; canonicalPlan: Record<string, unknown>; enrollmentId: string; kubernetesBinding: KubernetesBinding | null }
 export interface HeartbeatState { identityGeneration: number; bootId: string; sequence: number; sentAt: Date; capabilityDigest: string | null; requestDigest: string | null }
 export interface JoinConsumeReceipt { issuanceId: string; requestDigest: string }
+export interface RecoverableNode { nodeId: string; nextIdentityGeneration: number }
 
 export interface NodeTransaction {
   lockIdempotency(principalId: string, operation: string, key: string): Promise<void>;
@@ -18,7 +19,9 @@ export interface NodeTransaction {
   enrollmentById(id: string, lock?: boolean): Promise<EnrollmentRecord | undefined>;
   exchangeByEnrollment(enrollmentId: string): Promise<ExchangeNodeEnrollmentResponse | undefined>;
   exchangeBindingByEnrollment(enrollmentId: string): Promise<KubernetesBinding | null | undefined>;
+  recoverableNode(input: { workspaceId: string; name: string; platform: string; architecture: string; machineFingerprint: string; kubernetesBinding?: KubernetesBinding }): Promise<RecoverableNode | undefined>;
   createExchangedNode(input: { nodeId: string; identityId: string; enrollment: EnrollmentRecord; architecture: string; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<NodeEnrollmentIdentity>;
+  recoverExchangedNode(input: { nodeId: string; identityId: string; identityGeneration: number; enrollment: EnrollmentRecord; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<NodeEnrollmentIdentity>;
   nodeById(nodeId: string, lock?: boolean): Promise<NodeView | undefined>;
   listNodes(workspaceId: string): Promise<NodeView[]>;
   activeIdentity(nodeId: string, lockNode?: boolean): Promise<ActiveNodeIdentity | undefined>;
@@ -82,6 +85,25 @@ class PgNodeTransaction implements NodeTransaction {
     const result=await this.client.query(`SELECT n.kubernetes_cluster_id,n.kubernetes_node_name,n.kubernetes_node_uid,n.kubernetes_resource_version FROM node_install_plans p JOIN nodes n ON n.id=p.node_id WHERE p.enrollment_id=$1`,[enrollmentId]);
     const row=result.rows[0];if(!row)return undefined;const values=[row.kubernetes_cluster_id,row.kubernetes_node_name,row.kubernetes_node_uid,row.kubernetes_resource_version];if(values.every(value=>value===null))return null;if(values.some(value=>typeof value!=="string"||!value))throw new Error("persisted enrollment Kubernetes binding is incomplete");return{clusterId:row.kubernetes_cluster_id,nodeName:row.kubernetes_node_name,nodeUid:row.kubernetes_node_uid,resourceVersion:row.kubernetes_resource_version};
   }
+  async recoverableNode(input: { workspaceId: string; name: string; platform: string; architecture: string; machineFingerprint: string; kubernetesBinding?: KubernetesBinding }): Promise<RecoverableNode | undefined> {
+    const binding=input.kubernetesBinding;
+    const result=await this.client.query(`SELECT n.id,n.current_identity_generation
+      FROM nodes n
+      WHERE n.workspace_id=$1 AND n.name=$2 AND n.host_platform=$3 AND n.host_architecture=$4 AND n.machine_fingerprint=$5
+        AND n.lifecycle_state='installing' AND n.trust_state='verifying' AND n.agent_eligible=false
+        AND n.current_identity_status='active' AND n.current_capability_version IS NULL AND n.last_heartbeat_at IS NULL
+        AND n.kubernetes_cluster_id IS NOT DISTINCT FROM $6
+        AND n.kubernetes_node_name IS NOT DISTINCT FROM $7
+        AND n.kubernetes_node_uid IS NOT DISTINCT FROM $8
+        AND NOT EXISTS (SELECT 1 FROM node_install_receipts r WHERE r.node_id=n.id)
+        AND NOT EXISTS (SELECT 1 FROM node_join_issuances j WHERE j.node_id=n.id)
+        AND NOT EXISTS (SELECT 1 FROM node_operations o WHERE o.node_id=n.id)
+        AND NOT EXISTS (SELECT 1 FROM node_install_plans p WHERE p.node_id=n.id AND p.status IN ('issued','accepted') AND p.expires_at>clock_timestamp())
+      FOR UPDATE OF n`,[input.workspaceId,input.name,input.platform,input.architecture,input.machineFingerprint,binding?.clusterId??null,binding?.nodeName??null,binding?.nodeUid??null]);
+    const row=result.rows[0];if(!row)return undefined;
+    const generation=Number(row.current_identity_generation);if(!Number.isSafeInteger(generation)||generation<1)throw new Error("recoverable Node has no current identity generation");
+    return{nodeId:row.id,nextIdentityGeneration:generation+1};
+  }
   async createExchangedNode(input: { nodeId: string; identityId: string; enrollment: EnrollmentRecord; architecture: string; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<NodeEnrollmentIdentity> {
     await this.client.query(`INSERT INTO nodes(id,workspace_id,name,kind,owner_user_id,machine_fingerprint,host_platform,host_architecture,lifecycle_state,trust_state,agent_eligible,service_version,kubernetes_cluster_id,kubernetes_node_name,kubernetes_node_uid,kubernetes_resource_version)
       VALUES($1,$2,$3,'shared',$4,$5,$6,$7,'installing','verifying',false,'pending',$8,$9,$10,$11)`, [input.nodeId,input.enrollment.workspaceId,input.enrollment.requestedName,input.enrollment.createdBy,input.machineFingerprint,input.enrollment.expectedPlatform,input.architecture,input.kubernetesBinding?.clusterId??null,input.kubernetesBinding?.nodeName??null,input.kubernetesBinding?.nodeUid??null,input.kubernetesBinding?.resourceVersion??null]);
@@ -92,6 +114,21 @@ class PgNodeTransaction implements NodeTransaction {
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'issued')`, [input.planId,input.enrollment.workspaceId,input.nodeId,input.enrollment.id,input.enrollment.createdBy,input.enrollment.idempotencyKey,input.planDigest,input.signingKeyId,input.signature,input.plan,input.issuedAt,input.expiresAt]);
     await this.client.query(`UPDATE node_enrollments SET status='exchanged',machine_binding=$2,node_public_key=$3,node_public_key_fingerprint=$4,exchanged_at=$5,version=version+1 WHERE id=$1`, [input.enrollment.id,input.machineFingerprint,input.publicKey,input.publicKeyFingerprint,input.issuedAt]);
     await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,actor_user_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,$3,'node.enrollment_exchanged',$4)", [input.enrollment.workspaceId,input.nodeId,input.enrollment.createdBy,{ enrollmentId: input.enrollment.id, planId: input.planId }]);
+    return enrollmentIdentityRow(identity.rows[0]!);
+  }
+  async recoverExchangedNode(input: { nodeId: string; identityId: string; identityGeneration: number; enrollment: EnrollmentRecord; machineFingerprint: string; publicKey: string; publicKeyFingerprint: string; kubernetesBinding?: KubernetesBinding; planId: string; plan: Record<string, unknown>; planDigest: string; signingKeyId: string; signature: string; issuedAt: Date; expiresAt: Date }): Promise<NodeEnrollmentIdentity> {
+    const revoked=await this.client.query("UPDATE node_identities SET status='revoked',revoked_at=$2 WHERE node_id=$1 AND status='active' RETURNING generation",[input.nodeId,input.issuedAt]);
+    if(revoked.rowCount!==1||Number(revoked.rows[0]!.generation)!==input.identityGeneration-1)throw new Error("recoverable Node identity changed before exchange");
+    const identity=await this.client.query(`INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,signing_key_id,generation,status,issued_at,expires_at)
+      VALUES($1,$2,$3,$4,'node-identity/v1',$5,'active',$6,$7) RETURNING generation,signing_key_id,public_key_fingerprint,issued_at,expires_at`,[input.identityId,input.nodeId,input.publicKeyFingerprint,input.publicKey,input.identityGeneration,input.issuedAt,new Date(input.issuedAt.getTime()+30*24*60*60_000)]);
+    const updated=await this.client.query(`UPDATE nodes SET current_identity_generation=$2,current_identity_status='active',kubernetes_resource_version=$3,updated_at=$4
+      WHERE id=$1 AND lifecycle_state='installing' AND trust_state='verifying' AND agent_eligible=false RETURNING workspace_id`,[input.nodeId,input.identityGeneration,input.kubernetesBinding?.resourceVersion??null,input.issuedAt]);
+    if(updated.rowCount!==1)throw new Error("recoverable Node changed before exchange");
+    await this.client.query("UPDATE node_install_plans SET status='expired' WHERE node_id=$1 AND status='issued' AND expires_at<=clock_timestamp()",[input.nodeId]);
+    await this.client.query(`INSERT INTO node_install_plans(id,workspace_id,node_id,enrollment_id,approved_by,idempotency_key,plan_digest,signing_key_id,signature,canonical_plan,issued_at,expires_at,status)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'issued')`,[input.planId,input.enrollment.workspaceId,input.nodeId,input.enrollment.id,input.enrollment.createdBy,input.enrollment.idempotencyKey,input.planDigest,input.signingKeyId,input.signature,input.plan,input.issuedAt,input.expiresAt]);
+    await this.client.query(`UPDATE node_enrollments SET status='exchanged',machine_binding=$2,node_public_key=$3,node_public_key_fingerprint=$4,exchanged_at=$5,version=version+1 WHERE id=$1`,[input.enrollment.id,input.machineFingerprint,input.publicKey,input.publicKeyFingerprint,input.issuedAt]);
+    await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,actor_user_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,$3,'node.enrollment_recovered',$4)",[input.enrollment.workspaceId,input.nodeId,input.enrollment.createdBy,{enrollmentId:input.enrollment.id,planId:input.planId,identityGeneration:input.identityGeneration}]);
     return enrollmentIdentityRow(identity.rows[0]!);
   }
   async nodeById(nodeId: string, lock = false): Promise<NodeView | undefined> {

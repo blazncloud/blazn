@@ -55,4 +55,30 @@ test("PostgreSQL serializes enrollment replay and isolates workspaces",{skip:!ad
   }
 });
 
+test("PostgreSQL reissues an expired unactivated Node without duplicating its machine or Kubernetes binding",{skip:!adminUrl||!runtimeUrl},async()=>{
+  const admin=createDatabase(adminUrl!),runtime=createDatabase(runtimeUrl!),userId=randomUUID(),workspaceId=randomUUID();
+  try{
+    await admin.query("INSERT INTO users(id,email,display_name,password_salt,password_hash) VALUES($1,$2,'Recovery Operator','salt','hash')",[userId,`node-recovery-${userId}@example.test`]);
+    await admin.query("INSERT INTO workspaces(id,slug,name,created_by) VALUES($1,$2,'Node Recovery',$3)",[workspaceId,`node-recovery-${userId.slice(0,8)}`,userId]);
+    await admin.query("INSERT INTO workspace_memberships(workspace_id,user_id,role) VALUES($1,$2,'operator')",[workspaceId,userId]);
+    const initialNow=(await admin.query<{now:Date}>("SELECT clock_timestamp()+interval '1 minute' AS now")).rows[0]!.now,signer=generateKeyPairSync("ed25519"),signingPublicKey=signer.publicKey.export({format:"jwk"}).x!,signingKey={keyId:"test/recovery-v1",publicKey:signingPublicKey,fingerprint:`sha256:${publicKeyFingerprint(signingPublicKey)}`};
+    const planFactory={signingKey:async()=>signingKey,create:async(c:{planId:string;nodeId:string;enrollment:{id:string;workspaceId:string;idempotencyKey:string;createdBy:string;requestedName:string};issuedAt:Date;expiresAt:Date})=>{const digest=`sha256:${c.planId.replaceAll("-","").padEnd(64,"0")}`;return{planId:c.planId,nodeId:c.nodeId,enrollmentId:c.enrollment.id,workspaceId:c.enrollment.workspaceId,idempotencyKey:c.enrollment.idempotencyKey,approvedBy:c.enrollment.createdBy,hostname:c.enrollment.requestedName,mode:"adopt",cluster:{id:"cluster-a"},target:{machineFingerprint:"c".repeat(64)},issuedAt:c.issuedAt.toISOString(),expiresAt:c.expiresAt.toISOString(),signingKeyId:signingKey.keyId,digest,signature:sign(null,Buffer.from(`blazn-node-install-plan-v1\n${digest}`),signer.privateKey).toString("base64url")};}};
+    const principal={userId,email:"recovery@example.test",displayName:"Recovery Operator"},binding={clusterId:"cluster-a",nodeName:"mac-mini-3-agent",nodeUid:"uid-mac-3",resourceVersion:"old-rv"},machineFingerprint="c".repeat(64),firstIdentity=generateKeyPairSync("ed25519"),firstPublic=firstIdentity.publicKey.export({format:"jwk"}).x!;
+    const initialService=new NodeService(new PgNodeStore(runtime),async()=>Buffer.alloc(32,3),planFactory,()=>initialNow),first=await initialService.createEnrollment(principal,workspaceId,"recovery-first",{name:binding.nodeName,mode:"adopt",platform:"macos",architecture:"arm64"}),firstExchange=await initialService.exchangeEnrollment(first.id,{token:first.token,machineFingerprint,nodePublicKey:firstPublic,platform:"macos",architecture:"arm64",kubernetesBinding:binding}),firstPlan=firstExchange.plan as {planId:string;nodeId:string};
+    await admin.query("UPDATE node_install_plans SET expires_at=$2 WHERE id=$1",[firstPlan.planId,new Date(initialNow.getTime()-1000)]);
+    const recoveryNow=new Date(initialNow.getTime()+16*60_000),secondIdentity=generateKeyPairSync("ed25519"),secondPublic=secondIdentity.publicKey.export({format:"jwk"}).x!,recoveryBinding={...binding,resourceVersion:"fresh-rv"},recoveryService=new NodeService(new PgNodeStore(runtime),async()=>Buffer.alloc(32,3),planFactory,()=>recoveryNow),second=await recoveryService.createEnrollment(principal,workspaceId,"recovery-second",{name:binding.nodeName,mode:"adopt",platform:"macos",architecture:"arm64"}),recovered=await recoveryService.exchangeEnrollment(second.id,{token:second.token,machineFingerprint,nodePublicKey:secondPublic,platform:"macos",architecture:"arm64",kubernetesBinding:recoveryBinding}),recoveredPlan=recovered.plan as {planId:string;nodeId:string};
+    assert.equal(recoveredPlan.nodeId,firstPlan.nodeId);assert.notEqual(recoveredPlan.planId,firstPlan.planId);assert.equal(recovered.identity.generation,2);
+    const persisted=(await admin.query(`SELECT n.kubernetes_resource_version,n.current_identity_generation,
+      (SELECT count(*) FROM nodes same WHERE same.workspace_id=n.workspace_id AND same.machine_fingerprint=n.machine_fingerprint AND same.lifecycle_state<>'removed') AS node_count,
+      (SELECT status FROM node_install_plans WHERE id=$2) AS old_plan_status,
+      (SELECT status FROM node_install_plans WHERE id=$3) AS new_plan_status,
+      (SELECT status FROM node_identities WHERE node_id=n.id AND generation=1) AS old_identity_status,
+      (SELECT status FROM node_identities WHERE node_id=n.id AND generation=2) AS new_identity_status
+      FROM nodes n WHERE n.id=$1`,[firstPlan.nodeId,firstPlan.planId,recoveredPlan.planId])).rows[0]!;
+    assert.deepEqual({resourceVersion:persisted.kubernetes_resource_version,generation:Number(persisted.current_identity_generation),nodeCount:Number(persisted.node_count),oldPlan:persisted.old_plan_status,newPlan:persisted.new_plan_status,oldIdentity:persisted.old_identity_status,newIdentity:persisted.new_identity_status},{resourceVersion:"fresh-rv",generation:2,nodeCount:1,oldPlan:"expired",newPlan:"issued",oldIdentity:"revoked",newIdentity:"active"});
+  }finally{
+    await admin.query("DELETE FROM workspaces WHERE id=$1",[workspaceId]).catch(()=>{});await admin.query("DELETE FROM users WHERE id=$1",[userId]).catch(()=>{});await runtime.end();await admin.end();
+  }
+});
+
 function nodeProof(privateKey:ReturnType<typeof generateKeyPairSync>["privateKey"],prefix:string,body:unknown):string{return sign(null,Buffer.from(`${prefix}\n${canonicalJson(body)}`),privateKey).toString("base64url");}
