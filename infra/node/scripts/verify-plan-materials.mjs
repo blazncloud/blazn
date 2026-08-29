@@ -107,11 +107,12 @@ for (const id of profileIds) {
   }
 }
 
-const [systemd, launchd, limaText, binaryDigestsText] = await Promise.all([
+const [systemd, launchd, limaText, binaryDigestsText, macProfileText] = await Promise.all([
   readFile(`${sourceTemplates}/blazn-node.service`),
   readFile(`${sourceTemplates}/com.blazn.node.plist`),
   readFile(`${sourceTemplates}/lima-worker-binding.json`, "utf8"),
   readFile(`${sourceTemplates}/current-binary-digests.json`, "utf8"),
+  readFile(`${sourceTemplates}/macos-lima-worker-adopt-profile-v1.json`, "utf8"),
 ]);
 if (sha256(systemd) !== template.profiles["ubuntu-26.04-amd64-worker/v1"].amd64.nodeService.definitionSha256 || Object.values(template.profiles["existing-linux-worker-adopt/v1"]).some((profile) => sha256(systemd) !== profile.nodeService.definitionSha256)) fail("systemd definition digest drifted");
 if (sha256(launchd) !== template.profiles["macos-lima-worker-adopt/v1"].arm64.nodeService.definitionSha256) fail("launchd definition digest drifted");
@@ -133,6 +134,15 @@ const limaComponents = macProfile.components.filter((component) => component.nam
 const limaMutations = macProfile.mutations.filter((mutation) => mutation.kind === "file" && mutation.target === "/Library/Application Support/Blazn/lima-worker-binding.json");
 if (limaComponents.length !== 1 || limaComponents[0].artifactType !== "configuration" || limaComponents[0].sourceClass !== "embedded" || limaComponents[0].sha256 !== limaSha256) fail("Lima worker component is not bound to its canonical asset");
 if (limaMutations.length !== 1 || limaMutations[0].desired?.sourceComponent !== "lima-worker-binding" || limaMutations[0].desired?.contentSha256 !== limaSha256 || limaMutations[0].desiredDigest !== `sha256:${limaSha256}`) fail("Lima worker mutation is not bound to its canonical asset");
+const trustedMacProfile = JSON.parse(macProfileText);
+exact(trustedMacProfile, ["schemaVersion", "id", "controlPlaneOrigin", "allowedClusterOrigins", "allowedDownloadOrigins", "allowedDownloadHostSuffixes", "allowedRegistryOrigins", "allowedMutationRoots", "embeddedComponentSha256", "limaBinding"], "trusted macOS profile");
+exact(trustedMacProfile.limaBinding, ["componentName", "target", "sha256", "clusterId", "vmName", "workerName"], "trusted macOS Lima binding");
+const launchdComponent = macProfile.components.find((component) => component.name === "blazn-node-launchd");
+if (trustedMacProfile.schemaVersion !== 1 || trustedMacProfile.id !== "macos-lima-worker-adopt/v1" || trustedMacProfile.controlPlaneOrigin !== "https://blazn.benpelo.com") fail("trusted macOS profile identity drifted");
+if (JSON.stringify(trustedMacProfile.allowedClusterOrigins) !== JSON.stringify([macProfile.cluster.apiServer]) || JSON.stringify(trustedMacProfile.allowedRegistryOrigins) !== JSON.stringify(macProfile.cluster.registryEndpoints) || trustedMacProfile.allowedDownloadOrigins.length !== 0 || trustedMacProfile.allowedDownloadHostSuffixes.length !== 0) fail("trusted macOS profile origins drifted");
+if (JSON.stringify(trustedMacProfile.allowedMutationRoots) !== JSON.stringify(["/usr/local/bin", "/Library/LaunchDaemons", "/Library/Application Support/Blazn", "/Library/Application Support/BlaznNodeRoot"])) fail("trusted macOS mutation roots drifted");
+if (!launchdComponent || trustedMacProfile.embeddedComponentSha256["blazn-node-launchd"] !== launchdComponent.sha256 || trustedMacProfile.embeddedComponentSha256["lima-worker-binding"] !== limaSha256 || Object.keys(trustedMacProfile.embeddedComponentSha256).length !== 2) fail("trusted macOS embedded materials drifted");
+if (trustedMacProfile.limaBinding.componentName !== "lima-worker-binding" || trustedMacProfile.limaBinding.target !== limaMutations[0].target || trustedMacProfile.limaBinding.sha256 !== limaSha256 || trustedMacProfile.limaBinding.clusterId !== lima.clusterId || trustedMacProfile.limaBinding.vmName !== lima.vmName || trustedMacProfile.limaBinding.workerName !== lima.workerName) fail("trusted macOS Lima binding drifted");
 for (const path of [privateFile, metadataFile, templateFile]) {
   const info = await stat(path);
   if (!info.isFile()) fail(`${path} is not a regular file`);

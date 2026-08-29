@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "macos-lima-worker-adopt/v1",
+  "controlPlaneOrigin": "https://blazn.benpelo.com",
+  "allowedClusterOrigins": [
+    "https://192.168.0.108:16443"
+  ],
+  "allowedDownloadOrigins": [],
+  "allowedDownloadHostSuffixes": [],
+  "allowedRegistryOrigins": [
+    "https://registry-1.docker.io"
+  ],
+  "allowedMutationRoots": [
+    "/usr/local/bin",
+    "/Library/LaunchDaemons",
+    "/Library/Application Support/Blazn",
+    "/Library/Application Support/BlaznNodeRoot"
+  ],
+  "embeddedComponentSha256": {
+    "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc",
+    "lima-worker-binding": "a77e917590c1899f3d5f158e815f70950fad88867be207ed7bfbf4713fead58d"
+  },
+  "limaBinding": {
+    "componentName": "lima-worker-binding",
+    "target": "/Library/Application Support/Blazn/lima-worker-binding.json",
+    "sha256": "a77e917590c1899f3d5f158e815f70950fad88867be207ed7bfbf4713fead58d",
+    "clusterId": "frontro-microk8s-8f109e68-f1bf-40e5-8482-c97d10997dc2",
+    "vmName": "frontro-agent-worker",
+    "workerName": "mac-mini-3-agent"
+  }
+}
