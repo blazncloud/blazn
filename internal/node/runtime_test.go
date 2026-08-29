@@ -353,11 +353,14 @@ func TestAgentSandboxControllerAvailabilityRequiresObservedAvailableGeneration(t
 
 func TestProductionMaterialsAndRootHelperUseShippedBinary(t *testing.T) {
 	materials := ProductionEmbeddedMaterials()
-	for name, want := range map[string]string{"blazn-node-systemd": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc"} {
+	for name, want := range map[string]string{"blazn-node-systemd": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175", "blazn-node-launchd": "228cf51dd546f74b789f7d5e032428447d1e85febadad4b9fd2bf1402dea58dc", "lima-worker-binding": "a77e917590c1899f3d5f158e815f70950fad88867be207ed7bfbf4713fead58d"} {
 		sum := sha256.Sum256(materials[name])
 		if fmt.Sprintf("%x", sum) != want {
 			t.Fatalf("material %s digest=%x", name, sum)
 		}
+	}
+	if string(materials["lima-worker-binding"]) != `{"clusterId":"frontro-microk8s-8f109e68-f1bf-40e5-8482-c97d10997dc2","schemaVersion":"blazn.dev/lima-worker-binding/v1","vmName":"frontro-agent-worker","workerName":"mac-mini-3-agent"}` {
+		t.Fatal("embedded Lima worker binding is not the exact canonical canary binding")
 	}
 	if !strings.Contains(string(materials["blazn-node-systemd"]), "User=blazn-node\nGroup=blazn-node\nExecStart=/usr/local/bin/blazn node serve") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>UserName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<key>GroupName</key><string>_blazn-node</string>") || !strings.Contains(string(materials["blazn-node-launchd"]), "<string>node</string><string>serve</string>") {
 		t.Fatal("installed service units do not execute node serve under the dedicated identity")
