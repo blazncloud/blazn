@@ -80,8 +80,9 @@ type systemStore struct {
 }
 
 const (
-	backendSecretService = "secret-service"
-	backendProtectedFile = "protected-file"
+	backendSecretService           = "secret-service"
+	backendProtectedFile           = "protected-file"
+	darwinCredentialBackendEnvName = "BLAZN_DARWIN_CREDENTIAL_BACKEND"
 )
 
 func NewSystemStore() (CredentialStore, error) {
@@ -113,14 +114,51 @@ func newSystemStoreWithFallback(goos string, runner commandRunner, origin string
 	store := &systemStore{goos: goos, runner: runner, account: account}
 	switch goos {
 	case "darwin":
-		if _, err := runner.LookPath("security"); err != nil {
-			return nil, fmt.Errorf("secure credential store %q is unavailable: %w", "security", err)
-		}
-		return store, nil
+		return selectDarwinCredentialBackend(runner, store, fallback, account)
 	case "linux":
 		return selectLinuxCredentialBackend(runner, store, fallback, account)
 	default:
 		return nil, fmt.Errorf("secure credential storage is unsupported on %s", goos)
+	}
+}
+
+func selectDarwinCredentialBackend(runner commandRunner, keychain CredentialStore, fallback func() (CredentialStore, error), account string) (CredentialStore, error) {
+	protected, err := fallback()
+	if err != nil {
+		return nil, err
+	}
+	fileStore, ok := protected.(*protectedFileStore)
+	if !ok {
+		return nil, errors.New("protected credential fallback has an unexpected implementation")
+	}
+	receiptPath := filepath.Join(fileStore.dir, account+".backend")
+	selected, receiptErr := readBackendReceipt(receiptPath)
+	if receiptErr != nil && !errors.Is(receiptErr, os.ErrNotExist) {
+		return nil, receiptErr
+	}
+	requested := strings.TrimSpace(os.Getenv(darwinCredentialBackendEnvName))
+	if receiptErr == nil {
+		if selected != backendProtectedFile {
+			return nil, fmt.Errorf("credential backend receipt has unsupported value %q", selected)
+		}
+		if requested != "" && requested != selected {
+			return nil, fmt.Errorf("credential backend receipt selects %s but %s requests %q", selected, darwinCredentialBackendEnvName, requested)
+		}
+		return protected, nil
+	}
+	switch requested {
+	case "":
+		if _, err := runner.LookPath("security"); err != nil {
+			return nil, fmt.Errorf("secure credential store %q is unavailable: %w", "security", err)
+		}
+		return keychain, nil
+	case backendProtectedFile:
+		if err := writeBackendReceipt(receiptPath, backendProtectedFile); err != nil {
+			return nil, err
+		}
+		return protected, nil
+	default:
+		return nil, fmt.Errorf("%s must be %q when set", darwinCredentialBackendEnvName, backendProtectedFile)
 	}
 }
 

@@ -29,6 +29,25 @@ ZITADEL credentials and tokens never enter the CLI. The control API accepts a
 ZITADEL identity only for the pending one-time device authorization that
 started the browser transaction.
 
+## Headless macOS credential storage
+
+Interactive macOS sessions use the login Keychain by default. A Mac used only
+through SSH can have a login Keychain that exists but rejects non-interactive
+access with `errSecInteractionNotAllowed`. Choose the built-in protected file
+backend before the first login on such a host:
+
+```sh
+BLAZN_DARWIN_CREDENTIAL_BACKEND=protected-file blazn auth login --no-browser
+```
+
+The choice is written to an origin-namespaced, mode-0600 backend receipt under
+the current user's mode-0700 Blazn credential directory. Later commands use
+that receipt without the environment variable. The protected credential itself
+is a direct, owner-only, no-symlink mode-0600 file with atomic replacement and
+directory synchronization. A conflicting or unsupported backend override fails
+closed. Select one backend before storing credentials; do not alternate between
+Keychain and protected-file storage for the same API origin.
+
 ## Identity stack
 
 The isolated stack is in `infra/identity`:
