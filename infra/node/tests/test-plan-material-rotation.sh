@@ -63,7 +63,7 @@ for fault in initialized template-published journal-published upgrade-receipt-pu
   grep -F "injected Node plan rotation fault after $fault" "$root/first.err" >/dev/null
   run_rotate "$root" rotation >"$root/retry.out"
   sudo jq -e '.phase=="complete"' "$root/ownership/rotations/rotation/receipt.json" >/dev/null
-  sudo jq -e '[.profiles[][] .components[] | select(.sourceClass=="current_binary") | .version] | all(.=="v0.1.0-poc.112")' "$root/material/node-install-plan-template-v1.json" >/dev/null
+  sudo jq -e '[.profiles[][] .components[] | select(.sourceClass=="current_binary") | .version] | all(.=="v0.1.0-poc.117")' "$root/material/node-install-plan-template-v1.json" >/dev/null
   plan=$(sudo env BLAZN_NODE_PLAN_TEST_MODE=1 BLAZN_NODE_PLAN_ROOT="$root/material" BLAZN_NODE_PLAN_CREATE_JOURNAL="$root/ownership/journal.json" "$PLAN_OBJECT")
   [ "$(printf '%s' "$plan" | jq -cS .)" = "$(sudo jq -cS .nodePlan "$root/ownership/main.json")" ]
   [ "$(printf '%s' "$plan" | jq -cS .)" = "$(sudo jq -cS .nodePlan "$root/ownership/upgrade.json")" ]
