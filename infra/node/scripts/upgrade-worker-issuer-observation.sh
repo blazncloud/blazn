@@ -43,7 +43,7 @@ fault(){ [ "$TEST_MODE" = 1 ] || return 0; [ "${BLAZN_ISSUER_UPGRADE_TEST_FAIL_A
 write_receipt(){ filter=$1; shift; tmp=$RECEIPT.tmp.$$; jq "$@" "$filter" "$RECEIPT" >"$tmp"; chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$RECEIPT"; sync_path "$(dirname -- "$RECEIPT")"; }
 # shellcheck disable=SC2016
 set_phase(){ value=$1; write_receipt '.phase=$phase|.updatedAt=$at' --arg phase "$value" --arg at "$(now)"; phase=$value; fault "$value"; }
-material_digest(){ jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$1" | sha256sum | awk '{print "sha256:"$1}'; }
+material_digest(){ digest_material=$(jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$1"); printf '%s' "$digest_material" | sha256sum | awk '{print "sha256:"$1}'; }
 validate_file(){ path=$1; mode=$2; [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c '%u:%a:%h' "$path")" = "0:$mode:1" ] || die "unsafe receipt-bound file: $path"; }
 atomic_install(){
   install_source=$1; install_destination=$2; install_digest=$3; install_mode=$4
@@ -171,7 +171,8 @@ if [ "$phase" = complete ]; then
     fi
   fi
   if [ ! -e "$ACTIVE" ]; then mkdir -m 0700 "$ACTIVE"; sync_path "$RECOVERY"; else validate_active; fi
-  new_material=$(jq --arg digest "$SOURCE_DIGEST" '.binary.digest=$digest|.liveJoinBlocked=false' "$RECEIPT" | jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' | sha256sum | awk '{print "sha256:"$1}')
+  new_material_json=$(jq --arg digest "$SOURCE_DIGEST" '.binary.digest=$digest|.liveJoinBlocked=false' "$RECEIPT" | jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}')
+  new_material=sha256:$(printf '%s' "$new_material_json" | sha256sum | awk '{print $1}')
   prior_main=sha256:$(sha "$MAIN_RECEIPT")
   prior_receipt=sha256:$(sha "$RECEIPT")
   snapshot_file "$BINARY" "$PRIOR_BINARY" 755 "$old_binary"

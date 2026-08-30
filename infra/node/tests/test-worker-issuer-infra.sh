@@ -58,7 +58,8 @@ make_blocked_fixture(){
   run_install "$fixture_root" >/dev/null
   sudo jq '.liveJoinBlocked=true' "$fixture_root/ownership/issuer.json" | sudo tee "$fixture_root/ownership/issuer.json.tmp" >/dev/null
   sudo chmod 0600 "$fixture_root/ownership/issuer.json.tmp"; sudo mv -- "$fixture_root/ownership/issuer.json.tmp" "$fixture_root/ownership/issuer.json"
-  digest=$(sudo jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$fixture_root/ownership/issuer.json"|sha256sum|awk '{print "sha256:"$1}')
+  fixture_material=$(sudo jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$fixture_root/ownership/issuer.json")
+  digest=sha256:$(printf '%s' "$fixture_material" | sha256sum | awk '{print $1}')
   sudo jq --arg digest "$digest" '.microk8sIssuer.materialDigest=$digest' "$fixture_root/control-plane.json" | sudo tee "$fixture_root/control-plane.json.tmp" >/dev/null
   sudo chmod 0600 "$fixture_root/control-plane.json.tmp"; sudo mv -- "$fixture_root/control-plane.json.tmp" "$fixture_root/control-plane.json"
 }
@@ -109,7 +110,8 @@ for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade
   sudo jq -e --arg new "sha256:$(sha256sum "$observed_helper"|awk '{print $1}')" '.phase=="complete" and .liveJoinBlocked==false and .binary.digest==$new and .upgrade.resultBinaryDigest==$new' "$root/ownership/issuer.json" >/dev/null
   sudo jq -e '.schemaVersion=="blazn.dev/microk8s-worker-issuer-observation-upgrade/v1" and .priorBinaryDigest!=.resultBinaryDigest and .priorMaterialDigest!=.resultMaterialDigest and .priorMainDigest!=.resultMainDigest' "$root/ownership/recovery/observation-upgrade-active/journal.json" >/dev/null
   main_binding=$(sudo jq -er .microk8sIssuer.materialDigest "$root/control-plane.json")
-  receipt_binding=$(sudo jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$root/ownership/issuer.json"|sha256sum|awk '{print "sha256:"$1}')
+  receipt_material=$(sudo jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$root/ownership/issuer.json")
+  receipt_binding=sha256:$(printf '%s' "$receipt_material" | sha256sum | awk '{print $1}')
   [ "$main_binding" = "$receipt_binding" ] || { printf 'main receipt does not bind upgraded issuer\n' >&2; exit 1; }
   before=$(sudo sha256sum "$root/ownership/issuer.json" "$root/control-plane.json" "$root/usr/libexec/issuer")
   run_upgrade "$root" >/dev/null
