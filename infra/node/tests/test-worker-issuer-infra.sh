@@ -3,6 +3,7 @@ set -eu
 
 TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 INSTALLER=$TEST_DIR/../scripts/install-worker-issuer.sh
+UPGRADE=$TEST_DIR/../scripts/upgrade-worker-issuer-observation.sh
 ROLLBACK=$TEST_DIR/../scripts/rollback-worker-issuer.sh
 COMPOSE=$TEST_DIR/../../milestone-2/compose.yaml
 command -v sudo >/dev/null 2>&1 || { printf 'worker issuer infra test skipped: sudo unavailable\n'; exit 0; }
@@ -14,6 +15,8 @@ trap cleanup EXIT HUP INT TERM
 
 helper=$top/helper
 printf '#!/bin/sh\nexit 0\n' >"$helper"; chmod 0755 "$helper"
+observed_helper=$top/helper-observed
+printf '#!/bin/sh\n# observation-enforced\nexit 0\n' >"$observed_helper"; chmod 0755 "$observed_helper"
 systemctl=$top/systemctl
 # shellcheck disable=SC2016
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$BLAZN_TEST_LOG"\n' >"$systemctl"; chmod 0755 "$systemctl"
@@ -29,6 +32,23 @@ run_install(){
     BLAZN_ISSUER_STATE_ROOT="$install_root/issuer-state" BLAZN_ISSUER_RECEIPT_PATH="$install_root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$install_root/ownership/recovery" BLAZN_CONTROL_PLANE_ENV_FILE="$install_root/control-plane.env" BLAZN_RECEIPT_PATH="$install_root/control-plane.json" "$installer"
 }
 run_rollback(){ rollback_root=$1; rollback_fault=${2:-}; sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_ROLLBACK_TEST_FAIL_AFTER="$rollback_fault" BLAZN_ISSUER_STATE_ROOT="$rollback_root/issuer-state" BLAZN_ISSUER_RECEIPT_PATH="$rollback_root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$rollback_root/systemctl.log" "$ROLLBACK"; }
+run_upgrade(){
+  upgrade_root=$1; upgrade_fault=${2:-}
+  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_UPGRADE_TEST_FAIL_AFTER="$upgrade_fault" BLAZN_TEST_LOG="$upgrade_root/systemctl.log" \
+    BLAZN_ISSUER_BINARY_SOURCE="$observed_helper" BLAZN_ISSUER_BINARY_SHA256="sha256:$(sha256sum "$observed_helper" | awk '{print $1}')" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" \
+    BLAZN_ISSUER_BINARY_PATH="$upgrade_root/usr/libexec/issuer" BLAZN_ISSUER_RECEIPT_PATH="$upgrade_root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$upgrade_root/ownership/recovery" BLAZN_RECEIPT_PATH="$upgrade_root/control-plane.json" "$UPGRADE"
+}
+make_blocked_fixture(){
+  fixture_root=$1
+  mkdir -p "$fixture_root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$fixture_root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$fixture_root/control-plane.json"; : >"$fixture_root/systemctl.log"
+  sudo chown -R 0:0 "$fixture_root"; sudo chmod 0700 "$fixture_root" "$fixture_root/ownership"; sudo chmod 0600 "$fixture_root/control-plane.env" "$fixture_root/control-plane.json"
+  run_install "$fixture_root" >/dev/null
+  sudo jq '.liveJoinBlocked=true' "$fixture_root/ownership/issuer.json" | sudo tee "$fixture_root/ownership/issuer.json.tmp" >/dev/null
+  sudo chmod 0600 "$fixture_root/ownership/issuer.json.tmp"; sudo mv -- "$fixture_root/ownership/issuer.json.tmp" "$fixture_root/ownership/issuer.json"
+  digest=$(sudo jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$fixture_root/ownership/issuer.json"|sha256sum|awk '{print "sha256:"$1}')
+  sudo jq --arg digest "$digest" '.microk8sIssuer.materialDigest=$digest' "$fixture_root/control-plane.json" | sudo tee "$fixture_root/control-plane.json.tmp" >/dev/null
+  sudo chmod 0600 "$fixture_root/control-plane.json.tmp"; sudo mv -- "$fixture_root/control-plane.json.tmp" "$fixture_root/control-plane.json"
+}
 
 for fault in recovery-created initialized key-pending recovery-key-pending secret-created config-bound files-installed service-started complete; do
   root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"
@@ -62,6 +82,37 @@ BLAZN_NODE_BROKER_LOOPBACK=disabled' ]
   sudo jq -e 'has("microk8sIssuer")|not' "$root/control-plane.json" >/dev/null
   if [ "$fault" = complete ]; then sudo jq -e '.["later-reviewed-field"]=={generation:2}' "$root/control-plane.json" >/dev/null; fi
 done
+
+for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade-binary-installed upgrade-receipt-updated upgrade-main-bound upgrade-service-started complete; do
+  root=$top/upgrade-$fault; make_blocked_fixture "$root"
+  recovery_before=$(sudo sha256sum "$root/ownership/recovery/inventory.json" "$root/ownership/recovery/issuer-hmac-v1" "$root/ownership/recovery/control-plane.env" "$root/ownership/recovery/control-plane.json")
+  if run_upgrade "$root" "$fault" >"$top/upgrade-$fault.out" 2>"$top/upgrade-$fault.err"; then printf 'issuer upgrade fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
+  grep -F "injected issuer upgrade fault after $fault" "$top/upgrade-$fault.err" >/dev/null
+  run_upgrade "$root" >"$top/upgrade-$fault-retry.out"
+  recovery_after=$(sudo sha256sum "$root/ownership/recovery/inventory.json" "$root/ownership/recovery/issuer-hmac-v1" "$root/ownership/recovery/control-plane.env" "$root/ownership/recovery/control-plane.json")
+  [ "$recovery_before" = "$recovery_after" ] || { printf 'issuer upgrade changed recovery material\n' >&2; exit 1; }
+  sudo jq -e --arg new "sha256:$(sha256sum "$observed_helper"|awk '{print $1}')" '.phase=="complete" and .liveJoinBlocked==false and .binary.digest==$new and .upgrade.resultBinaryDigest==$new' "$root/ownership/issuer.json" >/dev/null
+  sudo jq -e '.schemaVersion=="blazn.dev/microk8s-worker-issuer-observation-upgrade/v1" and .priorBinaryDigest!=.resultBinaryDigest and .priorMaterialDigest!=.resultMaterialDigest and .priorMainDigest!=.resultMainDigest' "$root/ownership/recovery/observed-enforcement-upgrade-v1.json" >/dev/null
+  main_binding=$(sudo jq -er .microk8sIssuer.materialDigest "$root/control-plane.json")
+  receipt_binding=$(sudo jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$root/ownership/issuer.json"|sha256sum|awk '{print "sha256:"$1}')
+  [ "$main_binding" = "$receipt_binding" ] || { printf 'main receipt does not bind upgraded issuer\n' >&2; exit 1; }
+  before=$(sudo sha256sum "$root/ownership/issuer.json" "$root/control-plane.json" "$root/usr/libexec/issuer")
+  run_upgrade "$root" >/dev/null
+  after=$(sudo sha256sum "$root/ownership/issuer.json" "$root/control-plane.json" "$root/usr/libexec/issuer")
+  [ "$before" = "$after" ] || { printf 'completed issuer upgrade is not idempotent\n' >&2; exit 1; }
+  if [ "$fault" = complete ]; then
+    sudo mkdir -p "$root/issuer-state"; sudo chmod 0700 "$root/issuer-state"
+    run_rollback "$root" >/dev/null
+    sudo jq -e '.phase=="rolled-back" and .rollback.retainedRecovery==true' "$root/ownership/issuer.json" >/dev/null
+    sudo test -f "$root/ownership/recovery/observed-enforcement-upgrade-v1.json"
+  fi
+done
+
+conflict=$top/upgrade-main-conflict; make_blocked_fixture "$conflict"
+sudo sh -c 'tmp=$1.tmp; jq ".unreviewed=true" "$1" >"$tmp"; chmod 0600 "$tmp"; mv -- "$tmp" "$1"' sh "$conflict/control-plane.json"
+if run_upgrade "$conflict" >"$top/upgrade-main-conflict.out" 2>"$top/upgrade-main-conflict.err"; then printf 'issuer upgrade accepted an unbound main receipt\n' >&2; exit 1; fi
+grep -F 'main receipt does not bind blocked issuer' "$top/upgrade-main-conflict.err" >/dev/null
+sudo jq -e '.phase=="complete" and .liveJoinBlocked==true' "$conflict/ownership/issuer.json" >/dev/null
 
 mutable_source=$top/mutable-source
 mkdir -p "$mutable_source/scripts" "$mutable_source/systemd" "$mutable_source/install/ownership"

@@ -98,5 +98,8 @@ lock.
 generation, closed config, broker socket group, systemd/tmpfiles policy,
 recovery inventory, and crash-resumable receipt. The broker Compose profile
 receives only its database URL, AES join key, and fixed Unix socket—never the
-issuer HMAC key, Docker socket, kubeconfig, or MicroK8s directory. Live join
-remains blocked; see `docs/microk8s-worker-issuer-infra-runbook.md`.
+issuer HMAC key, Docker socket, kubeconfig, or MicroK8s directory.
+`upgrade-worker-issuer-observation.sh` transactionally moves an existing
+blocked receipt to the observation-enforced binary while preserving recovery
+material. Live use still requires the disposable-node qualification in
+`docs/microk8s-worker-issuer-infra-runbook.md`.

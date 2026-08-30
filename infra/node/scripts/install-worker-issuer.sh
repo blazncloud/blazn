@@ -184,6 +184,7 @@ if [ ! -e "$RECEIPT" ]; then
 fi
 if [ ! -f "$RECEIPT" ] || [ -L "$RECEIPT" ] || [ "$(stat -c '%u:%a:%h' "$RECEIPT")" != 0:600:1 ]; then die "issuer receipt is unsafe"; fi
 jq -e --arg host "$(hostname)" --argjson uid "$BROKER_UID" --argjson gid "$BROKER_GID" --argjson mgid "$MICROK8S_GID" '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .owner=="blazn-poc" and .host==$host and .brokerUid==$uid and .socket.gid==$gid and .microk8s.gid==$mgid' "$RECEIPT" >/dev/null || die "issuer receipt binding differs"
+if jq -e '.phase=="complete" and .liveJoinBlocked==true' "$RECEIPT" >/dev/null; then die "blocked issuer requires upgrade-worker-issuer-observation.sh"; fi
 [ "$(jq -er .sourceDigest "$RECOVERY/inventory.json")" = "$SOURCE_DIGEST" ] || die "recovery inventory source digest differs from reviewed helper"
 
 current=$(jq -er .phase "$RECEIPT")

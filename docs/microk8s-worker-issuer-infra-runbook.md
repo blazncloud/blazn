@@ -33,6 +33,19 @@ control-plane/master label or taint. It must then prove that the exact
 quarantined worker observation permits consumption, activation removes the
 bootstrap taint, and the active worker becomes heartbeat-verified and eligible.
 
+An existing complete receipt with `liveJoinBlocked: true` is not accepted by
+the installer. Stop the Node broker sidecar first. Under the same serialized
+lock, run `upgrade-worker-issuer-observation.sh` with the reviewed
+observation-enforced binary path and SHA-256. The upgrade stops the issuer,
+atomically replaces only the receipt-owned binary, changes the gate and binary
+digest, updates the exact main-receipt material binding, and restarts the
+service. Its root-only recovery journal records the prior/result binary,
+issuer-material, main-receipt, and unchanged recovery-inventory digests. Every
+intermediate phase is resumable; any unrelated receipt, binary, or recovery
+change fails closed.
+Keep the broker stopped until the matching control API build is installed and
+the issuer health/observation protocol plus the disposable-node canary pass.
+
 Before accepting backup v4, copy the receipt-bound recovery key and issuer
 receipt into the separately protected Node recovery inventory as
 `microk8s-issuer-hmac-v1` and `microk8s-worker-issuer.json`. Run

@@ -8,7 +8,7 @@
     "schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer-infra/v1"},
     "owner": {"const": "blazn-poc"},
     "host": {"type": "string", "minLength": 1},
-    "phase": {"enum": ["initialized", "secret-created", "config-bound", "files-installed", "service-started", "complete", "rollback-started", "service-stopped", "rollback-validated", "binary-removed", "config-removed", "secret-removed", "unit-removed", "tmpfiles-removed", "state-removed", "environment-restored", "main-removal-intent", "main-restored", "files-restored", "rolled-back"]},
+    "phase": {"enum": ["initialized", "secret-created", "config-bound", "files-installed", "service-started", "complete", "upgrade-initialized", "upgrade-service-stopped", "upgrade-binary-installed", "upgrade-receipt-updated", "upgrade-main-bound", "upgrade-service-started", "rollback-started", "service-stopped", "rollback-validated", "binary-removed", "config-removed", "secret-removed", "unit-removed", "tmpfiles-removed", "state-removed", "environment-restored", "main-removal-intent", "main-restored", "files-restored", "rolled-back"]},
     "createdAt": {"type": "string", "format": "date-time"},
     "updatedAt": {"type": "string", "format": "date-time"},
     "binary": {"$ref": "#/$defs/artifact"},
@@ -26,6 +26,7 @@
     "brokerGroupCreated": {"const": false},
     "rollback": {"type": "object", "additionalProperties": false, "required": ["retainedRecovery", "groupRetained", "rolledBackAt"], "properties": {"retainedRecovery": {"const": true}, "groupRetained": {"const": true}, "rolledBackAt": {"type": "string", "format": "date-time"}}},
     "rollbackMain": {"type": "object", "additionalProperties": false, "required": ["priorDigest", "resultDigest"], "properties": {"priorDigest": {"$ref": "#/$defs/digest"}, "resultDigest": {"$ref": "#/$defs/digest"}}},
+    "upgrade": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "journalPath", "journalDigest", "priorBinaryDigest", "resultBinaryDigest", "priorMaterialDigest", "resultMaterialDigest", "priorMainDigest", "resultMainDigest"], "properties": {"schemaVersion": {"const": "blazn.dev/microk8s-worker-issuer-observation-upgrade/v1"}, "journalPath": {"const": "/var/lib/blazn/ownership/microk8s-worker-issuer-recovery/observed-enforcement-upgrade-v1.json"}, "journalDigest": {"$ref": "#/$defs/digest"}, "priorBinaryDigest": {"$ref": "#/$defs/digest"}, "resultBinaryDigest": {"$ref": "#/$defs/digest"}, "priorMaterialDigest": {"$ref": "#/$defs/digest"}, "resultMaterialDigest": {"$ref": "#/$defs/digest"}, "priorMainDigest": {"$ref": "#/$defs/digest"}, "resultMainDigest": {"$ref": "#/$defs/digest"}}},
     "liveJoinBlocked": {"const": false}
   },
   "$defs": {
