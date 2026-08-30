@@ -2,13 +2,31 @@
 set -eu
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/blazn-dev-session-test.XXXXXX")
-trap 'rm -r -- "$work"' EXIT HUP INT TERM
+source_commit=$(git -C "$repo_root" rev-parse HEAD)
+test_ref=refs/remotes/origin/blazn-development-session-shell-test-$$
+ref_created=0
+cleanup() {
+  status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$ref_created" -eq 1 ]; then git -C "$repo_root" update-ref -d "$test_ref" "$source_commit" || status=1; fi
+  rm -r -- "$work" || status=1
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if ! git -C "$repo_root" update-ref "$test_ref" "$source_commit" 0000000000000000000000000000000000000000; then
+  printf 'unable to create isolated pushed-source test ref: %s\n' "$test_ref" >&2
+  exit 1
+fi
+ref_created=1
 receipt=$work/session.json
 state=$work/fake-state
 log=$work/fake.log
 workspace=3340c6d2-3684-4580-8385-146f1f11220c
-source_commit=$(git -C "$script_dir/../.." rev-parse HEAD)
 
 cat >"$work/blazn" <<'EOF'
 #!/bin/sh
