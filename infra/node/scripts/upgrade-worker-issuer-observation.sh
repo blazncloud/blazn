@@ -16,6 +16,9 @@ RECEIPT=${BLAZN_ISSUER_RECEIPT_PATH:-/var/lib/blazn/ownership/microk8s-worker-is
 RECOVERY=${BLAZN_ISSUER_RECOVERY_ROOT:-/var/lib/blazn/ownership/microk8s-worker-issuer-recovery}
 MAIN_RECEIPT=${BLAZN_RECEIPT_PATH:-/var/lib/blazn/ownership/control-plane.json}
 JOURNAL=$RECOVERY/observed-enforcement-upgrade-v1.json
+PRIOR_BINARY=$RECOVERY/observation-upgrade-prior-binary
+PRIOR_RECEIPT=$RECOVERY/observation-upgrade-prior-receipt.json
+PRIOR_MAIN=$RECOVERY/observation-upgrade-prior-main.json
 TEST_MODE=${BLAZN_ISSUER_INFRA_TEST_MODE:-0}
 SYSTEMCTL=${BLAZN_ISSUER_TEST_SYSTEMCTL:-systemctl}
 case "$SOURCE:$BINARY:$RECEIPT:$RECOVERY:$MAIN_RECEIPT:$JOURNAL" in /*:/*:/*:/*:/*:/*) ;; *) die "upgrade paths must be absolute" ;; esac
@@ -40,17 +43,16 @@ write_receipt(){ filter=$1; shift; tmp=$RECEIPT.tmp.$$; jq "$@" "$filter" "$RECE
 set_phase(){ value=$1; write_receipt '.phase=$phase|.updatedAt=$at' --arg phase "$value" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"; phase=$value; fault "$value"; }
 material_digest(){ jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$1" | sha256sum | awk '{print "sha256:"$1}'; }
 validate_file(){ path=$1; mode=$2; [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c '%u:%a:%h' "$path")" = "0:$mode:1" ] || die "unsafe receipt-bound file: $path"; }
-install_binary(){
-  python3 - "$SOURCE" "$BINARY" "$SOURCE_DIGEST" "$TEST_MODE" <<'PY'
+atomic_install(){
+  install_source=$1; install_destination=$2; install_digest=$3; install_mode=$4
+  python3 - "$install_source" "$install_destination" "$install_digest" "$install_mode" <<'PY'
 import hashlib, os, stat, sys, tempfile
-source, destination, expected, test_mode = sys.argv[1:]
+source, destination, expected, output_mode = sys.argv[1:]
 source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
 try:
     info = os.fstat(source_fd)
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise SystemExit("helper source is unsafe")
-    if test_mode != "1" and (info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o755):
-        raise SystemExit("helper source metadata is unsafe")
     fd, temporary = tempfile.mkstemp(prefix=".issuer-upgrade.", dir=os.path.dirname(destination))
     digest = hashlib.sha256()
     try:
@@ -62,7 +64,7 @@ try:
             output.flush(); os.fsync(output.fileno())
         if "sha256:" + digest.hexdigest() != expected:
             raise SystemExit("helper source differs from reviewed digest")
-        os.chown(temporary, 0, 0); os.chmod(temporary, 0o755); os.replace(temporary, destination)
+        os.chown(temporary, 0, 0); os.chmod(temporary, int(output_mode, 8)); os.replace(temporary, destination)
         parent = os.open(os.path.dirname(destination), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try: os.fsync(parent)
         finally: os.close(parent)
@@ -71,6 +73,25 @@ try:
         except FileNotFoundError: pass
 finally: os.close(source_fd)
 PY
+}
+install_binary(){ atomic_install "$SOURCE" "$BINARY" "$SOURCE_DIGEST" 0755; }
+snapshot_file(){
+  snapshot_source=$1; snapshot_destination=$2; snapshot_mode=$3; snapshot_digest=$4
+  if [ -e "$snapshot_destination" ]; then
+    validate_file "$snapshot_destination" "$snapshot_mode"
+    [ "sha256:$(sha "$snapshot_destination")" = "$snapshot_digest" ] || die "upgrade recovery snapshot conflicts: $snapshot_destination"
+  else
+    atomic_install "$snapshot_source" "$snapshot_destination" "$snapshot_digest" "0$snapshot_mode"
+  fi
+}
+restore_prior(){
+  "$SYSTEMCTL" stop blazn-microk8s-worker-issuer.service >/dev/null 2>&1 || true
+  atomic_install "$PRIOR_BINARY" "$BINARY" "$(jq -er .priorBinaryDigest "$JOURNAL")" 0755
+  atomic_install "$PRIOR_MAIN" "$MAIN_RECEIPT" "$(jq -er .priorMainFileDigest "$JOURNAL")" 0600
+  atomic_install "$PRIOR_RECEIPT" "$RECEIPT" "$(jq -er .priorReceiptDigest "$JOURNAL")" 0600
+  "$SYSTEMCTL" start blazn-microk8s-worker-issuer.service || die "new issuer failed and the prior binary was restored, but its service did not restart"
+  if [ "$TEST_MODE" != 1 ]; then "$SYSTEMCTL" is-active --quiet blazn-microk8s-worker-issuer.service || die "new issuer failed and the prior binary was restored, but its service is not active"; fi
+  die "upgraded issuer service failed; prior binary and receipt bindings were restored"
 }
 
 validate_file "$RECEIPT" 600
@@ -118,10 +139,14 @@ if [ "$phase" = complete ]; then
   jq -e --arg digest "$old_material" '.microk8sIssuer=={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$MAIN_RECEIPT" >/dev/null || die "main receipt does not bind blocked issuer"
   new_material=$(jq --arg digest "$SOURCE_DIGEST" '.binary.digest=$digest|.liveJoinBlocked=false' "$RECEIPT" | jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' | sha256sum | awk '{print "sha256:"$1}')
   prior_main=sha256:$(sha "$MAIN_RECEIPT")
+  prior_receipt=sha256:$(sha "$RECEIPT")
+  snapshot_file "$BINARY" "$PRIOR_BINARY" 755 "$old_binary"
+  snapshot_file "$RECEIPT" "$PRIOR_RECEIPT" 600 "$prior_receipt"
+  snapshot_file "$MAIN_RECEIPT" "$PRIOR_MAIN" 600 "$prior_main"
   result_main=$(jq --arg digest "$new_material" '.microk8sIssuer={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$MAIN_RECEIPT" | sha256sum | awk '{print "sha256:"$1}')
   if [ -e "$JOURNAL" ]; then validate_file "$JOURNAL" 600; else
     tmp=$JOURNAL.tmp.$$
-    jq -cn --arg createdAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg receipt "$RECEIPT" --arg binary "$BINARY" --arg oldBinary "$old_binary" --arg newBinary "$SOURCE_DIGEST" --arg oldMaterial "$old_material" --arg newMaterial "$new_material" --arg oldMain "$prior_main" --arg newMain "$result_main" --arg inventory "sha256:$(sha "$RECOVERY/inventory.json")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-observation-upgrade/v1",createdAt:$createdAt,receiptPath:$receipt,binaryPath:$binary,priorBinaryDigest:$oldBinary,resultBinaryDigest:$newBinary,priorMaterialDigest:$oldMaterial,resultMaterialDigest:$newMaterial,priorMainDigest:$oldMain,resultMainDigest:$newMain,recoveryInventoryDigest:$inventory}' >"$tmp"
+    jq -cn --arg createdAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg receipt "$RECEIPT" --arg binary "$BINARY" --arg oldBinary "$old_binary" --arg newBinary "$SOURCE_DIGEST" --arg oldMaterial "$old_material" --arg newMaterial "$new_material" --arg oldMain "$prior_main" --arg newMain "$result_main" --arg priorReceipt "$prior_receipt" --arg priorBinaryPath "$PRIOR_BINARY" --arg priorReceiptPath "$PRIOR_RECEIPT" --arg priorMainPath "$PRIOR_MAIN" --arg inventory "sha256:$(sha "$RECOVERY/inventory.json")" '{schemaVersion:"blazn.dev/microk8s-worker-issuer-observation-upgrade/v1",createdAt:$createdAt,receiptPath:$receipt,binaryPath:$binary,priorBinaryPath:$priorBinaryPath,priorReceiptPath:$priorReceiptPath,priorMainPath:$priorMainPath,priorBinaryDigest:$oldBinary,priorReceiptDigest:$priorReceipt,priorMainFileDigest:$oldMain,resultBinaryDigest:$newBinary,priorMaterialDigest:$oldMaterial,resultMaterialDigest:$newMaterial,priorMainDigest:$oldMain,resultMainDigest:$newMain,recoveryInventoryDigest:$inventory}' >"$tmp"
     chmod 0600 "$tmp"; sync_path "$tmp"; mv -- "$tmp" "$JOURNAL"; sync_path "$RECOVERY"
   fi
   fault journal-created
@@ -136,6 +161,9 @@ validate_file "$JOURNAL" 600
 [ "sha256:$(sha "$JOURNAL")" = "$(jq -er .upgrade.journalDigest "$RECEIPT")" ] || die "upgrade journal differs from receipt"
 [ "$(jq -er .upgrade.resultBinaryDigest "$RECEIPT")" = "$SOURCE_DIGEST" ] || die "upgrade target differs from reviewed helper"
 [ "$(jq -er '.recoveryInventoryDigest' "$JOURNAL")" = "sha256:$(sha "$RECOVERY/inventory.json")" ] || die "recovery inventory changed during upgrade"
+validate_file "$PRIOR_BINARY" 755; [ "sha256:$(sha "$PRIOR_BINARY")" = "$(jq -er .priorBinaryDigest "$JOURNAL")" ] || die "prior issuer recovery binary changed"
+validate_file "$PRIOR_RECEIPT" 600; [ "sha256:$(sha "$PRIOR_RECEIPT")" = "$(jq -er .priorReceiptDigest "$JOURNAL")" ] || die "prior issuer recovery receipt changed"
+validate_file "$PRIOR_MAIN" 600; [ "sha256:$(sha "$PRIOR_MAIN")" = "$(jq -er .priorMainFileDigest "$JOURNAL")" ] || die "prior issuer recovery main receipt changed"
 case "$phase" in upgrade-binary-installed|upgrade-receipt-updated|upgrade-main-bound|upgrade-service-started) [ "sha256:$(sha "$BINARY")" = "$SOURCE_DIGEST" ] || die "observation helper changed during upgrade" ;; esac
 case "$phase" in upgrade-receipt-updated|upgrade-main-bound|upgrade-service-started) [ "$(material_digest "$RECEIPT")" = "$(jq -er .upgrade.resultMaterialDigest "$RECEIPT")" ] || die "issuer material changed during upgrade" ;; esac
 case "$phase" in upgrade-main-bound|upgrade-service-started) [ "sha256:$(sha "$MAIN_RECEIPT")" = "$(jq -er .upgrade.resultMainDigest "$RECEIPT")" ] || die "main receipt changed during upgrade" ;; esac
@@ -157,8 +185,8 @@ if [ "$phase" = upgrade-receipt-updated ]; then
   set_phase upgrade-main-bound
 fi
 if [ "$phase" = upgrade-main-bound ]; then
-  "$SYSTEMCTL" start blazn-microk8s-worker-issuer.service
-  if [ "$TEST_MODE" != 1 ]; then "$SYSTEMCTL" is-active --quiet blazn-microk8s-worker-issuer.service || die "upgraded issuer service is not active"; fi
+  "$SYSTEMCTL" start blazn-microk8s-worker-issuer.service || restore_prior
+  if [ "$TEST_MODE" != 1 ]; then "$SYSTEMCTL" is-active --quiet blazn-microk8s-worker-issuer.service || restore_prior; fi
   set_phase upgrade-service-started
 fi
 if [ "$phase" = upgrade-service-started ]; then set_phase complete; fi

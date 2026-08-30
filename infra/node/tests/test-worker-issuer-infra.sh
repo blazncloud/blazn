@@ -19,7 +19,7 @@ observed_helper=$top/helper-observed
 printf '#!/bin/sh\n# observation-enforced\nexit 0\n' >"$observed_helper"; chmod 0755 "$observed_helper"
 systemctl=$top/systemctl
 # shellcheck disable=SC2016
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$BLAZN_TEST_LOG"\n' >"$systemctl"; chmod 0755 "$systemctl"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"$BLAZN_TEST_LOG"\nif [ "${BLAZN_TEST_FAIL_START:-0}" = 1 ] && [ "$1" = start ] && grep -q observation-enforced "$BLAZN_ISSUER_BINARY_PATH"; then exit 1; fi\n' >"$systemctl"; chmod 0755 "$systemctl"
 tmpfiles=$top/tmpfiles
 printf '#!/bin/sh\nexit 0\n' >"$tmpfiles"; chmod 0755 "$tmpfiles"
 
@@ -34,7 +34,8 @@ run_install(){
 run_rollback(){ rollback_root=$1; rollback_fault=${2:-}; sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_ROLLBACK_TEST_FAIL_AFTER="$rollback_fault" BLAZN_ISSUER_STATE_ROOT="$rollback_root/issuer-state" BLAZN_ISSUER_RECEIPT_PATH="$rollback_root/ownership/issuer.json" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" BLAZN_TEST_LOG="$rollback_root/systemctl.log" "$ROLLBACK"; }
 run_upgrade(){
   upgrade_root=$1; upgrade_fault=${2:-}
-  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_UPGRADE_TEST_FAIL_AFTER="$upgrade_fault" BLAZN_TEST_LOG="$upgrade_root/systemctl.log" \
+  upgrade_start_failure=${3:-0}
+  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_UPGRADE_TEST_FAIL_AFTER="$upgrade_fault" BLAZN_TEST_FAIL_START="$upgrade_start_failure" BLAZN_TEST_LOG="$upgrade_root/systemctl.log" \
     BLAZN_ISSUER_BINARY_SOURCE="$observed_helper" BLAZN_ISSUER_BINARY_SHA256="sha256:$(sha256sum "$observed_helper" | awk '{print $1}')" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" \
     BLAZN_ISSUER_BINARY_PATH="$upgrade_root/usr/libexec/issuer" BLAZN_ISSUER_RECEIPT_PATH="$upgrade_root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$upgrade_root/ownership/recovery" BLAZN_RECEIPT_PATH="$upgrade_root/control-plane.json" "$UPGRADE"
 }
@@ -107,6 +108,17 @@ for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade
     sudo test -f "$root/ownership/recovery/observed-enforcement-upgrade-v1.json"
   fi
 done
+
+failed_start=$top/upgrade-failed-start; make_blocked_fixture "$failed_start"
+prior_failed_start=$(sudo sha256sum "$failed_start/ownership/issuer.json" "$failed_start/control-plane.json" "$failed_start/usr/libexec/issuer")
+if run_upgrade "$failed_start" '' 1 >"$top/upgrade-failed-start.out" 2>"$top/upgrade-failed-start.err"; then printf 'issuer upgrade with failed service start unexpectedly completed\n' >&2; exit 1; fi
+grep -F 'prior binary and receipt bindings were restored' "$top/upgrade-failed-start.err" >/dev/null
+after_failed_start=$(sudo sha256sum "$failed_start/ownership/issuer.json" "$failed_start/control-plane.json" "$failed_start/usr/libexec/issuer")
+[ "$prior_failed_start" = "$after_failed_start" ] || { printf 'failed issuer upgrade did not restore exact prior state\n' >&2; exit 1; }
+sudo jq -e '.phase=="complete" and .liveJoinBlocked==true and (has("upgrade")|not)' "$failed_start/ownership/issuer.json" >/dev/null
+sudo test -f "$failed_start/ownership/recovery/observation-upgrade-prior-binary"
+run_upgrade "$failed_start" >/dev/null
+sudo jq -e '.phase=="complete" and .liveJoinBlocked==false' "$failed_start/ownership/issuer.json" >/dev/null
 
 conflict=$top/upgrade-main-conflict; make_blocked_fixture "$conflict"
 sudo sh -c 'tmp=$1.tmp; jq ".unreviewed=true" "$1" >"$tmp"; chmod 0600 "$tmp"; mv -- "$tmp" "$1"' sh "$conflict/control-plane.json"

@@ -226,6 +226,17 @@ func lockDevelopmentSession(name string) (string, func(), error) {
 			}
 			return "", nil, fmt.Errorf("could not fence stale development session lock: %w", err)
 		}
+		claimed, claimErr := readDevelopmentSessionLockOwner(claim)
+		if claimErr != nil || claimed != existing {
+			// Another recovery may have replaced the stale lock between our read and
+			// rename. Put that replacement back instead of deleting a live owner's
+			// lock. If the name is occupied again, preserve the fenced directory for
+			// explicit reconciliation.
+			if restoreErr := os.Rename(claim, lock); restoreErr != nil {
+				return "", nil, fmt.Errorf("development session lock changed during recovery; preserve for reconciliation: %s", claim)
+			}
+			return "", nil, fmt.Errorf("development session lock changed during recovery: %s", name)
+		}
 		if err := os.Remove(filepath.Join(claim, "owner.json")); err != nil || os.Remove(claim) != nil {
 			return "", nil, fmt.Errorf("stale development session lock was fenced at %s but requires reconciliation", claim)
 		}
