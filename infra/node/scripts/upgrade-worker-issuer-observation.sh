@@ -33,7 +33,7 @@ if [ "$TEST_MODE" != 1 ]; then
 fi
 case "$SOURCE_DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) die "helper digest is invalid" ;; esac
 case "${SOURCE_DIGEST#sha256:}" in *[!0-9a-f]*) die "helper digest is invalid" ;; esac
-[ -f "$SOURCE" ] && [ ! -L "$SOURCE" ] && [ "sha256:$(sha256sum "$SOURCE"|awk '{print $1}')" = "$SOURCE_DIGEST" ] || die "helper source differs from reviewed digest"
+if [ ! -f "$SOURCE" ] || [ -L "$SOURCE" ] || [ "sha256:$(sha256sum "$SOURCE"|awk '{print $1}')" != "$SOURCE_DIGEST" ]; then die "helper source differs from reviewed digest"; fi
 if [ "$TEST_MODE" != 1 ]; then [ "$(stat -c '%u:%a:%h' "$SOURCE")" = 0:755:1 ] || die "helper source metadata is unsafe"; fi
 
 sha(){ sha256sum "$1" | awk '{print $1}'; }
@@ -44,7 +44,7 @@ write_receipt(){ filter=$1; shift; tmp=$RECEIPT.tmp.$$; jq "$@" "$filter" "$RECE
 # shellcheck disable=SC2016
 set_phase(){ value=$1; write_receipt '.phase=$phase|.updatedAt=$at' --arg phase "$value" --arg at "$(now)"; phase=$value; fault "$value"; }
 material_digest(){ digest_material=$(jq -cS '{binary,config,unit,tmpfiles,state,environment,secret,socket,microk8s,recovery,brokerUid,liveJoinBlocked}' "$1"); printf '%s' "$digest_material" | sha256sum | awk '{print "sha256:"$1}'; }
-validate_file(){ path=$1; mode=$2; [ -f "$path" ] && [ ! -L "$path" ] && [ "$(stat -c '%u:%a:%h' "$path")" = "0:$mode:1" ] || die "unsafe receipt-bound file: $path"; }
+validate_file(){ path=$1; mode=$2; if [ ! -f "$path" ] || [ -L "$path" ] || [ "$(stat -c '%u:%a:%h' "$path")" != "0:$mode:1" ]; then die "unsafe receipt-bound file: $path"; fi; }
 atomic_install(){
   install_source=$1; install_destination=$2; install_digest=$3; install_mode=$4
   python3 - "$install_source" "$install_destination" "$install_digest" "$install_mode" <<'PY'
@@ -86,7 +86,7 @@ snapshot_file(){
     atomic_install "$snapshot_source" "$snapshot_destination" "$snapshot_digest" "0$snapshot_mode"
   fi
 }
-validate_active(){ [ -d "$ACTIVE" ] && [ ! -L "$ACTIVE" ] && [ "$(stat -c '%u:%a:%F' "$ACTIVE")" = 0:700:directory ] || die "issuer upgrade recovery directory is unsafe"; }
+validate_active(){ if [ ! -d "$ACTIVE" ] || [ -L "$ACTIVE" ] || [ "$(stat -c '%u:%a:%F' "$ACTIVE")" != 0:700:directory ]; then die "issuer upgrade recovery directory is unsafe"; fi; }
 archive_attempt(){
   validate_active; validate_file "$JOURNAL" 600
   archive_base=$RECOVERY/observation-upgrade-failed-$(sha "$JOURNAL"); archive=$archive_base; archive_suffix=0
@@ -117,9 +117,9 @@ restore_prior(){
 
 validate_file "$RECEIPT" 600
 validate_file "$MAIN_RECEIPT" 600
-[ -d "$RECOVERY" ] && [ ! -L "$RECOVERY" ] && [ "$(stat -c '%u:%a:%F' "$RECOVERY")" = 0:700:directory ] || die "issuer recovery root is unsafe"
+if [ ! -d "$RECOVERY" ] || [ -L "$RECOVERY" ] || [ "$(stat -c '%u:%a:%F' "$RECOVERY")" != 0:700:directory ]; then die "issuer recovery root is unsafe"; fi
 validate_file "$RECOVERY/inventory.json" 600
-[ -d "$(dirname -- "$BINARY")" ] && [ ! -L "$(dirname -- "$BINARY")" ] || die "issuer binary parent is unsafe"
+if [ ! -d "$(dirname -- "$BINARY")" ] || [ -L "$(dirname -- "$BINARY")" ]; then die "issuer binary parent is unsafe"; fi
 case "$(stat -c '%u:%a:%F' "$(dirname -- "$BINARY")")" in 0:700:directory|0:750:directory|0:755:directory) ;; *) die "issuer binary parent is unsafe" ;; esac
 [ "sha256:$(sha "$RECOVERY/inventory.json")" = "$(jq -er .recovery.inventoryDigest "$RECEIPT")" ] || die "recovery inventory differs from receipt"
 jq -e --arg host "$(hostname)" '.schemaVersion=="blazn.dev/microk8s-worker-issuer-infra/v1" and .owner=="blazn-poc" and .host==$host' "$RECEIPT" >/dev/null || die "issuer receipt is invalid"
@@ -231,7 +231,7 @@ if [ "$phase" = upgrade-main-bound ]; then
   set_phase upgrade-service-started
 fi
 if [ "$phase" = upgrade-service-started ]; then set_phase complete; fi
-[ "$phase" = complete ] && [ "$(jq -er .liveJoinBlocked "$RECEIPT")" = false ] || die "observation upgrade did not complete"
+if [ "$phase" != complete ] || [ "$(jq -er .liveJoinBlocked "$RECEIPT")" != false ]; then die "observation upgrade did not complete"; fi
 [ "sha256:$(sha "$BINARY")" = "$SOURCE_DIGEST" ] || die "upgraded binary differs from reviewed helper"
 [ "$(material_digest "$RECEIPT")" = "$(jq -er .upgrade.resultMaterialDigest "$RECEIPT")" ] || die "completed issuer material differs from journal"
 [ "sha256:$(sha "$MAIN_RECEIPT")" = "$(jq -er .upgrade.resultMainDigest "$RECEIPT")" ] || die "completed main receipt differs from journal"
