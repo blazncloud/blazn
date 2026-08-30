@@ -67,7 +67,7 @@ for fault in recovery-created initialized key-pending recovery-key-pending secre
   test_step=install-$fault
   root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"
   if run_install "$root" "$fault" >"$top/$fault.out" 2>"$top/$fault.err"; then printf 'issuer fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
-  grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null
+  grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null || { sed -n '1,120p' "$top/$fault.err" >&2; exit 1; }
   run_install "$root" >"$top/$fault-retry.out"
   sudo jq -e '.phase=="complete" and .liveJoinBlocked==false and .secret.decodedBytes==32 and .socket.path=="/run/blazn/microk8s-worker-issuer.sock"' "$root/ownership/issuer.json" >/dev/null
   before=$(sudo sha256sum "$root/etc/issuer/issuer-hmac-v1" "$root/etc/issuer/config.json" "$root/usr/libexec/issuer")
@@ -102,7 +102,7 @@ for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade
   root=$top/upgrade-$fault; make_blocked_fixture "$root"
   recovery_before=$(sudo sha256sum "$root/ownership/recovery/inventory.json" "$root/ownership/recovery/issuer-hmac-v1" "$root/ownership/recovery/control-plane.env" "$root/ownership/recovery/control-plane.json")
   if run_upgrade "$root" "$fault" >"$top/upgrade-$fault.out" 2>"$top/upgrade-$fault.err"; then printf 'issuer upgrade fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
-  grep -F "injected issuer upgrade fault after $fault" "$top/upgrade-$fault.err" >/dev/null
+  grep -F "injected issuer upgrade fault after $fault" "$top/upgrade-$fault.err" >/dev/null || { sed -n '1,120p' "$top/upgrade-$fault.err" >&2; exit 1; }
   run_upgrade "$root" >"$top/upgrade-$fault-retry.out"
   recovery_after=$(sudo sha256sum "$root/ownership/recovery/inventory.json" "$root/ownership/recovery/issuer-hmac-v1" "$root/ownership/recovery/control-plane.env" "$root/ownership/recovery/control-plane.json")
   [ "$recovery_before" = "$recovery_after" ] || { printf 'issuer upgrade changed recovery material\n' >&2; exit 1; }
@@ -149,7 +149,7 @@ for rollback_fault in upgrade-rollback-started upgrade-rollback-binary-restored 
   test_step=$rollback_fault
   rollback_root=$top/$rollback_fault; make_blocked_fixture "$rollback_root"
   if run_upgrade "$rollback_root" "$rollback_fault" 1 >"$top/$rollback_fault.out" 2>"$top/$rollback_fault.err"; then printf 'issuer rollback fault unexpectedly completed: %s\n' "$rollback_fault" >&2; exit 1; fi
-  grep -F "injected issuer upgrade fault after $rollback_fault" "$top/$rollback_fault.err" >/dev/null
+  grep -F "injected issuer upgrade fault after $rollback_fault" "$top/$rollback_fault.err" >/dev/null || { sed -n '1,120p' "$top/$rollback_fault.err" >&2; exit 1; }
   if ! run_upgrade "$rollback_root" '' 0 "$corrected_helper" >"$top/$rollback_fault-reconcile.out" 2>"$top/$rollback_fault-reconcile.err"; then
     run_upgrade "$rollback_root" '' 0 "$corrected_helper" >"$top/$rollback_fault-corrected.out"
   fi
@@ -235,7 +235,7 @@ for fault in service-stopped-before-phase rollback-validated-before-phase binary
   test_step=rollback-$fault
   root=$top/rollback-$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"; run_install "$root" >/dev/null; sudo mkdir -p "$root/issuer-state"; sudo chmod 0700 "$root/issuer-state"
   if run_rollback "$root" "$fault" >"$top/rollback-$fault.out" 2>"$top/rollback-$fault.err"; then printf 'rollback fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
-  grep -F "injected issuer rollback fault after $fault" "$top/rollback-$fault.err" >/dev/null
+  grep -F "injected issuer rollback fault after $fault" "$top/rollback-$fault.err" >/dev/null || { sed -n '1,120p' "$top/rollback-$fault.err" >&2; exit 1; }
   run_rollback "$root" >/dev/null; sudo jq -e '.phase=="rolled-back"' "$root/ownership/issuer.json" >/dev/null; sudo test ! -e "$root/issuer-state"; sudo jq -e 'has("microk8sIssuer")|not' "$root/control-plane.json" >/dev/null
 done
 

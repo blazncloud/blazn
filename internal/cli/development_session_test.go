@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -91,11 +92,15 @@ func TestDevelopmentSessionNativeLifecycle(t *testing.T) {
 	commit := strings.TrimSpace(string(commitBytes))
 	// GitHub checks out a synthetic merge commit for pull-request CI. Model a
 	// pushed commit locally without weakening the production pushed-ref check.
-	testRemoteRef := "refs/remotes/origin/blazn-development-session-test"
-	if err := exec.Command("git", "update-ref", testRemoteRef, commit).Run(); err != nil {
+	testRemoteRef := "refs/remotes/origin/blazn-development-session-test-" + strconv.Itoa(os.Getpid())
+	if err := exec.Command("git", "update-ref", testRemoteRef, commit, strings.Repeat("0", 40)).Run(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = exec.Command("git", "update-ref", "-d", testRemoteRef).Run() })
+	t.Cleanup(func() {
+		if err := exec.Command("git", "update-ref", "-d", testRemoteRef, commit).Run(); err != nil {
+			t.Errorf("delete temporary remote ref: %v", err)
+		}
+	})
 	runtime := &fakeDevelopmentSessionSandbox{}
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	app := New(stdout, stderr, BuildInfo{})
