@@ -70,10 +70,16 @@ git -C "$repo_root" cat-file -e "$source_commit^{commit}" 2>/dev/null || {
   exit 1
 }
 origin_ref=$(git -C "$repo_root" for-each-ref --format='%(refname)' --contains "$source_commit" refs/remotes/origin/ | head -1)
-[ -n "$origin_ref" ] || {
-  printf 'source commit is not reachable from a known origin ref; push it and fetch origin first: %s\n' "$source_commit" >&2
-  exit 1
-}
+if [ -z "$origin_ref" ]; then
+  remote_refs=$(git -C "$repo_root" ls-remote --heads --tags origin) || {
+    printf '%s\n' 'unable to inspect origin refs during source preflight' >&2
+    exit 1
+  }
+  printf '%s\n' "$remote_refs" | awk -v commit="$source_commit" '$1 == commit { found=1 } END { exit found ? 0 : 1 }' || {
+    printf 'source commit is not reachable from a known origin ref or exact remote tip; push it first: %s\n' "$source_commit" >&2
+    exit 1
+  }
+fi
 
 if [ -z "$architecture" ]; then
   architecture=amd64

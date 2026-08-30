@@ -26,9 +26,9 @@ BLAZN_WORKSPACE_ID=WORKSPACE_ID \
 The entrypoint finds `blazn` on `PATH`, uses the current Git commit, targets the
 qualified AMD64 lane, and reads the immutable template reference from the
 checked-in template. The default commit requires a clean tree. An explicit
-`--source` must name a commit reachable from an `origin` ref after the
-entrypoint refreshes the remote refs; push before starting if that preflight
-fails. It reuses the already-published
+`--source` must name a commit reachable from a fetched `origin` ref or match an
+exact remote branch/tag tip; push before starting if that preflight fails. It
+reuses the already-published
 immutable template by default. Run `run-live.sh --help` to select ARM64 or
 override another default. Use `--publish-template` only during first-time
 workspace setup; it overrides an inherited `BLAZN_SKIP_TEMPLATE_PUBLISH`.

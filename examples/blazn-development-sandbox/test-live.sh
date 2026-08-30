@@ -33,7 +33,13 @@ if [ "${BLAZN_SOURCE_PREFLIGHT_FETCH:-1}" = 1 ]; then
 fi
 git -C "$repo_root" cat-file -e "$source_commit^{commit}" 2>/dev/null || { printf 'source commit is not present locally: %s\n' "$source_commit" >&2; exit 1; }
 origin_ref=$(git -C "$repo_root" for-each-ref --format='%(refname)' --contains "$source_commit" refs/remotes/origin/ | head -1)
-[ -n "$origin_ref" ] || { printf 'source commit is not reachable from a known origin ref: %s\n' "$source_commit" >&2; exit 1; }
+if [ -z "$origin_ref" ]; then
+  remote_refs=$(git -C "$repo_root" ls-remote --heads --tags origin) || { printf '%s\n' 'unable to inspect origin refs during source preflight' >&2; exit 1; }
+  printf '%s\n' "$remote_refs" | awk -v commit="$source_commit" '$1 == commit { found=1 } END { exit found ? 0 : 1 }' || {
+    printf 'source commit is not reachable from a known origin ref or exact remote tip: %s\n' "$source_commit" >&2
+    exit 1
+  }
+fi
 patch_default_dir=${BLAZN_DEVELOPMENT_PATCH_DEFAULT_DIR:-}
 patch_output=${BLAZN_DEVELOPMENT_PATCH_OUTPUT:-}
 if [ -z "$patch_output" ]; then
