@@ -158,6 +158,8 @@ if [ "$phase" = complete ]; then
   [ "sha256:$(sha "$BINARY")" = "$old_binary" ] || die "installed helper differs from blocked receipt"
   old_material=$(material_digest "$RECEIPT")
   jq -e --arg digest "$old_material" '.microk8sIssuer=={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$MAIN_RECEIPT" >/dev/null || die "main receipt does not bind blocked issuer"
+  expected_blocked_main=sha256:$(jq --arg digest "$old_material" '.microk8sIssuer={receiptPath:"/var/lib/blazn/ownership/microk8s-worker-issuer.json",materialDigest:$digest}' "$main_backup" | sha256sum | awk '{print $1}')
+  [ "sha256:$(sha "$MAIN_RECEIPT")" = "$expected_blocked_main" ] || die "main receipt does not bind blocked issuer"
   if [ -e "$ACTIVE" ]; then
     validate_active
     if [ -e "$JOURNAL" ]; then
