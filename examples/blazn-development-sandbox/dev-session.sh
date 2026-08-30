@@ -120,7 +120,7 @@ load_receipt() {
 
 resolve_blazn() {
   if [ -z "$blazn" ]; then blazn=$(command -v blazn || true); fi
-  [ -n "$blazn" ] && [ -x "$blazn" ] || { printf '%s\n' 'Blazn CLI is not executable; pass --blazn PATH or add blazn to PATH' >&2; exit 1; }
+  if [ -z "$blazn" ] || [ ! -x "$blazn" ]; then printf '%s\n' 'Blazn CLI is not executable; pass --blazn PATH or add blazn to PATH' >&2; exit 1; fi
 }
 
 require_session() {
@@ -268,7 +268,7 @@ case $action in
     [ "$#" -eq 2 ] || { printf '%s\n' 'download requires REMOTE_PATH LOCAL_PATH' >&2; exit 64; }
     [ ! -e "$2" ] || { printf 'refusing to overwrite local path: %s\n' "$2" >&2; exit 1; }
     download_parent=$(dirname -- "$2")
-    [ -d "$download_parent" ] && [ -w "$download_parent" ] || { printf 'download directory is not writable: %s\n' "$download_parent" >&2; exit 1; }
+    if [ ! -d "$download_parent" ] || [ ! -w "$download_parent" ]; then printf 'download directory is not writable: %s\n' "$download_parent" >&2; exit 1; fi
     download_parent=$(CDPATH='' cd -- "$download_parent" && pwd)
     download_target=$download_parent/$(basename -- "$2")
     download_temp=$(mktemp "$download_parent/.blazn-download.XXXXXX")
@@ -305,7 +305,7 @@ case $action in
         *) printf '%s\n' 'finish requires --patch OUTPUT_PATH or explicit --discard' >&2; exit 64 ;;
       esac
     elif [ "$phase" = starting ]; then
-      [ "${1:-}" = --discard ] && [ "$#" -eq 1 ] || { printf '%s\n' 'an incomplete start may only be finished with explicit --discard' >&2; exit 64; }
+      if [ "${1:-}" != --discard ] || [ "$#" -ne 1 ]; then printf '%s\n' 'an incomplete start may only be finished with explicit --discard' >&2; exit 64; fi
       phase=discard_approved
       write_receipt
     else
