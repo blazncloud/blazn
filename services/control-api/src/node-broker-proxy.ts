@@ -2,7 +2,7 @@ import { request } from "node:http";
 import { NODE_ERROR_STATUS, type NodeErrorCode } from "./node-types.js";
 
 export interface BrokerProxyReply { status: number; body: Buffer; retryAfter?: string }
-export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply>; health(signal: AbortSignal): Promise<void> }
+export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply>; observe?(issuanceId:string,body:Record<string,unknown>,signal:AbortSignal):Promise<void>; health(signal: AbortSignal): Promise<void> }
 
 const brokerOrigin = "http://127.0.0.1:8081";
 const maxBytes = 16 * 1024;
@@ -24,6 +24,13 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
     if (reply.status !== 200 || reply.body.toString("utf8") !== '{"status":"ok"}') throw new Error("Node broker health response is invalid");
   }
 
+  async observe(issuanceId:string,body:Record<string,unknown>,signal:AbortSignal):Promise<void>{
+    if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(issuanceId))throw new Error("Node broker observation ID is invalid");
+    const payload=Buffer.from(JSON.stringify(body));if(payload.length>maxBytes)throw new Error("Node broker request is too large");
+    const reply=await this.call("POST",`/v1/node-service/join-observations/${issuanceId}`,payload,{"content-type":"application/json"},signal);
+    if(reply.status!==200||reply.body.toString("utf8")!=='{"verified":true}')throw new Error("Node broker rejected the joined worker observation");
+  }
+
   private call(method: "GET" | "POST", path: string, payload: Buffer, headers: Record<string, string>, signal: AbortSignal): Promise<BrokerProxyReply> {
     return new Promise((resolve, reject) => {
       let deadline: ReturnType<typeof setTimeout>;
@@ -35,7 +42,7 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
           const contentType = response.headers["content-type"];
           const retry = response.headers["retry-after"];
           if (!statuses.has(response.statusCode ?? 0) || contentType !== "application/json" || rawHeaderCount(response.rawHeaders,"content-type")!==1 || rawHeaderCount(response.rawHeaders,"retry-after")>1 || rawHeaderCount(response.rawHeaders,"location")!==0 || (Array.isArray(retry) ? retry.length !== 1 : false)) return fail(new Error("Node broker response contract is invalid"));
-          const body = Buffer.concat(chunks); try { const parsed:unknown=JSON.parse(body.toString("utf8"));if(path==="/healthz"){if(response.statusCode!==200||JSON.stringify(parsed)!=='{"status":"ok"}')throw new Error();}else validateBrokerBody(response.statusCode!,parsed); } catch { return fail(new Error("Node broker response JSON is invalid")); }
+          const body = Buffer.concat(chunks); try { const parsed:unknown=JSON.parse(body.toString("utf8"));if(path==="/healthz"){if(response.statusCode!==200||JSON.stringify(parsed)!=='{"status":"ok"}')throw new Error();}else if(path.startsWith("/v1/node-service/join-observations/")){if(response.statusCode===200){if(JSON.stringify(parsed)!=='{"verified":true}')throw new Error();}else validateBrokerBody(response.statusCode!,parsed);}else validateBrokerBody(response.statusCode!,parsed); } catch { return fail(new Error("Node broker response JSON is invalid")); }
           if (retry !== undefined && (response.statusCode !== 429 || typeof retry !== "string" || !/^[1-9][0-9]{0,2}$/.test(retry))) return fail(new Error("Node broker retry contract is invalid"));
           clearTimeout(deadline);resolve({ status: response.statusCode!, body, ...(typeof retry === "string" ? { retryAfter: retry } : {}) });
         });

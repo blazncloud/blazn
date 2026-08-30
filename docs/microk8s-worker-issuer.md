@@ -57,9 +57,14 @@ key, or command output.
 ## Honest live boundary
 
 Stock MicroK8s bootstrap tokens are not cryptographically bound to the joining
-node name, and MicroK8s exposes no token-revoke CLI. The helper records the
-expected name and bootstrap taint, but live join remains blocked until the
-follow-up platform hook verifies the new Kubernetes Node name/UID, applies and
-observes the bootstrap taint before eligibility, and quarantines unexpected
-joins. Broker proof, signed-plan binding, a single deterministic token, and the
-short TTL reduce exposure; they do not replace that hook.
+node name, and MicroK8s exposes no token-revoke CLI. The issuer therefore keeps
+durable issuance intent and exposes a closed observation operation. Join
+consumption fails unless MicroK8s returns the exact expected Node name, UID and
+resource version with exactly one `blazn.dev/bootstrap=pending:NoSchedule`
+taint and no control-plane/master label or taint. The Node service then verifies
+the signed Node proof and durable database binding before consumption.
+
+This enforcement removes the source-level `liveJoinBlocked` gate. It does not
+qualify a release or a live cluster by itself: the exact signed helper and
+control API build must pass the disposable-node qualification in the
+infrastructure runbook before issuance is enabled.

@@ -34,6 +34,23 @@ export interface IssuedWorkerCredential {
   expiresAt: Date;
 }
 
+export interface WorkerJoinObservationRequest {
+  issuanceId: string;
+  clusterId: string;
+  expectedNodeName: string;
+  bootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule";
+}
+
+export interface WorkerJoinObservation {
+  issuanceId: string;
+  clusterId: string;
+  nodeName: string;
+  nodeUid: string;
+  resourceVersion: string;
+  bootstrapTainted: true;
+  workerOnly: true;
+}
+
 export interface WorkerCredentialIssuer {
   health?(signal: AbortSignal): Promise<void>;
   issue(
@@ -41,6 +58,10 @@ export interface WorkerCredentialIssuer {
     signal: AbortSignal,
   ): Promise<IssuedWorkerCredential>;
   revoke(providerHandle: string, signal: AbortSignal): Promise<void>;
+  observe?(
+    request: WorkerJoinObservationRequest,
+    signal: AbortSignal,
+  ): Promise<WorkerJoinObservation>;
 }
 
 export interface BrokerBinding {

@@ -1,9 +1,10 @@
 # MicroK8s worker issuer infrastructure runbook
 
 This installs only the credential issuer boundary. It does not issue a
-credential or join a Node. Live join remains blocked until the expected
-Kubernetes Node name/UID and bootstrap-taint observer is reviewed. Never apply
-this qualification to `ben1` or shared MicroK8s.
+credential or join a Node. Join consumption now fails closed unless the issuer
+observes the exact expected Kubernetes Node name, UID, resource version, single
+bootstrap taint, and worker-only role. Never apply live qualification to `ben1`
+or shared MicroK8s.
 
 Before installation, hold the serialized control-plane lock and record merged
 source/helper/ownership-receipt digests, broker UID and pre-provisioned empty
@@ -20,11 +21,17 @@ config`. After normal prebackup and restore qualification, install under the
 lock with root-owned `BLAZN_ISSUER_BINARY_SOURCE`, its exact
 `BLAZN_ISSUER_BINARY_SHA256`, and the receipt-bound broker UID.
 
-Verify the receipt is complete and still says `liveJoinBlocked`, the service is
+Verify the receipt is complete and says `liveJoinBlocked: false`, the service is
 active, and `/run/blazn` plus its socket have the receipted owner/GID/modes.
 The broker profile must expose no Docker socket, kubeconfig, MicroK8s directory,
-host network, added capability, or issuer HMAC key. Do not call issuance until
-the post-join enforcement milestone is complete.
+host network, added capability, or issuer HMAC key. Do not enable live issuance
+until the exact release has passed the disposable-node qualification below.
+
+Qualification must prove that consumption fails for an absent Node, a wrong
+name/UID/resource version, a missing or duplicate bootstrap taint, and any
+control-plane/master label or taint. It must then prove that the exact
+quarantined worker observation permits consumption, activation removes the
+bootstrap taint, and the active worker becomes heartbeat-verified and eligible.
 
 Before accepting backup v4, copy the receipt-bound recovery key and issuer
 receipt into the separately protected Node recovery inventory as

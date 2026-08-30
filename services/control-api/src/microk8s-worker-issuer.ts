@@ -3,6 +3,8 @@ import { lstat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import type {
   IssuedWorkerCredential,
+  WorkerJoinObservation,
+  WorkerJoinObservationRequest,
   WorkerCredentialIssueRequest,
   WorkerCredentialIssuer,
 } from "./node-broker-types.js";
@@ -76,6 +78,18 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
     }
   }
 
+  async observe(request: WorkerJoinObservationRequest, signal: AbortSignal): Promise<WorkerJoinObservation> {
+    const response = object(await this.call({ schemaVersion, operation: "observe", ...request }, signal));
+    exactKeys(response, ["schemaVersion", "operation", "issuanceId", "clusterId", "nodeName", "nodeUid", "resourceVersion", "bootstrapTainted", "workerOnly"]);
+    if (response.schemaVersion !== schemaVersion || response.operation !== "observe" || response.issuanceId !== request.issuanceId ||
+        response.clusterId !== request.clusterId || response.nodeName !== request.expectedNodeName || typeof response.nodeUid !== "string" ||
+        !response.nodeUid || response.nodeUid.length > 128 || typeof response.resourceVersion !== "string" || !response.resourceVersion ||
+        response.resourceVersion.length > 128 || response.bootstrapTainted !== true || response.workerOnly !== true) {
+      throw new Error("MicroK8s worker issuer returned an invalid response");
+    }
+    return { issuanceId: request.issuanceId, clusterId: request.clusterId, nodeName: request.expectedNodeName, nodeUid: response.nodeUid, resourceVersion: response.resourceVersion, bootstrapTainted: true, workerOnly: true };
+  }
+
   async health(signal: AbortSignal): Promise<void> {
     const response = object(await this.call(undefined, signal, "GET", "/healthz"));
     exactKeys(response, ["schemaVersion", "operation", "healthy"]);
@@ -100,7 +114,7 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
             if (res.statusCode !== 200) {
               const error = object(parsed);
               exactKeys(error, ["schemaVersion", "operation", "code", "message"]);
-              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "deadline_exceeded", "internal_error"]);
+              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "deadline_exceeded", "internal_error"]);
               if (error.schemaVersion !== schemaVersion || error.operation !== "error" || typeof error.code !== "string" || !codes.has(error.code) || typeof error.message !== "string" || error.message.length < 1 || error.message.length > 256) {
                 throw new Error("MicroK8s worker issuer returned an invalid error response");
               }

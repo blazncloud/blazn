@@ -42,6 +42,17 @@ export class NodeBrokerService {
     await this.issuer.health(signal);
   }
 
+  async observeJoin(input: { issuanceId: string; clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string }): Promise<void> {
+    if (!UUID.test(input.issuanceId) || !input.clusterId || input.clusterId.length > 128 || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(input.nodeName) || !input.nodeUid || input.nodeUid.length > 128 || !input.resourceVersion || input.resourceVersion.length > 128) {
+      invalid("join observation binding is invalid");
+    }
+    if (!this.issuer.observe) throw new Error("worker join observer is unavailable");
+    const observed = await this.providerCall((signal) => this.issuer.observe!({ issuanceId: input.issuanceId, clusterId: input.clusterId, expectedNodeName: input.nodeName, bootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule" }, signal));
+    if (observed.issuanceId !== input.issuanceId || observed.clusterId !== input.clusterId || observed.nodeName !== input.nodeName || observed.nodeUid !== input.nodeUid || observed.resourceVersion !== input.resourceVersion || observed.bootstrapTainted !== true || observed.workerOnly !== true) {
+      throw invalidCredential("joined worker observation differs from the requested binding");
+    }
+  }
+
   async issue(
     idempotencyKey: string,
     request: JoinCredentialRequest,

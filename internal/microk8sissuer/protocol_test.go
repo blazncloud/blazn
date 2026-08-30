@@ -22,6 +22,21 @@ func TestDecodeRequestClosedAndTTLBounded(t *testing.T) {
 		}
 	}
 }
+func TestDecodeObserveRequestIsClosedAndBound(t *testing.T) {
+	data, _ := json.Marshal(observeFixture())
+	if _, err := DecodeRequest(data); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"issuanceId", "clusterId", "expectedNodeName", "bootstrapTaint"} {
+		var value map[string]any
+		_ = json.Unmarshal(data, &value)
+		delete(value, field)
+		bad, _ := json.Marshal(value)
+		if _, err := DecodeRequest(bad); err == nil {
+			t.Fatalf("observe request without %s passed", field)
+		}
+	}
+}
 func TestDeterministicTokenBindsEveryDomainField(t *testing.T) {
 	root := t.TempDir()
 	_ = os.Chmod(root, 0700)

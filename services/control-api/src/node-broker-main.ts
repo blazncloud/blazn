@@ -10,7 +10,7 @@ import { defaultMicroK8sIssuerSocket, UnixMicroK8sWorkerCredentialIssuer } from 
 
 export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<Server> {
   const resolvedIssuer = issuer ?? await UnixMicroK8sWorkerCredentialIssuer.connect(defaultMicroK8sIssuerSocket);
-  if (!resolvedIssuer.health) throw new Error("Node broker issuer health protocol is unavailable");
+  if (!resolvedIssuer.health || !resolvedIssuer.observe) throw new Error("Node broker issuer health/observation protocol is unavailable");
   await resolvedIssuer.health(AbortSignal.timeout(5_000));
   const root = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
   const databaseUrl = (await readFile(`${root}/database-url`, "utf8")).trim();

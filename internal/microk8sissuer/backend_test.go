@@ -6,17 +6,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
 
 type fakeRunner struct {
-	output     []byte
-	args       []string
-	calls      int
-	tokenFile  string
-	failStatus bool
+	output        []byte
+	observeOutput []byte
+	args          []string
+	calls         int
+	tokenFile     string
+	failStatus    bool
 }
 
 func (f *fakeRunner) Run(_ context.Context, path string, args []string) ([]byte, error) {
@@ -24,6 +26,9 @@ func (f *fakeRunner) Run(_ context.Context, path string, args []string) ([]byte,
 	f.args = append([]string(nil), args...)
 	if f.failStatus && path == "/snap/bin/microk8s.status" {
 		return nil, errors.New("unready details")
+	}
+	if strings.Contains(path, "kubectl") {
+		return f.observeOutput, nil
 	}
 	if len(args) >= 2 && args[0] == "--token" && f.tokenFile != "" {
 		file, _ := os.OpenFile(f.tokenFile, os.O_APPEND|os.O_WRONLY, 0)
@@ -57,7 +62,24 @@ func backendFixture(t *testing.T, content string) (*MicroK8sBackend, *fakeRunner
 	uid := os.Getuid()
 	runner := &fakeRunner{}
 	runner.tokenFile = path
-	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", StatusPath: "/snap/bin/microk8s.status", TokenFile: path, ExpectedUID: uint32(uid), ExpectedGID: uint32(os.Getgid()), ExpectedMode: 0600, Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
+	return &MicroK8sBackend{AddNodePath: "/snap/bin/microk8s.add-node", StatusPath: "/snap/bin/microk8s.status", KubectlPath: "/snap/bin/microk8s.kubectl", TokenFile: path, ExpectedUID: uint32(uid), ExpectedGID: uint32(os.Getgid()), ExpectedMode: 0600, Runner: runner, Now: func() time.Time { return time.Unix(1000, 0).UTC() }, allowTestPaths: true}, runner, path
+}
+
+func TestObserveRequiresExactBootstrapTaintAndWorkerRole(t *testing.T) {
+	backend, runner, _ := backendFixture(t, "")
+	runner.observeOutput = []byte(`{"metadata":{"name":"worker-a","uid":"uid-a","resourceVersion":"17","labels":{"kubernetes.io/arch":"amd64"}},"spec":{"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}]},"status":{"ignored":true}}`)
+	observed, err := backend.Observe(context.Background(), "worker-a")
+	if err != nil || !observed.BootstrapTainted || !observed.WorkerOnly || observed.UID != "uid-a" {
+		t.Fatalf("observation=%#v err=%v", observed, err)
+	}
+	if len(runner.args) != 5 || runner.args[0] != "get" || runner.args[1] != "node" || runner.args[2] != "worker-a" || runner.args[3] != "-o" || runner.args[4] != "json" {
+		t.Fatalf("args=%#v", runner.args)
+	}
+	runner.observeOutput = []byte(`{"metadata":{"name":"worker-a","uid":"uid-a","resourceVersion":"18","labels":{"node-role.kubernetes.io/control-plane":""}},"spec":{"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}]}}`)
+	observed, err = backend.Observe(context.Background(), "worker-a")
+	if err != nil || observed.WorkerOnly {
+		t.Fatalf("control-plane observation=%#v err=%v", observed, err)
+	}
 }
 func TestBackendUsesOnlyFixedCommandAndParsesExactJSON(t *testing.T) {
 	backend, runner, _ := backendFixture(t, "")

@@ -26,7 +26,7 @@
     "brokerGroupCreated": {"const": false},
     "rollback": {"type": "object", "additionalProperties": false, "required": ["retainedRecovery", "groupRetained", "rolledBackAt"], "properties": {"retainedRecovery": {"const": true}, "groupRetained": {"const": true}, "rolledBackAt": {"type": "string", "format": "date-time"}}},
     "rollbackMain": {"type": "object", "additionalProperties": false, "required": ["priorDigest", "resultDigest"], "properties": {"priorDigest": {"$ref": "#/$defs/digest"}, "resultDigest": {"$ref": "#/$defs/digest"}}},
-    "liveJoinBlocked": {"const": true}
+    "liveJoinBlocked": {"const": false}
   },
   "$defs": {
     "digest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},

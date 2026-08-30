@@ -27,7 +27,12 @@ type BackendIssue struct {
 type Backend interface {
 	Issue(context.Context, string, int) (BackendIssue, error)
 	Revoke(context.Context, string) error
+	Observe(context.Context, string) (NodeObservation, error)
 	Healthy(context.Context) error
+}
+type NodeObservation struct {
+	Name, UID, ResourceVersion   string
+	BootstrapTainted, WorkerOnly bool
 }
 type Service struct {
 	stateRoot string
@@ -66,6 +71,9 @@ func NewService(stateRoot string, key []byte, backend Backend) (*Service, error)
 func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 	if req.Operation == "issue" {
 		return s.issue(ctx, req)
+	}
+	if req.Operation == "observe" {
+		return s.observe(ctx, req)
 	}
 	return s.revoke(ctx, req.ProviderHandle)
 }
@@ -154,6 +162,33 @@ func (s *Service) revoke(ctx context.Context, id string) (RevokeResponse, error)
 		return s.writeState(path, state)
 	})
 	return RevokeResponse{SchemaVersion: SchemaVersion, Operation: "revoke", ProviderHandle: id, Revoked: err == nil}, err
+}
+
+func (s *Service) observe(ctx context.Context, req Request) (ObserveResponse, error) {
+	var response ObserveResponse
+	err := s.locked(ctx, func() error {
+		state, exists, err := s.readState(s.statePath(req.IssuanceID))
+		if err != nil {
+			return err
+		}
+		if !exists || state.Status != "issued" || !s.now().Before(state.ExpiresAt) {
+			return &ProtocolError{Code: "observation_unavailable", Message: "issued join binding is unavailable"}
+		}
+		bound := state.Request
+		if bound.ClusterID != req.ClusterID || bound.ExpectedNodeName != req.ExpectedNodeName || bound.BootstrapTaint != req.BootstrapTaint {
+			return &ProtocolError{Code: "binding_conflict", Message: "observation differs from issued join binding"}
+		}
+		observed, err := s.backend.Observe(ctx, bound.ExpectedNodeName)
+		if err != nil {
+			return &ProtocolError{Code: "observation_unavailable", Message: "joined worker observation failed"}
+		}
+		if observed.Name != bound.ExpectedNodeName || observed.UID == "" || observed.ResourceVersion == "" || !observed.BootstrapTainted || !observed.WorkerOnly {
+			return &ProtocolError{Code: "observation_rejected", Message: "joined worker does not satisfy bootstrap enforcement"}
+		}
+		response = ObserveResponse{SchemaVersion: SchemaVersion, Operation: "observe", IssuanceID: req.IssuanceID, ClusterID: req.ClusterID, NodeName: observed.Name, NodeUID: observed.UID, ResourceVersion: observed.ResourceVersion, BootstrapTainted: true, WorkerOnly: true}
+		return nil
+	})
+	return response, err
 }
 func (s *Service) response(st durableState) IssueResponse {
 	return IssueResponse{SchemaVersion: SchemaVersion, Operation: "issue", ProviderHandle: st.Request.IssuanceID, Credential: st.Credential, ClusterID: st.Request.ClusterID, ClusterHealthy: true, WorkerOnly: true, ExpiresAt: st.ExpiresAt}

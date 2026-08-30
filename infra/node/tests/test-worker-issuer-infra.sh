@@ -35,7 +35,7 @@ for fault in recovery-created initialized key-pending recovery-key-pending secre
   if run_install "$root" "$fault" >"$top/$fault.out" 2>"$top/$fault.err"; then printf 'issuer fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null
   run_install "$root" >"$top/$fault-retry.out"
-  sudo jq -e '.phase=="complete" and .liveJoinBlocked==true and .secret.decodedBytes==32 and .socket.path=="/run/blazn/microk8s-worker-issuer.sock"' "$root/ownership/issuer.json" >/dev/null
+  sudo jq -e '.phase=="complete" and .liveJoinBlocked==false and .secret.decodedBytes==32 and .socket.path=="/run/blazn/microk8s-worker-issuer.sock"' "$root/ownership/issuer.json" >/dev/null
   before=$(sudo sha256sum "$root/etc/issuer/issuer-hmac-v1" "$root/etc/issuer/config.json" "$root/usr/libexec/issuer")
   run_install "$root" >"$top/$fault-idempotent.out"
   after=$(sudo sha256sum "$root/etc/issuer/issuer-hmac-v1" "$root/etc/issuer/config.json" "$root/usr/libexec/issuer")
