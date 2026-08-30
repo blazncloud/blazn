@@ -69,7 +69,7 @@ grep -F 'expires must be a duration' "$work/huge.err" >/dev/null
 "$script_dir/dev-session.sh" --receipt "$receipt" --blazn "$work/blazn" start --workspace "$workspace" --source "$source_commit" --expires 30m >"$work/start.out"
 jq -e '.phase == "ready" and .sandboxId == "66578829-ee27-49b1-bfc0-65813042ceaf" and .expires == "30m"' "$receipt" >/dev/null
 grep -F 'safe.directory=/workspace/src/blazn' "$log" >/dev/null
-[ "$(stat -f '%Lp' "$receipt" 2>/dev/null || stat -c '%a' "$receipt")" = 600 ]
+[ "$(stat -c '%a' "$receipt" 2>/dev/null || stat -f '%Lp' "$receipt")" = 600 ]
 
 resume_receipt=$work/resume-session.json
 jq '.phase = "starting"' "$receipt" >"$resume_receipt"
