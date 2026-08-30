@@ -38,7 +38,8 @@ run_upgrade(){
   upgrade_root=$1; upgrade_fault=${2:-}
   upgrade_start_failure=${3:-0}
   upgrade_helper=${4:-$observed_helper}
-  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_UPGRADE_TEST_FAIL_AFTER="$upgrade_fault" BLAZN_TEST_FAIL_START="$upgrade_start_failure" BLAZN_TEST_LOG="$upgrade_root/systemctl.log" \
+  upgrade_now=${5:-}
+  sudo env BLAZN_FENCING_TOKEN=test BLAZN_ISSUER_INFRA_TEST_MODE=1 BLAZN_ISSUER_UPGRADE_TEST_FAIL_AFTER="$upgrade_fault" BLAZN_ISSUER_UPGRADE_TEST_NOW="$upgrade_now" BLAZN_TEST_FAIL_START="$upgrade_start_failure" BLAZN_TEST_LOG="$upgrade_root/systemctl.log" \
     BLAZN_ISSUER_BINARY_SOURCE="$upgrade_helper" BLAZN_ISSUER_BINARY_SHA256="sha256:$(sha256sum "$upgrade_helper" | awk '{print $1}')" BLAZN_ISSUER_TEST_SYSTEMCTL="$systemctl" \
     BLAZN_ISSUER_BINARY_PATH="$upgrade_root/usr/libexec/issuer" BLAZN_ISSUER_RECEIPT_PATH="$upgrade_root/ownership/issuer.json" BLAZN_ISSUER_RECOVERY_ROOT="$upgrade_root/ownership/recovery" BLAZN_RECEIPT_PATH="$upgrade_root/control-plane.json" "$UPGRADE"
 }
@@ -111,6 +112,15 @@ for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade
     sudo test -f "$root/ownership/recovery/observation-upgrade-active/journal.json"
   fi
 done
+
+archive_collision=$top/upgrade-archive-collision; make_blocked_fixture "$archive_collision"
+for collision_attempt in 1 2; do
+  if run_upgrade "$archive_collision" '' 1 "$observed_helper" '2026-08-30T12:00:00Z' >"$top/archive-collision-$collision_attempt.out" 2>"$top/archive-collision-$collision_attempt.err"; then printf 'same-time failed issuer upgrade unexpectedly completed\n' >&2; exit 1; fi
+  grep -F 'prior binary and receipt bindings were restored' "$top/archive-collision-$collision_attempt.err" >/dev/null
+done
+[ "$(sudo find "$archive_collision/ownership/recovery" -maxdepth 1 -type d -name 'observation-upgrade-failed-*' | wc -l | tr -d ' ')" = 2 ] || { printf 'same-time issuer failures did not create distinct archives\n' >&2; exit 1; }
+run_upgrade "$archive_collision" '' 0 "$corrected_helper" '2026-08-30T12:00:00Z' >/dev/null
+sudo jq -e --arg digest "sha256:$(sha256sum "$corrected_helper" | awk '{print $1}')" '.phase=="complete" and .liveJoinBlocked==false and .binary.digest==$digest' "$archive_collision/ownership/issuer.json" >/dev/null
 
 failed_start=$top/upgrade-failed-start; make_blocked_fixture "$failed_start"
 prior_failed_start=$(sudo sha256sum "$failed_start/ownership/issuer.json" "$failed_start/control-plane.json" "$failed_start/usr/libexec/issuer")
