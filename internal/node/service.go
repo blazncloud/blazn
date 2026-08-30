@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -58,6 +59,7 @@ func (s *Service) Enroll(ctx context.Context, options EnrollOptions, install boo
 	if s.api == nil || s.identities == nil || s.state == nil {
 		return EnrollResult{}, errors.New("node service dependencies are incomplete")
 	}
+	options.MachineFingerprint = canonicalMachineFingerprint(options.MachineFingerprint)
 	if options.AccessToken == "" || options.WorkspaceID == "" || len(options.IdempotencyKey) < 8 || options.Name == "" || options.MachineFingerprint == "" || options.Profile.ID == "" {
 		return EnrollResult{}, errors.New("node enrollment inputs are incomplete")
 	}
@@ -199,6 +201,10 @@ func validMachineFingerprint(value string) bool {
 		}
 	}
 	return true
+}
+
+func canonicalMachineFingerprint(value string) string {
+	return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), "sha256:")
 }
 
 func (s *Service) retireRemovedEnrollment(ctx context.Context, options EnrollOptions) error {

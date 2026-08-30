@@ -59,16 +59,16 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 }
 
 type MicroK8sBackend struct {
-	AddNodePath, StatusPath, TokenFile string
-	ExpectedUID                        uint32
-	ExpectedGID                        uint32
-	ExpectedMode                       os.FileMode
-	Runner                             CommandRunner
-	Now                                func() time.Time
-	allowTestPaths                     bool
-	beforeTokenExpiryWrite             func()
-	syncTokenFile                      func(*os.File) error
-	writeTokenExpiry                   func(*os.File, []byte, int64) (int, error)
+	AddNodePath, StatusPath, KubectlPath, TokenFile string
+	ExpectedUID                                     uint32
+	ExpectedGID                                     uint32
+	ExpectedMode                                    os.FileMode
+	Runner                                          CommandRunner
+	Now                                             func() time.Time
+	allowTestPaths                                  bool
+	beforeTokenExpiryWrite                          func()
+	syncTokenFile                                   func(*os.File) error
+	writeTokenExpiry                                func(*os.File, []byte, int64) (int, error)
 }
 type upstreamResponse struct {
 	Token string   `json:"token"`
@@ -101,7 +101,7 @@ func (b *MicroK8sBackend) Healthy(ctx context.Context) error {
 	return err
 }
 func (b *MicroK8sBackend) validateConfiguration() error {
-	if !b.allowTestPaths && (b.AddNodePath != "/snap/bin/microk8s.add-node" || b.StatusPath != "/snap/bin/microk8s.status" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt") {
+	if !b.allowTestPaths && (b.AddNodePath != "/snap/bin/microk8s.add-node" || b.StatusPath != "/snap/bin/microk8s.status" || b.KubectlPath != "/snap/bin/microk8s.kubectl" || b.TokenFile != "/var/snap/microk8s/current/credentials/cluster-tokens.txt") {
 		return fmt.Errorf("MicroK8s paths are not allowlisted")
 	}
 	if !b.allowTestPaths {
@@ -113,6 +113,50 @@ func (b *MicroK8sBackend) validateConfiguration() error {
 		return fmt.Errorf("MicroK8s runner is missing")
 	}
 	return nil
+}
+
+func (b *MicroK8sBackend) Observe(ctx context.Context, expectedName string) (NodeObservation, error) {
+	if err := b.validateConfiguration(); err != nil {
+		return NodeObservation{}, err
+	}
+	if !namePattern.MatchString(expectedName) {
+		return NodeObservation{}, fmt.Errorf("expected Node name is invalid")
+	}
+	out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "node", expectedName, "-o", "json"})
+	if err != nil {
+		return NodeObservation{}, err
+	}
+	var node struct {
+		Metadata struct {
+			Name, UID, ResourceVersion string
+			Labels                     map[string]string
+		} `json:"metadata"`
+		Spec struct {
+			Taints []struct{ Key, Value, Effect string } `json:"taints"`
+		} `json:"spec"`
+	}
+	// Kubernetes Node objects contain many fields, so decode once without the
+	// closed-field restriction while keeping the bounded command output.
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	if err := decoder.Decode(&node); err != nil || node.Metadata.Name != expectedName || node.Metadata.UID == "" || node.Metadata.ResourceVersion == "" {
+		return NodeObservation{}, fmt.Errorf("MicroK8s returned an invalid Node observation")
+	}
+	workerOnly := true
+	for key := range node.Metadata.Labels {
+		if key == "node-role.kubernetes.io/control-plane" || key == "node-role.kubernetes.io/master" {
+			workerOnly = false
+		}
+	}
+	bootstrapCount := 0
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "node-role.kubernetes.io/control-plane" || taint.Key == "node-role.kubernetes.io/master" {
+			workerOnly = false
+		}
+		if taint.Key == "blazn.dev/bootstrap" && taint.Value == "pending" && taint.Effect == "NoSchedule" {
+			bootstrapCount++
+		}
+	}
+	return NodeObservation{Name: node.Metadata.Name, UID: node.Metadata.UID, ResourceVersion: node.Metadata.ResourceVersion, BootstrapTainted: bootstrapCount == 1, WorkerOnly: workerOnly}, nil
 }
 func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (BackendIssue, error) {
 	if err := b.Healthy(ctx); err != nil {

@@ -49,24 +49,26 @@ type BuildInfo struct {
 }
 
 type App struct {
-	stdout        io.Writer
-	stderr        io.Writer
-	build         BuildInfo
-	doctor        func() DoctorReport
-	uninstall     func() (UninstallResult, error)
-	auth          func() (authCommands, error)
-	openBrowser   func(string) error
-	workspace     func() (workspaceCommands, error)
-	node          func(bool) (nodeCommands, error)
-	sandbox       func() (sandboxCommands, error)
-	stdin         io.Reader
-	stdinTTY      func() bool
-	plugins       pluginCommands
-	pluginContext func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
-	project       func() (projectCommands, error)
-	run           func() (runCommands, error)
-	proxy         func() (proxyCommands, error)
-	development   func() (developmentCommands, error)
+	stdout             io.Writer
+	stderr             io.Writer
+	build              BuildInfo
+	doctor             func() DoctorReport
+	uninstall          func() (UninstallResult, error)
+	auth               func() (authCommands, error)
+	openBrowser        func(string) error
+	workspace          func() (workspaceCommands, error)
+	node               func(bool) (nodeCommands, error)
+	sandbox            func() (sandboxCommands, error)
+	stdin              io.Reader
+	stdinTTY           func() bool
+	plugins            pluginCommands
+	pluginContext      func(context.Context, OutputFormat) (pluginpkg.RuntimeContext, error)
+	project            func() (projectCommands, error)
+	run                func() (runCommands, error)
+	proxy              func() (proxyCommands, error)
+	development        func() (developmentCommands, error)
+	hostName           func() (string, error)
+	machineFingerprint func() (string, error)
 }
 
 type pluginCommands interface {
@@ -116,17 +118,19 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		auth: func() (authCommands, error) {
 			return auth.NewDefaultService()
 		},
-		openBrowser: auth.OpenBrowser,
-		workspace:   func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
-		project:     func() (projectCommands, error) { return projectpkg.NewDefaultService() },
-		run:         func() (runCommands, error) { return runpkg.NewDefaultService() },
-		proxy:       defaultProxyCommandFactory,
-		development: func() (developmentCommands, error) { return developmentpkg.NewDefaultService() },
-		node:        func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
-		sandbox:     func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
-		stdin:       os.Stdin,
-		stdinTTY:    func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
-		plugins:     plugins,
+		openBrowser:        auth.OpenBrowser,
+		workspace:          func() (workspaceCommands, error) { return workspacepkg.NewDefaultService() },
+		project:            func() (projectCommands, error) { return projectpkg.NewDefaultService() },
+		run:                func() (runCommands, error) { return runpkg.NewDefaultService() },
+		proxy:              defaultProxyCommandFactory,
+		development:        func() (developmentCommands, error) { return developmentpkg.NewDefaultService() },
+		hostName:           os.Hostname,
+		machineFingerprint: nodepkg.HostMachineFingerprint,
+		node:               func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
+		sandbox:            func() (sandboxCommands, error) { return sandboxpkg.NewDefaultService() },
+		stdin:              os.Stdin,
+		stdinTTY:           func() bool { info, err := os.Stdin.Stat(); return err == nil && info.Mode()&os.ModeCharDevice != 0 },
+		plugins:            plugins,
 	}
 	app.pluginContext = app.resolvePluginContext
 	return app

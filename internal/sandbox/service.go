@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -399,7 +400,13 @@ func writeVerifiedFile(destination string, body io.Reader, expected int64, diges
 	if err := validateDownloadDestination(destination); err != nil {
 		return err
 	}
-	if err := os.Rename(tempName, destination); err != nil {
+	// The temporary file lives beside the destination, so creating a hard link
+	// publishes the verified bytes atomically while retaining O_EXCL semantics.
+	// os.Rename would overwrite a destination created after the final validation.
+	if err := os.Link(tempName, destination); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errors.New("download destination already exists")
+		}
 		return fmt.Errorf("install download: %w", err)
 	}
 	return nil
@@ -409,10 +416,8 @@ func validateDownloadDestination(path string) error {
 	if path == "" {
 		return errors.New("download destination is required")
 	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return errors.New("download destination must be a regular file and not a symlink")
-		}
+	if _, err := os.Lstat(path); err == nil {
+		return errors.New("download destination already exists")
 	} else if !os.IsNotExist(err) {
 		return err
 	}

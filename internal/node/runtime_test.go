@@ -1405,14 +1405,14 @@ func TestEnrollmentPinsSignerBeforeRejectingUntrustedPlan(t *testing.T) {
 	}
 }
 
-func TestEnrollmentRejectsInvalidMachineFingerprintBeforeIdentityOrAPI(t *testing.T) {
+func TestEnrollmentCanonicalizesQualifiedMachineFingerprint(t *testing.T) {
 	identityCalled := false
 	service := NewService(&mockAPI{}, identityStoreFunc(func() (Identity, error) {
 		identityCalled = true
 		return Identity{}, errors.New("identity must not be loaded")
 	}), &memoryState{}, nil)
-	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: "workspace-a", IdempotencyKey: "request-1", Name: "node-a", Mode: client.NodeModeFresh, Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, MachineFingerprint: "sha256:" + strings.Repeat("a", 64), Profile: client.NodeTrustedInstallProfile{ID: "ubuntu-26.04-amd64-worker/v1"}}, false)
-	if err == nil || err.Error() != "machine fingerprint must be 64 lowercase hexadecimal characters" || identityCalled {
+	_, err := service.Enroll(context.Background(), EnrollOptions{AccessToken: "access", WorkspaceID: "workspace-a", IdempotencyKey: "request-1", Name: "node-a", Mode: client.NodeModeFresh, Platform: client.NodePlatformLinux, Architecture: client.NodeArchAMD64, MachineFingerprint: " SHA256:" + strings.Repeat("A", 64) + " ", Profile: client.NodeTrustedInstallProfile{ID: "ubuntu-26.04-amd64-worker/v1"}}, false)
+	if err == nil || !identityCalled {
 		t.Fatalf("err=%v identityCalled=%t", err, identityCalled)
 	}
 }

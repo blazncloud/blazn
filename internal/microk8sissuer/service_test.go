@@ -19,6 +19,18 @@ type fakeBackend struct {
 	failIssue, failRevoke bool
 	now                   time.Time
 	failHealthy           bool
+	observation           NodeObservation
+	failObserve           bool
+}
+
+func (f *fakeBackend) Observe(_ context.Context, name string) (NodeObservation, error) {
+	if f.failObserve {
+		return NodeObservation{}, errors.New("private observation detail")
+	}
+	if f.observation.Name == "" {
+		return NodeObservation{Name: name, UID: "uid-a", ResourceVersion: "17", BootstrapTainted: true, WorkerOnly: true}, nil
+	}
+	return f.observation, nil
 }
 
 func (f *fakeBackend) Issue(_ context.Context, token string, ttl int) (BackendIssue, error) {
@@ -52,6 +64,9 @@ func secureTempDir(t *testing.T) string {
 func requestFixture() Request {
 	return Request{SchemaVersion: SchemaVersion, Operation: "issue", IssuanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ClusterID: "cluster-a", ExpectedNodeName: "worker-a", BootstrapTaint: BootstrapTaint, TTLSeconds: 60, WorkerOnly: true}
 }
+func observeFixture() Request {
+	return Request{SchemaVersion: SchemaVersion, Operation: "observe", IssuanceID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ClusterID: "cluster-a", ExpectedNodeName: "worker-a", BootstrapTaint: BootstrapTaint}
+}
 func TestIssueIsDeterministicAndBindsCredential(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	backend := &fakeBackend{now: now}
@@ -75,6 +90,34 @@ func TestIssueIsDeterministicAndBindsCredential(t *testing.T) {
 	var payload credentialPayload
 	if json.Unmarshal(raw, &payload) != nil || payload.ExpectedNodeName != "worker-a" || payload.BootstrapTaint != BootstrapTaint || !payload.WorkerOnly {
 		t.Fatal("credential omitted binding")
+	}
+}
+func TestObserveRequiresIssuedBindingAndEnforcesWorkerQuarantine(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	backend := &fakeBackend{now: now}
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
+	service.now = func() time.Time { return now }
+	if _, err := service.Handle(context.Background(), observeFixture()); err == nil {
+		t.Fatal("observation without issued binding passed")
+	}
+	if _, err := service.Handle(context.Background(), requestFixture()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Handle(context.Background(), observeFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := result.(ObserveResponse)
+	if observed.NodeUID != "uid-a" || observed.ResourceVersion != "17" || !observed.BootstrapTainted || !observed.WorkerOnly {
+		t.Fatalf("observation=%#v", observed)
+	}
+	backend.observation = NodeObservation{Name: "worker-a", UID: "uid-a", ResourceVersion: "18", WorkerOnly: true}
+	if _, err := service.Handle(context.Background(), observeFixture()); err == nil {
+		t.Fatal("untainted worker observation passed")
+	}
+	backend.observation = NodeObservation{Name: "worker-a", UID: "uid-a", ResourceVersion: "19", BootstrapTainted: true}
+	if _, err := service.Handle(context.Background(), observeFixture()); err == nil {
+		t.Fatal("control-plane observation passed")
 	}
 }
 func TestConflictingIssueFailsAndDoesNotCallBackend(t *testing.T) {

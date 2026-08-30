@@ -31,6 +31,18 @@ type Request struct {
 	ProviderHandle   string `json:"providerHandle,omitempty"`
 }
 
+type ObserveResponse struct {
+	SchemaVersion    string `json:"schemaVersion"`
+	Operation        string `json:"operation"`
+	IssuanceID       string `json:"issuanceId"`
+	ClusterID        string `json:"clusterId"`
+	NodeName         string `json:"nodeName"`
+	NodeUID          string `json:"nodeUid"`
+	ResourceVersion  string `json:"resourceVersion"`
+	BootstrapTainted bool   `json:"bootstrapTainted"`
+	WorkerOnly       bool   `json:"workerOnly"`
+}
+
 type IssueResponse struct {
 	SchemaVersion  string    `json:"schemaVersion"`
 	Operation      string    `json:"operation"`
@@ -78,6 +90,14 @@ func DecodeRequest(data []byte) (Request, error) {
 			!namePattern.MatchString(req.ExpectedNodeName) || req.BootstrapTaint != BootstrapTaint ||
 			req.TTLSeconds < 1 || req.TTLSeconds > 300 || !req.WorkerOnly {
 			return Request{}, invalid("issue binding is invalid")
+		}
+	case "observe":
+		for _, key := range []string{"issuanceId", "clusterId", "expectedNodeName", "bootstrapTaint"} {
+			allowed[key] = true
+		}
+		if !uuidPattern.MatchString(req.IssuanceID) || len(req.ClusterID) < 1 || len(req.ClusterID) > 128 ||
+			!namePattern.MatchString(req.ExpectedNodeName) || req.BootstrapTaint != BootstrapTaint {
+			return Request{}, invalid("observe binding is invalid")
 		}
 	case "revoke":
 		allowed["providerHandle"] = true

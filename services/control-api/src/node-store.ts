@@ -34,6 +34,7 @@ export interface NodeTransaction {
   recordHeartbeat(input: { nodeId: string; identityGeneration: number; bootId: string; sequence: number; sentAt: Date; capabilityDigest: string; requestDigest: string; capability: Record<string, unknown>; health: unknown; priorKubernetesResourceVersion: string; kubernetesBinding: KubernetesBinding }): Promise<void>;
   insertOperation(input: { id: string; workspaceId: string; nodeId: string; type: NodeOperationType; expectedVersion: number; requestedBy: string; idempotencyKey: string; requestDigest: string; parameters: Record<string, unknown> }): Promise<NodeOperationView>;
   listEvents(nodeId: string, afterId: string): Promise<NodeEvent[]>;
+  joinReplay(input: { issuanceId: string; nodeId: string; idempotencyKey: string; requestDigest: string }): Promise<NodeView | undefined>;
   consumeJoin(input: { issuanceId: string; nodeId: string; enrollmentId: string; planId: string; clusterId: string; nodeName: string; nodeUid: string; resourceVersion: string; idempotencyKey: string; requestDigest: string }): Promise<NodeView>;
 }
 
@@ -205,6 +206,13 @@ class PgNodeTransaction implements NodeTransaction {
     await this.client.query("UPDATE node_install_plans SET status='accepted',accepted_at=now() WHERE id=$1 AND status='issued'",[input.planId]);
     await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,'node.join_consumed',$3)",[row.workspace_id,input.nodeId,{issuanceId:input.issuanceId,idempotencyKey:input.idempotencyKey,requestDigest:input.requestDigest}]);
     const node=await this.nodeById(input.nodeId); if(!node) throw new Error("joined node disappeared"); return node;
+  }
+  async joinReplay(input:{issuanceId:string;nodeId:string;idempotencyKey:string;requestDigest:string}):Promise<NodeView|undefined>{
+    const result=await this.client.query("SELECT payload FROM node_audit_events WHERE node_id=$1 AND event_type='node.join_consumed' AND payload->>'idempotencyKey'=$2 ORDER BY created_at DESC LIMIT 1",[input.nodeId,input.idempotencyKey]);
+    const replay=result.rows[0]?.payload as Record<string,unknown>|undefined;
+    if(!replay)return undefined;
+    if(replay.issuanceId!==input.issuanceId||replay.requestDigest!==input.requestDigest)throw Object.assign(new Error("idempotency key is bound to another join consumption"),{nodeCode:"idempotency_conflict"});
+    const node=await this.nodeById(input.nodeId);if(!node)throw new Error("joined node disappeared");return node;
   }
 }
 

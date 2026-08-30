@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +199,7 @@ func TestUploadRejectsOverEightMiBBeforeGrant(t *testing.T) {
 	}
 }
 
-func TestDownloadVerifiesBeforeReplacingDestination(t *testing.T) {
+func TestDownloadVerifiesBeforeCreatingDestination(t *testing.T) {
 	dir := t.TempDir()
 	destination := dir + "/out"
 	contents := []byte("download")
@@ -210,20 +211,21 @@ func TestDownloadVerifiesBeforeReplacingDestination(t *testing.T) {
 	if err != nil || result.SHA256 != digest || !bytes.Equal(got, contents) {
 		t.Fatalf("result=%+v bytes=%q err=%v", result, got, err)
 	}
+	grants := api.grantCalls
+	if _, err := newFakeService(api).Download(context.Background(), "11111111-1111-4111-8111-111111111111", "/workspace/artifacts/out", destination); err == nil || !strings.Contains(err.Error(), "already exists") || api.grantCalls != grants {
+		t.Fatalf("existing destination err=%v grants=%d", err, api.grantCalls)
+	}
 	link := dir + "/link"
 	if err := os.Symlink(destination, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newFakeService(api).Download(context.Background(), "11111111-1111-4111-8111-111111111111", "/workspace/artifacts/out", link); err == nil {
-		t.Fatal("expected symlink rejection")
+	if _, err := newFakeService(api).Download(context.Background(), "11111111-1111-4111-8111-111111111111", "/workspace/artifacts/out", link); err == nil || !strings.Contains(err.Error(), "already exists") || api.grantCalls != grants {
+		t.Fatalf("symlink destination err=%v grants=%d", err, api.grantCalls)
 	}
 }
 
-func TestDownloadMismatchPreservesDestination(t *testing.T) {
+func TestDownloadMismatchLeavesDestinationAbsent(t *testing.T) {
 	destination := t.TempDir() + "/out"
-	if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	contents := []byte("tampered")
 	sum := sha256.Sum256([]byte("expected"))
 	digest := "sha256:" + hex.EncodeToString(sum[:])
@@ -231,9 +233,52 @@ func TestDownloadMismatchPreservesDestination(t *testing.T) {
 	if _, err := newFakeService(api).Download(context.Background(), "11111111-1111-4111-8111-111111111111", "/workspace/artifacts/out", destination); err == nil {
 		t.Fatal("expected mismatch")
 	}
-	got, _ := os.ReadFile(destination)
-	if string(got) != "original" {
-		t.Fatalf("destination=%q", got)
+	if _, err := os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("destination exists after mismatch: %v", err)
+	}
+	matches, err := filepath.Glob(filepath.Dir(destination) + "/.blazn-download-*")
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("temporary downloads=%v err=%v", matches, err)
+	}
+}
+
+func TestWriteVerifiedFileConcurrentDownloadsDoNotClobber(t *testing.T) {
+	directory := t.TempDir()
+	destination := filepath.Join(directory, "out")
+	contents := [][]byte{[]byte("first download"), []byte("second download")}
+	errorsByDownload := make(chan error, len(contents))
+	start := make(chan struct{})
+	for _, body := range contents {
+		body := body
+		go func() {
+			<-start
+			sum := sha256.Sum256(body)
+			errorsByDownload <- writeVerifiedFile(destination, bytes.NewReader(body), int64(len(body)), "sha256:"+hex.EncodeToString(sum[:]))
+		}()
+	}
+	close(start)
+	succeeded, existed := 0, 0
+	for range contents {
+		err := <-errorsByDownload
+		switch {
+		case err == nil:
+			succeeded++
+		case strings.Contains(err.Error(), "already exists"):
+			existed++
+		default:
+			t.Fatalf("unexpected concurrent download error: %v", err)
+		}
+	}
+	if succeeded != 1 || existed != 1 {
+		t.Fatalf("succeeded=%d existed=%d", succeeded, existed)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil || (!bytes.Equal(got, contents[0]) && !bytes.Equal(got, contents[1])) {
+		t.Fatalf("destination=%q err=%v", got, err)
+	}
+	matches, err := filepath.Glob(filepath.Join(directory, ".blazn-download-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("temporary downloads=%v err=%v", matches, err)
 	}
 }
 

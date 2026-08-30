@@ -61,16 +61,22 @@ For routine work, keep one bounded Sandbox across multiple commands. The local
 receipt contains only the Sandbox ID and lifecycle metadata, is mode `0600`,
 and defaults outside the repository under the user state directory.
 
+The installed CLI exposes this workflow directly. `--workspace` may be omitted
+when a Workspace is already selected. Use `--session NAME` on each command to
+keep multiple bounded sessions; the default name is `default`.
+
 ```text
-dev=examples/blazn-development-sandbox/dev-session.sh
-$dev start --workspace WORKSPACE_ID --expires 2h
-$dev status
-$dev exec -- sh -lc 'cd /workspace/src/blazn && go test ./...'
-$dev upload ./local-file /workspace/src/blazn/local-file
-$dev download /workspace/src/blazn/result ./result
-$dev patch ./checkpoint.patch
-$dev finish --patch ./final-change.patch
+blazn dev session start --workspace WORKSPACE_ID --expires 2h
+blazn dev session status
+blazn dev session exec -- sh -lc 'cd /workspace/src/blazn && go test ./...'
+blazn dev session upload ./local-file /workspace/src/blazn/local-file
+blazn dev session download /workspace/src/blazn/result ./result
+blazn dev session patch ./checkpoint.patch
+blazn dev session finish --patch ./final-change.patch
 ```
+
+`dev-session.sh` remains as a compatibility and live-acceptance wrapper while
+the native command rolls through signed release qualification.
 
 `start` accepts only a clean, pushed commit and records its materialized source
 as a fixed local Git baseline. Expiry is capped at two hours. `patch` stages all

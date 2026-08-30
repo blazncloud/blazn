@@ -78,12 +78,27 @@ func TestNodeHelpAndHeartbeat(t *testing.T) {
 	fake := &fakeNodeCommands{}
 	app := New(&stdout, &stderr, BuildInfo{})
 	app.node = func(bool) (nodeCommands, error) { return fake, nil }
-	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node list|get|capacity|enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
+	if code := app.Run([]string{"help", "node"}); code != 0 || !strings.Contains(stdout.String(), "node install|list|get|capacity|enroll|recover|repair|uninstall|heartbeat|serve") || !strings.Contains(stdout.String(), "root-authorize") {
 		t.Fatalf("help=%q code=%d", stdout.String(), code)
 	}
 	stdout.Reset()
 	if code := app.Run([]string{"node", "heartbeat"}); code != 0 || fake.heartbeats != 1 {
 		t.Fatalf("code=%d calls=%d", code, fake.heartbeats)
+	}
+}
+
+func TestNodeInstallUsesDetectedSafeDefaults(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	fake := &fakeNodeCommands{}
+	app := New(&stdout, &stderr, BuildInfo{})
+	app.node = func(bool) (nodeCommands, error) { return fake, nil }
+	app.hostName = func() (string, error) { return "worker-fresh", nil }
+	app.machineFingerprint = func() (string, error) { return strings.Repeat("a", 64), nil }
+	if code := app.Run([]string{"node", "install", "--workspace", "workspace-a"}); code != ExitSuccess {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if fake.options.WorkspaceID != "workspace-a" || fake.options.Name != "worker-fresh" || fake.options.Mode != client.NodeModeFresh || fake.options.RequestID != "node-install-"+strings.Repeat("a", 32) || fake.options.MachineFingerprint != strings.Repeat("a", 64) || fake.options.ProfileFile != "/etc/blazn/node/profiles/ubuntu-26.04-amd64-worker.json" {
+		t.Fatalf("options=%#v", fake.options)
 	}
 }
 

@@ -40,12 +40,14 @@ test("Unix issuer sends the closed binding and accepts canonical issue and revok
       schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "issue", providerHandle: issue.issuanceId,
       credential: "A".repeat(43), clusterId: issue.clusterId, clusterHealthy: true, workerOnly: true,
       expiresAt: "2030-01-01T00:01:00.000Z",
-    } : { schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "revoke", providerHandle: issue.issuanceId, revoked: true };
+    } : body.operation === "observe" ? { schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "observe", issuanceId: issue.issuanceId, clusterId: issue.clusterId, nodeName: issue.expectedNodeName, nodeUid: "uid-a", resourceVersion: "17", bootstrapTainted: true, workerOnly: true } : { schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "revoke", providerHandle: issue.issuanceId, revoked: true };
   });
   try {
     const issuer = new UnixMicroK8sWorkerCredentialIssuer(fixture.socket);
     const result = await issuer.issue(issue, new AbortController().signal);
     assert.equal(result.providerHandle, issue.issuanceId);
+    const observed=await issuer.observe({issuanceId:issue.issuanceId,clusterId:issue.clusterId,expectedNodeName:issue.expectedNodeName,bootstrapTaint:issue.bootstrapTaint},new AbortController().signal);
+    assert.equal(observed.nodeUid,"uid-a");
     await issuer.revoke(issue.issuanceId, new AbortController().signal);
     await issuer.health(new AbortController().signal);
     assert.deepEqual(seen[0], { schemaVersion: "blazn.dev/microk8s-worker-issuer/v1", operation: "issue", ...issue });

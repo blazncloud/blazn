@@ -25,6 +25,9 @@ func (a *App) runDevelopment(format OutputFormat, args []string) int {
 		return a.writeHelp(format, "dev")
 	}
 	command := args[0]
+	if command == "session" {
+		return a.runDevelopmentSession(format, args[1:])
+	}
 	if command == "validate" {
 		values, positional, err := parseSandboxFlags(args[1:], map[string]flagKind{"f": flagValue}, false)
 		if err != nil || len(positional) != 0 {

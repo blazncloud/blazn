@@ -124,6 +124,12 @@ export class NodeService {
     return this.store.transaction(async tx=>{const identity=await tx.activeIdentity(input.nodeId,true);if(!identity||identity.trustState==="revoked"||identity.lifecycleState==="removed"||!verifyNodeProof(identity.publicKey,"blazn-node-join-v1",input,proof))throw new NodeHttpError("identity_rejected","node identity is not active or proof could not be verified");
       return tx.consumeJoin({issuanceId,nodeId:input.nodeId,enrollmentId:input.enrollmentId,planId:input.planId,clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion,idempotencyKey,requestDigest:requestDigest({issuanceId,...input})});}).catch(mapStoreError);
   }
+
+  async replayConsumedJoin(issuanceId:string,idempotencyKey:string,input:{nodeId:string;enrollmentId:string;planId:string;joinedNodeUid:string;joinedNodeName:string;resourceVersion:string;clusterId:string},proof:string):Promise<NodeView|undefined>{
+    validIdempotency(idempotencyKey);
+    validUuid(issuanceId,"issuanceId");for(const field of ["nodeId","enrollmentId","planId"] as const)validUuid(input[field],field);validateBinding({clusterId:input.clusterId,nodeName:input.joinedNodeName,nodeUid:input.joinedNodeUid,resourceVersion:input.resourceVersion});
+    return this.store.transaction(async tx=>{const identity=await tx.activeIdentity(input.nodeId,false);if(!identity||identity.trustState==="revoked"||identity.lifecycleState==="removed"||!verifyNodeProof(identity.publicKey,"blazn-node-join-v1",input,proof))throw new NodeHttpError("identity_rejected","node identity is not active or proof could not be verified");return tx.joinReplay({issuanceId,nodeId:input.nodeId,idempotencyKey,requestDigest:requestDigest({issuanceId,...input})});}).catch(mapStoreError);
+  }
 }
 
 async function authorize(tx:NodeTransaction,principal:NodePrincipal,workspaceId:string,mutation:boolean,lock:boolean){const authority=await tx.authority(workspaceId,principal.userId,lock);if(!authority)throw new NodeHttpError("membership_required","active workspace membership is required");if(authority.workspaceStatus!=="active")throw new NodeHttpError("state_conflict","workspace is not active");if(!nodeRoleAllows(authority.role,mutation))throw new NodeHttpError("permission_denied","node action is not permitted");return authority;}
