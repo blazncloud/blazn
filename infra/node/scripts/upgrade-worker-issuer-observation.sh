@@ -138,7 +138,7 @@ recovery_key=$(jq -er .secretRecoveryPath "$RECOVERY/inventory.json"); validate_
 phase=$(jq -er .phase "$RECEIPT")
 case "$phase" in complete|upgrade-initialized|upgrade-service-stopped|upgrade-binary-installed|upgrade-receipt-updated|upgrade-main-bound|upgrade-service-started|upgrade-rollback-started|upgrade-rollback-binary-restored|upgrade-rollback-main-restored) ;; *) die "issuer receipt is not observation-upgrade resumable" ;; esac
 
-if [ "$phase" = complete ] && [ "$(jq -er .liveJoinBlocked)" = false ]; then
+if [ "$phase" = complete ] && [ "$(jq -er .liveJoinBlocked "$RECEIPT")" = false ]; then
   [ "$(jq -er .binary.digest "$RECEIPT")" = "$SOURCE_DIGEST" ] || die "completed observation upgrade uses another binary"
   validate_file "$JOURNAL" 600
   [ "sha256:$(sha "$JOURNAL")" = "$(jq -er .upgrade.journalDigest "$RECEIPT")" ] || die "upgrade journal differs from receipt"
@@ -150,7 +150,7 @@ if [ "$phase" = complete ] && [ "$(jq -er .liveJoinBlocked)" = false ]; then
 fi
 
 if [ "$phase" = complete ]; then
-  [ "$(jq -er .liveJoinBlocked)" = true ] || die "complete issuer receipt has an invalid live-join gate"
+  [ "$(jq -er .liveJoinBlocked "$RECEIPT")" = true ] || die "complete issuer receipt has an invalid live-join gate"
   jq -e 'has("upgrade")|not' "$RECEIPT" >/dev/null || die "blocked receipt has unexpected upgrade state"
   old_binary=$(jq -er .binary.digest "$RECEIPT")
   [ "$old_binary" != "$SOURCE_DIGEST" ] || die "blocked receipt cannot claim the observation-enforced binary"
@@ -228,7 +228,7 @@ if [ "$phase" = upgrade-main-bound ]; then
   set_phase upgrade-service-started
 fi
 if [ "$phase" = upgrade-service-started ]; then set_phase complete; fi
-[ "$phase" = complete ] && [ "$(jq -er .liveJoinBlocked)" = false ] || die "observation upgrade did not complete"
+[ "$phase" = complete ] && [ "$(jq -er .liveJoinBlocked "$RECEIPT")" = false ] || die "observation upgrade did not complete"
 [ "sha256:$(sha "$BINARY")" = "$SOURCE_DIGEST" ] || die "upgraded binary differs from reviewed helper"
 [ "$(material_digest "$RECEIPT")" = "$(jq -er .upgrade.resultMaterialDigest "$RECEIPT")" ] || die "completed issuer material differs from journal"
 [ "sha256:$(sha "$MAIN_RECEIPT")" = "$(jq -er .upgrade.resultMainDigest "$RECEIPT")" ] || die "completed main receipt differs from journal"
