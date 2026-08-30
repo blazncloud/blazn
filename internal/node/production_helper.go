@@ -3,11 +3,13 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -192,13 +194,190 @@ func PrepareProductionServiceState() error {
 			if !rootReceiptOwnsSystemBinary(paths.RootStateRoot, existing) {
 				return errors.New("system Blazn binary differs from both the authenticated installer and receipt-owned version")
 			}
-			return writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0)
+			if err := writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0); err != nil {
+				return err
+			}
 		}
-		return nil
 	} else if !errors.Is(readErr, os.ErrNotExist) && !strings.Contains(readErr.Error(), "material path is unsafe") {
 		return readErr
+	} else if err := writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0); err != nil {
+		return err
 	}
-	return writeRootAtomic(defaultRootBinaryPath, value, 0755, 0, 0)
+	return provisionProductionBootstrapProfiles(paths, uid, gid)
+}
+
+type bootstrapProfileReceipt struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Path          string `json:"path"`
+	SHA256        string `json:"sha256"`
+	OwnerUID      int    `json:"ownerUid"`
+	OwnerGID      int    `json:"ownerGid"`
+}
+
+func provisionProductionBootstrapProfiles(paths ProductionNodePaths, uid, gid int) error {
+	profiles := productionBootstrapProfiles()
+	if paths.ProfileRoot != LinuxNodeProfileRoot || len(profiles) != 1 {
+		return nil
+	}
+	return provisionBootstrapProfiles(paths, uid, gid, 0, 0, profiles)
+}
+
+func provisionBootstrapProfiles(paths ProductionNodePaths, uid, gid, systemUID, systemGID int, profiles map[string][]byte) error {
+	for _, directory := range []struct {
+		path string
+		mode os.FileMode
+		uid  int
+		gid  int
+	}{
+		{filepath.Dir(filepath.Dir(paths.ProfileRoot)), 0755, systemUID, systemGID},
+		{filepath.Dir(paths.ProfileRoot), 0755, systemUID, systemGID},
+		{paths.ProfileRoot, 0700, uid, gid},
+		{paths.RootStateRoot, 0700, systemUID, systemGID},
+	} {
+		if err := ensureBootstrapDirectory(directory.path, directory.mode, directory.uid, directory.gid); err != nil {
+			return fmt.Errorf("prepare bootstrap profile directory %s: %w", directory.path, err)
+		}
+	}
+	for name, encoded := range profiles {
+		path := filepath.Join(paths.ProfileRoot, name)
+		_, pathErr := os.Lstat(path)
+		if pathErr == nil {
+			existing, err := readBoundedRegular(path, 64<<10)
+			if err != nil {
+				return err
+			}
+			info, statErr := os.Lstat(path)
+			owner, _, ownerOK := fileOwner(info)
+			group, groupOK := fileGroup(info)
+			if statErr != nil || !ownerOK || !groupOK || owner != int64(uid) || group != int64(gid) || info.Mode().Perm() != 0600 || !bytes.Equal(bytes.TrimSpace(existing), encoded) {
+				return errors.New("existing trusted bootstrap profile differs from this signed release")
+			}
+		} else if errors.Is(pathErr, os.ErrNotExist) {
+			if err := writeBootstrapProfileAtomic(path, append(encoded, '\n'), uid, gid); err != nil {
+				return err
+			}
+		} else {
+			return pathErr
+		}
+		digest := sha256.Sum256(encoded)
+		receipt, err := json.Marshal(bootstrapProfileReceipt{SchemaVersion: 1, Path: path, SHA256: "sha256:" + hex.EncodeToString(digest[:]), OwnerUID: uid, OwnerGID: gid})
+		if err != nil {
+			return err
+		}
+		receiptPath := filepath.Join(paths.RootStateRoot, "bootstrap-profile-receipt.json")
+		if systemUID == 0 {
+			err = writeRootAtomic(receiptPath, append(receipt, '\n'), 0600, 0, 0)
+		} else {
+			err = writeBootstrapProfileAtomic(receiptPath, append(receipt, '\n'), systemUID, systemGID)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeBootstrapProfileAtomic(path string, value []byte, uid, gid int) error {
+	directoryPath := filepath.Dir(path)
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || filepath.Dir(directoryPath) == directoryPath {
+		return errors.New("bootstrap profile path is unsafe")
+	}
+	info, err := os.Lstat(directoryPath)
+	owner, _, ownerOK := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	if err != nil || !ownerOK || !groupOK || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || owner != int64(uid) || group != int64(gid) || info.Mode().Perm() != 0700 {
+		return errors.New("bootstrap profile directory changed or is unsafe")
+	}
+	root, err := os.OpenRoot(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	opened, err := root.Lstat(".")
+	if err != nil || !os.SameFile(info, opened) {
+		return errors.New("bootstrap profile directory changed while opening")
+	}
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return err
+	}
+	temporary := ".blazn-bootstrap-" + hex.EncodeToString(random)
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		_ = root.Remove(temporary)
+	}()
+	created, err := file.Stat()
+	createdOwner, createdLinks, createdOK := fileOwner(created)
+	if err != nil || !createdOK || !created.Mode().IsRegular() || createdLinks != 1 || createdOwner != currentUID() {
+		return errors.New("bootstrap profile temporary file is unsafe")
+	}
+	if err := file.Chown(uid, gid); err != nil {
+		return err
+	}
+	if err := file.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := file.Write(value); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	closed = true
+	if err := root.Rename(temporary, filepath.Base(path)); err != nil {
+		return err
+	}
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+func ensureBootstrapDirectory(path string, mode os.FileMode, uid, gid int) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return errors.New("bootstrap profile directory path is unsafe")
+	}
+	if err := verifyNoSymlinkTraversal(path); err != nil {
+		return err
+	}
+	created := false
+	if err := os.Mkdir(path, mode); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+	} else {
+		created = true
+	}
+	if created {
+		if err := os.Chown(path, uid, gid); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("bootstrap profile directory is unsafe")
+	}
+	owner, _, ownerOK := fileOwner(info)
+	group, groupOK := fileGroup(info)
+	if !ownerOK || !groupOK || owner != int64(uid) || group != int64(gid) || info.Mode().Perm() != mode {
+		return errors.New("bootstrap profile directory ownership or mode differs")
+	}
+	return nil
 }
 
 func receiptOwnsSystemBinary(receipt client.NodeInstallReceipt, value []byte) bool {

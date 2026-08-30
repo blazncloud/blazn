@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 type NodeEnrollOptions = nodepkg.CommandEnrollOptions
 
 var nodeUUIDPatternCLI = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var nodeMachineFingerprintPatternCLI = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type nodeCommands interface {
 	Enroll(context.Context, NodeEnrollOptions) (nodepkg.EnrollResult, error)
@@ -62,6 +64,44 @@ func (a *App) runNode(format OutputFormat, args []string) int {
 	}
 	ctx := context.Background()
 	switch args[0] {
+	case "install":
+		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true, "request-id": true, "name": true})
+		if err != nil || len(pos) != 0 {
+			return a.nodeUsage(format, err)
+		}
+		workspaceID := flags["workspace"]
+		if workspaceID == "" {
+			workspaces, workspaceErr := a.workspace()
+			if workspaceErr != nil {
+				return a.writeError(format, ExitUnavailable, "workspace_unavailable", workspaceErr.Error())
+			}
+			selection, selectionErr := workspaces.CurrentSelection(ctx)
+			if selectionErr != nil {
+				return a.nodeUsage(format, errors.New("node install needs a selected workspace or --workspace WORKSPACE"))
+			}
+			workspaceID = selection.WorkspaceID
+		}
+		name := flags["name"]
+		if name == "" {
+			name, err = a.hostName()
+			if err != nil || name == "" {
+				return a.writeError(format, ExitUnavailable, "host_identity_unavailable", "read host name")
+			}
+		}
+		fingerprint, err := a.machineFingerprint()
+		if err != nil {
+			return a.writeError(format, ExitUnavailable, "host_identity_unavailable", err.Error())
+		}
+		if !nodeMachineFingerprintPatternCLI.MatchString(fingerprint) {
+			return a.writeError(format, ExitUnavailable, "host_identity_unavailable", "derived machine fingerprint is invalid")
+		}
+		requestID := flags["request-id"]
+		if requestID == "" {
+			requestID = "node-install-" + fingerprint[:32]
+		}
+		profile := filepath.Join(nodepkg.LinuxNodeProfileRoot, "ubuntu-26.04-amd64-worker.json")
+		result, err := commands.Enroll(ctx, NodeEnrollOptions{WorkspaceID: workspaceID, RequestID: requestID, Name: name, Mode: client.NodeModeFresh, MachineFingerprint: fingerprint, ProfileFile: profile})
+		return a.writeNodeValue(format, result, err, "node installed and registered")
 	case "list":
 		pos, flags, err := positionalAndFlags(args[1:], 0, map[string]bool{"workspace": true})
 		if err != nil || len(pos) != 0 || flags["workspace"] == "" {

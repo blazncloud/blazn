@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "ubuntu-26.04-amd64-worker/v1",
+  "controlPlaneOrigin": "https://blazn.benpelo.com",
+  "allowedClusterOrigins": ["https://192.168.0.108:16443"],
+  "allowedDownloadOrigins": ["https://api.snapcraft.io"],
+  "allowedDownloadHostSuffixes": [],
+  "allowedRegistryOrigins": ["https://registry-1.docker.io"],
+  "allowedMutationRoots": [
+    "/etc/blazn/node",
+    "/etc/systemd/system",
+    "/usr/local/bin",
+    "/var/lib/blazn",
+    "/var/lib/blazn-node-root/install-backups"
+  ],
+  "embeddedComponentSha256": {
+    "blazn-node-systemd": "6b9275f689bc2a9aacbd0b3363fdd254c5f28c71b77a85c28f7be0c38a5a0175"
+  }
+}
