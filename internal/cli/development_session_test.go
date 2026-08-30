@@ -84,7 +84,9 @@ func TestDevelopmentSessionNativeLifecycle(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("BLAZN_SOURCE_PREFLIGHT_FETCH", "0")
 	t.Setenv("BLAZN_SESSION_POLL_DELAY_SECONDS", "0")
-	commitBytes, err := exec.Command("git", "rev-parse", "origin/main").Output()
+	// CI checks out a synthetic pull-request commit without necessarily
+	// materializing origin/main. The lifecycle only needs a valid full commit.
+	commitBytes, err := exec.Command("git", "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
