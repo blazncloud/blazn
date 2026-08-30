@@ -54,3 +54,35 @@ deliberately require root-owned private host-directory ancestry, and
 resolver rather than Go's pure-Go container fallback. Those host-only packages
 remain covered by the full Linux CI lane. The Sandbox runs every other Go
 package plus the complete control-API and coding-agent Node suites.
+
+## Persistent developer session
+
+For routine work, keep one bounded Sandbox across multiple commands. The local
+receipt contains only the Sandbox ID and lifecycle metadata, is mode `0600`,
+and defaults outside the repository under the user state directory.
+
+```text
+dev=examples/blazn-development-sandbox/dev-session.sh
+$dev start --workspace WORKSPACE_ID --expires 2h
+$dev status
+$dev exec -- sh -lc 'cd /workspace/src/blazn && go test ./...'
+$dev upload ./local-file /workspace/src/blazn/local-file
+$dev download /workspace/src/blazn/result ./result
+$dev patch ./checkpoint.patch
+$dev finish --patch ./final-change.patch
+```
+
+`start` accepts only a clean, pushed commit and records its materialized source
+as a fixed local Git baseline. Expiry is capped at two hours. `patch` stages all
+changes (including untracked files and deletions) and produces a binary-capable Git patch,
+downloads it atomically, verifies its server checksum, and refuses to overwrite
+an existing destination. `finish` stops the exact recorded Sandbox, deletes
+that same ID, and records `deleted` only after polling proves both `state` and
+`desiredState` are deleted. The server-side expiry remains the backstop if the
+workstation disconnects. Use `--receipt PATH` to run multiple named sessions.
+Individual uploads and downloads are limited to 8 MiB, and downloads refuse to
+overwrite local paths. `finish` requires either a final verified patch download
+or an explicit `--discard`, so teardown cannot silently destroy unexported work.
+`exec` decodes remote stdout and stderr while preserving
+the CLI exit distinction: `1` for a remote/API failure, `7` when unavailable,
+and `9` for truncated or partial evidence.

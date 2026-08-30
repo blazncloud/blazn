@@ -115,6 +115,7 @@ test-development-sandbox-static:
 	shellcheck examples/blazn-development-sandbox/*.sh
 	./examples/blazn-development-sandbox/test-entrypoint.sh
 	./examples/blazn-development-sandbox/test-read-retry.sh
+	./examples/blazn-development-sandbox/test-dev-session.sh
 	sh examples/blazn-development-sandbox/test-delete-and-prove.sh
 	sh examples/blazn-development-sandbox/test-download-patch.sh
 	shellcheck examples/coding-agent/scripts/*.sh

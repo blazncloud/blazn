@@ -17,13 +17,15 @@ output=$(CDPATH='' cd -- "$parent" && pwd)/$(basename -- "$output")
 checksum=$output.sha256
 [ ! -e "$output" ] && [ ! -e "$checksum" ] || { printf 'refusing to overwrite patch output or checksum: %s\n' "$output" >&2; exit 1; }
 
-patch_temp=$output.partial.$$
-checksum_temp=$checksum.partial.$$
+patch_temp=$(mktemp "$parent/.blazn-patch.XXXXXX")
+checksum_temp=$(mktemp "$parent/.blazn-checksum.XXXXXX")
+rm -f -- "$patch_temp" "$checksum_temp"
 complete=0
+output_linked=0
 cleanup() {
   rm -f -- "$patch_temp" "$checksum_temp"
-  if [ "$complete" -eq 0 ]; then
-    rm -f -- "$output" "$checksum"
+  if [ "$complete" -eq 0 ] && [ "$output_linked" -eq 1 ]; then
+    rm -f -- "$output"
   fi
 }
 trap cleanup EXIT
@@ -50,7 +52,17 @@ actual=sha256:$(digest_file "$patch_temp")
   exit 1
 }
 printf '%s  %s\n' "${actual#sha256:}" "$(basename -- "$output")" >"$checksum_temp"
-mv -- "$patch_temp" "$output"
-mv -- "$checksum_temp" "$checksum"
+ln -- "$patch_temp" "$output" 2>/dev/null || {
+  printf 'refusing to overwrite patch output: %s\n' "$output" >&2
+  exit 1
+}
+output_linked=1
+ln -- "$checksum_temp" "$checksum" 2>/dev/null || {
+  rm -f -- "$output"
+  output_linked=0
+  printf 'refusing to overwrite patch checksum: %s\n' "$checksum" >&2
+  exit 1
+}
+rm -f -- "$patch_temp" "$checksum_temp"
 complete=1
 printf '%s\n' "$actual"
