@@ -4,8 +4,8 @@ set -eu
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/blazn-dev-session-test.XXXXXX")
-source_commit=$(git -C "$repo_root" rev-parse HEAD)
-test_ref=refs/remotes/origin/blazn-development-session-shell-test-$$
+source_commit=
+test_ref=
 ref_created=0
 cleanup() {
   status=$?
@@ -18,6 +18,8 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+source_commit=$(git -C "$repo_root" rev-parse HEAD)
+test_ref=refs/remotes/origin/blazn-development-session-shell-test-$$
 if ! git -C "$repo_root" update-ref "$test_ref" "$source_commit" 0000000000000000000000000000000000000000; then
   printf 'unable to create isolated pushed-source test ref: %s\n' "$test_ref" >&2
   exit 1
