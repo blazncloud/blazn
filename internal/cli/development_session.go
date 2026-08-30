@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -29,6 +30,7 @@ const (
 )
 
 var developmentSessionName = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$`)
+var errDevelopmentProcessMissing = errors.New("process does not exist")
 
 type developmentSessionReceipt struct {
 	Schema        string `json:"schema"`
@@ -41,6 +43,12 @@ type developmentSessionReceipt struct {
 	Expires       string `json:"expires"`
 	RequestPrefix string `json:"requestPrefix"`
 	CreatedAt     string `json:"createdAt"`
+}
+
+type developmentSessionLockOwner struct {
+	PID   int    `json:"pid"`
+	Start string `json:"start"`
+	Token string `json:"token"`
 }
 
 type developmentSessionResult struct {
@@ -132,6 +140,10 @@ func extractDevelopmentSession(args []string) (string, []string, error) {
 	session := "default"
 	rest := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
+		if args[index] == "--" {
+			rest = append(rest, args[index:]...)
+			break
+		}
 		if args[index] == "--session" {
 			if index+1 >= len(args) {
 				return "", nil, errors.New("--session requires a name")
@@ -172,10 +184,114 @@ func lockDevelopmentSession(name string) (string, func(), error) {
 		return "", nil, err
 	}
 	lock := path + ".lock"
-	if err := os.Mkdir(lock, 0o700); err != nil {
-		return "", nil, fmt.Errorf("development session is busy: %s", name)
+	start, err := developmentProcessStart(os.Getpid())
+	if err != nil {
+		return "", nil, errors.New("could not determine development session lock owner identity")
 	}
-	return path, func() { _ = os.Remove(lock) }, nil
+	owner := developmentSessionLockOwner{PID: os.Getpid(), Start: start, Token: fmt.Sprintf("%d-%d", time.Now().UTC().UnixNano(), os.Getpid())}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := os.Mkdir(lock, 0o700); err == nil {
+			ownerPath := filepath.Join(lock, "owner.json")
+			file, createErr := os.OpenFile(ownerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if createErr != nil {
+				_ = os.Remove(lock)
+				return "", nil, createErr
+			}
+			encodeErr := json.NewEncoder(file).Encode(owner)
+			closeErr := file.Close()
+			if encodeErr != nil || closeErr != nil {
+				_ = os.Remove(ownerPath)
+				_ = os.Remove(lock)
+				return "", nil, errors.New("could not record development session lock owner")
+			}
+			return path, func() { releaseDevelopmentSessionLock(lock, owner) }, nil
+		} else if !os.IsExist(err) {
+			return "", nil, err
+		}
+		existing, readErr := readDevelopmentSessionLockOwner(lock)
+		if readErr != nil {
+			return "", nil, fmt.Errorf("development session lock is unsafe; preserve for reconciliation: %s", lock)
+		}
+		liveStart, liveErr := developmentProcessStart(existing.PID)
+		if liveErr == nil && liveStart == existing.Start {
+			return "", nil, fmt.Errorf("development session is busy: %s", name)
+		}
+		if liveErr != nil && !errors.Is(liveErr, errDevelopmentProcessMissing) {
+			return "", nil, fmt.Errorf("development session lock owner cannot be inspected; preserve for reconciliation: %s", lock)
+		}
+		claim := fmt.Sprintf("%s.recovery-%d-%d", lock, os.Getpid(), time.Now().UTC().UnixNano())
+		if err := os.Rename(lock, claim); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", nil, fmt.Errorf("could not fence stale development session lock: %w", err)
+		}
+		if err := os.Remove(filepath.Join(claim, "owner.json")); err != nil || os.Remove(claim) != nil {
+			return "", nil, fmt.Errorf("stale development session lock was fenced at %s but requires reconciliation", claim)
+		}
+	}
+	return "", nil, fmt.Errorf("development session lock changed during recovery: %s", name)
+}
+
+func readDevelopmentSessionLockOwner(lock string) (developmentSessionLockOwner, error) {
+	var owner developmentSessionLockOwner
+	info, err := os.Lstat(lock)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		return owner, errors.New("lock directory is unsafe")
+	}
+	ownerPath := filepath.Join(lock, "owner.json")
+	info, err = os.Lstat(ownerPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+		return owner, errors.New("lock owner is unsafe")
+	}
+	data, err := os.ReadFile(ownerPath)
+	if err != nil {
+		return owner, err
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&owner); err != nil || owner.PID < 1 || owner.Start == "" || owner.Token == "" {
+		return owner, errors.New("lock owner is invalid")
+	}
+	return owner, nil
+}
+
+func releaseDevelopmentSessionLock(lock string, expected developmentSessionLockOwner) {
+	actual, err := readDevelopmentSessionLockOwner(lock)
+	if err != nil || actual != expected {
+		return
+	}
+	if err := os.Remove(filepath.Join(lock, "owner.json")); err == nil {
+		_ = os.Remove(lock)
+	}
+}
+
+func developmentProcessStart(pid int) (string, error) {
+	if pid < 1 {
+		return "", errors.New("invalid process ID")
+	}
+	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		end := strings.LastIndexByte(string(data), ')')
+		if end < 0 {
+			return "", errors.New("invalid process stat")
+		}
+		fields := strings.Fields(string(data)[end+1:])
+		if len(fields) <= 19 || fields[19] == "" {
+			return "", errors.New("invalid process stat")
+		}
+		return fields[19], nil
+	}
+	if signalErr := syscall.Kill(pid, syscall.Signal(0)); signalErr != nil {
+		if errors.Is(signalErr, syscall.ESRCH) {
+			return "", errDevelopmentProcessMissing
+		}
+		return "", fmt.Errorf("inspect process: %w", signalErr)
+	}
+	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil || strings.TrimSpace(string(output)) == "" {
+		return "", errors.New("process start is unavailable")
+	}
+	return strings.Join(strings.Fields(string(output)), " "), nil
 }
 
 func readDevelopmentSession(path string) (developmentSessionReceipt, error) {

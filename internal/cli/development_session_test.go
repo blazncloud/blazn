@@ -181,6 +181,81 @@ func TestDevelopmentSessionRejectsUnsafeNameAndReceipt(t *testing.T) {
 	}
 }
 
+func TestDevelopmentSessionOptionParsingStopsAtExecDelimiter(t *testing.T) {
+	session, rest, err := extractDevelopmentSession([]string{"--session", "named", "--", "printf", "--session", "remote-value"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session != "named" || strings.Join(rest, "|") != "--|printf|--session|remote-value" {
+		t.Fatalf("session=%q rest=%q", session, rest)
+	}
+	session, rest, err = extractDevelopmentSession([]string{"--", "printf", "--session", "remote-value"})
+	if err != nil || session != "default" || strings.Join(rest, "|") != "--|printf|--session|remote-value" {
+		t.Fatalf("session=%q rest=%q err=%v", session, rest, err)
+	}
+}
+
+func TestDevelopmentSessionLockRecoversOnlyProvenStaleOwner(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path, err := developmentSessionPath("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := path + ".lock"
+	if err := os.MkdirAll(lock, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := developmentSessionLockOwner{PID: 2147483647, Start: "stale", Token: "stale-token"}
+	data, _ := json.Marshal(stale)
+	if err := os.WriteFile(filepath.Join(lock, "owner.json"), append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gotPath, unlock, err := lockDevelopmentSession("default")
+	if err != nil || gotPath != path {
+		t.Fatalf("path=%q err=%v", gotPath, err)
+	}
+	owner, err := readDevelopmentSessionLockOwner(lock)
+	if err != nil || owner.PID != os.Getpid() || owner.Token == stale.Token {
+		t.Fatalf("owner=%#v err=%v", owner, err)
+	}
+	unlock()
+	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
+		t.Fatalf("released lock remains: %v", err)
+	}
+}
+
+func TestDevelopmentSessionLockPreservesLiveAndInvalidOwners(t *testing.T) {
+	for name, ownerData := range map[string][]byte{
+		"live": func() []byte {
+			start, err := developmentProcessStart(os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, _ := json.Marshal(developmentSessionLockOwner{PID: os.Getpid(), Start: start, Token: "live-token"})
+			return append(data, '\n')
+		}(),
+		"invalid": []byte("{}\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			path, _ := developmentSessionPath("default")
+			lock := path + ".lock"
+			if err := os.MkdirAll(lock, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(lock, "owner.json"), ownerData, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := lockDevelopmentSession("default"); err == nil {
+				t.Fatal("existing owner unexpectedly replaced")
+			}
+			if _, err := os.Lstat(lock); err != nil {
+				t.Fatalf("existing lock was not preserved: %v", err)
+			}
+		})
+	}
+}
+
 func TestDevelopmentSessionTemplateDefaultsMatchPublishedManifest(t *testing.T) {
 	data, err := os.ReadFile("../../examples/coding-agent/sandbox-template-dev.yaml")
 	if err != nil {
