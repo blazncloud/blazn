@@ -10,7 +10,15 @@ command -v sudo >/dev/null 2>&1 || { printf 'worker issuer infra test skipped: s
 sudo -n true >/dev/null 2>&1 || { printf 'worker issuer infra test skipped: passwordless sudo unavailable\n'; exit 0; }
 top=${TMPDIR:-/tmp}/blazn-worker-issuer-infra-$$
 mkdir "$top"
-cleanup(){ sudo find "$top" -xdev -type l -print | grep . >/dev/null && return 1; sudo find "$top" -xdev -type f -delete; sudo find "$top" -xdev -depth -type d -empty -delete; }
+test_step=setup
+cleanup(){
+  test_status=$?
+  if sudo find "$top" -xdev -type l -print | grep . >/dev/null; then test_status=1; fi
+  sudo find "$top" -xdev -type f -delete || test_status=1
+  sudo find "$top" -xdev -depth -type d -empty -delete || test_status=1
+  if [ "$test_status" -ne 0 ]; then printf 'worker issuer infra test failed at %s\n' "$test_step" >&2; fi
+  return "$test_status"
+}
 trap cleanup EXIT HUP INT TERM
 
 helper=$top/helper
@@ -56,6 +64,7 @@ make_blocked_fixture(){
 }
 
 for fault in recovery-created initialized key-pending recovery-key-pending secret-created config-bound files-installed service-started complete; do
+  test_step=install-$fault
   root=$top/$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"
   if run_install "$root" "$fault" >"$top/$fault.out" 2>"$top/$fault.err"; then printf 'issuer fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected issuer fault after $fault" "$top/$fault.err" >/dev/null
@@ -89,6 +98,7 @@ BLAZN_NODE_BROKER_LOOPBACK=disabled' ]
 done
 
 for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade-binary-installed upgrade-receipt-updated upgrade-main-bound upgrade-service-started complete; do
+  test_step=upgrade-$fault
   root=$top/upgrade-$fault; make_blocked_fixture "$root"
   recovery_before=$(sudo sha256sum "$root/ownership/recovery/inventory.json" "$root/ownership/recovery/issuer-hmac-v1" "$root/ownership/recovery/control-plane.env" "$root/ownership/recovery/control-plane.json")
   if run_upgrade "$root" "$fault" >"$top/upgrade-$fault.out" 2>"$top/upgrade-$fault.err"; then printf 'issuer upgrade fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
@@ -113,6 +123,7 @@ for fault in journal-created upgrade-initialized upgrade-service-stopped upgrade
   fi
 done
 
+test_step=upgrade-archive-collision
 archive_collision=$top/upgrade-archive-collision; make_blocked_fixture "$archive_collision"
 for collision_attempt in 1 2; do
   if run_upgrade "$archive_collision" '' 1 "$observed_helper" '2026-08-30T12:00:00Z' >"$top/archive-collision-$collision_attempt.out" 2>"$top/archive-collision-$collision_attempt.err"; then printf 'same-time failed issuer upgrade unexpectedly completed\n' >&2; exit 1; fi
@@ -122,6 +133,7 @@ done
 run_upgrade "$archive_collision" '' 0 "$corrected_helper" '2026-08-30T12:00:00Z' >/dev/null
 sudo jq -e --arg digest "sha256:$(sha256sum "$corrected_helper" | awk '{print $1}')" '.phase=="complete" and .liveJoinBlocked==false and .binary.digest==$digest' "$archive_collision/ownership/issuer.json" >/dev/null
 
+test_step=upgrade-failed-start
 failed_start=$top/upgrade-failed-start; make_blocked_fixture "$failed_start"
 prior_failed_start=$(sudo sha256sum "$failed_start/ownership/issuer.json" "$failed_start/control-plane.json" "$failed_start/usr/libexec/issuer")
 if run_upgrade "$failed_start" '' 1 >"$top/upgrade-failed-start.out" 2>"$top/upgrade-failed-start.err"; then printf 'issuer upgrade with failed service start unexpectedly completed\n' >&2; exit 1; fi
@@ -134,6 +146,7 @@ run_upgrade "$failed_start" >/dev/null
 sudo jq -e '.phase=="complete" and .liveJoinBlocked==false' "$failed_start/ownership/issuer.json" >/dev/null
 
 for rollback_fault in upgrade-rollback-started upgrade-rollback-binary-restored upgrade-rollback-main-restored upgrade-rollback-receipt-restored; do
+  test_step=$rollback_fault
   rollback_root=$top/$rollback_fault; make_blocked_fixture "$rollback_root"
   if run_upgrade "$rollback_root" "$rollback_fault" 1 >"$top/$rollback_fault.out" 2>"$top/$rollback_fault.err"; then printf 'issuer rollback fault unexpectedly completed: %s\n' "$rollback_fault" >&2; exit 1; fi
   grep -F "injected issuer upgrade fault after $rollback_fault" "$top/$rollback_fault.err" >/dev/null
@@ -146,12 +159,14 @@ for rollback_fault in upgrade-rollback-started upgrade-rollback-binary-restored 
   sudo find "$rollback_root/ownership/recovery" -maxdepth 1 -type d -name 'observation-upgrade-failed-*' | grep . >/dev/null
 done
 
+test_step=upgrade-main-conflict
 conflict=$top/upgrade-main-conflict; make_blocked_fixture "$conflict"
 sudo sh -c 'tmp=$1.tmp; jq ".unreviewed=true" "$1" >"$tmp"; chmod 0600 "$tmp"; mv -- "$tmp" "$1"' sh "$conflict/control-plane.json"
 if run_upgrade "$conflict" >"$top/upgrade-main-conflict.out" 2>"$top/upgrade-main-conflict.err"; then printf 'issuer upgrade accepted an unbound main receipt\n' >&2; exit 1; fi
 grep -F 'main receipt does not bind blocked issuer' "$top/upgrade-main-conflict.err" >/dev/null
 sudo jq -e '.phase=="complete" and .liveJoinBlocked==true' "$conflict/ownership/issuer.json" >/dev/null
 
+test_step=mutable-source
 mutable_source=$top/mutable-source
 mkdir -p "$mutable_source/scripts" "$mutable_source/systemd" "$mutable_source/install/ownership"
 cp "$INSTALLER" "$mutable_source/scripts/install-worker-issuer.sh"
@@ -170,6 +185,7 @@ if run_install "$mutable_source/install" '' "$mutable_source/scripts/install-wor
 fi
 grep -F 'issuer artifact source differs from reviewed digest' "$top/mutable-source.err" >/dev/null
 
+test_step=unsafe-parent
 unsafe_parent=$top/unsafe-parent
 mkdir -p "$unsafe_parent/ownership" "$unsafe_parent/usr/libexec"
 printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$unsafe_parent/control-plane.env"
@@ -185,6 +201,7 @@ if run_install "$unsafe_parent" >"$top/unsafe-parent.out" 2>"$top/unsafe-parent.
 fi
 grep -F 'managed issuer parent owner or mode is unsafe' "$top/unsafe-parent.err" >/dev/null
 
+test_step=unsafe-state-parent
 unsafe_state_parent=$top/unsafe-state-parent
 mkdir -p "$unsafe_state_parent/ownership"
 printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$unsafe_state_parent/control-plane.env"
@@ -197,6 +214,7 @@ sudo chmod 0600 "$unsafe_state_parent/control-plane.env" "$unsafe_state_parent/c
 if run_install "$unsafe_state_parent" >"$top/unsafe-state-parent.out" 2>"$top/unsafe-state-parent.err"; then printf 'issuer install accepted an unsafe state parent\n' >&2; exit 1; fi
 grep -F 'issuer state parent is unsafe' "$top/unsafe-state-parent.err" >/dev/null
 
+test_step=unsafe-state
 unsafe_state=$top/unsafe-state
 mkdir -p "$unsafe_state/ownership"
 printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$unsafe_state/control-plane.env"
@@ -214,12 +232,14 @@ sudo chmod 0700 "$unsafe_state/issuer-state"
 run_rollback "$unsafe_state" >/dev/null
 
 for fault in service-stopped-before-phase rollback-validated-before-phase binary-removed-before-phase config-removed-before-phase secret-removed-before-phase unit-removed-before-phase tmpfiles-removed-before-phase state-removed-before-phase environment-restored-before-phase main-removal-intent-before-phase main-removal-intent main-restored-before-phase files-restored-before-phase rolled-back-before-phase; do
+  test_step=rollback-$fault
   root=$top/rollback-$fault; mkdir -p "$root/ownership"; printf 'BASELINE=value\nBLAZN_NODE_BROKER_LOOPBACK=disabled\n' >"$root/control-plane.env"; printf '{"schemaVersion":"blazn.dev/control-plane-ownership/v1","owner":"blazn-poc"}\n' >"$root/control-plane.json"; : >"$root/systemctl.log"; sudo chown -R 0:0 "$root"; sudo chmod 0700 "$root" "$root/ownership"; sudo chmod 0600 "$root/control-plane.env" "$root/control-plane.json"; run_install "$root" >/dev/null; sudo mkdir -p "$root/issuer-state"; sudo chmod 0700 "$root/issuer-state"
   if run_rollback "$root" "$fault" >"$top/rollback-$fault.out" 2>"$top/rollback-$fault.err"; then printf 'rollback fault unexpectedly completed: %s\n' "$fault" >&2; exit 1; fi
   grep -F "injected issuer rollback fault after $fault" "$top/rollback-$fault.err" >/dev/null
   run_rollback "$root" >/dev/null; sudo jq -e '.phase=="rolled-back"' "$root/ownership/issuer.json" >/dev/null; sudo test ! -e "$root/issuer-state"; sudo jq -e 'has("microk8sIssuer")|not' "$root/control-plane.json" >/dev/null
 done
 
+test_step=static-contracts
 grep -F 'source: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
 grep -F 'target: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
 grep -F 'network_mode: "service:api"' "$COMPOSE" >/dev/null
