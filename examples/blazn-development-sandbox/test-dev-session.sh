@@ -23,7 +23,7 @@ case $args in
     ;;
   *' sandbox stop '*) printf stopped >"$FAKE_STATE"; printf '%s\n' '{}' ;;
   *' sandbox delete '*) printf deleted >"$FAKE_STATE"; printf '%s\n' '{}' ;;
-  *' sandbox exec '*'git diff --cached'*) printf '%s\n' '{"remoteExitCode":0,"truncated":false,"stdoutBase64":"UEFUQ0hfUkVBRFk=","stderrBase64":""}' ;;
+  *' sandbox exec '*' diff --cached '*) printf '%s\n' '{"remoteExitCode":0,"truncated":false,"stdoutBase64":"UEFUQ0hfUkVBRFk=","stderrBase64":""}' ;;
   *' sandbox exec '*) printf '%s\n' '{"remoteExitCode":0,"truncated":false,"stdoutBase64":"","stderrBase64":""}' ;;
   *' sandbox upload '*) printf '%s\n' '{}' ;;
   *' sandbox download '*)
@@ -48,6 +48,7 @@ grep -F 'expires must be a duration' "$work/huge.err" >/dev/null
 
 "$script_dir/dev-session.sh" --receipt "$receipt" --blazn "$work/blazn" start --workspace "$workspace" --source "$source_commit" --expires 30m >"$work/start.out"
 jq -e '.phase == "ready" and .sandboxId == "66578829-ee27-49b1-bfc0-65813042ceaf" and .expires == "30m"' "$receipt" >/dev/null
+grep -F 'safe.directory=/workspace/src/blazn' "$log" >/dev/null
 [ "$(stat -f '%Lp' "$receipt" 2>/dev/null || stat -c '%a' "$receipt")" = 600 ]
 
 resume_receipt=$work/resume-session.json

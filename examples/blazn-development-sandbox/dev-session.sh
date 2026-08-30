@@ -147,7 +147,7 @@ capture_patch() {
   patch_output=$1
   # Variables in this command are intentionally expanded inside the Sandbox.
   # shellcheck disable=SC2016
-  "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc 'set -eu; cd /workspace/src/blazn; git add -A; git diff --cached --binary refs/blazn/baseline -- > /workspace/artifacts/change.patch; if test -s /workspace/artifacts/change.patch; then printf PATCH_READY; else rm -f /workspace/artifacts/change.patch; printf NO_CHANGES; fi' >"$evidence/patch.json"
+  "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc 'set -eu; cd /workspace/src/blazn; git -c safe.directory=/workspace/src/blazn add -A; git -c safe.directory=/workspace/src/blazn diff --cached --binary refs/blazn/baseline -- > /workspace/artifacts/change.patch; if test -s /workspace/artifacts/change.patch; then printf PATCH_READY; else rm -f /workspace/artifacts/change.patch; printf NO_CHANGES; fi' >"$evidence/patch.json"
   jq -e '.remoteExitCode == 0 and .truncated == false' "$evidence/patch.json" >/dev/null
   patch_state=$(jq -er '.stdoutBase64' "$evidence/patch.json" | decode_base64)
   if [ "$patch_state" = NO_CHANGES ]; then
@@ -226,7 +226,7 @@ case $action in
       attempt=$((attempt + 1)); sleep "${BLAZN_SESSION_POLL_DELAY_SECONDS:-5}"
     done
     [ "${state:-}" = ready ] || { printf '%s\n' 'Sandbox did not reach ready state' >&2; exit 1; }
-    "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc 'set -eu; cd /workspace/src/blazn; rm -rf .git; git init -q; git add -A; git -c user.name=Blazn -c user.email=development@blazn.invalid -c commit.gpgsign=false commit -qm "Blazn materialized source baseline"; git update-ref refs/blazn/baseline HEAD' >"$evidence/baseline.json"
+    "$blazn" --output json sandbox exec "$sandbox_id" -- sh -lc 'set -eu; cd /workspace/src/blazn; rm -rf .git; git init -q; git -c safe.directory=/workspace/src/blazn add -A; git -c safe.directory=/workspace/src/blazn -c user.name=Blazn -c user.email=development@blazn.invalid -c commit.gpgsign=false commit -qm "Blazn materialized source baseline"; git -c safe.directory=/workspace/src/blazn update-ref refs/blazn/baseline HEAD' >"$evidence/baseline.json"
     jq -e '.remoteExitCode == 0 and .truncated == false' "$evidence/baseline.json" >/dev/null
     phase=ready
     write_receipt
