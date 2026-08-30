@@ -46,7 +46,7 @@ done
 if [ -z "$blazn" ]; then
   blazn=$(command -v blazn || true)
 fi
-[ -n "$blazn" ] && [ -x "$blazn" ] || { printf '%s\n' 'Blazn CLI is not executable; pass --blazn PATH or add blazn to PATH' >&2; exit 1; }
+if [ -z "$blazn" ] || [ ! -x "$blazn" ]; then printf '%s\n' 'Blazn CLI is not executable; pass --blazn PATH or add blazn to PATH' >&2; exit 1; fi
 
 command -v git >/dev/null 2>&1 || { printf '%s\n' 'git is required' >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { printf '%s\n' 'jq is required' >&2; exit 1; }

@@ -12,10 +12,10 @@ output=$3
 evidence=$4
 checksum=$output.sha256
 parent=$(dirname -- "$output")
-[ -d "$parent" ] && [ -w "$parent" ] || { printf 'patch output directory is not writable: %s\n' "$parent" >&2; exit 1; }
+if [ ! -d "$parent" ] || [ ! -w "$parent" ]; then printf 'patch output directory is not writable: %s\n' "$parent" >&2; exit 1; fi
 output=$(CDPATH='' cd -- "$parent" && pwd)/$(basename -- "$output")
 checksum=$output.sha256
-[ ! -e "$output" ] && [ ! -e "$checksum" ] || { printf 'refusing to overwrite patch output or checksum: %s\n' "$output" >&2; exit 1; }
+if [ -e "$output" ] || [ -e "$checksum" ]; then printf 'refusing to overwrite patch output or checksum: %s\n' "$output" >&2; exit 1; fi
 
 patch_temp=$(mktemp "$parent/.blazn-patch.XXXXXX")
 checksum_temp=$(mktemp "$parent/.blazn-checksum.XXXXXX")

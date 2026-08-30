@@ -47,10 +47,10 @@ if [ -z "$patch_output" ]; then
   patch_output=$patch_default_dir/change-${source_commit}.patch
 fi
 patch_parent=$(dirname -- "$patch_output")
-[ -d "$patch_parent" ] && [ -w "$patch_parent" ] || { printf 'patch output directory is not writable: %s\n' "$patch_parent" >&2; exit 1; }
+if [ ! -d "$patch_parent" ] || [ ! -w "$patch_parent" ]; then printf 'patch output directory is not writable: %s\n' "$patch_parent" >&2; exit 1; fi
 patch_output=$(CDPATH='' cd -- "$patch_parent" && pwd)/$(basename -- "$patch_output")
 patch_checksum=$patch_output.sha256
-[ ! -e "$patch_output" ] && [ ! -e "$patch_checksum" ] || { printf 'refusing to overwrite patch output or checksum: %s\n' "$patch_output" >&2; exit 1; }
+if [ -e "$patch_output" ] || [ -e "$patch_checksum" ]; then printf 'refusing to overwrite patch output or checksum: %s\n' "$patch_output" >&2; exit 1; fi
 if printf 'Zg==\n' | base64 --decode >/dev/null 2>&1; then
   base64_mode=long
 elif printf 'Zg==\n' | base64 -D >/dev/null 2>&1; then
