@@ -113,6 +113,10 @@ test-development-contract:
 
 test-development-sandbox-static:
 	shellcheck examples/blazn-development-sandbox/*.sh
+	./examples/blazn-development-sandbox/test-entrypoint.sh
+	./examples/blazn-development-sandbox/test-read-retry.sh
+	sh examples/blazn-development-sandbox/test-delete-and-prove.sh
+	sh examples/blazn-development-sandbox/test-download-patch.sh
 	shellcheck examples/coding-agent/scripts/*.sh
 	grep -F 'ln -s /usr/local/go/bin/go /usr/local/bin/go' examples/blazn-development-sandbox/Dockerfile >/dev/null
 	grep -F 'ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt' examples/blazn-development-sandbox/Dockerfile >/dev/null

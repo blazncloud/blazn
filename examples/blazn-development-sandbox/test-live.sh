@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+read_retry=$script_dir/read-retry.sh
+delete_and_prove=$script_dir/delete-and-prove.sh
+download_patch=$script_dir/download-patch.sh
+repo_root=$(CDPATH='' cd -- "$script_dir/../.." && pwd)
+
 if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
   printf 'usage: %s BLAZN_BIN WORKSPACE TEMPLATE_FILE TEMPLATE_REFERENCE SOURCE_COMMIT [amd64|arm64]\n' "$0" >&2
   exit 64
@@ -21,7 +27,24 @@ case $source_commit in
 esac
 case ${#source_commit} in 40|64) ;; *) printf 'source commit must contain 40 or 64 hexadecimal characters\n' >&2; exit 1 ;; esac
 case $architecture in amd64|arm64) ;; *) printf 'architecture must be amd64 or arm64\n' >&2; exit 1 ;; esac
-for command in jq cmp date mktemp base64; do command -v "$command" >/dev/null 2>&1 || { printf '%s is required\n' "$command" >&2; exit 1; }; done
+for command in jq cmp date mktemp base64 git; do command -v "$command" >/dev/null 2>&1 || { printf '%s is required\n' "$command" >&2; exit 1; }; done
+if [ "${BLAZN_SOURCE_PREFLIGHT_FETCH:-1}" = 1 ]; then
+  git -C "$repo_root" fetch --quiet --no-tags origin || { printf '%s\n' 'unable to refresh origin before source preflight' >&2; exit 1; }
+fi
+git -C "$repo_root" cat-file -e "$source_commit^{commit}" 2>/dev/null || { printf 'source commit is not present locally: %s\n' "$source_commit" >&2; exit 1; }
+origin_ref=$(git -C "$repo_root" for-each-ref --format='%(refname)' --contains "$source_commit" refs/remotes/origin/ | head -1)
+[ -n "$origin_ref" ] || { printf 'source commit is not reachable from a known origin ref: %s\n' "$source_commit" >&2; exit 1; }
+patch_default_dir=${BLAZN_DEVELOPMENT_PATCH_DEFAULT_DIR:-}
+patch_output=${BLAZN_DEVELOPMENT_PATCH_OUTPUT:-}
+if [ -z "$patch_output" ]; then
+  patch_default_dir=$(mktemp -d "${TMPDIR:-/tmp}/blazn-development-output.XXXXXX")
+  patch_output=$patch_default_dir/change-${source_commit}.patch
+fi
+patch_parent=$(dirname -- "$patch_output")
+[ -d "$patch_parent" ] && [ -w "$patch_parent" ] || { printf 'patch output directory is not writable: %s\n' "$patch_parent" >&2; exit 1; }
+patch_output=$(CDPATH='' cd -- "$patch_parent" && pwd)/$(basename -- "$patch_output")
+patch_checksum=$patch_output.sha256
+[ ! -e "$patch_output" ] && [ ! -e "$patch_checksum" ] || { printf 'refusing to overwrite patch output or checksum: %s\n' "$patch_output" >&2; exit 1; }
 if printf 'Zg==\n' | base64 --decode >/dev/null 2>&1; then
   base64_mode=long
 elif printf 'Zg==\n' | base64 -D >/dev/null 2>&1; then
@@ -49,8 +72,8 @@ run_remote_job() {
   job_attempt=0
   while [ "$job_attempt" -lt 120 ]; do
     job_attempt=$((job_attempt + 1))
-    "$blazn" --output json sandbox exec "$sandbox_id" -- sh -c \
-      "if test -f '$remote_root.status'; then cat '$remote_root.status'; else printf running; fi" >"$work/$job_name-status.json"
+    "$read_retry" "$work/$job_name-status.json" "$blazn" --output json sandbox exec "$sandbox_id" -- sh -c \
+      "if test -f '$remote_root.status'; then cat '$remote_root.status'; else printf running; fi"
     jq -er '.stdoutBase64' "$work/$job_name-status.json" | decode_base64 >"$work/$job_name-status.txt"
     job_status=$(tr -d '\r\n' <"$work/$job_name-status.txt")
     case $job_status in
@@ -70,15 +93,25 @@ run_remote_job() {
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/blazn-development-live.XXXXXX")
 sandbox_id=
-delete_requested=0
+cleanup_proven=0
+create_started=0
 request_prefix=development-e2e-$(date -u '+%Y%m%d%H%M%S')-$$
 
 cleanup() {
-  if [ -n "$sandbox_id" ] && [ "$delete_requested" -eq 0 ]; then
-    "$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-cleanup" >/dev/null 2>&1 || \
-      printf 'warning: automatic Sandbox cleanup failed for %s\n' "$sandbox_id" >&2
+  original_status=$?
+  trap - EXIT
+  cleanup_failed=0
+  if [ -n "$sandbox_id" ] && [ "$cleanup_proven" -eq 0 ]; then
+    printf 'Blazn development E2E: proving cleanup for Sandbox %s\n' "$sandbox_id" >&2
+    if ! sh "$delete_and_prove" "$read_retry" "$blazn" "$sandbox_id" "$request_prefix-delete" "$work"; then
+      printf 'ERROR: Sandbox %s deletion is unproven; evidence retained at %s\n' "$sandbox_id" "$work" >&2
+      cleanup_failed=1
+    fi
+  elif [ "$create_started" -eq 1 ] && [ -z "$sandbox_id" ]; then
+    printf 'ERROR: create outcome is ambiguous and no exact Sandbox ID was recovered; evidence retained at %s\n' "$work" >&2
+    cleanup_failed=1
   fi
-  if [ "${BLAZN_E2E_KEEP_EVIDENCE:-0}" = 1 ]; then
+  if [ "${BLAZN_E2E_KEEP_EVIDENCE:-0}" = 1 ] || [ "$cleanup_failed" -eq 1 ]; then
     printf 'Blazn development E2E evidence retained at %s\n' "$work"
   else
     case $work in
@@ -86,6 +119,9 @@ cleanup() {
       *) printf 'refusing to remove unexpected test directory: %s\n' "$work" >&2 ;;
     esac
   fi
+  if [ -n "$patch_default_dir" ]; then rmdir -- "$patch_default_dir" 2>/dev/null || true; fi
+  if [ "$cleanup_failed" -eq 1 ] && [ "$original_status" -eq 0 ]; then original_status=1; fi
+  exit "$original_status"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
@@ -101,7 +137,8 @@ if [ "${BLAZN_SKIP_TEMPLATE_PUBLISH:-0}" != 1 ]; then
 fi
 
 stage 'creating development Sandbox'
-"$blazn" --output json sandbox create \
+create_started=1
+"$read_retry" "$work/create.json" "$blazn" --output json sandbox create \
   --template "$template_reference" \
   --arch "$architecture" \
   --mode direct \
@@ -109,14 +146,14 @@ stage 'creating development Sandbox'
   --approved-non-sensitive \
   --workspace "$workspace" \
   --source "source=$source_commit" \
-  --request-id "$request_prefix-create" >"$work/create.json"
+  --request-id "$request_prefix-create"
 sandbox_id=$(jq -er '.sandbox.id' "$work/create.json")
 
 ready_attempt=0
 stage 'waiting for Sandbox readiness and replaying watch'
 while [ "$ready_attempt" -lt 120 ]; do
   ready_attempt=$((ready_attempt + 1))
-  "$blazn" --output json sandbox get "$sandbox_id" >"$work/ready.json"
+  "$read_retry" "$work/ready.json" "$blazn" --output json sandbox get "$sandbox_id"
   state=$(jq -er '.state' "$work/ready.json")
   [ "$state" = ready ] && break
   case $state in failed|recovery_required|deleted) printf 'Sandbox entered terminal create state: %s\n' "$state" >&2; exit 1 ;; esac
@@ -126,7 +163,7 @@ done
 jq -e '.desiredState == "ready"' "$work/ready.json" >/dev/null
 # Replay the complete event stream after readiness so even clients with a
 # short per-request deadline exercise and verify the terminal watch contract.
-"$blazn" sandbox watch "$sandbox_id" >"$work/watch.jsonl"
+"$read_retry" "$work/watch.jsonl" "$blazn" sandbox watch "$sandbox_id"
 jq -e 'select(.type == "sandbox.ready")' "$work/watch.jsonl" >/dev/null
 
 stage 'verifying development toolchains'
@@ -166,12 +203,16 @@ stage 'generating patch artifact from the materialized source snapshot'
   'cd /workspace/src/blazn || exit; cp README.md README.md.before || exit; printf "\n<!-- blazn-development-e2e -->\n" >> README.md || exit; set +e; git diff --no-index --binary -- README.md.before README.md > /workspace/artifacts/change.patch; code=$?; set -e; rm -f README.md.before; test "$code" -eq 1; sed -i "s|a/README.md.before|a/README.md|g" /workspace/artifacts/change.patch; test -s /workspace/artifacts/change.patch' >"$work/artifact.json"
 jq -e '.remoteExitCode == 0 and .truncated == false' "$work/artifact.json" >/dev/null
 
+stage "downloading durable patch artifact to $patch_output"
+actual_patch_sha=$(sh "$download_patch" "$blazn" "$sandbox_id" "$patch_output" "$work/patch-download.json")
+printf 'Blazn development E2E: patch verified at %s (%s)\n' "$patch_output" "$actual_patch_sha"
+
 stage 'stopping Sandbox and proving terminal state'
 "$blazn" --output json sandbox stop "$sandbox_id" --request-id "$request_prefix-stop" >"$work/stop.json"
 stop_attempt=0
 while [ "$stop_attempt" -lt 120 ]; do
   stop_attempt=$((stop_attempt + 1))
-  "$blazn" --output json sandbox get "$sandbox_id" >"$work/stopped.json"
+  "$read_retry" "$work/stopped.json" "$blazn" --output json sandbox get "$sandbox_id"
   state=$(jq -er '.state' "$work/stopped.json")
   [ "$state" = stopped ] && break
   case $state in failed|recovery_required|deleted) printf 'Sandbox entered unexpected stop state: %s\n' "$state" >&2; exit 1 ;; esac
@@ -181,19 +222,7 @@ done
 jq -e '.desiredState == "stopped"' "$work/stopped.json" >/dev/null
 
 stage 'deleting Sandbox and proving terminal state'
-"$blazn" --output json sandbox delete "$sandbox_id" --request-id "$request_prefix-delete" >"$work/delete.json"
-delete_requested=1
-
-attempt=0
-while [ "$attempt" -lt 120 ]; do
-  attempt=$((attempt + 1))
-  "$blazn" --output json sandbox get "$sandbox_id" >"$work/deleted.json"
-  state=$(jq -er '.state' "$work/deleted.json")
-  [ "$state" = deleted ] && break
-  case $state in failed|recovery_required) printf 'Sandbox entered terminal cleanup state: %s\n' "$state" >&2; exit 1 ;; esac
-  sleep 2
-done
-[ "${state:-}" = deleted ] || { printf 'Sandbox did not reach deleted state\n' >&2; exit 1; }
-jq -e '.desiredState == "deleted"' "$work/deleted.json" >/dev/null
+sh "$delete_and_prove" "$read_retry" "$blazn" "$sandbox_id" "$request_prefix-delete" "$work"
+cleanup_proven=1
 
 printf 'Blazn CLI development acceptance passed for Sandbox %s (%s).\n' "$sandbox_id" "$architecture"
