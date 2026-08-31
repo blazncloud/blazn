@@ -85,6 +85,13 @@ jobs:
       - name: Verify Run and Artifact persistence, isolation, receipts, and no-delete policy
         run: ./scripts/test-run-postgres.sh
 
+  agent-harness-postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Verify Agent and Harness persistence, authorization, and immutable publication
+        run: ./scripts/test-agent-harness-postgres.sh
+
   development-postgres:
     runs-on: ubuntu-latest
     steps:

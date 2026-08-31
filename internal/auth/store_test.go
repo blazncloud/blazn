@@ -141,12 +141,16 @@ func TestLinuxStoreUsesNamespacedSecretServiceEntry(t *testing.T) {
 
 func TestDarwinStoreUsesNamespacedKeychainEntry(t *testing.T) {
 	runner := &fakeRunner{paths: map[string]bool{"security": true}}
-	store, err := newSystemStore("darwin", runner)
+	t.Setenv(darwinCredentialBackendEnvName, "")
+	store, err := newSystemStoreForOriginAtHome("darwin", runner, defaultAPIURL, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Put([]byte("session")); err != nil {
 		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 {
+		t.Fatalf("Keychain calls = %#v", runner.calls)
 	}
 	want := []string{"add-generic-password", "-U", "-s", credentialService, "-a", credentialAccountForOrigin(defaultAPIURL), "-w"}
 	if got := runner.calls[0]; got.name != "security" || !reflect.DeepEqual(got.args, want) || string(got.stdin) != "session" {
