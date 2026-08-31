@@ -17,7 +17,7 @@ func validAssignment(t *testing.T) Assignment {
 		RunID: "123e4567-e89b-42d3-a456-426614174000", WorkspaceID: "123e4567-e89b-42d3-a456-426614174001", ProjectID: "123e4567-e89b-42d3-a456-426614174002",
 		OperationID: "123e4567-e89b-42d3-a456-426614174003", SandboxID: "123e4567-e89b-42d3-a456-426614174004", AgentVersionID: "123e4567-e89b-42d3-a456-426614174005",
 		AgentVersionDigest: "sha256:" + strings.Repeat("a", 64), HarnessProfileID: "123e4567-e89b-42d3-a456-426614174006", HarnessProfileDigest: "sha256:" + strings.Repeat("b", 64),
-		HarnessVersionID: "123e4567-e89b-42d3-a456-426614174007", HarnessVersionDigest: "sha256:" + strings.Repeat("c", 64), RouteID: "123e4567-e89b-42d3-a456-426614174008",
+		HarnessVersionID: "123e4567-e89b-42d3-a456-426614174007", HarnessVersionDigest: "sha256:" + strings.Repeat("c", 64), HarnessExecutableDigest: "sha256:" + strings.Repeat("d", 64), RouteID: "123e4567-e89b-42d3-a456-426614174008",
 		RouteVersion: 7, Protocol: ProtocolOpenAIChat, ExpiresAt: "2026-09-01T00:00:00Z", ListenerCredentialRef: "listener-token://123e4567-e89b-42d3-a456-426614174009", ListenerTokenFingerprint: fingerprint,
 	}}
 }
@@ -35,7 +35,7 @@ func TestAssignmentRoundTripBindsScopeWithoutRawToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Scope.WorkspaceID != assignment.Scope.WorkspaceID || decoded.Scope.ProjectID != assignment.Scope.ProjectID || decoded.Scope.RunID != assignment.Scope.RunID || decoded.Scope.RouteID != assignment.Scope.RouteID || decoded.Scope.RouteVersion != assignment.Scope.RouteVersion || decoded.Scope.Protocol != assignment.Scope.Protocol {
+	if decoded.Scope.WorkspaceID != assignment.Scope.WorkspaceID || decoded.Scope.ProjectID != assignment.Scope.ProjectID || decoded.Scope.RunID != assignment.Scope.RunID || decoded.Scope.HarnessExecutableDigest != assignment.Scope.HarnessExecutableDigest || decoded.Scope.RouteID != assignment.Scope.RouteID || decoded.Scope.RouteVersion != assignment.Scope.RouteVersion || decoded.Scope.Protocol != assignment.Scope.Protocol {
 		t.Fatal("assignment scope binding changed during round trip")
 	}
 }
@@ -76,6 +76,11 @@ func TestScopeValidationRejectsIdentityRouteAndLifetimeDrift(t *testing.T) {
 	assignment.Scope.Protocol = "unknown"
 	if err := assignment.ValidateAt(now); err == nil {
 		t.Fatal("unsupported route protocol passed validation")
+	}
+	assignment = validAssignment(t)
+	assignment.Scope.HarnessExecutableDigest = "sha256:not-a-digest"
+	if err := assignment.ValidateAt(now); err == nil {
+		t.Fatal("malformed harness executable digest passed validation")
 	}
 }
 

@@ -20,7 +20,7 @@ import (
 var contractTemplate []byte
 
 const harnessDigest = "06c5fb15126d18e51164fc3585918506bbcafdec3c88e2707ccbbc000d70b3b6"
-const scopeDigest = "93729e99abbde7514803d30209690e37f1aef3c3d2ad220ee948edbc585e8f7a"
+const scopeDigest = "ed5d32806db5f678463ed9066d83c388b749bf2e46641882fcc661bb2c04a31e"
 
 func main() {
 	check := flag.Bool("check", false, "fail if generated harness worker contracts differ")
@@ -77,7 +77,7 @@ func validateSchemas(harness, scope map[string]any) error {
 	if stringAt(harness, "properties", "schemaVersion", "const") != "blazn.dev/harness-worker/v1alpha1" || stringAt(harness, "properties", "type", "const") != "execute" || stringAt(harness, "properties", "scope", "$ref") != "proxy/workload-scope.schema.json" {
 		return fmt.Errorf("harness worker identity changed")
 	}
-	wantScopeFields := "agentVersionDigest,agentVersionId,expiresAt,harnessProfileDigest,harnessProfileId,harnessVersionDigest,harnessVersionId,listenerCredentialRef,listenerTokenFingerprint,operationId,projectId,protocol,routeId,routeVersion,runId,sandboxId,workspaceId"
+	wantScopeFields := "agentVersionDigest,agentVersionId,expiresAt,harnessExecutableDigest,harnessProfileDigest,harnessProfileId,harnessVersionDigest,harnessVersionId,listenerCredentialRef,listenerTokenFingerprint,operationId,projectId,protocol,routeId,routeVersion,runId,sandboxId,workspaceId"
 	if joinedKeys(valueAt(scope, "properties")) != wantScopeFields || joinedStrings(valueAt(scope, "required")) != wantScopeFields {
 		return fmt.Errorf("workload scope fields changed")
 	}
@@ -105,7 +105,7 @@ func validateSchemas(harness, scope map[string]any) error {
 		}
 	}
 	template := string(contractTemplate)
-	for _, required := range []string{"WorkloadScopeMaxLifetime = 24 * time.Hour", "ListenerTokenFingerprint(token []byte)", "len(token) > contractMaxListenerTokenBytes", "json:\"routeId\"", "json:\"expiresAt\""} {
+	for _, required := range []string{"WorkloadScopeMaxLifetime = 24 * time.Hour", "ListenerTokenFingerprint(token []byte)", "len(token) > contractMaxListenerTokenBytes", "json:\"harnessExecutableDigest\"", "json:\"routeId\"", "json:\"expiresAt\""} {
 		if !strings.Contains(template, required) {
 			return fmt.Errorf("generated template lacks pinned semantic %q", required)
 		}

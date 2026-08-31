@@ -1,6 +1,6 @@
 // Code generated from packages/contracts/harness-worker.schema.json and packages/contracts/proxy/workload-scope.schema.json; DO NOT EDIT.
 // harness-worker.schema.json SHA256: 06c5fb15126d18e51164fc3585918506bbcafdec3c88e2707ccbbc000d70b3b6
-// workload-scope.schema.json SHA256: 93729e99abbde7514803d30209690e37f1aef3c3d2ad220ee948edbc585e8f7a
+// workload-scope.schema.json SHA256: ed5d32806db5f678463ed9066d83c388b749bf2e46641882fcc661bb2c04a31e
 
 package harnessworker
 
@@ -45,6 +45,7 @@ type WorkloadScope struct {
 	HarnessProfileDigest     string   `json:"harnessProfileDigest"`
 	HarnessVersionID         string   `json:"harnessVersionId"`
 	HarnessVersionDigest     string   `json:"harnessVersionDigest"`
+	HarnessExecutableDigest  string   `json:"harnessExecutableDigest"`
 	RouteID                  string   `json:"routeId"`
 	RouteVersion             int64    `json:"routeVersion"`
 	Protocol                 Protocol `json:"protocol"`
@@ -78,7 +79,7 @@ func ValidateWorkloadScopeAt(scope WorkloadScope, now time.Time) error {
 	}
 	for name, value := range map[string]string{
 		"agentVersionDigest": scope.AgentVersionDigest, "harnessProfileDigest": scope.HarnessProfileDigest,
-		"harnessVersionDigest": scope.HarnessVersionDigest, "listenerTokenFingerprint": scope.ListenerTokenFingerprint,
+		"harnessVersionDigest": scope.HarnessVersionDigest, "harnessExecutableDigest": scope.HarnessExecutableDigest, "listenerTokenFingerprint": scope.ListenerTokenFingerprint,
 	} {
 		if !contractDigestPattern.MatchString(value) {
 			return fmt.Errorf("%s must be a SHA-256 digest", name)

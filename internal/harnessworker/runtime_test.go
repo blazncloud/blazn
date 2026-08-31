@@ -20,7 +20,7 @@ func runtimeAssignment(now time.Time) Assignment {
 		ProjectID: "10000000-0000-4000-8000-000000000003", OperationID: "10000000-0000-4000-8000-000000000004",
 		SandboxID: "10000000-0000-4000-8000-000000000005", AgentVersionID: "10000000-0000-4000-8000-000000000006",
 		AgentVersionDigest: digest, HarnessProfileID: "10000000-0000-4000-8000-000000000007", HarnessProfileDigest: digest,
-		HarnessVersionID: "10000000-0000-4000-8000-000000000008", HarnessVersionDigest: digest,
+		HarnessVersionID: "10000000-0000-4000-8000-000000000008", HarnessVersionDigest: digest, HarnessExecutableDigest: digest,
 		RouteID: "10000000-0000-4000-8000-000000000009", RouteVersion: 1, Protocol: ProtocolOpenAIResponses,
 		ExpiresAt: now.Add(time.Hour).UTC().Format(time.RFC3339), ListenerCredentialRef: "listener-token://10000000-0000-4000-8000-000000000010",
 		ListenerTokenFingerprint: digest,

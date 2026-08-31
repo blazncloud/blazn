@@ -58,6 +58,12 @@ func TestSchemaValidationRejectsRouteAndSecretBoundaryDrift(t *testing.T) {
 		t.Fatal("route protocol drift passed validation")
 	}
 	scope = loadDocument(t, filepath.Join(root, "packages/contracts/proxy/workload-scope.schema.json"))
+	properties = valueAt(scope, "properties").(map[string]any)
+	delete(properties, "harnessExecutableDigest")
+	if err := validateSchemas(harness, scope); err == nil {
+		t.Fatal("harness executable binding drift passed validation")
+	}
+	scope = loadDocument(t, filepath.Join(root, "packages/contracts/proxy/workload-scope.schema.json"))
 	boundary := valueAt(scope, "x-blazn-secret-boundary").(map[string]any)
 	boundary["listenerTokenDelivery"] = "inline"
 	if err := validateSchemas(harness, scope); err == nil {

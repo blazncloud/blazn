@@ -40,6 +40,8 @@ jobs:
         run: make check-proxy-generated
       - name: Check generated scoped harness worker contracts
         run: make check-harness-worker-generated
+      - name: Cross-build scoped harness worker
+        run: make check-harness-worker-cross-build
       - name: Check generated Sandbox API client
         run: make check-sandbox-generated
       - name: Verify Sandbox contracts and fixtures

@@ -4,7 +4,7 @@
   "title": "Blazn Proxy Workload Scope",
   "type": "object",
   "additionalProperties": false,
-  "required": ["runId", "workspaceId", "projectId", "operationId", "sandboxId", "agentVersionId", "agentVersionDigest", "harnessProfileId", "harnessProfileDigest", "harnessVersionId", "harnessVersionDigest", "routeId", "routeVersion", "protocol", "expiresAt", "listenerCredentialRef", "listenerTokenFingerprint"],
+  "required": ["runId", "workspaceId", "projectId", "operationId", "sandboxId", "agentVersionId", "agentVersionDigest", "harnessProfileId", "harnessProfileDigest", "harnessVersionId", "harnessVersionDigest", "harnessExecutableDigest", "routeId", "routeVersion", "protocol", "expiresAt", "listenerCredentialRef", "listenerTokenFingerprint"],
   "properties": {
     "runId": {"$ref": "#/$defs/id"},
     "workspaceId": {"$ref": "#/$defs/id"},
@@ -17,6 +17,7 @@
     "harnessProfileDigest": {"$ref": "#/$defs/digest"},
     "harnessVersionId": {"$ref": "#/$defs/id"},
     "harnessVersionDigest": {"$ref": "#/$defs/digest"},
+    "harnessExecutableDigest": {"$ref": "#/$defs/digest"},
     "routeId": {"$ref": "#/$defs/id"},
     "routeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
     "protocol": {"enum": ["openai-responses", "openai-chat", "anthropic-messages"]},
