@@ -35,6 +35,7 @@ type KubernetesBackendConfig struct {
 	SourceRuntime           *KubernetesSourceRuntime
 	ArtifactRuntime         *KubernetesArtifactRuntime
 	AbsencePollInterval     time.Duration
+	AgentNodeObserver       AgentNodeObserver
 }
 
 type KubernetesBackend struct {
@@ -49,6 +50,7 @@ type KubernetesBackend struct {
 	createLocks             map[string]*kubernetesCreateLock
 	evidenceMu              sync.Mutex
 	evidence                map[string]kubernetesBackendEvidence
+	agentNodeObserver       AgentNodeObserver
 }
 
 type kubernetesCreateLock struct {
@@ -77,8 +79,18 @@ func NewKubernetesBackend(config KubernetesBackendConfig) (*KubernetesBackend, e
 		artifactRuntime:         config.ArtifactRuntime,
 		absencePollInterval:     config.AbsencePollInterval,
 		createLocks:             make(map[string]*kubernetesCreateLock),
-		evidence:                make(map[string]kubernetesBackendEvidence)}, nil
+		evidence:                make(map[string]kubernetesBackendEvidence),
+		agentNodeObserver:       config.AgentNodeObserver}, nil
 }
+
+func (b *KubernetesBackend) ObserveAgentNode(ctx context.Context, observation sandboxcontrol.AdmissionObservation) (AgentNodeObservation, error) {
+	if b.agentNodeObserver == nil {
+		return AgentNodeObservation{}, errors.New("Kubernetes Agent Node observer is unavailable")
+	}
+	return b.agentNodeObserver.ObserveAgentNode(ctx, observation)
+}
+
+func (b *KubernetesBackend) AgentNodeObservationEnabled() bool { return b.agentNodeObserver != nil }
 
 func (b *KubernetesBackend) PrepareSourceBootstrap(ctx context.Context, item WorkItem, observation sandboxcontrol.AdmissionObservation) error {
 	if b.sourceRuntime == nil {

@@ -67,12 +67,29 @@ test("PostgreSQL Agent Run controller freezes compatibility and fences allocatio
     await admin.query("UPDATE harness_profiles SET resource_version=1,digest=$2,document=$3::jsonb WHERE id=$1",[profile.id,profile.digest,JSON.stringify(profile)]);
     assert.ok(await controller.renew(first.id,"agent-run-worker",claim!.leaseToken,30));
     assert.equal(await controller.renew(first.id,"wrong-worker",claim!.leaseToken,30),undefined);
-    const nodeId=await seedNode(admin,workspaceId,principal.userId),sandboxId=await seedSandbox(admin,workspaceId,principal.userId,templateId,String(templateRef.versionId),String(templateRef.digest).slice(7));
+    const nodeId=await seedNode(admin,workspaceId,principal.userId),wrongNodeId=await seedNode(admin,workspaceId,principal.userId),sandboxId=await seedSandbox(admin,workspaceId,principal.userId,templateId,String(templateRef.versionId),String(templateRef.digest).slice(7));
     assert.equal(await controller.bindSandbox(first.id,"agent-run-worker",claim!.leaseToken,1,nodeId,sandboxId),false,"Sandbox bound without authoritative Pod-to-Node observation");
-    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,sandboxId,nodeId,"substituted-node"),false);
-    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,sandboxId,nodeId),true);
+    const sandboxLease=await activateSandboxLease(admin,sandboxId,"sandbox-observer");
+    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,sandboxId,nodeId,{...sandboxLease,leaseToken:randomUUID()}),false,"invalid lease recorded node observation");
+    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,sandboxId,nodeId,sandboxLease),true);
+    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,sandboxId,wrongNodeId,sandboxLease),false,"second eligible but wrong Node replaced authoritative observation");
+    await admin.query("UPDATE sandbox_reconcile_jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE operation_id=$1",[sandboxLease.operationId]);
+    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,sandboxId,nodeId,sandboxLease),false,"stale lease replayed node observation");
     assert.equal(await controller.bindSandbox(first.id,"wrong-worker",claim!.leaseToken,1,nodeId,sandboxId),false);
-    assert.equal(await controller.bindSandbox(first.id,"agent-run-worker",claim!.leaseToken,1,nodeId,sandboxId),true);
+    const bindingClient=await controllerDb.connect(),nodeMutationClient=await admin.connect();
+    try{
+      await bindingClient.query("BEGIN");
+      const bound=await bindingClient.query<{bound:boolean}>("SELECT agent_run_controller_bind_sandbox($1,$2,$3,$4,$5,$6) bound",[first.id,"agent-run-worker",claim!.leaseToken,1,nodeId,sandboxId]);
+      assert.equal(bound.rows[0]?.bound,true);
+      await nodeMutationClient.query("BEGIN");
+      await nodeMutationClient.query("SET LOCAL lock_timeout='100ms'");
+      await assert.rejects(()=>nodeMutationClient.query("UPDATE nodes SET agent_eligible=false WHERE id=$1",[nodeId]),pgCode("55P03"));
+      await nodeMutationClient.query("ROLLBACK");
+      await bindingClient.query("COMMIT");
+    }finally{
+      await nodeMutationClient.query("ROLLBACK").catch(()=>{});nodeMutationClient.release();
+      await bindingClient.query("ROLLBACK").catch(()=>{});bindingClient.release();
+    }
     const artifactId=randomUUID(),patchId=randomUUID();await admin.query(`INSERT INTO artifacts(id,workspace_id,project_id,source_run_id,kind,media_type,name,status,digest,size_bytes,object_key,created_by) VALUES
       ($1,$2,$3,$4,'agent.summary','document','summary','ready',$5,1,$6,$7),
       ($8,$2,$3,$4,'agent.patch','document','patch','ready',$9,1,$10,$7)`,[artifactId,workspaceId,projectId,first.id,`sha256:${"8".repeat(64)}`,`workspaces/${workspaceId}/agent/${artifactId}`,principal.userId,patchId,`sha256:${"7".repeat(64)}`,`workspaces/${workspaceId}/agent/${patchId}`]);
@@ -95,7 +112,8 @@ test("PostgreSQL Agent Run controller freezes compatibility and fences allocatio
 
     const placed=(await create()).run;assert.equal(await api.enqueue(placed.id,workspaceId,String(agentVersion.id),String(profile.id)),true);
     const placedClaim=await controller.claim("agent-run-placed-exhaustion",30),placedSandbox=await seedSandbox(admin,workspaceId,principal.userId,templateId,String(templateRef.versionId),String(templateRef.digest).slice(7));
-    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,placedSandbox,nodeId),true);
+    const placedSandboxLease=await activateSandboxLease(admin,placedSandbox,"sandbox-observer-placed");
+    assert.equal(await recordNodeObservation(sandboxControllerDb,admin,placedSandbox,nodeId,placedSandboxLease),true);
     assert.equal(placedClaim?.runId,placed.id);assert.equal(await controller.bindSandbox(placed.id,"agent-run-placed-exhaustion",placedClaim!.leaseToken,1,nodeId,placedSandbox),true);
     await admin.query("UPDATE agent_run_jobs SET attempt_count=5,lease_expires_at=clock_timestamp()-interval '1 second' WHERE run_id=$1",[placed.id]);
     assert.equal(await controller.claim("agent-run-after-placed-exhaustion",30),undefined);
@@ -116,7 +134,7 @@ test("PostgreSQL Agent Run controller freezes compatibility and fences allocatio
   }finally{await admin.query("DELETE FROM workspaces WHERE id=$1",[workspaceId]).catch(()=>{});await admin.query("DELETE FROM users WHERE id=$1",[principal.userId]).catch(()=>{});await Promise.all([runtime.end(),admin.end(),controllerDb.end(),developmentControllerDb.end(),sandboxControllerDb.end()]);}
 });
 
-async function seedNode(admin:ReturnType<typeof createDatabase>,workspaceId:string,userId:string){const id=randomUUID();await admin.query("INSERT INTO nodes(id,workspace_id,name,kind,owner_user_id,machine_fingerprint,host_platform,host_architecture,lifecycle_state,trust_state,service_version,kubernetes_cluster_id,kubernetes_node_name,kubernetes_node_uid,kubernetes_resource_version) VALUES($1,$2,'agent-node','managed',$3,$4,'linux','amd64','active','verified','test','cluster','agent-node',$5,'1')",[id,workspaceId,userId,"3".repeat(64),randomUUID()]);await admin.query("INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,signing_key_id,generation,status,issued_at,expires_at) VALUES($1,$2,$3,$4,'key',1,'active',now(),now()+interval '1 hour')",[randomUUID(),id,"4".repeat(64),"A".repeat(43)]);await admin.query("INSERT INTO node_capability_versions(id,node_id,version,digest,payload,observed_at) VALUES($1,$2,1,$3,'{}',now())",[randomUUID(),id,"5".repeat(64)]);await admin.query("UPDATE nodes SET current_identity_generation=1,current_identity_status='active',current_capability_version=1,agent_eligible=true WHERE id=$1",[id]);return id;}
+async function seedNode(admin:ReturnType<typeof createDatabase>,workspaceId:string,userId:string){const id=randomUUID(),suffix=id.slice(0,8),hex=id.replaceAll("-","").padEnd(64,"0");await admin.query("INSERT INTO nodes(id,workspace_id,name,kind,owner_user_id,machine_fingerprint,host_platform,host_architecture,lifecycle_state,trust_state,service_version,kubernetes_cluster_id,kubernetes_node_name,kubernetes_node_uid,kubernetes_resource_version) VALUES($1,$2,$3,'managed',$4,$5,'linux','amd64','active','verified','test','cluster',$6,$7,'1')",[id,workspaceId,`agent-node-${suffix}`,userId,hex,`agent-node-${suffix}`,randomUUID()]);await admin.query("INSERT INTO node_identities(id,node_id,public_key_fingerprint,public_key,signing_key_id,generation,status,issued_at,expires_at) VALUES($1,$2,$3,$4,'key',1,'active',now(),now()+interval '1 hour')",[randomUUID(),id,hex.split("").reverse().join(""),"A".repeat(43)]);await admin.query("INSERT INTO node_capability_versions(id,node_id,version,digest,payload,observed_at) VALUES($1,$2,1,$3,'{}',now())",[randomUUID(),id,hex]);await admin.query("UPDATE nodes SET current_identity_generation=1,current_identity_status='active',current_capability_version=1,agent_eligible=true WHERE id=$1",[id]);return id;}
 async function seedSandbox(admin:ReturnType<typeof createDatabase>,workspaceId:string,userId:string,templateId:string,versionId:string,digest:string){
   const id=randomUUID(),operationId=randomUUID(),backendUid=`sandbox-${randomUUID()}`,backendVersion="1",workloadName=`workload-${id}`,workloadUid=`workload-${randomUUID()}`,podName=`pod-${id}`,podUid=`pod-${randomUUID()}`;
   await admin.query(`INSERT INTO sandboxes(id,workspace_id,requested_by,template_id,template_version_id,template_name,template_version,template_digest,variant_name,image_index_digest,image_child_digest,architecture,allocation_mode,state,desired_state,queue_name,artifact_contract_digest,isolation,approved_non_sensitive,backend_uid,backend_resource_version,admission_id,expires_at) VALUES($1,$2,$3,$4,$5,'agent-template','1',$6,'linux-amd64',$7,$8,'amd64','direct','ready','ready','agent-queue',$9,'approved-non-sensitive-poc',true,$10,$11,$12,now()+interval '1 hour')`,[id,workspaceId,userId,templateId,versionId,digest,`registry.invalid/agent@sha256:${"1".repeat(64)}`,`registry.invalid/agent@sha256:${"2".repeat(64)}`,"6".repeat(64),backendUid,backendVersion,workloadUid]);
@@ -126,9 +144,10 @@ async function seedSandbox(admin:ReturnType<typeof createDatabase>,workspaceId:s
   await admin.query("INSERT INTO sandbox_workload_admissions(sandbox_id,workspace_id,operation_id,backend_uid,backend_resource_version,api_version,namespace,workload_name,workload_uid,workload_resource_version,admitted_cluster_queue,owner_api_version,owner_kind,owner_name,owner_uid,owner_controller,workspace_label,sandbox_label,admitted,condition_type,condition_status,admission_digest,pod_api_version,pod_kind,pod_namespace,pod_name,pod_uid,pod_resource_version,observation_digest) VALUES($1,$2,$3,$4,$5,'kueue.x-k8s.io/v1beta1','blazn-poc-sandboxes',$6,$7,'1','agent-queue','agents.x-k8s.io/v1beta1','Sandbox',$1::uuid::text,$4,true,$2::uuid::text,$1::uuid::text,true,'Admitted','True',$8,'v1','Pod','blazn-poc-sandboxes',$9,$10,'1',$11)",[id,workspaceId,operationId,backendUid,backendVersion,workloadName,workloadUid,workloadDigest,podName,podUid,String(observation.rows[0]?.digest)]);
   return id;
 }
-async function recordNodeObservation(sandboxController:ReturnType<typeof createDatabase>,admin:ReturnType<typeof createDatabase>,sandboxId:string,nodeId:string,nodeNameOverride?:string){
-  const result=await admin.query("SELECT a.observation_digest::text,n.kubernetes_cluster_id,n.kubernetes_node_name,n.kubernetes_node_uid FROM sandbox_workload_admissions a JOIN nodes n ON n.id=$2 WHERE a.sandbox_id=$1",[sandboxId,nodeId]),row=result.rows[0];
-  const recorded=await sandboxController.query<{recorded:boolean}>("SELECT sandbox_controller_record_agent_node_observation($1,$2,$3,$4,$5) recorded",[sandboxId,String(row?.observation_digest).trim(),row?.kubernetes_cluster_id,nodeNameOverride??row?.kubernetes_node_name,row?.kubernetes_node_uid]);
+async function activateSandboxLease(admin:ReturnType<typeof createDatabase>,sandboxId:string,workerId:string){const leaseToken=randomUUID(),result=await admin.query<{id:string}>("SELECT id FROM sandbox_operations WHERE sandbox_id=$1 ORDER BY created_at DESC LIMIT 1",[sandboxId]),operationId=String(result.rows[0]?.id);await admin.query("UPDATE sandbox_reconcile_jobs SET lease_owner=$2,lease_token=$3,lease_expires_at=clock_timestamp()+interval '1 hour',attempt_count=1 WHERE operation_id=$1",[operationId,workerId,leaseToken]);return{operationId,workerId,leaseToken};}
+async function recordNodeObservation(sandboxController:ReturnType<typeof createDatabase>,admin:ReturnType<typeof createDatabase>,sandboxId:string,nodeId:string,lease:{operationId:string;workerId:string;leaseToken:string}){
+  const result=await admin.query("SELECT a.observation_digest::text,a.pod_uid,a.pod_resource_version,n.kubernetes_cluster_id,n.kubernetes_node_name,n.kubernetes_node_uid FROM sandbox_workload_admissions a JOIN nodes n ON n.id=$2 WHERE a.sandbox_id=$1",[sandboxId,nodeId]),row=result.rows[0];
+  const recorded=await sandboxController.query<{recorded:boolean}>("SELECT sandbox_controller_record_agent_node_observation($1,$2,$3,$4,$5,$6,$7,$8,$9) recorded",[lease.operationId,lease.workerId,lease.leaseToken,String(row?.observation_digest).trim(),row?.pod_uid,row?.pod_resource_version,row?.kubernetes_cluster_id,row?.kubernetes_node_name,row?.kubernetes_node_uid]);
   return recorded.rows[0]?.recorded===true;
 }
 function pgCode(code:string){return(error:unknown)=>!!error&&typeof error==="object"&&"code" in error&&error.code===code;}

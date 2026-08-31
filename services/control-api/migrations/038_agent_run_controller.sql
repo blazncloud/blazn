@@ -83,6 +83,8 @@ CREATE TABLE agent_run_preallocation_failures (
 CREATE TABLE agent_run_sandbox_node_observations (
   sandbox_id uuid PRIMARY KEY,
   workspace_id uuid NOT NULL,
+  operation_id uuid NOT NULL,
+  controller_attempt integer NOT NULL CHECK (controller_attempt BETWEEN 1 AND 5),
   admission_observation_digest char(64) NOT NULL,
   pod_uid text NOT NULL CHECK (pod_uid ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
   pod_resource_version text NOT NULL CHECK (pod_resource_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
@@ -90,47 +92,73 @@ CREATE TABLE agent_run_sandbox_node_observations (
   kubernetes_cluster_id text NOT NULL CHECK (char_length(kubernetes_cluster_id) BETWEEN 1 AND 128),
   kubernetes_node_name text NOT NULL CHECK (char_length(kubernetes_node_name) BETWEEN 1 AND 253),
   kubernetes_node_uid text NOT NULL CHECK (char_length(kubernetes_node_uid) BETWEEN 1 AND 128),
+  node_observation_digest char(64) NOT NULL CHECK (node_observation_digest ~ '^[0-9a-f]{64}$'),
   observed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   FOREIGN KEY (sandbox_id,workspace_id) REFERENCES sandboxes(id,workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (operation_id,workspace_id,sandbox_id) REFERENCES sandbox_operations(id,workspace_id,sandbox_id) ON DELETE CASCADE,
   FOREIGN KEY (node_id,workspace_id) REFERENCES nodes(id,workspace_id),
   UNIQUE (sandbox_id,node_id)
 );
 
+CREATE FUNCTION agent_run_node_observation_digest(
+  p_operation_id uuid,p_admission_observation_digest text,p_pod_uid text,p_pod_resource_version text,
+  p_kubernetes_cluster_id text,p_kubernetes_node_name text,p_kubernetes_node_uid text)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path=pg_catalog,public AS $$
+  SELECT encode(public.digest(convert_to(concat_ws(E'\n','agent-run-node-observation-v1',p_operation_id::text,
+    p_admission_observation_digest,p_pod_uid,p_pod_resource_version,p_kubernetes_cluster_id,
+    p_kubernetes_node_name,p_kubernetes_node_uid),'UTF8'),'sha256'),'hex')
+$$;
+
 CREATE FUNCTION sandbox_controller_record_agent_node_observation(
-  p_sandbox_id uuid,p_admission_observation_digest text,p_kubernetes_cluster_id text,
-  p_kubernetes_node_name text,p_kubernetes_node_uid text)
+  p_operation_id uuid,p_worker_id text,p_lease_token uuid,p_admission_observation_digest text,
+  p_pod_uid text,p_pod_resource_version text,p_kubernetes_cluster_id text,p_kubernetes_node_name text,p_kubernetes_node_uid text)
 RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
-DECLARE target record;
+DECLARE target record; effective_now timestamptz:=clock_timestamp(); canonical_digest text;
 BEGIN
-  IF p_admission_observation_digest !~ '^[0-9a-f]{64}$' OR
+  IF p_worker_id IS NULL OR (p_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') OR p_lease_token IS NULL OR
+     p_admission_observation_digest !~ '^[0-9a-f]{64}$' OR
+     p_pod_uid !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' OR
+     p_pod_resource_version !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$' OR
      char_length(p_kubernetes_cluster_id) NOT BETWEEN 1 AND 128 OR
      char_length(p_kubernetes_node_name) NOT BETWEEN 1 AND 253 OR
      char_length(p_kubernetes_node_uid) NOT BETWEEN 1 AND 128 THEN RETURN false; END IF;
-  SELECT admission.workspace_id,admission.pod_uid,admission.pod_resource_version,node.id AS node_id
+  SELECT operation.sandbox_id,operation.workspace_id,job.attempt_count,node.id AS node_id
     INTO target
-    FROM public.sandbox_workload_admissions admission
+    FROM public.sandbox_operations operation
+    JOIN public.sandbox_reconcile_jobs job ON job.operation_id=operation.id AND job.workspace_id=operation.workspace_id
+      AND job.sandbox_id=operation.sandbox_id AND job.operation_type=operation.type
+    JOIN public.sandbox_workload_admissions admission ON admission.operation_id=operation.id
+      AND admission.sandbox_id=operation.sandbox_id AND admission.workspace_id=operation.workspace_id
     JOIN public.sandboxes sandbox ON sandbox.id=admission.sandbox_id AND sandbox.workspace_id=admission.workspace_id
     JOIN public.nodes node ON node.workspace_id=admission.workspace_id
       AND node.kubernetes_cluster_id=p_kubernetes_cluster_id
       AND node.kubernetes_node_name=p_kubernetes_node_name
       AND node.kubernetes_node_uid=p_kubernetes_node_uid
-    WHERE admission.sandbox_id=p_sandbox_id AND admission.observation_digest=p_admission_observation_digest
-      AND admission.pod_uid IS NOT NULL AND admission.pod_resource_version IS NOT NULL
-      AND sandbox.state IN ('ready','running') AND sandbox.expires_at>clock_timestamp()
+    WHERE operation.id=p_operation_id AND operation.status='running' AND job.completed_at IS NULL
+      AND job.lease_owner=p_worker_id AND job.lease_token=p_lease_token AND job.lease_expires_at>effective_now
+      AND admission.observation_digest=p_admission_observation_digest
+      AND admission.pod_uid=p_pod_uid AND admission.pod_resource_version=p_pod_resource_version
+      AND sandbox.state IN ('provisioning','ready','running') AND sandbox.expires_at>effective_now
       AND node.lifecycle_state='active' AND node.trust_state='verified' AND node.agent_eligible
-      AND node.current_identity_status='active' AND node.current_capability_version IS NOT NULL;
+      AND node.current_identity_status='active' AND node.current_capability_version IS NOT NULL
+    FOR UPDATE OF operation,job,admission,sandbox,node;
   IF NOT FOUND THEN RETURN false; END IF;
-  INSERT INTO public.agent_run_sandbox_node_observations(sandbox_id,workspace_id,admission_observation_digest,
-    pod_uid,pod_resource_version,node_id,kubernetes_cluster_id,kubernetes_node_name,kubernetes_node_uid)
-  VALUES(p_sandbox_id,target.workspace_id,p_admission_observation_digest,target.pod_uid,target.pod_resource_version,
-    target.node_id,p_kubernetes_cluster_id,p_kubernetes_node_name,p_kubernetes_node_uid)
+  canonical_digest:=public.agent_run_node_observation_digest(p_operation_id,p_admission_observation_digest,p_pod_uid,
+    p_pod_resource_version,p_kubernetes_cluster_id,p_kubernetes_node_name,p_kubernetes_node_uid);
+  INSERT INTO public.agent_run_sandbox_node_observations(sandbox_id,workspace_id,operation_id,controller_attempt,
+    admission_observation_digest,pod_uid,pod_resource_version,node_id,kubernetes_cluster_id,kubernetes_node_name,
+    kubernetes_node_uid,node_observation_digest)
+  VALUES(target.sandbox_id,target.workspace_id,p_operation_id,target.attempt_count,p_admission_observation_digest,p_pod_uid,
+    p_pod_resource_version,target.node_id,p_kubernetes_cluster_id,p_kubernetes_node_name,p_kubernetes_node_uid,canonical_digest)
   ON CONFLICT (sandbox_id) DO NOTHING;
   RETURN EXISTS(SELECT 1 FROM public.agent_run_sandbox_node_observations observation
-    WHERE observation.sandbox_id=p_sandbox_id AND observation.workspace_id=target.workspace_id
+    WHERE observation.sandbox_id=target.sandbox_id AND observation.workspace_id=target.workspace_id
+      AND observation.operation_id=p_operation_id AND observation.controller_attempt=target.attempt_count
       AND observation.admission_observation_digest=p_admission_observation_digest
-      AND observation.pod_uid=target.pod_uid AND observation.pod_resource_version=target.pod_resource_version
+      AND observation.pod_uid=p_pod_uid AND observation.pod_resource_version=p_pod_resource_version
       AND observation.node_id=target.node_id AND observation.kubernetes_cluster_id=p_kubernetes_cluster_id
-      AND observation.kubernetes_node_name=p_kubernetes_node_name AND observation.kubernetes_node_uid=p_kubernetes_node_uid);
+      AND observation.kubernetes_node_name=p_kubernetes_node_name AND observation.kubernetes_node_uid=p_kubernetes_node_uid
+      AND observation.node_observation_digest=canonical_digest);
 END $$;
 
 ALTER TABLE runs DROP CONSTRAINT runs_check4;
@@ -347,30 +375,34 @@ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE target record; effective_now timestamptz:=clock_timestamp();
 BEGIN
   SELECT run.*,b.template_version_id,b.template_digest,b.bound_sandbox_id,b.bound_node_id INTO target
-    FROM public.runs run JOIN public.agent_run_bindings b ON b.run_id=run.id JOIN public.agent_run_jobs job ON job.run_id=run.id
+    FROM public.runs run
+    JOIN public.agent_run_bindings b ON b.run_id=run.id
+    JOIN public.agent_run_jobs job ON job.run_id=run.id
+    JOIN public.sandboxes sandbox ON sandbox.id=p_sandbox_id AND sandbox.workspace_id=run.workspace_id
+    JOIN public.agent_run_sandbox_node_observations observation ON observation.sandbox_id=sandbox.id
+      AND observation.workspace_id=sandbox.workspace_id AND observation.node_id=p_node_id
+    JOIN public.sandbox_workload_admissions admission ON admission.operation_id=observation.operation_id
+      AND admission.sandbox_id=observation.sandbox_id AND admission.workspace_id=observation.workspace_id
+      AND admission.observation_digest=observation.admission_observation_digest
+      AND admission.pod_uid=observation.pod_uid AND admission.pod_resource_version=observation.pod_resource_version
+    JOIN public.nodes node ON node.id=observation.node_id AND node.workspace_id=observation.workspace_id
     WHERE run.id=p_run_id AND job.worker_id=p_worker_id AND job.lease_token=p_lease_token AND job.completed_at IS NULL
-      AND job.lease_expires_at>effective_now FOR UPDATE OF run,b,job;
+      AND job.lease_expires_at>effective_now
+      AND sandbox.requested_by=run.requested_by AND sandbox.state IN ('ready','running') AND sandbox.expires_at>effective_now
+      AND sandbox.template_version_id=b.template_version_id AND 'sha256:'||trim(sandbox.template_digest)=b.template_digest
+      AND node.kubernetes_cluster_id=observation.kubernetes_cluster_id
+      AND node.kubernetes_node_name=observation.kubernetes_node_name AND node.kubernetes_node_uid=observation.kubernetes_node_uid
+      AND observation.node_observation_digest=public.agent_run_node_observation_digest(observation.operation_id,
+        observation.admission_observation_digest::text,observation.pod_uid,observation.pod_resource_version,
+        observation.kubernetes_cluster_id,observation.kubernetes_node_name,observation.kubernetes_node_uid)
+      AND node.lifecycle_state='active' AND node.trust_state='verified' AND node.agent_eligible
+      AND node.current_identity_status='active' AND node.current_capability_version IS NOT NULL
+    FOR UPDATE OF run,b,job,sandbox,observation,admission,node;
   IF NOT FOUND THEN RETURN false; END IF;
   IF target.bound_sandbox_id IS NOT NULL THEN
     RETURN target.bound_sandbox_id=p_sandbox_id AND target.bound_node_id=p_node_id AND target.sandbox_id=p_sandbox_id AND target.node_id=p_node_id;
   END IF;
-  IF target.version<>p_expected_run_version OR target.status<>'queued' OR
-     NOT EXISTS(SELECT 1 FROM public.nodes n WHERE n.id=p_node_id AND n.workspace_id=target.workspace_id
-       AND n.lifecycle_state='active' AND n.trust_state='verified' AND n.agent_eligible) OR
-     NOT EXISTS(SELECT 1 FROM public.sandboxes s WHERE s.id=p_sandbox_id AND s.workspace_id=target.workspace_id
-       AND s.requested_by=target.requested_by AND s.state IN ('ready','running') AND s.expires_at>effective_now
-       AND s.template_version_id=target.template_version_id AND 'sha256:'||trim(s.template_digest)=target.template_digest) OR
-     NOT EXISTS(SELECT 1 FROM public.agent_run_sandbox_node_observations observation
-       JOIN public.sandbox_workload_admissions admission ON admission.sandbox_id=observation.sandbox_id
-         AND admission.workspace_id=observation.workspace_id
-         AND admission.observation_digest=observation.admission_observation_digest
-         AND admission.pod_uid=observation.pod_uid AND admission.pod_resource_version=observation.pod_resource_version
-       JOIN public.nodes node ON node.id=observation.node_id AND node.workspace_id=observation.workspace_id
-       WHERE observation.sandbox_id=p_sandbox_id AND observation.workspace_id=target.workspace_id
-         AND observation.node_id=p_node_id AND node.kubernetes_cluster_id=observation.kubernetes_cluster_id
-         AND node.kubernetes_node_name=observation.kubernetes_node_name
-         AND node.kubernetes_node_uid=observation.kubernetes_node_uid
-         AND node.lifecycle_state='active' AND node.trust_state='verified' AND node.agent_eligible) THEN RETURN false; END IF;
+  IF target.version<>p_expected_run_version OR target.status<>'queued' THEN RETURN false; END IF;
   UPDATE public.agent_run_bindings SET bound_sandbox_id=p_sandbox_id,bound_node_id=p_node_id,bound_at=effective_now WHERE run_id=p_run_id;
   UPDATE public.runs SET status='running',version=version+1,node_id=p_node_id,sandbox_id=p_sandbox_id,started_at=effective_now
     WHERE id=p_run_id AND version=p_expected_run_version AND status='queued';
@@ -458,12 +490,13 @@ END $$;
 
 REVOKE ALL ON TABLE agent_run_bindings,agent_run_jobs,agent_run_preallocation_failures,agent_run_sandbox_node_observations FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller;
 REVOKE ALL ON FUNCTION agent_run_append_event(uuid,uuid,uuid,text,jsonb),agent_run_enqueue(uuid,uuid,uuid,uuid),
-  validate_agent_run_preallocation_failure(),sandbox_controller_record_agent_node_observation(uuid,text,text,text,text),
+  validate_agent_run_preallocation_failure(),agent_run_node_observation_digest(uuid,text,text,text,text,text,text),
+  sandbox_controller_record_agent_node_observation(uuid,text,uuid,text,text,text,text,text,text),
   agent_run_controller_claim(text,integer),agent_run_controller_renew(uuid,text,uuid,integer),
   agent_run_controller_bind_sandbox(uuid,text,uuid,bigint,uuid,uuid),agent_run_controller_retry(uuid,text,uuid,integer,text),
   agent_run_controller_finalize(uuid,text,uuid,bigint,text,text,uuid[],bigint,text[])
   FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller;
-GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation(uuid,text,text,text,text) TO blazn_sandbox_controller;
+GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation(uuid,text,uuid,text,text,text,text,text,text) TO blazn_sandbox_controller;
 GRANT EXECUTE ON FUNCTION agent_run_enqueue(uuid,uuid,uuid,uuid) TO blazn_runtime;
 GRANT EXECUTE ON FUNCTION agent_run_controller_claim(text,integer),agent_run_controller_renew(uuid,text,uuid,integer),
   agent_run_controller_bind_sandbox(uuid,text,uuid,bigint,uuid,uuid),agent_run_controller_retry(uuid,text,uuid,integer,text),

@@ -124,7 +124,7 @@ BEGIN
               ('sandbox_controller_record_artifact_v1','uuid,text,uuid,text,text,text,text,text,text,text,text,bigint,text'),
               ('sandbox_controller_complete_artifact_export_v1','uuid,text,uuid,text,text[]'),
               ('sandbox_controller_consume_access_grant_v1','uuid,character,text'),
-              ('sandbox_controller_record_agent_node_observation','uuid,text,text,text,text')
+              ('sandbox_controller_record_agent_node_observation','uuid,text,uuid,text,text,text,text,text,text')
             )
             WHEN 'blazn_development_controller' THEN (function_row.proname,replace(oidvectortypes(function_row.proargtypes),' ','')) NOT IN (
               ('development_controller_claim','text,integer'),('development_controller_renew','uuid,text,uuid,integer'),('development_controller_resolve','uuid,text,uuid'),

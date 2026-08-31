@@ -150,11 +150,12 @@ func controllerEnvironment(t *testing.T) func(string) string {
 		t.Fatal(err)
 	}
 	values := map[string]string{
-		"BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE": secret,
-		"BLAZN_SANDBOX_CONTROLLER_WORKER_ID":         "controller-1",
-		"KUBERNETES_SERVICE_HOST":                    "10.96.0.1",
-		"KUBERNETES_SERVICE_PORT_HTTPS":              "443",
-		"BLAZN_SANDBOX_IO_IMAGE":                     "registry.example.test/blazn/sandbox-io@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"BLAZN_SANDBOX_CONTROLLER_DATABASE_URL_FILE":     secret,
+		"BLAZN_SANDBOX_CONTROLLER_WORKER_ID":             "controller-1",
+		"KUBERNETES_SERVICE_HOST":                        "10.96.0.1",
+		"KUBERNETES_SERVICE_PORT_HTTPS":                  "443",
+		"BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID": "cluster-test",
+		"BLAZN_SANDBOX_IO_IMAGE":                         "registry.example.test/blazn/sandbox-io@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}
 	return func(key string) string { return values[key] }
 }

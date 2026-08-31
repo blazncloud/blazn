@@ -109,6 +109,28 @@ type fakeBackend struct {
 	observedItems                                []WorkItem
 }
 
+type observingBackend struct {
+	*fakeBackend
+	placement AgentNodeObservation
+}
+
+func (*observingBackend) AgentNodeObservationEnabled() bool { return true }
+func (b *observingBackend) ObserveAgentNode(context.Context, sandboxcontrol.AdmissionObservation) (AgentNodeObservation, error) {
+	return b.placement, nil
+}
+
+type observingStore struct {
+	*fakeStore
+	placement                         *AgentNodeObservation
+	operationID, workerID, leaseToken string
+	accepted                          bool
+}
+
+func (s *observingStore) RecordAgentNodeObservation(_ context.Context, operationID, workerID, leaseToken string, value AgentNodeObservation) (bool, error) {
+	s.operationID, s.workerID, s.leaseToken, s.placement = operationID, workerID, leaseToken, &value
+	return s.accepted, nil
+}
+
 type blockingBackend struct {
 	started   chan struct{}
 	cancelled chan error
@@ -207,6 +229,26 @@ func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
 		store.completion.ExpectedWorkloadDigest == nil || *store.completion.ExpectedWorkloadDigest != state.AdmissionObservation.Workload.Digest ||
 		store.completion.ExpectedObservationDigest == nil || *store.completion.ExpectedObservationDigest != state.AdmissionObservation.Digest {
 		t.Fatalf("unexpected completion: %#v", store.completion)
+	}
+}
+
+func TestCreateRecordsFencedAgentNodeObservationBeforeCompletion(t *testing.T) {
+	item, state := createFixture(t)
+	placement := AgentNodeObservation{AdmissionObservationDigest: state.AdmissionObservation.Digest, PodUID: state.AdmissionObservation.Pod.UID, PodResourceVersion: state.AdmissionObservation.Pod.ResourceVersion, KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a", KubernetesNodeUID: "node-uid-a"}
+	store := &observingStore{fakeStore: &fakeStore{}, accepted: true}
+	backend := &observingBackend{fakeBackend: &fakeBackend{created: state}, placement: placement}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if store.placement == nil || !reflect.DeepEqual(*store.placement, placement) || store.operationID != item.OperationID || store.workerID != "controller-1" || store.leaseToken != item.LeaseToken || store.completion == nil {
+		t.Fatalf("store=%#v", store)
+	}
+	store = &observingStore{fakeStore: &fakeStore{}, accepted: false}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if store.completion != nil {
+		t.Fatal("fenced observation completed Sandbox operation")
 	}
 }
 

@@ -374,6 +374,23 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 			return nil
 		}
 	}
+	if observer, ok := c.backend.(AgentNodeObserver); ok && observer.AgentNodeObservationEnabled() {
+		observationStore, supported := c.store.(AgentNodeObservationStore)
+		if !supported {
+			return errors.New("sandbox controller Agent Node observation store is unavailable")
+		}
+		placement, err := observer.ObserveAgentNode(ctx, *state.AdmissionObservation)
+		if err != nil {
+			return err
+		}
+		recorded, err := observationStore.RecordAgentNodeObservation(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, placement)
+		if err != nil {
+			return err
+		}
+		if !recorded {
+			return nil
+		}
+	}
 	workloadDigest := state.AdmissionObservation.Workload.Digest
 	observationDigest := state.AdmissionObservation.Digest
 	uid, rv := state.Record.UID, state.Record.ResourceVersion

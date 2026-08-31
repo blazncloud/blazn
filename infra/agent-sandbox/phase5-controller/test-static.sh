@@ -23,6 +23,7 @@ render() {
     BLAZN_DATABASE_URL_SECRET_KEY=database-url \
     BLAZN_DATABASE_ENDPOINT_KIND=ip \
     BLAZN_KUBERNETES_API_CIDR=10.20.30.40/32 \
+    BLAZN_KUBERNETES_CLUSTER_ID=cluster-test \
     BLAZN_KUBERNETES_API_PORT=16443 \
     BLAZN_KUBERNETES_API_AUDIENCE=https://kubernetes.default.svc \
     BLAZN_BEN1_POSTGRES_CIDR=10.20.30.41/32 \
@@ -58,7 +59,7 @@ for script in "$ROOT"/*.sh; do sh -n "$script"; done
 render "$tmp/ip.yaml"
 manifest_mode=$(stat -c '%a' "$tmp/ip.yaml" 2>/dev/null || stat -f '%Lp' "$tmp/ip.yaml")
 [ "$manifest_mode" = 400 ]
-[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 8 ]
+[ "$(grep -c '^kind: ' "$tmp/ip.yaml")" -eq 10 ]
 [ "$(grep -Fxc "        image: $IMAGE" "$tmp/ip.yaml")" -eq 2 ]
 grep -F '  replicas: 0' "$tmp/ip.yaml" >/dev/null
 grep -F '  clusterIP: 10.152.183.207' "$tmp/ip.yaml" >/dev/null
@@ -109,10 +110,12 @@ grep -F 'cidr: 10.20.30.41/32' "$tmp/ip.yaml" >/dev/null
 grep -F 'cidr: 10.20.30.42/32' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "https://10.20.30.42:9443"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
+[ "$(grep -Fxc '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml")" -eq 1 ]
+grep -A1 -Fx '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml" | grep -Fxq '          value: "cluster-test"'
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 4 ]
-placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_ACCESS_SERVICE_CLUSTER_IP|BLAZN_ACCESS_SOURCE_CIDR|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_CA_KEY|BLAZN_REGISTRY_PULL_SECRET_NAME|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
+placeholder_pattern='BLAZN_CONTROLLER_IMAGE|BLAZN_SANDBOX_IO_IMAGE_REF|BLAZN_DATABASE_URL_SECRET_NAME|BLAZN_DATABASE_URL_SECRET_KEY|BLAZN_KUBERNETES_API_HOST|BLAZN_KUBERNETES_API_CIDR|BLAZN_KUBERNETES_API_PORT|BLAZN_KUBERNETES_CLUSTER_ID|BLAZN_KUBERNETES_API_AUDIENCE|BLAZN_BEN1_POSTGRES_CIDR|BLAZN_BEN1_POSTGRES_PORT|BLAZN_ACCESS_SERVICE_CLUSTER_IP|BLAZN_ACCESS_SOURCE_CIDR|BLAZN_DNS_CIDR|BLAZN_SOURCE_HOST|BLAZN_SOURCE_CIDR|BLAZN_SOURCE_DNS_CIDR|BLAZN_OBJECT_SECRET_NAME|BLAZN_OBJECT_ACCESS_KEY|BLAZN_OBJECT_SECRET_KEY|BLAZN_OBJECT_CA_KEY|BLAZN_REGISTRY_PULL_SECRET_NAME|BLAZN_OBJECT_ENDPOINT_HOST|BLAZN_OBJECT_ENDPOINT_CIDR|BLAZN_OBJECT_ENDPOINT_PORT|BLAZN_OBJECT_REGION|BLAZN_OBJECT_BUCKET'
 if grep -E "$placeholder_pattern" "$tmp/ip.yaml" >/dev/null; then
   printf 'render left an unresolved placeholder\n' >&2
   exit 1
@@ -184,6 +187,8 @@ repository_256="r.io/$repository_component_251"
 expect_fail oversized-repository BLAZN_CONTROLLER_IMAGE="$repository_256@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 expect_fail uppercase-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandbox-controller@sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 expect_fail broad-api BLAZN_KUBERNETES_API_CIDR=10.20.30.0/24
+expect_fail missing-cluster-id BLAZN_KUBERNETES_CLUSTER_ID=
+expect_fail invalid-cluster-id BLAZN_KUBERNETES_CLUSTER_ID='cluster id'
 expect_fail broad-database BLAZN_BEN1_POSTGRES_CIDR=10.20.30.0/24
 expect_fail unspecified-api BLAZN_KUBERNETES_API_CIDR=0.0.0.0/32
 expect_fail loopback-database BLAZN_BEN1_POSTGRES_CIDR=127.0.0.1/32
@@ -232,7 +237,7 @@ if grep -E 'hostPort:|hostAliases:|hostUsers:|hostNetwork: true|hostPID: true|ho
   printf 'template contains forbidden host coupling\n' >&2
   exit 1
 fi
-if grep -E 'resources: \["(secrets|nodes|runtimeclasses|customresourcedefinitions|validatingwebhookconfigurations|mutatingwebhookconfigurations)"\]' "$ROOT/controller.yaml.in" >/dev/null; then
+if grep -E 'resources: \["(secrets|runtimeclasses|customresourcedefinitions|validatingwebhookconfigurations|mutatingwebhookconfigurations)"\]' "$ROOT/controller.yaml.in" >/dev/null; then
   printf 'template grants forbidden resources\n' >&2
   exit 1
 fi
@@ -255,14 +260,18 @@ grep -F 'resources: ["networkpolicies"]' "$ROOT/controller.yaml.in" >/dev/null
 [ "$(grep -Fxc '  verbs: ["create", "get"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["delete", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -Fxc '  verbs: ["create", "delete", "get", "list"]' "$ROOT/controller.yaml.in")" -eq 1 ]
-[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 5 ]
-[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 5 ]
+[ "$(grep -c '^  resources: ' "$ROOT/controller.yaml.in")" -eq 6 ]
+[ "$(grep -c '^  verbs: ' "$ROOT/controller.yaml.in")" -eq 6 ]
 [ "$(grep -c '^kind: Role$' "$ROOT/controller.yaml.in")" -eq 1 ]
 [ "$(grep -c '^kind: RoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
-if grep -E '^kind: ClusterRole(Binding)?$' "$ROOT/controller.yaml.in" >/dev/null; then
-  printf 'template grants cluster-scoped RBAC\n' >&2
-  exit 1
-fi
+[ "$(grep -c '^kind: ClusterRole$' "$ROOT/controller.yaml.in")" -eq 1 ]
+[ "$(grep -c '^kind: ClusterRoleBinding$' "$ROOT/controller.yaml.in")" -eq 1 ]
+# The only cluster-scoped authority is an exact Node lookup. Scheduling proof
+# must never permit inventory/list/watch or any Node mutation.
+node_rule=$(awk '/^kind: ClusterRole$/{role=1} role&&/^rules:/{rules=1} rules{print} role&&/^---$/{exit}' "$ROOT/controller.yaml.in")
+printf '%s\n' "$node_rule" | grep -Fxq '  resources: ["nodes"]'
+printf '%s\n' "$node_rule" | grep -Fxq '  verbs: ["get"]'
+if printf '%s\n' "$node_rule" | grep -Eq 'list|watch|create|delete|patch|update|\*'; then printf 'Node observer RBAC is overbroad\n' >&2; exit 1; fi
 
 # These assertions intentionally match literal Dockerfile build arguments.
 # shellcheck disable=SC2016

@@ -20,6 +20,7 @@ const (
 	claimSQL                  = "SELECT row_to_json(claimed)::text, clock_timestamp() FROM public.sandbox_controller_claim_v5($1,$2) claimed"
 	renewSQL                  = "SELECT renewed, clock_timestamp() FROM (SELECT public.sandbox_controller_renew($1,$2,$3,$4) renewed) result"
 	bindSQL                   = "SELECT public.sandbox_controller_bind_backend_v4($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)"
+	recordAgentNodeSQL        = "SELECT public.sandbox_controller_record_agent_node_observation($1,$2,$3,$4,$5,$6,$7,$8,$9)"
 	recordSourcesSQL          = "SELECT public.sandbox_controller_record_source_materialization_v1($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)"
 	recordArtifactSQL         = "SELECT public.sandbox_controller_record_artifact_v1($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
 	completeArtifactExportSQL = "SELECT public.sandbox_controller_complete_artifact_export_v1($1,$2,$3,$4,$5::text[])"
@@ -161,6 +162,21 @@ func (s *PgStore) BindBackend(ctx context.Context, operationID, workerID, leaseT
 		observation.Workload.Admitted, observation.Workload.Condition.Type,
 		observation.Workload.Condition.Status, workloadDigest, observationDigest).Scan(&bound)
 	return bound, err
+}
+
+func (s *PgStore) RecordAgentNodeObservation(ctx context.Context, operationID, workerID, leaseToken string, observation AgentNodeObservation) (bool, error) {
+	digest, err := rawDigest(observation.AdmissionObservationDigest)
+	if err != nil || !workerPattern.MatchString(observation.PodUID) || !workerPattern.MatchString(observation.PodResourceVersion) ||
+		observation.KubernetesClusterID == "" || len(observation.KubernetesClusterID) > 128 ||
+		!kubernetesDNSNamePattern.MatchString(observation.KubernetesNodeName) || len(observation.KubernetesNodeName) > 253 ||
+		!workerPattern.MatchString(observation.KubernetesNodeUID) {
+		return false, errors.New("Agent Node observation is invalid")
+	}
+	var recorded bool
+	err = s.executor.QueryRow(ctx, recordAgentNodeSQL, operationID, workerID, leaseToken, digest,
+		observation.PodUID, observation.PodResourceVersion, observation.KubernetesClusterID,
+		observation.KubernetesNodeName, observation.KubernetesNodeUID).Scan(&recorded)
+	return recorded, err
 }
 
 func (s *PgStore) RecordSources(ctx context.Context, operationID, workerID, leaseToken string, observation sandboxcontrol.AdmissionObservation, receipt sandboxio.SourceMaterializationReceipt) (bool, error) {

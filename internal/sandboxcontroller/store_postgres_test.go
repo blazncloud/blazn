@@ -338,3 +338,19 @@ func TestPgStoreRenewSubtractsResponseDelay(t *testing.T) {
 		t.Fatalf("delayed renew: window=%+v ok=%v err=%v", window, ok, err)
 	}
 }
+
+func TestPgStoreRecordsLeaseFencedAgentNodeObservation(t *testing.T) {
+	executor := &fakeExecutor{rows: []sqlRow{resultRow{values: []any{true}}}}
+	store := &PgStore{executor: executor}
+	admission := storeObservationFixture()
+	recorded, err := store.RecordAgentNodeObservation(context.Background(), "operation", "worker", "lease", AgentNodeObservation{
+		AdmissionObservationDigest: admission.Digest, PodUID: admission.Pod.UID, PodResourceVersion: admission.Pod.ResourceVersion,
+		KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a", KubernetesNodeUID: "node-uid-a"})
+	if err != nil || !recorded {
+		t.Fatalf("recorded=%v err=%v", recorded, err)
+	}
+	call := executor.calls[0]
+	if call.query != recordAgentNodeSQL || len(call.args) != 9 || call.args[0] != "operation" || call.args[1] != "worker" || call.args[2] != "lease" || call.args[3] != admission.Digest[7:] || call.args[4] != admission.Pod.UID || call.args[5] != admission.Pod.ResourceVersion || call.args[6] != "cluster-a" || call.args[7] != "worker-a" || call.args[8] != "node-uid-a" {
+		t.Fatalf("call=%#v", call)
+	}
+}

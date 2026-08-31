@@ -30,6 +30,7 @@ var kubernetesDNSNamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61
 
 type KubernetesConfig struct {
 	BaseURL                                          string
+	ClusterID                                        string
 	CAFile                                           string
 	TokenFile                                        string
 	HelperImage                                      string
@@ -110,6 +111,10 @@ func ConfigFromEnv(getenv func(string) string) (RuntimeConfig, error) {
 }
 
 func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, error) {
+	clusterID := getenv("BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID")
+	if clusterID == "" || len(clusterID) > 128 || strings.TrimSpace(clusterID) != clusterID {
+		return KubernetesConfig{}, errors.New("sandbox controller Kubernetes cluster ID is invalid")
+	}
 	host := getenv("BLAZN_SANDBOX_CONTROLLER_KUBERNETES_HOST")
 	if host == "" {
 		host = getenv("KUBERNETES_SERVICE_HOST")
@@ -191,7 +196,7 @@ func kubernetesConfigFromEnv(getenv func(string) string) (KubernetesConfig, erro
 		}
 	}
 	endpoint := &url.URL{Scheme: "https", Host: net.JoinHostPort(host, port)}
-	return KubernetesConfig{BaseURL: endpoint.String(), CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage,
+	return KubernetesConfig{BaseURL: endpoint.String(), ClusterID: clusterID, CAFile: caFile, TokenFile: tokenFile, HelperImage: helperImage,
 		SourceDNSCIDRs: dnsCIDRs, SourceHostCIDRs: hostCIDRs,
 		ArtifactEndpoint: artifactValues[0], ArtifactRegion: artifactValues[1], ArtifactBucket: artifactValues[2],
 		ArtifactAccessKeyFile: artifactValues[3], ArtifactSecretKeyFile: artifactValues[4], ArtifactCAFile: artifactCAFile}, nil

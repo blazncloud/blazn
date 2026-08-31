@@ -438,7 +438,7 @@ test("Agent Run controller migration grants only its dedicated workload role",as
   assert.match(sql,/GRANT EXECUTE ON FUNCTION agent_run_controller_claim[\s\S]*agent_run_controller_finalize[\s\S]*TO blazn_agent_run_controller/);
   assert.match(sql,/CREATE TABLE agent_run_sandbox_node_observations[\s\S]*admission_observation_digest char\(64\)[\s\S]*kubernetes_node_uid text NOT NULL/);
   assert.match(sql,/agent_run_controller_bind_sandbox[\s\S]*JOIN public\.sandbox_workload_admissions admission[\s\S]*node\.kubernetes_node_uid=observation\.kubernetes_node_uid/);
-  assert.match(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation\(uuid,text,text,text,text\) TO blazn_sandbox_controller/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation\(uuid,text,uuid,text,text,text,text,text,text\) TO blazn_sandbox_controller/);
   assert.doesNotMatch(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation[^;]*TO blazn_agent_run_controller/);
   assert.doesNotMatch(sql,/GRANT EXECUTE ON FUNCTION agent_run_controller_[^;]*TO blazn_development_controller/);
   assert.doesNotMatch(sql,/GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_agent_run_controller/);

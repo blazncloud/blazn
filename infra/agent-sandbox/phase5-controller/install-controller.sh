@@ -26,7 +26,11 @@ case "$transaction_name" in */*|*..*|'') printf 'controller transaction path mus
 
 write_phase() { phase4c_write_phase "$transaction" "$1"; }
 object_present() { discovered=$(kubectl get "$1" "$2" -n "$3" --ignore-not-found -o name) || return 2; [ -n "$discovered" ]; }
-live_uid() { kubectl get "$1" "$2" -n "$3" -o jsonpath='{.metadata.uid}'; }
+live_uid() {
+  if [ "$3" = - ]; then kubectl get "$1" "$2" -o jsonpath='{.metadata.uid}'
+  else kubectl get "$1" "$2" -n "$3" -o jsonpath='{.metadata.uid}'
+  fi
+}
 
 if [ ! -e "$transaction" ]; then
   if ! { [ -f "$manifest" ] && [ ! -L "$manifest" ] && [ "$(stat -c '%h' "$manifest")" = 1 ]; }; then printf 'rendered controller manifest is unsafe\n' >&2; exit 1; fi
@@ -70,6 +74,8 @@ if [ "$phase" = apply-intent ]; then
     printf '"deployment/blazn-sandbox-controller":"%s",' "$(live_uid deployment blazn-sandbox-controller blazn-poc-system)"
     printf '"role/blazn-sandbox-controller":"%s",' "$(live_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
     printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
+    printf '"clusterrole/blazn-sandbox-controller-node-observer":"%s",' "$(live_uid clusterrole blazn-sandbox-controller-node-observer -)"
+    printf '"clusterrolebinding/blazn-sandbox-controller-node-observer":"%s",' "$(live_uid clusterrolebinding blazn-sandbox-controller-node-observer -)"
     printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(live_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
     printf '"service/blazn-sandbox-access":"%s",' "$(live_uid service blazn-sandbox-access blazn-poc-system)"
     printf '"networkpolicy/blazn-sandbox-controller-access-ingress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system)"
