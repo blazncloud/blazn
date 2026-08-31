@@ -44,7 +44,9 @@ verified_anchor_uid() {
     select((.metadata.finalizers // []) == []) | .metadata.uid'
 }
 validate_uid_journal() {
-  [ -f "$uids" ] && [ ! -L "$uids" ] && [ "$(stat -c '%u:%a:%h' "$uids")" = 0:600:1 ] || { printf 'owned UID journal metadata is unsafe\n' >&2; return 1; }
+  if [ ! -f "$uids" ] || [ -L "$uids" ] || [ "$(stat -c '%u:%a:%h' "$uids")" != 0:600:1 ]; then
+    printf 'owned UID journal metadata is unsafe\n' >&2; return 1
+  fi
   jq -e '
     ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","clusterrole/blazn-sandbox-controller-node-observer","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller","clusterrolebinding/blazn-sandbox-controller-node-observer"] as $allowed |
     (to_entries) as $entries | ($entries | length) <= ($allowed | length) and
@@ -52,7 +54,9 @@ validate_uid_journal() {
     all($entries[]; .value | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$uids" >/dev/null || { printf 'owned UID journal schema is invalid\n' >&2; return 1; }
 }
 validate_anchor_record() {
-  [ -f "$anchor_record" ] && [ ! -L "$anchor_record" ] && [ "$(stat -c '%u:%a:%h' "$anchor_record")" = 0:600:1 ] || { printf 'anchor journal metadata is unsafe\n' >&2; return 1; }
+  if [ ! -f "$anchor_record" ] || [ -L "$anchor_record" ] || [ "$(stat -c '%u:%a:%h' "$anchor_record")" != 0:600:1 ]; then
+    printf 'anchor journal metadata is unsafe\n' >&2; return 1
+  fi
   jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
     .apiVersion == "rbac.authorization.k8s.io/v1" and .kind == "ClusterRole" and .metadata.name == $name and
     .metadata.annotations == {"blazn.dev/phase5-transaction":$tx} and ((.metadata.labels // {}) == {}) and
@@ -99,6 +103,7 @@ if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-sandboxe
 
 anchor_name=blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID
 anchor_record=$transaction/anchor.json
+anchored=$transaction/controller-anchored.yaml
 controller_specs='serviceaccount|v1|ServiceAccount|blazn-sandbox-controller|blazn-poc-system|serviceaccount/blazn-sandbox-controller
 role|rbac.authorization.k8s.io/v1|Role|blazn-sandbox-controller|blazn-poc-sandboxes|role/blazn-sandbox-controller
 clusterrole|rbac.authorization.k8s.io/v1|ClusterRole|blazn-sandbox-controller-node-observer|-|clusterrole/blazn-sandbox-controller-node-observer
@@ -154,7 +159,6 @@ if [ "$phase" = anchor-journaled ]; then
   validate_anchor_record
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
-  anchored=$transaction/controller-anchored.yaml
   sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
   [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -eq 10 ] || { printf 'anchored controller manifest is incomplete\n' >&2; exit 1; }
   ! grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp" || { printf 'anchored controller manifest retains a placeholder\n' >&2; exit 1; }
@@ -166,7 +170,6 @@ uids=$transaction/owned-uids.json
 if [ "$phase" = apply-intent ]; then
   validate_anchor_record
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
-  anchored=$transaction/controller-anchored.yaml
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
   sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
   if [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -ne 10 ] || grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp"; then
@@ -214,6 +217,11 @@ if [ "$phase" = applied ] || [ "$phase" = scaled ]; then
   validate_anchor_record
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
+  sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
+  if [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -ne 10 ] || grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp"; then
+    printf 'rebuilt anchored controller manifest is invalid\n' >&2; exit 1
+  fi
+  chmod 0400 "$anchored.tmp"; sync -f "$anchored.tmp"; mv "$anchored.tmp" "$anchored"; sync -f "$transaction"
   validate_uid_journal
 fi
 if [ "$phase" = applied ]; then

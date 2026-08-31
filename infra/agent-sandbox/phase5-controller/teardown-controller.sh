@@ -32,7 +32,9 @@ current_uid() {
   fi | jq -er '.metadata.uid' 2>/dev/null
 }
 validate_uid_journal() {
-  [ -f "$uids" ] && [ ! -L "$uids" ] && [ "$(stat -c '%u:%a:%h' "$uids")" = 0:600:1 ] || { printf 'owned UID journal metadata is unsafe\n' >&2; return 1; }
+  if [ ! -f "$uids" ] || [ -L "$uids" ] || [ "$(stat -c '%u:%a:%h' "$uids")" != 0:600:1 ]; then
+    printf 'owned UID journal metadata is unsafe\n' >&2; return 1
+  fi
   jq -e '
     ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","clusterrole/blazn-sandbox-controller-node-observer","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller","clusterrolebinding/blazn-sandbox-controller-node-observer"] as $allowed |
     (to_entries) as $entries | ($entries | length) <= ($allowed | length) and
@@ -66,8 +68,10 @@ ambiguous=$transaction/recovery-required
 attempt_residual=$transaction/.recovery-required.current
 : >"$attempt_residual"
 resuming_rollback=0
-[ "$phase" = rollback-intent ] && resuming_rollback=1
-[ -f "$anchor_record" ] && [ ! -L "$anchor_record" ] && [ "$(stat -c '%u:%a:%h' "$anchor_record")" = 0:600:1 ] || { printf 'anchor journal metadata is unsafe\n' >&2; exit 1; }
+if [ "$phase" = rollback-intent ]; then resuming_rollback=1; fi
+if [ ! -f "$anchor_record" ] || [ -L "$anchor_record" ] || [ "$(stat -c '%u:%a:%h' "$anchor_record")" != 0:600:1 ]; then
+  printf 'anchor journal metadata is unsafe\n' >&2; exit 1
+fi
 jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
   .apiVersion == "rbac.authorization.k8s.io/v1" and .kind == "ClusterRole" and .metadata.name == $name and
   .metadata.annotations == {"blazn.dev/phase5-transaction":$tx} and ((.metadata.labels // {}) == {}) and
