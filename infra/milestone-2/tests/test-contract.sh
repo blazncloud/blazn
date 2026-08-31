@@ -189,6 +189,7 @@ fi
 grep -F 'Environment=DOCKER_CONFIG=/etc/blazn/docker-cli' "$unit" >/dev/null
 grep -F 'Environment=COMPOSE_BAKE=false' "$unit" >/dev/null
 grep -F 'BUILDX_NO_DEFAULT_ATTESTATIONS=1' "$ROOT_DIR/scripts/build-control-api.sh" >/dev/null
+grep -F 'RuntimeDirectory=lock/blazn-poc' "$unit" >/dev/null
 grep -F 'ExecStartPre=/opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh systemd-start systemd auto /opt/blazn/infra/milestone-2/scripts/start-control-plane.sh' "$unit" >/dev/null
 grep -F 'ExecStart=/opt/blazn/infra/milestone-2/scripts/run-control-plane.sh' "$unit" >/dev/null
 grep -F 'ExecStopPost=/opt/blazn/infra/milestone-2/scripts/with-control-plane-lock.sh systemd-stop systemd auto' "$unit" >/dev/null
