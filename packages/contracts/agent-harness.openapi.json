@@ -1,0 +1,18 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Blazn Agent and Harness API", "version": "v1alpha1"},
+  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "paths": {
+    "/v1/workspaces/{workspaceId}/agents": {"get": {"operationId": "listAgents"}, "post": {"operationId": "createAgent"}},
+    "/v1/workspaces/{workspaceId}/agents/{agentId}": {"get": {"operationId": "getAgent"}},
+    "/v1/workspaces/{workspaceId}/agents/{agentId}/versions": {"get": {"operationId": "listAgentVersions"}, "post": {"operationId": "publishAgentVersion"}},
+    "/v1/workspaces/{workspaceId}/agents/{agentId}/versions/{versionId}": {"get": {"operationId": "getAgentVersion"}},
+    "/v1/workspaces/{workspaceId}/harness/definitions": {"get": {"operationId": "listHarnessDefinitions"}, "post": {"operationId": "createHarnessDefinition"}},
+    "/v1/workspaces/{workspaceId}/harness/definitions/{definitionId}": {"get": {"operationId": "getHarnessDefinition"}},
+    "/v1/workspaces/{workspaceId}/harness/definitions/{definitionId}/versions": {"get": {"operationId": "listHarnessVersions"}, "post": {"operationId": "publishHarnessVersion"}},
+    "/v1/workspaces/{workspaceId}/harness/definitions/{definitionId}/versions/{versionId}": {"get": {"operationId": "getHarnessVersion"}},
+    "/v1/workspaces/{workspaceId}/harness/profiles": {"get": {"operationId": "listHarnessProfiles"}, "post": {"operationId": "createHarnessProfile"}},
+    "/v1/workspaces/{workspaceId}/harness/profiles/{profileId}": {"get": {"operationId": "getHarnessProfile"}},
+    "/v1/workspaces/{workspaceId}/harness/profiles/{profileId}/revisions": {"post": {"operationId": "reviseHarnessProfile"}}
+  }
+}

@@ -32,6 +32,8 @@ jobs:
         run: make check-project-generated
       - name: Check generated Run and Artifact API client
         run: make check-run-generated
+      - name: Check generated Agent and Harness API client
+        run: make check-agent-harness-generated
       - name: Check generated Node API client and signed models
         run: make check-node-generated
       - name: Check generated proxy contracts
