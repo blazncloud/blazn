@@ -5,6 +5,10 @@ on:
     paths:
       - "infra/agent-sandbox/**"
       - "Dockerfile.harness-worker-foundation"
+      - "go.mod"
+      - "go.sum"
+      - "cmd/blazn-harness-worker/**"
+      - "internal/**"
       - "docs/agent-sandbox-qualification.md"
       - ".github/workflows/agent-sandbox-qualification.yml"
   workflow_dispatch:
