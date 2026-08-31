@@ -31,6 +31,14 @@ current_uid() {
   else kubectl get "$1" "$2" -n "$3" -o json 2>/dev/null
   fi | jq -er '.metadata.uid' 2>/dev/null
 }
+validate_uid_journal() {
+  [ -f "$uids" ] && [ ! -L "$uids" ] && [ "$(stat -c '%u:%a:%h' "$uids")" = 0:600:1 ] || { printf 'owned UID journal metadata is unsafe\n' >&2; return 1; }
+  jq -e '
+    ["serviceaccount/blazn-sandbox-controller","role/blazn-sandbox-controller","clusterrole/blazn-sandbox-controller-node-observer","deployment/blazn-sandbox-controller","service/blazn-sandbox-access","networkpolicy/blazn-sandbox-controller-default-deny","networkpolicy/blazn-sandbox-controller-access-ingress","networkpolicy/blazn-sandbox-controller-egress","rolebinding/blazn-sandbox-controller","clusterrolebinding/blazn-sandbox-controller-node-observer"] as $allowed |
+    (to_entries) as $entries | ($entries | length) <= ($allowed | length) and
+    all(range(0; ($entries | length)); $entries[.].key == $allowed[.]) and
+    all($entries[]; .value | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$uids" >/dev/null || { printf 'owned UID journal schema is invalid\n' >&2; return 1; }
+}
 phase=$(cat "$transaction/phase")
 anchor_name=blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID
 anchor_record=$transaction/anchor.json
@@ -38,7 +46,15 @@ case "$phase" in
   sealed) write_phase rollback-complete; printf 'controller transaction rolled back before any apply\n'; exit 0 ;;
   anchor-intent)
     absent clusterrole "$anchor_name" - && { write_phase rollback-complete; printf 'controller transaction rolled back before anchor creation\n'; exit 0; }
-    printf 'transaction anchor exists without a journaled UID; recovery is required\n' >&2; exit 1
+    kubectl get clusterrole "$anchor_name" -o json >"$anchor_record.tmp"
+    jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
+      .apiVersion == "rbac.authorization.k8s.io/v1" and .kind == "ClusterRole" and
+      .metadata.name == $name and .metadata.annotations == {"blazn.dev/phase5-transaction":$tx} and
+      ((.metadata.labels // {}) == {}) and ((.metadata.ownerReferences // []) == []) and
+      ((.metadata.finalizers // []) == []) and ((.aggregationRule // null) == null) and
+      .rules == [] and (.metadata.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$anchor_record.tmp" >/dev/null || { printf 'un-journaled transaction anchor is not the exact inert anchor; recovery is required\n' >&2; exit 1; }
+    chmod 0600 "$anchor_record.tmp"; sync -f "$anchor_record.tmp"; mv "$anchor_record.tmp" "$anchor_record"; sync -f "$transaction"
+    write_phase anchor-journaled; phase=anchor-journaled
     ;;
   anchor-journaled|apply-intent) ;;
   applied|scaled|complete|rollback-intent) ;;
@@ -47,38 +63,32 @@ case "$phase" in
 esac
 uids=$transaction/owned-uids.json
 ambiguous=$transaction/recovery-required
-rm -f "$ambiguous"
+attempt_residual=$transaction/.recovery-required.current
+: >"$attempt_residual"
+resuming_rollback=0
+[ "$phase" = rollback-intent ] && resuming_rollback=1
+[ -f "$anchor_record" ] && [ ! -L "$anchor_record" ] && [ "$(stat -c '%u:%a:%h' "$anchor_record")" = 0:600:1 ] || { printf 'anchor journal metadata is unsafe\n' >&2; exit 1; }
+jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
+  .apiVersion == "rbac.authorization.k8s.io/v1" and .kind == "ClusterRole" and .metadata.name == $name and
+  .metadata.annotations == {"blazn.dev/phase5-transaction":$tx} and ((.metadata.labels // {}) == {}) and
+  ((.metadata.ownerReferences // []) == []) and ((.metadata.finalizers // []) == []) and
+  ((.aggregationRule // null) == null) and .rules == [] and
+  (.metadata.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$anchor_record" >/dev/null || { printf 'anchor journal schema is invalid\n' >&2; exit 1; }
 anchor_uid=$(jq -er '.metadata.uid' "$anchor_record") || { printf 'journaled transaction anchor identity is missing\n' >&2; exit 1; }
 anchor_safe=0
-if anchor_live=$(kubectl get clusterrole "$anchor_name" -o json 2>/dev/null) && printf '%s' "$anchor_live" | jq -e --arg uid "$anchor_uid" 'select(.metadata.uid == $uid) | select(.rules == [])' >/dev/null; then
+if anchor_live=$(kubectl get clusterrole "$anchor_name" -o json 2>/dev/null) && printf '%s' "$anchor_live" | jq -e --arg uid "$anchor_uid" --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
+  select(.metadata.uid == $uid and .metadata.name == $name) | select(.metadata.annotations == {"blazn.dev/phase5-transaction":$tx}) |
+  select((.metadata.labels // {}) == {} and (.metadata.ownerReferences // []) == [] and (.metadata.finalizers // []) == []) |
+  select((.aggregationRule // null) == null and .rules == [])' >/dev/null; then
   anchor_safe=1
-else
-  printf 'clusterrole/%s\n' "$anchor_name" >>"$ambiguous"
+elif [ "$resuming_rollback" -eq 0 ] || ! absent clusterrole "$anchor_name" -; then
+  printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
 fi
-if { [ "$phase" = anchor-journaled ] || [ "$phase" = apply-intent ]; } && [ ! -f "$uids" ]; then
-  # There is deliberately no dependent UID reconstruction here. The immutable
-  # recovery proof is the journaled anchor: foreground-delete it and let owner
-  # reference GC remove only actual dependents. Same-name replacements remain.
-  write_phase rollback-intent
-  if [ "$anchor_safe" -eq 1 ]; then
-    phase4c_start_uid_proxy "$transaction"
-    trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
-    phase4c_delete_uid "/apis/rbac.authorization.k8s.io/v1/clusterroles/$anchor_name" "$anchor_uid" Foreground
-    phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
-  fi
-  residual=0
-  for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
-    ref=${object%%:*}; ns=${object#*:}; kind=${ref%%/*}; name=${ref#*/}
-    if ! absent "$kind" "$name" "$ns"; then printf '%s\n' "$ref" >&2; residual=1; fi
-  done
-  if [ "$residual" -ne 0 ] || [ -s "$ambiguous" ]; then printf 'ambiguous replacement objects remain; recovery is required\n' >&2; exit 1; fi
-  write_phase rollback-complete
-  printf 'Phase 5 sandbox controller torn down through anchor GC\n'
-  exit 0
-fi
-# The install transaction records every owned UID immediately after apply, so
-# any post-apply phase must carry the identity file.
-[ -f "$uids" ] || { printf 'owned controller identities are missing; reconcile the transaction by hand\n' >&2; exit 1; }
+if [ ! -f "$uids" ]; then printf '{}\n' >"$uids.tmp"; chmod 0600 "$uids.tmp"; sync -f "$uids.tmp"; mv "$uids.tmp" "$uids"; sync -f "$transaction"; fi
+validate_uid_journal
+
+# Persist intent before scale-to-zero or any delete so a crash resumes cleanup.
+[ "$phase" = rollback-intent ] || { write_phase rollback-intent; phase=rollback-intent; }
 
 # Scale to zero first so no controller Pod is reconciling while its RBAC and
 # egress are removed.
@@ -90,8 +100,6 @@ if [ -n "$deployment_uid" ] && [ "$(current_uid deployment blazn-sandbox-control
     attempt=$((attempt + 1)); [ "$attempt" -le 30 ] || { printf 'controller Pods did not drain\n' >&2; exit 1; }; sleep 2
   done
 fi
-write_phase rollback-intent
-
 phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
 # Each delete is guarded by an absence pre-check so a resume after a partial
@@ -102,7 +110,11 @@ delete_owned() {
   owned_uid=$(jq -er --arg key "$owned_key" '.[$key] // empty' "$uids") || return 0
   [ -n "$owned_uid" ] || return 0
   if ! phase4c_delete_uid "$owned_path" "$owned_uid" Background; then
-    printf '%s\n' "$owned_key" >>"$ambiguous"
+    live_after_error=$(current_uid "$owned_kind" "$owned_name" "$owned_ns" || :)
+    [ -z "$live_after_error" ] && return 0
+    if [ "$live_after_error" != "$owned_uid" ] || ! phase4c_delete_uid "$owned_path" "$owned_uid" Background; then
+      printf '%s\n' "$owned_key" >>"$attempt_residual"
+    fi
   fi
   return 0
 }
@@ -119,30 +131,47 @@ delete_owned networkpolicy blazn-sandbox-controller-default-deny blazn-poc-syste
 delete_owned serviceaccount blazn-sandbox-controller blazn-poc-system serviceaccount/blazn-sandbox-controller /api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller
 if [ "$anchor_safe" -eq 1 ]; then
   if ! phase4c_delete_uid "/apis/rbac.authorization.k8s.io/v1/clusterroles/$anchor_name" "$anchor_uid" Foreground; then
-    printf 'clusterrole/%s\n' "$anchor_name" >>"$ambiguous"
+    anchor_after_error=$(current_uid clusterrole "$anchor_name" - || :)
+    if [ -n "$anchor_after_error" ] && { [ "$anchor_after_error" != "$anchor_uid" ] || ! phase4c_delete_uid "/apis/rbac.authorization.k8s.io/v1/clusterroles/$anchor_name" "$anchor_uid" Foreground; }; then
+      printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
+    fi
   fi
 fi
 phase4c_stop_uid_proxy
 trap - EXIT HUP INT TERM
 
-for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
-  gone_ref=${gone%%:*}; gone_ns=${gone#*:}
-  gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
-  expected_uid=$(jq -r --arg key "$gone_ref" '.[$key] // empty' "$uids")
-  live_uid_now=$(current_uid "$gone_kind" "$gone_name" "$gone_ns" || :)
-  if [ -n "$expected_uid" ]; then
-    [ "$live_uid_now" != "$expected_uid" ] || { printf '%s exact owned UID was not removed\n' "$gone" >&2; exit 1; }
-  elif [ -n "$live_uid_now" ]; then
-    printf '%s\n' "$gone_ref" >>"$ambiguous"
-  fi
+gc_attempts=${BLAZN_CONTROLLER_GC_ATTEMPTS:-60}
+case "$gc_attempts" in ''|*[!0-9]*|0) gc_attempts=60 ;; esac
+attempt=0
+while :; do
+  pending=0
+  for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+    gone_ref=${gone%%:*}; gone_ns=${gone#*:}; gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
+    expected_uid=$(jq -r --arg key "$gone_ref" '.[$key] // empty' "$uids")
+    live_uid_now=$(current_uid "$gone_kind" "$gone_name" "$gone_ns" || :)
+    if [ -n "$live_uid_now" ] && { [ -z "$expected_uid" ] || [ "$live_uid_now" = "$expected_uid" ]; }; then pending=1; fi
+    if [ -n "$expected_uid" ] && [ -n "$live_uid_now" ] && [ "$live_uid_now" != "$expected_uid" ]; then printf '%s\n' "$gone_ref" >>"$attempt_residual"; fi
+  done
+  live_anchor_uid=$(current_uid clusterrole "$anchor_name" - || :)
+  [ "$live_anchor_uid" = "$anchor_uid" ] && pending=1
+  if [ -n "$live_anchor_uid" ] && [ "$live_anchor_uid" != "$anchor_uid" ]; then printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"; fi
+  [ "$pending" -eq 0 ] && break
+  attempt=$((attempt + 1)); [ "$attempt" -lt "$gc_attempts" ] || break
+  sleep 2
 done
-if [ "$anchor_safe" -eq 1 ] && [ "$(current_uid clusterrole "$anchor_name" - || :)" = "$anchor_uid" ]; then
-  printf 'clusterrole/%s\n' "$anchor_name" >>"$ambiguous"
+if [ "$pending" -ne 0 ]; then
+  for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+    gone_ref=${gone%%:*}; gone_ns=${gone#*:}; gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
+    [ -z "$(current_uid "$gone_kind" "$gone_name" "$gone_ns" || :)" ] || printf '%s\n' "$gone_ref" >>"$attempt_residual"
+  done
+  [ "$(current_uid clusterrole "$anchor_name" - || :)" != "$anchor_uid" ] || printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
 fi
-if [ -s "$ambiguous" ]; then
+if [ -s "$attempt_residual" ]; then
+  sort -u "$attempt_residual" >"$ambiguous.tmp"; chmod 0600 "$ambiguous.tmp"; sync -f "$ambiguous.tmp"; mv "$ambiguous.tmp" "$ambiguous"; sync -f "$transaction"
   printf 'ambiguous replacement objects were left untouched; recovery is required:\n' >&2
   cat "$ambiguous" >&2
   exit 1
 fi
 write_phase rollback-complete
+rm -f "$ambiguous" "$attempt_residual"
 printf 'Phase 5 sandbox controller torn down to zero residue\n'

@@ -54,7 +54,36 @@ cat >"$tmp/bin/kubectl" <<'EOF'
 #!/bin/sh
 set -eu
 printf 'kubectl %s\n' "$*" >>"$FAKE_STATE/calls.log"
-present() { [ -e "$FAKE_STATE/$1" ] && [ ! -e "$FAKE_STATE/deleted-$1" ]; }
+present() {
+  if [ "$1" = anchor ] && [ -e "$FAKE_STATE/anchor-delete-pending" ]; then
+    if [ -e "$FAKE_STATE/anchor-delete-observed" ]; then
+      : >"$FAKE_STATE/deleted-anchor"
+      for dependent in deployment service access-ingress serviceaccount role rolebinding clusterrole clusterrolebinding egress deny; do [ -e "$FAKE_STATE/user-$dependent" ] || : >"$FAKE_STATE/deleted-$dependent"; done
+    else : >"$FAKE_STATE/anchor-delete-observed"
+    fi
+  fi
+  [ -e "$FAKE_STATE/$1" ] && [ ! -e "$FAKE_STATE/deleted-$1" ]
+}
+emit_object() {
+  object_key=$1
+  case "$object_key" in
+    serviceaccount) api=v1; kind=ServiceAccount; name=blazn-sandbox-controller; ns=blazn-poc-system; uid=44444444-4444-4444-8444-444444444444 ;;
+    role) api=rbac.authorization.k8s.io/v1; kind=Role; name=blazn-sandbox-controller; ns=blazn-poc-sandboxes; uid=22222222-2222-4222-8222-222222222222 ;;
+    clusterrole) api=rbac.authorization.k8s.io/v1; kind=ClusterRole; name=blazn-sandbox-controller-node-observer; ns=; uid=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ;;
+    deployment) api=apps/v1; kind=Deployment; name=blazn-sandbox-controller; ns=blazn-poc-system; uid=11111111-1111-4111-8111-111111111111 ;;
+    service) api=v1; kind=Service; name=blazn-sandbox-access; ns=blazn-poc-system; uid=77777777-7777-4777-8777-777777777777 ;;
+    deny) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-default-deny; ns=blazn-poc-system; uid=66666666-6666-4666-8666-666666666666 ;;
+    access-ingress) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-access-ingress; ns=blazn-poc-system; uid=88888888-8888-4888-8888-888888888888 ;;
+    egress) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-egress; ns=blazn-poc-system; uid=55555555-5555-4555-8555-555555555555 ;;
+    rolebinding) api=rbac.authorization.k8s.io/v1; kind=RoleBinding; name=blazn-sandbox-controller; ns=blazn-poc-sandboxes; uid=33333333-3333-4333-8333-333333333333 ;;
+    clusterrolebinding) api=rbac.authorization.k8s.io/v1; kind=ClusterRoleBinding; name=blazn-sandbox-controller-node-observer; ns=; uid=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb ;;
+    *) exit 1 ;;
+  esac
+  if [ -n "$ns" ]; then namespace_json=$(printf ',"namespace":"%s"' "$ns"); else namespace_json=; fi
+  if [ -e "$FAKE_STATE/user-$object_key" ]; then owner_uid=00000000-0000-4000-8000-000000000000; else owner_uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
+  if [ "${EMIT_LIVE:-0}" = 1 ] && [ "${FAKE_SEMANTIC_DRIFT:-}" = "$object_key" ]; then drift_json=',"unexpected":{"mutated":true}'; else drift_json=; fi
+  printf '{"apiVersion":"%s","kind":"%s","metadata":{"name":"%s"%s,"uid":"%s","labels":{"blazn.dev/phase5-object":"%s"},"annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"},"ownerReferences":[{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","controller":false,"blockOwnerDeletion":false}]}%s}\n' "$api" "$kind" "$name" "$namespace_json" "$uid" "$object_key" "$owner_uid" "$drift_json"
+}
 case "$*" in
   'config current-context') printf 'disposable-controller-test' ;;
   'get namespace kube-system -o jsonpath={.metadata.uid}') printf '99999999-9999-4999-8999-999999999999' ;;
@@ -67,26 +96,15 @@ case "$*" in
   'get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name') present deployment && [ ! -e "$FAKE_STATE/scaled0" ] && printf 'deployment/blazn-sandbox-controller\n' || { present deployment && printf 'deployment/blazn-sandbox-controller\n' || :; } ;;
   'create -f '*' -o json')
     : >"$FAKE_STATE/anchor"
-    printf '{"metadata":{"name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"}},"rules":[]}\n' ;;
+    printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"}},"rules":[]}\n' ;;
+  'apply --server-side --dry-run=server --field-manager blazn-phase5-controller -f '*' -l blazn.dev/phase5-object='*' -o json')
+    object_key=$(printf '%s' "$*" | sed 's/.*phase5-object=\([^ ]*\).*/\1/')
+    emit_object "$object_key" ;;
   'apply --server-side --field-manager blazn-phase5-controller -f '*' -l blazn.dev/phase5-object='*' -o json')
     object_key=$(printf '%s' "$*" | sed 's/.*phase5-object=\([^ ]*\).*/\1/')
-    case "$object_key" in
-      serviceaccount) api=v1; kind=ServiceAccount; name=blazn-sandbox-controller; ns=blazn-poc-system; uid=44444444-4444-4444-8444-444444444444 ;;
-      role) api=rbac.authorization.k8s.io/v1; kind=Role; name=blazn-sandbox-controller; ns=blazn-poc-sandboxes; uid=22222222-2222-4222-8222-222222222222 ;;
-      clusterrole) api=rbac.authorization.k8s.io/v1; kind=ClusterRole; name=blazn-sandbox-controller-node-observer; ns=; uid=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ;;
-      deployment) api=apps/v1; kind=Deployment; name=blazn-sandbox-controller; ns=blazn-poc-system; uid=11111111-1111-4111-8111-111111111111 ;;
-      service) api=v1; kind=Service; name=blazn-sandbox-access; ns=blazn-poc-system; uid=77777777-7777-4777-8777-777777777777 ;;
-      deny) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-default-deny; ns=blazn-poc-system; uid=66666666-6666-4666-8666-666666666666 ;;
-      access-ingress) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-access-ingress; ns=blazn-poc-system; uid=88888888-8888-4888-8888-888888888888 ;;
-      egress) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-egress; ns=blazn-poc-system; uid=55555555-5555-4555-8555-555555555555 ;;
-      rolebinding) api=rbac.authorization.k8s.io/v1; kind=RoleBinding; name=blazn-sandbox-controller; ns=blazn-poc-sandboxes; uid=33333333-3333-4333-8333-333333333333 ;;
-      clusterrolebinding) api=rbac.authorization.k8s.io/v1; kind=ClusterRoleBinding; name=blazn-sandbox-controller-node-observer; ns=; uid=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb ;;
-      *) exit 1 ;;
-    esac
     : >"$FAKE_STATE/$object_key"
     [ "${FAKE_PARTIAL_APPLY:-0}" = 1 ] && [ "$object_key" = rolebinding ] && exit 1
-    if [ -n "$ns" ]; then namespace_json=$(printf ',"namespace":"%s"' "$ns"); else namespace_json=; fi
-    printf '{"apiVersion":"%s","kind":"%s","metadata":{"name":"%s"%s,"uid":"%s","labels":{"blazn.dev/phase5-object":"%s"},"annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"},"ownerReferences":[{"kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc"}]}}\n' "$api" "$kind" "$name" "$namespace_json" "$uid" "$object_key" ;;
+    emit_object "$object_key" ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.spec.replicas}') [ -e "$FAKE_STATE/scaled1" ] && printf '1' || printf '0' ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1') : >"$FAKE_STATE/scaled1" ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0') : >"$FAKE_STATE/scaled0"; rm -f "$FAKE_STATE/scaled1" ;;
@@ -108,15 +126,13 @@ case "$*" in
   'get clusterrole blazn-phase5-anchor-99999999-9999-4999-8999-999999999999 -o json')
     present anchor || exit 1
     if [ -e "$FAKE_STATE/user-anchor" ]; then anchor_uid=dddddddd-dddd-4ddd-8ddd-dddddddddddd; else anchor_uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
-    printf '{"metadata":{"uid":"%s"},"rules":[]}\n' "$anchor_uid" ;;
+    printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"}},"rules":[]}\n' "$anchor_uid" ;;
   'get '*' -o json')
     for object in deployment/blazn-sandbox-controller:deployment:11111111-1111-4111-8111-111111111111 service/blazn-sandbox-access:service:77777777-7777-4777-8777-777777777777 networkpolicy/blazn-sandbox-controller-access-ingress:access-ingress:88888888-8888-4888-8888-888888888888 serviceaccount/blazn-sandbox-controller:serviceaccount:44444444-4444-4444-8444-444444444444 role/blazn-sandbox-controller:role:22222222-2222-4222-8222-222222222222 rolebinding/blazn-sandbox-controller:rolebinding:33333333-3333-4333-8333-333333333333 clusterrole/blazn-sandbox-controller-node-observer:clusterrole:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa clusterrolebinding/blazn-sandbox-controller-node-observer:clusterrolebinding:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb networkpolicy/blazn-sandbox-controller-egress:egress:55555555-5555-4555-8555-555555555555 networkpolicy/blazn-sandbox-controller-default-deny:deny:66666666-6666-4666-8666-666666666666; do
       ref=${object%%:*}; rest=${object#*:}; key=${rest%%:*}; uid=${rest#*:}
       case "$* " in "get ${ref%%/*} ${ref#*/} "*)
         present "$key" || exit 1
-        owner=99999999-9999-4999-8999-999999999999
-        if [ -e "$FAKE_STATE/user-$key" ]; then owner_ref=00000000-0000-4000-8000-000000000000; else owner_ref=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
-        printf '{"metadata":{"uid":"%s","annotations":{"blazn.dev/phase5-transaction":"%s"},"ownerReferences":[{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s"}]}}\n' "$uid" "$owner" "$owner_ref"
+        EMIT_LIVE=1 emit_object "$key"
         exit 0
         ;;
       esac
@@ -159,8 +175,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if key is not None and os.path.exists(os.path.join(state, f"deleted-{key}")):
             self.send_response(404)
         elif key is not None and body.get("preconditions", {}).get("uid") == uid:
-            open(os.path.join(state, f"deleted-{key}"), "w").close()
-            if key == "anchor":
+            if key == "anchor" and os.path.exists(os.path.join(state, "defer-anchor-delete")):
+                open(os.path.join(state, "anchor-delete-pending"), "w").close()
+            else:
+                open(os.path.join(state, f"deleted-{key}"), "w").close()
+            if key == "anchor" and not os.path.exists(os.path.join(state, "defer-anchor-delete")):
                 for dependent in ("deployment", "service", "access-ingress", "serviceaccount", "role", "rolebinding", "clusterrole", "clusterrolebinding", "egress", "deny"):
                     if os.path.exists(os.path.join(state, dependent)) and not os.path.exists(os.path.join(state, f"user-{dependent}")):
                         open(os.path.join(state, f"deleted-{dependent}"), "w").close()
@@ -210,6 +229,7 @@ run_tool() {
 }
 expect_phase() { [ "$(cat "$transaction/phase")" = "$1" ] || { printf 'expected phase %s, got %s\n' "$1" "$(cat "$transaction/phase")" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 expect_message() { grep -Fq -- "$1" "$tmp/last-err" || { printf 'missing expected message: %s\n' "$1" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
+expect_journal_length() { actual=$(jq -r 'length' "$transaction/owned-uids.json" 2>/dev/null || printf missing); [ "$actual" = "$1" ] || { printf 'expected UID journal length %s, got %s\n' "$1" "$actual" >&2; exit 1; }; }
 
 # T1: happy deploy, then idempotent re-run.
 reset_state; new_transaction
@@ -232,6 +252,37 @@ for boundary in sealed anchor-intent anchor-journaled apply-intent applied scale
   [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
   expect_phase complete
 done
+
+# T2b: a crash after the inert anchor create but before its journal adopts only
+# that exact transaction-unique zero-rule anchor and resumes safely.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=anchor-created BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase anchor-intent
+[ ! -e "$transaction/anchor.json" ]
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase complete
+
+# T2c: teardown can recover the same anchor-created crash and reaches zero
+# residue without ever applying a dependent object.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=anchor-created BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+run_tool teardown-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+
+# T6aa: foreground anchor deletion may complete asynchronously. Teardown polls
+# the exact anchor/dependent identities to bounded completion across that lag.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+: >"$FAKE_STATE/defer-anchor-delete"
+run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=5
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 1 ]
 
 # T3: a missing controller Secret blocks the deploy.
 reset_state; rm -f "$FAKE_STATE/db-secret"; new_transaction
@@ -275,6 +326,18 @@ grep -Fq '"uid": "88888888-8888-4888-8888-888888888888"' "$FAKE_STATE/delete-req
 grep -Fq '"uid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"' "$FAKE_STATE/delete-requests.log"
 grep -Fq '"uid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"' "$FAKE_STATE/delete-requests.log"
 
+# T6a: rollback intent is durable before scale/delete; a crash at that journal
+# resumes and completes instead of treating the absent/pending anchor as fatal.
+reset_state; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ]
+run_tool teardown-controller.sh BLAZN_PHASE4C_FAIL_AFTER=rollback-intent BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase rollback-intent
+run_tool teardown-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
 # were recorded at apply-intent, before scaling).
 reset_state; new_transaction
@@ -297,6 +360,18 @@ expect_phase applied
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase complete
+
+# T5d: a resumed object whose user-controlled semantics drifted from the exact
+# anchored manifest is rejected before any scale-up.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase applied
+run_tool install-controller.sh FAKE_SEMANTIC_DRIFT=role
+[ "$last_code" -eq 1 ]
+expect_message 'controller object semantics differ from sealed manifest: role'
+expect_phase applied
+[ ! -e "$FAKE_STATE/scaled1" ]
 
 # T6b: a teardown that has already removed some objects resumes cleanly
 # instead of aborting on a 404 for the already-deleted ones.
@@ -343,7 +418,7 @@ reset_state; new_transaction
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase apply-intent
-[ ! -e "$transaction/owned-uids.json" ]
+expect_journal_length 0
 run_tool install-controller.sh
 [ "$last_code" -eq 1 ]
 expect_message 'dependent controller object exists without a completed UID journal; recovery is required'
@@ -393,7 +468,7 @@ reset_state; new_transaction
 run_tool install-controller.sh FAKE_PARTIAL_APPLY=1
 [ "$last_code" -eq 1 ]
 expect_phase apply-intent
-[ ! -e "$transaction/owned-uids.json" ]
+expect_journal_length 8
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
