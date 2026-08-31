@@ -66,3 +66,10 @@ test("Agent Run launch planning rejects Harness metadata substitution",()=>{
   ]){const value=fixture();mutate(value.item);
     assert.throws(()=>planAgentRunSandboxLaunch(value.item,value.release,value.sandbox,new Date("2026-08-31T12:00:00Z")));}
 });
+
+test("Agent Run launch planning accepts the frozen UUID v7 and v8 identity range",()=>{
+  const value=fixture();
+  value.sandbox.operationId="31000000-0000-7000-8000-000000000001";
+  value.sandbox.sandboxId="32000000-0000-8000-8000-000000000001";
+  assert.doesNotThrow(()=>planAgentRunSandboxLaunch(value.item,value.release,value.sandbox,new Date("2026-08-31T12:00:00Z")));
+});

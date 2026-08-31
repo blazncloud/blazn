@@ -5,7 +5,7 @@ const scopePath="/run/blazn-harness/workload-scope.json";
 const listenerTokenPath="/run/blazn-harness/listener-token";
 const artifactRoot="/workspace/artifacts";
 const digestPattern=/^sha256:[0-9a-f]{64}$/;
-const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const uuidPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export class AgentRunLaunchValidationError extends Error {
   constructor(readonly code:"launch_authority_invalid"|"launch_authority_mismatch"|"harness_release_unavailable",message:string){super(message);}
