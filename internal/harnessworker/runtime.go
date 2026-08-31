@@ -51,9 +51,11 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 	}
 	var process ProcessResult
 	var runErr, finalizeErr error
+	runnerInvoked := false
 	if prepareErr != nil || sourceCloseErr != nil || !reflect.DeepEqual(spec.Execution, r.config.Execution) || len(spec.ExtraFiles) != 1 || !validOneShotDescriptor(spec.ExtraFiles[0]) || validateProcessSpec(spec) != nil {
 		prepareErr = errors.New("adapter process spec is invalid")
 	} else {
+		runnerInvoked = true
 		process, runErr = r.config.ProcessRunner.Run(runCtx, spec)
 	}
 	if prepared {
@@ -89,7 +91,8 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 	} else {
 		result.Status = "succeeded"
 	}
-	if !process.CleanupComplete {
+	cleanupUnproven := runnerInvoked && (ErrorCode(runErr) == "process_cleanup_unproven" || runErr == nil && !process.CleanupComplete)
+	if cleanupUnproven {
 		result.Artifacts = []ArtifactResult{}
 		return finish(result, started, r.config.Now())
 	}

@@ -182,17 +182,21 @@ func (s *fakeTokenSource) OpenListenerToken(context.Context, string) (*os.File, 
 }
 
 type fakeAdapter struct {
-	execution Execution
-	token     *os.File
-	child     *os.File
-	finalized int
-	finalErr  error
-	invalid   bool
-	reviewed  []ArtifactResult
+	execution  Execution
+	token      *os.File
+	child      *os.File
+	finalized  int
+	finalErr   error
+	invalid    bool
+	reviewed   []ArtifactResult
+	prepareErr error
 }
 
 func (a *fakeAdapter) Prepare(_ context.Context, _ Assignment, token *os.File) (ProcessSpec, error) {
 	a.token = token
+	if a.prepareErr != nil {
+		return ProcessSpec{}, a.prepareErr
+	}
 	if a.invalid {
 		return ProcessSpec{Execution: a.execution, Environment: []string{"BLAZN_PROXY_URL=http://127.0.0.1:8080", "BLAZN_LISTENER_TOKEN_FD=3"}, Stdin: strings.NewReader(""), Stdout: io.Discard, ExtraFiles: []*os.File{token}}, nil
 	}
@@ -289,6 +293,32 @@ func TestRuntimeFinalizesRejectedPreparedSpecAndClosesDescriptors(t *testing.T) 
 	}
 	if _, err := token.Stat(); err == nil {
 		t.Fatal("rejected regular source descriptor remained open")
+	}
+}
+
+func TestRuntimePreservesTokenCloseRecoveryOnPrelaunchFailures(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 20}
+	for name, configure := range map[string]func(*fakeAdapter){
+		"prepare failure": func(adapter *fakeAdapter) { adapter.prepareErr = errors.New("prepare failed") },
+		"spec rejection":  func(adapter *fakeAdapter) { adapter.invalid = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			tokenPath := filepath.Join(t.TempDir(), "token")
+			_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
+			token, _ := os.Open(tokenPath)
+			_ = token.Close()
+			adapter, collector := &fakeAdapter{execution: execution}, &fakeCollector{}
+			configure(adapter)
+			runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: adapter, ProcessRunner: &fakeRunner{}, Collector: collector, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := runtime.Run(context.Background(), runtimeAssignment(now))
+			if result.Status != "recovery_required" || result.ErrorCode != "postflight_scope_failed" || collector.calls != 0 {
+				t.Fatalf("result=%#v collector=%d", result, collector.calls)
+			}
+		})
 	}
 }
 
