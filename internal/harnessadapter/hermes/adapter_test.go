@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -64,9 +65,6 @@ func (f *fakeHermes) Run(ctx context.Context, spec harnessworker.ProcessSpec) (h
 	if len(spec.ExtraFiles) != 1 || spec.ExtraFiles[0] == nil {
 		f.t.Fatal("verified token FD was not inherited exactly once")
 	}
-	if _, err := spec.ExtraFiles[0].Seek(0, io.SeekStart); err != nil {
-		f.t.Fatal(err)
-	}
 	token, err := io.ReadAll(spec.ExtraFiles[0])
 	if err != nil {
 		f.t.Fatal(err)
@@ -91,13 +89,18 @@ func (f *fakeHermes) Run(ctx context.Context, spec harnessworker.ProcessSpec) (h
 	if err := os.WriteFile(filepath.Join(f.artifactRoot, "patch.diff"), patch, 0o600); err != nil {
 		f.t.Fatal(err)
 	}
-	digest := sha256.Sum256(patch)
+	summary := []byte("Completed the bounded change.\n")
+	if err := os.WriteFile(filepath.Join(f.artifactRoot, "summary.md"), summary, 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	patchDigest, summaryDigest := sha256.Sum256(patch), sha256.Sum256(summary)
 	records := []map[string]any{
 		recordValue(1, "harness.started", map[string]any{}, map[string]map[string]any{"hermes.session": {"sourceSessionId": "opaque-session"}}),
 		recordValue(2, "model.requested", routePayload(f.wantScope, map[string]any{"requestId": "74000000-0000-4000-8000-000000000001"}), map[string]map[string]any{}),
 		recordValue(3, "model.usage", routePayload(f.wantScope, map[string]any{"requestId": "74000000-0000-4000-8000-000000000001", "inputTokens": 4, "outputTokens": 2}), map[string]map[string]any{}),
-		recordValue(4, "patch.created", map[string]any{"name": "patch", "role": "patch", "kind": "agent.patch", "mediaType": "text/x-diff", "path": "/workspace/artifacts/patch.diff", "contentDigest": "sha256:" + hex.EncodeToString(digest[:])}, map[string]map[string]any{}),
-		recordValue(5, "result.reported", map[string]any{"status": "succeeded"}, map[string]map[string]any{}),
+		recordValue(4, "patch.created", map[string]any{"name": "patch", "role": "patch", "kind": "agent.patch", "mediaType": "text/x-diff", "path": "/workspace/artifacts/patch.diff", "contentDigest": "sha256:" + hex.EncodeToString(patchDigest[:])}, map[string]map[string]any{}),
+		recordValue(5, "artifact.created", map[string]any{"name": "summary", "role": "summary", "kind": "agent.summary", "mediaType": "text/markdown", "path": "/workspace/artifacts/summary.md", "contentDigest": "sha256:" + hex.EncodeToString(summaryDigest[:])}, map[string]map[string]any{}),
+		recordValue(6, "result.reported", map[string]any{"status": "succeeded"}, map[string]map[string]any{}),
 	}
 	for _, item := range records {
 		encoded, _ := json.Marshal(item)
@@ -106,6 +109,97 @@ func (f *fakeHermes) Run(ctx context.Context, spec harnessworker.ProcessSpec) (h
 		}
 	}
 	return harnessworker.ProcessResult{Exited: true, ExitCode: 0}, nil
+}
+
+type shortWriter struct {
+	max int
+	buf bytes.Buffer
+}
+
+func (w *shortWriter) Write(value []byte) (int, error) {
+	if len(value) > w.max {
+		value = value[:w.max]
+	}
+	return w.buf.Write(value)
+}
+
+func TestHermesNormalizedOutputCompletesShortWrites(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	output := &shortWriter{max: 3}
+	adapter, err := New(Config{ProxyURL: "http://127.0.0.1:19090", Output: output, ArtifactRoot: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := validScope(t, now)
+	spec, err := adapter.Prepare(context.Background(), harnessworker.Assignment{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.RequestTypeExecute, Scope: scope}, tokenFile(t, testToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(recordValue(1, "result.reported", map[string]any{"status": "failed"}, map[string]map[string]any{}))
+	if _, err := spec.Stdout.Write(append(want, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Finalize(context.Background(), harnessworker.ProcessResult{Exited: true, ExitCode: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var gotRecord map[string]any
+	if !bytes.HasSuffix(output.buf.Bytes(), []byte("\n")) || bytes.Count(output.buf.Bytes(), []byte("\n")) != 1 || json.Unmarshal(bytes.TrimSpace(output.buf.Bytes()), &gotRecord) != nil || gotRecord["type"] != "result.reported" {
+		t.Fatalf("short-write output is not one complete JSONL record: %q", output.buf.Bytes())
+	}
+}
+
+type blockedWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockedWriter) Write(value []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(value), nil
+}
+
+func TestHermesBlockedNormalizedOutputUnblocksOnCancellation(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	output := &blockedWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	adapter, err := New(Config{ProxyURL: "http://127.0.0.1:19090", Output: output, ArtifactRoot: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := validScope(t, now)
+	spec, err := adapter.Prepare(ctx, harnessworker.Assignment{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.RequestTypeExecute, Scope: scope}, tokenFile(t, testToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeDone := make(chan error, 1)
+	go func() {
+		for sequence := 1; sequence <= 20; sequence++ {
+			line, _ := json.Marshal(recordValue(sequence, "message.assistant", map[string]any{"content": "bounded"}, map[string]map[string]any{}))
+			if _, err := spec.Stdout.Write(append(line, '\n')); err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- nil
+	}()
+	<-output.entered
+	cancel()
+	select {
+	case err := <-writeDone:
+		if err == nil || !strings.Contains(err.Error(), "cancelled") {
+			t.Fatalf("blocked output error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocked normalized output held the Hermes stdout writer after cancellation")
+	}
+	close(output.release)
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), time.Second)
+	defer finalizeCancel()
+	if err := adapter.Finalize(finalizeCtx, harnessworker.ProcessResult{Canceled: true, TreeKilled: true}); err == nil {
+		t.Fatal("cancelled blocked output finalized successfully")
+	}
 }
 
 func TestHermesRunsThroughScopedProxyAndPreservesSafeEvidence(t *testing.T) {
@@ -163,7 +257,7 @@ func TestHermesRunsThroughScopedProxyAndPreservesSafeEvidence(t *testing.T) {
 		t.Fatalf("normalized evidence leaked credentials: %s", evidence)
 	}
 	artifacts := adapter.Artifacts()
-	if len(artifacts) != 1 || artifacts[0].Role != "patch" || artifacts[0].Size == 0 {
+	if len(artifacts) != 2 || artifacts[0].Role != "patch" || artifacts[1].Role != "summary" || artifacts[0].Size == 0 || artifacts[1].Size == 0 {
 		t.Fatalf("artifacts=%#v", artifacts)
 	}
 	for _, event := range events {
@@ -205,8 +299,9 @@ func TestHermesFailsClosedOnRouteSecretAndCancellationContradictions(t *testing.
 			}
 		})
 	}
-	adapter, spec := preparedAdapter(t, now)
-	line, _ := json.Marshal(recordValue(1, "result.reported", map[string]any{"status": "succeeded"}, map[string]map[string]any{}))
+	adapter, spec, root := preparedAdapterAt(t, now)
+	emitRequiredArtifacts(t, spec, root, 1)
+	line, _ := json.Marshal(recordValue(3, "result.reported", map[string]any{"status": "succeeded"}, map[string]map[string]any{}))
 	if _, err := spec.Stdout.Write(append(line, '\n')); err != nil {
 		t.Fatal(err)
 	}
@@ -322,10 +417,81 @@ func TestHermesRefusesArtifactReplacedAfterReview(t *testing.T) {
 	}
 }
 
+func TestHermesSuccessfulResultRequiresExactArtifactEvents(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	t.Run("missing", func(t *testing.T) {
+		adapter, spec := preparedAdapter(t, now)
+		line, _ := json.Marshal(recordValue(1, "result.reported", map[string]any{"status": "succeeded"}, map[string]map[string]any{}))
+		if _, err := spec.Stdout.Write(append(line, '\n')); err == nil || !strings.Contains(err.Error(), "missing required") {
+			t.Fatalf("missing artifacts error=%v", err)
+		}
+		if err := adapter.Finalize(context.Background(), harnessworker.ProcessResult{Canceled: true, TreeKilled: true}); err == nil {
+			t.Fatal("missing artifact events finalized successfully")
+		}
+	})
+	t.Run("duplicate", func(t *testing.T) {
+		_, spec, root := preparedAdapterAt(t, now)
+		patch := []byte("diff --git a/a b/a\n")
+		if err := os.WriteFile(filepath.Join(root, "patch.diff"), patch, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(patch)
+		payload := map[string]any{"name": "patch", "role": "patch", "kind": "agent.patch", "mediaType": "text/x-diff", "path": "/workspace/artifacts/patch.diff", "contentDigest": "sha256:" + hex.EncodeToString(digest[:])}
+		for sequence := 1; sequence <= 2; sequence++ {
+			line, _ := json.Marshal(recordValue(sequence, "patch.created", payload, map[string]map[string]any{}))
+			_, err := spec.Stdout.Write(append(line, '\n'))
+			if sequence == 2 && (err == nil || !strings.Contains(err.Error(), "duplicate")) {
+				t.Fatalf("duplicate artifact error=%v", err)
+			}
+		}
+	})
+	t.Run("event metadata mismatch", func(t *testing.T) {
+		_, spec, root := preparedAdapterAt(t, now)
+		summary := []byte("summary\n")
+		if err := os.WriteFile(filepath.Join(root, "summary.md"), summary, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(summary)
+		line, _ := json.Marshal(recordValue(1, "patch.created", map[string]any{"name": "summary", "role": "summary", "kind": "agent.summary", "mediaType": "text/markdown", "path": "/workspace/artifacts/summary.md", "contentDigest": "sha256:" + hex.EncodeToString(digest[:])}, map[string]map[string]any{}))
+		if _, err := spec.Stdout.Write(append(line, '\n')); err == nil || !strings.Contains(err.Error(), "output contract") {
+			t.Fatalf("mismatched artifact error=%v", err)
+		}
+	})
+}
+
+func TestHermesFinalizeRevalidatesArtifactBytesAndTokenAbsence(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	for name, replacement := range map[string][]byte{
+		"replacement":    []byte("different final summary\n"),
+		"listener token": []byte(testToken),
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter, spec, root := preparedAdapterAt(t, now)
+			emitRequiredArtifacts(t, spec, root, 1)
+			line, _ := json.Marshal(recordValue(3, "result.reported", map[string]any{"status": "succeeded"}, map[string]map[string]any{}))
+			if _, err := spec.Stdout.Write(append(line, '\n')); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "summary.md"), replacement, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Finalize(context.Background(), harnessworker.ProcessResult{Exited: true, ExitCode: 0}); err == nil || !strings.Contains(err.Error(), "changed") {
+				t.Fatalf("post-event %s error=%v", name, err)
+			}
+		})
+	}
+}
+
 func preparedAdapter(t *testing.T, now time.Time) (*Adapter, harnessworker.ProcessSpec) {
+	adapter, spec, _ := preparedAdapterAt(t, now)
+	return adapter, spec
+}
+
+func preparedAdapterAt(t *testing.T, now time.Time) (*Adapter, harnessworker.ProcessSpec, string) {
 	t.Helper()
 	var output bytes.Buffer
-	adapter, err := New(Config{ProxyURL: "http://127.0.0.1:19090", Output: &output, ArtifactRoot: t.TempDir(), Now: func() time.Time { return now }})
+	root := t.TempDir()
+	adapter, err := New(Config{ProxyURL: "http://127.0.0.1:19090", Output: &output, ArtifactRoot: root, Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +500,29 @@ func preparedAdapter(t *testing.T, now time.Time) (*Adapter, harnessworker.Proce
 	if err != nil {
 		t.Fatal(err)
 	}
-	return adapter, spec
+	return adapter, spec, root
+}
+
+func emitRequiredArtifacts(t *testing.T, spec harnessworker.ProcessSpec, root string, firstSequence int) {
+	t.Helper()
+	patch, summary := []byte("diff --git a/a b/a\n"), []byte("summary\n")
+	if err := os.WriteFile(filepath.Join(root, "patch.diff"), patch, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "summary.md"), summary, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	patchDigest, summaryDigest := sha256.Sum256(patch), sha256.Sum256(summary)
+	records := []map[string]any{
+		recordValue(firstSequence, "patch.created", map[string]any{"name": "patch", "role": "patch", "kind": "agent.patch", "mediaType": "text/x-diff", "path": "/workspace/artifacts/patch.diff", "contentDigest": "sha256:" + hex.EncodeToString(patchDigest[:])}, map[string]map[string]any{}),
+		recordValue(firstSequence+1, "artifact.created", map[string]any{"name": "summary", "role": "summary", "kind": "agent.summary", "mediaType": "text/markdown", "path": "/workspace/artifacts/summary.md", "contentDigest": "sha256:" + hex.EncodeToString(summaryDigest[:])}, map[string]map[string]any{}),
+	}
+	for _, item := range records {
+		encoded, _ := json.Marshal(item)
+		if _, err := spec.Stdout.Write(append(encoded, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func validScope(t *testing.T, now time.Time) harnessworker.WorkloadScope {
@@ -344,7 +532,7 @@ func validScope(t *testing.T, now time.Time) harnessworker.WorkloadScope {
 		t.Fatal(err)
 	}
 	digest := "sha256:" + strings.Repeat("a", 64)
-	return harnessworker.WorkloadScope{RunID: "30000000-0000-4000-8000-000000000001", WorkspaceID: "40000000-0000-4000-8000-000000000001", ProjectID: "50000000-0000-4000-8000-000000000001", OperationID: "60000000-0000-4000-8000-000000000001", SandboxID: "61000000-0000-4000-8000-000000000001", AgentVersionID: "62000000-0000-4000-8000-000000000001", AgentVersionDigest: digest, HarnessProfileID: "63000000-0000-4000-8000-000000000001", HarnessProfileDigest: digest, HarnessVersionID: "64000000-0000-4000-8000-000000000001", HarnessVersionDigest: digest, RouteID: testRouteID, RouteVersion: 7, Protocol: harnessworker.ProtocolOpenAIResponses, ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), ListenerCredentialRef: "listener-token://65000000-0000-4000-8000-000000000001", ListenerTokenFingerprint: fingerprint}
+	return harnessworker.WorkloadScope{RunID: "30000000-0000-4000-8000-000000000001", WorkspaceID: "40000000-0000-4000-8000-000000000001", ProjectID: "50000000-0000-4000-8000-000000000001", OperationID: "60000000-0000-4000-8000-000000000001", SandboxID: "61000000-0000-4000-8000-000000000001", AgentVersionID: "62000000-0000-4000-8000-000000000001", AgentVersionDigest: digest, HarnessProfileID: "63000000-0000-4000-8000-000000000001", HarnessProfileDigest: digest, HarnessVersionID: "64000000-0000-4000-8000-000000000001", HarnessVersionDigest: digest, HarnessExecutableDigest: digest, RouteID: testRouteID, RouteVersion: 7, Protocol: harnessworker.ProtocolOpenAIResponses, ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), ListenerCredentialRef: "listener-token://65000000-0000-4000-8000-000000000001", ListenerTokenFingerprint: fingerprint}
 }
 
 func tokenFile(t *testing.T, value string) *os.File {

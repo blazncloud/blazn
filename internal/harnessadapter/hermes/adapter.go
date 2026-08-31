@@ -90,12 +90,18 @@ func (a *Adapter) Prepare(ctx context.Context, assignment harnessworker.Assignme
 		return harnessworker.ProcessSpec{}, err
 	}
 	abort := make(chan error, 1)
-	normal := &normalizer{scope: assignment.Scope, token: token, output: a.output, artifactRoot: a.artifactRoot, abort: abort, artifacts: []Artifact{}}
 	stdin, err := scopeInput(assignment.Scope)
 	if err != nil {
 		zero(token)
 		return harnessworker.ProcessSpec{}, err
 	}
+	childToken, err := listenerTokenPipe(token)
+	if err != nil {
+		zero(token)
+		return harnessworker.ProcessSpec{}, err
+	}
+	delivery := newOutputDelivery(ctx, a.output, abort)
+	normal := &normalizer{scope: assignment.Scope, token: token, delivery: delivery, artifactRoot: a.artifactRoot, abort: abort, artifacts: []Artifact{}}
 	a.normal, a.prepared = normal, true
 	return harnessworker.ProcessSpec{
 		Execution: harnessworker.Execution{
@@ -107,7 +113,7 @@ func (a *Adapter) Prepare(ctx context.Context, assignment harnessworker.Assignme
 		Environment: []string{"BLAZN_LISTENER_TOKEN_FD=3", "BLAZN_PROXY_URL=" + a.proxyURL},
 		Stdin:       stdin,
 		Stdout:      normal,
-		ExtraFiles:  []*os.File{verifiedToken},
+		ExtraFiles:  []*os.File{childToken},
 		Abort:       abort,
 	}, nil
 }
@@ -122,7 +128,7 @@ func (a *Adapter) Finalize(ctx context.Context, process harnessworker.ProcessRes
 	}
 	normal := a.normal
 	a.mu.Unlock()
-	if err := normal.finalize(); err != nil {
+	if err := normal.finalize(ctx); err != nil {
 		return err
 	}
 	if process.Canceled || process.TimedOut || ctx.Err() != nil {
@@ -137,6 +143,23 @@ func (a *Adapter) Finalize(ctx context.Context, process harnessworker.ProcessRes
 		return errors.New("Hermes exited successfully without a successful terminal record")
 	}
 	return nil
+}
+
+func listenerTokenPipe(token []byte) (*os.File, error) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return nil, errors.New("create Hermes listener credential pipe")
+	}
+	if err := writeAll(writer, token); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return nil, errors.New("write Hermes listener credential pipe")
+	}
+	if err := writer.Close(); err != nil {
+		_ = reader.Close()
+		return nil, errors.New("seal Hermes listener credential pipe")
+	}
+	return reader, nil
 }
 
 type Artifact struct {
@@ -161,6 +184,25 @@ func (a *Adapter) Artifacts() []Artifact {
 	return append([]Artifact(nil), normal.artifacts...)
 }
 
+// ReviewedArtifacts returns the adapter-attested terminal artifact evidence in
+// the worker's shared shape. The runtime compares this defensive copy with its
+// independent, post-process rooted collection before reporting success.
+func (a *Adapter) ReviewedArtifacts() []harnessworker.ArtifactResult {
+	a.mu.Lock()
+	normal := a.normal
+	a.mu.Unlock()
+	if normal == nil {
+		return nil
+	}
+	normal.mu.Lock()
+	defer normal.mu.Unlock()
+	results := make([]harnessworker.ArtifactResult, 0, len(normal.artifacts))
+	for _, artifact := range normal.artifacts {
+		results = append(results, harnessworker.ArtifactResult{Name: artifact.Name, Role: artifact.Role, Kind: artifact.Kind, MediaType: artifact.MediaType, Size: artifact.Size, ContentDigest: artifact.ContentDigest})
+	}
+	return results
+}
+
 type record struct {
 	SchemaVersion string                    `json:"schemaVersion"`
 	Sequence      int                       `json:"sequence"`
@@ -173,7 +215,7 @@ type normalizer struct {
 	mu             sync.Mutex
 	scope          harnessworker.WorkloadScope
 	token          []byte
-	output         io.Writer
+	delivery       *outputDelivery
 	artifactRoot   string
 	abort          chan<- error
 	pending        []byte
@@ -181,6 +223,87 @@ type normalizer struct {
 	artifacts      []Artifact
 	terminalStatus string
 	failed         error
+}
+
+type outputDelivery struct {
+	ctx    context.Context
+	output io.Writer
+	abort  chan<- error
+	queue  chan []byte
+	done   chan struct{}
+	once   sync.Once
+
+	mu  sync.Mutex
+	err error
+}
+
+func newOutputDelivery(ctx context.Context, output io.Writer, abort chan<- error) *outputDelivery {
+	delivery := &outputDelivery{ctx: ctx, output: output, abort: abort, queue: make(chan []byte, 8), done: make(chan struct{})}
+	go delivery.run()
+	return delivery
+}
+
+func (d *outputDelivery) run() {
+	defer close(d.done)
+	for value := range d.queue {
+		if err := writeAll(d.output, value); err != nil {
+			d.mu.Lock()
+			d.err = errors.New("write normalized Hermes output")
+			err := d.err
+			d.mu.Unlock()
+			select {
+			case d.abort <- err:
+			default:
+			}
+			return
+		}
+	}
+}
+
+func (d *outputDelivery) send(value []byte) error {
+	select {
+	case <-d.done:
+		return d.result()
+	default:
+	}
+	select {
+	case d.queue <- value:
+		return nil
+	case <-d.done:
+		return d.result()
+	case <-d.ctx.Done():
+		return errors.New("write normalized Hermes output cancelled")
+	}
+}
+
+func (d *outputDelivery) finish(ctx context.Context) error {
+	d.once.Do(func() { close(d.queue) })
+	select {
+	case <-d.done:
+		return d.result()
+	case <-ctx.Done():
+		return errors.New("flush normalized Hermes output cancelled")
+	}
+}
+
+func (d *outputDelivery) result() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.err
+}
+
+func writeAll(output io.Writer, value []byte) error {
+	for len(value) != 0 {
+		written, err := output.Write(value)
+		if err != nil {
+			return err
+		}
+		if written <= 0 || written > len(value) {
+			return io.ErrShortWrite
+		}
+		value = value[written:]
+	}
+	return nil
 }
 
 func (n *normalizer) Write(value []byte) (int, error) {
@@ -230,15 +353,62 @@ func (n *normalizer) consume(line []byte) error {
 		if err != nil {
 			return err
 		}
-		n.artifacts = append(n.artifacts, artifact)
+		if err := n.addArtifact(item.Type, artifact); err != nil {
+			return err
+		}
 	}
 	if item.Type == "result.reported" {
-		n.terminalStatus = text(item.Payload["status"])
+		status := text(item.Payload["status"])
+		if status == "succeeded" {
+			if err := n.requireSuccessfulArtifacts(); err != nil {
+				return err
+			}
+		}
+		n.terminalStatus = status
 	}
 	canonical, _ := json.Marshal(item)
 	canonical = append(canonical, '\n')
-	if _, err := n.output.Write(canonical); err != nil {
-		return errors.New("write normalized Hermes output")
+	if err := n.delivery.send(canonical); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (n *normalizer) addArtifact(eventType string, artifact Artifact) error {
+	expectedPath := ""
+	switch {
+	case eventType == "patch.created" && artifact.Name == "patch" && artifact.Role == "patch":
+		expectedPath = "/workspace/artifacts/patch.diff"
+	case eventType == "artifact.created" && artifact.Name == "summary" && artifact.Role == "summary":
+		expectedPath = "/workspace/artifacts/summary.md"
+	default:
+		return errors.New("Hermes artifact event does not match the required output contract")
+	}
+	if artifact.Path != expectedPath {
+		return errors.New("Hermes artifact path does not match the required output contract")
+	}
+	for _, existing := range n.artifacts {
+		if existing.Name == artifact.Name || existing.Role == artifact.Role || existing.Path == artifact.Path {
+			return errors.New("Hermes emitted a duplicate artifact event")
+		}
+	}
+	if artifact.Role == "patch" && len(n.artifacts) != 0 || artifact.Role == "summary" && (len(n.artifacts) != 1 || n.artifacts[0].Role != "patch") {
+		return errors.New("Hermes artifact events are out of required order")
+	}
+	n.artifacts = append(n.artifacts, artifact)
+	return nil
+}
+
+func (n *normalizer) requireSuccessfulArtifacts() error {
+	if len(n.artifacts) != 2 {
+		return errors.New("Hermes successful result is missing required artifact events")
+	}
+	found := map[string]bool{}
+	for _, artifact := range n.artifacts {
+		found[artifact.Role] = true
+	}
+	if !found["patch"] || !found["summary"] {
+		return errors.New("Hermes successful result is missing required artifact events")
 	}
 	return nil
 }
@@ -254,17 +424,36 @@ func (n *normalizer) fail(err error) error {
 	return n.failed
 }
 
-func (n *normalizer) finalize() error {
+func (n *normalizer) finalize(ctx context.Context) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	defer zero(n.token)
+	outputErr := n.delivery.finish(ctx)
 	if n.failed != nil {
 		return n.failed
 	}
 	if len(n.pending) != 0 {
 		return errors.New("Hermes output ended with an incomplete JSONL record")
 	}
+	if outputErr != nil {
+		return outputErr
+	}
+	if n.terminalStatus == "succeeded" {
+		if err := n.requireSuccessfulArtifacts(); err != nil {
+			return err
+		}
+		for _, artifact := range n.artifacts {
+			validated, err := validateArtifact(artifactPayload(artifact), n.artifactRoot, n.token)
+			if err != nil || validated != artifact {
+				return errors.New("Hermes artifact changed after its creation event")
+			}
+		}
+	}
 	return nil
+}
+
+func artifactPayload(artifact Artifact) map[string]any {
+	return map[string]any{"name": artifact.Name, "role": artifact.Role, "kind": artifact.Kind, "mediaType": artifact.MediaType, "path": artifact.Path, "contentDigest": artifact.ContentDigest}
 }
 
 func (n *normalizer) status() string {
