@@ -319,12 +319,13 @@ func TestRuntimeFailsClosedWhenNormalProcessCleanupIsUnproven(t *testing.T) {
 	_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
 	token, _ := os.Open(tokenPath)
 	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
-	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: cleanupUnprovenRunner{}, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	collector := &fakeCollector{artifacts: []ArtifactResult{{Name: "patch", Role: "patch", Kind: "agent.patch", MediaType: "text/x-diff", Size: 9, ContentDigest: "sha256:" + strings.Repeat("a", 64)}}}
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: cleanupUnprovenRunner{}, Collector: collector, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result := runtime.Run(context.Background(), runtimeAssignment(now))
-	if result.Status != "recovery_required" || result.ErrorCode != "process_cleanup_unproven" || result.ProcessTreeTerminated {
+	if result.Status != "recovery_required" || result.ErrorCode != "process_cleanup_unproven" || result.ProcessTreeTerminated || collector.calls != 0 || len(result.Artifacts) != 0 {
 		t.Fatalf("cleanup result=%#v", result)
 	}
 }

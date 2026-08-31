@@ -89,6 +89,10 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 	} else {
 		result.Status = "succeeded"
 	}
+	if !process.CleanupComplete {
+		result.Artifacts = []ArtifactResult{}
+		return finish(result, started, r.config.Now())
+	}
 	validationCtx, validationCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	postflightErr := r.config.ScopeValidator.ValidateWorkloadScope(validationCtx, assignment.Scope)
 	validationCancel()
