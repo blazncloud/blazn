@@ -83,7 +83,7 @@ func parseExecution(arguments []string) (harnessworker.Execution, error) {
 			return harnessworker.Execution{}, fmt.Errorf("launch configuration is invalid")
 		}
 	}
-	return harnessworker.Execution{Argv: append([]string(nil), arguments[2:]...), WorkingDirectory: "/workspace", TimeoutSeconds: harnessworker.DefaultRunSeconds, CancelGraceSeconds: harnessworker.DefaultCancelSeconds}, nil
+	return harnessworker.Execution{Argv: append([]string(nil), arguments[2:]...), WorkingDirectory: "/workspace", TimeoutSeconds: hermes.ReviewedRunSeconds, CancelGraceSeconds: hermes.ReviewedCancelSeconds}, nil
 }
 
 func fixedArtifacts() []harnessworker.ArtifactSpec {

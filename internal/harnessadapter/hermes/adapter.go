@@ -23,15 +23,28 @@ import (
 )
 
 const (
-	ReviewedExecutable = "/opt/blazn/hermes"
-	RecordSchema       = "blazn.dev/hermes-adapter-record/v1alpha1"
-	maxRecordBytes     = 128 << 10
-	maxRecords         = 10000
-	maxTokenBytes      = 4 << 10
-	maxArtifactBytes   = 8 << 20
+	ReviewedExecutable       = "/opt/blazn/hermes"
+	ReviewedRunSeconds       = 30 * 60
+	ReviewedCancelSeconds    = 20
+	ReviewedGracefulSignal   = "SIGINT"
+	listenerTokenEnvironment = "BLAZN_LISTENER_TOKEN_FD"
+	proxyURLEnvironment      = "BLAZN_PROXY_URL"
+	RecordSchema             = "blazn.dev/hermes-adapter-record/v1alpha1"
+	maxRecordBytes           = 128 << 10
+	maxRecords               = 10000
+	maxTokenBytes            = 4 << 10
+	maxArtifactBytes         = 8 << 20
 )
 
 var ReviewedArgv = []string{"run", "--jsonl"}
+
+func ReviewedEnvironmentAllowlist() []string {
+	return []string{listenerTokenEnvironment, proxyURLEnvironment}
+}
+
+func SupportsProtocol(protocol harnessworker.Protocol) bool {
+	return protocol == harnessworker.ProtocolOpenAIResponses || protocol == harnessworker.ProtocolOpenAIChat
+}
 
 type Config struct {
 	ProxyURL     string
@@ -85,6 +98,9 @@ func (a *Adapter) Prepare(ctx context.Context, assignment harnessworker.Assignme
 	if err := assignment.ValidateAt(a.now().UTC()); err != nil {
 		return harnessworker.ProcessSpec{}, fmt.Errorf("Hermes assignment is invalid: %w", err)
 	}
+	if !SupportsProtocol(assignment.Scope.Protocol) {
+		return harnessworker.ProcessSpec{}, errors.New("Hermes assignment protocol is unsupported")
+	}
 	token, err := readVerifiedToken(verifiedToken, assignment.Scope.ListenerTokenFingerprint)
 	if err != nil {
 		return harnessworker.ProcessSpec{}, err
@@ -107,10 +123,10 @@ func (a *Adapter) Prepare(ctx context.Context, assignment harnessworker.Assignme
 		Execution: harnessworker.Execution{
 			Argv:               []string{ReviewedExecutable, ReviewedArgv[0], ReviewedArgv[1]},
 			WorkingDirectory:   "/workspace",
-			TimeoutSeconds:     harnessworker.DefaultRunSeconds,
-			CancelGraceSeconds: harnessworker.DefaultCancelSeconds,
+			TimeoutSeconds:     ReviewedRunSeconds,
+			CancelGraceSeconds: ReviewedCancelSeconds,
 		},
-		Environment: []string{"BLAZN_LISTENER_TOKEN_FD=3", "BLAZN_PROXY_URL=" + a.proxyURL},
+		Environment: []string{listenerTokenEnvironment + "=3", proxyURLEnvironment + "=" + a.proxyURL},
 		Stdin:       stdin,
 		Stdout:      normal,
 		ExtraFiles:  []*os.File{childToken},

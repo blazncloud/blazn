@@ -309,6 +309,20 @@ func TestHermesRunsThroughScopedProxyAndPreservesSafeEvidence(t *testing.T) {
 	}
 }
 
+func TestHermesRejectsProtocolOutsideReviewedProfile(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	adapter, err := New(Config{ProxyURL: "http://127.0.0.1:19090", Output: io.Discard, ArtifactRoot: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := validScope(t, now)
+	scope.Protocol = harnessworker.ProtocolAnthropicMessages
+	_, err = adapter.Prepare(context.Background(), harnessworker.Assignment{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.RequestTypeExecute, Scope: scope}, tokenFile(t, testToken))
+	if err == nil || !strings.Contains(err.Error(), "protocol is unsupported") {
+		t.Fatalf("unsupported Hermes protocol error=%v", err)
+	}
+}
+
 func TestHermesFailsClosedOnRouteSecretAndCancellationContradictions(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	for name, test := range map[string]struct {

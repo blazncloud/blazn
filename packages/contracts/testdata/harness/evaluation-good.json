@@ -7,7 +7,7 @@
     "platform": "linux/amd64",
     "resolvedHarness": {
         "definition": {"id":"19000000-0000-4000-8000-000000000001","kind":"hermes","resourceVersion":1},
-        "version": {"id":"20000000-0000-4000-8000-000000000001","digest":"sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7"},
+        "version": {"id":"20000000-0000-4000-8000-000000000001","digest":"sha256:ef2f252dd50e2924542daac5faad4b8116b0db822f3ae86edbf0569f380567de"},
         "profile": {"id":"21000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","digest":"sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74"}
     },
     "cases": [
@@ -126,6 +126,6 @@
         "runId": "30000000-0000-4000-8000-000000000001",
         "receiptDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "parityGroupId": "92000000-0000-4000-8000-000000000001",
-        "runReceipt": {"runId":"30000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","receiptDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","agentVersionId":"11000000-0000-4000-8000-000000000001","agentVersionDigest":"sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28","harnessVersionId":"20000000-0000-4000-8000-000000000001","harnessVersionDigest":"sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7","profileId":"21000000-0000-4000-8000-000000000001","profileDigest":"sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74","sourceRepository":"https://github.com/blazncloud/blazn.git","sourceCommit":"1111111111111111111111111111111111111111","templateVersionId":"60000000-0000-4000-8000-000000000001","templateDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","taskDigest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","resultDigest":"sha256:12ab548bf72ee788159fc53478f13a1edc7644c9dad6df12668daea92c1c11be"}
+        "runReceipt": {"runId":"30000000-0000-4000-8000-000000000001","workspaceId":"40000000-0000-4000-8000-000000000001","receiptDigest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","agentVersionId":"11000000-0000-4000-8000-000000000001","agentVersionDigest":"sha256:a4e3adaa4f42cef0b8572181b9ba335a9ad8eabea12677020bc3812f5e8dff28","harnessVersionId":"20000000-0000-4000-8000-000000000001","harnessVersionDigest":"sha256:ef2f252dd50e2924542daac5faad4b8116b0db822f3ae86edbf0569f380567de","profileId":"21000000-0000-4000-8000-000000000001","profileDigest":"sha256:48356f63c62a346f1a211121b1f57b164ecfa789344f6a9e85ef3be792310a74","sourceRepository":"https://github.com/blazncloud/blazn.git","sourceCommit":"1111111111111111111111111111111111111111","templateVersionId":"60000000-0000-4000-8000-000000000001","templateDigest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","taskDigest":"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","resultDigest":"sha256:12ab548bf72ee788159fc53478f13a1edc7644c9dad6df12668daea92c1c11be"}
     }
 }

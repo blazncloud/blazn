@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +20,7 @@ import (
 func TestParseExecutionAllowsOnlyReviewedHermesArgv(t *testing.T) {
 	valid := []string{"blazn-harness-worker", "--", hermes.ReviewedExecutable, "run", "--jsonl"}
 	execution, err := parseExecution(valid)
-	if err != nil || strings.Join(execution.Argv, "|") != hermes.ReviewedExecutable+"|run|--jsonl" {
+	if err != nil || strings.Join(execution.Argv, "|") != hermes.ReviewedExecutable+"|run|--jsonl" || execution.TimeoutSeconds != hermes.ReviewedRunSeconds || execution.CancelGraceSeconds != hermes.ReviewedCancelSeconds {
 		t.Fatalf("execution=%#v err=%v", execution, err)
 	}
 	for _, invalid := range [][]string{
@@ -29,6 +31,51 @@ func TestParseExecutionAllowsOnlyReviewedHermesArgv(t *testing.T) {
 		if _, err := parseExecution(invalid); err == nil {
 			t.Fatalf("unreviewed argv passed: %#v", invalid)
 		}
+	}
+}
+
+func TestHermesWorkerMatchesFrozenProfile(t *testing.T) {
+	type fixture struct {
+		Version struct {
+			Executable struct {
+				Path                 string   `json:"path"`
+				FixedArgv            []string `json:"fixedArgv"`
+				EnvironmentAllowlist []string `json:"environmentAllowlist"`
+				Termination          struct {
+					GracefulSignal string `json:"gracefulSignal"`
+					GraceSeconds   int    `json:"graceSeconds"`
+				} `json:"termination"`
+			} `json:"executable"`
+			Compatibility struct {
+				ProxyProtocols []string `json:"proxyProtocols"`
+			} `json:"compatibility"`
+		} `json:"version"`
+		Profile struct {
+			Policy struct {
+				MaxRunSeconds int `json:"maxRunSeconds"`
+			} `json:"policy"`
+		} `json:"profile"`
+	}
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve worker test source")
+	}
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "packages", "contracts", "testdata", "harness", "hermes-profile.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frozen fixture
+	if err := json.Unmarshal(body, &frozen); err != nil {
+		t.Fatal(err)
+	}
+	if frozen.Version.Executable.Path != hermes.ReviewedExecutable || !reflect.DeepEqual(frozen.Version.Executable.FixedArgv, hermes.ReviewedArgv) ||
+		!reflect.DeepEqual(frozen.Version.Executable.EnvironmentAllowlist, hermes.ReviewedEnvironmentAllowlist()) || frozen.Version.Executable.Termination.GracefulSignal != hermes.ReviewedGracefulSignal ||
+		frozen.Version.Executable.Termination.GraceSeconds != hermes.ReviewedCancelSeconds || frozen.Profile.Policy.MaxRunSeconds != hermes.ReviewedRunSeconds {
+		t.Fatalf("frozen Hermes executable contract diverged: %#v", frozen)
+	}
+	wantProtocols := []string{string(harnessworker.ProtocolOpenAIResponses), string(harnessworker.ProtocolOpenAIChat)}
+	if !reflect.DeepEqual(frozen.Version.Compatibility.ProxyProtocols, wantProtocols) || !hermes.SupportsProtocol(harnessworker.ProtocolOpenAIResponses) || !hermes.SupportsProtocol(harnessworker.ProtocolOpenAIChat) || hermes.SupportsProtocol(harnessworker.ProtocolAnthropicMessages) {
+		t.Fatalf("frozen Hermes protocol contract diverged: %q", frozen.Version.Compatibility.ProxyProtocols)
 	}
 }
 
@@ -122,7 +169,7 @@ func TestHermesCompositionStreamsSafeEvidenceBeforeTerminalResult(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution := harnessworker.Execution{Argv: []string{hermes.ReviewedExecutable, "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: harnessworker.DefaultRunSeconds, CancelGraceSeconds: harnessworker.DefaultCancelSeconds}
+	execution := harnessworker.Execution{Argv: []string{hermes.ReviewedExecutable, "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: hermes.ReviewedRunSeconds, CancelGraceSeconds: hermes.ReviewedCancelSeconds}
 	runtime, err := harnessworker.NewRuntime(harnessworker.RunConfig{
 		ScopeValidator: compositionScopeValidator{}, ExecutableVerifier: compositionExecutableVerifier{}, TokenSource: compositionTokenSource{file: tokenFile}, Adapter: adapter,
 		ProcessRunner: compositionRunner{}, Collector: compositionCollector{}, Execution: execution, Artifacts: fixedArtifacts(),
