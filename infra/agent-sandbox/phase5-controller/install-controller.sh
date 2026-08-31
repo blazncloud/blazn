@@ -90,7 +90,7 @@ phase=$(cat "$transaction/phase")
 case "$phase" in
   complete) printf 'controller deployment transaction is already complete\n'; exit 0 ;;
   rollback-complete) printf 'controller deployment transaction was rolled back; use a new transaction\n' >&2; exit 1 ;;
-  sealed|anchor-intent|anchor-journaled|baselined|apply-intent|applied|scaled) ;;
+  sealed|anchor-intent|anchor-journaled|baselined|apply-intent|applied|scale-intent|scaled) ;;
   *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;
 esac
 
@@ -280,7 +280,7 @@ EOF
   done
   write_phase applied; phase=applied
 fi
-if [ "$phase" = applied ] || [ "$phase" = scaled ]; then
+if [ "$phase" = applied ] || [ "$phase" = scale-intent ] || [ "$phase" = scaled ]; then
   validate_anchor_record
   anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
   [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
@@ -293,13 +293,28 @@ if [ "$phase" = applied ] || [ "$phase" = scaled ]; then
   validate_uid_journal
 fi
 if [ "$phase" = applied ]; then
-  # Idempotent across a crash between the scale and its journal entry: the
-  # scale target is 1, so re-running scale is a no-op, and the recorded UID
-  # proves the Deployment is still the one this transaction applied.
-  expected_deployment_replicas=0
+  # Persist scale intent before the mutation. Accept replicas=1 here for
+  # transactions created by the earlier protocol that could crash after the
+  # fenced patch but before journaling a dedicated intent phase.
+  deployment_resume_replicas=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json | jq -er '.spec.replicas')
+  case "$deployment_resume_replicas" in 0|1) ;; *) printf 'controller Deployment replicas changed unexpectedly\n' >&2; exit 1 ;; esac
+  expected_deployment_replicas=$deployment_resume_replicas
   validate_all_live
-  deployment_uid=$(jq -er '."deployment/blazn-sandbox-controller"' "$uids")
-  scale_deployment_exact "$deployment_uid" "$validated_deployment_rv"
+  write_phase scale-intent; phase=scale-intent
+fi
+if [ "$phase" = scale-intent ]; then
+  # A resume distinguishes the two safe crash states using the exact journaled
+  # UID plus immutable semantics: zero still needs the fenced patch; one proves
+  # that the prior patch succeeded.
+  deployment_resume_replicas=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json | jq -er '.spec.replicas')
+  case "$deployment_resume_replicas" in 0|1) ;; *) printf 'controller Deployment replicas changed unexpectedly\n' >&2; exit 1 ;; esac
+  expected_deployment_replicas=$deployment_resume_replicas
+  validate_all_live
+  if [ "$deployment_resume_replicas" = 0 ]; then
+    deployment_uid=$(jq -er '."deployment/blazn-sandbox-controller"' "$uids")
+    scale_deployment_exact "$deployment_uid" "$validated_deployment_rv"
+    if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = scale-executed ]; then exit 86; fi
+  fi
   expected_deployment_replicas=1
   validate_all_live
   write_phase scaled; phase=scaled

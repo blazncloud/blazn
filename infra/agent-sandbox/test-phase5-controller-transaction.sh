@@ -80,7 +80,7 @@ emit_object() {
     *) exit 1 ;;
   esac
   if [ -n "$ns" ]; then namespace_json=$(printf ',"namespace":"%s"' "$ns"); else namespace_json=; fi
-  if [ -e "$FAKE_STATE/user-$object_key" ]; then owner_uid=00000000-0000-4000-8000-000000000000; else owner_uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
+  if [ -e "$FAKE_STATE/user-$object_key" ]; then uid=00000000-0000-4000-8000-000000000000; owner_uid=00000000-0000-4000-8000-000000000000; else owner_uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
   if [ "${EMIT_LIVE:-0}" = 1 ] && [ "${FAKE_SEMANTIC_DRIFT:-}" = "$object_key" ]; then drift_json=',"unexpected":{"mutated":true}'; else drift_json=; fi
   if [ "${EMIT_ADMISSION:-0}" = 1 ] && [ "${FAKE_ADMISSION_MUTATION:-}" = "$object_key" ]; then admission_json=',"rules":[{"apiGroups":["*"],"resources":["*"],"verbs":["*"]}]'; else admission_json=; fi
   if [ "$object_key" = deployment ]; then
@@ -281,7 +281,7 @@ run_tool install-controller.sh
 grep -Fq 'already complete' "$tmp/last-out"
 
 # T2: crash at each journal boundary, then resume to completion.
-for boundary in sealed anchor-intent anchor-journaled baselined apply-intent applied scaled complete; do
+for boundary in sealed anchor-intent anchor-journaled baselined apply-intent applied scale-intent scaled complete; do
   test_case "T2 crash boundary $boundary"
   reset_state; new_transaction
   run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER="$boundary" BLAZN_PHASE4C_DISPOSABLE_TEST=true
@@ -411,8 +411,19 @@ run_tool teardown-controller.sh
 expect_phase rollback-complete
 [ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 11 ]
 
-# T5c: a resume after the scale succeeded but before its journal entry
-# completes instead of failing on the sealed zero replicas.
+# T5c: a crash after the fenced scale succeeds but before the scaled journal
+# resumes from durable scale-intent and accepts the exact replicas=1 object.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=scale-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase scale-intent
+[ -e "$FAKE_STATE/scaled1" ]
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase complete
+
+# T5ca: transactions created before scale-intent existed may still be in
+# applied with an already-scaled exact Deployment; migrate them safely.
 reset_state; new_transaction
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]

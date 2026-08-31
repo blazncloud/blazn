@@ -63,7 +63,7 @@ case "$phase" in
     printf 'transaction anchor exists without an authoritative journaled UID; manual recovery is required\n' >&2; exit 1
     ;;
   anchor-journaled|baselined|apply-intent) ;;
-  applied|scaled|complete|rollback-intent) ;;
+  applied|scale-intent|scaled|complete|rollback-intent) ;;
   rollback-complete) printf 'controller transaction already rolled back\n'; exit 0 ;;
   *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;
 esac
@@ -102,18 +102,30 @@ validate_uid_journal
 # egress are removed.
 deployment_uid=$(jq -r '."deployment/blazn-sandbox-controller" // empty' "$uids")
 if [ -n "$deployment_uid" ]; then
+  drain_owned_deployment=0
   deployment_live=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json 2>/dev/null || :)
   deployment_live_uid=$(printf '%s' "$deployment_live" | jq -r '.metadata.uid // empty' 2>/dev/null || :)
   deployment_live_rv=$(printf '%s' "$deployment_live" | jq -r '.metadata.resourceVersion // empty' 2>/dev/null || :)
   if [ "$deployment_live_uid" = "$deployment_uid" ] && [ -n "$deployment_live_rv" ]; then
-    if ! scale_down_exact "$deployment_uid" "$deployment_live_rv"; then
-      deployment_after_scale_error=$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)
-      [ -z "$deployment_after_scale_error" ] || printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
+    if scale_down_exact "$deployment_uid" "$deployment_live_rv"; then
+      drain_owned_deployment=1
+    else
+      # The patch can lose a race to replacement or an unrelated update.
+      # Re-read the full identity: never wait on or scale a replacement. A
+      # same-UID resourceVersion race gets one newly fenced retry.
+      deployment_after_scale_error=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json 2>/dev/null || :)
+      deployment_after_uid=$(printf '%s' "$deployment_after_scale_error" | jq -r '.metadata.uid // empty' 2>/dev/null || :)
+      deployment_after_rv=$(printf '%s' "$deployment_after_scale_error" | jq -r '.metadata.resourceVersion // empty' 2>/dev/null || :)
+      if [ "$deployment_after_uid" = "$deployment_uid" ] && [ -n "$deployment_after_rv" ] && scale_down_exact "$deployment_uid" "$deployment_after_rv"; then
+        drain_owned_deployment=1
+      elif [ -n "$deployment_after_uid" ]; then
+        printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
+      fi
     fi
   elif [ -n "$deployment_live_uid" ]; then
     printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
   fi
-  if [ "$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)" = "$deployment_uid" ]; then
+  if [ "$drain_owned_deployment" -eq 1 ] && [ "$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)" = "$deployment_uid" ]; then
   attempt=0
   until [ "$(kubectl get pods -n blazn-poc-system -l app.kubernetes.io/name=blazn-sandbox-controller --no-headers 2>/dev/null | grep -c . || :)" = 0 ]; do
     attempt=$((attempt + 1)); [ "$attempt" -le 30 ] || { printf 'controller Pods did not drain\n' >&2; exit 1; }; sleep 2
