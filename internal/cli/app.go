@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	agentharnesspkg "github.com/blazncloud/blazn/internal/agentharness"
 	"github.com/blazncloud/blazn/internal/auth"
 	"github.com/blazncloud/blazn/internal/client"
 	developmentpkg "github.com/blazncloud/blazn/internal/development"
@@ -67,6 +68,7 @@ type App struct {
 	run                func() (runCommands, error)
 	proxy              func() (proxyCommands, error)
 	development        func() (developmentCommands, error)
+	agentHarness       func() (agentHarnessCommands, error)
 	hostName           func() (string, error)
 	machineFingerprint func() (string, error)
 }
@@ -124,6 +126,7 @@ func New(stdout, stderr io.Writer, build BuildInfo) *App {
 		run:                func() (runCommands, error) { return runpkg.NewDefaultService() },
 		proxy:              defaultProxyCommandFactory,
 		development:        func() (developmentCommands, error) { return developmentpkg.NewDefaultService() },
+		agentHarness:       func() (agentHarnessCommands, error) { return agentharnesspkg.NewDefaultService() },
 		hostName:           os.Hostname,
 		machineFingerprint: nodepkg.HostMachineFingerprint,
 		node:               func(daemonOnly bool) (nodeCommands, error) { return defaultNodeCommandFactory(build, daemonOnly) },
@@ -258,6 +261,10 @@ func (a *App) Run(args []string) int {
 		return a.runWorkspace(format, rest)
 	case "project":
 		return a.runProject(format, rest)
+	case "agent":
+		return a.runAgent(format, rest)
+	case "harness":
+		return a.runHarness(format, rest)
 	case "run":
 		return a.runRun(format, rest)
 	case "dev":

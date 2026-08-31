@@ -29,11 +29,13 @@ type commandError struct {
 }
 
 var rootCommands = []helpCommand{
+	{Name: "agent", Summary: "Validate, publish, and inspect versioned Agents"},
 	{Name: "auth", Summary: "Authenticate this device and manage sessions"},
 	{Name: "content", Summary: "Manage Content media workflows (plugin)"},
 	{Name: "doctor", Summary: "Run offline readiness checks"},
 	{Name: "dev", Summary: "Validate, build, test, inspect, and publish development projects"},
 	{Name: "help", Summary: "Show help for a command"},
+	{Name: "harness", Summary: "Validate, publish, and inspect Harness resources"},
 	{Name: "node", Summary: "Enroll, install, recover, and heartbeat a Node"},
 	{Name: "plugins", Summary: "Install and manage signed Blazn plugins"},
 	{Name: "project", Summary: "Create, select, and manage Workspace Projects"},
@@ -105,6 +107,10 @@ func (a *App) writeHelp(format OutputFormat, topic string) int {
 				{Name: "edit", Summary: "Update or archive a Project"},
 			},
 		}
+	case "agent":
+		output = helpOutput{Command: "agent", Usage: "blazn agent validate|create|list|get|versions|version|publish [options]", Summary: "Validate and manage Agents in the selected Workspace.", Commands: []helpCommand{{Name: "validate", Summary: "Validate an AgentVersion JSON document offline"}, {Name: "create", Summary: "Create an Agent identity"}, {Name: "list", Summary: "List Agents"}, {Name: "get", Summary: "Get an Agent"}, {Name: "versions", Summary: "List published AgentVersions"}, {Name: "version", Summary: "Get an AgentVersion"}, {Name: "publish", Summary: "Publish an immutable AgentVersion"}}}
+	case "harness":
+		output = helpOutput{Command: "harness", Usage: "blazn harness validate|definitions|definition|publish-definition|versions|version|publish-version|profiles|profile|publish-profile|revise-profile [options]", Summary: "Validate and manage Harness definitions, versions, and profiles.", Commands: []helpCommand{{Name: "validate", Summary: "Validate a Harness JSON document offline"}, {Name: "definitions", Summary: "List HarnessDefinitions"}, {Name: "definition", Summary: "Get a HarnessDefinition"}, {Name: "publish-definition", Summary: "Create a HarnessDefinition"}, {Name: "versions", Summary: "List HarnessVersions"}, {Name: "version", Summary: "Get a HarnessVersion"}, {Name: "publish-version", Summary: "Publish an immutable HarnessVersion"}, {Name: "profiles", Summary: "List HarnessProfiles"}, {Name: "profile", Summary: "Get a HarnessProfile"}, {Name: "publish-profile", Summary: "Create a HarnessProfile"}, {Name: "revise-profile", Summary: "Publish a HarnessProfile revision"}}}
 	case "node":
 		output = helpOutput{Command: "node", Usage: "blazn node install|list|get|capacity|enroll|recover|repair|uninstall|heartbeat|serve [options]", Summary: "Operate Nodes and their signed install/daemon runtime.", Commands: []helpCommand{{Name: "install", Summary: "Register and install this fresh Linux host using safe detected defaults"}, {Name: "list", Summary: "List Nodes in a Workspace"}, {Name: "get", Summary: "Get a Node"}, {Name: "capacity", Summary: "Show Node eligibility and capability publication state"}, {Name: "enroll", Summary: "Enroll and root-authorize with explicit advanced bootstrap inputs"}, {Name: "recover", Summary: "Resume rollback from the install WAL"}, {Name: "repair", Summary: "Reconcile an active receipt using a current authorized plan"}, {Name: "uninstall", Summary: "Remove Node-owned state and restore receipt-captured prior values"}, {Name: "heartbeat", Summary: "Submit one node-proof capability heartbeat"}, {Name: "serve", Summary: "Run the token-free Node heartbeat daemon"}}}
 	case "template":
