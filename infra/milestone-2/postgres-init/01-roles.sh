@@ -48,6 +48,8 @@ CREATE ROLE blazn_sandbox_controller
   LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 CREATE ROLE blazn_development_controller
   NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE blazn_agent_run_controller
+  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
 DO $preserve$
 DECLARE database_row record;
@@ -76,6 +78,7 @@ GRANT CONNECT ON DATABASE :"database_name" TO blazn_bootstrap;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_node_broker;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_sandbox_controller;
 GRANT CONNECT ON DATABASE :"database_name" TO blazn_development_controller;
+GRANT CONNECT ON DATABASE :"database_name" TO blazn_agent_run_controller;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT USAGE, CREATE ON SCHEMA public TO blazn_migration;
@@ -84,6 +87,7 @@ GRANT USAGE ON SCHEMA public TO blazn_bootstrap;
 GRANT USAGE ON SCHEMA public TO blazn_node_broker;
 GRANT USAGE ON SCHEMA public TO blazn_sandbox_controller;
 GRANT USAGE ON SCHEMA public TO blazn_development_controller;
+GRANT USAGE ON SCHEMA public TO blazn_agent_run_controller;
 ALTER DEFAULT PRIVILEGES FOR ROLE blazn_migration IN SCHEMA public
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 COMMIT;

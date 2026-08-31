@@ -21,11 +21,11 @@ DO $roles$
 DECLARE role_name text;
 DECLARE role_oid oid;
 BEGIN
-  FOREACH role_name IN ARRAY ARRAY['blazn_sandbox_controller','blazn_development_controller'] LOOP
+  FOREACH role_name IN ARRAY ARRAY['blazn_sandbox_controller','blazn_development_controller','blazn_agent_run_controller'] LOOP
     IF EXISTS (
       SELECT FROM pg_roles
       WHERE pg_roles.rolname=role_name
-        AND ((rolcanlogin AND role_name <> 'blazn_sandbox_controller') OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+        AND ((rolcanlogin AND role_name NOT IN ('blazn_sandbox_controller','blazn_agent_run_controller')) OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
     ) THEN
       RAISE EXCEPTION 'controller role % has unsafe attributes', role_name;
     END IF;
@@ -57,6 +57,8 @@ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE pg_roles.rolname=role_name) THEN
       IF role_name = 'blazn_sandbox_controller' THEN
         EXECUTE 'CREATE ROLE blazn_sandbox_controller LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS';
+      ELSIF role_name = 'blazn_agent_run_controller' THEN
+        EXECUTE 'CREATE ROLE blazn_agent_run_controller LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS';
       ELSE
         EXECUTE format(
           'CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
@@ -121,7 +123,8 @@ BEGIN
               ('sandbox_controller_record_source_materialization_v1','uuid,text,uuid,text,text,text,text,text,jsonb,jsonb'),
               ('sandbox_controller_record_artifact_v1','uuid,text,uuid,text,text,text,text,text,text,text,text,bigint,text'),
               ('sandbox_controller_complete_artifact_export_v1','uuid,text,uuid,text,text[]'),
-              ('sandbox_controller_consume_access_grant_v1','uuid,character,text')
+              ('sandbox_controller_consume_access_grant_v1','uuid,character,text'),
+              ('sandbox_controller_record_agent_node_observation','uuid,text,text,text,text')
             )
             WHEN 'blazn_development_controller' THEN (function_row.proname,replace(oidvectortypes(function_row.proargtypes),' ','')) NOT IN (
               ('development_controller_claim','text,integer'),('development_controller_renew','uuid,text,uuid,integer'),('development_controller_resolve','uuid,text,uuid'),
@@ -136,6 +139,13 @@ BEGIN
               ('development_collector_resolve_bound_sandbox_v1','uuid,bigint,text,text'),
               ('development_collector_mark_sandbox_ready_v1','uuid,bigint,text,text,uuid'),
               ('development_collector_authorize_execution_v1','uuid,bigint,text,text,uuid')
+            )
+            WHEN 'blazn_agent_run_controller' THEN (function_row.proname,replace(oidvectortypes(function_row.proargtypes),' ','')) NOT IN (
+              ('agent_run_controller_claim','text,integer'),
+              ('agent_run_controller_renew','uuid,text,uuid,integer'),
+              ('agent_run_controller_bind_sandbox','uuid,text,uuid,bigint,uuid,uuid'),
+              ('agent_run_controller_retry','uuid,text,uuid,integer,text'),
+              ('agent_run_controller_finalize','uuid,text,uuid,bigint,text,text,uuid[],bigint,text[]')
             )
           END
         )
@@ -257,7 +267,7 @@ BEGIN
   END LOOP;
 END
 $pgcrypto$;
-GRANT CONNECT ON DATABASE :"database_name" TO blazn_sandbox_controller,blazn_development_controller;
-GRANT USAGE ON SCHEMA public TO blazn_sandbox_controller,blazn_development_controller;
+GRANT CONNECT ON DATABASE :"database_name" TO blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller;
+GRANT USAGE ON SCHEMA public TO blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller;
 COMMIT;
 SQL

@@ -111,13 +111,15 @@ DO $$
 DECLARE unsafe_count integer;
 BEGIN
   SELECT count(*) INTO unsafe_count FROM pg_roles
-    WHERE rolname IN ('blazn_sandbox_controller','blazn_development_controller')
-      AND (rolcanlogin <> (rolname='blazn_sandbox_controller') OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls);
+    WHERE rolname IN ('blazn_sandbox_controller','blazn_development_controller','blazn_agent_run_controller')
+      AND (rolcanlogin <> (rolname IN ('blazn_sandbox_controller','blazn_agent_run_controller')) OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls);
   IF unsafe_count <> 0 THEN RAISE EXCEPTION 'controller compatibility created unsafe roles'; END IF;
   IF NOT has_database_privilege('blazn_sandbox_controller','blazn','CONNECT')
      OR NOT has_database_privilege('blazn_development_controller','blazn','CONNECT')
+     OR NOT has_database_privilege('blazn_agent_run_controller','blazn','CONNECT')
      OR NOT has_schema_privilege('blazn_sandbox_controller','public','USAGE')
-     OR NOT has_schema_privilege('blazn_development_controller','public','USAGE') THEN
+     OR NOT has_schema_privilege('blazn_development_controller','public','USAGE')
+     OR NOT has_schema_privilege('blazn_agent_run_controller','public','USAGE') THEN
     RAISE EXCEPTION 'controller compatibility grants are incomplete';
   END IF;
 END $$;
@@ -265,6 +267,7 @@ BEGIN
     )
     OR has_function_privilege('blazn_sandbox_controller','public.digest(bytea,text)','EXECUTE')
     OR has_function_privilege('blazn_development_controller','public.digest(text,text)','EXECUTE')
+    OR has_function_privilege('blazn_agent_run_controller','public.digest(text,text)','EXECUTE')
     OR NOT has_function_privilege('blazn_migration','public.digest(bytea,text)','EXECUTE')
     OR NOT has_function_privilege('blazn_migration','public.digest(text,text)','EXECUTE') THEN
     RAISE EXCEPTION 'controller compatibility did not normalize pgcrypto authority';

@@ -77,6 +77,62 @@ CREATE TABLE agent_run_preallocation_failures (
   FOREIGN KEY (run_id,workspace_id,project_id) REFERENCES agent_run_bindings(run_id,workspace_id,project_id) ON DELETE CASCADE
 );
 
+-- The Sandbox controller is the only component that observes both the bound
+-- Pod and its Kubernetes Node.  Persist that observation separately from the
+-- Agent Run controller so the latter cannot invent placement provenance.
+CREATE TABLE agent_run_sandbox_node_observations (
+  sandbox_id uuid PRIMARY KEY,
+  workspace_id uuid NOT NULL,
+  admission_observation_digest char(64) NOT NULL,
+  pod_uid text NOT NULL CHECK (pod_uid ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
+  pod_resource_version text NOT NULL CHECK (pod_resource_version ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
+  node_id uuid NOT NULL,
+  kubernetes_cluster_id text NOT NULL CHECK (char_length(kubernetes_cluster_id) BETWEEN 1 AND 128),
+  kubernetes_node_name text NOT NULL CHECK (char_length(kubernetes_node_name) BETWEEN 1 AND 253),
+  kubernetes_node_uid text NOT NULL CHECK (char_length(kubernetes_node_uid) BETWEEN 1 AND 128),
+  observed_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  FOREIGN KEY (sandbox_id,workspace_id) REFERENCES sandboxes(id,workspace_id) ON DELETE CASCADE,
+  FOREIGN KEY (node_id,workspace_id) REFERENCES nodes(id,workspace_id),
+  UNIQUE (sandbox_id,node_id)
+);
+
+CREATE FUNCTION sandbox_controller_record_agent_node_observation(
+  p_sandbox_id uuid,p_admission_observation_digest text,p_kubernetes_cluster_id text,
+  p_kubernetes_node_name text,p_kubernetes_node_uid text)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
+DECLARE target record;
+BEGIN
+  IF p_admission_observation_digest !~ '^[0-9a-f]{64}$' OR
+     char_length(p_kubernetes_cluster_id) NOT BETWEEN 1 AND 128 OR
+     char_length(p_kubernetes_node_name) NOT BETWEEN 1 AND 253 OR
+     char_length(p_kubernetes_node_uid) NOT BETWEEN 1 AND 128 THEN RETURN false; END IF;
+  SELECT admission.workspace_id,admission.pod_uid,admission.pod_resource_version,node.id AS node_id
+    INTO target
+    FROM public.sandbox_workload_admissions admission
+    JOIN public.sandboxes sandbox ON sandbox.id=admission.sandbox_id AND sandbox.workspace_id=admission.workspace_id
+    JOIN public.nodes node ON node.workspace_id=admission.workspace_id
+      AND node.kubernetes_cluster_id=p_kubernetes_cluster_id
+      AND node.kubernetes_node_name=p_kubernetes_node_name
+      AND node.kubernetes_node_uid=p_kubernetes_node_uid
+    WHERE admission.sandbox_id=p_sandbox_id AND admission.observation_digest=p_admission_observation_digest
+      AND admission.pod_uid IS NOT NULL AND admission.pod_resource_version IS NOT NULL
+      AND sandbox.state IN ('ready','running') AND sandbox.expires_at>clock_timestamp()
+      AND node.lifecycle_state='active' AND node.trust_state='verified' AND node.agent_eligible
+      AND node.current_identity_status='active' AND node.current_capability_version IS NOT NULL;
+  IF NOT FOUND THEN RETURN false; END IF;
+  INSERT INTO public.agent_run_sandbox_node_observations(sandbox_id,workspace_id,admission_observation_digest,
+    pod_uid,pod_resource_version,node_id,kubernetes_cluster_id,kubernetes_node_name,kubernetes_node_uid)
+  VALUES(p_sandbox_id,target.workspace_id,p_admission_observation_digest,target.pod_uid,target.pod_resource_version,
+    target.node_id,p_kubernetes_cluster_id,p_kubernetes_node_name,p_kubernetes_node_uid)
+  ON CONFLICT (sandbox_id) DO NOTHING;
+  RETURN EXISTS(SELECT 1 FROM public.agent_run_sandbox_node_observations observation
+    WHERE observation.sandbox_id=p_sandbox_id AND observation.workspace_id=target.workspace_id
+      AND observation.admission_observation_digest=p_admission_observation_digest
+      AND observation.pod_uid=target.pod_uid AND observation.pod_resource_version=target.pod_resource_version
+      AND observation.node_id=target.node_id AND observation.kubernetes_cluster_id=p_kubernetes_cluster_id
+      AND observation.kubernetes_node_name=p_kubernetes_node_name AND observation.kubernetes_node_uid=p_kubernetes_node_uid);
+END $$;
+
 ALTER TABLE runs DROP CONSTRAINT runs_check4;
 ALTER TABLE runs DROP CONSTRAINT runs_check6;
 ALTER TABLE runs ADD CONSTRAINT runs_node_placement_or_preallocation_failure_check CHECK (
@@ -84,6 +140,8 @@ ALTER TABLE runs ADD CONSTRAINT runs_node_placement_or_preallocation_failure_che
   (proof_class='sandbox' AND status IN ('failed','cancelled') AND node_id IS NULL));
 ALTER TABLE runs ADD CONSTRAINT runs_sandbox_placement_or_preallocation_failure_check CHECK (
   status='queued' OR proof_class<>'sandbox' OR sandbox_id IS NOT NULL OR status IN ('failed','cancelled'));
+ALTER TABLE runs ADD CONSTRAINT runs_sandbox_placement_pair_check CHECK (
+  proof_class<>'sandbox' OR (node_id IS NULL)=(sandbox_id IS NULL));
 
 CREATE FUNCTION validate_agent_run_preallocation_failure() RETURNS trigger
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
@@ -238,8 +296,8 @@ BEGIN
       agent_version_digest,harness_profile_id,harness_profile_digest)
       SELECT binding.run_id,binding.workspace_id,binding.project_id,'controller_attempts_exhausted',binding.agent_version_id,
         binding.agent_version_digest,binding.harness_profile_id,binding.harness_profile_digest
-      FROM public.agent_run_bindings binding WHERE binding.run_id=exhausted.id AND binding.bound_sandbox_id IS NULL;
-    IF NOT FOUND THEN RAISE EXCEPTION 'exhausted Agent Run already has placement' USING ERRCODE='40001'; END IF;
+      FROM public.agent_run_bindings binding WHERE binding.run_id=exhausted.id
+        AND binding.bound_sandbox_id IS NULL AND binding.bound_node_id IS NULL;
     UPDATE public.runs SET status='failed',version=version+1,completed_at=effective_now,error_code='controller_attempts_exhausted' WHERE id=exhausted.id;
     UPDATE public.agent_run_jobs AS exhausted_job SET worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,completed_at=effective_now,
       last_error_code='controller_attempts_exhausted',updated_at=effective_now WHERE exhausted_job.run_id=exhausted.id;
@@ -261,11 +319,14 @@ BEGIN
   RETURN QUERY SELECT run.id,run.workspace_id,run.project_id,run.version,selected.lease_token,selected.lease_expires_at,
     selected.attempt_count,run.requested_by,run.plan_digest,b.agent_version_id,b.agent_version_digest,av.document,
     b.harness_definition_id,b.harness_version_id,b.harness_version_digest,hv.document,b.harness_profile_id,
-    b.harness_profile_digest,hp.document,b.template_version_id,b.template_digest,b.model_route_id,b.model_route_version,
+    b.harness_profile_digest,revision.document,b.template_version_id,b.template_digest,b.model_route_id,b.model_route_version,
     b.model_protocol,b.bound_sandbox_id,b.bound_node_id
     FROM public.runs run JOIN public.agent_run_bindings b ON b.run_id=run.id
     JOIN public.agent_versions av ON av.id=b.agent_version_id JOIN public.harness_versions hv ON hv.id=b.harness_version_id
-    JOIN public.harness_profiles hp ON hp.id=b.harness_profile_id WHERE run.id=selected.run_id;
+    JOIN public.harness_profile_revisions revision ON revision.profile_id=b.harness_profile_id
+      AND revision.workspace_id=b.workspace_id AND revision.resource_version=b.harness_profile_resource_version
+      AND revision.digest=b.harness_profile_digest
+    WHERE run.id=selected.run_id;
 END $$;
 
 CREATE FUNCTION agent_run_controller_renew(p_run_id uuid,p_worker_id text,p_lease_token uuid,p_lease_seconds integer)
@@ -298,7 +359,18 @@ BEGIN
        AND n.lifecycle_state='active' AND n.trust_state='verified' AND n.agent_eligible) OR
      NOT EXISTS(SELECT 1 FROM public.sandboxes s WHERE s.id=p_sandbox_id AND s.workspace_id=target.workspace_id
        AND s.requested_by=target.requested_by AND s.state IN ('ready','running') AND s.expires_at>effective_now
-       AND s.template_version_id=target.template_version_id AND 'sha256:'||trim(s.template_digest)=target.template_digest) THEN RETURN false; END IF;
+       AND s.template_version_id=target.template_version_id AND 'sha256:'||trim(s.template_digest)=target.template_digest) OR
+     NOT EXISTS(SELECT 1 FROM public.agent_run_sandbox_node_observations observation
+       JOIN public.sandbox_workload_admissions admission ON admission.sandbox_id=observation.sandbox_id
+         AND admission.workspace_id=observation.workspace_id
+         AND admission.observation_digest=observation.admission_observation_digest
+         AND admission.pod_uid=observation.pod_uid AND admission.pod_resource_version=observation.pod_resource_version
+       JOIN public.nodes node ON node.id=observation.node_id AND node.workspace_id=observation.workspace_id
+       WHERE observation.sandbox_id=p_sandbox_id AND observation.workspace_id=target.workspace_id
+         AND observation.node_id=p_node_id AND node.kubernetes_cluster_id=observation.kubernetes_cluster_id
+         AND node.kubernetes_node_name=observation.kubernetes_node_name
+         AND node.kubernetes_node_uid=observation.kubernetes_node_uid
+         AND node.lifecycle_state='active' AND node.trust_state='verified' AND node.agent_eligible) THEN RETURN false; END IF;
   UPDATE public.agent_run_bindings SET bound_sandbox_id=p_sandbox_id,bound_node_id=p_node_id,bound_at=effective_now WHERE run_id=p_run_id;
   UPDATE public.runs SET status='running',version=version+1,node_id=p_node_id,sandbox_id=p_sandbox_id,started_at=effective_now
     WHERE id=p_run_id AND version=p_expected_run_version AND status='queued';
@@ -331,8 +403,8 @@ BEGIN
       agent_version_digest,harness_profile_id,harness_profile_digest)
       SELECT binding.run_id,binding.workspace_id,binding.project_id,'controller_attempts_exhausted',binding.agent_version_id,
         binding.agent_version_digest,binding.harness_profile_id,binding.harness_profile_digest
-      FROM public.agent_run_bindings binding WHERE binding.run_id=target.id AND binding.bound_sandbox_id IS NULL;
-    IF NOT FOUND THEN RAISE EXCEPTION 'exhausted Agent Run already has placement' USING ERRCODE='40001'; END IF;
+      FROM public.agent_run_bindings binding WHERE binding.run_id=target.id
+        AND binding.bound_sandbox_id IS NULL AND binding.bound_node_id IS NULL;
     UPDATE public.runs SET status='failed',version=version+1,completed_at=effective_now,error_code='controller_attempts_exhausted'
       WHERE id=target.id AND status IN ('queued','running');
     UPDATE public.agent_run_jobs SET worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,completed_at=effective_now,last_error_code=p_error_code,updated_at=effective_now WHERE run_id=target.id;
@@ -352,7 +424,9 @@ CREATE FUNCTION agent_run_controller_finalize(p_run_id uuid,p_worker_id text,p_l
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE target record; effective_now timestamptz:=clock_timestamp(); names text[]; receipt jsonb;
 BEGIN
-  IF p_outcome NOT IN ('succeeded','failed') OR p_steps<0 OR cardinality(p_artifact_ids)>100 OR cardinality(p_warnings)>100 OR
+  IF p_outcome NOT IN ('succeeded','failed') OR p_steps IS NULL OR p_steps<0 OR p_artifact_ids IS NULL OR p_warnings IS NULL OR
+     cardinality(p_artifact_ids)>100 OR cardinality(p_warnings)>100 OR
+     EXISTS(SELECT 1 FROM unnest(p_warnings) warning WHERE warning IS NULL OR char_length(warning) NOT BETWEEN 1 AND 512) OR
      (p_outcome='failed')<>(p_error_code IS NOT NULL AND p_error_code ~ '^[a-z][a-z0-9_]{0,62}$') THEN
     RAISE EXCEPTION 'invalid Agent Run finalization' USING ERRCODE='22023'; END IF;
   SELECT run.*,b.agent_version_id,b.agent_version_digest,b.harness_version_id,b.harness_version_digest,
@@ -382,17 +456,15 @@ BEGIN
   RETURN true;
 END $$;
 
--- Foundation limitation: the deployment currently provisions one non-login
--- controller workload role.  Until bootstrap gains a dedicated Agent Run role,
--- expose only these SECURITY DEFINER entry points to that role and no tables.
-REVOKE ALL ON TABLE agent_run_bindings,agent_run_jobs,agent_run_preallocation_failures FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller;
+REVOKE ALL ON TABLE agent_run_bindings,agent_run_jobs,agent_run_preallocation_failures,agent_run_sandbox_node_observations FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller;
 REVOKE ALL ON FUNCTION agent_run_append_event(uuid,uuid,uuid,text,jsonb),agent_run_enqueue(uuid,uuid,uuid,uuid),
-  validate_agent_run_preallocation_failure(),
+  validate_agent_run_preallocation_failure(),sandbox_controller_record_agent_node_observation(uuid,text,text,text,text),
   agent_run_controller_claim(text,integer),agent_run_controller_renew(uuid,text,uuid,integer),
   agent_run_controller_bind_sandbox(uuid,text,uuid,bigint,uuid,uuid),agent_run_controller_retry(uuid,text,uuid,integer,text),
   agent_run_controller_finalize(uuid,text,uuid,bigint,text,text,uuid[],bigint,text[])
-  FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller;
+  FROM PUBLIC,blazn_runtime,blazn_bootstrap,blazn_node_broker,blazn_sandbox_controller,blazn_development_controller,blazn_agent_run_controller;
+GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation(uuid,text,text,text,text) TO blazn_sandbox_controller;
 GRANT EXECUTE ON FUNCTION agent_run_enqueue(uuid,uuid,uuid,uuid) TO blazn_runtime;
 GRANT EXECUTE ON FUNCTION agent_run_controller_claim(text,integer),agent_run_controller_renew(uuid,text,uuid,integer),
   agent_run_controller_bind_sandbox(uuid,text,uuid,bigint,uuid,uuid),agent_run_controller_retry(uuid,text,uuid,integer,text),
-  agent_run_controller_finalize(uuid,text,uuid,bigint,text,text,uuid[],bigint,text[]) TO blazn_development_controller;
+  agent_run_controller_finalize(uuid,text,uuid,bigint,text,text,uuid[],bigint,text[]) TO blazn_agent_run_controller;
