@@ -111,12 +111,13 @@ type fakeBackend struct {
 
 type observingBackend struct {
 	*fakeBackend
-	placement AgentNodeObservation
+	placement    AgentNodeObservation
+	placementErr error
 }
 
 func (*observingBackend) AgentNodeObservationEnabled() bool { return true }
 func (b *observingBackend) ObserveAgentNode(context.Context, sandboxcontrol.AdmissionObservation) (AgentNodeObservation, error) {
-	return b.placement, nil
+	return b.placement, b.placementErr
 }
 
 type observingStore struct {
@@ -124,11 +125,12 @@ type observingStore struct {
 	placement                         *AgentNodeObservation
 	operationID, workerID, leaseToken string
 	accepted                          bool
+	recordErr                         error
 }
 
 func (s *observingStore) RecordAgentNodeObservation(_ context.Context, operationID, workerID, leaseToken string, value AgentNodeObservation) (bool, error) {
 	s.operationID, s.workerID, s.leaseToken, s.placement = operationID, workerID, leaseToken, &value
-	return s.accepted, nil
+	return s.accepted, s.recordErr
 }
 
 type blockingBackend struct {
@@ -247,8 +249,33 @@ func TestCreateRecordsFencedAgentNodeObservationBeforeCompletion(t *testing.T) {
 	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if store.completion != nil {
-		t.Fatal("fenced observation completed Sandbox operation")
+	if store.placement == nil || store.completion == nil || store.completion.Status != "succeeded" {
+		t.Fatalf("unenrolled Node result blocked ordinary Sandbox completion: %#v", store)
+	}
+	observerErr := errors.New("Node observer failed")
+	backend.placementErr = observerErr
+	observerFailureStore := &observingStore{fakeStore: &fakeStore{}}
+	if err := testController(t, observerFailureStore, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if observerFailureStore.retryCalls != 0 || observerFailureStore.completion == nil || observerFailureStore.completion.Status != "succeeded" {
+		t.Fatalf("observer error blocked ordinary Sandbox completion: %#v", observerFailureStore)
+	}
+	backend.placementErr = nil
+	storeErr := errors.New("Node observation store failed")
+	storeFailureStore := &observingStore{fakeStore: &fakeStore{}, recordErr: storeErr}
+	if err := testController(t, storeFailureStore, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if storeFailureStore.retryCalls != 0 || storeFailureStore.completion == nil || storeFailureStore.completion.Status != "succeeded" {
+		t.Fatalf("store error blocked ordinary Sandbox completion: %#v", storeFailureStore)
+	}
+	unsupportedStore := &fakeStore{}
+	if err := testController(t, unsupportedStore, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if unsupportedStore.retryCalls != 0 || unsupportedStore.completion == nil || unsupportedStore.completion.Status != "succeeded" {
+		t.Fatalf("unsupported evidence store blocked ordinary Sandbox completion: %#v", unsupportedStore)
 	}
 }
 

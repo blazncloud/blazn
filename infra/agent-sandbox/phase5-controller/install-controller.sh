@@ -26,10 +26,25 @@ case "$transaction_name" in */*|*..*|'') printf 'controller transaction path mus
 
 write_phase() { phase4c_write_phase "$transaction" "$1"; }
 object_present() { discovered=$(kubectl get "$1" "$2" -n "$3" --ignore-not-found -o name) || return 2; [ -n "$discovered" ]; }
+object_absent() {
+  if [ "$3" = - ]; then discovered=$(kubectl get "$1" "$2" --ignore-not-found -o name) || return 2
+  else discovered=$(kubectl get "$1" "$2" -n "$3" --ignore-not-found -o name) || return 2
+  fi
+  [ -z "$discovered" ]
+}
 live_uid() {
   if [ "$3" = - ]; then kubectl get "$1" "$2" -o jsonpath='{.metadata.uid}'
   else kubectl get "$1" "$2" -n "$3" -o jsonpath='{.metadata.uid}'
   fi
+}
+owned_uid() {
+  if [ "$3" = - ]; then kubectl get "$1" "$2" -o json
+  else kubectl get "$1" "$2" -n "$3" -o json
+  fi | jq -er --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" 'select(.metadata.annotations["blazn.dev/phase5-transaction"] == $tx) | .metadata.uid'
+}
+assert_available() {
+  object_absent "$1" "$2" "$3" && return 0
+  owned_uid "$1" "$2" "$3" >/dev/null 2>&1 || { printf 'controller object already exists outside this transaction: %s/%s\n' "$1" "$2" >&2; exit 1; }
 }
 
 if [ ! -e "$transaction" ]; then
@@ -44,6 +59,7 @@ sealed=$transaction/controller.yaml
 if [ -L "$sealed" ] || [ ! -f "$sealed" ] || [ "$(stat -c '%u:%a:%h' "$sealed")" != 0:400:1 ]; then printf 'sealed controller manifest is unsafe\n' >&2; exit 1; fi
 [ "$(sha256sum "$sealed" | awk '{print $1}')" = "$BLAZN_EXPECTED_CONTROLLER_SHA256" ] || { printf 'sealed controller manifest digest mismatch\n' >&2; exit 1; }
 grep -Fq 'replicas: 0' "$sealed" || { printf 'the reviewed controller manifest must start scaled to zero\n' >&2; exit 1; }
+[ "$(grep -Fxc "    blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 10 ] || { printf 'sealed controller manifest transaction identity mismatch\n' >&2; exit 1; }
 phase=$(cat "$transaction/phase")
 case "$phase" in
   complete) printf 'controller deployment transaction is already complete\n'; exit 0 ;;
@@ -60,27 +76,37 @@ if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-system; 
 if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-sandboxes; then printf 'the Sandbox registry pull Secret is not provisioned\n' >&2; exit 1; fi
 
 if [ "$phase" = sealed ]; then
-  deployment_state=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system --ignore-not-found -o name) || { printf 'controller Deployment discovery failed\n' >&2; exit 1; }
-  [ -z "$deployment_state" ] || { printf 'a controller Deployment already exists; use its own transaction or roll it back first\n' >&2; exit 1; }
+  for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+    ref=${object%%:*}; ns=${object#*:}; kind=${ref%%/*}; name=${ref#*/}
+    object_absent "$kind" "$name" "$ns" || { printf 'controller object already exists before transaction: %s\n' "$ref" >&2; exit 1; }
+  done
   write_phase apply-intent; phase=apply-intent
 fi
 uids=$transaction/owned-uids.json
 if [ "$phase" = apply-intent ]; then
+  # A restart in apply-intent may follow a successful apply whose UID capture
+  # was interrupted. Existing objects are acceptable only when their sealed
+  # transaction annotation proves this transaction created them.
+  for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
+    ref=${object%%:*}; ns=${object#*:}; kind=${ref%%/*}; name=${ref#*/}
+    assert_available "$kind" "$name" "$ns"
+  done
   kubectl apply --server-side --field-manager blazn-phase5-controller -f "$sealed" >/dev/null
+  if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = apply-executed ]; then exit 86; fi
   # Record every owned identity immediately after apply so a crash before
   # completion still leaves a UID-fenced teardown path.
   {
     printf '{'
-    printf '"deployment/blazn-sandbox-controller":"%s",' "$(live_uid deployment blazn-sandbox-controller blazn-poc-system)"
-    printf '"role/blazn-sandbox-controller":"%s",' "$(live_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
-    printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(live_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
-    printf '"clusterrole/blazn-sandbox-controller-node-observer":"%s",' "$(live_uid clusterrole blazn-sandbox-controller-node-observer -)"
-    printf '"clusterrolebinding/blazn-sandbox-controller-node-observer":"%s",' "$(live_uid clusterrolebinding blazn-sandbox-controller-node-observer -)"
-    printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(live_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
-    printf '"service/blazn-sandbox-access":"%s",' "$(live_uid service blazn-sandbox-access blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-access-ingress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-egress":"%s",' "$(live_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-default-deny":"%s"' "$(live_uid networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system)"
+    printf '"deployment/blazn-sandbox-controller":"%s",' "$(owned_uid deployment blazn-sandbox-controller blazn-poc-system)"
+    printf '"role/blazn-sandbox-controller":"%s",' "$(owned_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
+    printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(owned_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
+    printf '"clusterrole/blazn-sandbox-controller-node-observer":"%s",' "$(owned_uid clusterrole blazn-sandbox-controller-node-observer -)"
+    printf '"clusterrolebinding/blazn-sandbox-controller-node-observer":"%s",' "$(owned_uid clusterrolebinding blazn-sandbox-controller-node-observer -)"
+    printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(owned_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
+    printf '"service/blazn-sandbox-access":"%s",' "$(owned_uid service blazn-sandbox-access blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-access-ingress":"%s",' "$(owned_uid networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-egress":"%s",' "$(owned_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
+    printf '"networkpolicy/blazn-sandbox-controller-default-deny":"%s"' "$(owned_uid networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system)"
     printf '}\n'
   } >"$uids.tmp"
   jq -e 'to_entries | all(.value | test("^[0-9a-f-]{36}$"))' "$uids.tmp" >/dev/null || { printf 'owned controller identities are incomplete\n' >&2; exit 1; }

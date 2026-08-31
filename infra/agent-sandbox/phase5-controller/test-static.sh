@@ -22,6 +22,7 @@ render() {
     BLAZN_DATABASE_URL_SECRET_NAME=controller-db-url \
     BLAZN_DATABASE_URL_SECRET_KEY=database-url \
     BLAZN_DATABASE_ENDPOINT_KIND=ip \
+    BLAZN_PHASE5_TRANSACTION_ID=99999999-9999-4999-8999-999999999999 \
     BLAZN_KUBERNETES_API_CIDR=10.20.30.40/32 \
     BLAZN_KUBERNETES_CLUSTER_ID=cluster-test \
     BLAZN_KUBERNETES_API_PORT=16443 \
@@ -112,6 +113,7 @@ grep -F 'value: "https://10.20.30.42:9443"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml")" -eq 1 ]
 grep -A1 -Fx '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml" | grep -Fxq '          value: "cluster-test"'
+[ "$(grep -Fxc '    blazn.dev/phase5-transaction: 99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 10 ]
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 4 ]
@@ -189,6 +191,8 @@ expect_fail uppercase-digest BLAZN_CONTROLLER_IMAGE=registry.example/blazn/sandb
 expect_fail broad-api BLAZN_KUBERNETES_API_CIDR=10.20.30.0/24
 expect_fail missing-cluster-id BLAZN_KUBERNETES_CLUSTER_ID=
 expect_fail invalid-cluster-id BLAZN_KUBERNETES_CLUSTER_ID='cluster id'
+expect_fail missing-transaction-id BLAZN_PHASE5_TRANSACTION_ID=
+expect_fail invalid-transaction-id BLAZN_PHASE5_TRANSACTION_ID=NOT-A-UUID
 expect_fail broad-database BLAZN_BEN1_POSTGRES_CIDR=10.20.30.0/24
 expect_fail unspecified-api BLAZN_KUBERNETES_API_CIDR=0.0.0.0/32
 expect_fail loopback-database BLAZN_BEN1_POSTGRES_CIDR=127.0.0.1/32

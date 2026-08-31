@@ -37,6 +37,7 @@ BLAZN_CONTROLLER_IMAGE="registry.blaze.internal:5000/blazn/sandbox-controller@sh
 BLAZN_SANDBOX_IO_IMAGE="registry.blaze.internal:5000/blazn/sandbox-io@sha256:$(printf '%064d' 0 | tr '0' 'b')" \
 BLAZN_DATABASE_URL_SECRET_NAME=blazn-controller-database-url BLAZN_DATABASE_URL_SECRET_KEY=database-url \
 BLAZN_DATABASE_ENDPOINT_KIND=ip \
+BLAZN_PHASE5_TRANSACTION_ID=99999999-9999-4999-8999-999999999999 \
 BLAZN_KUBERNETES_API_CIDR=10.152.183.1/32 BLAZN_KUBERNETES_API_PORT=443 BLAZN_KUBERNETES_API_AUDIENCE=https://kubernetes.default.svc BLAZN_KUBERNETES_CLUSTER_ID=cluster-test \
 BLAZN_BEN1_POSTGRES_CIDR=192.168.0.100/32 BLAZN_BEN1_POSTGRES_PORT=5432 \
 BLAZN_ACCESS_SERVICE_CLUSTER_IP=10.152.183.207 BLAZN_ACCESS_SOURCE_CIDR=192.168.0.108/32 \
@@ -82,6 +83,18 @@ case "$*" in
   'get networkpolicy blazn-sandbox-controller-access-ingress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '88888888-8888-4888-8888-888888888888' ;;
   'get networkpolicy blazn-sandbox-controller-egress -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '55555555-5555-4555-8555-555555555555' ;;
   'get networkpolicy blazn-sandbox-controller-default-deny -n blazn-poc-system -o jsonpath={.metadata.uid}') printf '66666666-6666-4666-8666-666666666666' ;;
+  'get '*' -o json')
+    for object in deployment/blazn-sandbox-controller:deployment:11111111-1111-4111-8111-111111111111 service/blazn-sandbox-access:service:77777777-7777-4777-8777-777777777777 networkpolicy/blazn-sandbox-controller-access-ingress:access-ingress:88888888-8888-4888-8888-888888888888 serviceaccount/blazn-sandbox-controller:serviceaccount:44444444-4444-4444-8444-444444444444 role/blazn-sandbox-controller:role:22222222-2222-4222-8222-222222222222 rolebinding/blazn-sandbox-controller:rolebinding:33333333-3333-4333-8333-333333333333 clusterrole/blazn-sandbox-controller-node-observer:clusterrole:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa clusterrolebinding/blazn-sandbox-controller-node-observer:clusterrolebinding:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb networkpolicy/blazn-sandbox-controller-egress:egress:55555555-5555-4555-8555-555555555555 networkpolicy/blazn-sandbox-controller-default-deny:deny:66666666-6666-4666-8666-666666666666; do
+      ref=${object%%:*}; rest=${object#*:}; key=${rest%%:*}; uid=${rest#*:}
+      case "$* " in "get ${ref%%/*} ${ref#*/} "*)
+        present "$key" || exit 1
+        if [ -e "$FAKE_STATE/user-$key" ]; then owner=00000000-0000-4000-8000-000000000000; else owner=99999999-9999-4999-8999-999999999999; fi
+        printf '{"metadata":{"uid":"%s","annotations":{"blazn.dev/phase5-transaction":"%s"}}}\n' "$uid" "$owner"
+        exit 0
+        ;;
+      esac
+    done
+    exit 1 ;;
   'get '*' --ignore-not-found -o name')
     # Match on the exact "kind name" prefix so same-named objects of different
     # kinds are never conflated (real kubectl scopes by kind).
@@ -281,7 +294,55 @@ expect_phase rollback-complete
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction
 run_tool install-controller.sh
 [ "$last_code" -eq 1 ]
-expect_message 'already exists'
+expect_message 'already exists before transaction'
+
+# T7b: cluster-scoped names are preflighted too; a user-owned global object is
+# never adopted, applied over, inventoried, or deleted.
+reset_state; : >"$FAKE_STATE/clusterrole"; : >"$FAKE_STATE/user-clusterrole"; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 1 ]
+expect_message 'clusterrole/blazn-sandbox-controller-node-observer'
+if grep -Fq 'apply --server-side' "$FAKE_STATE/calls.log"; then printf 'pre-existing ClusterRole must block apply\n' >&2; exit 1; fi
+
+# T7c: a crash after apply but before UID capture resumes safely from the
+# transaction annotations and completes the inventory.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase apply-intent
+[ ! -e "$transaction/owned-uids.json" ]
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase complete
+jq -e 'length == 10' "$transaction/owned-uids.json" >/dev/null
+
+# T7d: teardown from the same crash window discovers and UID-fences only the
+# objects carrying this transaction's annotation.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+run_tool teardown-controller.sh
+[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
+expect_phase rollback-complete
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 10 ]
+
+# T7e: if an object is replaced after apply but before UID capture, neither
+# recovery path adopts it. Teardown emits no deletes, and install does not
+# apply again, because both fail closed on the mismatched transaction owner.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+expect_phase apply-intent
+: >"$FAKE_STATE/user-clusterrole"
+run_tool teardown-controller.sh
+[ "$last_code" -eq 1 ]
+expect_message 'existing controller object is not owned by this transaction: clusterrole/blazn-sandbox-controller-node-observer'
+[ ! -e "$FAKE_STATE/delete-requests.log" ]
+run_tool install-controller.sh
+[ "$last_code" -eq 1 ]
+expect_message 'controller object already exists outside this transaction: clusterrole/blazn-sandbox-controller-node-observer'
+[ "$(grep -c 'apply --server-side' "$FAKE_STATE/calls.log")" -eq 1 ]
+[ ! -e "$FAKE_STATE/delete-requests.log" ]
 
 # T8: path traversal outside the reviewed transaction root is rejected.
 reset_state; transaction=$tx_root/controller-x/../$tx_prefix-evil

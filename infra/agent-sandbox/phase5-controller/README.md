@@ -30,6 +30,7 @@ BLAZN_CONTROLLER_IMAGE='registry.example/blazn/sandbox-controller@sha256:aaaaaaa
 BLAZN_DATABASE_URL_SECRET_NAME='blazn-sandbox-controller-database-url' \
 BLAZN_DATABASE_URL_SECRET_KEY='database-url' \
 BLAZN_DATABASE_ENDPOINT_KIND='ip' \
+BLAZN_PHASE5_TRANSACTION_ID='<lowercase transaction UUID>' \
 BLAZN_KUBERNETES_API_CIDR='10.0.0.10/32' \
 BLAZN_KUBERNETES_API_PORT='16443' \
 BLAZN_KUBERNETES_API_AUDIENCE='https://kubernetes.default.svc' \
