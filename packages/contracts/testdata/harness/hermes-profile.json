@@ -17,7 +17,7 @@
     "id": "20000000-0000-4000-8000-000000000001",
     "definitionId": "19000000-0000-4000-8000-000000000001",
     "version": "1.0.0",
-    "digest": "sha256:cd5a472c20fde6c33370b5046a0f648d83b008fee93ed1c3d8ee3acc2991b0e7",
+    "digest": "sha256:ef2f252dd50e2924542daac5faad4b8116b0db822f3ae86edbf0569f380567de",
     "protocolVersion": "blazn.dev/harness-adapter/v1alpha1",
     "implementation": {
       "kind": "image",
@@ -31,6 +31,7 @@
         "--jsonl"
       ],
       "environmentAllowlist": [
+        "BLAZN_LISTENER_TOKEN_FD",
         "BLAZN_PROXY_URL"
       ],
       "termination": {

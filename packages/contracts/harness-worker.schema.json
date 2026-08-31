@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://blazn.dev/schemas/harness-worker-v1alpha1.json",
+  "title": "Blazn Harness Worker Assignment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "type", "scope"],
+  "properties": {
+    "schemaVersion": {"const": "blazn.dev/harness-worker/v1alpha1"},
+    "type": {"const": "execute"},
+    "scope": {"$ref": "proxy/workload-scope.schema.json"}
+  },
+  "x-blazn-secret-boundary": {
+    "listenerTokenDelivery": "out-of-band",
+    "forbiddenKeys": ["listenerToken", "token", "password", "secret", "credential", "authorization", "apiKey", "privateKey", "kubeconfig", "nodeCredential"]
+  }
+}

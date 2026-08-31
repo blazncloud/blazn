@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blazncloud/blazn/internal/harnessworker"
 	proxya "github.com/blazncloud/blazn/internal/proxy/anthropic"
 	"github.com/blazncloud/blazn/internal/proxycontract"
 )
@@ -41,6 +42,16 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	} else if !authenticateAndStrip(request.Header, h.config.ListenerToken) {
 		writeError(writer, safeError("authentication_failed", "listener authentication failed", http.StatusUnauthorized, false))
 		return
+	}
+	if h.config.WorkloadScope != nil {
+		if err := h.config.WorkloadScope.ValidateAt(h.config.Now().UTC()); err != nil || protocolForPath(request.URL.Path) != h.config.WorkloadScope.Protocol {
+			if isAnthropic {
+				writeAnthropicError(writer, safeError("policy_denied", "request is outside the workload route scope", http.StatusForbidden, false))
+			} else {
+				writeError(writer, safeError("policy_denied", "request is outside the workload route scope", http.StatusForbidden, false))
+			}
+			return
+		}
 	}
 	if request.URL.Path == "/v1/models" {
 		if request.Method != http.MethodGet {
@@ -111,6 +122,17 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 			writeError(writer, err)
 		}
 		return
+	}
+	if h.config.WorkloadScope != nil {
+		routes = exactScopedRoute(routes, h.config.WorkloadScope.RouteID)
+		if len(routes) == 0 {
+			if isAnthropic {
+				writeAnthropicError(writer, safeError("no_compliant_route", "the workload route is unavailable", http.StatusForbidden, false))
+			} else {
+				writeError(writer, safeError("no_compliant_route", "the workload route is unavailable", http.StatusForbidden, false))
+			}
+			return
+		}
 	}
 	h.emit(normalized, routes[0], 1, proxycontract.EventRequestStarted, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, 0, nil)
 	deadline, parseErr := time.Parse(time.RFC3339, normalized.Limits.DeadlineAt)
@@ -206,6 +228,28 @@ func (h *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	latency := h.config.Now().Sub(started)
 	h.emit(normalized, result.route, result.attempt, proxycontract.EventAttemptFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, h.config.Now().Sub(result.attemptStarted), &response.Usage)
 	h.emit(normalized, result.route, result.attempt, proxycontract.EventRequestFinished, proxycontract.OutcomeSuccess, proxycontract.EventReasonNone, latency, &response.Usage)
+}
+
+func protocolForPath(value string) harnessworker.Protocol {
+	switch value {
+	case "/v1/responses":
+		return harnessworker.ProtocolOpenAIResponses
+	case "/v1/chat/completions":
+		return harnessworker.ProtocolOpenAIChat
+	case "/v1/messages":
+		return harnessworker.ProtocolAnthropicMessages
+	default:
+		return ""
+	}
+}
+
+func exactScopedRoute(routes []proxycontract.Route, routeID string) []proxycontract.Route {
+	for _, route := range routes {
+		if route.ID == routeID {
+			return []proxycontract.Route{route}
+		}
+	}
+	return nil
 }
 
 func writeAnthropicError(writer http.ResponseWriter, err error) {
