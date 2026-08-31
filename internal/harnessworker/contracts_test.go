@@ -94,7 +94,7 @@ func TestListenerTokenFingerprintUsesExactBoundedBytes(t *testing.T) {
 	if _, err := ListenerTokenFingerprint(nil); err == nil {
 		t.Fatal("empty listener token passed validation")
 	}
-	if _, err := ListenerTokenFingerprint(make([]byte, MaxListenerTokenBytes+1)); err == nil {
+	if _, err := ListenerTokenFingerprint(make([]byte, contractMaxListenerTokenBytes+1)); err == nil {
 		t.Fatal("oversized listener token passed validation")
 	}
 }

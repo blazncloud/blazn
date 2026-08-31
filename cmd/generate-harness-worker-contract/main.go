@@ -105,7 +105,7 @@ func validateSchemas(harness, scope map[string]any) error {
 		}
 	}
 	template := string(contractTemplate)
-	for _, required := range []string{"WorkloadScopeMaxLifetime = 24 * time.Hour", "ListenerTokenFingerprint(token []byte)", "len(token) > MaxListenerTokenBytes", "json:\"routeId\"", "json:\"expiresAt\""} {
+	for _, required := range []string{"WorkloadScopeMaxLifetime = 24 * time.Hour", "ListenerTokenFingerprint(token []byte)", "len(token) > contractMaxListenerTokenBytes", "json:\"routeId\"", "json:\"expiresAt\""} {
 		if !strings.Contains(template, required) {
 			return fmt.Errorf("generated template lacks pinned semantic %q", required)
 		}

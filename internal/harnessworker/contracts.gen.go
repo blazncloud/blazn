@@ -15,10 +15,12 @@ import (
 )
 
 const (
-	HarnessWorkerSchemaVersion = "blazn.dev/harness-worker/v1alpha1"
-	WorkloadScopeMaxLifetime   = 24 * time.Hour
-	ProtocolVersion            = HarnessWorkerSchemaVersion
-	RequestTypeExecute         = "execute"
+	HarnessWorkerSchemaVersion    = "blazn.dev/harness-worker/v1alpha1"
+	WorkloadScopeMaxLifetime      = 24 * time.Hour
+	ProtocolVersion               = HarnessWorkerSchemaVersion
+	RequestTypeExecute            = "execute"
+	contractMaxAssignmentBytes    = 128 << 10
+	contractMaxListenerTokenBytes = 4 << 10
 )
 
 type Protocol string
@@ -119,7 +121,7 @@ func (assignment Assignment) ValidateAt(now time.Time) error {
 
 func DecodeAssignment(reader io.Reader, now time.Time) (Assignment, error) {
 	var assignment Assignment
-	decoder := json.NewDecoder(io.LimitReader(reader, MaxProtocolLineBytes+1))
+	decoder := json.NewDecoder(io.LimitReader(reader, contractMaxAssignmentBytes+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&assignment); err != nil {
 		return Assignment{}, err
@@ -139,7 +141,7 @@ func DecodeAssignment(reader io.Reader, now time.Time) (Assignment, error) {
 
 func DecodeWorkloadScope(reader io.Reader, now time.Time) (WorkloadScope, error) {
 	var scope WorkloadScope
-	decoder := json.NewDecoder(io.LimitReader(reader, MaxProtocolLineBytes+1))
+	decoder := json.NewDecoder(io.LimitReader(reader, contractMaxAssignmentBytes+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&scope); err != nil {
 		return WorkloadScope{}, err
@@ -161,7 +163,7 @@ func ListenerTokenFingerprint(token []byte) (string, error) {
 	if len(token) == 0 {
 		return "", errors.New("listener token is required")
 	}
-	if len(token) > MaxListenerTokenBytes {
+	if len(token) > contractMaxListenerTokenBytes {
 		return "", errors.New("listener token exceeds the supported size")
 	}
 	digest := sha256.Sum256(token)
