@@ -30,9 +30,11 @@ BLAZN_CONTROLLER_IMAGE='registry.example/blazn/sandbox-controller@sha256:aaaaaaa
 BLAZN_DATABASE_URL_SECRET_NAME='blazn-sandbox-controller-database-url' \
 BLAZN_DATABASE_URL_SECRET_KEY='database-url' \
 BLAZN_DATABASE_ENDPOINT_KIND='ip' \
+BLAZN_PHASE5_TRANSACTION_ID='<lowercase transaction UUID>' \
 BLAZN_KUBERNETES_API_CIDR='10.0.0.10/32' \
 BLAZN_KUBERNETES_API_PORT='16443' \
 BLAZN_KUBERNETES_API_AUDIENCE='https://kubernetes.default.svc' \
+BLAZN_KUBERNETES_CLUSTER_ID='production-cluster-id-from-node-enrollment' \
 BLAZN_BEN1_POSTGRES_CIDR='10.0.0.11/32' \
 BLAZN_BEN1_POSTGRES_PORT='5432' \
 BLAZN_ACCESS_SERVICE_CLUSTER_IP='10.152.183.207' \
@@ -57,7 +59,9 @@ boundary accepts a comma-separated, duplicate-free set of at most 64 exact
 addresses for a reviewed rotating frontend. Broad CIDRs, wildcard ports,
 absent values, and mutable image tags fail closed. The
 API host passed to the process is derived from the exact API `/32`, so it does
-not need DNS. The database URL in the pre-existing Secret must name the exact
+not need DNS. `BLAZN_KUBERNETES_CLUSTER_ID` must be the authoritative cluster ID
+used by node enrollment and persisted in the control plane; it is not derived
+from an API address or Kubernetes context name. The database URL in the pre-existing Secret must name the exact
 ben1 IP and port above when `BLAZN_DATABASE_ENDPOINT_KIND=ip`.
 
 If the reviewed database URL instead uses a hostname, set
@@ -74,15 +78,32 @@ uses only a 600-second projected API token with an explicit audience. Its Role
 can create/delete/patch and read Sandboxes only in `blazn-poc-sandboxes`; Pod
 access is get/list, Kueue Workload access is list-only, and `pods/exec` has only
 the create/get connect verbs required by the WebSocket v5 handshake,
-and NetworkPolicy access is create/delete/get/list there. The controller accepts
+and NetworkPolicy access is create/delete/get/list there. A separate ClusterRole
+grants only `get` on core `nodes`, solely so the controller can freeze the UID of
+the exact Node named by the admitted Pod; it grants no list, watch, or mutation.
+The controller accepts
 only its pinned helper command, verifies the exact Pod and Sandbox UIDs before
 and after each WebSocket v5 exchange, creates an exact temporary DNS/HTTPS
 source policy, and deletes it with UID/resource-version preconditions before
 releasing the init gate. It has no separate Sandbox status
-subresource grant, ClusterRole, or other cluster-scoped authority and no Secret,
-Node, RuntimeClass, CRD, webhook, namespace, or wildcard authority. RuntimeClass
+subresource grant or other cluster-scoped authority and no Secret, RuntimeClass,
+CRD, webhook, namespace, or wildcard authority. RuntimeClass
 access may be added only in a separate PR that wires and qualifies an exact
 runtime capability.
+
+The reviewed render intentionally retains exactly ten
+`BLAZN_PHASE5_ANCHOR_UID` owner-reference placeholders. Installation first
+creates a transaction-unique, zero-rule ClusterRole anchor and durably journals
+its server-issued UID. It substitutes only that constrained UID into a sealed
+copy, captures and hashes both client intent and an approved server-defaulted
+semantic baseline while every dependent name is absent, then applies each uniquely labeled manifest document separately and
+durably journals the UID returned by that exact apply before proceeding. A
+crash before a dependent UID is journaled is recovered only by foreground
+deletion of the anchor and Kubernetes owner-reference garbage collection; the
+installer never rediscovers or adopts the dependent by annotation or name.
+If the process crashes after anchor creation but before receiving and durably
+journaling its UID, the inert zero-rule anchor is intentionally left for manual
+recovery: a same-shape object cannot be proven to be the originally created UID.
 
 The database URL Secret, separately owned object credential Secret, and public Kubernetes CA are projected read-only for
 kubelet. A same-UID init binary copies the normalized database URL and exact,
@@ -143,7 +164,7 @@ rendered pull Secret exists in both namespaces before applying or scaling the
 controller.
 
 `install-controller.sh` is a journaled, crash-resumable, UID-fenced
-transaction (`sealed → apply-intent → applied → scaled → complete`): it
+transaction (`sealed → anchor-intent → anchor-journaled → baselined → apply-intent → applied → scaled → complete`): it
 requires the boundary, the Agent Sandbox controller, and both Secrets, seals
 the rendered controller manifest, verifies the reviewed digest and that it
 starts at zero replicas, applies it, scales it to one, waits for

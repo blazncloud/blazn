@@ -191,7 +191,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
   const here = path.dirname(fileURLToPath(import.meta.url));
   const directory = path.resolve(here, "../migrations");
   const migrations = await readMigrationInventory(directory);
-  assert.deepEqual(migrations.slice(-14), [
+  assert.deepEqual(migrations.slice(-15), [
     "024_development_controller.sql",
     "025_development_executor.sql",
     "026_development_sandbox_evidence.sql",
@@ -206,6 +206,7 @@ test("migration sequence derives one ordered collision-free inventory", async ()
     "035_sandbox_empty_artifact_warnings.sql",
     "036_sandbox_delete_after_stop.sql",
     "037_agent_harness.sql",
+    "038_agent_run_controller.sql",
   ]);
 });
 
@@ -428,4 +429,17 @@ test("Development candidate images replace only controller claims and fence term
   assert.match(sql,/CREATE OR REPLACE FUNCTION development_controller_commit_execution_v1[\s\S]*Development terminal images do not match the resolved candidate binding/);
   assert.match(sql,/REVOKE EXECUTE ON FUNCTION development_controller_finalize_v1[\s\S]*FROM blazn_development_controller/);
   assert.doesNotMatch(sql,/UPDATE public\.sandboxes SET image_/);
+});
+
+test("Agent Run controller migration grants only its dedicated workload role",async()=>{
+  const here=path.dirname(fileURLToPath(import.meta.url));
+  const sql=await readFile(path.resolve(here,"../migrations/038_agent_run_controller.sql"),"utf8");
+  assert.match(sql,/REVOKE ALL ON TABLE agent_run_bindings,agent_run_jobs,agent_run_preallocation_failures[^;]* FROM [^;]*blazn_development_controller,blazn_agent_run_controller/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION agent_run_controller_claim[\s\S]*agent_run_controller_finalize[\s\S]*TO blazn_agent_run_controller/);
+  assert.match(sql,/CREATE TABLE agent_run_sandbox_node_observations[\s\S]*admission_observation_digest char\(64\)[\s\S]*kubernetes_node_uid text NOT NULL/);
+  assert.match(sql,/agent_run_controller_bind_sandbox[\s\S]*JOIN public\.sandbox_workload_admissions admission[\s\S]*node\.kubernetes_node_uid=observation\.kubernetes_node_uid/);
+  assert.match(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation\(uuid,text,uuid,text,text,text,text,text,text\) TO blazn_sandbox_controller/);
+  assert.doesNotMatch(sql,/GRANT EXECUTE ON FUNCTION sandbox_controller_record_agent_node_observation[^;]*TO blazn_agent_run_controller/);
+  assert.doesNotMatch(sql,/GRANT EXECUTE ON FUNCTION agent_run_controller_[^;]*TO blazn_development_controller/);
+  assert.doesNotMatch(sql,/GRANT (?:SELECT|INSERT|UPDATE|DELETE|ALL)[^;]*TO blazn_agent_run_controller/);
 });

@@ -100,6 +100,20 @@ type Store interface {
 	Close() error
 }
 
+type AgentNodeObservation struct {
+	AdmissionObservationDigest, PodUID, PodResourceVersion     string
+	KubernetesClusterID, KubernetesNodeName, KubernetesNodeUID string
+}
+
+type AgentNodeObservationStore interface {
+	RecordAgentNodeObservation(context.Context, string, string, string, AgentNodeObservation) (bool, error)
+}
+
+type AgentNodeObserver interface {
+	AgentNodeObservationEnabled() bool
+	ObserveAgentNode(context.Context, sandboxcontrol.AdmissionObservation) (AgentNodeObservation, error)
+}
+
 type BackendState struct {
 	Record                                           sandboxcontrol.SandboxRecord
 	AdmissionObservation                             *sandboxcontrol.AdmissionObservation

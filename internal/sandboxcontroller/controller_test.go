@@ -109,6 +109,30 @@ type fakeBackend struct {
 	observedItems                                []WorkItem
 }
 
+type observingBackend struct {
+	*fakeBackend
+	placement    AgentNodeObservation
+	placementErr error
+}
+
+func (*observingBackend) AgentNodeObservationEnabled() bool { return true }
+func (b *observingBackend) ObserveAgentNode(context.Context, sandboxcontrol.AdmissionObservation) (AgentNodeObservation, error) {
+	return b.placement, b.placementErr
+}
+
+type observingStore struct {
+	*fakeStore
+	placement                         *AgentNodeObservation
+	operationID, workerID, leaseToken string
+	accepted                          bool
+	recordErr                         error
+}
+
+func (s *observingStore) RecordAgentNodeObservation(_ context.Context, operationID, workerID, leaseToken string, value AgentNodeObservation) (bool, error) {
+	s.operationID, s.workerID, s.leaseToken, s.placement = operationID, workerID, leaseToken, &value
+	return s.accepted, s.recordErr
+}
+
 type blockingBackend struct {
 	started   chan struct{}
 	cancelled chan error
@@ -207,6 +231,51 @@ func TestCreateBindsExactBackendAndCompletes(t *testing.T) {
 		store.completion.ExpectedWorkloadDigest == nil || *store.completion.ExpectedWorkloadDigest != state.AdmissionObservation.Workload.Digest ||
 		store.completion.ExpectedObservationDigest == nil || *store.completion.ExpectedObservationDigest != state.AdmissionObservation.Digest {
 		t.Fatalf("unexpected completion: %#v", store.completion)
+	}
+}
+
+func TestCreateRecordsFencedAgentNodeObservationBeforeCompletion(t *testing.T) {
+	item, state := createFixture(t)
+	placement := AgentNodeObservation{AdmissionObservationDigest: state.AdmissionObservation.Digest, PodUID: state.AdmissionObservation.Pod.UID, PodResourceVersion: state.AdmissionObservation.Pod.ResourceVersion, KubernetesClusterID: "cluster-a", KubernetesNodeName: "worker-a", KubernetesNodeUID: "node-uid-a"}
+	store := &observingStore{fakeStore: &fakeStore{}, accepted: true}
+	backend := &observingBackend{fakeBackend: &fakeBackend{created: state}, placement: placement}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if store.placement == nil || !reflect.DeepEqual(*store.placement, placement) || store.operationID != item.OperationID || store.workerID != "controller-1" || store.leaseToken != item.LeaseToken || store.completion == nil {
+		t.Fatalf("store=%#v", store)
+	}
+	store = &observingStore{fakeStore: &fakeStore{}, accepted: false}
+	if err := testController(t, store, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if store.placement == nil || store.completion == nil || store.completion.Status != "succeeded" {
+		t.Fatalf("unenrolled Node result blocked ordinary Sandbox completion: %#v", store)
+	}
+	observerErr := errors.New("Node observer failed")
+	backend.placementErr = observerErr
+	observerFailureStore := &observingStore{fakeStore: &fakeStore{}}
+	if err := testController(t, observerFailureStore, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if observerFailureStore.retryCalls != 0 || observerFailureStore.completion == nil || observerFailureStore.completion.Status != "succeeded" {
+		t.Fatalf("observer error blocked ordinary Sandbox completion: %#v", observerFailureStore)
+	}
+	backend.placementErr = nil
+	storeErr := errors.New("Node observation store failed")
+	storeFailureStore := &observingStore{fakeStore: &fakeStore{}, recordErr: storeErr}
+	if err := testController(t, storeFailureStore, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if storeFailureStore.retryCalls != 0 || storeFailureStore.completion == nil || storeFailureStore.completion.Status != "succeeded" {
+		t.Fatalf("store error blocked ordinary Sandbox completion: %#v", storeFailureStore)
+	}
+	unsupportedStore := &fakeStore{}
+	if err := testController(t, unsupportedStore, backend).reconcile(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if unsupportedStore.retryCalls != 0 || unsupportedStore.completion == nil || unsupportedStore.completion.Status != "succeeded" {
+		t.Fatalf("unsupported evidence store blocked ordinary Sandbox completion: %#v", unsupportedStore)
 	}
 }
 

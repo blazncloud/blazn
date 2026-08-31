@@ -132,8 +132,9 @@ func NewKubernetesBackendFromConfig(config KubernetesConfig) (*KubernetesBackend
 			return nil, err
 		}
 	}
+	observer := &kubernetesAgentNodeObserver{baseURL: config.BaseURL, clusterID: config.ClusterID, client: client}
 	return NewKubernetesBackend(KubernetesBackendConfig{Adapter: adapter, Health: health, ArtifactExportSupported: artifactRuntime != nil,
-		HelperImage: config.HelperImage, SourceRuntime: sourceRuntime, ArtifactRuntime: artifactRuntime})
+		HelperImage: config.HelperImage, SourceRuntime: sourceRuntime, ArtifactRuntime: artifactRuntime, AgentNodeObserver: observer})
 }
 
 func newKubernetesHTTPClient(config KubernetesConfig) (*http.Client, error) {

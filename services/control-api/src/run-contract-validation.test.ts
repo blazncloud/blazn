@@ -64,6 +64,11 @@ test("Run schema separates synthetic proof from populated live placement", async
   assert.equal(validate(sandbox), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ...sandbox, placement: null }), false, "terminal Sandbox Run accepted null placement");
   assert.equal(validate({ ...sandbox, receipt: null }), false, "terminal Run accepted null receipt");
+  const failed={...sandbox,status:"failed",errorCode:"controller_attempts_exhausted",receipt:{...receipt,outcome:"failed"}};
+  assert.equal(validate(failed),true,JSON.stringify(validate.errors));
+  assert.equal(validate({...failed,placement:null}),true,JSON.stringify(validate.errors));
+  assert.equal(validate({...failed,placement:{nodeId:sandbox.placement.nodeId}}),false,"failed Sandbox Run accepted partial node placement");
+  assert.equal(validate({...failed,placement:{sandboxId:sandbox.placement.sandboxId}}),false,"failed Sandbox Run accepted partial Sandbox placement");
 });
 
 test("Artifact schema exposes availability without leaking storage keys", async () => {

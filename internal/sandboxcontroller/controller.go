@@ -374,6 +374,21 @@ func (c *Controller) create(ctx context.Context, item WorkItem) error {
 			return nil
 		}
 	}
+	if observer, ok := c.backend.(AgentNodeObserver); ok && observer.AgentNodeObservationEnabled() {
+		observationStore, supported := c.store.(AgentNodeObservationStore)
+		if !supported {
+			log.Print("sandbox controller Agent placement evidence store is unavailable; continuing without evidence")
+		} else {
+			placement, observationErr := observer.ObserveAgentNode(ctx, *state.AdmissionObservation)
+			if observationErr != nil {
+				log.Print("sandbox controller Agent placement observation failed; continuing without evidence")
+			} else if _, recordErr := observationStore.RecordAgentNodeObservation(ctx, item.OperationID, c.config.WorkerID, item.LeaseToken, placement); recordErr != nil {
+				log.Print("sandbox controller Agent placement evidence write failed; continuing without evidence")
+			}
+		}
+		// Missing or fenced evidence is not an ordinary Sandbox failure. Agent
+		// Run binding still requires the row; completion is fenced separately.
+	}
 	workloadDigest := state.AdmissionObservation.Workload.Digest
 	observationDigest := state.AdmissionObservation.Digest
 	uid, rv := state.Record.UID, state.Record.ResourceVersion

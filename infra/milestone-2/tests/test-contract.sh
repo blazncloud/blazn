@@ -119,11 +119,14 @@ for required in 'postgres_password' 'read_only: true' 'no-new-privileges:true' '
 done
 grep -F 'database-role-compat:' "$compose" >/dev/null
 grep -F 'condition: service_completed_successfully' "$compose" >/dev/null
-grep -F "ARRAY['blazn_sandbox_controller','blazn_development_controller']" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
+grep -F "ARRAY['blazn_sandbox_controller','blazn_development_controller','blazn_agent_run_controller']" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 grep -F 'controller role % has unsafe attributes' "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 grep -F "('sandbox_controller_consume_access_grant_v1','uuid,character,text')" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
-grep -F "rolcanlogin AND role_name <> 'blazn_sandbox_controller'" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
+grep -F "('sandbox_controller_record_agent_node_observation','uuid,text,uuid,text,text,text,text,text,text')" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
+grep -F "rolcanlogin AND role_name NOT IN ('blazn_sandbox_controller','blazn_agent_run_controller')" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 grep -A1 -F 'CREATE ROLE blazn_sandbox_controller' "$ROOT_DIR/postgres-init/01-roles.sh" | grep -F 'LOGIN NOSUPERUSER' >/dev/null
+grep -A1 -F 'CREATE ROLE blazn_agent_run_controller' "$ROOT_DIR/postgres-init/01-roles.sh" | grep -F 'LOGIN NOSUPERUSER' >/dev/null
+grep -F "WHEN 'blazn_agent_run_controller'" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 grep -F 'REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC' "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 grep -F "ARRAY['public.digest(bytea,text)','public.digest(text,text)']" "$ROOT_DIR/postgres-compat/ensure-controller-roles.sh" >/dev/null
 
