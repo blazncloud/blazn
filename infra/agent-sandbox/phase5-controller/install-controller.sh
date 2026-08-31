@@ -117,17 +117,15 @@ egress|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-egress|blazn-
 rolebinding|rbac.authorization.k8s.io/v1|RoleBinding|blazn-sandbox-controller|blazn-poc-sandboxes|rolebinding/blazn-sandbox-controller
 clusterrolebinding|rbac.authorization.k8s.io/v1|ClusterRoleBinding|blazn-sandbox-controller-node-observer|-|clusterrolebinding/blazn-sandbox-controller-node-observer'
 canonicalize_object() {
-  jq -S 'del(.metadata.uid, .metadata.resourceVersion, .metadata.generation, .metadata.creationTimestamp, .metadata.managedFields, .metadata.selfLink, .status)'
+  jq -S 'del(.metadata.uid, .metadata.resourceVersion, .metadata.generation, .metadata.creationTimestamp, .metadata.managedFields, .metadata.selfLink, .status, .spec.replicas)'
 }
 canonicalize_admission_comparison() {
   canonicalize_object | jq -S '
     del(.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"],
-        .spec.clusterIPs, .spec.ipFamilies, .spec.ipFamilyPolicy, .spec.internalTrafficPolicy, .spec.sessionAffinity, .spec.sessionAffinityConfig,
-        .spec.progressDeadlineSeconds, .spec.revisionHistoryLimit, .spec.strategy,
-        .spec.template.spec.dnsPolicy, .spec.template.spec.restartPolicy, .spec.template.spec.schedulerName,
-        .spec.template.spec.terminationGracePeriodSeconds, .spec.template.spec.enableServiceLinks) |
-    (.spec.template.spec.containers[]? |= del(.imagePullPolicy, .terminationMessagePath, .terminationMessagePolicy)) |
-    (.spec.template.spec.initContainers[]? |= del(.imagePullPolicy, .terminationMessagePath, .terminationMessagePolicy))'
+        .spec.ipFamilies, .spec.ipFamilyPolicy, .spec.internalTrafficPolicy, .spec.sessionAffinity, .spec.sessionAffinityConfig,
+        .spec.progressDeadlineSeconds, .spec.template.spec.dnsPolicy, .spec.template.spec.schedulerName) |
+    (.spec.template.spec.containers[]? |= del(.terminationMessagePath, .terminationMessagePolicy)) |
+    (.spec.template.spec.initContainers[]? |= del(.terminationMessagePath, .terminationMessagePolicy))'
 }
 validate_baseline_bundle() {
   if [ ! -d "$baseline_dir" ] || [ -L "$baseline_dir" ] || [ "$(stat -c '%u:%a' "$baseline_dir")" != 0:700 ]; then printf 'controller semantic baseline directory is unsafe\n' >&2; return 1; fi
@@ -158,6 +156,7 @@ EOF
     validate_semantics "$validate_key" "$validate_response"
     [ "$(jq -er --arg ref "$validate_ref" '.[$ref]' "$uids")" = "$(jq -er '.metadata.uid' "$validate_response")" ] || { printf 'controller object identity changed: %s\n' "$validate_ref" >&2; return 1; }
     if [ "$validate_key" = deployment ]; then
+      [ "$(jq -er '.spec.replicas' "$validate_response")" = "$expected_deployment_replicas" ] || { printf 'controller Deployment replicas changed unexpectedly\n' >&2; return 1; }
       validated_deployment_rv=$(jq -er '.metadata.resourceVersion' "$validate_response")
       validated_deployment_available=$(jq -r '[.status.conditions[]? | select(.type == "Available") | .status][0] // "False"' "$validate_response")
     fi
@@ -265,6 +264,7 @@ EOF
     kubectl apply --server-side --field-manager blazn-phase5-controller -f "$anchored" -l "blazn.dev/phase5-object=$key" -o json >"$response"
     if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && { [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = apply-executed ] || [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = "apply-executed-$key" ]; }; then exit 86; fi
     validate_semantics "$key" "$response"
+    if [ "$key" = deployment ]; then [ "$(jq -er '.spec.replicas' "$response")" = 0 ] || { printf 'applied controller Deployment did not remain scaled to zero\n' >&2; exit 1; }; fi
     jq -e --arg api "$api" --arg kind "$object_kind" --arg name "$name" --arg ns "$ns" --arg key "$key" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" --arg anchor "$anchor_name" --arg anchor_uid "$anchor_uid" '
       .apiVersion == $api and .kind == $kind and .metadata.name == $name and
       (if $ns == "-" then ((.metadata.namespace // "") == "") else .metadata.namespace == $ns end) and
@@ -296,13 +296,16 @@ if [ "$phase" = applied ]; then
   # Idempotent across a crash between the scale and its journal entry: the
   # scale target is 1, so re-running scale is a no-op, and the recorded UID
   # proves the Deployment is still the one this transaction applied.
+  expected_deployment_replicas=0
   validate_all_live
   deployment_uid=$(jq -er '."deployment/blazn-sandbox-controller"' "$uids")
   scale_deployment_exact "$deployment_uid" "$validated_deployment_rv"
+  expected_deployment_replicas=1
   validate_all_live
   write_phase scaled; phase=scaled
 fi
 if [ "$phase" = scaled ]; then
+  expected_deployment_replicas=1
   available_attempts=${BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS:-60}
   case "$available_attempts" in ''|*[!0-9]*) available_attempts=60 ;; esac
   attempt=0

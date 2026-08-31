@@ -84,11 +84,13 @@ emit_object() {
   if [ "${EMIT_LIVE:-0}" = 1 ] && [ "${FAKE_SEMANTIC_DRIFT:-}" = "$object_key" ]; then drift_json=',"unexpected":{"mutated":true}'; else drift_json=; fi
   if [ "${EMIT_ADMISSION:-0}" = 1 ] && [ "${FAKE_ADMISSION_MUTATION:-}" = "$object_key" ]; then admission_json=',"rules":[{"apiGroups":["*"],"resources":["*"],"verbs":["*"]}]'; else admission_json=; fi
   if [ "$object_key" = deployment ]; then
-    if [ -e "$FAKE_STATE/scaled1" ]; then resource_version=rv-2; available=True; else resource_version=rv-1; available=False; fi
+    if [ -e "$FAKE_STATE/scaled1" ]; then resource_version=rv-2; available=True; replicas=1; else resource_version=rv-1; available=False; replicas=0; fi
     [ "${FAKE_UNAVAILABLE:-0}" = 1 ] && available=False
+    spec_json=$(printf ',"spec":{"replicas":%s}' "$replicas")
     status_json=$(printf ',"status":{"conditions":[{"type":"Available","status":"%s"}]}' "$available")
-  else resource_version=rv-1; status_json=; fi
-  printf '{"apiVersion":"%s","kind":"%s","metadata":{"name":"%s"%s,"uid":"%s","resourceVersion":"%s","labels":{"blazn.dev/phase5-object":"%s"},"annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"},"ownerReferences":[{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","controller":false,"blockOwnerDeletion":false}]}%s%s%s}\n' "$api" "$kind" "$name" "$namespace_json" "$uid" "$resource_version" "$object_key" "$owner_uid" "$drift_json" "$admission_json" "$status_json"
+  else resource_version=rv-1; spec_json=; status_json=; fi
+  if [ "${EMIT_ADMISSION:-0}" = 1 ] && [ "${FAKE_EXPLICIT_MUTATION:-}" = "$object_key" ]; then explicit_json=',"reviewedField":"mutated"'; else explicit_json=; fi
+  printf '{"apiVersion":"%s","kind":"%s","metadata":{"name":"%s"%s,"uid":"%s","resourceVersion":"%s","labels":{"blazn.dev/phase5-object":"%s"},"annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"},"ownerReferences":[{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","controller":false,"blockOwnerDeletion":false}]}%s%s%s%s%s}\n' "$api" "$kind" "$name" "$namespace_json" "$uid" "$resource_version" "$object_key" "$owner_uid" "$drift_json" "$admission_json" "$explicit_json" "$spec_json" "$status_json"
 }
 case "$*" in
   'config current-context') printf 'disposable-controller-test' ;;
@@ -179,15 +181,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_PATCH(self):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
         current_rv = "rv-2" if os.path.exists(os.path.join(state, "scaled1")) else "rv-1"
+        target_replicas = body[-1].get("value") if body else None
         expected = [
             {"op": "test", "path": "/metadata/uid", "value": "11111111-1111-4111-8111-111111111111"},
             {"op": "test", "path": "/metadata/resourceVersion", "value": current_rv},
-            {"op": "replace", "path": "/spec/replicas", "value": 1},
+            {"op": "replace", "path": "/spec/replicas", "value": target_replicas},
         ]
-        if self.path.endswith("/deployments/blazn-sandbox-controller") and body == expected and not os.path.exists(os.path.join(state, "race-deployment")):
-            open(os.path.join(state, "scaled1"), "w").close(); self.send_response(200)
+        race = os.path.exists(os.path.join(state, "race-deployment")) if target_replicas == 1 else os.path.exists(os.path.join(state, "race-teardown-deployment"))
+        if self.path.endswith("/deployments/blazn-sandbox-controller") and body == expected and target_replicas in (0, 1) and not race:
+            if target_replicas == 1:
+                open(os.path.join(state, "scaled1"), "w").close()
+            else:
+                open(os.path.join(state, "scaled0"), "w").close()
+                try: os.unlink(os.path.join(state, "scaled1"))
+                except FileNotFoundError: pass
+            self.send_response(200)
         else:
-            if os.path.exists(os.path.join(state, "race-deployment")):
+            if race:
                 open(os.path.join(state, "user-deployment"), "w").close()
             self.send_response(409)
         self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b"{}")
@@ -198,6 +208,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log.write(f"{self.path} {json.dumps(body)}\n")
         if key is not None and os.path.exists(os.path.join(state, f"deleted-{key}")):
             self.send_response(404)
+        elif key is not None and os.path.exists(os.path.join(state, f"user-{key}")):
+            self.send_response(409)
         elif key is not None and body.get("preconditions", {}).get("uid") == uid:
             if key == "anchor" and os.path.exists(os.path.join(state, "defer-anchor-delete")):
                 open(os.path.join(state, "anchor-delete-pending"), "w").close()
@@ -254,6 +266,8 @@ run_tool() {
 expect_phase() { [ "$(cat "$transaction/phase")" = "$1" ] || { printf 'expected phase %s, got %s\n' "$1" "$(cat "$transaction/phase")" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 expect_message() { grep -Fq -- "$1" "$tmp/last-err" || { printf 'missing expected message: %s\n' "$1" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 expect_journal_length() { actual=$(jq -r 'length' "$transaction/owned-uids.json" 2>/dev/null || printf missing); [ "$actual" = "$1" ] || { printf 'expected UID journal length %s, got %s\n' "$1" "$actual" >&2; exit 1; }; }
+expect_code() { [ "$last_code" -eq "$1" ] || { printf 'expected exit %s, got %s\n' "$1" "$last_code" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
+test_case() { printf 'controller transaction test: %s\n' "$1"; }
 
 # T1: happy deploy, then idempotent re-run.
 reset_state; new_transaction
@@ -268,6 +282,7 @@ grep -Fq 'already complete' "$tmp/last-out"
 
 # T2: crash at each journal boundary, then resume to completion.
 for boundary in sealed anchor-intent anchor-journaled baselined apply-intent applied scaled complete; do
+  test_case "T2 crash boundary $boundary"
   reset_state; new_transaction
   run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER="$boundary" BLAZN_PHASE4C_DISPOSABLE_TEST=true
   [ "$last_code" -eq 86 ] || { printf 'boundary %s: expected 86, got %s\n' "$boundary" "$last_code" >&2; cat "$tmp/last-err" >&2; exit 1; }
@@ -280,25 +295,29 @@ done
 # T2b: a crash after anchor create but before its authoritative UID journal is
 # fail-closed; an indistinguishable same-shape replacement is never adopted.
 reset_state; new_transaction
+test_case 'T2b unknown anchor install refusal'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=anchor-created BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 expect_phase anchor-intent
 [ ! -e "$transaction/anchor.json" ]
 : >"$FAKE_STATE/user-anchor"
 run_tool install-controller.sh
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'anchor exists without an authoritative journaled UID'
 expect_phase anchor-intent
 
 # T2c: teardown also refuses to delete the unknown server UID, leaving the
 # harmless inert residue for explicit manual recovery.
 reset_state; new_transaction
+test_case 'T2c unknown anchor teardown refusal'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=anchor-created BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 : >"$FAKE_STATE/user-anchor"
 run_tool teardown-controller.sh
-[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
-expect_phase rollback-complete
+expect_code 1
+expect_message 'anchor exists without an authoritative journaled UID'
+expect_phase anchor-intent
+[ ! -e "$FAKE_STATE/delete-requests.log" ] || { printf 'unknown anchor teardown issued a delete\n' >&2; exit 1; }
 
 # T6aa: foreground anchor deletion may complete asynchronously. Teardown polls
 # the exact anchor/dependent identities to bounded completion across that lag.
@@ -365,6 +384,21 @@ run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
 
+# T6ab: a Deployment replacement between teardown validation and scale-down
+# fails the UID/resourceVersion patch; bindings still revoke and replacement is untouched.
+reset_state; new_transaction
+run_tool install-controller.sh
+[ "$last_code" -eq 0 ]
+: >"$FAKE_STATE/race-teardown-deployment"
+run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
+[ "$last_code" -eq 1 ]
+expect_phase rollback-intent
+expect_message 'ambiguous replacement objects were left untouched; recovery is required'
+[ -e "$FAKE_STATE/deleted-clusterrolebinding" ]
+[ -e "$FAKE_STATE/deleted-rolebinding" ]
+[ ! -e "$FAKE_STATE/scaled0" ]
+[ ! -e "$FAKE_STATE/deleted-deployment" ]
+
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
 # were recorded at apply-intent, before scaling).
 reset_state; new_transaction
@@ -406,6 +440,15 @@ reset_state; new_transaction
 run_tool install-controller.sh FAKE_ADMISSION_MUTATION=role
 [ "$last_code" -eq 1 ]
 expect_message 'server-defaulted baseline contains an unapproved admission mutation: role'
+expect_phase anchor-journaled
+[ ! -e "$FAKE_STATE/serviceaccount" ]
+
+# T5ee: reviewed explicit fields are never normalized away; a symmetric
+# admission rewrite of such intent is rejected during baseline capture.
+reset_state; new_transaction
+run_tool install-controller.sh FAKE_EXPLICIT_MUTATION=deployment
+[ "$last_code" -eq 1 ]
+expect_message 'server-defaulted baseline contains an unapproved admission mutation: deployment'
 expect_phase anchor-journaled
 [ ! -e "$FAKE_STATE/serviceaccount" ]
 
@@ -485,12 +528,11 @@ expect_message 'dependent controller object exists without a completed UID journ
 # anchor; owner-reference GC removes its unjournaled dependents.
 reset_state; new_transaction
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 run_tool teardown-controller.sh
-[ "$last_code" -eq 1 ]
-expect_message 'anchor exists without an authoritative journaled UID'
-expect_phase anchor-intent
-[ ! -e "$FAKE_STATE/delete-requests.log" ]
+expect_code 0
+expect_phase rollback-complete
+[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 1 ] || { printf 'apply-executed recovery did not delete only the authoritative anchor\n' >&2; exit 1; }
 grep -Fq 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' "$FAKE_STATE/delete-requests.log"
 
 # T7e: if an object is replaced after apply but before UID capture, neither

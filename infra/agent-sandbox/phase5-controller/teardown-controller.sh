@@ -31,6 +31,18 @@ current_uid() {
   else kubectl get "$1" "$2" -n "$3" -o json 2>/dev/null
   fi | jq -er '.metadata.uid' 2>/dev/null
 }
+scale_down_exact() {
+  scale_uid=$1; scale_rv=$2
+  scale_payload=$(jq -cn --arg uid "$scale_uid" --arg rv "$scale_rv" '[{"op":"test","path":"/metadata/uid","value":$uid},{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"replace","path":"/spec/replicas","value":0}]')
+  phase4c_start_uid_proxy "$transaction"
+  trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+  # shellcheck disable=SC2154 # assigned by phase4c_start_uid_proxy
+  if ! curl --fail-with-body --silent --show-error --unix-socket "$phase4c_proxy_socket" -X PATCH -H 'content-type: application/json-patch+json' --data-binary "$scale_payload" 'http://localhost/apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller' >/dev/null; then
+    phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
+    return 1
+  fi
+  phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
+}
 validate_uid_journal() {
   if [ ! -f "$uids" ] || [ -L "$uids" ] || [ "$(stat -c '%u:%a:%h' "$uids")" != 0:600:1 ]; then
     printf 'owned UID journal metadata is unsafe\n' >&2; return 1
@@ -89,12 +101,24 @@ validate_uid_journal
 # Scale to zero first so no controller Pod is reconciling while its RBAC and
 # egress are removed.
 deployment_uid=$(jq -r '."deployment/blazn-sandbox-controller" // empty' "$uids")
-if [ -n "$deployment_uid" ] && [ "$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)" = "$deployment_uid" ]; then
-  kubectl scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0 >/dev/null
+if [ -n "$deployment_uid" ]; then
+  deployment_live=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json 2>/dev/null || :)
+  deployment_live_uid=$(printf '%s' "$deployment_live" | jq -r '.metadata.uid // empty' 2>/dev/null || :)
+  deployment_live_rv=$(printf '%s' "$deployment_live" | jq -r '.metadata.resourceVersion // empty' 2>/dev/null || :)
+  if [ "$deployment_live_uid" = "$deployment_uid" ] && [ -n "$deployment_live_rv" ]; then
+    if ! scale_down_exact "$deployment_uid" "$deployment_live_rv"; then
+      deployment_after_scale_error=$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)
+      [ -z "$deployment_after_scale_error" ] || printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
+    fi
+  elif [ -n "$deployment_live_uid" ]; then
+    printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
+  fi
+  if [ "$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)" = "$deployment_uid" ]; then
   attempt=0
   until [ "$(kubectl get pods -n blazn-poc-system -l app.kubernetes.io/name=blazn-sandbox-controller --no-headers 2>/dev/null | grep -c . || :)" = 0 ]; do
     attempt=$((attempt + 1)); [ "$attempt" -le 30 ] || { printf 'controller Pods did not drain\n' >&2; exit 1; }; sleep 2
   done
+  fi
 fi
 phase4c_start_uid_proxy "$transaction"
 trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
