@@ -77,6 +77,7 @@ emit_object() {
     egress) api=networking.k8s.io/v1; kind=NetworkPolicy; name=blazn-sandbox-controller-egress; ns=blazn-poc-system; uid=55555555-5555-4555-8555-555555555555 ;;
     rolebinding) api=rbac.authorization.k8s.io/v1; kind=RoleBinding; name=blazn-sandbox-controller; ns=blazn-poc-sandboxes; uid=33333333-3333-4333-8333-333333333333 ;;
     clusterrolebinding) api=rbac.authorization.k8s.io/v1; kind=ClusterRoleBinding; name=blazn-sandbox-controller-node-observer; ns=; uid=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb ;;
+    anchor) api=rbac.authorization.k8s.io/v1; kind=ClusterRole; name=blazn-phase5-anchor-99999999-9999-4999-8999-999999999999; ns=; uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc ;;
     *) exit 1 ;;
   esac
   if [ -n "$ns" ]; then namespace_json=$(printf ',"namespace":"%s"' "$ns"); else namespace_json=; fi
@@ -138,10 +139,22 @@ case "$*" in
     present anchor || exit 1
     if [ -e "$FAKE_STATE/user-anchor" ]; then anchor_uid=dddddddd-dddd-4ddd-8ddd-dddddddddddd; else anchor_uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
     printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"}},"rules":[]}\n' "$anchor_uid" ;;
+  'get '*' --ignore-not-found -o json')
+    for object in deployment/blazn-sandbox-controller:deployment service/blazn-sandbox-access:service networkpolicy/blazn-sandbox-controller-access-ingress:access-ingress serviceaccount/blazn-sandbox-controller:serviceaccount role/blazn-sandbox-controller:role rolebinding/blazn-sandbox-controller:rolebinding clusterrole/blazn-sandbox-controller-node-observer:clusterrole clusterrolebinding/blazn-sandbox-controller-node-observer:clusterrolebinding networkpolicy/blazn-sandbox-controller-egress:egress networkpolicy/blazn-sandbox-controller-default-deny:deny clusterrole/blazn-phase5-anchor-99999999-9999-4999-8999-999999999999:anchor; do
+      ref=${object%%:*}; key=${object#*:}
+      case "$* " in "get ${ref%%/*} ${ref#*/} "*)
+        [ ! -e "$FAKE_STATE/fail-get-$key" ] || exit 1
+        present "$key" && { EMIT_LIVE=1 EMIT_ADMISSION=1 emit_object "$key"; }
+        exit 0
+        ;;
+      esac
+    done
+    exit 1 ;;
   'get '*' -o json')
     for object in deployment/blazn-sandbox-controller:deployment:11111111-1111-4111-8111-111111111111 service/blazn-sandbox-access:service:77777777-7777-4777-8777-777777777777 networkpolicy/blazn-sandbox-controller-access-ingress:access-ingress:88888888-8888-4888-8888-888888888888 serviceaccount/blazn-sandbox-controller:serviceaccount:44444444-4444-4444-8444-444444444444 role/blazn-sandbox-controller:role:22222222-2222-4222-8222-222222222222 rolebinding/blazn-sandbox-controller:rolebinding:33333333-3333-4333-8333-333333333333 clusterrole/blazn-sandbox-controller-node-observer:clusterrole:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa clusterrolebinding/blazn-sandbox-controller-node-observer:clusterrolebinding:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb networkpolicy/blazn-sandbox-controller-egress:egress:55555555-5555-4555-8555-555555555555 networkpolicy/blazn-sandbox-controller-default-deny:deny:66666666-6666-4666-8666-666666666666; do
       ref=${object%%:*}; rest=${object#*:}; key=${rest%%:*}; uid=${rest#*:}
       case "$* " in "get ${ref%%/*} ${ref#*/} "*)
+        [ ! -e "$FAKE_STATE/fail-get-$key" ] || exit 1
         present "$key" || exit 1
         EMIT_LIVE=1 EMIT_ADMISSION=1 emit_object "$key"
         exit 0
@@ -206,7 +219,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         key, uid = targets.get(self.path, (None, None))
         with open(os.path.join(state, "delete-requests.log"), "a") as log:
             log.write(f"{self.path} {json.dumps(body)}\n")
-        if key is not None and os.path.exists(os.path.join(state, f"deleted-{key}")):
+        if key is not None and os.path.exists(os.path.join(state, f"arm-get-failure-after-delete-{key}")):
+            open(os.path.join(state, f"fail-get-{key}"), "w").close()
+        if key is not None and os.path.exists(os.path.join(state, f"fail-delete-{key}")):
+            self.send_response(500)
+        elif key is not None and os.path.exists(os.path.join(state, f"deleted-{key}")):
             self.send_response(404)
         elif key is not None and os.path.exists(os.path.join(state, f"user-{key}")):
             self.send_response(409)
@@ -399,6 +416,47 @@ expect_message 'ambiguous replacement objects were left untouched; recovery is r
 [ ! -e "$FAKE_STATE/scaled0" ]
 [ ! -e "$FAKE_STATE/deleted-deployment" ]
 
+# T6ac: a DELETE failure followed by an API discovery failure is never
+# interpreted as confirmed absence or rollback completion.
+reset_state; new_transaction
+test_case 'T6ac post-delete discovery error remains recovery-required'
+run_tool install-controller.sh
+expect_code 0
+: >"$FAKE_STATE/fail-delete-service"
+: >"$FAKE_STATE/arm-get-failure-after-delete-service"
+run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
+expect_code 1
+expect_phase rollback-intent
+expect_message 'recovery is required'
+[ -e "$FAKE_STATE/deleted-clusterrolebinding" ]
+[ -e "$FAKE_STATE/deleted-rolebinding" ]
+
+# T6ad: even after a successful UID-fenced DELETE, a GC observation error does
+# not prove absence and cannot advance the journal to rollback-complete.
+reset_state; new_transaction
+test_case 'T6ad GC discovery error blocks rollback completion'
+run_tool install-controller.sh
+expect_code 0
+: >"$FAKE_STATE/arm-get-failure-after-delete-service"
+run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
+expect_code 1
+expect_phase rollback-intent
+expect_message 'recovery is required'
+
+# T6ae: an initial Deployment discovery error neither authorizes a blind scale
+# nor prevents binding-first revocation, but it keeps recovery incomplete.
+reset_state; new_transaction
+test_case 'T6ae initial Deployment discovery error is fail-closed'
+run_tool install-controller.sh
+expect_code 0
+: >"$FAKE_STATE/fail-get-deployment"
+run_tool teardown-controller.sh BLAZN_CONTROLLER_GC_ATTEMPTS=2
+expect_code 1
+expect_phase rollback-intent
+expect_message 'recovery is required'
+[ -e "$FAKE_STATE/deleted-clusterrolebinding" ]
+[ -e "$FAKE_STATE/deleted-rolebinding" ]
+
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
 # were recorded at apply-intent, before scaling).
 reset_state; new_transaction
@@ -470,8 +528,8 @@ run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DI
 [ "$last_code" -eq 86 ]
 : >"$FAKE_STATE/race-deployment"
 run_tool install-controller.sh
-[ "$last_code" -eq 22 ] || [ "$last_code" -eq 1 ]
-expect_phase applied
+  [ "$last_code" -eq 22 ] || [ "$last_code" -eq 1 ]
+  expect_phase scale-intent
 [ ! -e "$FAKE_STATE/scaled1" ]
 
 # T5g: a replacement after the atomic scale is rejected by exact UID/baseline

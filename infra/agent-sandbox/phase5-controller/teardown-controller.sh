@@ -26,10 +26,17 @@ absent() {
   fi
   [ -z "$discovered" ]
 }
-current_uid() {
-  if [ "$3" = - ]; then kubectl get "$1" "$2" -o json 2>/dev/null
-  else kubectl get "$1" "$2" -n "$3" -o json 2>/dev/null
-  fi | jq -er '.metadata.uid' 2>/dev/null
+observe_object() {
+  observed_state=error; observed_uid=; observed_rv=; observed_json=
+  if [ "$3" = - ]; then
+    observed_json=$(kubectl get "$1" "$2" --ignore-not-found -o json) || return 0
+  else
+    observed_json=$(kubectl get "$1" "$2" -n "$3" --ignore-not-found -o json) || return 0
+  fi
+  if [ -z "$observed_json" ]; then observed_state=absent; return 0; fi
+  observed_uid=$(printf '%s' "$observed_json" | jq -er '.metadata.uid | strings | select(length > 0)') || { observed_uid=; return 0; }
+  observed_rv=$(printf '%s' "$observed_json" | jq -r '.metadata.resourceVersion // empty') || { observed_uid=; observed_rv=; return 0; }
+  observed_state=present
 }
 scale_down_exact() {
   scale_uid=$1; scale_rv=$2
@@ -103,33 +110,39 @@ validate_uid_journal
 deployment_uid=$(jq -r '."deployment/blazn-sandbox-controller" // empty' "$uids")
 if [ -n "$deployment_uid" ]; then
   drain_owned_deployment=0
-  deployment_live=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json 2>/dev/null || :)
-  deployment_live_uid=$(printf '%s' "$deployment_live" | jq -r '.metadata.uid // empty' 2>/dev/null || :)
-  deployment_live_rv=$(printf '%s' "$deployment_live" | jq -r '.metadata.resourceVersion // empty' 2>/dev/null || :)
-  if [ "$deployment_live_uid" = "$deployment_uid" ] && [ -n "$deployment_live_rv" ]; then
+  observe_object deployment blazn-sandbox-controller blazn-poc-system
+  if [ "$observed_state" = present ] && [ "$observed_uid" = "$deployment_uid" ] && [ -n "$observed_rv" ]; then
+    deployment_live_rv=$observed_rv
     if scale_down_exact "$deployment_uid" "$deployment_live_rv"; then
       drain_owned_deployment=1
     else
       # The patch can lose a race to replacement or an unrelated update.
       # Re-read the full identity: never wait on or scale a replacement. A
       # same-UID resourceVersion race gets one newly fenced retry.
-      deployment_after_scale_error=$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o json 2>/dev/null || :)
-      deployment_after_uid=$(printf '%s' "$deployment_after_scale_error" | jq -r '.metadata.uid // empty' 2>/dev/null || :)
-      deployment_after_rv=$(printf '%s' "$deployment_after_scale_error" | jq -r '.metadata.resourceVersion // empty' 2>/dev/null || :)
-      if [ "$deployment_after_uid" = "$deployment_uid" ] && [ -n "$deployment_after_rv" ] && scale_down_exact "$deployment_uid" "$deployment_after_rv"; then
+      observe_object deployment blazn-sandbox-controller blazn-poc-system
+      if [ "$observed_state" = present ] && [ "$observed_uid" = "$deployment_uid" ] && [ -n "$observed_rv" ] && scale_down_exact "$deployment_uid" "$observed_rv"; then
         drain_owned_deployment=1
-      elif [ -n "$deployment_after_uid" ]; then
+      elif [ "$observed_state" != absent ]; then
         printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
       fi
     fi
-  elif [ -n "$deployment_live_uid" ]; then
+  elif [ "$observed_state" != absent ]; then
     printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
   fi
-  if [ "$drain_owned_deployment" -eq 1 ] && [ "$(current_uid deployment blazn-sandbox-controller blazn-poc-system || :)" = "$deployment_uid" ]; then
-  attempt=0
-  until [ "$(kubectl get pods -n blazn-poc-system -l app.kubernetes.io/name=blazn-sandbox-controller --no-headers 2>/dev/null | grep -c . || :)" = 0 ]; do
-    attempt=$((attempt + 1)); [ "$attempt" -le 30 ] || { printf 'controller Pods did not drain\n' >&2; exit 1; }; sleep 2
-  done
+  if [ "$drain_owned_deployment" -eq 1 ]; then
+    observe_object deployment blazn-sandbox-controller blazn-poc-system
+    if [ "$observed_state" = present ] && [ "$observed_uid" = "$deployment_uid" ]; then
+      attempt=0
+      while :; do
+        if ! controller_pods=$(kubectl get pods -n blazn-poc-system -l app.kubernetes.io/name=blazn-sandbox-controller --no-headers); then
+          printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"; break
+        fi
+        [ -z "$controller_pods" ] && break
+        attempt=$((attempt + 1)); [ "$attempt" -le 30 ] || { printf 'controller Pods did not drain\n' >&2; exit 1; }; sleep 2
+      done
+    elif [ "$observed_state" != absent ]; then
+      printf 'deployment/blazn-sandbox-controller\n' >>"$attempt_residual"
+    fi
   fi
 fi
 phase4c_start_uid_proxy "$transaction"
@@ -138,15 +151,17 @@ trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
 # teardown skips the already-removed objects instead of aborting on a 404.
 delete_owned() {
   owned_kind=$1; owned_name=$2; owned_ns=$3; owned_key=$4; owned_path=$5
-  absent "$owned_kind" "$owned_name" "$owned_ns" && return 0
+  observe_object "$owned_kind" "$owned_name" "$owned_ns"
+  [ "$observed_state" = absent ] && return 0
   owned_uid=$(jq -er --arg key "$owned_key" '.[$key] // empty' "$uids") || return 0
   [ -n "$owned_uid" ] || return 0
   if ! phase4c_delete_uid "$owned_path" "$owned_uid" Background; then
-    live_after_error=$(current_uid "$owned_kind" "$owned_name" "$owned_ns" || :)
-    [ -z "$live_after_error" ] && return 0
-    if [ "$live_after_error" != "$owned_uid" ] || ! phase4c_delete_uid "$owned_path" "$owned_uid" Background; then
-      printf '%s\n' "$owned_key" >>"$attempt_residual"
-    fi
+    observe_object "$owned_kind" "$owned_name" "$owned_ns"
+    [ "$observed_state" = absent ] && return 0
+    if [ "$observed_state" = present ] && [ "$observed_uid" = "$owned_uid" ] && phase4c_delete_uid "$owned_path" "$owned_uid" Background; then return 0; fi
+    # A discovery error is not absence, and a different UID is an untouched
+    # replacement. Both require explicit recovery.
+    printf '%s\n' "$owned_key" >>"$attempt_residual"
   fi
   return 0
 }
@@ -163,8 +178,9 @@ delete_owned networkpolicy blazn-sandbox-controller-default-deny blazn-poc-syste
 delete_owned serviceaccount blazn-sandbox-controller blazn-poc-system serviceaccount/blazn-sandbox-controller /api/v1/namespaces/blazn-poc-system/serviceaccounts/blazn-sandbox-controller
 if [ "$anchor_safe" -eq 1 ]; then
   if ! phase4c_delete_uid "/apis/rbac.authorization.k8s.io/v1/clusterroles/$anchor_name" "$anchor_uid" Foreground; then
-    anchor_after_error=$(current_uid clusterrole "$anchor_name" - || :)
-    if [ -n "$anchor_after_error" ] && { [ "$anchor_after_error" != "$anchor_uid" ] || ! phase4c_delete_uid "/apis/rbac.authorization.k8s.io/v1/clusterroles/$anchor_name" "$anchor_uid" Foreground; }; then
+    observe_object clusterrole "$anchor_name" -
+    if [ "$observed_state" = present ] && [ "$observed_uid" = "$anchor_uid" ] && phase4c_delete_uid "/apis/rbac.authorization.k8s.io/v1/clusterroles/$anchor_name" "$anchor_uid" Foreground; then :
+    elif [ "$observed_state" != absent ]; then
       printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
     fi
   fi
@@ -180,13 +196,16 @@ while :; do
   for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
     gone_ref=${gone%%:*}; gone_ns=${gone#*:}; gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
     expected_uid=$(jq -r --arg key "$gone_ref" '.[$key] // empty' "$uids")
-    live_uid_now=$(current_uid "$gone_kind" "$gone_name" "$gone_ns" || :)
-    if [ -n "$live_uid_now" ] && { [ -z "$expected_uid" ] || [ "$live_uid_now" = "$expected_uid" ]; }; then pending=1; fi
-    if [ -n "$expected_uid" ] && [ -n "$live_uid_now" ] && [ "$live_uid_now" != "$expected_uid" ]; then printf '%s\n' "$gone_ref" >>"$attempt_residual"; fi
+    observe_object "$gone_kind" "$gone_name" "$gone_ns"
+    if [ "$observed_state" = error ]; then pending=1
+    elif [ "$observed_state" = present ] && { [ -z "$expected_uid" ] || [ "$observed_uid" = "$expected_uid" ]; }; then pending=1
+    elif [ "$observed_state" = present ] && [ -n "$expected_uid" ] && [ "$observed_uid" != "$expected_uid" ]; then printf '%s\n' "$gone_ref" >>"$attempt_residual"
+    fi
   done
-  live_anchor_uid=$(current_uid clusterrole "$anchor_name" - || :)
-  [ "$live_anchor_uid" = "$anchor_uid" ] && pending=1
-  if [ -n "$live_anchor_uid" ] && [ "$live_anchor_uid" != "$anchor_uid" ]; then printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"; fi
+  observe_object clusterrole "$anchor_name" -
+  if [ "$observed_state" = error ] || { [ "$observed_state" = present ] && [ "$observed_uid" = "$anchor_uid" ]; }; then pending=1
+  elif [ "$observed_state" = present ]; then printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
+  fi
   [ "$pending" -eq 0 ] && break
   attempt=$((attempt + 1)); [ "$attempt" -lt "$gc_attempts" ] || break
   sleep 2
@@ -194,9 +213,11 @@ done
 if [ "$pending" -ne 0 ]; then
   for gone in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
     gone_ref=${gone%%:*}; gone_ns=${gone#*:}; gone_kind=${gone_ref%%/*}; gone_name=${gone_ref#*/}
-    [ -z "$(current_uid "$gone_kind" "$gone_name" "$gone_ns" || :)" ] || printf '%s\n' "$gone_ref" >>"$attempt_residual"
+    observe_object "$gone_kind" "$gone_name" "$gone_ns"
+    [ "$observed_state" = absent ] || printf '%s\n' "$gone_ref" >>"$attempt_residual"
   done
-  [ "$(current_uid clusterrole "$anchor_name" - || :)" != "$anchor_uid" ] || printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
+  observe_object clusterrole "$anchor_name" -
+  [ "$observed_state" = absent ] || printf 'clusterrole/%s\n' "$anchor_name" >>"$attempt_residual"
 fi
 if [ -s "$attempt_residual" ]; then
   sort -u "$attempt_residual" >"$ambiguous.tmp"; chmod 0600 "$ambiguous.tmp"; sync -f "$ambiguous.tmp"; mv "$ambiguous.tmp" "$ambiguous"; sync -f "$transaction"
