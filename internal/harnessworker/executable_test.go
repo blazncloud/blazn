@@ -149,7 +149,19 @@ func protectedExecutableFixture(t *testing.T) (string, string, string) {
 
 func protectedExecutableFixtureWithParent(t *testing.T) (string, string, string, string) {
 	t.Helper()
-	parent := t.TempDir()
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := os.MkdirTemp(workingDirectory, ".protected-executable-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(parent); err != nil {
+			t.Errorf("remove protected executable fixture: %v", err)
+		}
+	})
 	root := filepath.Join(parent, "trusted")
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
