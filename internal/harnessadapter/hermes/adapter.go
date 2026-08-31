@@ -196,11 +196,21 @@ func (a *Adapter) ReviewedArtifacts() []harnessworker.ArtifactResult {
 	}
 	normal.mu.Lock()
 	defer normal.mu.Unlock()
-	results := make([]harnessworker.ArtifactResult, 0, len(normal.artifacts))
-	for _, artifact := range normal.artifacts {
+	results := make([]harnessworker.ArtifactResult, 0, len(normal.reviewedArtifacts))
+	for _, artifact := range normal.reviewedArtifacts {
 		results = append(results, harnessworker.ArtifactResult{Name: artifact.Name, Role: artifact.Role, Kind: artifact.Kind, MediaType: artifact.MediaType, Size: artifact.Size, ContentDigest: artifact.ContentDigest})
 	}
 	return results
+}
+
+// OutputReusable reports whether the adapter's delivery goroutine has
+// definitively returned. A false value means that goroutine remains the sole
+// owner of the output writer and the caller must suppress its terminal record.
+func (a *Adapter) OutputReusable() bool {
+	a.mu.Lock()
+	normal := a.normal
+	a.mu.Unlock()
+	return normal == nil || normal.delivery.reusable()
 }
 
 type record struct {
@@ -212,17 +222,18 @@ type record struct {
 }
 
 type normalizer struct {
-	mu             sync.Mutex
-	scope          harnessworker.WorkloadScope
-	token          []byte
-	delivery       *outputDelivery
-	artifactRoot   string
-	abort          chan<- error
-	pending        []byte
-	records        int
-	artifacts      []Artifact
-	terminalStatus string
-	failed         error
+	mu                sync.Mutex
+	scope             harnessworker.WorkloadScope
+	token             []byte
+	delivery          *outputDelivery
+	artifactRoot      string
+	abort             chan<- error
+	pending           []byte
+	records           int
+	artifacts         []Artifact
+	reviewedArtifacts []Artifact
+	terminalStatus    string
+	failed            error
 }
 
 type outputDelivery struct {
@@ -290,6 +301,15 @@ func (d *outputDelivery) result() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.err
+}
+
+func (d *outputDelivery) reusable() bool {
+	select {
+	case <-d.done:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeAll(output io.Writer, value []byte) error {
@@ -429,6 +449,10 @@ func (n *normalizer) finalize(ctx context.Context) error {
 	defer n.mu.Unlock()
 	defer zero(n.token)
 	outputErr := n.delivery.finish(ctx)
+	artifactErr := n.reviewFixedArtifacts()
+	if artifactErr != nil {
+		return artifactErr
+	}
 	if n.failed != nil {
 		return n.failed
 	}
@@ -442,13 +466,48 @@ func (n *normalizer) finalize(ctx context.Context) error {
 		if err := n.requireSuccessfulArtifacts(); err != nil {
 			return err
 		}
-		for _, artifact := range n.artifacts {
-			validated, err := validateArtifact(artifactPayload(artifact), n.artifactRoot, n.token)
-			if err != nil || validated != artifact {
+	}
+	return nil
+}
+
+func (n *normalizer) reviewFixedArtifacts() error {
+	n.reviewedArtifacts = nil
+	reviewed := make([]Artifact, 0, len(n.artifacts))
+	for _, fixed := range []Artifact{
+		{Name: "patch", Role: "patch", Kind: "agent.patch", MediaType: "text/x-diff", Path: "/workspace/artifacts/patch.diff"},
+		{Name: "summary", Role: "summary", Kind: "agent.summary", MediaType: "text/markdown", Path: "/workspace/artifacts/summary.md"},
+	} {
+		fileSystem, err := sandboxio.OpenRootFileSystem(n.artifactRoot)
+		if err != nil {
+			return errors.New("open Hermes artifact root")
+		}
+		contents, readErr := sandboxio.ReadArtifact(fileSystem, fixed.Path, maxArtifactBytes)
+		_ = fileSystem.Close()
+		if sandboxio.IsProtocolError(readErr, "artifact_not_found") {
+			continue
+		}
+		if readErr != nil {
+			return errors.New("Hermes fixed artifact is unavailable or unsafe")
+		}
+		containsToken := bytes.Contains(contents.Body, n.token)
+		zero(contents.Body)
+		if containsToken {
+			return errors.New("Hermes fixed artifact contains forbidden credential material")
+		}
+		for _, recorded := range n.artifacts {
+			if recorded.Path != fixed.Path {
+				continue
+			}
+			if recorded.Name != fixed.Name || recorded.Role != fixed.Role || recorded.Kind != fixed.Kind || recorded.MediaType != fixed.MediaType || recorded.Size != contents.Size || subtle.ConstantTimeCompare([]byte(recorded.ContentDigest), []byte(contents.SHA256)) != 1 {
 				return errors.New("Hermes artifact changed after its creation event")
 			}
+			reviewed = append(reviewed, recorded)
 		}
 	}
+	if len(reviewed) != len(n.artifacts) {
+		return errors.New("Hermes recorded artifact is missing after process exit")
+	}
+	n.reviewedArtifacts = reviewed
 	return nil
 }
 

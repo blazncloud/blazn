@@ -202,6 +202,45 @@ func TestHermesBlockedNormalizedOutputUnblocksOnCancellation(t *testing.T) {
 	}
 }
 
+func TestHermesUnresolvedOutputRetainsExclusiveOwnershipAfterFinalize(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithCancel(context.Background())
+	output := &blockedWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	adapter, err := New(Config{ProxyURL: "http://127.0.0.1:19090", Output: output, ArtifactRoot: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := validScope(t, now)
+	spec, err := adapter.Prepare(ctx, harnessworker.Assignment{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.RequestTypeExecute, Scope: scope}, tokenFile(t, testToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, _ := json.Marshal(recordValue(1, "result.reported", map[string]any{"status": "failed"}, map[string]map[string]any{}))
+	if _, err := spec.Stdout.Write(append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	<-output.entered
+	cancel()
+	finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer finalizeCancel()
+	if err := adapter.Finalize(finalizeCtx, harnessworker.ProcessResult{Canceled: true, TreeKilled: true}); err == nil || !strings.Contains(err.Error(), "flush") {
+		t.Fatalf("unresolved delivery finalize error=%v", err)
+	}
+	if adapter.OutputReusable() {
+		t.Fatal("blocked delivery released output ownership")
+	}
+	// The command observes false and suppresses its terminal response. Resuming
+	// the writer can therefore complete only the already-owned adapter record.
+	close(output.release)
+	deadline := time.Now().Add(time.Second)
+	for !adapter.OutputReusable() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !adapter.OutputReusable() {
+		t.Fatal("resumed delivery did not finish")
+	}
+}
+
 func TestHermesRunsThroughScopedProxyAndPreservesSafeEvidence(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scope := validScope(t, now)
@@ -461,9 +500,12 @@ func TestHermesSuccessfulResultRequiresExactArtifactEvents(t *testing.T) {
 
 func TestHermesFinalizeRevalidatesArtifactBytesAndTokenAbsence(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
-	for name, replacement := range map[string][]byte{
-		"replacement":    []byte("different final summary\n"),
-		"listener token": []byte(testToken),
+	for name, test := range map[string]struct {
+		replacement []byte
+		want        string
+	}{
+		"replacement":    {[]byte("different final summary\n"), "changed"},
+		"listener token": {[]byte(testToken), "credential"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			adapter, spec, root := preparedAdapterAt(t, now)
@@ -472,13 +514,31 @@ func TestHermesFinalizeRevalidatesArtifactBytesAndTokenAbsence(t *testing.T) {
 			if _, err := spec.Stdout.Write(append(line, '\n')); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(root, "summary.md"), replacement, 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, "summary.md"), test.replacement, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := adapter.Finalize(context.Background(), harnessworker.ProcessResult{Exited: true, ExitCode: 0}); err == nil || !strings.Contains(err.Error(), "changed") {
+			if err := adapter.Finalize(context.Background(), harnessworker.ProcessResult{Exited: true, ExitCode: 0}); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("post-event %s error=%v", name, err)
 			}
 		})
+	}
+}
+
+func TestHermesFailedRunScansUnrecordedFixedArtifactsForToken(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	adapter, spec, root := preparedAdapterAt(t, now)
+	if err := os.WriteFile(filepath.Join(root, "patch.diff"), []byte("failure context "+testToken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	line, _ := json.Marshal(recordValue(1, "result.reported", map[string]any{"status": "failed"}, map[string]map[string]any{}))
+	if _, err := spec.Stdout.Write(append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Finalize(context.Background(), harnessworker.ProcessResult{Exited: true, ExitCode: 1}); err == nil || !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("failed-run listener artifact error=%v", err)
+	}
+	if reviewed := adapter.ReviewedArtifacts(); len(reviewed) != 0 {
+		t.Fatalf("unsafe failed artifacts were reviewed: %#v", reviewed)
 	}
 }
 
