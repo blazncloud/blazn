@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/blazncloud/blazn/internal/harnessworker"
 	"github.com/blazncloud/blazn/internal/proxycontract"
 )
 
@@ -58,6 +59,9 @@ type Config struct {
 	Resolver        EndpointResolver
 	Events          EventSink
 	Now             func() time.Time
+	// WorkloadScope constrains a scoped harness listener to one immutable
+	// route identity, version, and source protocol. Session listeners leave it nil.
+	WorkloadScope *harnessworker.WorkloadScope
 }
 
 type Handler struct {
@@ -82,6 +86,18 @@ func NewHandler(config Config) (*Handler, error) {
 	}
 	if config.Now == nil {
 		config.Now = time.Now
+	}
+	if config.WorkloadScope != nil {
+		if err := config.WorkloadScope.ValidateAt(config.Now().UTC()); err != nil {
+			return nil, fmt.Errorf("workload scope is invalid: %w", err)
+		}
+		if config.WorkloadScope.RouteVersion != int64(config.Policy.Version) {
+			return nil, errors.New("workload route version does not match policy version")
+		}
+		fingerprint, err := harnessworker.ListenerTokenFingerprint([]byte(config.ListenerToken))
+		if err != nil || fingerprint != config.WorkloadScope.ListenerTokenFingerprint {
+			return nil, errors.New("listener token does not match workload scope")
+		}
 	}
 	if config.Events == nil {
 		config.Events = EventSinkFunc(func(proxycontract.Event) {})
