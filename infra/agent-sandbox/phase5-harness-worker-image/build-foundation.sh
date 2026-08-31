@@ -13,8 +13,7 @@ output_dir=$2
 for required in docker git python3 sha256sum curl tar; do
   command -v "$required" >/dev/null 2>&1 || { printf '%s is required\n' "$required" >&2; exit 1; }
 done
-docker buildx version >/dev/null 2>&1 || { printf 'docker buildx is required (pinned plugin: %s)\n' "$BUILDX_URL" >&2; exit 1; }
-[ -d "$source_dir/.git" ] || { printf 'source directory is not a git checkout\n' >&2; exit 1; }
+git -C "$source_dir" rev-parse --is-inside-work-tree 2>/dev/null | grep -Fxq true || { printf 'source directory is not a git checkout\n' >&2; exit 1; }
 head_commit=$(git -C "$source_dir" rev-parse HEAD)
 [ "$head_commit" = "$BLAZN_EXPECTED_SOURCE_COMMIT" ] || { printf 'source checkout is %s, not the reviewed commit\n' "$head_commit" >&2; exit 1; }
 [ -z "$(git -C "$source_dir" status --porcelain)" ] || { printf 'source checkout is not clean\n' >&2; exit 1; }
@@ -39,14 +38,18 @@ fetch_tool() {
 fetch_tool "$TRIVY_URL" "$TRIVY_SHA256" "$output_dir/tools/trivy.tgz"
 tar -xzf "$output_dir/tools/trivy.tgz" -C "$output_dir/tools" trivy
 chmod 0700 "$output_dir/tools/trivy"
+fetch_tool "$BUILDX_URL" "$BUILDX_SHA256" "$output_dir/tools/docker-buildx"
+chmod 0700 "$output_dir/tools/docker-buildx"
+buildx=$output_dir/tools/docker-buildx
+"$buildx" version >/dev/null
 
 builder=blazn-harness-worker-foundation-$$
-docker buildx create --name "$builder" --driver docker-container --bootstrap >/dev/null
-cleanup() { docker buildx rm --force "$builder" >/dev/null 2>&1 || :; }
+"$buildx" create --name "$builder" --driver docker-container --driver-opt "image=$BUILDKIT_IMAGE" --bootstrap >/dev/null
+cleanup() { "$buildx" rm --force "$builder" >/dev/null 2>&1 || :; }
 trap cleanup EXIT HUP INT TERM
 
 name=harness-worker-foundation
-docker buildx build --builder "$builder" \
+"$buildx" build --builder "$builder" \
   --platform linux/amd64,linux/arm64 \
   --provenance=false --sbom=false \
   -f "$source_dir/Dockerfile.harness-worker-foundation" \

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "infra/agent-sandbox/**"
+      - "Dockerfile.harness-worker-foundation"
       - "docs/agent-sandbox-qualification.md"
       - ".github/workflows/agent-sandbox-qualification.yml"
   workflow_dispatch:
@@ -78,6 +79,13 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - run: infra/agent-sandbox/test-phase5-build-e2e.sh
+
+  harness-worker-foundation-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: infra/agent-sandbox/test-harness-worker-foundation-e2e.sh
 
   install-disposable:
     runs-on: ubuntu-latest
