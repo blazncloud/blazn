@@ -285,6 +285,7 @@ expect_message() { grep -Fq -- "$1" "$tmp/last-err" || { printf 'missing expecte
 expect_journal_length() { actual=$(jq -r 'length' "$transaction/owned-uids.json" 2>/dev/null || printf missing); [ "$actual" = "$1" ] || { printf 'expected UID journal length %s, got %s\n' "$1" "$actual" >&2; exit 1; }; }
 expect_code() { [ "$last_code" -eq "$1" ] || { printf 'expected exit %s, got %s\n' "$1" "$last_code" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 expect_delete_count() { actual=$(grep -c preconditions "$FAKE_STATE/delete-requests.log" 2>/dev/null || :); [ "$actual" = "$1" ] || { printf 'expected %s UID delete requests, got %s\n' "$1" "$actual" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
+expect_real_apply_count() { actual=$(grep -c 'apply --server-side --field-manager' "$FAKE_STATE/calls.log" 2>/dev/null || :); [ "$actual" = "$1" ] || { printf 'expected %s real server-side applies, got %s\n' "$1" "$actual" >&2; exit 1; }; }
 expect_state_file() { [ -e "$FAKE_STATE/$1" ] || { printf 'expected fake state marker %s\n' "$1" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 test_case() { printf 'controller transaction test: %s\n' "$1"; }
 
@@ -604,9 +605,9 @@ expect_code 86
 expect_phase apply-intent
 expect_journal_length 0
 run_tool install-controller.sh
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'dependent controller object exists without a completed UID journal; recovery is required'
-[ "$(grep -c 'apply --server-side' "$FAKE_STATE/calls.log")" -eq 1 ]
+expect_real_apply_count 1
 
 # T7d: teardown from the same crash window foreground-deletes only the inert
 # anchor; owner-reference GC removes its unjournaled dependents.
@@ -644,9 +645,9 @@ run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHA
 [ "$last_code" -eq 86 ]
 : >"$FAKE_STATE/user-serviceaccount"
 run_tool install-controller.sh
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'dependent controller object exists without a completed UID journal; recovery is required: serviceaccount/blazn-sandbox-controller'
-[ "$(grep -c 'apply --server-side' "$FAKE_STATE/calls.log")" -eq 1 ]
+expect_real_apply_count 1
 [ ! -e "$FAKE_STATE/delete-requests.log" ]
 
 # T7f: a partial apply is recoverable through anchor GC without reconstructing
