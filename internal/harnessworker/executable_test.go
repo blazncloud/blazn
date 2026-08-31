@@ -63,6 +63,42 @@ func TestProtectedExecutableVerifierRejectsUnsafeMetadataAndDigest(t *testing.T)
 			t.Fatalf("writable directory error=%v", err)
 		}
 	})
+	t.Run("writable parent permits trusted-root replacement", func(t *testing.T) {
+		parent, root, executable, digest := protectedExecutableFixtureWithParent(t)
+		if err := os.Rename(root, root+"-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body, err := os.ReadFile(filepath.Join(root+"-old", "hermes"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(executable, body, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(parent, 0o770); err != nil {
+			t.Fatal(err)
+		}
+		if err := testExecutableVerifier(root).VerifyExecutable(context.Background(), executable, digest); ErrorCode(err) != "harness_executable_untrusted" {
+			t.Fatalf("replacement below writable parent error=%v", err)
+		}
+	})
+	t.Run("symlink trusted root", func(t *testing.T) {
+		parent, root, executable, digest := protectedExecutableFixtureWithParent(t)
+		realRoot := root + "-real"
+		if err := os.Rename(root, realRoot); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(realRoot, root); err != nil {
+			t.Fatal(err)
+		}
+		executable = filepath.Join(root, filepath.Base(executable))
+		if err := testExecutableVerifier(root).VerifyExecutable(context.Background(), executable, digest); ErrorCode(err) != "harness_executable_untrusted" {
+			t.Fatalf("symlink trusted root error=%v parent=%s", err, parent)
+		}
+	})
 	t.Run("wrong owner policy", func(t *testing.T) {
 		root, executable, digest := protectedExecutableFixture(t)
 		verifier := ProtectedExecutableVerifier{TrustedRoot: root, RequiredOwnerUID: os.Geteuid() + 1}
@@ -107,7 +143,17 @@ func testExecutableVerifier(root string) ProtectedExecutableVerifier {
 
 func protectedExecutableFixture(t *testing.T) (string, string, string) {
 	t.Helper()
-	root := t.TempDir()
+	_, root, executable, digest := protectedExecutableFixtureWithParent(t)
+	return root, executable, digest
+}
+
+func protectedExecutableFixtureWithParent(t *testing.T) (string, string, string, string) {
+	t.Helper()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "trusted")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -117,5 +163,5 @@ func protectedExecutableFixture(t *testing.T) (string, string, string) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(body)
-	return root, name, fmt.Sprintf("sha256:%x", digest)
+	return parent, root, name, fmt.Sprintf("sha256:%x", digest)
 }

@@ -71,28 +71,38 @@ func verifyProtectedExecutable(ctx context.Context, trustedRoot, name, expectedD
 
 func verifyDirectoryChain(trustedRoot, directory string, requiredOwnerUID int) error {
 	current := directory
+	atOrBelowTrustedRoot := true
+	reachedTrustedRoot := false
 	for {
 		info, err := os.Lstat(current)
-		if err != nil || !protectedDirectoryInfo(info, requiredOwnerUID) {
+		if err != nil || !protectedDirectoryInfo(info, requiredOwnerUID, atOrBelowTrustedRoot) {
 			return errors.New("executable directory is untrusted")
 		}
 		if current == trustedRoot {
-			return nil
+			reachedTrustedRoot = true
+			atOrBelowTrustedRoot = false
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
-			return errors.New("trusted executable root was not reached")
+			if !reachedTrustedRoot {
+				return errors.New("trusted executable root was not reached")
+			}
+			return nil
 		}
 		current = parent
 	}
 }
 
-func protectedDirectoryInfo(info os.FileInfo, requiredOwnerUID int) bool {
+func protectedDirectoryInfo(info os.FileInfo, requiredOwnerUID int, requireExactOwner bool) bool {
 	if info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
 		return false
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == requiredOwnerUID
+	if !ok {
+		return false
+	}
+	ownerUID := int(stat.Uid)
+	return ownerUID == requiredOwnerUID || !requireExactOwner && ownerUID == 0
 }
 
 func protectedExecutableInfo(info os.FileInfo, requiredOwnerUID int) bool {
