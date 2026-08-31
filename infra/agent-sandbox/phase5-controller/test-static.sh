@@ -114,6 +114,13 @@ grep -F 'value: "10.20.30.40"' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -Fxc '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml")" -eq 1 ]
 grep -A1 -Fx '        - name: BLAZN_SANDBOX_CONTROLLER_KUBERNETES_CLUSTER_ID' "$tmp/ip.yaml" | grep -Fxq '          value: "cluster-test"'
 [ "$(grep -Fxc '    blazn.dev/phase5-transaction: 99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 10 ]
+[ "$(grep -Fxc '    uid: BLAZN_PHASE5_ANCHOR_UID' "$tmp/ip.yaml")" -eq 10 ]
+[ "$(grep -Fxc '    name: blazn-phase5-anchor-99999999-9999-4999-8999-999999999999' "$tmp/ip.yaml")" -eq 10 ]
+[ "$(grep -Fxc '    controller: false' "$tmp/ip.yaml")" -eq 10 ]
+[ "$(grep -Fxc '    blockOwnerDeletion: false' "$tmp/ip.yaml")" -eq 10 ]
+for object_key in serviceaccount role rolebinding clusterrole clusterrolebinding deployment service deny access-ingress egress; do
+  [ "$(grep -Fxc "    blazn.dev/phase5-object: $object_key" "$tmp/ip.yaml")" -eq 1 ]
+done
 grep -F 'value: "10.20.30.53/32"' "$tmp/ip.yaml" >/dev/null
 grep -F 'value: '\''{"github.com":["140.82.112.4/32"]}'\''' "$tmp/ip.yaml" >/dev/null
 [ "$(grep -c 'cidr: ' "$tmp/ip.yaml")" -eq 4 ]

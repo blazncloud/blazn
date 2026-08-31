@@ -37,14 +37,9 @@ live_uid() {
   else kubectl get "$1" "$2" -n "$3" -o jsonpath='{.metadata.uid}'
   fi
 }
-owned_uid() {
-  if [ "$3" = - ]; then kubectl get "$1" "$2" -o json
-  else kubectl get "$1" "$2" -n "$3" -o json
-  fi | jq -er --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" 'select(.metadata.annotations["blazn.dev/phase5-transaction"] == $tx) | .metadata.uid'
-}
-assert_available() {
-  object_absent "$1" "$2" "$3" && return 0
-  owned_uid "$1" "$2" "$3" >/dev/null 2>&1 || { printf 'controller object already exists outside this transaction: %s/%s\n' "$1" "$2" >&2; exit 1; }
+verified_anchor_uid() {
+  kubectl get clusterrole "$anchor_name" -o json | jq -er --arg uid "$1" '
+    select(.metadata.uid == $uid) | select(.rules == []) | .metadata.uid'
 }
 
 if [ ! -e "$transaction" ]; then
@@ -60,11 +55,17 @@ if [ -L "$sealed" ] || [ ! -f "$sealed" ] || [ "$(stat -c '%u:%a:%h' "$sealed")"
 [ "$(sha256sum "$sealed" | awk '{print $1}')" = "$BLAZN_EXPECTED_CONTROLLER_SHA256" ] || { printf 'sealed controller manifest digest mismatch\n' >&2; exit 1; }
 grep -Fq 'replicas: 0' "$sealed" || { printf 'the reviewed controller manifest must start scaled to zero\n' >&2; exit 1; }
 [ "$(grep -Fxc "    blazn.dev/phase5-transaction: $BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 10 ] || { printf 'sealed controller manifest transaction identity mismatch\n' >&2; exit 1; }
+[ "$(grep -Fxc '    uid: BLAZN_PHASE5_ANCHOR_UID' "$sealed")" -eq 10 ] || { printf 'sealed controller anchor placeholders are invalid\n' >&2; exit 1; }
+[ "$(grep -Fxc "    name: blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID" "$sealed")" -eq 10 ] || { printf 'sealed controller anchor references are invalid\n' >&2; exit 1; }
+[ "$(grep -Fxc '    controller: false' "$sealed")" -eq 10 ] && [ "$(grep -Fxc '    blockOwnerDeletion: false' "$sealed")" -eq 10 ] || { printf 'sealed controller owner references are invalid\n' >&2; exit 1; }
+for object_key in serviceaccount role rolebinding clusterrole clusterrolebinding deployment service deny access-ingress egress; do
+  [ "$(grep -Fxc "    blazn.dev/phase5-object: $object_key" "$sealed")" -eq 1 ] || { printf 'sealed controller object selectors are invalid\n' >&2; exit 1; }
+done
 phase=$(cat "$transaction/phase")
 case "$phase" in
   complete) printf 'controller deployment transaction is already complete\n'; exit 0 ;;
   rollback-complete) printf 'controller deployment transaction was rolled back; use a new transaction\n' >&2; exit 1 ;;
-  sealed|apply-intent|applied|scaled) ;;
+  sealed|anchor-intent|anchor-journaled|apply-intent|applied|scaled) ;;
   *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;
 esac
 
@@ -75,42 +76,83 @@ if ! object_present secret "$BLAZN_OBJECT_SECRET_NAME" blazn-poc-system; then pr
 if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-system; then printf 'the controller registry pull Secret is not provisioned\n' >&2; exit 1; fi
 if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-sandboxes; then printf 'the Sandbox registry pull Secret is not provisioned\n' >&2; exit 1; fi
 
+anchor_name=blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID
+anchor_record=$transaction/anchor.json
 if [ "$phase" = sealed ]; then
   for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
     ref=${object%%:*}; ns=${object#*:}; kind=${ref%%/*}; name=${ref#*/}
     object_absent "$kind" "$name" "$ns" || { printf 'controller object already exists before transaction: %s\n' "$ref" >&2; exit 1; }
   done
+  object_absent clusterrole "$anchor_name" - || { printf 'transaction anchor already exists before transaction\n' >&2; exit 1; }
+  write_phase anchor-intent; phase=anchor-intent
+fi
+if [ "$phase" = anchor-intent ]; then
+  object_absent clusterrole "$anchor_name" - || { printf 'transaction anchor exists without a journaled server UID; recovery is required\n' >&2; exit 1; }
+  anchor_request=$transaction/.anchor-request.json
+  printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"%s","annotations":{"blazn.dev/phase5-transaction":"%s"}},"rules":[]}\n' "$anchor_name" "$BLAZN_PHASE5_TRANSACTION_ID" >"$anchor_request"
+  kubectl create -f "$anchor_request" -o json >"$anchor_record.tmp"
+  rm -f "$anchor_request"
+  if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = anchor-created ]; then exit 86; fi
+  jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
+    .metadata.name == $name and .metadata.annotations["blazn.dev/phase5-transaction"] == $tx and .rules == [] and (.metadata.uid | test("^[0-9a-f-]{36}$"))' "$anchor_record.tmp" >/dev/null || { printf 'transaction anchor response is invalid\n' >&2; exit 1; }
+  mv "$anchor_record.tmp" "$anchor_record"; chmod 0600 "$anchor_record"
+  sync -f "$anchor_record"; sync -f "$transaction"
+  write_phase anchor-journaled; phase=anchor-journaled
+fi
+if [ "$phase" = anchor-journaled ]; then
+  anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
+  [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
+  anchored=$transaction/controller-anchored.yaml
+  sed "s/BLAZN_PHASE5_ANCHOR_UID/$anchor_uid/g" "$sealed" >"$anchored.tmp"
+  [ "$(grep -Fxc "    uid: $anchor_uid" "$anchored.tmp")" -eq 10 ] || { printf 'anchored controller manifest is incomplete\n' >&2; exit 1; }
+  ! grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp" || { printf 'anchored controller manifest retains a placeholder\n' >&2; exit 1; }
+  mv "$anchored.tmp" "$anchored"; chmod 0400 "$anchored"
+  sync -f "$anchored"; sync -f "$transaction"
   write_phase apply-intent; phase=apply-intent
 fi
 uids=$transaction/owned-uids.json
 if [ "$phase" = apply-intent ]; then
-  # A restart in apply-intent may follow a successful apply whose UID capture
-  # was interrupted. Existing objects are acceptable only when their sealed
-  # transaction annotation proves this transaction created them.
-  for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
-    ref=${object%%:*}; ns=${object#*:}; kind=${ref%%/*}; name=${ref#*/}
-    assert_available "$kind" "$name" "$ns"
+  anchor_uid=$(jq -er '.metadata.uid' "$anchor_record")
+  anchored=$transaction/controller-anchored.yaml
+  [ "$anchor_uid" = "$(verified_anchor_uid "$anchor_uid")" ] || { printf 'transaction anchor identity or inert rules changed; recovery is required\n' >&2; exit 1; }
+  if [ ! -f "$uids" ]; then printf '{}\n' >"$uids.tmp"; chmod 0600 "$uids.tmp"; sync -f "$uids.tmp"; mv "$uids.tmp" "$uids"; sync -f "$transaction"; fi
+  # Apply one sealed document at a time. The UID is accepted only from that
+  # apply response and is durably journaled before the next object is touched.
+  for spec in \
+    'serviceaccount|v1|ServiceAccount|blazn-sandbox-controller|blazn-poc-system|serviceaccount/blazn-sandbox-controller' \
+    'role|rbac.authorization.k8s.io/v1|Role|blazn-sandbox-controller|blazn-poc-sandboxes|role/blazn-sandbox-controller' \
+    'clusterrole|rbac.authorization.k8s.io/v1|ClusterRole|blazn-sandbox-controller-node-observer|-|clusterrole/blazn-sandbox-controller-node-observer' \
+    'deployment|apps/v1|Deployment|blazn-sandbox-controller|blazn-poc-system|deployment/blazn-sandbox-controller' \
+    'service|v1|Service|blazn-sandbox-access|blazn-poc-system|service/blazn-sandbox-access' \
+    'deny|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-default-deny|blazn-poc-system|networkpolicy/blazn-sandbox-controller-default-deny' \
+    'access-ingress|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-access-ingress|blazn-poc-system|networkpolicy/blazn-sandbox-controller-access-ingress' \
+    'egress|networking.k8s.io/v1|NetworkPolicy|blazn-sandbox-controller-egress|blazn-poc-system|networkpolicy/blazn-sandbox-controller-egress' \
+    'rolebinding|rbac.authorization.k8s.io/v1|RoleBinding|blazn-sandbox-controller|blazn-poc-sandboxes|rolebinding/blazn-sandbox-controller' \
+    'clusterrolebinding|rbac.authorization.k8s.io/v1|ClusterRoleBinding|blazn-sandbox-controller-node-observer|-|clusterrolebinding/blazn-sandbox-controller-node-observer'; do
+    IFS='|' read -r key api object_kind name ns ref <<EOF
+$spec
+EOF
+    journaled_uid=$(jq -r --arg ref "$ref" '.[$ref] // empty' "$uids")
+    if [ -n "$journaled_uid" ]; then
+      [ "$journaled_uid" = "$(live_uid "${ref%%/*}" "$name" "$ns")" ] || { printf 'journaled controller object identity changed: %s\n' "$ref" >&2; exit 1; }
+      continue
+    fi
+    object_absent "${ref%%/*}" "$name" "$ns" || { printf 'dependent controller object exists without a completed UID journal; recovery is required: %s\n' "$ref" >&2; exit 1; }
+    response=$transaction/.apply-response.json
+    kubectl apply --server-side --field-manager blazn-phase5-controller -f "$anchored" -l "blazn.dev/phase5-object=$key" -o json >"$response"
+    if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && { [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = apply-executed ] || [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = "apply-executed-$key" ]; }; then exit 86; fi
+    jq -e --arg api "$api" --arg kind "$object_kind" --arg name "$name" --arg ns "$ns" --arg key "$key" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" --arg anchor "$anchor_name" --arg anchor_uid "$anchor_uid" '
+      .apiVersion == $api and .kind == $kind and .metadata.name == $name and
+      (if $ns == "-" then ((.metadata.namespace // "") == "") else .metadata.namespace == $ns end) and
+      .metadata.labels["blazn.dev/phase5-object"] == $key and .metadata.annotations["blazn.dev/phase5-transaction"] == $tx and
+      any(.metadata.ownerReferences[]?; .kind == "ClusterRole" and .name == $anchor and .uid == $anchor_uid) and
+      (.metadata.uid | test("^[0-9a-f-]{36}$"))' "$response" >/dev/null || { printf 'controller apply response is invalid: %s\n' "$ref" >&2; exit 1; }
+    applied_uid=$(jq -er '.metadata.uid' "$response")
+    jq --arg ref "$ref" --arg uid "$applied_uid" '. + {($ref):$uid}' "$uids" >"$uids.tmp"
+    chmod 0600 "$uids.tmp"; sync -f "$uids.tmp"; mv "$uids.tmp" "$uids"; sync -f "$transaction"
+    rm -f "$response"
+    if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = "journal-$key" ]; then exit 86; fi
   done
-  kubectl apply --server-side --field-manager blazn-phase5-controller -f "$sealed" >/dev/null
-  if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = apply-executed ]; then exit 86; fi
-  # Record every owned identity immediately after apply so a crash before
-  # completion still leaves a UID-fenced teardown path.
-  {
-    printf '{'
-    printf '"deployment/blazn-sandbox-controller":"%s",' "$(owned_uid deployment blazn-sandbox-controller blazn-poc-system)"
-    printf '"role/blazn-sandbox-controller":"%s",' "$(owned_uid role blazn-sandbox-controller blazn-poc-sandboxes)"
-    printf '"rolebinding/blazn-sandbox-controller":"%s",' "$(owned_uid rolebinding blazn-sandbox-controller blazn-poc-sandboxes)"
-    printf '"clusterrole/blazn-sandbox-controller-node-observer":"%s",' "$(owned_uid clusterrole blazn-sandbox-controller-node-observer -)"
-    printf '"clusterrolebinding/blazn-sandbox-controller-node-observer":"%s",' "$(owned_uid clusterrolebinding blazn-sandbox-controller-node-observer -)"
-    printf '"serviceaccount/blazn-sandbox-controller":"%s",' "$(owned_uid serviceaccount blazn-sandbox-controller blazn-poc-system)"
-    printf '"service/blazn-sandbox-access":"%s",' "$(owned_uid service blazn-sandbox-access blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-access-ingress":"%s",' "$(owned_uid networkpolicy blazn-sandbox-controller-access-ingress blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-egress":"%s",' "$(owned_uid networkpolicy blazn-sandbox-controller-egress blazn-poc-system)"
-    printf '"networkpolicy/blazn-sandbox-controller-default-deny":"%s"' "$(owned_uid networkpolicy blazn-sandbox-controller-default-deny blazn-poc-system)"
-    printf '}\n'
-  } >"$uids.tmp"
-  jq -e 'to_entries | all(.value | test("^[0-9a-f-]{36}$"))' "$uids.tmp" >/dev/null || { printf 'owned controller identities are incomplete\n' >&2; exit 1; }
-  mv "$uids.tmp" "$uids"; chmod 0600 "$uids"
   write_phase applied; phase=applied
 fi
 if [ "$phase" = applied ]; then

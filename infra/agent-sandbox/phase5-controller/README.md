@@ -91,6 +91,16 @@ CRD, webhook, namespace, or wildcard authority. RuntimeClass
 access may be added only in a separate PR that wires and qualifies an exact
 runtime capability.
 
+The reviewed render intentionally retains exactly ten
+`BLAZN_PHASE5_ANCHOR_UID` owner-reference placeholders. Installation first
+creates a transaction-unique, zero-rule ClusterRole anchor and durably journals
+its server-issued UID. It substitutes only that constrained UID into a sealed
+copy, then applies each uniquely labeled manifest document separately and
+durably journals the UID returned by that exact apply before proceeding. A
+crash before a dependent UID is journaled is recovered only by foreground
+deletion of the anchor and Kubernetes owner-reference garbage collection; the
+installer never rediscovers or adopts the dependent by annotation or name.
+
 The database URL Secret, separately owned object credential Secret, and public Kubernetes CA are projected read-only for
 kubelet. A same-UID init binary copies the normalized database URL and exact,
 bounded CA contents plus the two normalized object credential values without logging them into a memory-backed private
