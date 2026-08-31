@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - "infra/agent-sandbox/**"
+      - "Dockerfile.harness-worker-foundation"
+      - "go.mod"
+      - "go.sum"
+      - "cmd/blazn-harness-worker/**"
+      - "internal/**"
       - "docs/agent-sandbox-qualification.md"
       - ".github/workflows/agent-sandbox-qualification.yml"
   workflow_dispatch:
@@ -26,12 +31,14 @@ jobs:
       - run: infra/agent-sandbox/test-phase5-boundary-static.sh
       - run: infra/agent-sandbox/test-phase5-install-static.sh
       - run: infra/agent-sandbox/phase5-controller/test-static.sh
+      - run: infra/agent-sandbox/phase5-harness-worker-image/test-static.sh
       - run: shellcheck infra/agent-sandbox/*.sh
       - run: shellcheck infra/agent-sandbox/phase4c/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-boundary/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-build/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-install/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-controller/*.sh
+      - run: shellcheck infra/agent-sandbox/phase5-harness-worker-image/*.sh
 
   transaction:
     runs-on: ubuntu-latest
@@ -76,6 +83,13 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - run: infra/agent-sandbox/test-phase5-build-e2e.sh
+
+  harness-worker-foundation-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - run: infra/agent-sandbox/test-harness-worker-foundation-e2e.sh
 
   install-disposable:
     runs-on: ubuntu-latest
