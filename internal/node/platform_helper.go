@@ -1151,7 +1151,11 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 		}
 		defer cleanup()
 		if manager == "snap" {
-			_, err = e.Commands.Run(ctx, "/usr/bin/snap", "install", name, "--dangerous")
+			args, argumentErr := localSnapInstallArguments(m, name)
+			if argumentErr != nil {
+				return argumentErr
+			}
+			_, err = e.Commands.Run(ctx, "/usr/bin/snap", args...)
 		} else if manager == "brew" {
 			_, err = e.Commands.Run(ctx, "/opt/homebrew/bin/brew", "install", name)
 		} else {
@@ -1171,6 +1175,16 @@ func (e NativeRootEngine) apply(ctx context.Context, plan client.NodeInstallPlan
 	default:
 		return errors.New("mutation kind is unsupported")
 	}
+}
+
+func localSnapInstallArguments(mutation client.NodeInstallMutation, packagePath string) ([]string, error) {
+	if mutation.Target != "microk8s" {
+		return nil, errors.New("local snap package target is unsupported")
+	}
+	// Every reviewed MicroK8s revision in the signed Node profiles uses classic
+	// confinement. A local snap still requires --dangerous for its detached
+	// assertion and separately requires --classic to accept that confinement.
+	return []string{"install", packagePath, "--dangerous", "--classic"}, nil
 }
 
 func planComponent(plan client.NodeInstallPlan, material *RootMaterial) *client.NodeInstallComponent {

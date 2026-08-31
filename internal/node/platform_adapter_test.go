@@ -1953,6 +1953,19 @@ func TestSystemdRollbackReloadsAfterCASRemoval(t *testing.T) {
 	}
 }
 
+func TestMicroK8sLocalSnapInstallRequiresClassicConfinement(t *testing.T) {
+	args, err := localSnapInstallArguments(client.NodeInstallMutation{Kind: "package", Target: "microk8s", Desired: map[string]any{"manager": "snap"}}, "/var/tmp/microk8s.snap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(args, "\x00"), "install\x00/var/tmp/microk8s.snap\x00--dangerous\x00--classic"; got != want {
+		t.Fatalf("snap install arguments=%q want=%q", got, want)
+	}
+	if _, err := localSnapInstallArguments(client.NodeInstallMutation{Kind: "package", Target: "unreviewed"}, "/var/tmp/unreviewed.snap"); err == nil {
+		t.Fatal("unreviewed local snap target was accepted")
+	}
+}
+
 func TestPackageCaptureDistinguishesAbsentFromProbeFailure(t *testing.T) {
 	plan := client.NodeInstallPlan{PlanID: "11111111-1111-4111-8111-111111111111"}
 	mutation := client.NodeInstallMutation{Ordinal: 1, Kind: "package", Target: "microk8s", Desired: map[string]any{"manager": "snap"}}
