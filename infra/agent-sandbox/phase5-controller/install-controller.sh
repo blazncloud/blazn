@@ -90,7 +90,7 @@ phase=$(cat "$transaction/phase")
 case "$phase" in
   complete) printf 'controller deployment transaction is already complete\n'; exit 0 ;;
   rollback-complete) printf 'controller deployment transaction was rolled back; use a new transaction\n' >&2; exit 1 ;;
-  sealed|anchor-intent|anchor-journaled|apply-intent|applied|scaled) ;;
+  sealed|anchor-intent|anchor-journaled|baselined|apply-intent|applied|scaled) ;;
   *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;
 esac
 
@@ -104,6 +104,8 @@ if ! object_present secret "$BLAZN_REGISTRY_PULL_SECRET_NAME" blazn-poc-sandboxe
 anchor_name=blazn-phase5-anchor-$BLAZN_PHASE5_TRANSACTION_ID
 anchor_record=$transaction/anchor.json
 anchored=$transaction/controller-anchored.yaml
+baseline_dir=$transaction/baseline
+baseline_hashes=$baseline_dir/baseline.sha256
 controller_specs='serviceaccount|v1|ServiceAccount|blazn-sandbox-controller|blazn-poc-system|serviceaccount/blazn-sandbox-controller
 role|rbac.authorization.k8s.io/v1|Role|blazn-sandbox-controller|blazn-poc-sandboxes|role/blazn-sandbox-controller
 clusterrole|rbac.authorization.k8s.io/v1|ClusterRole|blazn-sandbox-controller-node-observer|-|clusterrole/blazn-sandbox-controller-node-observer
@@ -117,16 +119,58 @@ clusterrolebinding|rbac.authorization.k8s.io/v1|ClusterRoleBinding|blazn-sandbox
 canonicalize_object() {
   jq -S 'del(.metadata.uid, .metadata.resourceVersion, .metadata.generation, .metadata.creationTimestamp, .metadata.managedFields, .metadata.selfLink, .status)'
 }
+canonicalize_admission_comparison() {
+  canonicalize_object | jq -S '
+    del(.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"],
+        .spec.clusterIPs, .spec.ipFamilies, .spec.ipFamilyPolicy, .spec.internalTrafficPolicy, .spec.sessionAffinity, .spec.sessionAffinityConfig,
+        .spec.progressDeadlineSeconds, .spec.revisionHistoryLimit, .spec.strategy,
+        .spec.template.spec.dnsPolicy, .spec.template.spec.restartPolicy, .spec.template.spec.schedulerName,
+        .spec.template.spec.terminationGracePeriodSeconds, .spec.template.spec.enableServiceLinks) |
+    (.spec.template.spec.containers[]? |= del(.imagePullPolicy, .terminationMessagePath, .terminationMessagePolicy)) |
+    (.spec.template.spec.initContainers[]? |= del(.imagePullPolicy, .terminationMessagePath, .terminationMessagePolicy))'
+}
+validate_baseline_bundle() {
+  if [ ! -d "$baseline_dir" ] || [ -L "$baseline_dir" ] || [ "$(stat -c '%u:%a' "$baseline_dir")" != 0:700 ]; then printf 'controller semantic baseline directory is unsafe\n' >&2; return 1; fi
+  if [ ! -f "$baseline_hashes" ] || [ -L "$baseline_hashes" ] || [ "$(stat -c '%u:%a:%h' "$baseline_hashes")" != 0:400:1 ]; then printf 'controller semantic baseline digest file is unsafe\n' >&2; return 1; fi
+  for baseline_key in serviceaccount role clusterrole deployment service deny access-ingress egress rolebinding clusterrolebinding; do
+    baseline_file=$baseline_dir/$baseline_key.json
+    if [ ! -f "$baseline_file" ] || [ -L "$baseline_file" ] || [ "$(stat -c '%u:%a:%h' "$baseline_file")" != 0:400:1 ]; then printf 'controller semantic baseline file is unsafe: %s\n' "$baseline_key" >&2; return 1; fi
+  done
+  (cd "$baseline_dir" && sha256sum -c baseline.sha256 >/dev/null) || { printf 'controller semantic baseline digest mismatch\n' >&2; return 1; }
+}
 validate_semantics() {
   semantic_key=$1; semantic_actual=$2
-  semantic_expected=$transaction/.semantic-expected.json
-  semantic_expected_canonical=$transaction/.semantic-expected-canonical.json
+  semantic_expected_canonical=$baseline_dir/$semantic_key.json
   semantic_actual_canonical=$transaction/.semantic-actual-canonical.json
-  kubectl apply --server-side --dry-run=server --field-manager blazn-phase5-controller -f "$anchored" -l "blazn.dev/phase5-object=$semantic_key" -o json >"$semantic_expected"
-  canonicalize_object <"$semantic_expected" >"$semantic_expected_canonical"
   canonicalize_object <"$semantic_actual" >"$semantic_actual_canonical"
   cmp -s "$semantic_expected_canonical" "$semantic_actual_canonical" || { printf 'controller object semantics differ from sealed manifest: %s\n' "$semantic_key" >&2; return 1; }
-  rm -f "$semantic_expected" "$semantic_expected_canonical" "$semantic_actual_canonical"
+  rm -f "$semantic_actual_canonical"
+}
+validate_all_live() {
+  validated_deployment_rv=
+  validated_deployment_available=False
+  for validate_spec in $controller_specs; do
+    IFS='|' read -r validate_key _validate_api _validate_kind validate_name validate_ns validate_ref <<EOF
+$validate_spec
+EOF
+    validate_response=$transaction/.validate-live.json
+    if [ "$validate_ns" = - ]; then kubectl get "${validate_ref%%/*}" "$validate_name" -o json >"$validate_response"; else kubectl get "${validate_ref%%/*}" "$validate_name" -n "$validate_ns" -o json >"$validate_response"; fi
+    validate_semantics "$validate_key" "$validate_response"
+    [ "$(jq -er --arg ref "$validate_ref" '.[$ref]' "$uids")" = "$(jq -er '.metadata.uid' "$validate_response")" ] || { printf 'controller object identity changed: %s\n' "$validate_ref" >&2; return 1; }
+    if [ "$validate_key" = deployment ]; then
+      validated_deployment_rv=$(jq -er '.metadata.resourceVersion' "$validate_response")
+      validated_deployment_available=$(jq -r '[.status.conditions[]? | select(.type == "Available") | .status][0] // "False"' "$validate_response")
+    fi
+    rm -f "$validate_response"
+  done
+}
+scale_deployment_exact() {
+  scale_payload=$(jq -cn --arg uid "$1" --arg rv "$2" '[{"op":"test","path":"/metadata/uid","value":$uid},{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"replace","path":"/spec/replicas","value":1}]')
+  phase4c_start_uid_proxy "$transaction"
+  trap 'phase4c_stop_uid_proxy' EXIT HUP INT TERM
+  # shellcheck disable=SC2154 # assigned by phase4c_start_uid_proxy
+  curl --fail-with-body --silent --show-error --unix-socket "$phase4c_proxy_socket" -X PATCH -H 'content-type: application/json-patch+json' --data-binary "$scale_payload" 'http://localhost/apis/apps/v1/namespaces/blazn-poc-system/deployments/blazn-sandbox-controller' >/dev/null
+  phase4c_stop_uid_proxy; trap - EXIT HUP INT TERM
 }
 if [ "$phase" = sealed ]; then
   for object in deployment/blazn-sandbox-controller:blazn-poc-system service/blazn-sandbox-access:blazn-poc-system serviceaccount/blazn-sandbox-controller:blazn-poc-system role/blazn-sandbox-controller:blazn-poc-sandboxes rolebinding/blazn-sandbox-controller:blazn-poc-sandboxes clusterrole/blazn-sandbox-controller-node-observer:- clusterrolebinding/blazn-sandbox-controller-node-observer:- networkpolicy/blazn-sandbox-controller-access-ingress:blazn-poc-system networkpolicy/blazn-sandbox-controller-egress:blazn-poc-system networkpolicy/blazn-sandbox-controller-default-deny:blazn-poc-system; do
@@ -137,15 +181,12 @@ if [ "$phase" = sealed ]; then
   write_phase anchor-intent; phase=anchor-intent
 fi
 if [ "$phase" = anchor-intent ]; then
-  if object_absent clusterrole "$anchor_name" -; then
-    anchor_request=$transaction/.anchor-request.json
-    printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"%s","annotations":{"blazn.dev/phase5-transaction":"%s"}},"rules":[]}\n' "$anchor_name" "$BLAZN_PHASE5_TRANSACTION_ID" >"$anchor_request"
-    kubectl create -f "$anchor_request" -o json >"$anchor_record.tmp"
-    rm -f "$anchor_request"
-    if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = anchor-created ]; then exit 86; fi
-  else
-    kubectl get clusterrole "$anchor_name" -o json >"$anchor_record.tmp"
-  fi
+  object_absent clusterrole "$anchor_name" - || { printf 'transaction anchor exists without an authoritative journaled UID; manual recovery is required\n' >&2; exit 1; }
+  anchor_request=$transaction/.anchor-request.json
+  printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"%s","annotations":{"blazn.dev/phase5-transaction":"%s"}},"rules":[]}\n' "$anchor_name" "$BLAZN_PHASE5_TRANSACTION_ID" >"$anchor_request"
+  kubectl create -f "$anchor_request" -o json >"$anchor_record.tmp"
+  rm -f "$anchor_request"
+  if [ "${BLAZN_PHASE4C_DISPOSABLE_TEST:-}" = true ] && [ "${BLAZN_PHASE4C_FAIL_AFTER:-}" = anchor-created ]; then exit 86; fi
   jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
     .apiVersion == "rbac.authorization.k8s.io/v1" and .kind == "ClusterRole" and
     .metadata.name == $name and .metadata.annotations == {"blazn.dev/phase5-transaction":$tx} and
@@ -164,6 +205,31 @@ if [ "$phase" = anchor-journaled ]; then
   ! grep -Fq BLAZN_PHASE5_ANCHOR_UID "$anchored.tmp" || { printf 'anchored controller manifest retains a placeholder\n' >&2; exit 1; }
   mv "$anchored.tmp" "$anchored"; chmod 0400 "$anchored"
   sync -f "$anchored"; sync -f "$transaction"
+  install -d -o root -g root -m 0700 "$baseline_dir"
+  for spec in $controller_specs; do
+    IFS='|' read -r key _api _object_kind name ns ref <<EOF
+$spec
+EOF
+    object_absent "${ref%%/*}" "$name" "$ns" || { printf 'controller object appeared before immutable baseline capture: %s\n' "$ref" >&2; exit 1; }
+    baseline_response=$transaction/.baseline-response.json
+    baseline_intent=$transaction/.baseline-intent.json
+    kubectl apply --server-side --dry-run=server --field-manager blazn-phase5-controller -f "$anchored" -l "blazn.dev/phase5-object=$key" -o json >"$baseline_response"
+    kubectl apply --dry-run=client --field-manager blazn-phase5-controller -f "$anchored" -l "blazn.dev/phase5-object=$key" -o json >"$baseline_intent"
+    canonicalize_admission_comparison <"$baseline_response" >"$transaction/.baseline-server-compare.json"
+    canonicalize_admission_comparison <"$baseline_intent" >"$transaction/.baseline-intent-compare.json"
+    cmp -s "$transaction/.baseline-server-compare.json" "$transaction/.baseline-intent-compare.json" || { printf 'server-defaulted baseline contains an unapproved admission mutation: %s\n' "$key" >&2; exit 1; }
+    canonicalize_object <"$baseline_response" >"$baseline_dir/$key.json.tmp"
+    chmod 0400 "$baseline_dir/$key.json.tmp"; sync -f "$baseline_dir/$key.json.tmp"; mv "$baseline_dir/$key.json.tmp" "$baseline_dir/$key.json"
+    rm -f "$baseline_response" "$baseline_intent" "$transaction/.baseline-server-compare.json" "$transaction/.baseline-intent-compare.json"
+  done
+  (cd "$baseline_dir" && for baseline_key in serviceaccount role clusterrole deployment service deny access-ingress egress rolebinding clusterrolebinding; do sha256sum "$baseline_key.json"; done >baseline.sha256.tmp)
+  chmod 0400 "$baseline_hashes.tmp"; sync -f "$baseline_hashes.tmp"; mv "$baseline_hashes.tmp" "$baseline_hashes"; sync -f "$baseline_dir"; sync -f "$transaction"
+  validate_baseline_bundle
+  write_phase baselined; phase=baselined
+fi
+if [ "$phase" = baselined ]; then
+  validate_anchor_record
+  validate_baseline_bundle
   write_phase apply-intent; phase=apply-intent
 fi
 uids=$transaction/owned-uids.json
@@ -176,6 +242,7 @@ if [ "$phase" = apply-intent ]; then
     printf 'rebuilt anchored controller manifest is invalid\n' >&2; exit 1
   fi
   chmod 0400 "$anchored.tmp"; sync -f "$anchored.tmp"; mv "$anchored.tmp" "$anchored"; sync -f "$transaction"
+  validate_baseline_bundle
   if [ ! -f "$uids" ]; then printf '{}\n' >"$uids.tmp"; chmod 0600 "$uids.tmp"; sync -f "$uids.tmp"; mv "$uids.tmp" "$uids"; sync -f "$transaction"; fi
   validate_uid_journal
   # Apply one sealed document at a time. The UID is accepted only from that
@@ -222,34 +289,32 @@ if [ "$phase" = applied ] || [ "$phase" = scaled ]; then
     printf 'rebuilt anchored controller manifest is invalid\n' >&2; exit 1
   fi
   chmod 0400 "$anchored.tmp"; sync -f "$anchored.tmp"; mv "$anchored.tmp" "$anchored"; sync -f "$transaction"
+  validate_baseline_bundle
   validate_uid_journal
 fi
 if [ "$phase" = applied ]; then
   # Idempotent across a crash between the scale and its journal entry: the
   # scale target is 1, so re-running scale is a no-op, and the recorded UID
   # proves the Deployment is still the one this transaction applied.
-  for spec in $controller_specs; do
-    IFS='|' read -r key _api _object_kind name ns ref <<EOF
-$spec
-EOF
-    response=$transaction/.pre-scale-response.json
-    if [ "$ns" = - ]; then kubectl get "${ref%%/*}" "$name" -o json >"$response"; else kubectl get "${ref%%/*}" "$name" -n "$ns" -o json >"$response"; fi
-    validate_semantics "$key" "$response"
-    [ "$(jq -er --arg ref "$ref" '.[$ref]' "$uids")" = "$(jq -er '.metadata.uid' "$response")" ] || { printf 'controller object identity changed before scale: %s\n' "$ref" >&2; exit 1; }
-    rm -f "$response"
-  done
-  kubectl scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1 >/dev/null
+  validate_all_live
+  deployment_uid=$(jq -er '."deployment/blazn-sandbox-controller"' "$uids")
+  scale_deployment_exact "$deployment_uid" "$validated_deployment_rv"
+  validate_all_live
   write_phase scaled; phase=scaled
 fi
 if [ "$phase" = scaled ]; then
   available_attempts=${BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS:-60}
   case "$available_attempts" in ''|*[!0-9]*) available_attempts=60 ;; esac
   attempt=0
-  until [ "$(kubectl get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)" = True ]; do
+  while :; do
+    validate_all_live
+    if [ "$validated_deployment_available" = True ]; then break; fi
     attempt=$((attempt + 1))
     [ "$attempt" -le "$available_attempts" ] || { printf 'the controller never became Available\n' >&2; kubectl get pods -n blazn-poc-system -o wide >&2 || :; exit 1; }
     sleep 3
   done
+  validate_all_live
+  [ "$validated_deployment_available" = True ] || { printf 'controller availability changed before completion\n' >&2; exit 1; }
   write_phase complete
 fi
 printf 'Phase 5 sandbox controller deployed and Available\n'

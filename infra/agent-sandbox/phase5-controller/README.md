@@ -95,11 +95,15 @@ The reviewed render intentionally retains exactly ten
 `BLAZN_PHASE5_ANCHOR_UID` owner-reference placeholders. Installation first
 creates a transaction-unique, zero-rule ClusterRole anchor and durably journals
 its server-issued UID. It substitutes only that constrained UID into a sealed
-copy, then applies each uniquely labeled manifest document separately and
+copy, captures and hashes both client intent and an approved server-defaulted
+semantic baseline while every dependent name is absent, then applies each uniquely labeled manifest document separately and
 durably journals the UID returned by that exact apply before proceeding. A
 crash before a dependent UID is journaled is recovered only by foreground
 deletion of the anchor and Kubernetes owner-reference garbage collection; the
 installer never rediscovers or adopts the dependent by annotation or name.
+If the process crashes after anchor creation but before receiving and durably
+journaling its UID, the inert zero-rule anchor is intentionally left for manual
+recovery: a same-shape object cannot be proven to be the originally created UID.
 
 The database URL Secret, separately owned object credential Secret, and public Kubernetes CA are projected read-only for
 kubelet. A same-UID init binary copies the normalized database URL and exact,
@@ -160,7 +164,7 @@ rendered pull Secret exists in both namespaces before applying or scaling the
 controller.
 
 `install-controller.sh` is a journaled, crash-resumable, UID-fenced
-transaction (`sealed → apply-intent → applied → scaled → complete`): it
+transaction (`sealed → anchor-intent → anchor-journaled → baselined → apply-intent → applied → scaled → complete`): it
 requires the boundary, the Agent Sandbox controller, and both Secrets, seals
 the rendered controller manifest, verifies the reviewed digest and that it
 starts at zero replicas, applies it, scales it to one, waits for

@@ -48,17 +48,9 @@ case "$phase" in
   sealed) write_phase rollback-complete; printf 'controller transaction rolled back before any apply\n'; exit 0 ;;
   anchor-intent)
     absent clusterrole "$anchor_name" - && { write_phase rollback-complete; printf 'controller transaction rolled back before anchor creation\n'; exit 0; }
-    kubectl get clusterrole "$anchor_name" -o json >"$anchor_record.tmp"
-    jq -e --arg name "$anchor_name" --arg tx "$BLAZN_PHASE5_TRANSACTION_ID" '
-      .apiVersion == "rbac.authorization.k8s.io/v1" and .kind == "ClusterRole" and
-      .metadata.name == $name and .metadata.annotations == {"blazn.dev/phase5-transaction":$tx} and
-      ((.metadata.labels // {}) == {}) and ((.metadata.ownerReferences // []) == []) and
-      ((.metadata.finalizers // []) == []) and ((.aggregationRule // null) == null) and
-      .rules == [] and (.metadata.uid | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$anchor_record.tmp" >/dev/null || { printf 'un-journaled transaction anchor is not the exact inert anchor; recovery is required\n' >&2; exit 1; }
-    chmod 0600 "$anchor_record.tmp"; sync -f "$anchor_record.tmp"; mv "$anchor_record.tmp" "$anchor_record"; sync -f "$transaction"
-    write_phase anchor-journaled; phase=anchor-journaled
+    printf 'transaction anchor exists without an authoritative journaled UID; manual recovery is required\n' >&2; exit 1
     ;;
-  anchor-journaled|apply-intent) ;;
+  anchor-journaled|baselined|apply-intent) ;;
   applied|scaled|complete|rollback-intent) ;;
   rollback-complete) printf 'controller transaction already rolled back\n'; exit 0 ;;
   *) printf 'controller transaction phase is invalid\n' >&2; exit 1 ;;

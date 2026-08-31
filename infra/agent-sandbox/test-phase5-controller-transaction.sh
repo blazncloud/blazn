@@ -82,7 +82,13 @@ emit_object() {
   if [ -n "$ns" ]; then namespace_json=$(printf ',"namespace":"%s"' "$ns"); else namespace_json=; fi
   if [ -e "$FAKE_STATE/user-$object_key" ]; then owner_uid=00000000-0000-4000-8000-000000000000; else owner_uid=cccccccc-cccc-4ccc-8ccc-cccccccccccc; fi
   if [ "${EMIT_LIVE:-0}" = 1 ] && [ "${FAKE_SEMANTIC_DRIFT:-}" = "$object_key" ]; then drift_json=',"unexpected":{"mutated":true}'; else drift_json=; fi
-  printf '{"apiVersion":"%s","kind":"%s","metadata":{"name":"%s"%s,"uid":"%s","labels":{"blazn.dev/phase5-object":"%s"},"annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"},"ownerReferences":[{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","controller":false,"blockOwnerDeletion":false}]}%s}\n' "$api" "$kind" "$name" "$namespace_json" "$uid" "$object_key" "$owner_uid" "$drift_json"
+  if [ "${EMIT_ADMISSION:-0}" = 1 ] && [ "${FAKE_ADMISSION_MUTATION:-}" = "$object_key" ]; then admission_json=',"rules":[{"apiGroups":["*"],"resources":["*"],"verbs":["*"]}]'; else admission_json=; fi
+  if [ "$object_key" = deployment ]; then
+    if [ -e "$FAKE_STATE/scaled1" ]; then resource_version=rv-2; available=True; else resource_version=rv-1; available=False; fi
+    [ "${FAKE_UNAVAILABLE:-0}" = 1 ] && available=False
+    status_json=$(printf ',"status":{"conditions":[{"type":"Available","status":"%s"}]}' "$available")
+  else resource_version=rv-1; status_json=; fi
+  printf '{"apiVersion":"%s","kind":"%s","metadata":{"name":"%s"%s,"uid":"%s","resourceVersion":"%s","labels":{"blazn.dev/phase5-object":"%s"},"annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"},"ownerReferences":[{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"%s","controller":false,"blockOwnerDeletion":false}]}%s%s%s}\n' "$api" "$kind" "$name" "$namespace_json" "$uid" "$resource_version" "$object_key" "$owner_uid" "$drift_json" "$admission_json" "$status_json"
 }
 case "$*" in
   'config current-context') printf 'disposable-controller-test' ;;
@@ -99,12 +105,15 @@ case "$*" in
     printf '{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"blazn-phase5-anchor-99999999-9999-4999-8999-999999999999","uid":"cccccccc-cccc-4ccc-8ccc-cccccccccccc","annotations":{"blazn.dev/phase5-transaction":"99999999-9999-4999-8999-999999999999"}},"rules":[]}\n' ;;
   'apply --server-side --dry-run=server --field-manager blazn-phase5-controller -f '*' -l blazn.dev/phase5-object='*' -o json')
     object_key=$(printf '%s' "$*" | sed 's/.*phase5-object=\([^ ]*\).*/\1/')
+    EMIT_ADMISSION=1 emit_object "$object_key" ;;
+  'apply --dry-run=client --field-manager blazn-phase5-controller -f '*' -l blazn.dev/phase5-object='*' -o json')
+    object_key=$(printf '%s' "$*" | sed 's/.*phase5-object=\([^ ]*\).*/\1/')
     emit_object "$object_key" ;;
   'apply --server-side --field-manager blazn-phase5-controller -f '*' -l blazn.dev/phase5-object='*' -o json')
     object_key=$(printf '%s' "$*" | sed 's/.*phase5-object=\([^ ]*\).*/\1/')
     : >"$FAKE_STATE/$object_key"
     [ "${FAKE_PARTIAL_APPLY:-0}" = 1 ] && [ "$object_key" = rolebinding ] && exit 1
-    emit_object "$object_key" ;;
+    EMIT_ADMISSION=1 emit_object "$object_key" ;;
   'get deployment blazn-sandbox-controller -n blazn-poc-system -o jsonpath={.spec.replicas}') [ -e "$FAKE_STATE/scaled1" ] && printf '1' || printf '0' ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=1') : >"$FAKE_STATE/scaled1" ;;
   'scale deployment blazn-sandbox-controller -n blazn-poc-system --replicas=0') : >"$FAKE_STATE/scaled0"; rm -f "$FAKE_STATE/scaled1" ;;
@@ -132,7 +141,7 @@ case "$*" in
       ref=${object%%:*}; rest=${object#*:}; key=${rest%%:*}; uid=${rest#*:}
       case "$* " in "get ${ref%%/*} ${ref#*/} "*)
         present "$key" || exit 1
-        EMIT_LIVE=1 emit_object "$key"
+        EMIT_LIVE=1 EMIT_ADMISSION=1 emit_object "$key"
         exit 0
         ;;
       esac
@@ -167,6 +176,21 @@ targets = {
 }
 class Server(socketserver.UnixStreamServer): allow_reuse_address = True
 class Handler(http.server.BaseHTTPRequestHandler):
+    def do_PATCH(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
+        current_rv = "rv-2" if os.path.exists(os.path.join(state, "scaled1")) else "rv-1"
+        expected = [
+            {"op": "test", "path": "/metadata/uid", "value": "11111111-1111-4111-8111-111111111111"},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": current_rv},
+            {"op": "replace", "path": "/spec/replicas", "value": 1},
+        ]
+        if self.path.endswith("/deployments/blazn-sandbox-controller") and body == expected and not os.path.exists(os.path.join(state, "race-deployment")):
+            open(os.path.join(state, "scaled1"), "w").close(); self.send_response(200)
+        else:
+            if os.path.exists(os.path.join(state, "race-deployment")):
+                open(os.path.join(state, "user-deployment"), "w").close()
+            self.send_response(409)
+        self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(b"{}")
     def do_DELETE(self):
         body = json.loads(self.rfile.read(int(self.headers.get("content-length", "0"))))
         key, uid = targets.get(self.path, (None, None))
@@ -243,7 +267,7 @@ run_tool install-controller.sh
 grep -Fq 'already complete' "$tmp/last-out"
 
 # T2: crash at each journal boundary, then resume to completion.
-for boundary in sealed anchor-intent anchor-journaled apply-intent applied scaled complete; do
+for boundary in sealed anchor-intent anchor-journaled baselined apply-intent applied scaled complete; do
   reset_state; new_transaction
   run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER="$boundary" BLAZN_PHASE4C_DISPOSABLE_TEST=true
   [ "$last_code" -eq 86 ] || { printf 'boundary %s: expected 86, got %s\n' "$boundary" "$last_code" >&2; cat "$tmp/last-err" >&2; exit 1; }
@@ -253,22 +277,25 @@ for boundary in sealed anchor-intent anchor-journaled apply-intent applied scale
   expect_phase complete
 done
 
-# T2b: a crash after the inert anchor create but before its journal adopts only
-# that exact transaction-unique zero-rule anchor and resumes safely.
+# T2b: a crash after anchor create but before its authoritative UID journal is
+# fail-closed; an indistinguishable same-shape replacement is never adopted.
 reset_state; new_transaction
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=anchor-created BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase anchor-intent
 [ ! -e "$transaction/anchor.json" ]
+: >"$FAKE_STATE/user-anchor"
 run_tool install-controller.sh
-[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
-expect_phase complete
+[ "$last_code" -eq 1 ]
+expect_message 'anchor exists without an authoritative journaled UID'
+expect_phase anchor-intent
 
-# T2c: teardown can recover the same anchor-created crash and reaches zero
-# residue without ever applying a dependent object.
+# T2c: teardown also refuses to delete the unknown server UID, leaving the
+# harmless inert residue for explicit manual recovery.
 reset_state; new_transaction
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=anchor-created BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
+: >"$FAKE_STATE/user-anchor"
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
@@ -373,6 +400,36 @@ expect_message 'controller object semantics differ from sealed manifest: role'
 expect_phase applied
 [ ! -e "$FAKE_STATE/scaled1" ]
 
+# T5e: an admission mutation present symmetrically in server dry-run and real
+# apply is rejected against independent client/sealed intent before any apply.
+reset_state; new_transaction
+run_tool install-controller.sh FAKE_ADMISSION_MUTATION=role
+[ "$last_code" -eq 1 ]
+expect_message 'server-defaulted baseline contains an unapproved admission mutation: role'
+expect_phase anchor-journaled
+[ ! -e "$FAKE_STATE/serviceaccount" ]
+
+# T5f: replacing the Deployment after exact validation but at the atomic patch
+# causes the UID/resourceVersion tests to fail; the replacement is never run.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+: >"$FAKE_STATE/race-deployment"
+run_tool install-controller.sh
+[ "$last_code" -eq 22 ] || [ "$last_code" -eq 1 ]
+expect_phase applied
+[ ! -e "$FAKE_STATE/scaled1" ]
+
+# T5g: a replacement after the atomic scale is rejected by exact UID/baseline
+# validation and cannot make the transaction complete by reporting Available.
+reset_state; new_transaction
+run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=scaled BLAZN_PHASE4C_DISPOSABLE_TEST=true
+[ "$last_code" -eq 86 ]
+: >"$FAKE_STATE/user-deployment"
+run_tool install-controller.sh
+[ "$last_code" -eq 1 ]
+expect_phase scaled
+
 # T6b: a teardown that has already removed some objects resumes cleanly
 # instead of aborting on a 404 for the already-deleted ones.
 reset_state; new_transaction
@@ -430,9 +487,10 @@ reset_state; new_transaction
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 run_tool teardown-controller.sh
-[ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
-expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 1 ]
+[ "$last_code" -eq 1 ]
+expect_message 'anchor exists without an authoritative journaled UID'
+expect_phase anchor-intent
+[ ! -e "$FAKE_STATE/delete-requests.log" ]
 grep -Fq 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' "$FAKE_STATE/delete-requests.log"
 
 # T7e: if an object is replaced after apply but before UID capture, neither
