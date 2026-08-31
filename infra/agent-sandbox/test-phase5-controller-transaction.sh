@@ -284,6 +284,8 @@ expect_phase() { [ "$(cat "$transaction/phase")" = "$1" ] || { printf 'expected 
 expect_message() { grep -Fq -- "$1" "$tmp/last-err" || { printf 'missing expected message: %s\n' "$1" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 expect_journal_length() { actual=$(jq -r 'length' "$transaction/owned-uids.json" 2>/dev/null || printf missing); [ "$actual" = "$1" ] || { printf 'expected UID journal length %s, got %s\n' "$1" "$actual" >&2; exit 1; }; }
 expect_code() { [ "$last_code" -eq "$1" ] || { printf 'expected exit %s, got %s\n' "$1" "$last_code" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
+expect_delete_count() { actual=$(grep -c preconditions "$FAKE_STATE/delete-requests.log" 2>/dev/null || :); [ "$actual" = "$1" ] || { printf 'expected %s UID delete requests, got %s\n' "$1" "$actual" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
+expect_state_file() { [ -e "$FAKE_STATE/$1" ] || { printf 'expected fake state marker %s\n' "$1" >&2; cat "$tmp/last-err" >&2; exit 1; }; }
 test_case() { printf 'controller transaction test: %s\n' "$1"; }
 
 # T1: happy deploy, then idempotent re-run.
@@ -460,20 +462,22 @@ expect_message 'recovery is required'
 # T5b: a transaction stranded at 'scaled' can still be torn down (owned UIDs
 # were recorded at apply-intent, before scaling).
 reset_state; new_transaction
+test_case 'T5b scaled unavailable transaction teardown'
 run_tool install-controller.sh FAKE_UNAVAILABLE=1 BLAZN_CONTROLLER_AVAILABLE_ATTEMPTS=2
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_phase scaled
 [ -f "$transaction/owned-uids.json" ]
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 11 ]
+expect_delete_count 11
 
 # T5c: a crash after the fenced scale succeeds but before the scaled journal
 # resumes from durable scale-intent and accepts the exact replicas=1 object.
 reset_state; new_transaction
+test_case 'T5c scale-executed crash resume'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=scale-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 expect_phase scale-intent
 [ -e "$FAKE_STATE/scaled1" ]
 run_tool install-controller.sh
@@ -483,8 +487,9 @@ expect_phase complete
 # T5ca: transactions created before scale-intent existed may still be in
 # applied with an already-scaled exact Deployment; migrate them safely.
 reset_state; new_transaction
+test_case 'T5ca legacy applied-plus-scaled resume'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 expect_phase applied
 : >"$FAKE_STATE/scaled1"
 run_tool install-controller.sh
@@ -494,8 +499,9 @@ expect_phase complete
 # T5d: a resumed object whose user-controlled semantics drifted from the exact
 # anchored manifest is rejected before any scale-up.
 reset_state; new_transaction
+test_case 'T5d semantic drift rejection'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 expect_phase applied
 run_tool install-controller.sh FAKE_SEMANTIC_DRIFT=role
 [ "$last_code" -eq 1 ]
@@ -506,8 +512,9 @@ expect_phase applied
 # T5e: an admission mutation present symmetrically in server dry-run and real
 # apply is rejected against independent client/sealed intent before any apply.
 reset_state; new_transaction
+test_case 'T5e symmetric admission mutation rejection'
 run_tool install-controller.sh FAKE_ADMISSION_MUTATION=role
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'server-defaulted baseline contains an unapproved admission mutation: role'
 expect_phase anchor-journaled
 [ ! -e "$FAKE_STATE/serviceaccount" ]
@@ -515,8 +522,9 @@ expect_phase anchor-journaled
 # T5ee: reviewed explicit fields are never normalized away; a symmetric
 # admission rewrite of such intent is rejected during baseline capture.
 reset_state; new_transaction
+test_case 'T5ee explicit intent mutation rejection'
 run_tool install-controller.sh FAKE_EXPLICIT_MUTATION=deployment
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'server-defaulted baseline contains an unapproved admission mutation: deployment'
 expect_phase anchor-journaled
 [ ! -e "$FAKE_STATE/serviceaccount" ]
@@ -524,19 +532,21 @@ expect_phase anchor-journaled
 # T5f: replacing the Deployment after exact validation but at the atomic patch
 # causes the UID/resourceVersion tests to fail; the replacement is never run.
 reset_state; new_transaction
+test_case 'T5f atomic scale replacement race'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=applied BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 : >"$FAKE_STATE/race-deployment"
 run_tool install-controller.sh
-  [ "$last_code" -eq 22 ] || [ "$last_code" -eq 1 ]
-  expect_phase scale-intent
+case "$last_code" in 1|22) ;; *) printf 'expected scale race exit 1 or 22, got %s\n' "$last_code" >&2; cat "$tmp/last-err" >&2; exit 1 ;; esac
+expect_phase scale-intent
 [ ! -e "$FAKE_STATE/scaled1" ]
 
 # T5g: a replacement after the atomic scale is rejected by exact UID/baseline
 # validation and cannot make the transaction complete by reporting Available.
 reset_state; new_transaction
+test_case 'T5g post-scale replacement rejection'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=scaled BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 : >"$FAKE_STATE/user-deployment"
 run_tool install-controller.sh
 [ "$last_code" -eq 1 ]
@@ -545,47 +555,52 @@ expect_phase scaled
 # T6b: a teardown that has already removed some objects resumes cleanly
 # instead of aborting on a 404 for the already-deleted ones.
 reset_state; new_transaction
+test_case 'T6b partial teardown resume'
 run_tool install-controller.sh
-[ "$last_code" -eq 0 ]
+expect_code 0
 # Pre-mark the Deployment and egress policy as already deleted, then tear down.
 : >"$FAKE_STATE/deleted-deployment"; : >"$FAKE_STATE/deleted-egress"; rm -f "$FAKE_STATE/scaled1"; : >"$FAKE_STATE/scaled0"
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
 # Nine still-present owned objects, including the anchor, were deleted.
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 9 ]
+expect_delete_count 9
 
 # T6c: a resume that already removed only the same-named Role (its sibling
 # ServiceAccount/RoleBinding/Deployment still present) skips the Role by kind,
 # proving the absence pre-check is kind-scoped, not name-scoped.
 reset_state; new_transaction
+test_case 'T6c kind-scoped absence resume'
 run_tool install-controller.sh
-[ "$last_code" -eq 0 ]
+expect_code 0
 : >"$FAKE_STATE/deleted-role"; rm -f "$FAKE_STATE/scaled1"; : >"$FAKE_STATE/scaled0"
 run_tool teardown-controller.sh
 [ "$last_code" -eq 0 ] || { cat "$tmp/last-err" >&2; exit 1; }
 expect_phase rollback-complete
-[ "$(grep -c 'preconditions' "$FAKE_STATE/delete-requests.log")" -eq 10 ]
+expect_delete_count 10
 
 # T7: a pre-existing controller Deployment blocks a fresh transaction.
 reset_state; : >"$FAKE_STATE/deployment"; new_transaction
+test_case 'T7 pre-existing Deployment refusal'
 run_tool install-controller.sh
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'already exists before transaction'
 
 # T7b: cluster-scoped names are preflighted too; a user-owned global object is
 # never adopted, applied over, inventoried, or deleted.
 reset_state; : >"$FAKE_STATE/clusterrole"; : >"$FAKE_STATE/user-clusterrole"; new_transaction
+test_case 'T7b pre-existing cluster RBAC refusal'
 run_tool install-controller.sh
-[ "$last_code" -eq 1 ]
+expect_code 1
 expect_message 'clusterrole/blazn-sandbox-controller-node-observer'
 if grep -Fq 'apply --server-side' "$FAKE_STATE/calls.log"; then printf 'pre-existing ClusterRole must block apply\n' >&2; exit 1; fi
 
 # T7c: a crash after apply but before UID capture never reconstructs ownership
 # or reapplies dependents. Install reports recovery-required.
 reset_state; new_transaction
+test_case 'T7c unjournaled apply refusal'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
-[ "$last_code" -eq 86 ]
+expect_code 86
 expect_phase apply-intent
 expect_journal_length 0
 run_tool install-controller.sh
@@ -596,6 +611,7 @@ expect_message 'dependent controller object exists without a completed UID journ
 # T7d: teardown from the same crash window foreground-deletes only the inert
 # anchor; owner-reference GC removes its unjournaled dependents.
 reset_state; new_transaction
+test_case 'T7d unjournaled apply anchor-GC teardown'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
 expect_code 86
 run_tool teardown-controller.sh
@@ -608,6 +624,7 @@ grep -Fq 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' "$FAKE_STATE/delete-requests.log
 # recovery path adopts it. Anchor GC removes actual dependents, leaves the
 # same-annotation replacement without the anchor owner reference, and reports.
 reset_state; new_transaction
+test_case 'T7e replacement during unjournaled apply teardown'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase apply-intent
@@ -622,6 +639,7 @@ expect_phase rollback-intent
 # A separate install-resume from the same crash shape also refuses adoption
 # before issuing a second apply.
 reset_state; new_transaction
+test_case 'T7e install resume refuses replacement adoption'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 : >"$FAKE_STATE/user-serviceaccount"
@@ -634,6 +652,7 @@ expect_message 'dependent controller object exists without a completed UID journ
 # T7f: a partial apply is recoverable through anchor GC without reconstructing
 # or adopting dependent UIDs.
 reset_state; new_transaction
+test_case 'T7f partial apply anchor-GC recovery'
 run_tool install-controller.sh FAKE_PARTIAL_APPLY=1
 [ "$last_code" -eq 1 ]
 expect_phase apply-intent
@@ -646,6 +665,7 @@ expect_phase rollback-complete
 # T7g: a crash after the first durable dependent journal deletes that exact UID
 # and then foreground-deletes the anchor. Missing later journal keys are safe.
 reset_state; new_transaction
+test_case 'T7g first journal crash recovery'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=journal-serviceaccount BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase apply-intent
@@ -658,6 +678,7 @@ expect_phase rollback-complete
 # T7h: a mid-sequence crash after apply but before that response is journaled
 # deletes the four earlier exact UIDs; anchor GC removes the unjournaled Service.
 reset_state; new_transaction
+test_case 'T7h mid-apply crash recovery'
 run_tool install-controller.sh BLAZN_PHASE4C_FAIL_AFTER=apply-executed-service BLAZN_PHASE4C_DISPOSABLE_TEST=true
 [ "$last_code" -eq 86 ]
 expect_phase apply-intent
@@ -670,6 +691,7 @@ expect_phase rollback-complete
 # T7i: a missing journaled anchor does not block independent binding-first UID
 # cleanup. The transaction remains recovery-required and is not completed.
 reset_state; new_transaction
+test_case 'T7i missing anchor independent cleanup'
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ]
 : >"$FAKE_STATE/deleted-anchor"
@@ -684,6 +706,7 @@ grep -Fq '33333333-3333-4333-8333-333333333333' "$FAKE_STATE/delete-requests.log
 # T7j: a same-name replacement of the anchor is likewise untouched while all
 # journaled dependent UIDs are cleaned.
 reset_state; new_transaction
+test_case 'T7j replacement anchor independent cleanup'
 run_tool install-controller.sh
 [ "$last_code" -eq 0 ]
 : >"$FAKE_STATE/user-anchor"
