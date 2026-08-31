@@ -22,37 +22,42 @@ func main() {
 func run(ctx context.Context, arguments []string, input io.Reader, output io.Writer, proxyURL string, now func() time.Time) int {
 	execution, err := parseExecution(arguments)
 	if err != nil {
-		_ = harnessworker.EncodeResponse(output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: "launch_config_invalid"})
+		_ = writeResponse(ctx, output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: "launch_config_invalid"})
 		return 2
 	}
 	adapter, err := hermes.New(hermes.Config{ProxyURL: proxyURL, Output: output, ArtifactRoot: harnessworker.DefaultArtifactRoot, Now: now})
 	if err != nil {
-		_ = harnessworker.EncodeResponse(output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: "launch_config_invalid"})
+		_ = writeResponse(ctx, output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: "launch_config_invalid"})
 		return 2
 	}
 	artifacts := fixedArtifacts()
 	runtime, err := harnessworker.NewRuntime(harnessworker.RunConfig{
-		ScopeValidator:    harnessworker.FileScopeValidator{Path: harnessworker.DefaultScopePath},
-		TokenSource:       harnessworker.ProtectedListenerTokenFile{Path: harnessworker.DefaultListenerToken},
-		Adapter:           adapter,
-		ProcessRunner:     harnessworker.ExecProcessRunner{},
-		Collector:         harnessworker.FileArtifactCollector{Root: harnessworker.DefaultArtifactRoot},
-		Execution:         execution,
-		Artifacts:         artifacts,
-		AllowedExecutable: hermes.ReviewedExecutable,
-		Now:               now,
+		ScopeValidator:     harnessworker.FileScopeValidator{Path: harnessworker.DefaultScopePath},
+		ExecutableVerifier: harnessworker.ProtectedExecutableVerifier{TrustedRoot: "/opt/blazn", RequiredOwnerUID: 0},
+		TokenSource:        harnessworker.ProtectedListenerTokenFile{Path: harnessworker.DefaultListenerToken},
+		Adapter:            adapter,
+		ProcessRunner:      harnessworker.ExecProcessRunner{},
+		Collector:          harnessworker.FileArtifactCollector{Root: harnessworker.DefaultArtifactRoot},
+		Execution:          execution,
+		Artifacts:          artifacts,
+		AllowedExecutable:  hermes.ReviewedExecutable,
+		Now:                now,
 	})
 	if err != nil {
-		_ = harnessworker.EncodeResponse(output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: "worker_config_invalid"})
+		_ = writeResponse(ctx, output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: "worker_config_invalid"})
 		return 2
 	}
 	assignment, err := harnessworker.DecodeAssignmentLine(ctx, input, now())
 	if err != nil {
-		_ = harnessworker.EncodeResponse(output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: harnessworker.ErrorCode(err)})
+		_ = writeResponse(ctx, output, harnessworker.ErrorResponse{SchemaVersion: harnessworker.HarnessWorkerSchemaVersion, Type: harnessworker.ResponseTypeError, ErrorCode: harnessworker.ErrorCode(err)})
 		return 2
 	}
 	result := runtime.Run(ctx, assignment)
-	if err := harnessworker.EncodeResponse(output, result); err != nil {
+	if !adapter.OutputReusable() {
+		fmt.Fprintln(os.Stderr, "harness worker output ownership unresolved")
+		return 1
+	}
+	if err := writeResponse(ctx, output, result); err != nil {
 		fmt.Fprintln(os.Stderr, "harness worker response failed")
 		return 1
 	}
@@ -60,6 +65,12 @@ func run(ctx context.Context, arguments []string, input io.Reader, output io.Wri
 		return 0
 	}
 	return 1
+}
+
+func writeResponse(parent context.Context, output io.Writer, response any) error {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+	return harnessworker.EncodeResponseContext(ctx, output, response)
 }
 
 func parseExecution(arguments []string) (harnessworker.Execution, error) {

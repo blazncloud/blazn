@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,7 +25,7 @@ func TestExecProcessRunnerUsesExactArgvWithoutShell(t *testing.T) {
 	spec, closeToken := helperProcessSpec(t, directory, "write", output, literal)
 	defer closeToken()
 	result, err := (ExecProcessRunner{}).Run(context.Background(), spec)
-	if err != nil || !result.Exited || result.ExitCode != 0 || !result.ProcessGroupGone || result.TreeKilled {
+	if runtime.GOOS == "linux" && err != nil || runtime.GOOS == "darwin" && ErrorCode(err) != "process_cleanup_unproven" || !result.Exited || result.ExitCode != 0 || !result.ProcessGroupGone || result.TreeKilled {
 		t.Fatalf("process result=%#v err=%v", result, err)
 	}
 	body, err := os.ReadFile(output)
@@ -45,7 +47,7 @@ func TestExecProcessRunnerTimeoutTerminatesProcessGroup(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	result, err := (ExecProcessRunner{}).Run(ctx, spec)
-	if err != nil || !result.Canceled || !result.TimedOut || !result.TreeKilled || !result.ProcessGroupGone || time.Since(started) > 3*time.Second {
+	if runtime.GOOS == "linux" && (err != nil || !result.TreeKilled || !result.CleanupComplete) || runtime.GOOS == "darwin" && (ErrorCode(err) != "process_cleanup_unproven" || result.TreeKilled || result.CleanupComplete) || !result.Canceled || !result.TimedOut || !result.ProcessGroupGone || time.Since(started) > 3*time.Second {
 		t.Fatalf("cancel result=%#v elapsed=%v err=%v", result, time.Since(started), err)
 	}
 	body, err := os.ReadFile(pidPath)
@@ -59,6 +61,51 @@ func TestExecProcessRunnerTimeoutTerminatesProcessGroup(t *testing.T) {
 	}
 	if processExists(pid) {
 		t.Fatal("descendant survived process-group cancellation")
+	}
+}
+
+func TestExecProcessRunnerUsesHermesGracefulSIGINT(t *testing.T) {
+	directory := t.TempDir()
+	observed := filepath.Join(directory, "signal")
+	ready := filepath.Join(directory, "ready")
+	spec, closeToken := helperProcessSpec(t, directory, "await-sigint", observed, ready)
+	defer closeToken()
+	spec.Execution.CancelGraceSeconds = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		result ProcessResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := (ExecProcessRunner{}).Run(ctx, spec)
+		done <- outcome{result: result, err: err}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatal("helper did not install SIGINT handler")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	var completed outcome
+	select {
+	case completed = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runner did not finish after SIGINT")
+	}
+	result, err := completed.result, completed.err
+	if runtime.GOOS == "linux" && err != nil || runtime.GOOS == "darwin" && ErrorCode(err) != "process_cleanup_unproven" || !result.Canceled {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	body, readErr := os.ReadFile(observed)
+	if readErr != nil || string(body) != "interrupt" {
+		t.Fatalf("graceful signal=%q err=%v", body, readErr)
 	}
 }
 
@@ -85,18 +132,27 @@ func TestProcessSpecRejectsEnvironmentAndDescriptorExpansion(t *testing.T) {
 	}
 }
 
+func TestReceiveWaitIsBoundedWhenWaitNeverReturns(t *testing.T) {
+	started := time.Now()
+	if _, ok := receiveWait(make(chan error), 20*time.Millisecond); ok || time.Since(started) > time.Second {
+		t.Fatalf("unbounded wait elapsed=%v", time.Since(started))
+	}
+}
+
 func helperProcessSpec(t *testing.T, directory string, arguments ...string) (ProcessSpec, func()) {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tokenPath := filepath.Join(directory, "listener-token")
-	if err := os.WriteFile(tokenPath, []byte("test-listener-token"), 0o600); err != nil {
+	token, writer, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := os.Open(tokenPath)
-	if err != nil {
+	if _, err := writer.Write([]byte("test-listener-token")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
 	argv := []string{executable, "-test.run=^TestHarnessWorkerProcessHelper$", "--", "harnessworker-helper"}
@@ -134,6 +190,33 @@ func TestHarnessWorkerProcessHelper(t *testing.T) {
 			os.Exit(12)
 		}
 		_ = child.Wait()
+	case "spawn-setsid-wait":
+		executable, err := os.Executable()
+		if err != nil {
+			os.Exit(14)
+		}
+		child := exec.Command(executable, "-test.run=^TestHarnessWorkerProcessHelper$", "--", "harnessworker-helper", "escape-wait", arguments[1])
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := child.Start(); err != nil {
+			os.Exit(15)
+		}
+		_ = child.Wait()
+	case "escape-wait":
+		if err := os.WriteFile(arguments[1], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(16)
+		}
+		time.Sleep(30 * time.Second)
+	case "await-sigint":
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGINT)
+		defer signal.Stop(signals)
+		if err := os.WriteFile(arguments[2], []byte("ready"), 0o600); err != nil {
+			os.Exit(18)
+		}
+		received := <-signals
+		if err := os.WriteFile(arguments[1], []byte(received.String()), 0o600); err != nil {
+			os.Exit(17)
+		}
 	default:
 		os.Exit(13)
 	}

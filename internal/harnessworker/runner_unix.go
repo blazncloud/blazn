@@ -21,10 +21,18 @@ func (ExecProcessRunner) Run(ctx context.Context, spec ProcessSpec) (ProcessResu
 	command.Env = append([]string{"HOME=/workspace", "LANG=C.UTF-8", "TMPDIR=/workspace/tmp"}, spec.Environment...)
 	command.ExtraFiles = append([]*os.File(nil), spec.ExtraFiles...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	tracker, err := prepareDescendantTracking()
+	if err != nil {
+		return ProcessResult{}, protocolError("process_cleanup_unavailable")
+	}
+	defer tracker.restore()
 	stderr := &boundedDiscard{limit: maxCapturedProcessBytes}
 	command.Stdin, command.Stdout, command.Stderr = spec.Stdin, spec.Stdout, stderr
 	if err := command.Start(); err != nil {
 		return ProcessResult{}, err
+	}
+	for _, file := range spec.ExtraFiles {
+		_ = file.Close()
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- command.Wait() }()
@@ -32,25 +40,24 @@ func (ExecProcessRunner) Run(ctx context.Context, spec ProcessSpec) (ProcessResu
 	select {
 	case err := <-wait:
 		setExitResult(&result, command, err)
-		// A completed adapter may not leave detached work in its process group.
-		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		result.ProcessGroupGone = waitProcessGroupGone(command.Process.Pid, time.Second)
+		result.ProcessGroupGone, result.CleanupComplete = tracker.cleanup(command.Process.Pid, time.Second)
 	case <-ctx.Done():
-		terminateProcessTree(command, execution, wait, &result, errors.Is(ctx.Err(), context.DeadlineExceeded))
+		terminateProcessTree(command, execution, wait, tracker, &result, errors.Is(ctx.Err(), context.DeadlineExceeded))
 	case <-spec.Abort:
-		terminateProcessTree(command, execution, wait, &result, false)
+		terminateProcessTree(command, execution, wait, tracker, &result, false)
 	}
 	result.OutputTruncated = stderr.truncated
-	if !result.ProcessGroupGone {
+	if !result.CleanupComplete {
 		return result, protocolError("process_cleanup_unproven")
 	}
 	return result, nil
 }
 
-func terminateProcessTree(command *exec.Cmd, execution Execution, wait <-chan error, result *ProcessResult, timedOut bool) {
+func terminateProcessTree(command *exec.Cmd, execution Execution, wait <-chan error, tracker descendantTracker, result *ProcessResult, timedOut bool) {
 	result.Canceled = true
 	result.TimedOut = timedOut
-	_ = syscall.Kill(-command.Process.Pid, syscall.SIGTERM)
+	waitConfirmed := true
+	_ = syscall.Kill(-command.Process.Pid, syscall.SIGINT)
 	grace := time.NewTimer(time.Duration(execution.CancelGraceSeconds) * time.Second)
 	select {
 	case err := <-wait:
@@ -60,12 +67,26 @@ func terminateProcessTree(command *exec.Cmd, execution Execution, wait <-chan er
 		setExitResult(result, command, err)
 	case <-grace.C:
 		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		setExitResult(result, command, <-wait)
+		if err, ok := receiveWait(wait, time.Second); ok {
+			setExitResult(result, command, err)
+		} else {
+			waitConfirmed = false
+		}
 	}
-	// Kill any descendant which survived the leader's graceful exit.
-	_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-	result.ProcessGroupGone = waitProcessGroupGone(command.Process.Pid, time.Second)
-	result.TreeKilled = result.ProcessGroupGone
+	result.ProcessGroupGone, result.CleanupComplete = tracker.cleanup(command.Process.Pid, time.Second)
+	result.CleanupComplete = result.CleanupComplete && waitConfirmed
+	result.TreeKilled = result.CleanupComplete
+}
+
+func receiveWait(wait <-chan error, timeout time.Duration) (error, bool) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-wait:
+		return err, true
+	case <-timer.C:
+		return nil, false
+	}
 }
 
 func waitProcessGroupGone(processGroupID int, timeout time.Duration) bool {

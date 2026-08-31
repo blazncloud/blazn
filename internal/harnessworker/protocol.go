@@ -27,13 +27,31 @@ func DecodeAssignmentLine(ctx context.Context, input io.Reader, now time.Time) (
 	if input == nil {
 		return Assignment{}, protocolError("request_invalid")
 	}
+	type outcome struct {
+		assignment Assignment
+		err        error
+	}
+	completed := make(chan outcome, 1)
+	go func() {
+		assignment, err := decodeAssignmentLine(input, now)
+		completed <- outcome{assignment: assignment, err: err}
+	}()
+	select {
+	case result := <-completed:
+		return result.assignment, result.err
+	case <-ctx.Done():
+		if closer, ok := input.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return Assignment{}, protocolError("request_cancelled")
+	}
+}
+
+func decodeAssignmentLine(input io.Reader, now time.Time) (Assignment, error) {
 	reader := bufio.NewReader(io.LimitReader(input, MaxProtocolLineBytes+2))
 	line, err := reader.ReadBytes('\n')
 	if err != nil || len(line) < 2 || len(line) > MaxProtocolLineBytes+1 || line[len(line)-1] != '\n' || line[len(line)-2] == '\r' {
 		return Assignment{}, protocolError("request_invalid")
-	}
-	if err := ctx.Err(); err != nil {
-		return Assignment{}, protocolError("request_cancelled")
 	}
 	extra, err := reader.ReadByte()
 	if err == nil || !errors.Is(err, io.EOF) || extra != 0 {
@@ -47,6 +65,24 @@ func DecodeAssignmentLine(ctx context.Context, input io.Reader, now time.Time) (
 }
 
 func EncodeResponse(output io.Writer, response any) error {
+	return encodeResponse(output, response)
+}
+
+func EncodeResponseContext(ctx context.Context, output io.Writer, response any) error {
+	completed := make(chan error, 1)
+	go func() { completed <- encodeResponse(output, response) }()
+	select {
+	case err := <-completed:
+		return err
+	case <-ctx.Done():
+		if closer, ok := output.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		return protocolError("response_cancelled")
+	}
+}
+
+func encodeResponse(output io.Writer, response any) error {
 	if output == nil {
 		return errors.New("worker output is required")
 	}

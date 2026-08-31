@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -37,7 +38,7 @@ func (w *boundedDiscard) Write(value []byte) (int, error) {
 var _ io.Writer = (*boundedDiscard)(nil)
 
 func validateProcessSpec(spec ProcessSpec) error {
-	if !validProcessExecution(spec.Execution) || spec.Stdin == nil || spec.Stdout == nil || len(spec.ExtraFiles) != 1 || spec.ExtraFiles[0] == nil {
+	if !validProcessExecution(spec.Execution) || spec.Stdin == nil || spec.Stdout == nil || len(spec.ExtraFiles) != 1 || !validOneShotDescriptor(spec.ExtraFiles[0]) {
 		return errors.New("process spec is incomplete")
 	}
 	seen := map[string]bool{}
@@ -64,6 +65,18 @@ func validateProcessSpec(spec ProcessSpec) error {
 		return errors.New("process environment is incomplete")
 	}
 	return nil
+}
+
+func validOneShotDescriptor(file *os.File) bool {
+	if file == nil {
+		return false
+	}
+	info, err := file.Stat()
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		return false
+	}
+	_, err = file.Seek(0, io.SeekCurrent)
+	return err != nil
 }
 
 func validLoopbackProxyURL(value string) bool {

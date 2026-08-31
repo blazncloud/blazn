@@ -58,6 +58,12 @@ func (compositionScopeValidator) ValidateWorkloadScope(context.Context, harnessw
 	return nil
 }
 
+type compositionExecutableVerifier struct{}
+
+func (compositionExecutableVerifier) VerifyExecutable(context.Context, string, string) error {
+	return nil
+}
+
 type compositionTokenSource struct{ file *os.File }
 
 func (source compositionTokenSource) OpenListenerToken(context.Context, string) (*os.File, error) {
@@ -76,7 +82,7 @@ func (compositionRunner) Run(_ context.Context, spec harnessworker.ProcessSpec) 
 			return harnessworker.ProcessResult{}, err
 		}
 	}
-	return harnessworker.ProcessResult{Exited: true, ExitCode: 0, ProcessGroupGone: true}, nil
+	return harnessworker.ProcessResult{Exited: true, ExitCode: 0, ProcessGroupGone: true, CleanupComplete: true}, nil
 }
 
 type compositionCollector struct{}
@@ -118,8 +124,8 @@ func TestHermesCompositionStreamsSafeEvidenceBeforeTerminalResult(t *testing.T) 
 	}
 	execution := harnessworker.Execution{Argv: []string{hermes.ReviewedExecutable, "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: harnessworker.DefaultRunSeconds, CancelGraceSeconds: harnessworker.DefaultCancelSeconds}
 	runtime, err := harnessworker.NewRuntime(harnessworker.RunConfig{
-		ScopeValidator: compositionScopeValidator{}, TokenSource: compositionTokenSource{file: tokenFile}, Adapter: adapter,
-		ProcessRunner: compositionRunner{}, Collector: compositionCollector{}, Execution: execution, Artifacts: []harnessworker.ArtifactSpec{},
+		ScopeValidator: compositionScopeValidator{}, ExecutableVerifier: compositionExecutableVerifier{}, TokenSource: compositionTokenSource{file: tokenFile}, Adapter: adapter,
+		ProcessRunner: compositionRunner{}, Collector: compositionCollector{}, Execution: execution, Artifacts: fixedArtifacts(),
 		AllowedExecutable: hermes.ReviewedExecutable, Now: func() time.Time { return now },
 	})
 	if err != nil {
@@ -130,10 +136,10 @@ func TestHermesCompositionStreamsSafeEvidenceBeforeTerminalResult(t *testing.T) 
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[0], `"type":"harness.started"`) || !strings.Contains(lines[1], `"type":"result.reported"`) || !strings.Contains(lines[2], `"type":"result"`) {
+	if len(lines) != 2 || !strings.Contains(lines[0], `"type":"harness.started"`) || !strings.Contains(lines[1], `"type":"result"`) {
 		t.Fatalf("unexpected composed JSONL: %s", output.String())
 	}
-	if result.Status != "succeeded" || result.ProcessTreeTerminated || strings.Contains(output.String(), string(token)) || strings.Contains(output.String(), "listener-secret") {
+	if result.Status != "recovery_required" || result.ErrorCode != "adapter_output_invalid" || result.ProcessTreeTerminated || strings.Contains(output.String(), string(token)) || strings.Contains(output.String(), "listener-secret") {
 		t.Fatalf("unsafe or incorrect composed result: result=%#v output=%s", result, output.String())
 	}
 }

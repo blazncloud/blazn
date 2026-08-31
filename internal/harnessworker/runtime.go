@@ -10,7 +10,7 @@ import (
 type Runtime struct{ config RunConfig }
 
 func NewRuntime(config RunConfig) (*Runtime, error) {
-	if config.ScopeValidator == nil || config.TokenSource == nil || config.Adapter == nil || config.ProcessRunner == nil || config.Collector == nil ||
+	if config.ScopeValidator == nil || config.ExecutableVerifier == nil || config.TokenSource == nil || config.Adapter == nil || config.ProcessRunner == nil || config.Collector == nil ||
 		ValidateExecution(config.Execution, config.Artifacts) != nil || config.AllowedExecutable == "" || config.Execution.Argv[0] != config.AllowedExecutable {
 		return nil, errors.New("harness worker configuration is invalid")
 	}
@@ -31,6 +31,10 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 		result.ErrorCode = ErrorCode(err)
 		return finish(result, started, r.config.Now())
 	}
+	if err := r.config.ExecutableVerifier.VerifyExecutable(ctx, r.config.AllowedExecutable, assignment.Scope.HarnessExecutableDigest); err != nil {
+		result.ErrorCode = ErrorCode(err)
+		return finish(result, started, r.config.Now())
+	}
 	token, err := r.config.TokenSource.OpenListenerToken(ctx, assignment.Scope.ListenerTokenFingerprint)
 	if err != nil {
 		result.ErrorCode = ErrorCode(err)
@@ -38,18 +42,26 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(r.config.Execution.TimeoutSeconds)*time.Second)
 	spec, prepareErr := r.config.Adapter.Prepare(runCtx, assignment, token)
+	prepared := prepareErr == nil
+	sourceCloseErr := token.Close()
+	for _, file := range spec.ExtraFiles {
+		if file != nil {
+			defer file.Close()
+		}
+	}
 	var process ProcessResult
 	var runErr, finalizeErr error
-	if prepareErr != nil || !reflect.DeepEqual(spec.Execution, r.config.Execution) || len(spec.ExtraFiles) != 1 || spec.ExtraFiles[0] != token || validateProcessSpec(spec) != nil {
+	if prepareErr != nil || sourceCloseErr != nil || !reflect.DeepEqual(spec.Execution, r.config.Execution) || len(spec.ExtraFiles) != 1 || !validOneShotDescriptor(spec.ExtraFiles[0]) || validateProcessSpec(spec) != nil {
 		prepareErr = errors.New("adapter process spec is invalid")
 	} else {
 		process, runErr = r.config.ProcessRunner.Run(runCtx, spec)
+	}
+	if prepared {
 		finalizeCtx, finalizeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		finalizeErr = r.config.Adapter.Finalize(finalizeCtx, process)
 		finalizeCancel()
 	}
 	cancel()
-	closeErr := token.Close()
 	result.OutputTruncated = process.OutputTruncated
 	result.ProcessTreeTerminated = process.TreeKilled
 	if process.Exited {
@@ -66,6 +78,8 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 		} else {
 			result.ErrorCode = "process_start_failed"
 		}
+	} else if !process.CleanupComplete {
+		result.Status, result.ErrorCode = "recovery_required", "process_cleanup_unproven"
 	} else if process.TimedOut {
 		result.Status, result.ErrorCode = "timed_out", "process_timed_out"
 	} else if process.Canceled {
@@ -78,7 +92,7 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 	validationCtx, validationCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	postflightErr := r.config.ScopeValidator.ValidateWorkloadScope(validationCtx, assignment.Scope)
 	validationCancel()
-	if closeErr != nil || postflightErr != nil {
+	if sourceCloseErr != nil || postflightErr != nil {
 		result.Status, result.ErrorCode, result.Artifacts = "recovery_required", "postflight_scope_failed", []ArtifactResult{}
 		return finish(result, started, r.config.Now())
 	}
@@ -93,8 +107,31 @@ func (r *Runtime) Run(ctx context.Context, assignment Assignment) Result {
 		}
 	} else {
 		result.Artifacts, result.Warnings = artifacts, append(result.Warnings, warnings...)
+		if !sameArtifacts(r.config.Adapter.ReviewedArtifacts(), artifacts) {
+			result.Status, result.ErrorCode, result.Artifacts = "recovery_required", "artifact_evidence_mismatch", []ArtifactResult{}
+		}
 	}
 	return finish(result, started, r.config.Now())
+}
+
+func sameArtifacts(reviewed, collected []ArtifactResult) bool {
+	if len(reviewed) != len(collected) {
+		return false
+	}
+	byName := make(map[string]ArtifactResult, len(reviewed))
+	for _, artifact := range reviewed {
+		if _, duplicate := byName[artifact.Name]; duplicate {
+			return false
+		}
+		byName[artifact.Name] = artifact
+	}
+	for _, artifact := range collected {
+		if expected, ok := byName[artifact.Name]; !ok || expected != artifact {
+			return false
+		}
+		delete(byName, artifact.Name)
+	}
+	return len(byName) == 0
 }
 
 func finish(result Result, started, ended time.Time) Result {

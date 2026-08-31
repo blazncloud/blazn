@@ -22,7 +22,7 @@ const (
 	MaxArgumentBytes       = 4096
 	MaxArgumentTotalBytes  = 32 << 10
 	DefaultRunSeconds      = 60 * 60
-	DefaultCancelSeconds   = 5
+	DefaultCancelSeconds   = 20
 	MaxRunSeconds          = 24 * 60 * 60
 	MaxCancellationSeconds = 30
 )
@@ -76,6 +76,7 @@ type ErrorResponse struct {
 type ProcessResult struct {
 	ExitCode, Signal                                         int
 	Exited, Canceled, TimedOut, TreeKilled, ProcessGroupGone bool
+	CleanupComplete                                          bool
 	OutputTruncated                                          bool
 }
 
@@ -91,16 +92,18 @@ type ProcessSpec struct {
 type Adapter interface {
 	Prepare(context.Context, Assignment, *os.File) (ProcessSpec, error)
 	Finalize(context.Context, ProcessResult) error
+	ReviewedArtifacts() []ArtifactResult
 }
 
 type RunConfig struct {
-	ScopeValidator    WorkloadScopeValidator
-	TokenSource       ListenerTokenSource
-	Adapter           Adapter
-	ProcessRunner     ProcessRunner
-	Collector         ArtifactCollector
-	Execution         Execution
-	Artifacts         []ArtifactSpec
-	AllowedExecutable string
-	Now               func() time.Time
+	ScopeValidator     WorkloadScopeValidator
+	ExecutableVerifier ExecutableVerifier
+	TokenSource        ListenerTokenSource
+	Adapter            Adapter
+	ProcessRunner      ProcessRunner
+	Collector          ArtifactCollector
+	Execution          Execution
+	Artifacts          []ArtifactSpec
+	AllowedExecutable  string
+	Now                func() time.Time
 }

@@ -48,6 +48,55 @@ func TestDecodeAssignmentLineIsSingleClosedSecretFreeRecord(t *testing.T) {
 	}
 }
 
+func TestDecodeAssignmentLineCancellationClosesIncompleteInput(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := DecodeAssignmentLine(ctx, reader, time.Now())
+		done <- err
+	}()
+	if _, err := writer.Write([]byte(`{"schemaVersion":"incomplete"}`)); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if ErrorCode(err) != "request_cancelled" {
+			t.Fatalf("error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("incomplete assignment read ignored cancellation")
+	}
+}
+
+type blockingWriteCloser struct{ closed chan struct{} }
+
+func (writer *blockingWriteCloser) Write([]byte) (int, error) {
+	<-writer.closed
+	return 0, io.ErrClosedPipe
+}
+func (writer *blockingWriteCloser) Close() error {
+	select {
+	case <-writer.closed:
+	default:
+		close(writer.closed)
+	}
+	return nil
+}
+
+func TestEncodeResponseContextClosesBlockedOutputOnCancellation(t *testing.T) {
+	output := &blockingWriteCloser{closed: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := EncodeResponseContext(ctx, output, ErrorResponse{SchemaVersion: HarnessWorkerSchemaVersion, Type: ResponseTypeError, ErrorCode: "test"})
+	if ErrorCode(err) != "response_cancelled" || time.Since(started) > time.Second {
+		t.Fatalf("error=%v elapsed=%v", err, time.Since(started))
+	}
+}
+
 func TestProtectedListenerTokenRequiresExactBytesAndNoSymlink(t *testing.T) {
 	directory := t.TempDir()
 	tokenPath := filepath.Join(directory, "token")
@@ -117,6 +166,16 @@ type fakeTokenSource struct {
 	calls int
 }
 
+type fakeExecutableVerifier struct {
+	calls int
+	err   error
+}
+
+func (verifier *fakeExecutableVerifier) VerifyExecutable(context.Context, string, string) error {
+	verifier.calls++
+	return verifier.err
+}
+
 func (s *fakeTokenSource) OpenListenerToken(context.Context, string) (*os.File, error) {
 	s.calls++
 	return s.file, nil
@@ -125,34 +184,59 @@ func (s *fakeTokenSource) OpenListenerToken(context.Context, string) (*os.File, 
 type fakeAdapter struct {
 	execution Execution
 	token     *os.File
+	child     *os.File
 	finalized int
 	finalErr  error
+	invalid   bool
+	reviewed  []ArtifactResult
 }
 
 func (a *fakeAdapter) Prepare(_ context.Context, _ Assignment, token *os.File) (ProcessSpec, error) {
 	a.token = token
-	return ProcessSpec{Execution: a.execution, Environment: []string{"BLAZN_PROXY_URL=http://127.0.0.1:8080", "BLAZN_LISTENER_TOKEN_FD=3"}, Stdin: strings.NewReader(""), Stdout: io.Discard, ExtraFiles: []*os.File{token}}, nil
+	if a.invalid {
+		return ProcessSpec{Execution: a.execution, Environment: []string{"BLAZN_PROXY_URL=http://127.0.0.1:8080", "BLAZN_LISTENER_TOKEN_FD=3"}, Stdin: strings.NewReader(""), Stdout: io.Discard, ExtraFiles: []*os.File{token}}, nil
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return ProcessSpec{}, err
+	}
+	if _, err := writer.Write([]byte("one-shot-token")); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return ProcessSpec{}, err
+	}
+	_ = writer.Close()
+	a.child = reader
+	return ProcessSpec{Execution: a.execution, Environment: []string{"BLAZN_PROXY_URL=http://127.0.0.1:8080", "BLAZN_LISTENER_TOKEN_FD=3"}, Stdin: strings.NewReader(""), Stdout: io.Discard, ExtraFiles: []*os.File{reader}}, nil
 }
 func (a *fakeAdapter) Finalize(context.Context, ProcessResult) error {
 	a.finalized++
 	return a.finalErr
 }
+func (a *fakeAdapter) ReviewedArtifacts() []ArtifactResult {
+	return append([]ArtifactResult(nil), a.reviewed...)
+}
 
 type fakeRunner struct {
 	calls  int
 	result ProcessResult
+	file   *os.File
 }
 
-func (r *fakeRunner) Run(context.Context, ProcessSpec) (ProcessResult, error) {
+func (r *fakeRunner) Run(_ context.Context, spec ProcessSpec) (ProcessResult, error) {
 	r.calls++
+	r.file = spec.ExtraFiles[0]
 	return r.result, nil
 }
 
-type fakeCollector struct{ calls int }
+type fakeCollector struct {
+	calls     int
+	artifacts []ArtifactResult
+}
 
 func (c *fakeCollector) Collect(context.Context, []ArtifactSpec, bool) ([]ArtifactResult, []string, error) {
 	c.calls++
-	return []ArtifactResult{}, []string{}, nil
+	return append([]ArtifactResult(nil), c.artifacts...), []string{}, nil
 }
 
 func TestRuntimeFencesScopeRunsSealedAdapterAndRevalidates(t *testing.T) {
@@ -167,17 +251,59 @@ func TestRuntimeFencesScopeRunsSealedAdapterAndRevalidates(t *testing.T) {
 	}
 	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
 	validator, source := &fakeScopeValidator{}, &fakeTokenSource{file: token}
-	adapter, runner, collector := &fakeAdapter{execution: execution}, &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0}}, &fakeCollector{}
-	runtime, err := NewRuntime(RunConfig{ScopeValidator: validator, TokenSource: source, Adapter: adapter, ProcessRunner: runner, Collector: collector, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	adapter, runner, collector := &fakeAdapter{execution: execution}, &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0, CleanupComplete: true}}, &fakeCollector{}
+	verifier := &fakeExecutableVerifier{}
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: validator, ExecutableVerifier: verifier, TokenSource: source, Adapter: adapter, ProcessRunner: runner, Collector: collector, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result := runtime.Run(context.Background(), runtimeAssignment(now))
-	if result.Status != "succeeded" || result.ProcessTreeTerminated || validator.calls != 2 || source.calls != 1 || runner.calls != 1 || adapter.finalized != 1 || collector.calls != 1 || adapter.token != token {
+	if result.Status != "succeeded" || result.ProcessTreeTerminated || validator.calls != 2 || verifier.calls != 1 || source.calls != 1 || runner.calls != 1 || adapter.finalized != 1 || collector.calls != 1 || adapter.token != token {
 		t.Fatalf("result=%#v validation=%d token=%d runner=%d finalize=%d collect=%d", result, validator.calls, source.calls, runner.calls, adapter.finalized, collector.calls)
 	}
 	if _, err := token.Stat(); err == nil {
 		t.Fatal("verified listener FD remained open")
+	}
+	if _, err := adapter.child.Stat(); err == nil {
+		t.Fatal("one-shot child FD remained open in parent")
+	}
+	if runner.file != adapter.child || runner.file == token {
+		t.Fatal("runner did not receive the adapter-derived one-shot descriptor")
+	}
+}
+
+func TestRuntimeFinalizesRejectedPreparedSpecAndClosesDescriptors(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
+	token, _ := os.Open(tokenPath)
+	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
+	adapter, runner := &fakeAdapter{execution: execution, invalid: true}, &fakeRunner{}
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: adapter, ProcessRunner: runner, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Run(context.Background(), runtimeAssignment(now))
+	if result.ErrorCode != "adapter_prepare_failed" || adapter.finalized != 1 || runner.calls != 0 {
+		t.Fatalf("result=%#v finalized=%d runner=%d", result, adapter.finalized, runner.calls)
+	}
+	if _, err := token.Stat(); err == nil {
+		t.Fatal("rejected regular source descriptor remained open")
+	}
+}
+
+func TestRuntimeVerifiesFrozenExecutableBeforeOpeningCredential(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 20}
+	verifier := &fakeExecutableVerifier{err: protocolError("harness_executable_untrusted")}
+	source := &fakeTokenSource{}
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: verifier, TokenSource: source, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: &fakeRunner{}, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Run(context.Background(), runtimeAssignment(now))
+	if result.ErrorCode != "harness_executable_untrusted" || verifier.calls != 1 || source.calls != 0 {
+		t.Fatalf("result=%#v verifier=%d token=%d", result, verifier.calls, source.calls)
 	}
 }
 
@@ -193,7 +319,7 @@ func TestRuntimeFailsClosedWhenNormalProcessCleanupIsUnproven(t *testing.T) {
 	_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
 	token, _ := os.Open(tokenPath)
 	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
-	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: cleanupUnprovenRunner{}, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: cleanupUnprovenRunner{}, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +336,7 @@ func TestRuntimePostflightScopeFailureIsRecoveryRequired(t *testing.T) {
 	token, _ := os.Open(tokenPath)
 	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
 	validator, collector := &fakeScopeValidator{failAfter: 2}, &fakeCollector{}
-	runtime, err := NewRuntime(RunConfig{ScopeValidator: validator, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0}}, Collector: collector, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: validator, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution}, ProcessRunner: &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0, CleanupComplete: true}}, Collector: collector, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,13 +352,49 @@ func TestRuntimeClassifiesAdapterOutputFailureSeparately(t *testing.T) {
 	_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
 	token, _ := os.Open(tokenPath)
 	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
-	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution, finalErr: errors.New("untrusted output")}, ProcessRunner: &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0, TreeKilled: true}}, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: &fakeAdapter{execution: execution, finalErr: errors.New("untrusted output")}, ProcessRunner: &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0, TreeKilled: true, CleanupComplete: true}}, Collector: &fakeCollector{}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	result := runtime.Run(context.Background(), runtimeAssignment(now))
 	if result.Status != "recovery_required" || result.ErrorCode != "adapter_output_invalid" {
 		t.Fatalf("adapter output result=%#v", result)
+	}
+}
+
+func TestRuntimeRequiresCollectedArtifactsToMatchReviewedEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
+	token, _ := os.Open(tokenPath)
+	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 2}
+	collected := ArtifactResult{Name: "patch", Role: "patch", Kind: "agent.patch", MediaType: "text/x-diff", Size: 9, ContentDigest: "sha256:" + strings.Repeat("a", 64)}
+	adapter := &fakeAdapter{execution: execution, reviewed: []ArtifactResult{{Name: "patch", Role: "patch", Kind: "agent.patch", MediaType: "text/x-diff", Size: 10, ContentDigest: collected.ContentDigest}}}
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: adapter, ProcessRunner: &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 0, CleanupComplete: true}}, Collector: &fakeCollector{artifacts: []ArtifactResult{collected}}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Run(context.Background(), runtimeAssignment(now))
+	if result.Status != "recovery_required" || result.ErrorCode != "artifact_evidence_mismatch" || len(result.Artifacts) != 0 {
+		t.Fatalf("artifact mismatch result=%#v", result)
+	}
+}
+
+func TestRuntimeSuppressesUnreviewedArtifactsOnProcessFailure(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	tokenPath := filepath.Join(t.TempDir(), "token")
+	_ = os.WriteFile(tokenPath, []byte("token"), 0o600)
+	token, _ := os.Open(tokenPath)
+	execution := Execution{Argv: []string{"/opt/blazn/hermes", "run", "--jsonl"}, WorkingDirectory: "/workspace", TimeoutSeconds: 60, CancelGraceSeconds: 20}
+	collected := ArtifactResult{Name: "patch", Role: "patch", Kind: "agent.patch", MediaType: "text/x-diff", Size: 9, ContentDigest: "sha256:" + strings.Repeat("a", 64)}
+	adapter := &fakeAdapter{execution: execution, reviewed: []ArtifactResult{}}
+	runtime, err := NewRuntime(RunConfig{ScopeValidator: &fakeScopeValidator{}, ExecutableVerifier: &fakeExecutableVerifier{}, TokenSource: &fakeTokenSource{file: token}, Adapter: adapter, ProcessRunner: &fakeRunner{result: ProcessResult{Exited: true, ExitCode: 1, CleanupComplete: true}}, Collector: &fakeCollector{artifacts: []ArtifactResult{collected}}, Execution: execution, Artifacts: defaultArtifactSpecs(), AllowedExecutable: "/opt/blazn/hermes", Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := runtime.Run(context.Background(), runtimeAssignment(now))
+	if result.Status != "recovery_required" || result.ErrorCode != "artifact_evidence_mismatch" || len(result.Artifacts) != 0 {
+		t.Fatalf("failure artifact mismatch result=%#v", result)
 	}
 }
 
