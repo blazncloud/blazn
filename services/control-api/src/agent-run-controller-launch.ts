@@ -13,7 +13,9 @@ export class AgentRunLaunchValidationError extends Error {
 
 /** A controller-only, signed/published release observation. It is not accepted from a Run or user request. */
 export interface HarnessWorkerReleaseAuthority {
-  workerImage:string;
+  workerImageIndex:string;
+  workerImageDigest:string;
+  architecture:"amd64"|"arm64";
   workerExecutable:string;
   hermesIncluded:true;
   runnable:true;
@@ -29,6 +31,7 @@ export interface AgentRunSandboxAuthority {
   templateName:string;
   templateVersion:string;
   architecture:"amd64"|"arm64";
+  imageIndex:string;
   imageDigest:string;
   command:string[];
   operationId:string;
@@ -73,7 +76,7 @@ export function planAgentRunSandboxLaunch(item:AgentRunWorkItem,release:HarnessW
     harnessVersionDigest:item.harnessVersionDigest,harnessExecutableDigest:release.harnessExecutableDigest,
     routeId:item.modelRouteId,routeVersion:item.modelRouteVersion,protocol:item.modelProtocol,expiresAt:new Date(sandbox.expiresAt).toISOString(),
     listenerCredentialRef:sandbox.listenerCredentialRef,listenerTokenFingerprint:sandbox.listenerTokenFingerprint};
-  return{image:release.workerImage,command,architecture:sandbox.architecture,
+  return{image:release.workerImageDigest,command,architecture:sandbox.architecture,
     template:{id:sandbox.templateVersionId,digest:sandbox.templateDigest,name:sandbox.templateName,version:sandbox.templateVersion},
     assignment:{schemaVersion:"blazn.dev/harness-worker/v1alpha1",type:"execute",scope},
     projections:[{kind:"document",path:scopePath,readOnly:true,content:"assignment.scope"},
@@ -95,24 +98,26 @@ function validateClaimDocuments(item:AgentRunWorkItem){
 }
 
 function validateRelease(value:HarnessWorkerReleaseAuthority,item:AgentRunWorkItem){
-  if(value.hermesIncluded!==true||value.runnable!==true||value.workerExecutable!==workerExecutable||!immutableImage(value.workerImage)||!uuidPattern.test(value.harnessVersionId)||
+  if(value.hermesIncluded!==true||value.runnable!==true||value.workerExecutable!==workerExecutable||!immutableImage(value.workerImageIndex)||
+    !immutableImage(value.workerImageDigest)||value.workerImageIndex===value.workerImageDigest||!["amd64","arm64"].includes(value.architecture)||!uuidPattern.test(value.harnessVersionId)||
     !digestPattern.test(value.harnessVersionDigest)||!realDigest(value.harnessExecutableDigest))unavailable("Harness worker release authority is incomplete");
   if(value.harnessVersionId!==item.harnessVersionId||value.harnessVersionDigest!==item.harnessVersionDigest)
     mismatch("Harness worker release authority does not match the claimed HarnessVersion");
   const harness=record(item.harnessVersion,"HarnessVersion"),implementation=record(harness.implementation,"Harness implementation"),provenance=record(harness.provenance,"Harness provenance");
-  if(implementation.kind!=="image"||implementation.digest!==value.workerImage)mismatch("Harness implementation does not match the worker image");
-  const imageDigest=`sha256:${value.workerImage.slice(value.workerImage.lastIndexOf("@sha256:")+8)}`;
-  if(provenance.artifactDigest!==imageDigest)mismatch("Harness provenance does not bind the worker image");
+  if(implementation.kind!=="image"||implementation.digest!==value.workerImageIndex)mismatch("Harness implementation does not match the worker image index");
+  const imageIndexDigest=`sha256:${value.workerImageIndex.slice(value.workerImageIndex.lastIndexOf("@sha256:")+8)}`;
+  if(provenance.artifactDigest!==imageIndexDigest)mismatch("Harness provenance does not bind the worker image index");
 }
 
 function validateSandbox(value:AgentRunSandboxAuthority,item:AgentRunWorkItem,release:HarnessWorkerReleaseAuthority,now:Date){
   if(!uuidPattern.test(value.operationId)||!uuidPattern.test(value.sandboxId)||!uuidPattern.test(value.templateVersionId)||
     !digestPattern.test(value.templateDigest)||!name(value.templateName)||!version(value.templateVersion)||
-    !["amd64","arm64"].includes(value.architecture)||!immutableImage(value.imageDigest)||!Array.isArray(value.command)||
+    !["amd64","arm64"].includes(value.architecture)||!immutableImage(value.imageIndex)||!immutableImage(value.imageDigest)||value.imageIndex===value.imageDigest||!Array.isArray(value.command)||
     !value.command.every(part=>typeof part==="string"&&part.length>0&&part.length<=1024&&!part.includes("\0"))||
     !/^listener-token:\/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.listenerCredentialRef)||!realDigest(value.listenerTokenFingerprint))invalid("Sandbox launch authority is invalid");
   if(value.templateVersionId!==item.templateVersionId||value.templateDigest!==item.templateDigest)mismatch("SandboxTemplate authority does not match the claimed template");
-  if(value.imageDigest!==release.workerImage)mismatch("SandboxTemplate image does not match the worker release");
+  if(value.imageIndex!==release.workerImageIndex)mismatch("SandboxTemplate image index does not match the worker release");
+  if(value.imageDigest!==release.workerImageDigest||value.architecture!==release.architecture)mismatch("SandboxTemplate image child does not match the worker release architecture");
   const expires=new Date(value.expiresAt),maximum=new Date(now.valueOf()+24*60*60*1000);
   if(Number.isNaN(now.valueOf())||Number.isNaN(expires.valueOf())||expires<=now||expires>maximum)invalid("Sandbox launch expiry is invalid");
   const definition=record(item.harnessVersion,"HarnessVersion"),platforms=strings(definition.supportedPlatforms,"Harness supported platforms");
