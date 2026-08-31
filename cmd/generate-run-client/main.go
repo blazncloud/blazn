@@ -19,7 +19,7 @@ import (
 //go:embed run.gen.go.tmpl
 var runTemplate []byte
 
-const supportedRunContractSHA256 = "6a1b91ddc98d937e812f32d79234a4cd367c669ec1ad778e69f8c8f6d1d10919"
+const supportedRunContractSHA256 = "451a7e182f4f152c40c46180481c841c4096973e92d343948b87865432717ebe"
 
 var operations = map[string]string{
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                                      "createRun",

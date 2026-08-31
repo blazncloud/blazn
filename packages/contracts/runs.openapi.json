@@ -177,7 +177,7 @@
           {"if": {"properties": {"status": {"const": "cancelled"}}, "required": ["status"]}, "then": {"required": ["completedAt"], "properties": {"receipt": {"type": "object"}}}},
           {"if": {"properties": {"proofClass": {"const": "synthetic"}}, "required": ["proofClass"]}, "then": {"properties": {"placement": {"type": "null"}}}},
           {"if": {"properties": {"proofClass": {"const": "local"}, "status": {"not": {"const": "queued"}}}, "required": ["proofClass", "status"]}, "then": {"properties": {"placement": {"type": "object", "required": ["nodeId"], "not": {"anyOf": [{"required": ["sandboxId"]}, {"required": ["modelRouteId"]}]}}}}},
-          {"if": {"properties": {"proofClass": {"const": "sandbox"}, "status": {"not": {"const": "queued"}}}, "required": ["proofClass", "status"]}, "then": {"properties": {"placement": {"type": "object", "required": ["nodeId", "sandboxId"], "not": {"required": ["modelRouteId"]}}}}},
+          {"if": {"properties": {"proofClass": {"const": "sandbox"}, "status": {"not": {"enum": ["queued", "failed", "cancelled"]}}}, "required": ["proofClass", "status"]}, "then": {"properties": {"placement": {"type": "object", "required": ["nodeId", "sandboxId"], "not": {"required": ["modelRouteId"]}}}}},
           {"if": {"properties": {"proofClass": {"const": "provider"}, "status": {"not": {"const": "queued"}}}, "required": ["proofClass", "status"]}, "then": {"properties": {"placement": {"type": "object", "required": ["modelRouteId"], "not": {"anyOf": [{"required": ["nodeId"]}, {"required": ["sandboxId"]}]}}}}}
         ]
       },
