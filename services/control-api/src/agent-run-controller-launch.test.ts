@@ -51,6 +51,9 @@ test("Agent Run launch planning fails closed for foundation, placeholder, and mi
     (value:ReturnType<typeof fixture>)=>{(value.release as {runnable:boolean}).runnable=false;},
     (value:ReturnType<typeof fixture>)=>{value.release.workerImage=`registry.blazn.invalid/harness/hermes@${digest("12")}`;},
     (value:ReturnType<typeof fixture>)=>{value.release.harnessExecutableDigest=digest("aa");},
+    (value:ReturnType<typeof fixture>)=>{value.release.workerImage=`user:password@registry.blazn.example.com/harness/hermes@${digest("12")}`;},
+    (value:ReturnType<typeof fixture>)=>{value.release.workerImage=`registry.blazn.example.com:65536/harness/hermes@${digest("12")}`;},
+    (value:ReturnType<typeof fixture>)=>{value.release.workerImage=`registry.blazn.example.com /harness/hermes@${digest("12")}`;},
     (value:ReturnType<typeof fixture>)=>{value.sandbox.command=["/bin/sh","-c","id"];},
     (value:ReturnType<typeof fixture>)=>{value.sandbox.imageDigest=`registry.blazn.example.com/harness/other@${digest("ab")}`;},
     (value:ReturnType<typeof fixture>)=>{value.sandbox.expiresAt="2026-09-01T12:00:01Z";},
@@ -67,9 +70,8 @@ test("Agent Run launch planning rejects Harness metadata substitution",()=>{
     assert.throws(()=>planAgentRunSandboxLaunch(value.item,value.release,value.sandbox,new Date("2026-08-31T12:00:00Z")));}
 });
 
-test("Agent Run launch planning accepts the frozen UUID v7 and v8 identity range",()=>{
-  const value=fixture();
-  value.sandbox.operationId="31000000-0000-7000-8000-000000000001";
-  value.sandbox.sandboxId="32000000-0000-8000-8000-000000000001";
-  assert.doesNotThrow(()=>planAgentRunSandboxLaunch(value.item,value.release,value.sandbox,new Date("2026-08-31T12:00:00Z")));
+test("Agent Run launch planning matches the worker UUID contract",()=>{
+  for(const version of ["6","7","8"]){const value=fixture();
+    value.sandbox.operationId=`31000000-0000-${version}000-8000-000000000001`;
+    assert.throws(()=>planAgentRunSandboxLaunch(value.item,value.release,value.sandbox,new Date("2026-08-31T12:00:00Z")));}
 });
