@@ -26,12 +26,14 @@ jobs:
       - run: infra/agent-sandbox/test-phase5-boundary-static.sh
       - run: infra/agent-sandbox/test-phase5-install-static.sh
       - run: infra/agent-sandbox/phase5-controller/test-static.sh
+      - run: infra/agent-sandbox/phase5-harness-worker-image/test-static.sh
       - run: shellcheck infra/agent-sandbox/*.sh
       - run: shellcheck infra/agent-sandbox/phase4c/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-boundary/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-build/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-install/*.sh
       - run: shellcheck infra/agent-sandbox/phase5-controller/*.sh
+      - run: shellcheck infra/agent-sandbox/phase5-harness-worker-image/*.sh
 
   transaction:
     runs-on: ubuntu-latest

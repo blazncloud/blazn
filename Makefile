@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-agent-harness-client check-agent-harness-generated generate-proxy-contract check-proxy-generated generate-harness-worker-contract check-harness-worker-generated check-harness-worker-cross-build generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-project-postgres test-run-postgres test-agent-harness-postgres test-agent-run-controller-postgres test-development-postgres test-sandbox-postgres test-sandbox-controller-postgres test-phase5-controller-deployment-static test-phase5-controller-secret-init test-sandbox-io-static release test-release test-install ci
+.PHONY: fmt fmt-check generate-client check-generated generate-workspace-client check-workspace-generated generate-project-client check-project-generated generate-run-client check-run-generated generate-agent-harness-client check-agent-harness-generated generate-proxy-contract check-proxy-generated generate-harness-worker-contract check-harness-worker-generated check-harness-worker-cross-build test-harness-worker-image-static generate-node-client check-node-generated generate-sandbox-client check-sandbox-generated test test-control-api test-identity test-identity-root test-infra test-runtime-persistence test-sandbox-contract test-project-contract test-run-contract test-development-contract test-development-sandbox-static test-harness-contract test-project-postgres test-run-postgres test-agent-harness-postgres test-agent-run-controller-postgres test-development-postgres test-sandbox-postgres test-sandbox-controller-postgres test-phase5-controller-deployment-static test-phase5-controller-secret-init test-sandbox-io-static release test-release test-install ci
 
 fmt:
 	go fmt ./...
@@ -69,6 +69,10 @@ check-harness-worker-generated:
 check-harness-worker-cross-build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /dev/null ./cmd/blazn-harness-worker
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /dev/null ./cmd/blazn-harness-worker
+
+test-harness-worker-image-static:
+	./infra/agent-sandbox/phase5-harness-worker-image/test-static.sh
+	shellcheck infra/agent-sandbox/phase5-harness-worker-image/*.sh
 
 test:
 	go test ./...
