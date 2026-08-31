@@ -99,6 +99,28 @@ test("PostgreSQL Agent Run controller freezes compatibility and fences allocatio
     assert.equal(await controller.finalize(first.id,"agent-run-worker",claim!.leaseToken,2,"succeeded",undefined,[artifactId,patchId],1,[]),true);
     const finished=await admin.query("SELECT status,node_id,sandbox_id FROM runs WHERE id=$1",[first.id]);assert.deepEqual(finished.rows[0],{status:"succeeded",node_id:nodeId,sandbox_id:sandboxId});
 
+    const failedWithoutArtifacts=(await create()).run;assert.equal(await api.enqueue(failedWithoutArtifacts.id,workspaceId,String(agentVersion.id),String(profile.id)),true);
+    const zeroClaim=await controller.claim("agent-run-failed-zero",30),zeroSandbox=await seedSandbox(admin,workspaceId,principal.userId,templateId,String(templateRef.versionId),String(templateRef.digest).slice(7));
+    const zeroSandboxLease=await activateSandboxLease(admin,zeroSandbox,"sandbox-observer-failed-zero");
+    assert.equal(zeroClaim?.runId,failedWithoutArtifacts.id);assert.equal(await recordNodeObservation(sandboxControllerDb,admin,zeroSandbox,nodeId,zeroSandboxLease),true);
+    assert.equal(await controller.bindSandbox(failedWithoutArtifacts.id,"agent-run-failed-zero",zeroClaim!.leaseToken,1,nodeId,zeroSandbox),true);
+    assert.equal(await controller.finalize(failedWithoutArtifacts.id,"agent-run-failed-zero",zeroClaim!.leaseToken,2,"failed","harness_failed",[],2,["harness exited before producing outputs"]),true);
+    const zeroFailure=await admin.query("SELECT r.status,r.error_code,rr.receipt FROM runs r JOIN run_receipts rr ON rr.run_id=r.id WHERE r.id=$1",[failedWithoutArtifacts.id]);
+    assert.equal(zeroFailure.rows[0]?.status,"failed");assert.equal(zeroFailure.rows[0]?.error_code,"harness_failed");assert.deepEqual(zeroFailure.rows[0]?.receipt.artifactIds,[]);
+
+    const failedWithPartialArtifacts=(await create()).run;assert.equal(await api.enqueue(failedWithPartialArtifacts.id,workspaceId,String(agentVersion.id),String(profile.id)),true);
+    const partialClaim=await controller.claim("agent-run-failed-partial",30),partialSandbox=await seedSandbox(admin,workspaceId,principal.userId,templateId,String(templateRef.versionId),String(templateRef.digest).slice(7));
+    const partialSandboxLease=await activateSandboxLease(admin,partialSandbox,"sandbox-observer-failed-partial");
+    assert.equal(partialClaim?.runId,failedWithPartialArtifacts.id);assert.equal(await recordNodeObservation(sandboxControllerDb,admin,partialSandbox,nodeId,partialSandboxLease),true);
+    assert.equal(await controller.bindSandbox(failedWithPartialArtifacts.id,"agent-run-failed-partial",partialClaim!.leaseToken,1,nodeId,partialSandbox),true);
+    const partialArtifactId=randomUUID();await admin.query("INSERT INTO artifacts(id,workspace_id,project_id,source_run_id,kind,media_type,name,status,digest,size_bytes,object_key,created_by) VALUES($1,$2,$3,$4,'agent.summary','document','summary','ready',$5,1,$6,$7)",[partialArtifactId,workspaceId,projectId,failedWithPartialArtifacts.id,`sha256:${"5".repeat(64)}`,`workspaces/${workspaceId}/agent/${partialArtifactId}`,principal.userId]);
+    const duplicateArtifactResult=await controllerDb.query<{completed:boolean}>("SELECT agent_run_controller_finalize($1,$2,$3,$4,'failed','patch_failed',$5::uuid[],3,ARRAY[]::text[]) completed",[failedWithPartialArtifacts.id,"agent-run-failed-partial",partialClaim!.leaseToken,2,[partialArtifactId,partialArtifactId]]);
+    assert.equal(duplicateArtifactResult.rows[0]?.completed,false,"duplicate artifact IDs were accepted");
+    assert.equal(await controller.finalize(failedWithPartialArtifacts.id,"agent-run-failed-partial",partialClaim!.leaseToken,2,"failed","patch_failed",[artifactId],3,[]),false,"artifact from another Run was accepted");
+    assert.equal(await controller.finalize(failedWithPartialArtifacts.id,"agent-run-failed-partial",partialClaim!.leaseToken,2,"failed","patch_failed",[partialArtifactId],3,[]),true);
+    const partialFailure=await admin.query("SELECT r.status,r.error_code,rr.receipt FROM runs r JOIN run_receipts rr ON rr.run_id=r.id WHERE r.id=$1",[failedWithPartialArtifacts.id]);
+    assert.equal(partialFailure.rows[0]?.status,"failed");assert.equal(partialFailure.rows[0]?.error_code,"patch_failed");assert.deepEqual(partialFailure.rows[0]?.receipt.artifactIds,[partialArtifactId]);
+
     const retryRun=(await create()).run;assert.equal(await api.enqueue(retryRun.id,workspaceId,String(agentVersion.id),String(profile.id)),true);
     const retryClaim=await controller.claim("agent-run-retry",30);assert.equal(retryClaim?.runId,retryRun.id);
     assert.equal(await controller.retry(retryRun.id,"agent-run-retry",retryClaim!.leaseToken,0,"adapter_unavailable"),"retry_scheduled");

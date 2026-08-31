@@ -473,7 +473,13 @@ BEGIN
       ((a.name='patch' AND a.kind='agent.patch' AND a.media_type='document') OR
        (a.name='summary' AND a.kind='agent.summary' AND a.media_type='document') OR
        (a.name NOT IN ('patch','summary') AND a.kind='agent.output'));
-  IF cardinality(names)<>cardinality(p_artifact_ids) OR names<>ARRAY(SELECT unnest(target.output_names) ORDER BY 1) THEN RETURN false; END IF;
+  IF cardinality(names)<>cardinality(p_artifact_ids) OR
+     cardinality(names)<>cardinality(ARRAY(SELECT DISTINCT supplied.name FROM unnest(names) AS supplied(name))) OR
+     (p_outcome='succeeded' AND names IS DISTINCT FROM ARRAY(SELECT unnest(target.output_names) ORDER BY 1)) OR
+     (p_outcome='failed' AND EXISTS(SELECT 1 FROM unnest(names) AS supplied(name)
+       WHERE NOT EXISTS(SELECT 1 FROM unnest(target.output_names) AS expected(name) WHERE expected.name=supplied.name))) THEN
+    RETURN false;
+  END IF;
   receipt:=jsonb_build_object('schemaVersion','blazn.run/receipt/v1alpha1','proofClass','sandbox','outcome',p_outcome,
     'planDigest',target.plan_digest,'artifactIds',to_jsonb(p_artifact_ids),
     'summary',jsonb_build_object('steps',p_steps,'warnings',to_jsonb(p_warnings)));

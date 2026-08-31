@@ -12,6 +12,8 @@ test("Agent Run controller service validates the lease-fenced boundary",async()=
   assert.equal(await service.bindSandbox(run,"agent-controller-1",token,1,node,sandbox),true);
   assert.equal(await service.retry(run,"agent-controller-1",token,1,"adapter_unavailable"),"retry_scheduled");
   assert.equal(await service.finalize(run,"agent-controller-1",token,2,"succeeded",undefined,[],1,[]),true);
+  assert.equal(await service.finalize(run,"agent-controller-1",token,2,"failed","harness_failed",[],1,[]),true);
+  assert.equal(await service.finalize(run,"agent-controller-1",token,2,"failed","patch_failed",[id()],1,[]),true);
 });
 test("Agent Run controller service rejects malformed and inconsistent finalization",async()=>{
   const service=new AgentRunControllerService(store),run=id(),token=id();
