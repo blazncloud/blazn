@@ -8,11 +8,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
 	workspacepkg "github.com/blazncloud/blazn/internal/workspace"
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 type API interface {
@@ -106,18 +109,90 @@ func ReadDocument(path string) (client.JSONDocument, error) {
 	}
 	return d, nil
 }
+
+var schemaOnce sync.Once
+var documentSchemas map[string]*jsonschema.Schema
+var documentSchemaErr error
+var lowerUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 func ValidateDocument(kind string, d client.JSONDocument) error {
-	required := map[string][]string{"agent-version": {"id", "agentId", "workspaceId", "version", "digest", "createdBy", "createdAt"}, "harness-definition": {"id", "kind", "status", "resourceVersion"}, "harness-version": {"id", "definitionId", "version", "digest"}, "harness-profile": {"id", "workspaceId", "name", "harnessVersionId", "status", "resourceVersion", "digest"}}
-	fields, ok := required[kind]
+	schemaOnce.Do(compileDocumentSchemas)
+	if documentSchemaErr != nil {
+		return fmt.Errorf("compile normative schemas: %w", documentSchemaErr)
+	}
+	schema, ok := documentSchemas[kind]
 	if !ok {
 		return fmt.Errorf("unknown document kind %q", kind)
 	}
-	for _, f := range fields {
-		if _, ok := d[f]; !ok {
-			return fmt.Errorf("%s requires field %s", kind, f)
+	if err := schema.Validate(map[string]any(d)); err != nil {
+		return fmt.Errorf("%s violates the normative schema: %w", kind, err)
+	}
+	for _, field := range identifierFields(kind) {
+		if value, ok := d[field].(string); ok && !lowerUUID.MatchString(value) {
+			return fmt.Errorf("%s field %s must be a lowercase UUID", kind, field)
 		}
 	}
 	return nil
+}
+
+func identifierFields(kind string) []string {
+	switch kind {
+	case "agent-version":
+		return []string{"id", "agentId", "workspaceId", "createdBy", "defaultHarnessProfileId", "evaluationId"}
+	case "harness-definition":
+		return []string{"id"}
+	case "harness-version":
+		return []string{"id", "definitionId"}
+	case "harness-profile":
+		return []string{"id", "workspaceId", "harnessVersionId"}
+	}
+	return nil
+}
+
+func compileDocumentSchemas() {
+	documentSchemas = map[string]*jsonschema.Schema{}
+	for _, source := range []struct {
+		raw      string
+		mappings map[string]string
+	}{{agentSchemaJSON, map[string]string{"agent-version": "version"}}, {harnessSchemaJSON, map[string]string{"harness-definition": "definition", "harness-version": "version", "harness-profile": "profile"}}} {
+		var root map[string]any
+		decoder := json.NewDecoder(strings.NewReader(source.raw))
+		decoder.UseNumber()
+		if err := decoder.Decode(&root); err != nil {
+			documentSchemaErr = err
+			return
+		}
+		properties, ok := root["properties"].(map[string]any)
+		if !ok {
+			documentSchemaErr = errors.New("schema properties missing")
+			return
+		}
+		for kind, property := range source.mappings {
+			sub, ok := properties[property].(map[string]any)
+			if !ok {
+				documentSchemaErr = fmt.Errorf("schema %s missing", property)
+				return
+			}
+			copy := make(map[string]any, len(sub)+2)
+			for key, value := range sub {
+				copy[key] = value
+			}
+			copy["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+			copy["$defs"] = root["$defs"]
+			compiler := jsonschema.NewCompiler()
+			compiler.AssertFormat()
+			if err := compiler.AddResource("mem://"+kind, copy); err != nil {
+				documentSchemaErr = err
+				return
+			}
+			compiled, err := compiler.Compile("mem://" + kind)
+			if err != nil {
+				documentSchemaErr = err
+				return
+			}
+			documentSchemas[kind] = compiled
+		}
+	}
 }
 
 func (s *Service) CreateAgent(ctx context.Context, name string, tags []string, key string) (client.AgentEnvelope, error) {

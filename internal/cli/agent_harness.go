@@ -309,7 +309,16 @@ func (a *App) writeAgentHarnessError(f OutputFormat, e error) int {
 	}
 	var api *client.APIError
 	if errors.As(e, &api) {
-		return a.writeError(f, ExitFailure, api.Body.Code, api.Error())
+		code := api.Body.Code
+		if code == "" {
+			code = "api_error"
+		}
+		exit := ExitFailure
+		switch code {
+		case "access_expired", "session_revoked", "device_revoked", "unauthorized":
+			exit = ExitUnavailable
+		}
+		return a.writeError(f, exit, code, api.Error())
 	}
 	return a.writeError(f, ExitUnavailable, "agent_harness_unavailable", e.Error())
 }

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -9,8 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
+
+//go:embed agent_harness.gen.go.tmpl
+var clientTemplate []byte
 
 var expected = map[string]string{
 	"GET /v1/workspaces/{workspaceId}/agents": "listAgents", "POST /v1/workspaces/{workspaceId}/agents": "createAgent",
@@ -29,23 +35,31 @@ func main() {
 	var doc map[string]any
 	fatal(json.Unmarshal(contract, &doc))
 	fatal(validate(doc))
-	digest := sha256.Sum256(contract)
-	marker := "// Contract SHA256: " + hex.EncodeToString(digest[:])
-	clientPath := filepath.Join(root, "internal/client/agent_harness.gen.go")
-	client, err := os.ReadFile(clientPath)
+	agentSchema, err := os.ReadFile(filepath.Join(root, "packages/contracts/agent.schema.json"))
 	fatal(err)
-	lines := strings.Split(string(client), "\n")
-	if len(lines) < 2 || !strings.HasPrefix(lines[1], "// Contract SHA256: ") {
-		fatal(fmt.Errorf("generated Agent/Harness client has no contract marker"))
-	}
+	harnessSchema, err := os.ReadFile(filepath.Join(root, "packages/contracts/harness.schema.json"))
+	fatal(err)
+	digestInput := append(append(append([]byte{}, contract...), agentSchema...), harnessSchema...)
+	digest := sha256.Sum256(digestInput)
+	generated := bytes.ReplaceAll(clientTemplate, []byte("{{CONTRACT_SHA256}}"), []byte(hex.EncodeToString(digest[:])))
+	clientPath := filepath.Join(root, "internal/client/agent_harness.gen.go")
+	schemaGenerated := []byte("// Code generated from normative Agent/Harness schemas; DO NOT EDIT.\npackage agentharness\n\nconst agentSchemaJSON = " + strconv.Quote(string(agentSchema)) + "\nconst harnessSchemaJSON = " + strconv.Quote(string(harnessSchema)) + "\n")
+	schemaPath := filepath.Join(root, "internal/agentharness/schemas.gen.go")
 	if *check {
-		if lines[1] != marker {
+		current, err := os.ReadFile(clientPath)
+		fatal(err)
+		if !bytes.Equal(current, generated) {
 			fatal(fmt.Errorf("generated Agent/Harness client is stale; run make generate-agent-harness-client"))
+		}
+		currentSchema, err := os.ReadFile(schemaPath)
+		fatal(err)
+		if !bytes.Equal(currentSchema, schemaGenerated) {
+			fatal(fmt.Errorf("generated Agent/Harness schemas are stale; run make generate-agent-harness-client"))
 		}
 		return
 	}
-	lines[1] = marker
-	fatal(os.WriteFile(clientPath, []byte(strings.Join(lines, "\n")), 0o644))
+	fatal(os.WriteFile(clientPath, generated, 0o644))
+	fatal(os.WriteFile(schemaPath, schemaGenerated, 0o644))
 }
 
 func validate(doc map[string]any) error {

@@ -2,20 +2,53 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/blazncloud/blazn/internal/client"
 )
 
 func TestAgentValidateIsOffline(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "agent.json")
-	_ = os.WriteFile(p, []byte(`{"id":"i","agentId":"a","workspaceId":"w","version":1,"digest":"d","createdBy":"u","createdAt":"now"}`), 0600)
+	fixture, err := os.ReadFile("../../packages/contracts/testdata/harness/agent-good.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bundle map[string]any
+	if err := json.Unmarshal(fixture, &bundle); err != nil {
+		t.Fatal(err)
+	}
+	version, _ := json.Marshal(bundle["version"])
+	_ = os.WriteFile(p, version, 0600)
 	out, errout := new(bytes.Buffer), new(bytes.Buffer)
 	app := New(out, errout, BuildInfo{})
 	app.agentHarness = func() (agentHarnessCommands, error) { t.Fatal("offline validation initialized API"); return nil, nil }
 	if code := app.Run([]string{"agent", "validate", "--file", p}); code != ExitSuccess || !strings.Contains(out.String(), "valid") {
 		t.Fatalf("code=%d out=%q err=%q", code, out, errout)
+	}
+}
+
+func TestAgentHarnessAPIErrorExitMapping(t *testing.T) {
+	for _, tc := range []struct {
+		code     string
+		wantExit int
+		wantCode string
+	}{{"access_expired", ExitUnavailable, "access_expired"}, {"session_revoked", ExitUnavailable, "session_revoked"}, {"device_revoked", ExitUnavailable, "device_revoked"}, {"unauthorized", ExitUnavailable, "unauthorized"}, {"permission_denied", ExitFailure, "permission_denied"}, {"", ExitFailure, "api_error"}} {
+		t.Run(tc.wantCode, func(t *testing.T) {
+			out, errout := new(bytes.Buffer), new(bytes.Buffer)
+			app := New(out, errout, BuildInfo{})
+			apiErr := &client.APIError{StatusCode: 401, Body: client.ErrorBody{Code: tc.code, Message: "denied"}}
+			if got := app.writeAgentHarnessError(OutputJSON, apiErr); got != tc.wantExit {
+				t.Fatalf("exit=%d want=%d", got, tc.wantExit)
+			}
+			if errout.Len() != 0 || !strings.Contains(out.String(), `"code":"`+tc.wantCode+`"`) || !strings.Contains(out.String(), fmt.Sprintf(`"exitCode":%d`, tc.wantExit)) {
+				t.Fatalf("out=%q err=%q", out, errout)
+			}
+		})
 	}
 }
 func TestAgentAndHarnessHelpAreWired(t *testing.T) {

@@ -65,6 +65,9 @@ func TestAgentHarnessClientRejectsInvalidIdentifiers(t *testing.T) {
 	if _, e := c.GetHarnessVersion(context.Background(), "t", ahWorkspace, ahAgent, "bad"); e == nil {
 		t.Fatal("invalid version accepted")
 	}
+	if _, e := c.GetAgent(context.Background(), "t", ahWorkspace, "00000000-0000-4000-8000-00000000000A"); e == nil {
+		t.Fatal("uppercase UUID accepted")
+	}
 	if _, e := c.ListAgents(context.Background(), "t", ahWorkspace, string(make([]byte, 129))); e == nil {
 		t.Fatal("oversize cursor accepted")
 	}
