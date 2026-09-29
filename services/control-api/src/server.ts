@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { renderAuthResult, renderOidcHandoff, sendHtml, type AuthMode } from "./auth-page.js";
 import { serveActivationPage } from "./activation-http.js";
 import { loadConfig } from "./config.js";
+import { browserCors, browserOrigins } from "./browser-cors.js";
 import { createDatabase, type Database } from "./db.js";
 import { HttpError, jsonBody, requireExactKeys, requiredSecret, requiredString, sendJson } from "./http.js";
 import { enforceLimit, remoteIdentity, TrustedProxyPolicy } from "./limits.js";
@@ -43,6 +44,7 @@ import { OidcClient, type OidcIdentity } from "./oidc.js";
 import { activationPublicKeyDigest, oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, sealActivationConfirmation, stateMatches, unsealActivationConfirmation } from "./oidc-state.js";
 
 const config = loadConfig();
+const allowedBrowserOrigins = browserOrigins(process.env.BROWSER_ORIGINS);
 const database = createDatabase(config.databaseUrl);
 const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -508,6 +510,7 @@ const server = createServer((request, response) => {
   const started = Date.now();
   const requestId = randomUUID();
   response.setHeader("x-request-id", requestId);
+  if (browserCors(request, response, allowedBrowserOrigins)) return;
   route(request, response).catch((error: unknown) => {
     const httpError = normalizeControlHttpError(error);
     if (!response.headersSent) {
