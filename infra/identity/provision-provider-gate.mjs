@@ -77,9 +77,17 @@ for (const candidate of tokenInventory.payload.result) {
     if (!removed.ok) fail("superseded provider gate token could not be revoked");
   }
 }
-tokenInventory = await listTokens();
-const retainedToken = tokenInventory.payload?.result?.[0];
-if (!tokenInventory.ok || Number(tokenInventory.payload?.pagination?.totalResult) !== 1 || tokenInventory.payload?.result?.length !== 1 || retainedToken?.id !== gateTokenId || retainedToken?.userId !== userId || Date.parse(retainedToken?.expirationDate) !== Date.parse(expiration)) fail("provider gate token rotation did not converge");
+// Token search is a projection: allow bounded read convergence after mutations.
+// Never mint another token or relax the exact inventory check while waiting.
+let converged = false;
+for (let attempt = 0; attempt < 6; attempt++) {
+  if (attempt) await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** (attempt - 1)));
+  tokenInventory = await listTokens();
+  const retainedToken = tokenInventory.payload?.result?.[0];
+  converged = tokenInventory.ok && Number(tokenInventory.payload?.pagination?.totalResult) === 1 && tokenInventory.payload?.result?.length === 1 && retainedToken?.id === gateTokenId && retainedToken?.userId === userId && Date.parse(retainedToken?.expirationDate) === Date.parse(expiration);
+  if (converged) break;
+}
+if (!converged) fail("provider gate token rotation did not converge");
 
 let sentinel = await sentinelOrganization(gateToken);
 if (!sentinel.ok) fail("authority sentinel inventory is unavailable");
