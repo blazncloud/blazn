@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "macos-lima-worker-adopt/v1",
-  "controlPlaneOrigin": "https://blazn.benpelo.com",
+  "controlPlaneOrigin": "https://api.blazn.frontro.com",
   "allowedClusterOrigins": [
     "https://192.168.0.108:16443"
   ],
