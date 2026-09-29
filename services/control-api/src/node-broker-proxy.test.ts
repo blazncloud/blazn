@@ -32,3 +32,14 @@ test("loopback proxy enforces frozen success and error body boundaries",async()=
   for(const fixture of cases){const server=createServer((_request,response)=>{response.writeHead(fixture.status,{"content-type":"application/json"});response.end(JSON.stringify(fixture.body));});await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(8081,"127.0.0.1",resolve);});try{await assert.rejects(new LoopbackNodeBrokerProxy().issue({},"join-key-1","x".repeat(86),new AbortController().signal),/JSON/);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}}
   const server=createServer((_request,response)=>{response.writeHead(503,{"content-type":"application/json"});response.end(JSON.stringify({code:"node_broker_unavailable",message:"x".repeat(1024),requestId:"r".repeat(128)}));});await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(8081,"127.0.0.1",resolve);});try{assert.equal((await new LoopbackNodeBrokerProxy().issue({},"join-key-1","x".repeat(86),new AbortController().signal)).status,503);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
 });
+
+test("private broker origins require a caller key and send it on every call",async()=>{
+  const key="k".repeat(43);const seen:(string|undefined)[]=[];
+  const server=createServer((request,response)=>{seen.push(request.headers["x-blazn-broker-caller"] as string|undefined);response.writeHead(200,{"content-type":"application/json"});response.end('{"status":"ok"}');});
+  await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(18089,"127.0.0.1",resolve);});
+  try{await new LoopbackNodeBrokerProxy(1000,{origin:"http://127.0.0.1:18089/",callerKey:key}).health(new AbortController().signal);assert.deepEqual(seen,[key]);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
+  assert.throws(()=>new LoopbackNodeBrokerProxy(1000,{origin:"http://10.1.2.3:8081/"}),/caller key is required/);
+  assert.doesNotThrow(()=>new LoopbackNodeBrokerProxy(1000,{origin:"http://10.1.2.3:8081/",callerKey:key}));
+  for(const origin of ["https://10.1.2.3:8081/","http://10.1.2.3/","http://8.8.8.8:8081/","http://broker.internal:8081/","http://u:p@10.1.2.3:8081/","http://10.1.2.3:8081/x","http://010.1.2.3:8081/"])assert.throws(()=>new LoopbackNodeBrokerProxy(1000,{origin,callerKey:key}),/BLAZN_NODE_BROKER_URL is invalid/,origin);
+  assert.throws(()=>new LoopbackNodeBrokerProxy(1000,{origin:"http://10.1.2.3:8081/",callerKey:"short"}),/caller key is invalid/);
+});
