@@ -416,7 +416,23 @@ func safeKubernetesOwner(info os.FileInfo) bool {
 }
 
 func safeKubernetesDirectory(info os.FileInfo) bool {
-	if info == nil || !info.IsDir() || info.Mode().Perm()&0o002 != 0 || !safeKubernetesOwner(info) {
+	return safeKubernetesDirectoryAt(info, false)
+}
+
+// safeKubernetesVolumeRoot additionally accepts a world-writable volume root
+// when the sticky bit is set. Some kubelets (observed on MicroK8s 1.35) create
+// projected-volume roots as root-owned mode 3777. The sticky bit prevents any
+// other user from renaming or removing the root-owned ..data and token links,
+// and every entry below the root is still held to the strict rules.
+func safeKubernetesVolumeRoot(info os.FileInfo) bool {
+	return safeKubernetesDirectoryAt(info, true)
+}
+
+func safeKubernetesDirectoryAt(info os.FileInfo, volumeRoot bool) bool {
+	if info == nil || !info.IsDir() || !safeKubernetesOwner(info) {
+		return false
+	}
+	if info.Mode().Perm()&0o002 != 0 && !(volumeRoot && info.Mode()&os.ModeSticky != 0) {
 		return false
 	}
 	if info.Mode().Perm()&0o020 == 0 {
@@ -451,9 +467,9 @@ func inspectKubernetesDirectoryChain(root, target string, lstat func(string) (os
 		}
 	}
 	identities := make([]kubernetesDirectoryIdentity, 0, len(paths))
-	for _, directory := range paths {
+	for index, directory := range paths {
 		info, err := lstat(directory)
-		if err != nil || !safeKubernetesDirectory(info) {
+		if err != nil || !safeKubernetesDirectoryAt(info, index == 0) {
 			return nil, errors.New("Kubernetes credential directory is unsafe")
 		}
 		identities = append(identities, kubernetesDirectoryIdentity{path: directory, info: info})
@@ -465,9 +481,9 @@ func stableKubernetesDirectoryChain(identities []kubernetesDirectoryIdentity, ls
 	if len(identities) == 0 || lstat == nil {
 		return false
 	}
-	for _, identity := range identities {
+	for index, identity := range identities {
 		current, err := lstat(identity.path)
-		if err != nil || !safeKubernetesDirectory(current) || !os.SameFile(identity.info, current) {
+		if err != nil || !safeKubernetesDirectoryAt(current, index == 0) || !os.SameFile(identity.info, current) {
 			return false
 		}
 	}

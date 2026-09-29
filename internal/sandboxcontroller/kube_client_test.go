@@ -439,3 +439,39 @@ func tlsKubernetesFixture(t *testing.T, server *httptest.Server) (KubernetesConf
 	}
 	return KubernetesConfig{BaseURL: "https://" + parsed.Host, CAFile: caFile, TokenFile: filepath.Join(directory, "token"), HelperImage: testSandboxIOImage}, rotate
 }
+
+func TestProjectedTokenAcceptsStickyWorldWritableVolumeRootOnly(t *testing.T) {
+	build := func(t *testing.T, rootMode os.FileMode, versionMode os.FileMode) string {
+		directory := t.TempDir()
+		version := filepath.Join(directory, "..2026_09_29_00_00_00")
+		if err := os.Mkdir(version, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(version, "token"), []byte("sticky-projected-token\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Base(version), filepath.Join(directory, "..data")); err != nil {
+			t.Fatal(err)
+		}
+		token := filepath.Join(directory, "token")
+		if err := os.Symlink("..data/token", token); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(version, versionMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(directory, rootMode); err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	if value, err := readProjectedServiceAccountToken(build(t, 0o777|os.ModeSticky, 0o750)); err != nil || value != "sticky-projected-token" {
+		t.Fatalf("sticky world-writable projection root rejected: value=%q err=%v", value, err)
+	}
+	if _, err := readProjectedServiceAccountToken(build(t, 0o777, 0o750)); err == nil {
+		t.Fatal("non-sticky world-writable projection root was accepted")
+	}
+	if _, err := readProjectedServiceAccountToken(build(t, 0o777|os.ModeSticky, 0o777|os.ModeSticky)); err == nil {
+		t.Fatal("sticky world-writable directory below the volume root was accepted")
+	}
+}
