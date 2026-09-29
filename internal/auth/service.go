@@ -21,7 +21,7 @@ import (
 	"github.com/blazncloud/blazn/internal/client"
 )
 
-const defaultAPIURL = "https://blazn.benpelo.com"
+const defaultAPIURL = "https://api.blazn.frontro.com"
 
 const (
 	maxDeviceAuthorizationLifetime = 15 * time.Minute

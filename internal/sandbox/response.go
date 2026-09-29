@@ -14,12 +14,14 @@ import (
 var (
 	uuidPattern      = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	eventTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,95}$`)
-	grantEndpoint    = regexp.MustCompile(`^https://blazn\.benpelo\.com/v1/sandbox-access-grants/`)
+	grantEndpoint    = regexp.MustCompile(`^https://[^/?#@]+/v1/sandbox-access-grants/`)
 )
 
 func validUUID(value string) bool { return uuidPattern.MatchString(value) }
 
-func validateGrant(created client.SandboxAccessGrantCreated, sandboxID string, kind client.SandboxGrantKind, now time.Time) error {
+// validateGrant checks the grant binding. When origin is set, the returned
+// endpoint must belong to the same API origin the CLI is talking to.
+func validateGrant(created client.SandboxAccessGrantCreated, sandboxID string, kind client.SandboxGrantKind, now time.Time, origin string) error {
 	grant := created.Grant
 	wantScope := map[client.SandboxGrantKind]string{
 		client.SandboxGrantExec: "sandbox.exec", client.SandboxGrantUpload: "sandbox.upload", client.SandboxGrantDownload: "sandbox.download",
@@ -41,7 +43,7 @@ func validateGrant(created client.SandboxAccessGrantCreated, sandboxID string, k
 	if len(created.AccessToken) < 43 || len(created.AccessToken) > 256 || strings.ContainsAny(created.AccessToken, "\r\n\t ") {
 		return errors.New("sandbox access grant token is invalid")
 	}
-	if !grantEndpoint.MatchString(created.Endpoint) {
+	if !grantEndpoint.MatchString(created.Endpoint) || (origin != "" && !strings.HasPrefix(created.Endpoint, strings.TrimRight(origin, "/")+"/v1/sandbox-access-grants/")) {
 		return errors.New("sandbox access grant endpoint is invalid")
 	}
 	return nil
