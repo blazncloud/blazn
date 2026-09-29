@@ -68,9 +68,13 @@ function zitadelConfig(): Config["zitadel"] {
 	const reviewedRelease = process.env.ZITADEL_REVIEWED_RELEASE?.trim() ?? "";
 	const policyDigest = process.env.ZITADEL_REVIEWED_ASSURANCE_POLICY_DIGEST?.trim() ?? "";
 	const acrPolicy = process.env.ZITADEL_REVIEWED_ACR_POLICY?.trim() ?? "";
-	const acceptedAmrSets = (process.env.ZITADEL_REVIEWED_MFA_AMR_SETS ?? "").split(";").filter(Boolean).map((set) => set.split("+").map((value) => value.trim().toLowerCase()).filter(Boolean));
+	const acceptedAmrSets = (process.env.ZITADEL_REVIEWED_MFA_AMR_SETS ?? "").split(";").map((set) => set.split("+").map((value) => value.trim().toLowerCase()));
 	const reviewedAmrSets = [["pwd", "mfa", "otp"], ["user", "mfa"]];
-	const matchesReviewedAmrSets = acceptedAmrSets.length === reviewedAmrSets.length && acceptedAmrSets.every((set, index) => set.length === reviewedAmrSets[index]!.length && set.every((value, valueIndex) => value === reviewedAmrSets[index]![valueIndex]));
+	// A deployment may enable only independently qualified alternatives. Never
+	// accept arbitrary combinations, weaker subsets of a method set, or duplicates.
+	const matchesReviewedAmrSets = acceptedAmrSets.length > 0
+		&& new Set(acceptedAmrSets.map((set) => set.join("+"))).size === acceptedAmrSets.length
+		&& acceptedAmrSets.every((set) => reviewedAmrSets.some((known) => set.length === known.length && set.every((value, index) => value === known[index])));
 	if (reviewedRelease !== "v4.17.1" || !/^sha256:[0-9a-f]{64}$/.test(policyDigest) || acrPolicy !== "zitadel-v4.17.1-empty" || !matchesReviewedAmrSets) throw new Error("reviewed ZITADEL v4.17.1 empty-ACR/MFA policy configuration is required");
 	return { issuerUrl: issuer.href.replace(/\/$/, ""), clientId, clientSecret: valueOrFile("ZITADEL_CLIENT_SECRET"), cookieKey: valueOrFile("OIDC_COOKIE_KEY"), assurancePolicy: { provider: "zitadel", reviewedRelease, policyDigest, acrPolicy, acceptedAmrSets } };
 }

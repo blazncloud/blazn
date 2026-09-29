@@ -14,6 +14,7 @@ export interface PendingActivation {
 export interface ActivationHttpDependencies {
   lookup(code: string): Promise<PendingActivation | undefined>;
   oidcEnabled: boolean;
+  emailEnabled?: boolean;
   publicKeyDigest(publicKey: string): string;
   activationConfirmation?(input: { authorizationId: string; userCode: string; mode: AuthMode; publicKeyDigest: string }): string;
 }
@@ -47,5 +48,5 @@ export async function serveActivationPage(response: ServerResponse, url: URL, de
   const activationConfirmation = dependencies.oidcEnabled
     ? dependencies.activationConfirmation?.({ authorizationId: authorization.id, userCode: code, mode, publicKeyDigest })
     : undefined;
-  sendHtml(response, 200, renderActivationPage({ code, deviceName: authorization.deviceName, platform: authorization.platform, mode, oidcEnabled: dependencies.oidcEnabled, publicKeyDigest, ...(activationConfirmation ? { activationConfirmation } : {}) }));
+  sendHtml(response, 200, renderActivationPage({ code, deviceName: authorization.deviceName, platform: authorization.platform, mode, oidcEnabled: dependencies.oidcEnabled, emailEnabled: dependencies.emailEnabled ?? false, publicKeyDigest, ...(activationConfirmation ? { activationConfirmation } : {}) }));
 }

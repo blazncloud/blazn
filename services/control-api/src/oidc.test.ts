@@ -75,3 +75,12 @@ test("OIDC discovery streaming is cancelled at the hard byte cap", async () => {
 		assert.equal(cancelled, true);
 	} finally { globalThis.fetch = originalFetch; }
 });
+
+test("TOTP-only policy rejects the unconfigured WebAuthn alternative and non-string ACR", () => {
+  const scoped = { ...verification, assurancePolicy: { ...verification.assurancePolicy, acceptedAmrSets: [["pwd", "mfa", "otp"]] } };
+  assert.doesNotThrow(() => verifyOidcIdToken(token(), scoped));
+  assert.throws(() => verifyOidcIdToken(token({ amr: ["user", "mfa"] }), scoped), /assurance/);
+  for (const acr of [null, false, 0]) {
+    assert.throws(() => verifyOidcIdToken(token({ acr }), scoped), /assurance/);
+  }
+});

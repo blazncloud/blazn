@@ -25,6 +25,27 @@ test("PostgreSQL workspace isolation, idempotency, invitation race, owner safety
     const other = await service.createWorkspace(rival, "create-key-0002", { name: "Other", slug: "other" });
     await assert.rejects(service.getWorkspace(member, other.workspace.id), isCode("workspace_not_found"));
 
+    const revoked = await service.createInvitation(owner, created.workspace.id, "invite-revoked-0001", { role: "viewer", expiresIn: 600 });
+    await service.revokeInvitation(owner, created.workspace.id, revoked.invitation.id, revoked.invitation.version, "revoke-invite-0001");
+    await assert.rejects(service.acceptInvitation(member, "accept-revoked-0001", revoked.inviteToken), isCode("invitation_revoked"));
+    const expired = await service.createInvitation(owner, created.workspace.id, "invite-expired-0001", { role: "operator", expiresIn: 600 });
+    await admin.query("UPDATE workspace_invitations SET created_at=now()-interval '20 minutes', expires_at=now()-interval '10 minutes' WHERE id=$1", [expired.invitation.id]);
+    await assert.rejects(service.acceptInvitation(member, "accept-expired-0001", expired.inviteToken), isCode("invitation_expired"));
+    await assert.rejects(service.getWorkspace(member, created.workspace.id), isCode("workspace_not_found"));
+
+    // Initial ownership is deliberately immutable. Concurrent leave/removal/
+    // demotion must all fail, rather than implementing an ownership transfer.
+    const ownerResults = await Promise.allSettled([
+      service.leaveWorkspace(owner, created.workspace.id, 1, "owner-leave-0001"),
+      service.removeMember(owner, created.workspace.id, owner.userId, 1, "owner-remove-0001"),
+      service.updateMember(owner, created.workspace.id, owner.userId, "owner-demote-0001", { role: "administrator", expectedVersion: 1 }),
+    ]);
+    for (const result of ownerResults) {
+      assert.equal(result.status, "rejected");
+      if (result.status === "rejected") assert.ok(isCode("last_owner")(result.reason));
+    }
+    assert.equal((await service.getWorkspace(owner, created.workspace.id)).workspace.currentUserRole, "owner");
+
     const invite = await service.createInvitation(owner, created.workspace.id, "invite-key-0001", { role: "member", expiresIn: 600 });
     const inviteReplay = await service.createInvitation(owner, created.workspace.id, "invite-key-0001", { role: "member", expiresIn: 600 });
     assert.equal(inviteReplay.inviteToken, invite.inviteToken);

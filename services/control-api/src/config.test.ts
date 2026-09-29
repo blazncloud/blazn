@@ -55,8 +55,26 @@ test("ZITADEL assurance configuration rejects release, ACR, and MFA drift", () =
     { ZITADEL_REVIEWED_RELEASE: "v4.17.2" },
     { ZITADEL_REVIEWED_ACR_POLICY: "accept-empty" },
     { ZITADEL_REVIEWED_MFA_AMR_SETS: "pwd+otp;user" },
-    { ZITADEL_REVIEWED_MFA_AMR_SETS: "pwd+mfa+otp" },
   ]) {
     withIdentityEnvironment(overrides, () => assert.throws(() => loadConfig(), /v4\.17\.1 empty-ACR\/MFA policy/));
+  }
+});
+
+test("deployment can select a nonempty subset of fixed reviewed MFA alternatives", () => {
+  for (const [configured, expected] of [
+    ["pwd+mfa+otp", [["pwd", "mfa", "otp"]]],
+    ["user+mfa", [["user", "mfa"]]],
+  ] as const) {
+    withIdentityEnvironment({ ZITADEL_REVIEWED_MFA_AMR_SETS: configured }, () => {
+      assert.deepEqual(loadConfig().zitadel?.assurancePolicy.acceptedAmrSets, expected);
+    });
+  }
+});
+
+test("MFA selection rejects empty, weak, unknown, duplicate and malformed alternatives", () => {
+  for (const configured of ["", ";", "mfa", "pwd+otp", "pwd+mfa", "user", "password+mfa+otp", "pwd+mfa+otp;unknown+mfa", "pwd+mfa+otp;pwd+mfa+otp", "user+mfa;user+mfa", "pwd+mfa+otp;", ";user+mfa", "pwd++mfa+otp", "pwd+mfa+otp+otp"]) {
+    withIdentityEnvironment({ ZITADEL_REVIEWED_MFA_AMR_SETS: configured }, () => {
+      assert.throws(() => loadConfig(), /v4\.17\.1 empty-ACR\/MFA policy/);
+    });
   }
 });

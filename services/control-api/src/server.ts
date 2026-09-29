@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { renderAuthResult, renderOidcHandoff, sendHtml, type AuthMode } from "./auth-page.js";
+import { renderAuthResult, renderEmailCodePage, renderOidcHandoff, sendHtml, type AuthMode } from "./auth-page.js";
+import { displayNameFromEmail, EMAIL_CODE_MAX_ATTEMPTS, EMAIL_CODE_TTL_SECONDS, emailCodeHash, emailCodeMatches, emailLoginFromEnvironment, generateEmailCode, normalizeEmail, normalizeEmailCode } from "./email-login.js";
 import { serveActivationPage } from "./activation-http.js";
 import { loadConfig } from "./config.js";
+import { browserCors, browserOrigins } from "./browser-cors.js";
 import { createDatabase, type Database } from "./db.js";
 import { HttpError, jsonBody, requireExactKeys, requiredSecret, requiredString, sendJson } from "./http.js";
 import { enforceLimit, remoteIdentity, TrustedProxyPolicy } from "./limits.js";
-import { randomToken, sessionRevokePayload, tokenHash, userCode, verifyDeviceProof, verifyPassword } from "./security.js";
+import { randomToken, sessionRevokePayload, tokenHash, userCode, verifyDeviceProof } from "./security.js";
 import { sessionAccessError } from "./session-state.js";
 import { verifyBucket } from "./s3.js";
 import { readInvitationKey } from "./workspace-crypto.js";
@@ -43,11 +45,13 @@ import { OidcClient, type OidcIdentity } from "./oidc.js";
 import { activationPublicKeyDigest, oidcCookieKey, oidcTransactionCookie, oidcTransactionFromRequest, sealActivationConfirmation, stateMatches, unsealActivationConfirmation } from "./oidc-state.js";
 
 const config = loadConfig();
+const allowedBrowserOrigins = browserOrigins(process.env.BROWSER_ORIGINS);
 const database = createDatabase(config.databaseUrl);
 const activeStreams = new Map<string, Set<ServerResponse>>();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const trustedProxies = new TrustedProxyPolicy(config.trustedProxyCidrs, config.trustedProxyHops);
 const oidcClient = config.zitadel ? new OidcClient({ issuerUrl: config.zitadel.issuerUrl, clientId: config.zitadel.clientId, clientSecret: config.zitadel.clientSecret, callbackUrl: `${config.publicUrl}/v1/auth/oidc/callback`, assurancePolicy: config.zitadel.assurancePolicy }) : undefined;
+const emailLogin = emailLoginFromEnvironment();
 const oidcKey = config.zitadel ? oidcCookieKey(config.zitadel.cookieKey) : undefined;
 const workspaceRouter = new WorkspaceHttpRouter(new WorkspaceService(new PgWorkspaceStore(database), readInvitationKey));
 const projectRouter = new ProjectHttpRouter(new ProjectService(new PgProjectStore(database)));
@@ -248,49 +252,105 @@ async function formBody(request: IncomingMessage, limit = 64 * 1024): Promise<Re
   return Object.fromEntries(params.entries());
 }
 
-async function approveDevice(request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const contentType = request.headers["content-type"] ?? "";
-  const body = contentType.startsWith("application/x-www-form-urlencoded") ? await formBody(request) : await jsonBody(request);
-  requireExactKeys(body, ["user_code", "email", "password"]);
+function activationMode(value: unknown): AuthMode {
+  return value === "signup" ? "signup" : "signin";
+}
+
+async function pendingEmailAuthorization(code: string): Promise<{ id: string; device_name: string; platform: string } | undefined> {
+  const result = await database.query<{ id: string; device_name: string; platform: string }>("SELECT id, device_name, platform FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL", [code]);
+  return result.rows[0];
+}
+
+async function sendEmailCode(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (!emailLogin) throw new HttpError("not_found", "email sign-in is not configured");
+  const body = await formBody(request);
+  requireExactKeys(body, ["user_code", "email", "mode"]);
   const code = requiredString(body, "user_code", 16).toUpperCase();
-  const email = requiredString(body, "email", 254).toLowerCase();
-  const password = requiredSecret(body, "password", 1024);
+  const mode = activationMode(body.mode);
+  const email = normalizeEmail(requiredString(body, "email", 254));
+  const pending = await pendingEmailAuthorization(code);
+  if (!pending) {
+    sendHtml(response, 404, renderAuthResult("Activation code unavailable", "This device request expired or was already used. Run blazn auth login again.", false));
+    return;
+  }
+  if (!email) {
+    sendHtml(response, 400, renderAuthResult("Enter a valid email", "That email address could not be used.", false));
+    return;
+  }
   const callerIdentity = remoteIdentity(request, trustedProxies, config.trustedProxySecret);
-  await enforceLimit(database, "device-approve-ip", callerIdentity, 20, 15 * 60);
-  const liveAuthorization = await database.query<{ id: string }>("SELECT id FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL", [code]);
-  const live = liveAuthorization.rows[0];
-  if (!live) throw new HttpError("authorization_not_found", "authorization code is invalid, expired, or already used");
-  const accountLimitIdentity = `${live.id}:${callerIdentity}:${email}`;
-  await enforceLimit(database, "device-approve-account", accountLimitIdentity, 10, 15 * 60);
+  await enforceLimit(database, "email-code-ip", callerIdentity, 10, 15 * 60);
+  await enforceLimit(database, "email-code-address", email, 5, 15 * 60);
+  const loginCode = generateEmailCode();
+  await database.query("DELETE FROM email_login_codes WHERE expires_at < now() - interval '1 hour'");
+  await database.query("UPDATE email_login_codes SET consumed_at = now() WHERE device_authorization_id = $1 AND consumed_at IS NULL", [pending.id]);
+  await database.query("INSERT INTO email_login_codes(id, device_authorization_id, email, code_hash, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))", [randomUUID(), pending.id, email, emailCodeHash(emailLogin.codeKey, pending.id, email, loginCode), EMAIL_CODE_TTL_SECONDS]);
+  try {
+    await emailLogin.sender.sendLoginCode({ to: email, code: loginCode, deviceName: pending.device_name });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "email_code_delivery_failed", message: error instanceof Error ? error.message : "unknown" }));
+    await database.query("UPDATE email_login_codes SET consumed_at = now() WHERE device_authorization_id = $1 AND consumed_at IS NULL", [pending.id]);
+    sendHtml(response, 502, renderAuthResult("We couldn't send the email", "The sign-in code could not be delivered. Wait a moment and try again.", false));
+    return;
+  }
+  sendHtml(response, 200, renderEmailCodePage({ code, email, deviceName: pending.device_name, platform: pending.platform, mode }));
+}
+
+async function verifyEmailCode(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  if (!emailLogin) throw new HttpError("not_found", "email sign-in is not configured");
+  const body = await formBody(request);
+  requireExactKeys(body, ["user_code", "email", "mode", "code"]);
+  const code = requiredString(body, "user_code", 16).toUpperCase();
+  const mode = activationMode(body.mode);
+  const email = normalizeEmail(requiredString(body, "email", 254));
+  const loginCode = normalizeEmailCode(requiredString(body, "code", 16));
+  await enforceLimit(database, "email-verify-ip", remoteIdentity(request, trustedProxies, config.trustedProxySecret), 30, 15 * 60);
   const client = await database.connect();
+  let failure: string | undefined;
+  let created = false;
+  let deviceName = "";
+  let platform = "";
   try {
     await client.query("BEGIN");
-    const authorization = await client.query<{ id: string }>("SELECT id FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL FOR UPDATE", [code]);
+    const authorization = await client.query<{ id: string; device_name: string; platform: string }>("SELECT id, device_name, platform FROM device_authorizations WHERE user_code = $1 AND expires_at > now() AND approved_user_id IS NULL AND consumed_at IS NULL FOR UPDATE", [code]);
     const pending = authorization.rows[0];
-    if (!pending) throw new HttpError("authorization_not_found", "authorization code is invalid, expired, or already used");
-    const user = await client.query<{ id: string; password_salt: string | null; password_hash: string | null }>("SELECT id, password_salt, password_hash FROM users WHERE email = $1", [email]);
-    let userId: string;
-    if (user.rows[0]?.password_salt && user.rows[0].password_hash) {
-      if (!(await verifyPassword(password, user.rows[0].password_salt, user.rows[0].password_hash))) throw new HttpError("identity_rejected", "identity verification failed");
-      userId = user.rows[0].id;
-    } else throw new HttpError("identity_rejected", "identity verification failed");
-    await client.query("UPDATE device_authorizations SET approved_user_id = $1 WHERE id = $2", [userId, pending.id]);
+    if (!pending || !email) {
+      await client.query("ROLLBACK");
+      sendHtml(response, 404, renderAuthResult("Activation code unavailable", "This device request expired or was already used. Run blazn auth login again.", false));
+      return;
+    }
+    deviceName = pending.device_name;
+    platform = pending.platform;
+    const stored = await client.query<{ id: string; code_hash: string; attempts: number }>("SELECT id, code_hash, attempts FROM email_login_codes WHERE device_authorization_id = $1 AND email = $2 AND consumed_at IS NULL AND expires_at > now() ORDER BY created_at DESC LIMIT 1 FOR UPDATE", [pending.id, email]);
+    const row = stored.rows[0];
+    if (!row) failure = "This code expired. Send a new code.";
+    else if (row.attempts >= EMAIL_CODE_MAX_ATTEMPTS) failure = "Too many attempts. Send a new code.";
+    else if (!loginCode || !emailCodeMatches(row.code_hash, emailCodeHash(emailLogin.codeKey, pending.id, email, loginCode))) {
+      await client.query("UPDATE email_login_codes SET attempts = attempts + 1 WHERE id = $1", [row.id]);
+      failure = row.attempts + 1 >= EMAIL_CODE_MAX_ATTEMPTS ? "Too many attempts. Send a new code." : "The code is incorrect. Check the email and try again.";
+    } else {
+      await client.query("UPDATE email_login_codes SET consumed_at = now(), attempts = attempts + 1 WHERE id = $1", [row.id]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`email:${email}`]);
+      const user = await client.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [email]);
+      let userId = user.rows[0]?.id;
+      if (!userId) {
+        userId = randomUUID();
+        await client.query("INSERT INTO users(id, email, display_name, email_verified_at) VALUES ($1, $2, $3, now())", [userId, email, displayNameFromEmail(email)]);
+        created = true;
+      }
+      await client.query("UPDATE device_authorizations SET approved_user_id = $1 WHERE id = $2", [userId, pending.id]);
+    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
-    if (contentType.startsWith("application/x-www-form-urlencoded")) {
-      sendHtml(response, 403, renderAuthResult("Sign-in was rejected", "The email or password could not be verified. No device was authorized.", false));
-      return;
-    }
     throw error;
   } finally {
     client.release();
   }
-  if (contentType.startsWith("application/x-www-form-urlencoded")) {
-    sendHtml(response, 200, renderAuthResult("Device authorized", "Your existing Blazn account approved this CLI.", true));
-  } else {
-    sendJson(response, 200, { status: "approved" });
+  if (failure) {
+    sendHtml(response, 400, renderEmailCodePage({ code, email: email ?? "", deviceName, platform, mode, error: failure }));
+    return;
   }
+  sendHtml(response, 200, renderAuthResult(created ? "Account created" : "Device authorized", created ? "Your Blazn account is ready and this CLI is signed in." : "You're signed in. This CLI is now authorized.", true));
 }
 
 async function exchangeDeviceCode(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -399,13 +459,15 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return device ? { id: device.id, deviceName: device.device_name, platform: device.platform, publicKey: device.public_key } : undefined;
     },
     oidcEnabled: Boolean(oidcClient),
+    emailEnabled: Boolean(emailLogin),
     publicKeyDigest: activationPublicKeyDigest,
     ...(oidcClient && oidcKey ? { activationConfirmation: ({ authorizationId, userCode: code, mode, publicKeyDigest }) => sealActivationConfirmation(oidcKey, { authorizationId, userCode: code, mode, publicKeyDigest, issuedAt: Date.now() }) } : {}),
   });
 	if (request.method === "POST" && url.pathname === "/v1/auth/oidc/start") return startOidc(request, response);
   if (request.method === "GET" && url.pathname === "/v1/auth/oidc/callback") return oidcCallback(request, response, url);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/authorizations") return startDeviceAuthorization(request, response);
-  if (request.method === "POST" && url.pathname === "/v1/auth/device/approve") return approveDevice(request, response);
+  if (request.method === "POST" && url.pathname === "/v1/auth/device/email-code") return sendEmailCode(request, response);
+  if (request.method === "POST" && url.pathname === "/v1/auth/device/email-verify") return verifyEmailCode(request, response);
   if (request.method === "POST" && url.pathname === "/v1/auth/device/sessions") return exchangeDeviceCode(request, response);
   if (request.method === "POST" && url.pathname === "/v1/auth/sessions/refresh") return refreshSession(request, response);
   if (request.method === "POST" && url.pathname === "/v1/auth/sessions/revoke") return revokeSessionWithProof(request, response);
@@ -499,7 +561,7 @@ async function route(request: IncomingMessage, response: ServerResponse): Promis
       return { userId: current.userId, email: current.email, displayName: current.displayName };
     });
   }
-  const known = new Set(["/healthz", "/activate", "/v1/auth/oidc/start", "/v1/auth/oidc/callback", "/v1/auth/device/authorizations", "/v1/auth/device/approve", "/v1/auth/device/sessions", "/v1/auth/sessions/refresh", "/v1/auth/sessions/revoke", "/v1/auth/me", "/v1/auth/session", "/v1/auth/devices", "/v1/events"]);
+  const known = new Set(["/healthz", "/activate", "/v1/auth/oidc/start", "/v1/auth/oidc/callback", "/v1/auth/device/authorizations", "/v1/auth/device/email-code", "/v1/auth/device/email-verify", "/v1/auth/device/sessions", "/v1/auth/sessions/refresh", "/v1/auth/sessions/revoke", "/v1/auth/me", "/v1/auth/session", "/v1/auth/devices", "/v1/events"]);
   if (known.has(url.pathname) || deviceMatch) throw new HttpError("method_not_allowed", "method is not allowed for this route");
   throw new HttpError("not_found", "route not found");
 }
@@ -508,6 +570,7 @@ const server = createServer((request, response) => {
   const started = Date.now();
   const requestId = randomUUID();
   response.setHeader("x-request-id", requestId);
+  if (browserCors(request, response, allowedBrowserOrigins)) return;
   route(request, response).catch((error: unknown) => {
     const httpError = normalizeControlHttpError(error);
     if (!response.headersSent) {

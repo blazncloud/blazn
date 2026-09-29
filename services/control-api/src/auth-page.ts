@@ -8,6 +8,7 @@ export interface ActivationPageInput {
   platform: string;
   mode: AuthMode;
   oidcEnabled: boolean;
+  emailEnabled?: boolean;
   activationConfirmation?: string;
   publicKeyDigest: string;
 }
@@ -20,7 +21,17 @@ function flame(): string {
   return `<svg aria-hidden="true" viewBox="0 0 1024 1024"><rect x="64" y="64" width="896" height="896" rx="200" fill="#101010"/><rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="rgba(255,255,255,.13)" stroke-width="8"/><svg x="294" y="212" width="436" height="600" viewBox="120 90 160 220"><g transform="translate(0 400) scale(.1 -.1)" fill="#f97316"><path d="M1892 3003c-23-20-529-827-572-913-168-334-58-750 255-963 408-278 983-83 1140 386 70 212 46 440-67 632-52 87-173 208-258 257-98 57-106 52-234-156-112-181-112-200-2-297 139-122 123-328-31-412-175-94-373 22-373 218 0 37 8 75 19 100 10 22 107 182 216 355 229 366 228 364 219 393-14 46-198 383-218 399-27 23-68 23-94 1z"/></g></svg></svg>`;
 }
 
+function emailForm(input: ActivationPageInput): string {
+  const label = input.mode === "signup" ? "Create account with email" : "Continue with email";
+  return `<form method="post" action="/v1/auth/device/email-code"><input type="hidden" name="user_code" value="${escapeHtml(input.code)}"><input type="hidden" name="mode" value="${input.mode}"><label class="field">Email<input name="email" type="email" autocomplete="email" inputmode="email" maxlength="254" placeholder="you@company.com" required autofocus></label><button class="primary" type="submit">${label}</button></form>`;
+}
+
 function identityButton(input: ActivationPageInput): string {
+  if (input.emailEnabled) return input.oidcEnabled ? `${emailForm(input)}<div class="divider">or</div>${oidcButton(input)}` : emailForm(input);
+  return oidcButton(input);
+}
+
+function oidcButton(input: ActivationPageInput): string {
   if (!input.oidcEnabled) return `<div class="notice"><strong>Account creation is not enabled yet.</strong><span>The self-hosted Blazn identity service must be configured by an administrator.</span></div>`;
 	if (!input.activationConfirmation) throw new Error("OIDC activation confirmation is required");
   const label = input.mode === "signup" ? "Create a secure account" : "Continue securely";
@@ -38,10 +49,26 @@ function document(title: string, body: string): string {
 export function renderActivationPage(input: ActivationPageInput): string {
   const signin = input.mode === "signin";
   const tabBase = `/activate?user_code=${encodeURIComponent(input.code)}`;
-  const legacy = signin ? `<form method="post" action="/v1/auth/device/approve"><input type="hidden" name="user_code" value="${escapeHtml(input.code)}"><label class="field">Email<input name="email" type="email" autocomplete="username" required></label><label class="field">Password<input name="password" type="password" autocomplete="current-password" required></label><button class="primary">Authorize this device</button></form><div class="divider">or</div>` : "";
   const heading = signin ? "Welcome back" : "Create your Blazn account";
-  const lede = signin ? "Sign in to approve this CLI without sharing credentials with the device." : "Create a verified identity in Blazn's self-hosted authentication service. Multi-factor authentication is required.";
-  return document("Authorize Blazn", `<div class="shell"><section class="story"><div class="brand">${flame()}<span>Blazn</span></div><div class="hero"><div class="eyebrow">Your AI workforce, one command away</div><h1>Build with agents.<br>Keep control.</h1><p>Securely connect this machine to the workspace where your models, tools, environments, and team operate together.</p></div><div class="proof"><span>Device-bound sessions</span><span>Verified identities</span><span>MFA enforced</span></div></section><main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><div class="device"><strong>${escapeHtml(input.deviceName)}</strong><span>${escapeHtml(input.platform)} · key ${escapeHtml(input.publicKeyDigest.slice(7, 19))}</span><div class="code">${escapeHtml(input.code)}</div></div><nav class="tabs" aria-label="Account access"><a class="tab ${signin ? "active" : ""}" href="${tabBase}&mode=signin">Sign in</a><a class="tab ${signin ? "" : "active"}" href="${tabBase}&mode=signup">Sign up</a></nav><h2>${heading}</h2><p class="lede">${lede}</p>${legacy}${identityButton(input)}<p class="terms">By continuing, you explicitly approve the device and public-key fingerprint shown above.</p></div></main></div>`);
+  const lede = input.emailEnabled
+    ? (signin ? "Enter your email and we'll send you a one-time code. No password needed." : "Enter your email and we'll send you a one-time code to create your account.")
+    : (signin ? "Sign in to approve this CLI without sharing credentials with the device." : "Create a verified identity in Blazn's self-hosted authentication service. Multi-factor authentication is required.");
+  return document("Authorize Blazn", `<div class="shell"><section class="story"><div class="brand">${flame()}<span>Blazn</span></div><div class="hero"><div class="eyebrow">Your AI workforce, one command away</div><h1>Build with agents.<br>Keep control.</h1><p>Securely connect this machine to the workspace where your models, tools, environments, and team operate together.</p></div><div class="proof"><span>Device-bound sessions</span><span>Verified identities</span><span>${input.emailEnabled ? "Passwordless email codes" : "MFA enforced"}</span></div></section><main class="panel"><div class="card"><div class="mobile-brand">${flame()}<span>Blazn</span></div><div class="device"><strong>${escapeHtml(input.deviceName)}</strong><span>${escapeHtml(input.platform)} · key ${escapeHtml(input.publicKeyDigest.slice(7, 19))}</span><div class="code">${escapeHtml(input.code)}</div></div><nav class="tabs" aria-label="Account access"><a class="tab ${signin ? "active" : ""}" href="${tabBase}&mode=signin">Sign in</a><a class="tab ${signin ? "" : "active"}" href="${tabBase}&mode=signup">Sign up</a></nav><h2>${heading}</h2><p class="lede">${lede}</p>${identityButton(input)}<p class="terms">By continuing, you explicitly approve the device and public-key fingerprint shown above.</p></div></main></div>`);
+}
+
+export interface EmailCodePageInput {
+  code: string;
+  email: string;
+  deviceName: string;
+  platform: string;
+  mode: AuthMode;
+  error?: string;
+}
+
+export function renderEmailCodePage(input: EmailCodePageInput): string {
+  const notice = input.error ? `<div class="notice" role="alert"><strong>That code didn't work.</strong><span>${escapeHtml(input.error)}</span></div>` : "";
+  const hidden = `<input type="hidden" name="user_code" value="${escapeHtml(input.code)}"><input type="hidden" name="email" value="${escapeHtml(input.email)}"><input type="hidden" name="mode" value="${input.mode}">`;
+  return document("Check your email", `<main class="panel"><div class="card"><div class="mobile-brand" style="display:flex">${flame()}<span>Blazn</span></div><div class="device"><strong>${escapeHtml(input.deviceName)}</strong><span>${escapeHtml(input.platform)}</span><div class="code">${escapeHtml(input.code)}</div></div><h2>Check your email</h2><p class="lede">We sent a 6-digit code to <strong>${escapeHtml(input.email)}</strong>. It expires in 10 minutes.</p>${notice}<form method="post" action="/v1/auth/device/email-verify">${hidden}<label class="field">Sign-in code<input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 -]{6,7}" minlength="6" maxlength="7" placeholder="123456" required autofocus></label><button class="primary" type="submit">Verify and authorize device</button></form><form method="post" action="/v1/auth/device/email-code" style="margin-top:12px">${hidden}<button class="social" type="submit">Send a new code</button></form><p class="terms"><a href="/activate?user_code=${encodeURIComponent(input.code)}&amp;mode=${input.mode}">Use a different email</a></p></div></main>`);
 }
 
 function codeEntry(error?: string): string {
