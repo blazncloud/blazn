@@ -23,7 +23,7 @@ import (
 	"github.com/blazncloud/blazn/internal/client"
 )
 
-const defaultAPIURL = "https://blazn.benpelo.com"
+const defaultAPIURL = "https://api.blazn.frontro.com"
 
 type Session struct {
 	AccessToken string

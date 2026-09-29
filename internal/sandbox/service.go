@@ -111,6 +111,7 @@ type Service struct {
 	reconnect time.Duration
 	maxErrors int
 	now       func() time.Time
+	origin    string
 }
 
 func NewService(api API, tokens TokenProvider) *Service {
@@ -138,7 +139,9 @@ func NewDefaultService() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewService(ClientAPI{Client: generated, wire: wire}, NewWorkspaceTokenProvider(sessions)), nil
+	service := NewService(ClientAPI{Client: generated, wire: wire}, NewWorkspaceTokenProvider(sessions))
+	service.origin = strings.TrimRight(apiURL, "/")
+	return service, nil
 }
 
 func (s *Service) token(ctx context.Context, forceRefresh bool) (string, error) {
@@ -366,7 +369,7 @@ func (s *Service) createGrant(ctx context.Context, id string, kind client.Sandbo
 	if err != nil {
 		return client.SandboxAccessGrantCreated{}, err
 	}
-	if err := validateGrant(grant, id, kind, s.now().UTC()); err != nil {
+	if err := validateGrant(grant, id, kind, s.now().UTC(), s.origin); err != nil {
 		return client.SandboxAccessGrantCreated{}, err
 	}
 	return grant, nil
