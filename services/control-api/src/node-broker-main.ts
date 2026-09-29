@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { createDatabase } from "./db.js";
 import { readJoinCredentialKey } from "./node-broker-crypto.js";
 import { createNodeBrokerServer } from "./node-broker-http.js";
+import { nodeBrokerOrigin } from "./node-broker-proxy.js";
 import { NodeBrokerService } from "./node-broker-service.js";
 import { PgNodeBrokerStore, probeNodeBrokerDatabase } from "./node-broker-store.js";
 import type { WorkerCredentialIssuer } from "./node-broker-types.js";
@@ -17,6 +18,12 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
   if (!databaseUrl) throw new Error("Node broker database URL is empty");
   const port = Number(process.env.NODE_BROKER_PORT ?? "8081");
   if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("Node broker port is invalid");
+  const bind = process.env.NODE_BROKER_BIND ?? "127.0.0.1";
+  const callerKeyFile = process.env.BLAZN_NODE_BROKER_CALLER_KEY_FILE;
+  const callerKey = callerKeyFile ? (await readFile(callerKeyFile, "utf8")).trim() : undefined;
+  const bindTarget = nodeBrokerOrigin(`http://${bind}:${port}/`);
+  if (callerKey !== undefined && !/^[A-Za-z0-9_-]{43,128}$/.test(callerKey)) throw new Error("Node broker caller key is invalid");
+  if (!bindTarget.loopback && callerKey === undefined) throw new Error("Node broker caller key is required for a non-loopback bind address");
   const database = createDatabase(databaseUrl);
   const onDatabaseError=attachNodeBrokerDatabasePoolErrors(database);
   try {
@@ -24,8 +31,8 @@ export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<
     const startupKey = await readJoinCredentialKey(`${root}/join-credential-v1`);
     startupKey.fill(0);
     const service = new NodeBrokerService(new PgNodeBrokerStore(database), () => readJoinCredentialKey(`${root}/join-credential-v1`), resolvedIssuer);
-    const server = createNodeBrokerServer(service);
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, "127.0.0.1", resolve); });
+    const server = createNodeBrokerServer(service, callerKey !== undefined ? { callerKey } : {});
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(port, bind, resolve); });
     server.once("close", () => { void endNodeBrokerDatabase(database,onDatabaseError); });
     return server;
   } catch (error) {

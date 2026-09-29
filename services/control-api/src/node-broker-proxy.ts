@@ -1,16 +1,50 @@
+import { readFileSync } from "node:fs";
 import { request } from "node:http";
 import { NODE_ERROR_STATUS, type NodeErrorCode } from "./node-types.js";
 
 export interface BrokerProxyReply { status: number; body: Buffer; retryAfter?: string }
 export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply>; observe?(issuanceId:string,body:Record<string,unknown>,signal:AbortSignal):Promise<void>; health(signal: AbortSignal): Promise<void> }
 
-const brokerOrigin = "http://127.0.0.1:8081";
+const loopbackOrigin = "http://127.0.0.1:8081";
+export const NODE_BROKER_CALLER_HEADER = "x-blazn-broker-caller";
+const callerKeyPattern = /^[A-Za-z0-9_-]{43,128}$/;
+
+export interface NodeBrokerProxyOptions { origin?: string; callerKey?: string }
+
+// A broker origin other than the fixed loopback sidecar must be a private
+// IPv4 http origin with an explicit port, and every call must then carry the
+// shared caller key so that other hosts on the private network cannot use the
+// broker's unauthenticated observation route.
+export function nodeBrokerOrigin(value: string): { origin: string; loopback: boolean } {
+  let parsed: URL;
+  try { parsed = new URL(value); } catch { throw new Error("BLAZN_NODE_BROKER_URL is invalid"); }
+  const octets = parsed.hostname.split(".").map(Number);
+  const ipv4 = octets.length === 4 && octets.every((octet, index) => Number.isInteger(octet) && octet >= 0 && octet <= 255 && String(octet) === parsed.hostname.split(".")[index]);
+  const loopback = ipv4 && octets[0] === 127;
+  const privateHost = ipv4 && (octets[0] === 10 || (octets[0] === 172 && octets[1]! >= 16 && octets[1]! <= 31) || (octets[0] === 192 && octets[1] === 168));
+  if (parsed.protocol !== "http:" || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== "/" || !parsed.port || !(loopback || privateHost)) throw new Error("BLAZN_NODE_BROKER_URL is invalid");
+  return { origin: parsed.origin, loopback };
+}
 const maxBytes = 16 * 1024;
 const statuses = new Set([200, 400, 401, 403, 404, 405, 409, 410, 413, 429, 500, 502, 503, 504]);
 
 export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
-  constructor(private readonly timeoutMs = 5_000) {
+  private readonly origin: string;
+  private readonly callerKey?: string;
+
+  constructor(private readonly timeoutMs = 5_000, options: NodeBrokerProxyOptions = {}) {
     if (timeoutMs < 1 || timeoutMs > 10_000) throw new Error("Node broker proxy configuration is invalid");
+    const target = nodeBrokerOrigin(options.origin ?? loopbackOrigin);
+    if (options.callerKey !== undefined && !callerKeyPattern.test(options.callerKey)) throw new Error("Node broker caller key is invalid");
+    if (!target.loopback && options.callerKey === undefined) throw new Error("Node broker caller key is required for a non-loopback broker");
+    this.origin = target.origin;
+    if (options.callerKey !== undefined) this.callerKey = options.callerKey;
+  }
+
+  static fromEnvironment(env: NodeJS.ProcessEnv = process.env): LoopbackNodeBrokerProxy {
+    const keyFile = env.BLAZN_NODE_BROKER_CALLER_KEY_FILE;
+    const callerKey = keyFile ? readFileSync(keyFile, "utf8").trim() : undefined;
+    return new LoopbackNodeBrokerProxy(5_000, { ...(env.BLAZN_NODE_BROKER_URL ? { origin: env.BLAZN_NODE_BROKER_URL } : {}), ...(callerKey !== undefined ? { callerKey } : {}) });
   }
 
   async issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply> {
@@ -35,7 +69,7 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
     return new Promise((resolve, reject) => {
       let deadline: ReturnType<typeof setTimeout>;
       const fail=(error:Error)=>{clearTimeout(deadline);reject(error);};
-      const req = request(`${brokerOrigin}${path}`, { method, signal, headers: { ...headers, "content-length": String(payload.length), connection: "close" } }, (response) => {
+      const req = request(`${this.origin}${path}`, { method, signal, headers: { ...headers, ...(this.callerKey ? { [NODE_BROKER_CALLER_HEADER]: this.callerKey } : {}), "content-length": String(payload.length), connection: "close" } }, (response) => {
         const chunks: Buffer[] = []; let size = 0;
         response.on("data", (chunk: Buffer) => { size += chunk.length; if (size > maxBytes) req.destroy(new Error("Node broker response is too large")); else chunks.push(chunk); });
         response.on("end", () => {

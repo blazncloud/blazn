@@ -1,13 +1,20 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { NodeBrokerService } from "./node-broker-service.js";
 import type { JoinCredentialRequest } from "./node-broker-types.js";
 import { nodeErrorBody, NodeHttpError } from "./node-types.js";
 
-export function createNodeBrokerServer(service: NodeBrokerService): Server {
+export interface NodeBrokerServerOptions { callerKey?: string }
+
+export function createNodeBrokerServer(service: NodeBrokerService, options: NodeBrokerServerOptions = {}): Server {
+  const expectedCaller = options.callerKey === undefined ? undefined : createHash("sha256").update(options.callerKey).digest();
   return createServer(async (request, response) => {
     const requestId = randomUUID();
     try {
+      if (expectedCaller) {
+        const supplied = request.headersDistinct["x-blazn-broker-caller"] ?? [];
+        if (supplied.length !== 1 || !timingSafeEqual(createHash("sha256").update(supplied[0]!).digest(), expectedCaller)) throw new NodeHttpError("unauthorized", "Node broker caller is not authorized");
+      }
       if (request.url === "/healthz" && request.method === "GET") { try { await service.health(AbortSignal.timeout(2_000)); return send(response, 200, { status: "ok" }); } catch { throw new NodeHttpError("node_broker_unavailable", "Node broker is unavailable"); } }
       const observation = request.url?.match(/^\/v1\/node-service\/join-observations\/([0-9a-f-]+)$/);
       if (observation) {

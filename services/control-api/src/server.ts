@@ -64,7 +64,7 @@ const nodeSecretsRoot = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blaz
 const nodePlanSigner = new FileNodePlanSigner(process.env.NODE_PLAN_SIGNING_KEY_ID ?? "control-plane-node-plan/v1", process.env.NODE_PLAN_SIGNING_PRIVATE_KEY_FILE ?? "/etc/blazn/node-plan/signing-private-v1.b64url");
 const brokerMode = process.env.BLAZN_NODE_BROKER_LOOPBACK ?? "disabled";
 if (brokerMode !== "enabled" && brokerMode !== "disabled") throw new Error("BLAZN_NODE_BROKER_LOOPBACK must be enabled or disabled");
-const brokerProxy = brokerMode === "enabled" ? new LoopbackNodeBrokerProxy() : undefined;
+const brokerProxy = brokerMode === "enabled" ? LoopbackNodeBrokerProxy.fromEnvironment() : undefined;
 const nodeRouter = new NodeHttpRouter(new NodeService(
   new PgNodeStore(database),
   () => readNodeEnrollmentKey(process.env.NODE_ENROLLMENT_HMAC_FILE ?? `${nodeSecretsRoot}/enrollment-hmac-v1`),

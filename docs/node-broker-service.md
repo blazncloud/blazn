@@ -6,9 +6,20 @@ enrolled Node public key. Before issuance it independently verifies the stored
 plan signature and all workspace, enrollment, plan, Node, machine, public-key,
 cluster, worker-only, lifecycle, trust, expiry, and request-digest bindings.
 
-The public API reaches this process through a fixed loopback-only reverse
-route. `BLAZN_NODE_BROKER_LOOPBACK` accepts only `enabled` or `disabled`; there
-is no origin override. Only the closed JSON body, singular idempotency key, and
+The public API reaches this process through a reverse route.
+`BLAZN_NODE_BROKER_LOOPBACK` accepts only `enabled` or `disabled`. By default
+the route targets the loopback sidecar at `http://127.0.0.1:8081`.
+
+A deployment whose API cannot share a host with the root-owned worker issuer
+(for example a Kubernetes API pod under the restricted Pod Security profile) may
+set `BLAZN_NODE_BROKER_URL` to a private IPv4 `http://` origin with an explicit
+port. A non-loopback origin requires `BLAZN_NODE_BROKER_CALLER_KEY_FILE`, a
+43–128 character base64url key sent as `X-Blazn-Broker-Caller` on every call.
+The broker binds to `NODE_BROKER_BIND` (default `127.0.0.1`); any non-loopback
+bind requires the same key file, and whenever a key is configured every broker
+route, including health and join observation, rejects a missing or different
+key in constant time. Restrict the broker port with a host firewall to the API's
+source addresses; the key is defense in depth, not a substitute. Only the closed JSON body, singular idempotency key, and
 singular Node proof are forwarded—never bearer credentials, cookies, proxy
 headers, or client address headers—and redirects are not followed. One overall
 deadline and both payload directions are bounded. Rate limiting occurs only at
