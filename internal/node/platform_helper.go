@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -387,7 +388,7 @@ func (e NativeRootEngine) observeCapability(ctx context.Context, plan client.Nod
 }
 
 func (e NativeRootEngine) observeCapabilityBinding(ctx context.Context, plan client.NodeInstallPlan, binding client.KubernetesBinding) (RootNodeObservation, error) {
-	output, err := e.kubectl(ctx, plan, "get", "node", binding.NodeName, "-o", "json")
+	output, err := e.getNode(ctx, plan, binding.NodeName)
 	if err != nil {
 		return RootNodeObservation{}, err
 	}
@@ -1206,16 +1207,47 @@ func (e NativeRootEngine) verifyPackage(ctx context.Context, m client.NodeInstal
 	}
 	if manager == "snap" {
 		revision := strings.TrimPrefix(expected, "v1.35.6-rev")
-		if revision == expected || installed != "revision:"+revision {
+		if revision == expected {
 			return errors.New("installed snap revision differs from signed plan")
 		}
-		return nil
+		if installed == "revision:"+revision {
+			return nil
+		}
+		// A fresh install stages the pinned store artifact and installs it
+		// with "snap install --dangerous", which snapd reports as a local
+		// revision such as x1. Accept that only for install mutations and only
+		// when the mounted snap file is byte-identical to the signed digest.
+		local := strings.TrimPrefix(installed, "revision:")
+		if m.Action == "install" && localSnapRevisionPattern.MatchString(local) {
+			return verifyLocalSnapDigest(m.Target, local, m.DesiredDigest)
+		}
+		return errors.New("installed snap revision differs from signed plan")
 	}
 	if installed != expected {
 		if manager == "brew" {
 			return errors.New("installed brew version differs from signed plan")
 		}
 		return errors.New("installed package version differs from signed plan")
+	}
+	return nil
+}
+
+var (
+	localSnapRevisionPattern = regexp.MustCompile(`^x[0-9]{1,9}$`)
+	snapdSnapsDirectory      = "/var/lib/snapd/snaps"
+)
+
+func verifyLocalSnapDigest(target, revision, desiredDigest string) error {
+	if !strings.HasPrefix(desiredDigest, "sha256:") || len(desiredDigest) != 71 || strings.ContainsAny(target, "/_") {
+		return errors.New("installed local snap lacks a signed digest")
+	}
+	value, err := readBoundedRegular(filepath.Join(snapdSnapsDirectory, target+"_"+revision+".snap"), 512<<20)
+	if err != nil {
+		return errors.New("installed local snap cannot be read")
+	}
+	sum := sha256.Sum256(value)
+	if "sha256:"+hex.EncodeToString(sum[:]) != desiredDigest {
+		return errors.New("installed local snap differs from signed digest")
 	}
 	return nil
 }
@@ -1714,7 +1746,7 @@ func (e NativeRootEngine) verifyRollbackDesired(ctx context.Context, plan client
 		if join == nil || join.ExpectedNodeUID == "" {
 			return errors.New("cluster rollback binding is unavailable")
 		}
-		output, err := e.kubectl(ctx, plan, "get", "node", join.ExpectedNodeName, "-o", "json")
+		output, err := e.getNode(ctx, plan, join.ExpectedNodeName)
 		if err != nil {
 			return err
 		}
@@ -1811,6 +1843,12 @@ sys.path.insert(0,"/snap/microk8s/current/scripts/wrappers")
 p="/snap/microk8s/current/scripts/wrappers/join.py"
 s=importlib.util.spec_from_file_location("blazn_microk8s_join",p)
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+t="--register-with-taints=blazn.dev/bootstrap=pending:NoSchedule"
+b=m.store_base_kubelet_args
+def w(a):
+    if "--register-with-taints" in a: raise SystemExit(3)
+    b(a.rstrip("\n")+"\n"+t+"\n")
+m.store_base_kubelet_args=w
 c=sys.stdin.readline().strip()
 if not c: raise SystemExit(2)
 m.join.callback(c,"as-worker",False,False)
@@ -1842,15 +1880,31 @@ func (e NativeRootEngine) verifyJoinRuntime(ctx context.Context, plan client.Nod
 	}
 	return nil
 }
+
+// Node-local Kubernetes access uses the kubelet's own node credential.
+// A joined MicroK8s worker has no administrator kubeconfig (microk8s.kubectl
+// refuses on workers), and the Node authorizer limits this identity to its own
+// Node object, which is all the install, observation and capacity release
+// steps touch.
+const (
+	microK8sKubectlPath            = "/snap/microk8s/current/kubectl"
+	microK8sKubeletKubeconfig      = "/var/snap/microk8s/current/credentials/kubelet.config"
+	microK8sBootstrapTaintArgument = "--register-with-taints=blazn.dev/bootstrap=pending:NoSchedule"
+)
+
+func nodeKubectlArguments(args []string) []string {
+	return append([]string{"--kubeconfig", microK8sKubeletKubeconfig}, args...)
+}
+
 func (e NativeRootEngine) kubectl(ctx context.Context, plan client.NodeInstallPlan, args ...string) ([]byte, error) {
 	if e.Platform == "linux" {
-		return e.Commands.Run(ctx, "/snap/bin/microk8s.kubectl", args...)
+		return e.Commands.Run(ctx, microK8sKubectlPath, nodeKubectlArguments(args)...)
 	}
 	vm, err := readLimaVM(plan, e.LimaBindingPath)
 	if err != nil {
 		return nil, err
 	}
-	fixed := append([]string{"shell", vm, "sudo", "/snap/bin/microk8s.kubectl"}, args...)
+	fixed := append([]string{"shell", vm, "sudo", microK8sKubectlPath}, nodeKubectlArguments(args)...)
 	return e.Commands.Run(ctx, "/usr/local/bin/limactl", fixed...)
 }
 func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, join *RootJoinBinding, remove bool) error {
@@ -1935,7 +1989,30 @@ type capacityNodeState struct {
 	Unschedulable                *bool
 }
 
+// errCapacityReleaseConflict marks a failed atomic release patch. A newly
+// joined worker's Node object changes as it becomes Ready (the lifecycle
+// controller removes not-ready taints), which invalidates the patch's
+// resourceVersion and taint tests; the whole release is then re-read and
+// retried a bounded number of times.
+var errCapacityReleaseConflict = errors.New("atomic Kubernetes capacity release failed")
+
+var capacityReleaseAttempts, capacityReleaseInterval = 30, 2 * time.Second
+
 func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding, receipt *client.NodeInstallReceipt, grant *client.NodeActivationGrant) (*client.KubernetesBinding, error) {
+	for attempt := 1; ; attempt++ {
+		binding, err := e.releaseNodeCapacityOnce(ctx, plan, join, receipt, grant)
+		if !errors.Is(err, errCapacityReleaseConflict) || attempt >= capacityReleaseAttempts {
+			return binding, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(capacityReleaseInterval):
+		}
+	}
+}
+
+func (e NativeRootEngine) releaseNodeCapacityOnce(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding, receipt *client.NodeInstallReceipt, grant *client.NodeActivationGrant) (*client.KubernetesBinding, error) {
 	if join == nil || receipt == nil || grant == nil || join.ClusterID != plan.Cluster.ID || join.ExpectedNodeName != plan.Hostname || join.ExpectedNodeUID == "" || join.ExpectedResourceVersion == "" {
 		return nil, errors.New("capacity release requires the exact installed node binding")
 	}
@@ -2013,7 +2090,7 @@ func (e NativeRootEngine) releaseNodeCapacity(ctx context.Context, plan client.N
 	}
 	output, err := e.kubectl(ctx, plan, "patch", "node", authorized.NodeName, "--type=json", "--patch", string(encoded), "-o", "json")
 	if err != nil {
-		return nil, errors.New("atomic Kubernetes capacity release failed")
+		return nil, errCapacityReleaseConflict
 	}
 	patched, err := decodeCapacityNode(output)
 	if err != nil || patched.Name != authorized.NodeName || patched.UID != authorized.NodeUID {
@@ -2071,7 +2148,7 @@ func (e NativeRootEngine) verifyActivatedCapacityState(ctx context.Context, plan
 }
 
 func (e NativeRootEngine) readCapacityNode(ctx context.Context, plan client.NodeInstallPlan, name string) (capacityNodeState, error) {
-	output, err := e.kubectl(ctx, plan, "get", "node", name, "-o", "json")
+	output, err := e.getNode(ctx, plan, name)
 	if err != nil {
 		return capacityNodeState{}, err
 	}
@@ -2121,7 +2198,7 @@ func (e NativeRootEngine) readClusterNode(ctx context.Context, plan client.NodeI
 	if join == nil || join.ExpectedNodeUID == "" || join.ExpectedResourceVersion == "" {
 		return clusterNodeState{}, errors.New("cluster mutation requires an exact joined node binding")
 	}
-	output, err := e.kubectl(ctx, plan, "get", "node", join.ExpectedNodeName, "-o", "json")
+	output, err := e.getNode(ctx, plan, join.ExpectedNodeName)
 	if err != nil {
 		return clusterNodeState{}, err
 	}
@@ -2154,8 +2231,28 @@ func (e NativeRootEngine) readClusterNode(ctx context.Context, plan client.NodeI
 	}
 	return clusterNodeState{Name: value.Metadata.Name, UID: value.Metadata.UID, ResourceVersion: value.Metadata.ResourceVersion, Labels: value.Metadata.Labels, Taints: taints, LabelsPresent: labelsPresent, TaintsPresent: taintsPresent}, nil
 }
+
+// joinObservationAttempts bounds how long a fresh worker may take to restart
+// its kubelet and local API server proxy after "microk8s join" or after the
+// kubelet restarts again; every node-local Node read tolerates that window.
+var joinObservationAttempts, joinObservationInterval = 60, 2 * time.Second
+
+func (e NativeRootEngine) getNode(ctx context.Context, plan client.NodeInstallPlan, name string) ([]byte, error) {
+	for attempt := 1; ; attempt++ {
+		output, err := e.kubectl(ctx, plan, "get", "node", name, "-o", "json")
+		if err == nil || attempt >= joinObservationAttempts {
+			return output, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(joinObservationInterval):
+		}
+	}
+}
+
 func (e NativeRootEngine) observeNode(ctx context.Context, plan client.NodeInstallPlan, name string) (JoinedNode, error) {
-	output, err := e.kubectl(ctx, plan, "get", "node", name, "-o", "json")
+	output, err := e.getNode(ctx, plan, name)
 	if err != nil {
 		return JoinedNode{}, err
 	}
@@ -2175,7 +2272,7 @@ func (e NativeRootEngine) verify(ctx context.Context, plan client.NodeInstallPla
 	if binding == nil || binding.ClusterID != plan.Cluster.ID || binding.ExpectedNodeName != plan.Hostname || binding.ExpectedNodeUID == "" || binding.ExpectedResourceVersion == "" {
 		return JoinedNode{}, errors.New("verification binding is incomplete")
 	}
-	output, err := e.kubectl(ctx, plan, "get", "node", binding.ExpectedNodeName, "-o", "json")
+	output, err := e.getNode(ctx, plan, binding.ExpectedNodeName)
 	if err != nil {
 		return JoinedNode{}, err
 	}
