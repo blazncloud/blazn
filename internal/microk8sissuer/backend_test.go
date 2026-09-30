@@ -213,3 +213,32 @@ func TestUnsafeAndAmbiguousTokenFilesFailClosed(t *testing.T) {
 	}
 	_ = syscall.Unlink(path)
 }
+
+func TestBackendSkipsUnbracketedIPv6URLsAndRequiresADialableOne(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	check := token + "/check-value-123456"
+	backend, runner, _ := backendFixture(t, "")
+	runner.output = []byte(fmt.Sprintf(`{"token":%q,"urls":[%q,%q,%q]}`, check, "192.168.0.108:25000/"+check, "fd7a:115c:a1e0::3135:e23d:25000/"+check, "fc00:f853:ccd:e793::1:25000/"+check))
+	issued, err := backend.Issue(context.Background(), token, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issued.URLs) != 1 || issued.URLs[0] != "192.168.0.108:25000/"+check {
+		t.Fatalf("unexpected usable URLs %#v", issued.URLs)
+	}
+	backend, runner, _ = backendFixture(t, "")
+	runner.output = []byte(fmt.Sprintf(`{"token":%q,"urls":[%q]}`, check, "fd7a:115c:a1e0::3135:e23d:25000/"+check))
+	if _, err := backend.Issue(context.Background(), token, 60); err == nil {
+		t.Fatal("IPv6-only upstream produced a credential without a dialable URL")
+	}
+	backend, runner, _ = backendFixture(t, "")
+	runner.output = []byte(fmt.Sprintf(`{"token":%q,"urls":[%q,%q]}`, check, "192.168.0.108:25000/"+check, "fd7a::1:25000/wrong-check"))
+	if _, err := backend.Issue(context.Background(), token, 60); err != nil {
+		t.Fatalf("skipped IPv6 URL still influenced validation: %v", err)
+	}
+	for _, candidate := range []string{"192.168.0.1:25000/x", "[fd7a::1]:25000/x", "evil.example:25000/x"} {
+		if bareIPv6JoinURL(candidate) {
+			t.Fatalf("%q misclassified as bare IPv6", candidate)
+		}
+	}
+}
