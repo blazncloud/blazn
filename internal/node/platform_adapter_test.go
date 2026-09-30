@@ -86,11 +86,26 @@ type scriptedExecutor struct {
 	run func(string, []string, []byte) ([]byte, error)
 }
 
+// legacyKubectlView maps the exact kubelet-credential kubectl invocation back
+// to the historical microk8s.kubectl shape these scripted tests assert on.
+// Any other shape is passed through unchanged and fails those assertions.
+func legacyKubectlView(path string, args []string) (string, []string) {
+	if path == microK8sKubectlPath && len(args) >= 2 && args[0] == "--kubeconfig" && args[1] == microK8sKubeletKubeconfig {
+		return "/snap/bin/microk8s.kubectl", args[2:]
+	}
+	if path == "/usr/local/bin/limactl" && len(args) >= 6 && args[0] == "shell" && args[2] == "sudo" && args[3] == microK8sKubectlPath && args[4] == "--kubeconfig" && args[5] == microK8sKubeletKubeconfig {
+		return path, append([]string{"shell", args[1], "sudo", "/snap/bin/microk8s.kubectl"}, args[6:]...)
+	}
+	return path, args
+}
+
 func (e scriptedExecutor) Run(_ context.Context, path string, args ...string) ([]byte, error) {
+	path, args = legacyKubectlView(path, args)
 	return e.run(path, args, nil)
 }
 
 func (e scriptedExecutor) RunInput(_ context.Context, path string, input []byte, args ...string) ([]byte, error) {
+	path, args = legacyKubectlView(path, args)
 	return e.run(path, args, input)
 }
 
@@ -103,6 +118,7 @@ func (e *recordingExecutor) RunInput(ctx context.Context, path string, input []b
 }
 
 func (e *recordingExecutor) run(path string, input []byte, args ...string) ([]byte, error) {
+	path, args = legacyKubectlView(path, args)
 	e.calls = append(e.calls, recordedCommand{path: path, args: append([]string(nil), args...), input: append([]byte(nil), input...)})
 	if strings.HasSuffix(path, "microk8s.kubectl") || (path == "/usr/local/bin/limactl" && containsArgument(args, "/snap/bin/microk8s.kubectl")) {
 		return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"7"},"spec":{"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}]}}`), nil
@@ -1674,91 +1690,105 @@ func TestPlatformAdapterReleasesCapacityAndAdvancesExactBinding(t *testing.T) {
 }
 
 func TestRootCapacityReleaseUsesCASAndIsIdempotent(t *testing.T) {
-	authorization, identity, signer := validBootstrapAuthorizationWithSigner(t)
-	plan := authorization.Expected.Plan
-	plan.Mutations = append(plan.Mutations,
-		client.NodeInstallMutation{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
-		client.NodeInstallMutation{Ordinal: 5, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
-	)
-	plan.Digest = ""
-	plan.Signature = ""
-	digest, err := client.NodeInstallPlanDigest(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.Digest = digest
-	plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
-	authorization.Expected.Plan = plan
-	stateStore := &memoryState{}
-	installer := NewInstaller(&mockPlatform{failAt: -1}, stateStore)
-	installer.uid = func() int64 { return 0 }
-	issuedAt, _ := time.Parse(time.RFC3339, plan.IssuedAt)
-	installer.now = func() time.Time { return issuedAt.Add(time.Minute) }
-	receipt, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	grant := signedActivationGrant(t, plan, receipt, *authorization.KubernetesBinding, signer)
-	root := testRoot(t)
-	authorityPath := filepath.Join(root, "authority", "install-authority.json")
-	if err := os.Mkdir(filepath.Dir(authorityPath), 0700); err != nil {
-		t.Fatal(err)
-	}
-	authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: plan.IssuedAt}
-	authority.Digest, err = RootInstallAuthorityDigest(authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encodedAuthority, _ := json.Marshal(authority)
-	if err := writePrivateCreate(authorityPath, encodedAuthority); err != nil {
-		t.Fatal(err)
-	}
-	initial := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-drift","labels":{"blazn.dev/pool":"default"}},"spec":{"unschedulable":true,"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"},{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
-	released := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-released","labels":{"blazn.dev/pool":"default","blazn.dev/sandbox-eligible":"true"}},"spec":{"unschedulable":false,"taints":[{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
-	getCalls, patchCalls := 0, 0
-	commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
-		switch args[0] {
-		case "get":
-			getCalls++
-			if getCalls == 1 {
-				return []byte(initial), nil
+	previousAttempts, previousInterval := capacityReleaseAttempts, capacityReleaseInterval
+	capacityReleaseAttempts, capacityReleaseInterval = 3, time.Millisecond
+	defer func() { capacityReleaseAttempts, capacityReleaseInterval = previousAttempts, previousInterval }()
+	for _, conflictFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conflictFirst=%v", conflictFirst), func(t *testing.T) {
+			authorization, identity, signer := validBootstrapAuthorizationWithSigner(t)
+			plan := authorization.Expected.Plan
+			plan.Mutations = append(plan.Mutations,
+				client.NodeInstallMutation{Ordinal: 4, Kind: "label", Action: "apply", Target: "blazn.dev/pool", Desired: map[string]any{"value": "default"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+				client.NodeInstallMutation{Ordinal: 5, Kind: "taint", Action: "apply", Target: "blazn.dev/bootstrap", Desired: map[string]any{"value": "pending", "effect": "NoSchedule"}, DesiredDigest: "sha256:" + testHash, Rollback: "restore_prior"},
+			)
+			plan.Digest = ""
+			plan.Signature = ""
+			digest, err := client.NodeInstallPlanDigest(plan)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return []byte(released), nil
-		case "patch":
-			patchCalls++
-			var operations []map[string]any
-			if len(args) != 8 || args[4] != "--patch" || json.Unmarshal([]byte(args[5]), &operations) != nil {
-				return nil, errors.New("invalid patch arguments")
+			plan.Digest = digest
+			plan.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(signer.PrivateKey, []byte("blazn-node-install-plan-v1\n"+digest)))
+			authorization.Expected.Plan = plan
+			stateStore := &memoryState{}
+			installer := NewInstaller(&mockPlatform{failAt: -1}, stateStore)
+			installer.uid = func() int64 { return 0 }
+			issuedAt, _ := time.Parse(time.RFC3339, plan.IssuedAt)
+			installer.now = func() time.Time { return issuedAt.Add(time.Minute) }
+			receipt, err := installer.Install(context.Background(), plan, authorization.Expected.Identity, identity)
+			if err != nil {
+				t.Fatal(err)
 			}
-			patchJSON := args[5]
-			for _, required := range []string{`"op":"test","path":"/metadata/uid","value":"uid-1"`, `"op":"test","path":"/metadata/resourceVersion","value":"opaque-drift"`, `"path":"/metadata/labels/blazn.dev~1sandbox-eligible","value":"true"`, `"path":"/spec/unschedulable","value":true`, `"path":"/spec/unschedulable","value":false`} {
-				if !strings.Contains(patchJSON, required) {
-					return nil, fmt.Errorf("patch lacks %s", required)
+			grant := signedActivationGrant(t, plan, receipt, *authorization.KubernetesBinding, signer)
+			root := testRoot(t)
+			authorityPath := filepath.Join(root, "authority", "install-authority.json")
+			if err := os.Mkdir(filepath.Dir(authorityPath), 0700); err != nil {
+				t.Fatal(err)
+			}
+			authority := RootInstallAuthority{SchemaVersion: RootInstallAuthoritySchema, Plan: plan, Identity: authorization.Expected.Identity, PlanSigningKey: authorization.PlanSigningKey, NodePublicKey: authorization.NodePublicKey, KubernetesBinding: authorization.KubernetesBinding, ProfileID: authorization.ProfileID, ProfileSHA256: "sha256:" + testHash, ControlPlaneOrigin: "https://control.example.test", AuthorizedAt: plan.IssuedAt}
+			authority.Digest, err = RootInstallAuthorityDigest(authority)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encodedAuthority, _ := json.Marshal(authority)
+			if err := writePrivateCreate(authorityPath, encodedAuthority); err != nil {
+				t.Fatal(err)
+			}
+			initial := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-drift","labels":{"blazn.dev/pool":"default"}},"spec":{"unschedulable":true,"taints":[{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"},{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+			released := `{"metadata":{"name":"worker-1.example.test","uid":"uid-1","resourceVersion":"opaque-released","labels":{"blazn.dev/pool":"default","blazn.dev/sandbox-eligible":"true"}},"spec":{"unschedulable":false,"taints":[{"key":"dedicated","value":"workers","effect":"NoSchedule"}]}}`
+			getCalls, patchCalls := 0, 0
+			commands := scriptedExecutor{run: func(_ string, args []string, _ []byte) ([]byte, error) {
+				switch args[0] {
+				case "get":
+					getCalls++
+					if getCalls == 1 || (conflictFirst && getCalls == 2) {
+						return []byte(initial), nil
+					}
+					return []byte(released), nil
+				case "patch":
+					patchCalls++
+					if conflictFirst && patchCalls == 1 {
+						return nil, errors.New("the object has been modified")
+					}
+					var operations []map[string]any
+					if len(args) != 8 || args[4] != "--patch" || json.Unmarshal([]byte(args[5]), &operations) != nil {
+						return nil, errors.New("invalid patch arguments")
+					}
+					patchJSON := args[5]
+					for _, required := range []string{`"op":"test","path":"/metadata/uid","value":"uid-1"`, `"op":"test","path":"/metadata/resourceVersion","value":"opaque-drift"`, `"path":"/metadata/labels/blazn.dev~1sandbox-eligible","value":"true"`, `"path":"/spec/unschedulable","value":true`, `"path":"/spec/unschedulable","value":false`} {
+						if !strings.Contains(patchJSON, required) {
+							return nil, fmt.Errorf("patch lacks %s", required)
+						}
+					}
+					return []byte(released), nil
+				default:
+					return nil, errors.New("unexpected kubectl operation")
 				}
+			}}
+			engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: authorityPath, RootStateRoot: root}
+			join := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
+			binding, err := engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
+			expectedPatches, expectedGets := 1, 2
+			if conflictFirst {
+				expectedPatches, expectedGets = 2, 3
 			}
-			return []byte(released), nil
-		default:
-			return nil, errors.New("unexpected kubectl operation")
-		}
-	}}
-	engine := NativeRootEngine{Platform: "linux", Commands: commands, AuthorityPath: authorityPath, RootStateRoot: root}
-	join := &RootJoinBinding{ClusterID: plan.Cluster.ID, ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "7", BootstrapTaint: plan.Cluster.BootstrapTaint, WorkerOnly: true}
-	binding, err := engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
-	if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != 1 || getCalls != 2 {
-		t.Fatalf("binding=%#v patch=%d get=%d err=%v", binding, patchCalls, getCalls, err)
-	}
-	join.ExpectedResourceVersion = "7"
-	binding, err = engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
-	if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != 1 {
-		t.Fatalf("idempotent binding=%#v patch=%d err=%v", binding, patchCalls, err)
-	}
-	join.ExpectedResourceVersion = "opaque-released"
-	if err := engine.verifyActivatedCapacityState(context.Background(), plan, join); err != nil {
-		t.Fatalf("released capacity state did not verify for retry: %v", err)
-	}
-	persisted, err := loadRootAuthority(authorityPath)
-	if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "opaque-released" {
-		t.Fatalf("persisted=%#v err=%v", persisted.KubernetesBinding, err)
+			if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != expectedPatches || getCalls != expectedGets {
+				t.Fatalf("binding=%#v patch=%d get=%d err=%v", binding, patchCalls, getCalls, err)
+			}
+			join.ExpectedResourceVersion = "7"
+			binding, err = engine.releaseNodeCapacity(context.Background(), plan, join, &receipt, &grant)
+			if err != nil || binding.ResourceVersion != "opaque-released" || patchCalls != expectedPatches {
+				t.Fatalf("idempotent binding=%#v patch=%d err=%v", binding, patchCalls, err)
+			}
+			join.ExpectedResourceVersion = "opaque-released"
+			if err := engine.verifyActivatedCapacityState(context.Background(), plan, join); err != nil {
+				t.Fatalf("released capacity state did not verify for retry: %v", err)
+			}
+			persisted, err := loadRootAuthority(authorityPath)
+			if err != nil || persisted.KubernetesBinding == nil || persisted.KubernetesBinding.ResourceVersion != "opaque-released" {
+				t.Fatalf("persisted=%#v err=%v", persisted.KubernetesBinding, err)
+			}
+		})
 	}
 }
 

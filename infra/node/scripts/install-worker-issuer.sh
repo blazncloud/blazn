@@ -13,7 +13,7 @@ SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 SOURCE=${BLAZN_ISSUER_BINARY_SOURCE:?set BLAZN_ISSUER_BINARY_SOURCE to the reviewed helper binary}
 SOURCE_DIGEST=${BLAZN_ISSUER_BINARY_SHA256:?set BLAZN_ISSUER_BINARY_SHA256 to the reviewed sha256 digest}
 UNIT_SOURCE=$SCRIPT_DIR/../systemd/blazn-microk8s-worker-issuer.service
-UNIT_SOURCE_DIGEST=sha256:1051d5a13db6cadc5ef4aa9d4f8e27b334feaa1a740c89607d33b9b5a489b508
+UNIT_SOURCE_DIGEST=sha256:3602caea532b47fc8c03ee621d90fd97286b9e95826ebaa39761b901c2926182
 TMPFILES_SOURCE=$SCRIPT_DIR/../systemd/blazn-microk8s-worker-issuer.tmpfiles
 TMPFILES_SOURCE_DIGEST=sha256:ab1492fc38be84b26bb6acc91a933560b304c3bc5412196f70c608cb5797ae39
 ROOT=${BLAZN_ISSUER_CONFIG_ROOT:-/etc/blazn/microk8s-worker-issuer}

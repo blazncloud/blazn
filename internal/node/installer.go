@@ -590,8 +590,8 @@ func (i *Installer) trustedActiveReceipt(plan client.NodeInstallPlan, meta clien
 	if err != nil {
 		return receipt, err
 	}
-	if i.verifyReceiptValue(plan, meta, identity, receipt, "active") != nil {
-		return receipt, errors.New("active node install receipt is untrusted")
+	if verifyErr := i.verifyReceiptValue(plan, meta, identity, receipt, "active"); verifyErr != nil {
+		return receipt, fmt.Errorf("active node install receipt is untrusted: %w", verifyErr)
 	}
 	return receipt, nil
 }

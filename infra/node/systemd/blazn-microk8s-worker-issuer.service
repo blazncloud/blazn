@@ -1,33 +1,37 @@
 [Unit]
 Description=Blazn narrow MicroK8s worker credential issuer
 After=snap.microk8s.daemon-cluster-agent.service
-Requires=snap.microk8s.daemon-cluster-agent.service
+Wants=snap.microk8s.daemon-cluster-agent.service
 ConditionPathIsExecutable=/usr/libexec/blazn/blazn-microk8s-worker-issuer
 ConditionPathExists=/etc/blazn/microk8s-worker-issuer/config.json
 ConditionPathExists=/etc/blazn/microk8s-worker-issuer/issuer-hmac-v1
 
 [Service]
+# /snap/bin/microk8s.* run through snap-confine, which needs the root snap
+# user directory, an AppArmor profile transition and its own file
+# capabilities (cap_dac_read_search ... cap_sys_resource). Wants= rather than
+# Requires= keeps a MicroK8s service restart from stopping the issuer.
 Type=simple
 User=root
 Group=root
 UMask=0077
 ExecStart=/usr/libexec/blazn/blazn-microk8s-worker-issuer
-Restart=on-failure
+Restart=always
 RestartSec=2s
 TimeoutStartSec=20s
 TimeoutStopSec=10s
-NoNewPrivileges=true
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_SYS_RESOURCE
 PrivateDevices=true
 PrivateTmp=true
-ProtectHome=true
+ProtectHome=false
 ProtectSystem=strict
 ProtectClock=true
 ProtectControlGroups=true
 ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
-ReadWritePaths=/run/blazn /var/lib/blazn-node-root/microk8s-worker-issuer /var/snap/microk8s/current/credentials
+ReadWritePaths=/run/blazn /var/lib/blazn-node-root/microk8s-worker-issuer /var/snap/microk8s/current/credentials /root/snap
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=true
 RestrictSUIDSGID=true

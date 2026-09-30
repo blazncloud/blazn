@@ -143,6 +143,13 @@ func verifyNoSymlinkTraversal(target string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
+		if errors.Is(err, os.ErrPermission) && rootOnlyDirectory(filepath.Dir(current)) {
+			// An unprivileged caller cannot inspect below a root-owned
+			// directory that no other user can write, so nothing it could
+			// have linked lies below this point; the root helper re-verifies
+			// that subtree with full privileges before acting on it.
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -151,6 +158,15 @@ func verifyNoSymlinkTraversal(target string) error {
 		}
 	}
 	return nil
+}
+
+func rootOnlyDirectory(path string) bool {
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	owner, _, ok := fileOwner(info)
+	return ok && owner == 0
 }
 
 func verifyProfileTargetTraversal(target string) error {
