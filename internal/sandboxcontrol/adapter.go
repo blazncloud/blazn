@@ -107,11 +107,25 @@ type kubePodSpec struct {
 	AutomountServiceAccountToken bool              `json:"automountServiceAccountToken"`
 	RestartPolicy                string            `json:"restartPolicy"`
 	NodeSelector                 map[string]string `json:"nodeSelector"`
+	Tolerations                  []kubeToleration  `json:"tolerations,omitempty"`
 	SecurityContext              map[string]any    `json:"securityContext"`
 	Containers                   []kubeContainer   `json:"containers"`
 	InitContainers               []kubeContainer   `json:"initContainers,omitempty"`
 	Volumes                      []kubeVolume      `json:"volumes,omitempty"`
 }
+
+type kubeToleration struct {
+	Key      string `json:"key"`
+	Operator string `json:"operator"`
+	Value    string `json:"value"`
+	Effect   string `json:"effect"`
+}
+
+// SandboxOnlyToleration is the single toleration a Sandbox Pod carries. A
+// Blazn node dedicated to sandboxes is tainted with it so only sandboxes (and
+// cluster DaemonSets that tolerate every taint) run there; shared
+// sandbox-eligible nodes are untainted and unaffected by it.
+var SandboxOnlyToleration = kubeToleration{Key: "blazn.dev/sandbox-only", Operator: "Equal", Value: "true", Effect: "NoExecute"}
 
 type kubeContainer struct {
 	Name            string                       `json:"name"`
@@ -719,6 +733,7 @@ func renderPodSpec(request CreateRequest) kubePodSpec {
 	return kubePodSpec{
 		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
 		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
+		Tolerations:     []kubeToleration{SandboxOnlyToleration},
 		SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 		Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
 			SecurityContext: restrictedContainerSecurity(),

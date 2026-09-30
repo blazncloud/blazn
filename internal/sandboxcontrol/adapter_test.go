@@ -844,6 +844,7 @@ func TestObserveAdmissionAcceptsOnlyExactAPIMaterializedPodDefaults(t *testing.T
 		spec["imagePullSecrets"] = []any{map[string]any{"name": registryPullSecretName}}
 		spec["nodeSelector"].(map[string]any)[agentWorkloadLabel] = "true"
 		spec["tolerations"] = []any{
+			map[string]any{"key": "blazn.dev/sandbox-only", "operator": "Equal", "value": "true", "effect": "NoExecute"},
 			map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
 			map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
 		}
@@ -1393,9 +1394,16 @@ func TestFakeAPIClientBoundsStalledHandlerAndCleanup(t *testing.T) {
 
 func materialPodSpecMutations() map[string]func(map[string]any) {
 	return map[string]func(map[string]any){
-		"host network": func(spec map[string]any) { spec["hostNetwork"] = true },
-		"host PID":     func(spec map[string]any) { spec["hostPID"] = true },
-		"DNS policy":   func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
+		"host network":       func(spec map[string]any) { spec["hostNetwork"] = true },
+		"host PID":           func(spec map[string]any) { spec["hostPID"] = true },
+		"DNS policy":         func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
+		"toleration removed": func(spec map[string]any) { delete(spec, "tolerations") },
+		"toleration widened": func(spec map[string]any) {
+			spec["tolerations"] = []any{map[string]any{"operator": "Exists"}}
+		},
+		"toleration appended": func(spec map[string]any) {
+			spec["tolerations"] = append(spec["tolerations"].([]any), map[string]any{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"})
+		},
 		"foreign image pull secret": func(spec map[string]any) {
 			spec["imagePullSecrets"] = []any{map[string]any{"name": "foreign-secret"}}
 		},

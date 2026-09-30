@@ -78,6 +78,9 @@ def good():
                         "kubernetes.io/arch": "amd64",
                         "blazn.dev/sandbox-eligible": "true",
                     },
+                    "tolerations": [
+                        {"key": "blazn.dev/sandbox-only", "operator": "Equal", "value": "true", "effect": "NoExecute"}
+                    ],
                     "securityContext": {
                         "runAsNonRoot": True,
                         "runAsUser": 65532,
@@ -189,6 +192,12 @@ def mutate(doc, mutation):
         pod["initContainers"][0]["resources"]["limits"]["ephemeral-storage"] = "500Gi"
     elif mutation == "volume-size-oversize":
         pod["volumes"][0]["emptyDir"]["sizeLimit"] = "5000Gi"
+    elif mutation == "tolerate-everything":
+        pod["tolerations"] = [{"operator": "Exists"}]
+    elif mutation == "extra-toleration":
+        pod["tolerations"].append({"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"})
+    elif mutation == "timed-toleration":
+        pod["tolerations"][0]["tolerationSeconds"] = 60
     else:
         raise SystemExit(f"unknown mutation {mutation}")
     return doc

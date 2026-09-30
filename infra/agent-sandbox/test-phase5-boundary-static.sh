@@ -69,6 +69,7 @@ for needle in (
     "object.metadata.annotations[k] == oldObject.metadata.annotations[k]",
     "oldObject.metadata.annotations.all(k, k == 'agents.x-k8s.io/pod-name' || k in object.metadata.annotations)",
     "sandboxes.blazn.dev/trust-level",
+    "size(variables.pod.tolerations) == 1 && variables.pod.tolerations.all(t, has(t.key) && t.key == 'blazn.dev/sandbox-only'",
 ):
     assert needle in expressions, f"policy lost required rule: {needle}"
 policy_binding = by[("ValidatingAdmissionPolicyBinding", "blazn-sandbox-boundary")]

@@ -25,8 +25,9 @@ The admission policy admits exactly the Sandbox shape rendered by
 workspace, owner, and sandbox-id labels mirrored onto the podTemplate with
 the `blazn-poc` queue label, the trust, expiry, and intent-digest
 annotations, the tokenless runner identity, Never restart, no RuntimeClass,
-exactly the sandbox-eligibility and architecture node selector, no host
-namespaces or scheduling overrides, the reviewed 65532 pod security context,
+exactly the sandbox-eligibility and architecture node selector, at most the
+single `blazn.dev/sandbox-only=true:NoExecute` toleration that admits Sandboxes
+onto dedicated Blazn nodes, no host namespaces or other scheduling overrides, the reviewed 65532 pod security context,
 emptyDir-only reviewed volume names, one digest-pinned `main` container with
 a bounded argv and fully declared bounded resources, the two digest-pinned
 `/blazn-sandbox-io` helpers, and no environment, args, ports, or probes.
@@ -43,7 +44,7 @@ The upgrade verifies every prior UID, preserves namespaces and Secrets, and
 records the successor before marking the prior journal superseded.
 
 `good-sandbox.py` is the executable statement of that contract: it renders
-the adapter-exact object plus twenty-two reviewed mutations, and
+the adapter-exact object plus twenty-five reviewed mutations, and
 `test-phase5-boundary-disposable.sh` proves on a disposable kind cluster
 that the good object is admitted while every mutation is denied by the rule
 that owns it, plus a permitted-but-wrong creator identity, update fencing,

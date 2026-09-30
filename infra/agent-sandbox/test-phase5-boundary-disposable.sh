@@ -141,6 +141,9 @@ expect_denied mount-traversal 'reviewed workspace paths' "$controller"
 expect_denied mount-subpath 'reviewed workspace paths' "$controller"
 expect_denied init-ephemeral-oversize 'digest-pinned IO helpers' "$controller"
 expect_denied volume-size-oversize 'size-bounded emptyDir volumes' "$controller"
+expect_denied tolerate-everything 'may not override scheduling' "$controller"
+expect_denied extra-toleration 'may not override scheduling' "$controller"
+expect_denied timed-toleration 'may not override scheduling' "$controller"
 expect_denied good 'Only the Blazn sandbox controller may create' "$attacker"
 
 # Update fencing: mutations are denied for every identity; the controller's

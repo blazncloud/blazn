@@ -440,7 +440,13 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 		map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": json.Number("300")},
 		map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": json.Number("300")},
 	}
-	if !removeExactDefault(observed, "tolerations", defaultTolerations) {
+	// DefaultTolerationSeconds appends its two tolerations after the rendered
+	// ones; the rendered list alone (plugin disabled) is also exact.
+	if expectedTolerations, ok := expectedObject["tolerations"].([]any); ok {
+		if reflect.DeepEqual(observed["tolerations"], append(append([]any(nil), expectedTolerations...), defaultTolerations...)) {
+			observed["tolerations"] = expectedObject["tolerations"]
+		}
+	} else if !removeExactDefault(observed, "tolerations", defaultTolerations) {
 		return false
 	}
 	if pullSecrets, exists := observed["imagePullSecrets"]; exists {
