@@ -57,8 +57,11 @@ type InstallWAL struct {
 	ServicePrior    ServicePriorState            `json:"servicePrior"`
 	Mutations       []client.NodeReceiptMutation `json:"mutations"`
 	Residues        []client.NodeReceiptResidue  `json:"residues,omitempty"`
-	CreatedAt       string                       `json:"createdAt"`
-	UpdatedAt       string                       `json:"updatedAt"`
+	// ClusterLeft records that uninstall detached this fresh worker from the
+	// shared cluster, so a resumed uninstall does not repeat it.
+	ClusterLeft bool   `json:"clusterLeft,omitempty"`
+	CreatedAt   string `json:"createdAt"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 type UninstallCleanupJournal struct {
 	SchemaVersion int                       `json:"schemaVersion"`

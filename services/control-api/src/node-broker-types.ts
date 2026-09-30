@@ -62,6 +62,16 @@ export interface WorkerCredentialIssuer {
     request: WorkerJoinObservationRequest,
     signal: AbortSignal,
   ): Promise<WorkerJoinObservation>;
+  retire?(
+    request: RetiredWorkerRequest,
+    signal: AbortSignal,
+  ): Promise<{ deleted: boolean }>;
+}
+
+export interface RetiredWorkerRequest {
+  clusterId: string;
+  expectedNodeName: string;
+  nodeUid: string;
 }
 
 export interface BrokerBinding {

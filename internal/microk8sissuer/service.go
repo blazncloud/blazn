@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -29,6 +30,7 @@ type Backend interface {
 	Issue(context.Context, string, int) (BackendIssue, error)
 	Revoke(context.Context, string) error
 	Observe(context.Context, string) (NodeObservation, error)
+	Retire(context.Context, string, string) (bool, error)
 	Healthy(context.Context) error
 }
 type NodeObservation struct {
@@ -75,6 +77,9 @@ func (s *Service) Handle(ctx context.Context, req Request) (any, error) {
 	}
 	if req.Operation == "observe" {
 		return s.observe(ctx, req)
+	}
+	if req.Operation == "retire" {
+		return s.retire(ctx, req)
 	}
 	return s.revoke(ctx, req.ProviderHandle)
 }
@@ -191,6 +196,27 @@ func (s *Service) observe(ctx context.Context, req Request) (ObserveResponse, er
 	})
 	return response, err
 }
+
+// retire deletes the Node object of a Blazn worker that has already left the
+// cluster. The backend refuses any Node that is not a Blazn worker, whose UID
+// differs, or that has not applied its own retirement taint.
+func (s *Service) retire(ctx context.Context, req Request) (RetireResponse, error) {
+	var response RetireResponse
+	err := s.locked(ctx, func() error {
+		deleted, err := s.backend.Retire(ctx, req.ExpectedNodeName, req.NodeUID)
+		if err != nil {
+			var protocol *ProtocolError
+			if errors.As(err, &protocol) {
+				return protocol
+			}
+			return &ProtocolError{Code: "microk8s_unavailable", Message: "retired worker removal failed"}
+		}
+		response = RetireResponse{SchemaVersion: SchemaVersion, Operation: "retire", ClusterID: req.ClusterID, NodeName: req.ExpectedNodeName, NodeUID: req.NodeUID, Deleted: deleted}
+		return nil
+	})
+	return response, err
+}
+
 func (s *Service) response(st durableState) IssueResponse {
 	return IssueResponse{SchemaVersion: SchemaVersion, Operation: "issue", ProviderHandle: st.Request.IssuanceID, Credential: st.Credential, ClusterID: st.Request.ClusterID, ClusterHealthy: true, WorkerOnly: true, ExpiresAt: st.ExpiresAt}
 }

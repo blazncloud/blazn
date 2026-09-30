@@ -29,6 +29,18 @@ type Request struct {
 	TTLSeconds       int    `json:"ttlSeconds,omitempty"`
 	WorkerOnly       bool   `json:"workerOnly,omitempty"`
 	ProviderHandle   string `json:"providerHandle,omitempty"`
+	NodeUID          string `json:"nodeUid,omitempty"`
+}
+
+// RetireResponse reports the removal of a retired Blazn worker's Node object.
+// Deleted is false when the Node was already gone.
+type RetireResponse struct {
+	SchemaVersion string `json:"schemaVersion"`
+	Operation     string `json:"operation"`
+	ClusterID     string `json:"clusterId"`
+	NodeName      string `json:"nodeName"`
+	NodeUID       string `json:"nodeUid"`
+	Deleted       bool   `json:"deleted"`
 }
 
 type ObserveResponse struct {
@@ -98,6 +110,13 @@ func DecodeRequest(data []byte) (Request, error) {
 		if !uuidPattern.MatchString(req.IssuanceID) || len(req.ClusterID) < 1 || len(req.ClusterID) > 128 ||
 			!namePattern.MatchString(req.ExpectedNodeName) || req.BootstrapTaint != BootstrapTaint {
 			return Request{}, invalid("observe binding is invalid")
+		}
+	case "retire":
+		for _, key := range []string{"clusterId", "expectedNodeName", "nodeUid"} {
+			allowed[key] = true
+		}
+		if len(req.ClusterID) < 1 || len(req.ClusterID) > 128 || !namePattern.MatchString(req.ExpectedNodeName) || !uuidPattern.MatchString(req.NodeUID) {
+			return Request{}, invalid("retire binding is invalid")
 		}
 	case "revoke":
 		allowed["providerHandle"] = true

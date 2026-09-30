@@ -440,7 +440,7 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 		map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": json.Number("300")},
 		map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": json.Number("300")},
 	}
-	if !removeExactDefault(observed, "tolerations", defaultTolerations) {
+	if !removeDefaultTolerations(observed, defaultTolerations) {
 		return false
 	}
 	if pullSecrets, exists := observed["imagePullSecrets"]; exists {
@@ -481,6 +481,30 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 		}
 	}
 	return reflect.DeepEqual(observed, expectedObject)
+}
+
+// removeDefaultTolerations strips the NoExecute tolerations the
+// DefaultTolerationSeconds admission plugin appends after the template's own
+// tolerations. Each default is removed at most once and only from the tail, so
+// any other toleration is left for the exact comparison with the expected spec.
+func removeDefaultTolerations(object map[string]any, defaults []any) bool {
+	value, exists := object["tolerations"]
+	if !exists {
+		return true
+	}
+	tolerations, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	if len(tolerations) >= len(defaults) && reflect.DeepEqual(tolerations[len(tolerations)-len(defaults):], defaults) {
+		tolerations = tolerations[:len(tolerations)-len(defaults)]
+	}
+	if len(tolerations) == 0 {
+		delete(object, "tolerations")
+	} else {
+		object["tolerations"] = tolerations
+	}
+	return true
 }
 
 func removeExactDefault(object map[string]any, key string, expected any) bool {

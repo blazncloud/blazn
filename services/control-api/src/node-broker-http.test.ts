@@ -32,3 +32,15 @@ test("internal broker errors log a bounded single line without multiline content
   assert.match(internalBrokerErrorLine("x","r"),/name=UnknownError code=none message=""/);
   assert.equal(internalBrokerErrorLine(new Error("y".repeat(500)),"r").length<300,true);
 });
+
+test("broker HTTP removes a retired worker only through the closed retirement route",async()=>{
+  let seen:unknown;const service={async retireNode(value:unknown){seen=value;return true;}} as unknown as NodeBrokerService,server=createNodeBrokerServer(service);
+  await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`,retirement={clusterId:"cluster-a",nodeName:"worker-a",nodeUid:"44444444-4444-4444-8444-444444444444"};
+  try{
+    const response=await fetch(`${origin}/v1/node-service/node-retirements`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(retirement)});
+    assert.equal(response.status,200);assert.deepEqual(await response.json(),{deleted:true});assert.deepEqual(seen,retirement);
+    const extra=await fetch(`${origin}/v1/node-service/node-retirements`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...retirement,force:true})});assert.equal(extra.status,400);
+    const bearer=await fetch(`${origin}/v1/node-service/node-retirements`,{method:"POST",headers:{"content-type":"application/json",authorization:"Bearer user-token"},body:JSON.stringify(retirement)});assert.equal(bearer.status,401);
+    assert.equal((await fetch(`${origin}/v1/node-service/node-retirements`)).status,405);
+  }finally{await new Promise<void>(r=>server.close(()=>r()));}
+});

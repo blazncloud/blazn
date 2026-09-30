@@ -21,6 +21,14 @@ type fakeBackend struct {
 	failHealthy           bool
 	observation           NodeObservation
 	failObserve           bool
+	retired               []string
+	retireDeleted         bool
+	retireErr             error
+}
+
+func (f *fakeBackend) Retire(_ context.Context, name, uid string) (bool, error) {
+	f.retired = append(f.retired, name+"/"+uid)
+	return f.retireDeleted, f.retireErr
 }
 
 func (f *fakeBackend) Observe(_ context.Context, name string) (NodeObservation, error) {

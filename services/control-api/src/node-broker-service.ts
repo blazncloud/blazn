@@ -53,6 +53,18 @@ export class NodeBrokerService {
     }
   }
 
+  // retireNode removes the Node object of a worker the control API has
+  // already retired. The issuer deletes only a Blazn worker with the bound UID
+  // that has tainted itself as retired and left the cluster.
+  async retireNode(input: { clusterId: string; nodeName: string; nodeUid: string }): Promise<boolean> {
+    if (!input.clusterId || input.clusterId.length > 128 || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(input.nodeName) || !UUID.test(input.nodeUid)) {
+      invalid("retired worker binding is invalid");
+    }
+    if (!this.issuer.retire) throw new Error("retired worker remover is unavailable");
+    const result = await this.providerCall((signal) => this.issuer.retire!({ clusterId: input.clusterId, expectedNodeName: input.nodeName, nodeUid: input.nodeUid }, signal));
+    return result.deleted;
+  }
+
   async issue(
     idempotencyKey: string,
     request: JoinCredentialRequest,

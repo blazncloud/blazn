@@ -673,6 +673,20 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 	}
 	for index := len(wal.Mutations) - 1; index >= 0; index-- {
 		entry := &wal.Mutations[index]
+		// A fresh worker leaves the shared cluster before its MicroK8s
+		// package is rolled back or retained, whichever uninstall chose.
+		if wal.Lifecycle == "uninstall" && plan.Mode == client.NodeModeFresh && !wal.ClusterLeft && entry.Kind == "package" && entry.Target == "microk8s" {
+			if leaver, ok := i.platform.(interface{ LeaveCluster(context.Context) error }); ok {
+				if err := leaver.LeaveCluster(ctx); err != nil {
+					return residues, fmt.Errorf("leave the cluster before removing the node runtime: %w", err)
+				}
+			}
+			wal.ClusterLeft = true
+			wal.UpdatedAt = nowString(i.now())
+			if err := i.state.SaveWAL(*wal); err != nil {
+				return residues, err
+			}
+		}
 		if entry.Status != "applied" && entry.Status != "pending" {
 			continue
 		}

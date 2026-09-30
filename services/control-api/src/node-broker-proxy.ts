@@ -3,7 +3,7 @@ import { request } from "node:http";
 import { NODE_ERROR_STATUS, type NodeErrorCode } from "./node-types.js";
 
 export interface BrokerProxyReply { status: number; body: Buffer; retryAfter?: string }
-export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply>; observe?(issuanceId:string,body:Record<string,unknown>,signal:AbortSignal):Promise<void>; health(signal: AbortSignal): Promise<void> }
+export interface NodeBrokerProxy { issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply>; observe?(issuanceId:string,body:Record<string,unknown>,signal:AbortSignal):Promise<void>; retire?(body:{clusterId:string;nodeName:string;nodeUid:string},signal:AbortSignal):Promise<boolean>; health(signal: AbortSignal): Promise<void> }
 
 const loopbackOrigin = "http://127.0.0.1:8081";
 export const NODE_BROKER_CALLER_HEADER = "x-blazn-broker-caller";
@@ -65,6 +65,14 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
     const payload=Buffer.from(JSON.stringify(body));if(payload.length>maxBytes)throw new Error("Node broker request is too large");
     const reply=await this.call("POST",`/v1/node-service/join-observations/${issuanceId}`,payload,{"content-type":"application/json"},signal);
     if(reply.status!==200||reply.body.toString("utf8")!=='{"verified":true}')throw new Error("Node broker rejected the joined worker observation");
+  }
+
+  async retire(body:{clusterId:string;nodeName:string;nodeUid:string},signal:AbortSignal):Promise<boolean>{
+    const payload=Buffer.from(JSON.stringify({clusterId:body.clusterId,nodeName:body.nodeName,nodeUid:body.nodeUid}));if(payload.length>maxBytes)throw new Error("Node broker request is too large");
+    const reply=await this.call("POST","/v1/node-service/node-retirements",payload,{"content-type":"application/json"},signal);
+    const text=reply.body.toString("utf8");
+    if(reply.status!==200||(text!=='{"deleted":true}'&&text!=='{"deleted":false}'))throw new Error("Node broker rejected the retired worker removal");
+    return text==='{"deleted":true}';
   }
 
   private call(method: "GET" | "POST", path: string, payload: Buffer, headers: Record<string, string>, signal: AbortSignal): Promise<BrokerProxyReply> {
