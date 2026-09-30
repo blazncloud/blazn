@@ -1,6 +1,9 @@
 package node
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestJoinCertificateCheckMatchesMicroK8s(t *testing.T) {
 	for _, value := range []string{"fee24a55f47e", "check-value-123456"} {
@@ -23,5 +26,20 @@ func TestPreferredJoinURLMatchesSignedAPIServerHost(t *testing.T) {
 	}
 	if got := preferredJoinURL(urls, "https://192.168.0.200:16443"); got != urls[0] {
 		t.Fatalf("fallback selected %q", got)
+	}
+}
+
+func TestMicroK8sJoinRunsInSnapContextWithTokenOnStdinOnly(t *testing.T) {
+	args := microK8sJoinArguments()
+	if len(args) != 7 || args[0] != "run" || args[1] != "--shell" || args[2] != "microk8s" || args[3] != "-c" || args[6] != microK8sJoinStdinProgram {
+		t.Fatalf("unexpected join invocation %#v", args)
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, ":25000/") {
+			t.Fatalf("join URL leaked into argv: %q", arg)
+		}
+	}
+	if !strings.Contains(microK8sJoinStdinProgram, `sys.path.insert(0,"/snap/microk8s/current/scripts/wrappers")`) || !strings.Contains(microK8sJoinStdinProgram, "sys.stdin.readline()") {
+		t.Fatal("join program must import MicroK8s wrapper modules and read the URL from stdin")
 	}
 }
