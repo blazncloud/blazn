@@ -1,5 +1,5 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: 28e58f649cdf4e65034c3dba3003b547bf6580bf4ad1381ac4cf056f6b8fc7e2
+// OpenAPI SHA256: 8663978a4e12894c91cb8ab81833bb3e5817cfc5218c41aa427620d1e7c7c9ce
 // NodeInstallPlan SHA256: b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f
 // NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
 // NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
@@ -150,6 +150,10 @@ type ExchangeNodeEnrollmentRequest struct {
 	Platform           NodePlatform       `json:"platform"`
 	Architecture       NodeArchitecture   `json:"architecture"`
 	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
+}
+
+type NodeRetirementRequest struct {
+	Receipt NodeInstallReceipt `json:"receipt"`
 }
 
 type NodeActivationRequest struct {
@@ -2487,6 +2491,15 @@ func (c *Client) ActivateNode(ctx context.Context, nodeProof, idempotencyKey str
 		return output, fmt.Errorf("node activation request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/activations", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RetireNode(ctx context.Context, nodeProof, idempotencyKey string, request NodeRetirementRequest) (Node, error) {
+	var output Node
+	if nodeProof == "" || !validNodeIdempotencyKey(idempotencyKey) || ValidateNodeInstallReceipt(request.Receipt) != nil || request.Receipt.State != "removed" || len(request.Receipt.Residues) != 0 {
+		return output, fmt.Errorf("node retirement request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/retirements", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
 	return output, err
 }
 

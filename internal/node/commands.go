@@ -216,6 +216,48 @@ func (c *CommandRuntime) beginAndResumeUninstallCleanup(ctx context.Context, pla
 	}
 	return c.resumeUninstallCleanup(ctx, store, journal)
 }
+
+type retirementAPI interface {
+	RetireNode(context.Context, string, string, client.NodeRetirementRequest) (client.Node, error)
+}
+
+// retireRemovedNode tells the control plane that the node identity has
+// uninstalled itself, while that identity still exists to sign the request.
+// A transport or server failure keeps the cleanup journal so rerunning
+// uninstall retries with the same idempotency key. A definitive rejection
+// (already removed, never activated, or a receipt the server cannot chain)
+// cannot be fixed by retrying, so local cleanup continues.
+func (c *CommandRuntime) retireRemovedNode(ctx context.Context, receipt client.NodeInstallReceipt) error {
+	if c.Service == nil || c.Identities == nil {
+		return nil
+	}
+	api, ok := c.Service.api.(retirementAPI)
+	if !ok {
+		return errors.New("node retirement API is unavailable")
+	}
+	identity, err := c.Identities.LoadOrCreate()
+	if err != nil {
+		return fmt.Errorf("load node identity for retirement: %w", err)
+	}
+	request := client.NodeRetirementRequest{Receipt: receipt}
+	proof, err := nodeProof(identity.PrivateKey, "blazn-node-retirement-v1", request)
+	if err != nil {
+		return err
+	}
+	retired, err := api.RetireNode(ctx, proof, "node-retire-"+receipt.ReceiptID, request)
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && (apiErr.Body.Code == "identity_rejected" || apiErr.Body.Code == "state_conflict") {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("retire node with the control plane (rerun uninstall to retry): %w", err)
+	}
+	if retired.ID != receipt.NodeID || retired.LifecycleState != "removed" {
+		return errors.New("retirement response differs from the removed node")
+	}
+	return nil
+}
+
 func (c *CommandRuntime) resumePendingUninstallCleanup(ctx context.Context) (client.NodeInstallReceipt, bool, error) {
 	if c.PrepareState != nil {
 		if err := c.PrepareState(ctx); err != nil {
@@ -278,6 +320,9 @@ func (c *CommandRuntime) resumeUninstallCleanup(ctx context.Context, store FileS
 		}
 	}
 	if cleanupCheckpointRank(wal.Checkpoint) < 3 {
+		if err := c.retireRemovedNode(ctx, journal.Receipt); err != nil {
+			return err
+		}
 		if err := removeLocalNodeState(store); err != nil {
 			return err
 		}

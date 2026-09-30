@@ -194,10 +194,14 @@ func (c PipeObservationClient) Call(ctx context.Context, request RootRequest) (R
 	command := exec.CommandContext(runCtx, "/usr/bin/sudo", "-n", c.HelperPath, RootObserveSubcommand)
 	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
 	var stdout bytes.Buffer
-	command.Stdout = &limitedOutput{writer: &stdout, remaining: 2 << 20}
+	stdoutLimit := &limitedOutput{writer: &stdout, remaining: 2 << 20}
+	command.Stdout = stdoutLimit
 	command.Stderr = &limitedOutput{writer: &bytes.Buffer{}, remaining: 4096}
 	if err := command.Run(); err != nil {
 		return RootResponse{}, errors.New("root observation helper failed")
+	}
+	if stdoutLimit.overflow {
+		return RootResponse{}, errors.New("root observation helper output exceeded limit")
 	}
 	return decodeRootResponse(&stdout)
 }
@@ -224,14 +228,18 @@ func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (Ro
 	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
 	command.Stdin = bytes.NewReader(encoded)
 	var stdout bytes.Buffer
-	command.Stdout = &limitedOutput{writer: &stdout, remaining: 2 << 20}
+	stdoutLimit := &limitedOutput{writer: &stdout, remaining: 2 << 20}
+	command.Stdout = stdoutLimit
 	var helperStderr bytes.Buffer
-	command.Stderr = &limitedOutput{writer: &helperStderr, remaining: 4096}
+	command.Stderr = &limitedOutput{writer: &helperStderr, remaining: 4096, keepTail: true}
 	if err := command.Run(); err != nil {
 		if detail := rootHelperFailureDetail(helperStderr.String()); detail != "" {
 			return response, fmt.Errorf("root helper operation failed: %s", detail)
 		}
 		return response, errors.New("root helper operation failed")
+	}
+	if stdoutLimit.overflow {
+		return response, errors.New("root helper output exceeded limit")
 	}
 	return decodeRootResponse(&stdout)
 }
@@ -249,17 +257,38 @@ func decodeRootResponse(input io.Reader) (RootResponse, error) {
 	return response, nil
 }
 
+// limitedOutput bounds what is retained from a child process but always
+// drains the pipe. Returning a write error would make os/exec close the read
+// end, and the child's next write would kill it with SIGPIPE part-way through
+// a privileged mutation. With keepTail set, the most recent bytes are kept so
+// a final diagnostic line survives verbose output.
 type limitedOutput struct {
 	writer    *bytes.Buffer
 	remaining int
+	keepTail  bool
+	overflow  bool
 }
 
 func (l *limitedOutput) Write(value []byte) (int, error) {
-	if len(value) > l.remaining {
-		return 0, errors.New("root helper output exceeded limit")
+	if len(value) <= l.remaining {
+		l.remaining -= len(value)
+		return l.writer.Write(value)
 	}
-	l.remaining -= len(value)
-	return l.writer.Write(value)
+	l.overflow = true
+	if l.keepTail {
+		limit := l.writer.Len() + l.remaining
+		combined := append(append([]byte{}, l.writer.Bytes()...), value...)
+		if len(combined) > limit {
+			combined = combined[len(combined)-limit:]
+		}
+		l.writer.Reset()
+		l.writer.Write(combined)
+		l.remaining = limit - len(combined)
+	} else {
+		l.writer.Write(value[:l.remaining])
+		l.remaining = 0
+	}
+	return len(value), nil
 }
 
 type PlatformAdapter struct {

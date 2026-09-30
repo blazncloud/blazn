@@ -112,6 +112,10 @@ type ExchangeNodeEnrollmentRequest struct {
 	KubernetesBinding  *KubernetesBinding `json:"kubernetesBinding,omitempty"`
 }
 
+type NodeRetirementRequest struct {
+	Receipt NodeInstallReceipt `json:"receipt"`
+}
+
 type NodeActivationRequest struct {
 	ExpectedVersion    int64              `json:"expectedVersion"`
 	Receipt            NodeInstallReceipt `json:"receipt"`
@@ -2445,6 +2449,15 @@ func (c *Client) ActivateNode(ctx context.Context, nodeProof, idempotencyKey str
 		return output, fmt.Errorf("node activation request is invalid")
 	}
 	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/activations", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
+	return output, err
+}
+
+func (c *Client) RetireNode(ctx context.Context, nodeProof, idempotencyKey string, request NodeRetirementRequest) (Node, error) {
+	var output Node
+	if nodeProof == "" || !validNodeIdempotencyKey(idempotencyKey) || ValidateNodeInstallReceipt(request.Receipt) != nil || request.Receipt.State != "removed" || len(request.Receipt.Residues) != 0 {
+		return output, fmt.Errorf("node retirement request is invalid")
+	}
+	err := c.nodeDo(ctx, http.MethodPost, "/v1/node-service/retirements", "", nodeProof, idempotencyKey, request, &output, http.StatusOK)
 	return output, err
 }
 

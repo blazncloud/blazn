@@ -9,6 +9,7 @@ export interface NodeActivationAuthority extends ActiveNodeIdentity { planId: st
 export interface HeartbeatState { identityGeneration: number; bootId: string; sequence: number; sentAt: Date; capabilityDigest: string | null; requestDigest: string | null }
 export interface JoinConsumeReceipt { issuanceId: string; requestDigest: string }
 export interface RecoverableNode { nodeId: string; nextIdentityGeneration: number }
+export interface NodeRetirementAuthority { nodeId: string; workspaceId: string; lifecycleState: string; nodeVersion: number; generation: number | null; publicKey: string; publicKeyFingerprint: string; signingKeyId: string; planDigest: string; activeReceiptGeneration: number }
 
 export interface NodeTransaction {
   lockIdempotency(principalId: string, operation: string, key: string): Promise<void>;
@@ -28,6 +29,9 @@ export interface NodeTransaction {
   activationReplay(nodeId: string, idempotencyKey: string, requestDigest: string, receiptDigest: string): Promise<NodeActivationGrant | undefined>;
   activationAuthority(nodeId: string, planId: string): Promise<NodeActivationAuthority | undefined>;
   activateNode(input: { nodeId: string; expectedVersion: number; idempotencyKey: string; requestDigest: string; receipt: Record<string, unknown>; receiptId: string; receiptDigest: string; planId: string; identityGeneration: number; signerFingerprint: string; signingKeyId: string; signature: string; priorKubernetesBinding: KubernetesBinding; kubernetesBinding: KubernetesBinding; activationGrant: NodeActivationGrant }): Promise<{node:NodeView;activationGrant:NodeActivationGrant}>;
+  retirementReplay(nodeId: string, idempotencyKey: string): Promise<{ requestDigest: string } | undefined>;
+  retirementAuthority(nodeId: string, planId: string, receiptId: string): Promise<NodeRetirementAuthority | undefined>;
+  retireNode(input: { nodeId: string; expectedVersion: number; identityGeneration: number; idempotencyKey: string; requestDigest: string; receiptId: string; receiptDigest: string }): Promise<NodeView>;
   heartbeatState(nodeId: string): Promise<HeartbeatState | undefined>;
   bootObserved(nodeId: string, identityGeneration: number, bootId: string): Promise<boolean>;
   observeBoot(nodeId: string, workspaceId: string, identityGeneration: number, bootId: string, sentAt: Date): Promise<void>;
@@ -156,6 +160,26 @@ class PgNodeTransaction implements NodeTransaction {
     const prior=input.priorKubernetesBinding,next=input.kubernetesBinding;const updated=await this.client.query(`UPDATE nodes SET lifecycle_state='active',trust_state='verified',agent_eligible=true,kubernetes_resource_version=$7,version=version+1,updated_at=now() WHERE id=$1 AND version=$2 AND lifecycle_state IN ('installing','verifying') AND trust_state='verifying' AND kubernetes_cluster_id=$3 AND kubernetes_node_name=$4 AND kubernetes_node_uid=$5 AND kubernetes_resource_version=$6 RETURNING workspace_id`,[input.nodeId,input.expectedVersion,prior.clusterId,prior.nodeName,prior.nodeUid,prior.resourceVersion,next.resourceVersion]);if(!updated.rowCount)throw Object.assign(new Error("node activation compare-and-set failed"),{nodeCode:"version_conflict"});const workspaceId=updated.rows[0]!.workspace_id;
     await this.client.query(`INSERT INTO node_install_receipts(id,workspace_id,node_id,plan_id,receipt_digest,signer_kind,identity_generation,signer_fingerprint,signing_key_id,signature,payload,activation_idempotency_key,request_digest,expected_node_version,activation_grant) VALUES($1,$2,$3,$4,$5,'node_identity',$6,$7,$8,$9,$10,$11,$12,$13,$14)`,[input.receiptId,workspaceId,input.nodeId,input.planId,input.receiptDigest,input.identityGeneration,input.signerFingerprint,input.signingKeyId,input.signature,input.receipt,input.idempotencyKey,input.requestDigest,input.expectedVersion,input.activationGrant]);
     await this.client.query("UPDATE node_install_plans SET status='accepted',accepted_at=COALESCE(accepted_at,now()) WHERE id=$1 AND status IN ('issued','accepted')",[input.planId]);await this.client.query("UPDATE node_enrollments e SET status='consumed',consumed_by_node_id=$2,consumed_at=COALESCE(consumed_at,now()),version=CASE WHEN status='exchanged' THEN version+1 ELSE version END WHERE e.id=(SELECT enrollment_id FROM node_install_plans WHERE id=$1) AND status IN ('exchanged','consumed')",[input.planId,input.nodeId]);await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,'node.activated',$3)",[workspaceId,input.nodeId,{receiptId:input.receiptId,receiptDigest:`sha256:${input.receiptDigest}`,idempotencyKey:input.idempotencyKey,expectedVersion:input.expectedVersion,kubernetesBinding:input.kubernetesBinding}]);const node=await this.nodeById(input.nodeId);if(!node)throw new Error("activated node disappeared");return{node,activationGrant:input.activationGrant};
+  }
+  async retirementReplay(nodeId:string,idempotencyKey:string):Promise<{requestDigest:string}|undefined>{
+    const result=await this.client.query("SELECT payload->>'requestDigest' AS request_digest FROM node_audit_events WHERE node_id=$1 AND event_type='node.retired' AND payload->>'idempotencyKey'=$2 ORDER BY created_at DESC LIMIT 1",[nodeId,idempotencyKey]);
+    const row=result.rows[0];return row?{requestDigest:String(row.request_digest)}:undefined;
+  }
+  async retirementAuthority(nodeId:string,planId:string,receiptId:string):Promise<NodeRetirementAuthority|undefined>{
+    const result=await this.client.query(`SELECT n.id AS node_id,n.workspace_id,n.lifecycle_state,n.version AS node_version,i.generation,i.public_key,i.public_key_fingerprint,i.signing_key_id,p.plan_digest,(r.payload->>'generation')::bigint AS active_receipt_generation
+      FROM nodes n JOIN node_install_plans p ON p.node_id=n.id AND p.id=$2 JOIN node_install_receipts r ON r.node_id=n.id AND r.id=$3 AND r.plan_id=p.id
+      LEFT JOIN node_identities i ON i.node_id=n.id AND i.generation=n.current_identity_generation AND i.status='active'
+      WHERE n.id=$1 FOR UPDATE OF n`,[nodeId,planId,receiptId]);
+    const r=result.rows[0];if(!r)return undefined;
+    return{nodeId:r.node_id,workspaceId:r.workspace_id,lifecycleState:r.lifecycle_state,nodeVersion:Number(r.node_version),generation:r.generation===null?null:Number(r.generation),publicKey:r.public_key??"",publicKeyFingerprint:String(r.public_key_fingerprint??"").trim(),signingKeyId:r.signing_key_id??"",planDigest:String(r.plan_digest).trim(),activeReceiptGeneration:Number(r.active_receipt_generation)};
+  }
+  async retireNode(input:{nodeId:string;expectedVersion:number;identityGeneration:number;idempotencyKey:string;requestDigest:string;receiptId:string;receiptDigest:string}):Promise<NodeView>{
+    const updated=await this.client.query(`UPDATE nodes SET lifecycle_state='removed',trust_state='revoked',agent_eligible=false,current_identity_generation=NULL,current_identity_status=NULL,offline_after=NULL,version=version+1,updated_at=now() WHERE id=$1 AND version=$2 AND lifecycle_state<>'removed' AND current_identity_generation=$3 RETURNING workspace_id`,[input.nodeId,input.expectedVersion,input.identityGeneration]);
+    if(!updated.rowCount)throw Object.assign(new Error("node retirement compare-and-set failed"),{nodeCode:"version_conflict"});
+    const workspaceId=updated.rows[0]!.workspace_id;
+    await this.client.query("UPDATE node_identities SET status='revoked',revoked_at=now() WHERE node_id=$1 AND generation=$2 AND status='active'",[input.nodeId,input.identityGeneration]);
+    await this.client.query("INSERT INTO node_audit_events(id,workspace_id,node_id,event_type,payload) VALUES(gen_random_uuid(),$1,$2,'node.retired',$3)",[workspaceId,input.nodeId,{receiptId:input.receiptId,receiptDigest:`sha256:${input.receiptDigest}`,idempotencyKey:input.idempotencyKey,requestDigest:input.requestDigest,expectedVersion:input.expectedVersion,identityGeneration:input.identityGeneration}]);
+    const node=await this.nodeById(input.nodeId);if(!node)throw new Error("retired node disappeared");return node;
   }
   async heartbeatState(nodeId: string): Promise<HeartbeatState | undefined> {
     const result=await this.client.query("SELECT * FROM node_heartbeat_state WHERE node_id=$1",[nodeId]); const r=result.rows[0];
