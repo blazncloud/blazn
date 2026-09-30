@@ -360,7 +360,7 @@ func sameCreateSpec(observed, expected kubeSandbox) bool {
 	if observed.APIVersion != expected.APIVersion || observed.Kind != expected.Kind ||
 		observed.Metadata.Name != expected.Metadata.Name || observed.Metadata.Namespace != expected.Metadata.Namespace ||
 		!objectIDPattern.MatchString(observed.Metadata.UID) || !objectIDPattern.MatchString(observed.Metadata.ResourceVersion) ||
-		!sameMaterialSpec(observed.RawSpec, expected.Spec) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
+		!sameMaterialSpec(observed.RawSpec, legacyTolerationSpec(observed.RawSpec, expected.Spec)) || !sameJSON(observed.Metadata.Finalizers, expected.Metadata.Finalizers) {
 		return false
 	}
 	for key, value := range expected.Metadata.Labels {
@@ -374,6 +374,24 @@ func sameCreateSpec(observed, expected kubeSandbox) bool {
 		}
 	}
 	return true
+}
+
+// legacyTolerationSpec compares a Sandbox created before Pods carried the
+// sandbox-only toleration against the spec without it. Omitting a toleration
+// can only narrow placement, so accepting the older shape widens nothing.
+func legacyTolerationSpec(observed json.RawMessage, expected kubeSandboxSpec) kubeSandboxSpec {
+	var probe struct {
+		PodTemplate struct {
+			Spec map[string]json.RawMessage `json:"spec"`
+		} `json:"podTemplate"`
+	}
+	if json.Unmarshal(observed, &probe) != nil {
+		return expected
+	}
+	if _, present := probe.PodTemplate.Spec["tolerations"]; !present {
+		expected.PodTemplate.Spec.Tolerations = nil
+	}
+	return expected
 }
 
 func sameJSON(left, right any) bool {

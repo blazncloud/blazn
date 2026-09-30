@@ -442,9 +442,14 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 	}
 	// DefaultTolerationSeconds appends its two tolerations after the rendered
 	// ones; the rendered list alone (plugin disabled) is also exact.
+	// A Pod admitted before Sandbox Pods carried the sandbox-only toleration
+	// has only the defaults; it is compared as the older rendered shape.
 	if expectedTolerations, ok := expectedObject["tolerations"].([]any); ok {
 		if reflect.DeepEqual(observed["tolerations"], append(append([]any(nil), expectedTolerations...), defaultTolerations...)) {
 			observed["tolerations"] = expectedObject["tolerations"]
+		} else if current, present := observed["tolerations"]; !present || reflect.DeepEqual(current, defaultTolerations) {
+			delete(observed, "tolerations")
+			delete(expectedObject, "tolerations")
 		}
 	} else if !removeExactDefault(observed, "tolerations", defaultTolerations) {
 		return false

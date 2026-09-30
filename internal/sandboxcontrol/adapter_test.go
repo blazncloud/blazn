@@ -858,6 +858,58 @@ func TestObserveAdmissionAcceptsOnlyExactAPIMaterializedPodDefaults(t *testing.T
 	}
 }
 
+func TestObserveAdmissionAcceptsPodsAdmittedBeforeTheSandboxOnlyToleration(t *testing.T) {
+	for name, tolerations := range map[string]any{
+		"absent": nil,
+		"defaults only": []any{
+			map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
+			map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeAPI(t)
+			request := testCreate()
+			adapter := testAdapter(t, fake, &fakeExporter{})
+			record, _, err := adapter.Create(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake.mutatePodResponse = func(document map[string]any) {
+				spec := document["items"].([]any)[0].(map[string]any)["spec"].(map[string]any)
+				delete(spec, "tolerations")
+				if tolerations != nil {
+					spec["tolerations"] = tolerations
+				}
+			}
+			if _, err := adapter.ObserveAdmission(context.Background(), request, record, nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestLegacySandboxSpecWithoutTolerationStillMatches(t *testing.T) {
+	manifest := render(testCreate(), "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64))
+	legacy := manifest.Spec
+	legacy.PodTemplate.Spec.Tolerations = nil
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameMaterialSpec(raw, legacyTolerationSpec(raw, manifest.Spec)) {
+		t.Fatal("a Sandbox created before the sandbox-only toleration must still match")
+	}
+	widened := manifest.Spec
+	widened.PodTemplate.Spec.Tolerations = []kubeToleration{{Operator: "Exists"}}
+	raw, err = json.Marshal(widened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameMaterialSpec(raw, legacyTolerationSpec(raw, manifest.Spec)) {
+		t.Fatal("a widened toleration must not match")
+	}
+}
+
 func TestObserveAbsenceFindsExactOwnedOrphansWithoutLabels(t *testing.T) {
 	fake := newFakeAPI(t)
 	request := testCreate()
@@ -1394,10 +1446,9 @@ func TestFakeAPIClientBoundsStalledHandlerAndCleanup(t *testing.T) {
 
 func materialPodSpecMutations() map[string]func(map[string]any) {
 	return map[string]func(map[string]any){
-		"host network":       func(spec map[string]any) { spec["hostNetwork"] = true },
-		"host PID":           func(spec map[string]any) { spec["hostPID"] = true },
-		"DNS policy":         func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
-		"toleration removed": func(spec map[string]any) { delete(spec, "tolerations") },
+		"host network": func(spec map[string]any) { spec["hostNetwork"] = true },
+		"host PID":     func(spec map[string]any) { spec["hostPID"] = true },
+		"DNS policy":   func(spec map[string]any) { spec["dnsPolicy"] = "Default" },
 		"toleration widened": func(spec map[string]any) {
 			spec["tolerations"] = []any{map[string]any{"operator": "Exists"}}
 		},
