@@ -190,11 +190,24 @@ func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (Bac
 	if json.Unmarshal(out, &parsed) != nil || !subtleTokenCheck(parsed.Token, token) {
 		return BackendIssue{}, fmt.Errorf("unexpected MicroK8s credential")
 	}
+	usable := make([]string, 0, len(parsed.URLs))
 	for _, candidate := range parsed.URLs {
+		if bareIPv6JoinURL(candidate) {
+			// MicroK8s v1.35 prints every host address, including IPv6
+			// literals without brackets (for example Tailscale fd7a::/48 or a
+			// Docker IPv6 bridge). Such a URL is not a dialable host:port and
+			// is omitted; every remaining URL must still validate exactly.
+			continue
+		}
 		if !validJoinURL(candidate, parsed.Token) {
 			return BackendIssue{}, fmt.Errorf("unexpected MicroK8s URL")
 		}
+		usable = append(usable, candidate)
 	}
+	if len(usable) == 0 {
+		return BackendIssue{}, fmt.Errorf("MicroK8s returned no dialable worker URL")
+	}
+	parsed.URLs = usable
 	seen := make(map[string]bool, len(parsed.URLs))
 	for _, candidate := range parsed.URLs {
 		if seen[candidate] {
@@ -455,6 +468,19 @@ func parseTokenFile(data []byte, target string) ([]string, int, int64, int64, er
 	}
 	return lines, count, targetEpoch, targetOffset, nil
 }
+
+// bareIPv6JoinURL reports whether the authority part of a MicroK8s join URL is
+// an unbracketed IPv6 literal followed by a port, such as "fd7a::1:25000/...".
+func bareIPv6JoinURL(candidate string) bool {
+	authority, _, _ := strings.Cut(candidate, "/")
+	if strings.ContainsAny(authority, "[]") || strings.Count(authority, ":") < 2 {
+		return false
+	}
+	index := strings.LastIndex(authority, ":")
+	ip := net.ParseIP(authority[:index])
+	return ip != nil && ip.To4() == nil
+}
+
 func validJoinURL(candidate, tokenCheck string) bool {
 	u, err := url.Parse("https://" + candidate)
 	if err != nil || u.User != nil || u.Scheme != "https" || u.RawQuery != "" || u.Fragment != "" || u.Path != "/"+tokenCheck {

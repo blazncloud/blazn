@@ -33,7 +33,7 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
   private readonly callerKey?: string;
 
   constructor(private readonly timeoutMs = 5_000, options: NodeBrokerProxyOptions = {}) {
-    if (timeoutMs < 1 || timeoutMs > 10_000) throw new Error("Node broker proxy configuration is invalid");
+    if (timeoutMs < 1 || timeoutMs > 30_000) throw new Error("Node broker proxy configuration is invalid");
     const target = nodeBrokerOrigin(options.origin ?? loopbackOrigin);
     if (options.callerKey !== undefined && !callerKeyPattern.test(options.callerKey)) throw new Error("Node broker caller key is invalid");
     if (!target.loopback && options.callerKey === undefined) throw new Error("Node broker caller key is required for a non-loopback broker");
@@ -44,7 +44,9 @@ export class LoopbackNodeBrokerProxy implements NodeBrokerProxy {
   static fromEnvironment(env: NodeJS.ProcessEnv = process.env): LoopbackNodeBrokerProxy {
     const keyFile = env.BLAZN_NODE_BROKER_CALLER_KEY_FILE;
     const callerKey = keyFile ? readFileSync(keyFile, "utf8").trim() : undefined;
-    return new LoopbackNodeBrokerProxy(5_000, { ...(env.BLAZN_NODE_BROKER_URL ? { origin: env.BLAZN_NODE_BROKER_URL } : {}), ...(callerKey !== undefined ? { callerKey } : {}) });
+    // Join issuance runs MicroK8s readiness plus add-node on a loaded control
+    // plane (observed 5-10s); stay inside the CLI's 30s request deadline.
+    return new LoopbackNodeBrokerProxy(25_000, { ...(env.BLAZN_NODE_BROKER_URL ? { origin: env.BLAZN_NODE_BROKER_URL } : {}), ...(callerKey !== undefined ? { callerKey } : {}) });
   }
 
   async issue(body: Record<string, unknown>, idempotencyKey: string, proof: string, signal: AbortSignal): Promise<BrokerProxyReply> {

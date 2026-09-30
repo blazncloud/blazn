@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -200,10 +201,16 @@ func (s *Service) token(r Request) string {
 }
 func requestDigest(r Request) string { raw, _ := json.Marshal(r); return hash(string(raw)) }
 func hash(v string) string           { x := sha256.Sum256([]byte(v)); return hex.EncodeToString(x[:]) }
+
+// subtleTokenCheck accepts MicroK8s "<token>/<server-cert-check>". MicroK8s
+// v1.35 (add_token.py, server_cert_check) emits a 12 hex character check.
 func subtleTokenCheck(check, token string) bool {
 	parts := strings.Split(check, "/")
-	return len(parts) == 2 && hmac.Equal([]byte(parts[0]), []byte(token)) && len(parts[1]) >= 16
+	return len(parts) == 2 && hmac.Equal([]byte(parts[0]), []byte(token)) && len(parts[1]) >= 12 && len(parts[1]) <= 128 && tokenCheckPattern.MatchString(parts[1])
 }
+
+var tokenCheckPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
 func (s *Service) statePath(id string) string { return filepath.Join(s.stateRoot, id+".json") }
 func (s *Service) locked(ctx context.Context, fn func() error) error {
 	if err := os.MkdirAll(s.stateRoot, 0700); err != nil {

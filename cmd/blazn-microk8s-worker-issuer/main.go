@@ -57,7 +57,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	return (&microk8sissuer.Server{Service: service, AllowedUID: cfg.BrokerUID, AllowedGID: cfg.BrokerGID, Timeout: 10 * time.Second, HealthCache: time.Minute}).Serve(socketPath)
+	return (&microk8sissuer.Server{Service: service, AllowedUID: cfg.BrokerUID, AllowedGID: cfg.BrokerGID, Timeout: 18 * time.Second, HealthCache: time.Minute}).Serve(socketPath)
 }
 func readSecureJSON(path string, out any) error {
 	data, err := readSecure(path)

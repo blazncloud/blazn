@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
-import { createNodeBrokerServer } from "./node-broker-http.js";
+import { createNodeBrokerServer, internalBrokerErrorLine } from "./node-broker-http.js";
 import type { NodeBrokerService } from "./node-broker-service.js";
 
 const body={enrollmentId:"11111111-1111-4111-8111-111111111111",planId:"22222222-2222-4222-8222-222222222222",planDigest:`sha256:${"a".repeat(64)}`,nodeId:"33333333-3333-4333-8333-333333333333",machineFingerprint:"b".repeat(64),nodePublicKeyFingerprint:`sha256:${"c".repeat(64)}`};
@@ -23,4 +23,12 @@ test("broker HTTP requires the exact caller key on every route when one is confi
     assert.equal((await fetch(`${origin}/healthz`,{headers:{"x-blazn-broker-caller":key}})).status,200);
     assert.equal(observed,1);
   }finally{await new Promise<void>(r=>server.close(()=>r()));}
+});
+
+test("internal broker errors log a bounded single line without multiline content",()=>{
+  const error=Object.assign(new TypeError("bad\nvalue\u0000"),{code:"23514"});
+  const line=internalBrokerErrorLine(error,"req-1");
+  assert.equal(line,'node broker internal error requestId=req-1 name=TypeError code=23514 message="bad value?"');
+  assert.match(internalBrokerErrorLine("x","r"),/name=UnknownError code=none message=""/);
+  assert.equal(internalBrokerErrorLine(new Error("y".repeat(500)),"r").length<300,true);
 });
