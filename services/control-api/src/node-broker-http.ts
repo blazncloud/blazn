@@ -37,6 +37,7 @@ export function createNodeBrokerServer(service: NodeBrokerService, options: Node
       const input: JoinCredentialRequest = { enrollmentId: text(body.enrollmentId, "enrollmentId", 64), planId: text(body.planId, "planId", 64), planDigest: text(body.planDigest, "planDigest", 71), nodeId: text(body.nodeId, "nodeId", 64), machineFingerprint: text(body.machineFingerprint, "machineFingerprint", 64), nodePublicKeyFingerprint: text(body.nodePublicKeyFingerprint, "nodePublicKeyFingerprint", 71) };
       send(response, 200, await service.issue(idempotency, input, proof));
     } catch (error) {
+      if (!(error instanceof NodeHttpError)) logInternalBrokerError(error, requestId);
       const failure = error instanceof NodeHttpError ? error : new NodeHttpError("internal_error", "internal broker error");
       if (failure.code === "rate_limited") response.setHeader("retry-after", "60");
       send(response, failure.status, nodeErrorBody(failure, requestId));
@@ -50,3 +51,18 @@ function text(value: unknown, name: string, max: number): string { if (typeof va
 function single(request: IncomingMessage, name: string): string { const values = request.headersDistinct[name] ?? []; if (values.length !== 1) throw new NodeHttpError("invalid_request", `${name} must appear exactly once`); return values[0]!; }
 function singleOptional(request: IncomingMessage, name: string): string | undefined { const values = request.headersDistinct[name] ?? []; if (values.length > 1) throw new NodeHttpError("invalid_request", `${name} must not be repeated`); return values[0]; }
 function send(response: ServerResponse, status: number, body: unknown): void { const payload = JSON.stringify(body); response.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), "cache-control": "no-store" }); response.end(payload); }
+
+// Unexpected failures are otherwise invisible: the response is deliberately a
+// generic internal_error. Log only the error class, a bounded single-line
+// message and a Postgres SQLSTATE; broker errors carry no credential material.
+export function internalBrokerErrorLine(error: unknown, requestId: string): string {
+  const value = error instanceof Error ? error : undefined;
+  const name = value && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value.name) ? value.name : "UnknownError";
+  const message = value ? value.message.replace(/[\r\n\t]+/g, " ").replace(/[^\x20-\x7e]/g, "?").slice(0, 200) : "";
+  const code = value && "code" in value && typeof value.code === "string" && /^[A-Z0-9]{5}$/.test(value.code) ? value.code : "none";
+  return `node broker internal error requestId=${requestId} name=${name} code=${code} message=${JSON.stringify(message)}`;
+}
+
+function logInternalBrokerError(error: unknown, requestId: string): void {
+  process.stderr.write(`${internalBrokerErrorLine(error, requestId)}\n`);
+}
