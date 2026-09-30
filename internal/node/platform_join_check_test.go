@@ -56,7 +56,7 @@ func TestMicroK8sJoinRunsInSnapContextWithTokenOnStdinOnly(t *testing.T) {
 func TestJoinRegistersTheWorkerWithTheBootstrapTaint(t *testing.T) {
 	// MicroK8s worker join replaces the kubelet args file with the control
 	// plane's arguments, so the taint must be appended inside that step.
-	for _, fragment := range []string{"m.store_base_kubelet_args=w", `t="--register-with-taints=blazn.dev/bootstrap=pending:NoSchedule,blazn.dev/sandbox-node=true:NoSchedule"`, `l="--node-labels=node.kubernetes.io/exclude-from-external-load-balancers=true"`, `+t+"\n"+l+"\n"`, `"--register-with-taints" in a`} {
+	for _, fragment := range []string{"m.store_base_kubelet_args=w", `t="--register-with-taints=blazn.dev/bootstrap=pending:NoSchedule,blazn.dev/sandbox-node=true:NoSchedule"`, `b(a.rstrip("\n")+"\n"+t+"\n")`, `"--register-with-taints" in a`} {
 		if !strings.Contains(microK8sJoinStdinProgram, fragment) {
 			t.Fatalf("join program lacks %q", fragment)
 		}

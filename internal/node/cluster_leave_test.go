@@ -84,3 +84,32 @@ func TestPodsPendingRetirementRequiresANoExecuteToleration(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinedNodeIsExcludedFromExternalLoadBalancers(t *testing.T) {
+	labelled := false
+	var patch string
+	engine := NativeRootEngine{Platform: "linux", allowTestJoinRuntime: true, Commands: scriptedExecutor{run: func(path string, args []string, _ []byte) ([]byte, error) {
+		switch args[0] {
+		case "get":
+			if labelled {
+				return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"9","labels":{"blazn.dev/node":"true","node.kubernetes.io/exclude-from-external-load-balancers":"true"}}}`), nil
+			}
+			return []byte(`{"metadata":{"name":"worker-1","uid":"uid-1","resourceVersion":"8","labels":{"blazn.dev/node":"true"}}}`), nil
+		case "patch":
+			patch, labelled = args[5], true
+			return []byte(`{}`), nil
+		}
+		t.Fatalf("unexpected %s %v", path, args)
+		return nil, nil
+	}}}
+	refreshed, err := engine.excludeFromExternalLoadBalancers(context.Background(), client.NodeInstallPlan{}, JoinedNode{Name: "worker-1", UID: "uid-1", ResourceVersion: "7"})
+	if err != nil || refreshed.ResourceVersion != "9" || refreshed.UID != "uid-1" {
+		t.Fatalf("refreshed=%#v err=%v", refreshed, err)
+	}
+	if !strings.Contains(patch, `"path":"/metadata/labels/node.kubernetes.io~1exclude-from-external-load-balancers","value":"true"`) || !strings.Contains(patch, `"path":"/metadata/uid","value":"uid-1"`) {
+		t.Fatalf("patch=%s", patch)
+	}
+	if _, err := engine.excludeFromExternalLoadBalancers(context.Background(), client.NodeInstallPlan{}, JoinedNode{Name: "worker-1", UID: "other"}); err == nil {
+		t.Fatal("a changed Node UID must fail")
+	}
+}

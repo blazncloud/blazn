@@ -352,6 +352,9 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if err != nil {
 			return RootResponse{}, err
 		}
+		if joined, err = e.excludeFromExternalLoadBalancers(ctx, request.Plan, joined); err != nil {
+			return RootResponse{}, err
+		}
 		binding, err := e.updateRootKubernetesBinding(request.Plan, joined)
 		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion, KubernetesBinding: binding}, err
 	case RootAbortJoin:
@@ -1956,11 +1959,10 @@ p="/snap/microk8s/current/scripts/wrappers/join.py"
 s=importlib.util.spec_from_file_location("blazn_microk8s_join",p)
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 t="` + microK8sRegistrationTaintArgument + `"
-l="` + microK8sRegistrationLabelArgument + `"
 b=m.store_base_kubelet_args
 def w(a):
     if "--register-with-taints" in a: raise SystemExit(3)
-    b(a.rstrip("\n")+"\n"+t+"\n"+l+"\n")
+    b(a.rstrip("\n")+"\n"+t+"\n")
 m.store_base_kubelet_args=w
 c=sys.stdin.readline().strip()
 if not c: raise SystemExit(2)
@@ -2008,14 +2010,15 @@ const (
 // A Blazn node is a dedicated sandbox host inside a shared cluster. It
 // registers with a permanent sandbox-node taint that only Blazn sandbox Pods
 // tolerate, so the cluster's own DaemonSets (ingress, load-balancer speakers,
-// log shippers) never land on a user's machine, and it is excluded from
-// external load-balancer announcements. Activation removes only the bootstrap
-// taint. Kubelets merge repeated --node-labels flags, so the MicroK8s worker
-// labels the control plane supplies are preserved.
+// log shippers) never land on a user's machine. Activation removes only the
+// bootstrap taint. The load-balancer exclusion label is applied right after
+// the join (see excludeFromExternalLoadBalancers): MicroK8s rewrites the
+// kubelet's --node-labels argument during the join, so a registration flag
+// would be dropped.
 const (
 	SandboxNodeTaintKey               = "blazn.dev/sandbox-node"
 	microK8sRegistrationTaintArgument = microK8sBootstrapTaintArgument + ",blazn.dev/sandbox-node=true:NoSchedule"
-	microK8sRegistrationLabelArgument = "--node-labels=node.kubernetes.io/exclude-from-external-load-balancers=true"
+	externalLoadBalancerExclusion     = "node.kubernetes.io/exclude-from-external-load-balancers"
 )
 
 func nodeKubectlArguments(args []string) []string {

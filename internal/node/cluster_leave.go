@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -185,4 +186,43 @@ func podsPendingRetirement(output []byte) bool {
 		}
 	}
 	return false
+}
+
+// excludeFromExternalLoadBalancers labels a freshly joined worker so that
+// load-balancer speakers never announce service addresses from it, then
+// returns the refreshed Node. The permanent sandbox-node taint already keeps
+// such speakers off; the label also covers a speaker that tolerates it.
+func (e NativeRootEngine) excludeFromExternalLoadBalancers(ctx context.Context, plan client.NodeInstallPlan, joined JoinedNode) (JoinedNode, error) {
+	for attempt := 1; ; attempt++ {
+		state, err := e.readCapacityNode(ctx, plan, joined.Name)
+		if err != nil {
+			return JoinedNode{}, err
+		}
+		if state.UID != joined.UID {
+			return JoinedNode{}, errors.New("joined node UID changed before load-balancer exclusion")
+		}
+		if state.Labels[externalLoadBalancerExclusion] == "true" {
+			return JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion}, nil
+		}
+		path := "/metadata/labels/" + strings.ReplaceAll(strings.ReplaceAll(externalLoadBalancerExclusion, "~", "~0"), "/", "~1")
+		operations := []map[string]any{{"op": "test", "path": "/metadata/uid", "value": state.UID}, {"op": "test", "path": "/metadata/resourceVersion", "value": state.ResourceVersion}}
+		if state.LabelsPresent {
+			operations = append(operations, map[string]any{"op": "add", "path": path, "value": "true"})
+		} else {
+			operations = append(operations, map[string]any{"op": "add", "path": "/metadata/labels", "value": map[string]string{externalLoadBalancerExclusion: "true"}})
+		}
+		encoded, err := json.Marshal(operations)
+		if err != nil {
+			return JoinedNode{}, err
+		}
+		if _, err := e.kubectl(ctx, plan, "patch", "node", joined.Name, "--type=json", "--patch", string(encoded), "-o", "json"); err != nil && attempt >= capacityReleaseAttempts {
+			return JoinedNode{}, errors.New("joined node could not be excluded from external load balancers")
+		} else if err != nil {
+			select {
+			case <-ctx.Done():
+				return JoinedNode{}, ctx.Err()
+			case <-time.After(capacityReleaseInterval):
+			}
+		}
+	}
 }
