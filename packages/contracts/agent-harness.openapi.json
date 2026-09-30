@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {"title": "Blazn Agent and Harness API", "version": "v1alpha1"},
-  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "servers": [{"url": "https://api.blazn.frontro.com"}],
   "paths": {
     "/v1/workspaces/{workspaceId}/agents": {"get": {"operationId": "listAgents"}, "post": {"operationId": "createAgent"}},
     "/v1/workspaces/{workspaceId}/agents/{agentId}": {"get": {"operationId": "getAgent"}},

@@ -19,7 +19,7 @@ import (
 //go:embed project.gen.go.tmpl
 var projectTemplate []byte
 
-const supportedProjectContractSHA256 = "32000a7b33ee03d8d81085ffe6b76c3e43c556285a771f06dbeac3c0b1e07a45"
+const supportedProjectContractSHA256 = "744c6f3050af6b24d2705512ef133e4b7f3df640111a0f2bf8ef5b149b2efba1"
 
 var operations = map[string]string{
 	"POST /v1/workspaces/{workspaceId}/projects":                                   "createProject",
@@ -94,7 +94,7 @@ func validate(document map[string]any, template string) error {
 	if stringAt(document, "openapi") != "3.1.0" || stringAt(document, "info", "version") != "v1alpha1" {
 		return fmt.Errorf("Project contract version changed")
 	}
-	if stringAt(document, "servers", "0", "url") != "https://blazn.benpelo.com" {
+	if stringAt(document, "servers", "0", "url") != "https://api.blazn.frontro.com" {
 		return fmt.Errorf("Project server origin changed")
 	}
 	paths, ok := valueAt(document, "paths").(map[string]any)

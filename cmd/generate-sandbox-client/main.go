@@ -25,7 +25,7 @@ import (
 var clientTemplate []byte
 
 const (
-	openAPISHA256  = "8586de72bf6fef822191842fe68c411c644b583d322cfd758ec2f3a921a7d0d2"
+	openAPISHA256  = "4c60a6fcf07169bdcad7d1f13d270ba8c5342d6857c1b8b588b79616cf06c1e6"
 	templateSHA256 = "46bc1cb68cfacb032d24b5b7f80167fc892157fdbb455594f8e9c0cc9b9770ca"
 	cliSHA256      = "e40063e5f7b1edc107282a637e3d67f1d477467c8e9243d1ae082c0a44c3da83"
 )

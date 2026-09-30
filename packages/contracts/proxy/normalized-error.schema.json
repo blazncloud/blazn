@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/normalized-error.json",
+  "$id": "https://blazn.frontro.com/schemas/proxy/v1alpha1/normalized-error.json",
   "title": "Normalized proxy error",
   "type": "object", "additionalProperties": false,
   "required": ["code", "retryClass", "safeMessage"],

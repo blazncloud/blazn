@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/workspaces.openapi.json; DO NOT EDIT.
-// Contract SHA256: 5ef88c48d07f7e65b8b116a2f5ad10a1d129777611ce0cca9801db5afa5c12e1
+// Contract SHA256: f597d665a49f381312c18ba414c3b2e020bae2274d3d70549b85602960edc7ad
 
 package client
 

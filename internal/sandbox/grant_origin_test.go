@@ -15,7 +15,7 @@ func TestValidateGrantBindsEndpointToAPIOrigin(t *testing.T) {
 	if err := validateGrant(created, sandboxID, client.SandboxGrantExec, now, "https://api.blazn.frontro.com"); err != nil {
 		t.Fatalf("same-origin endpoint rejected: %v", err)
 	}
-	if err := validateGrant(created, sandboxID, client.SandboxGrantExec, now, "https://blazn.benpelo.com"); err == nil {
+	if err := validateGrant(created, sandboxID, client.SandboxGrantExec, now, "https://attacker.example"); err == nil {
 		t.Fatal("cross-origin endpoint accepted")
 	}
 	for _, endpoint := range []string{

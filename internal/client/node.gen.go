@@ -1,8 +1,8 @@
 // Code generated from the Blazn node contracts; DO NOT EDIT.
-// OpenAPI SHA256: 8663978a4e12894c91cb8ab81833bb3e5817cfc5218c41aa427620d1e7c7c9ce
-// NodeInstallPlan SHA256: b84d9c550e18aa58dc81aa7c03b9adbefd63959906e049e77f7bc1607e57887f
-// NodeInstallReceipt SHA256: 459977cde65802a09cb1259dabd3029e0a505511adbe1f2eea4bab98c4e1bad6
-// NodeOperationReceipt SHA256: 95445951f5fb917e80668e45e0a82ebbed24735b575a16e8fdad56824214c79b
+// OpenAPI SHA256: c06c4a9e64dee67521cb7a501c83ac3afc672ad660451e586fa308ca61387f42
+// NodeInstallPlan SHA256: e8cbc6566ae144e020338d173cea6c28c1cca616306cccdc3c2ffa69045bf123
+// NodeInstallReceipt SHA256: 311cee0270fd2051db8fef7b8f2a513277b602be2d03241613c3a9a9dd1b0551
+// NodeOperationReceipt SHA256: 2046d961f3af261e38e5e81e66275e88e53b98077167e7f86fe59f045cb004c8
 
 package client
 

@@ -148,7 +148,7 @@ func newFakeService(api *fakeAPI) *Service {
 func grant(kind client.SandboxGrantKind, sandboxID string) client.SandboxAccessGrantCreated {
 	now := time.Now().UTC()
 	scope := map[client.SandboxGrantKind]string{client.SandboxGrantExec: "sandbox.exec", client.SandboxGrantUpload: "sandbox.upload", client.SandboxGrantDownload: "sandbox.download"}[kind]
-	return client.SandboxAccessGrantCreated{Grant: client.SandboxAccessGrant{ID: "22222222-2222-4222-8222-222222222222", SandboxID: sandboxID, WorkspaceID: "33333333-3333-4333-8333-333333333333", Scope: scope, Kind: kind, State: client.SandboxGrantActive, CreatedAt: now.Add(-time.Second).Format(time.RFC3339Nano), ExpiresAt: now.Add(30 * time.Second).Format(time.RFC3339Nano)}, AccessToken: strings.Repeat("g", 43), Endpoint: "https://blazn.benpelo.com/v1/sandbox-access-grants/22222222-2222-4222-8222-222222222222"}
+	return client.SandboxAccessGrantCreated{Grant: client.SandboxAccessGrant{ID: "22222222-2222-4222-8222-222222222222", SandboxID: sandboxID, WorkspaceID: "33333333-3333-4333-8333-333333333333", Scope: scope, Kind: kind, State: client.SandboxGrantActive, CreatedAt: now.Add(-time.Second).Format(time.RFC3339Nano), ExpiresAt: now.Add(30 * time.Second).Format(time.RFC3339Nano)}, AccessToken: strings.Repeat("g", 43), Endpoint: "https://api.blazn.frontro.com/v1/sandbox-access-grants/22222222-2222-4222-8222-222222222222"}
 }
 
 func TestExecKeepsGrantInMemoryAndTruncationIsPartial(t *testing.T) {

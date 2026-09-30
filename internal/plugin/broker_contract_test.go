@@ -20,7 +20,7 @@ func TestBrokerRequestContractIsClosedScopedAndSecretFree(t *testing.T) {
 	if err := json.Unmarshal(encoded, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document["$id"] != "https://blazn.benpelo.com/contracts/plugin-broker-request-v1.schema.json" {
+	if document["$id"] != "https://blazn.frontro.com/contracts/plugin-broker-request-v1.schema.json" {
 		t.Fatalf("schema id=%v", document["$id"])
 	}
 	methods := collectBrokerMethodConstants(document)

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/policy.json",
+  "$id": "https://blazn.frontro.com/schemas/proxy/v1alpha1/policy.json",
   "title": "Blazn LLM router policy",
   "type": "object",
   "additionalProperties": false,

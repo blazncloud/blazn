@@ -19,7 +19,7 @@ import (
 //go:embed workspace.gen.go.tmpl
 var workspaceTemplate []byte
 
-const supportedWorkspaceContractSHA256 = "5ef88c48d07f7e65b8b116a2f5ad10a1d129777611ce0cca9801db5afa5c12e1"
+const supportedWorkspaceContractSHA256 = "f597d665a49f381312c18ba414c3b2e020bae2274d3d70549b85602960edc7ad"
 
 type operation struct {
 	path, method, id string
@@ -130,7 +130,7 @@ func validate(document map[string]any, template string) error {
 		return fmt.Errorf("workspace bearer authentication must be opaque")
 	}
 	servers, _ := at(document, "servers").([]any)
-	if len(servers) != 1 || atString(servers[0], "url") != "https://blazn.benpelo.com" {
+	if len(servers) != 1 || atString(servers[0], "url") != "https://api.blazn.frontro.com" {
 		return fmt.Errorf("workspace API server origin changed")
 	}
 	security, ok := at(document, "security").([]any)

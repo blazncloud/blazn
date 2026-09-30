@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/projects.openapi.json; DO NOT EDIT.
-// Contract SHA256: 32000a7b33ee03d8d81085ffe6b76c3e43c556285a771f06dbeac3c0b1e07a45
+// Contract SHA256: 744c6f3050af6b24d2705512ef133e4b7f3df640111a0f2bf8ef5b149b2efba1
 
 package client
 
