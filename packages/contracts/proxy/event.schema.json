@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/event.json",
+  "$id": "https://blazn.frontro.com/schemas/proxy/v1alpha1/event.json",
   "title": "Blazn proxy operational event",
   "type": "object",
   "additionalProperties": false,

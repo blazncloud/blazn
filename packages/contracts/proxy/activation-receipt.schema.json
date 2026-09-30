@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/activation-receipt.json",
+  "$id": "https://blazn.frontro.com/schemas/proxy/v1alpha1/activation-receipt.json",
   "title": "Blazn proxy activation receipt",
   "type": "object", "additionalProperties": false,
   "required": ["schemaVersion", "activationId", "nonce", "generation", "ownerUid", "journalDigest", "policyDigest", "platform", "mode", "sessionIdentity", "binary", "listener", "publicationMechanism", "environment", "rollbackSummary", "activatedAt", "state", "checksum"],

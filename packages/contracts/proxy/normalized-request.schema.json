@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://blazn.benpelo.com/schemas/proxy/v1alpha1/normalized-request.json",
+  "$id": "https://blazn.frontro.com/schemas/proxy/v1alpha1/normalized-request.json",
   "title": "Normalized proxy request",
   "type": "object", "additionalProperties": false,
   "required": ["logicalRequestId", "protocol", "modelAlias", "dataClass", "stream", "blocks", "tools", "limits", "capabilitiesRequired"],

@@ -19,7 +19,7 @@ import (
 //go:embed run.gen.go.tmpl
 var runTemplate []byte
 
-const supportedRunContractSHA256 = "46fd590980dd7a69a9e4e163d84620d39f0537c0f8cf5c9325fcb70dbec9ecc8"
+const supportedRunContractSHA256 = "aa95914d9e6e2c005eb1f770094d8525a87e1b4e969949d0f5efbe9a0fe72d2f"
 
 var operations = map[string]string{
 	"POST /v1/workspaces/{workspaceId}/projects/{projectId}/runs":                                      "createRun",
@@ -118,7 +118,7 @@ func validate(document map[string]any, template string) error {
 	if stringAt(document, "openapi") != "3.1.0" || stringAt(document, "info", "version") != "v1alpha1" {
 		return fmt.Errorf("Run contract version changed")
 	}
-	if stringAt(document, "servers", "0", "url") != "https://blazn.benpelo.com" {
+	if stringAt(document, "servers", "0", "url") != "https://api.blazn.frontro.com" {
 		return fmt.Errorf("Run server origin changed")
 	}
 	paths, ok := valueAt(document, "paths").(map[string]any)

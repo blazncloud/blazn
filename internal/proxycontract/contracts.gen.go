@@ -1,12 +1,12 @@
 // Code generated from packages/contracts/proxy; DO NOT EDIT.
-// activation-journal.schema.json SHA256: b5b75e0ae6ef54f645dfb6a1ec6743ff580cf6d91348566a30ebf3f63a710807
-// activation-receipt.schema.json SHA256: 93720291b499bc1af00a64957155666b6d88575733e9deb848adcdc76dcb7c5a
-// event.schema.json SHA256: d672f8ec2dd0eaab6200cb9a17b57f92fcef6e343f4ce9d7deb8aa4f09a2a704
-// normalized-error.schema.json SHA256: 3f05faaa510ee0a97fc6e6b8a5bc5dea830c3a17edd64476777b8b847532bd1c
-// normalized-request.schema.json SHA256: 2f1f41709c21e871c8d6e61333b493cf04d08070c59a48e1f908b262204237b4
-// normalized-response.schema.json SHA256: 90bc26e2bdf4cadcf061f69fe89dd14b8dca1da365d7c2bcde4f8289a2467f87
-// normalized-stream-event.schema.json SHA256: 2be0990699fe1ae7de35627c997c2b23f6cb525d19c119b54ad65afec8707fea
-// policy.schema.json SHA256: 3f8925f6fbdf3fab9613a88c5ce7e97e2c7d0cac702e0180f67ea28c92d5f7b9
+// activation-journal.schema.json SHA256: c9c0223077624f8e70ca2ed5cdc3fc3a0c64271535783a81fdda92385721d18d
+// activation-receipt.schema.json SHA256: 32552cfbd2471b69886ff9b78ce0489a4b581b06113a870f2e8de39421e6d2bf
+// event.schema.json SHA256: 26aac6e81fec6037ef0e01be16b55f483da07324b1074039c41673a23754dd8f
+// normalized-error.schema.json SHA256: 1406cfd4714f469014aafa4e778d52be514d818c2163e270ac4e68ae9a00de48
+// normalized-request.schema.json SHA256: 13fd0dd4cf5f8ebcd465e73019a274b500fc109867bafefc7deba607eb7bc43c
+// normalized-response.schema.json SHA256: 507bd2bef57b8065fcaa7e65a6289ed0135bba653a0bd60253c1f926d8731355
+// normalized-stream-event.schema.json SHA256: a7cd2eafe2fc2b085766e31dc1d65be736fba4cd2989f9940e425ec5f69e0ea2
+// policy.schema.json SHA256: 76fb12aa2072af6dcf72d6cf5751c2c39db6ae4e5be022cd1efc36fdfe19e1a6
 
 package proxycontract
 

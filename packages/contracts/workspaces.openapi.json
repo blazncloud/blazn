@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {"title": "Blazn Workspace API Overlay", "version": "v1alpha1"},
-  "servers": [{"url": "https://blazn.benpelo.com"}],
+  "servers": [{"url": "https://api.blazn.frontro.com"}],
   "security": [{"bearerAuth": []}],
   "paths": {
     "/v1/workspaces": {
