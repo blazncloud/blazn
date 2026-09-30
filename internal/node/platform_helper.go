@@ -299,6 +299,13 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if err != nil || request.Prior == nil {
 			return RootResponse{}, errors.New("rollback request is incomplete")
 		}
+		if mutation.Kind == "label" || mutation.Kind == "taint" {
+			refreshed, refreshErr := e.refreshRollbackBinding(ctx, request.Plan, request.Join)
+			if refreshErr != nil {
+				return RootResponse{}, refreshErr
+			}
+			request.Join = refreshed
+		}
 		if err := e.rollback(ctx, request.Plan, mutation, *request.Prior, request.BackupRoot, request.Join); err != nil {
 			return RootResponse{}, err
 		}
@@ -1441,7 +1448,102 @@ func trustedPreparedDirectoryOwner(owner, group, installerUID, installerGID int6
 	return (owner == 0 && group == 0) || (owner == installerUID && group == installerGID)
 }
 
+// refreshRollbackBinding lets an uninstall or recovery that runs long after the
+// install proceed: the kubelet's own status updates advance the Node
+// resourceVersion continuously. The Node must still be the exact name and UID
+// held by the root authority; the fresh resourceVersion only becomes the
+// compare-and-swap precondition of the rollback patch.
+func (e NativeRootEngine) refreshRollbackBinding(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding) (*RootJoinBinding, error) {
+	authority, err := e.rootKubernetesBinding()
+	if err != nil {
+		return nil, err
+	}
+	if join == nil || authority == nil || authority.NodeName != join.ExpectedNodeName || authority.NodeUID != join.ExpectedNodeUID {
+		return nil, errors.New("cluster rollback binding differs from root authority")
+	}
+	observed, err := e.observeNode(ctx, plan, join.ExpectedNodeName)
+	if err != nil {
+		return nil, err
+	}
+	if observed.UID != authority.NodeUID {
+		return nil, errors.New("cluster rollback node UID differs from root authority")
+	}
+	refreshed := *join
+	refreshed.ExpectedResourceVersion = observed.ResourceVersion
+	return &refreshed, nil
+}
+
+// requarantineReleasedNode rolls back the bootstrap taint of a node whose
+// capacity was released after activation. Release legitimately removed the
+// taint and added the eligibility label; uninstall must return the Node to
+// quarantine (taint present, not eligible) rather than leave it schedulable.
+func (e NativeRootEngine) requarantineReleasedNode(ctx context.Context, plan client.NodeInstallPlan, join *RootJoinBinding) (bool, error) {
+	state, err := e.readCapacityNode(ctx, plan, join.ExpectedNodeName)
+	if err != nil {
+		return false, err
+	}
+	if state.UID != join.ExpectedNodeUID {
+		return false, errors.New("quarantine node UID differs from binding")
+	}
+	released, err := validateCapacityState(state)
+	if err != nil || !released {
+		return false, err
+	}
+	taints := append(append([]clusterTaint(nil), state.Taints...), clusterTaint{Key: "blazn.dev/bootstrap", Value: "pending", Effect: "NoSchedule"})
+	labelPath := "/metadata/labels/" + strings.ReplaceAll(strings.ReplaceAll(capacityEligibilityLabel, "~", "~0"), "/", "~1")
+	operations := []map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": state.UID},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": state.ResourceVersion},
+		{"op": "test", "path": labelPath, "value": "true"},
+		{"op": "remove", "path": labelPath},
+	}
+	if state.TaintsPresent {
+		operations = append(operations, map[string]any{"op": "test", "path": "/spec/taints", "value": state.Taints}, map[string]any{"op": "replace", "path": "/spec/taints", "value": taints})
+	} else {
+		operations = append(operations, map[string]any{"op": "add", "path": "/spec/taints", "value": taints})
+	}
+	encoded, err := json.Marshal(operations)
+	if err != nil {
+		return false, err
+	}
+	output, err := e.kubectl(ctx, plan, "patch", "node", join.ExpectedNodeName, "--type=json", "--patch", string(encoded), "-o", "json")
+	if err != nil {
+		return false, errCapacityReleaseConflict
+	}
+	patched, err := decodeCapacityNode(output)
+	if err != nil || patched.UID != join.ExpectedNodeUID {
+		return false, errors.New("quarantine response differs from binding")
+	}
+	if stillReleased, verifyErr := validateCapacityState(patched); verifyErr != nil || stillReleased {
+		return false, errors.New("quarantine response is not in bootstrap quarantine")
+	}
+	join.ExpectedResourceVersion = patched.ResourceVersion
+	return true, nil
+}
+
 func (e NativeRootEngine) rollback(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, prior PriorState, backupRoot string, join *RootJoinBinding) error {
+	if m.Kind == "taint" && isBootstrapTaintMutation(m) && join != nil {
+		// The kubelet's own status updates can advance the Node between the
+		// read and the compare-and-swap patch; re-read and retry, bounded.
+		for attempt := 1; ; attempt++ {
+			quarantined, err := e.requarantineReleasedNode(ctx, plan, join)
+			if errors.Is(err, errCapacityReleaseConflict) && attempt < capacityReleaseAttempts {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(capacityReleaseInterval):
+				}
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if quarantined {
+				return nil
+			}
+			break
+		}
+	}
 	if err := e.verifyRollbackDesired(ctx, plan, m, join); err != nil {
 		if matches, priorErr := e.matchesCapturedPrior(ctx, plan, m, prior, backupRoot, join); priorErr == nil && matches {
 			return nil
@@ -1907,7 +2009,24 @@ func (e NativeRootEngine) kubectl(ctx context.Context, plan client.NodeInstallPl
 	fixed := append([]string{"shell", vm, "sudo", microK8sKubectlPath}, nodeKubectlArguments(args)...)
 	return e.Commands.Run(ctx, "/usr/local/bin/limactl", fixed...)
 }
+
+var errClusterMutationConflict = errors.New("atomic Kubernetes node mutation failed")
+
 func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, join *RootJoinBinding, remove bool) error {
+	for attempt := 1; ; attempt++ {
+		err := e.applyClusterMutationOnce(ctx, plan, m, join, remove)
+		if !errors.Is(err, errClusterMutationConflict) || attempt >= capacityReleaseAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(capacityReleaseInterval):
+		}
+	}
+}
+
+func (e NativeRootEngine) applyClusterMutationOnce(ctx context.Context, plan client.NodeInstallPlan, m client.NodeInstallMutation, join *RootJoinBinding, remove bool) error {
 	state, err := e.readClusterNode(ctx, plan, join)
 	if err != nil {
 		return err
@@ -1967,7 +2086,7 @@ func (e NativeRootEngine) applyClusterMutation(ctx context.Context, plan client.
 	}
 	output, err := e.kubectl(ctx, plan, "patch", "node", join.ExpectedNodeName, "--type=json", "--patch", string(encoded), "-o", "json")
 	if err != nil {
-		return errors.New("atomic Kubernetes node mutation failed")
+		return errClusterMutationConflict
 	}
 	var result struct {
 		Metadata struct{ Name, UID, ResourceVersion string } `json:"metadata"`
@@ -2044,9 +2163,7 @@ func (e NativeRootEngine) releaseNodeCapacityOnce(ctx context.Context, plan clie
 	if stateErr != nil {
 		return nil, stateErr
 	}
-	if join.ExpectedResourceVersion != authorized.ResourceVersion && !released {
-		return nil, errors.New("capacity release request resourceVersion differs from root authority")
-	}
+
 	if state.ResourceVersion != authorized.ResourceVersion {
 		if released {
 			return e.updateRootKubernetesBinding(plan, JoinedNode{Name: state.Name, UID: state.UID, ResourceVersion: state.ResourceVersion})
@@ -2214,9 +2331,10 @@ func (e NativeRootEngine) readClusterNode(ctx context.Context, plan client.NodeI
 	if decodeSingleJSON(output, &value) != nil || value.Metadata.Name != join.ExpectedNodeName || value.Metadata.UID != join.ExpectedNodeUID {
 		return clusterNodeState{}, errors.New("cluster mutation node UID differs from binding")
 	}
-	if value.Metadata.ResourceVersion != join.ExpectedResourceVersion {
-		return clusterNodeState{}, errors.New("cluster mutation resourceVersion differs from its precondition")
-	}
+	// The kubelet advances the Node resourceVersion with its own status
+	// updates, so it is not identity. The freshly read value becomes the
+	// compare-and-swap precondition of the patch built from this state.
+	join.ExpectedResourceVersion = value.Metadata.ResourceVersion
 	labelsPresent := value.Metadata.Labels != nil
 	if value.Metadata.Labels == nil {
 		value.Metadata.Labels = map[string]string{}
