@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLimitedOutputDrainsVerboseChildWithoutKillingIt(t *testing.T) {
@@ -24,5 +25,17 @@ func TestLimitedOutputDrainsVerboseChildWithoutKillingIt(t *testing.T) {
 	}
 	if detail := rootHelperFailureDetail(tail.String()); detail != "final detail" {
 		t.Fatalf("detail=%q", detail)
+	}
+}
+
+func TestRootHelperCallTimeoutOutlastsPackageDownloads(t *testing.T) {
+	if got := rootHelperCallTimeout(RootApply, 2*time.Minute); got <= rootPackageDownloadTimeout {
+		t.Fatalf("apply timeout %s does not outlast the helper package download budget", got)
+	}
+	if got := rootHelperCallTimeout(RootRollback, 2*time.Minute); got <= rootPackageDownloadTimeout {
+		t.Fatalf("rollback timeout %s does not outlast the helper package download budget", got)
+	}
+	if got := rootHelperCallTimeout(RootLoadWAL, 2*time.Minute); got != 2*time.Minute {
+		t.Fatalf("state operations keep the configured timeout, got %s", got)
 	}
 }

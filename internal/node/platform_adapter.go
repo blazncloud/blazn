@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/blazncloud/blazn/internal/client"
@@ -206,6 +207,18 @@ func (c PipeObservationClient) Call(ctx context.Context, request RootRequest) (R
 	return decodeRootResponse(&stdout)
 }
 
+// rootHelperCallTimeout lets mutation calls outlast the helper's own package
+// download budget. A shorter client deadline abandons a helper that is still
+// staging a package, and the rollback then races the orphaned install.
+func rootHelperCallTimeout(operation RootOperation, base time.Duration) time.Duration {
+	if operation == RootApply || operation == RootRollback {
+		if long := rootPackageDownloadTimeout + 5*time.Minute; long > base {
+			return long
+		}
+	}
+	return base
+}
+
 func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (RootResponse, error) {
 	var response RootResponse
 	if c.HelperPath == "" {
@@ -218,13 +231,18 @@ func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (Ro
 	if err != nil || len(encoded) > 2<<20 {
 		return response, errors.New("root helper request is invalid")
 	}
-	runCtx, cancel := context.WithTimeout(ctx, c.Timeout)
+	runCtx, cancel := context.WithTimeout(ctx, rootHelperCallTimeout(request.Operation, c.Timeout))
 	defer cancel()
 	path, args := c.HelperPath, []string{RootHelperSubcommand}
 	if c.UseSudo {
 		path, args = "/usr/bin/sudo", []string{"-n", DefaultRootHelperPath, RootHelperSubcommand}
 	}
 	command := exec.CommandContext(runCtx, path, args...)
+	// SIGKILL cannot be relayed by sudo, so it would orphan a root helper that
+	// keeps mutating the host while this process rolls back. sudo relays
+	// SIGTERM to the helper; escalate only if it does not exit.
+	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
+	command.WaitDelay = 30 * time.Second
 	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
 	command.Stdin = bytes.NewReader(encoded)
 	var stdout bytes.Buffer
