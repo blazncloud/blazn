@@ -2353,12 +2353,27 @@ func decodeJoinCredential(encoded string, binding *RootJoinBinding) (joinPayload
 	for _, candidate := range payload.URLs {
 		parsed, err := url.Parse("https://" + candidate)
 		parts := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
-		if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || net.ParseIP(parsed.Hostname()) == nil || parsed.Port() == "" || len(parts) != 2 || len(parts[0]) != 32 || len(parts[1]) < 16 {
+		if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || net.ParseIP(parsed.Hostname()) == nil || parsed.Port() == "" || len(parts) != 2 || len(parts[0]) != 32 || !validJoinCertificateCheck(parts[1]) {
 			return payload, nil, errors.New("worker credential endpoint is invalid")
 		}
 	}
 	return payload, payload.URLs, nil
 }
+
+// validJoinCertificateCheck accepts the MicroK8s server certificate check in a
+// join URL. MicroK8s v1.35 add_token.py emits 12 hex characters.
+func validJoinCertificateCheck(value string) bool {
+	if len(value) < 12 || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 func readLimaVM(plan client.NodeInstallPlan, configuredPath string) (string, error) {
 	var expected string
 	for _, component := range plan.Components {

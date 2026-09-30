@@ -242,3 +242,18 @@ func TestBackendSkipsUnbracketedIPv6URLsAndRequiresADialableOne(t *testing.T) {
 		}
 	}
 }
+
+func TestBackendAcceptsMicroK8sTwelveHexCertificateCheck(t *testing.T) {
+	token := "0123456789abcdef0123456789abcdef"
+	check := token + "/fee24a55f47e"
+	backend, runner, _ := backendFixture(t, "")
+	runner.output = []byte(fmt.Sprintf(`{"token":%q,"urls":[%q]}`, check, "192.168.0.108:25000/"+check))
+	if _, err := backend.Issue(context.Background(), token, 60); err != nil {
+		t.Fatalf("real MicroK8s v1.35 certificate check rejected: %v", err)
+	}
+	for _, bad := range []string{token + "/short", token + "/fee24a55f47e/x", token + "/fee24a55 f47e", "ffffffffffffffffffffffffffffffff/fee24a55f47e"} {
+		if subtleTokenCheck(bad, token) {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+}
