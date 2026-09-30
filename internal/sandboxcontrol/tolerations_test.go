@@ -2,6 +2,7 @@ package sandboxcontrol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -38,11 +39,33 @@ func TestObservedPodAcceptsOnlyTheSandboxNodeTolerationPlusDefaults(t *testing.T
 	if !observe([]any{sandboxNode}) {
 		t.Fatal("the sandbox-node toleration without defaults must match")
 	}
-	if observe(defaults) || observe(nil) {
-		t.Fatal("a Pod missing the sandbox-node toleration must not match")
+	if !observe(defaults) || !observe(nil) {
+		t.Fatal("a Pod admitted before the sandbox-node toleration (defaults only or none) must still match")
 	}
 	wildcard := map[string]any{"operator": "Exists"}
 	if observe(append([]any{sandboxNode, wildcard}, defaults...)) || observe(append([]any{wildcard}, defaults...)) {
 		t.Fatal("an injected wildcard toleration must not match")
+	}
+}
+
+func TestLegacySandboxSpecWithoutTolerationStillMatches(t *testing.T) {
+	manifest := render(testCreate(), "sha256:"+strings.Repeat("a", 64), "sha256:"+strings.Repeat("b", 64))
+	legacy := manifest.Spec
+	legacy.PodTemplate.Spec.Tolerations = nil
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameMaterialSpec(raw, legacyTolerationSpec(raw, manifest.Spec)) {
+		t.Fatal("a Sandbox created before the sandbox-node toleration must still match")
+	}
+	widened := manifest.Spec
+	widened.PodTemplate.Spec.Tolerations = []kubeToleration{{Operator: "Exists"}}
+	raw, err = json.Marshal(widened)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameMaterialSpec(raw, legacyTolerationSpec(raw, manifest.Spec)) {
+		t.Fatal("a widened toleration must not match")
 	}
 }
