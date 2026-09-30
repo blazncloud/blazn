@@ -212,7 +212,8 @@ func (FixedCommandExecutor) RunInput(ctx context.Context, path string, input []b
 	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bin", "LANG=C", "LC_ALL=C", "SNAP=/snap/microk8s/current", "SNAP_DATA=/var/snap/microk8s/current", "SNAP_COMMON=/var/snap/microk8s/common"}
 	command.Stdin = bytes.NewReader(input)
 	var stdout bytes.Buffer
-	command.Stdout = &limitedOutput{writer: &stdout, remaining: 1 << 20}
+	stdoutLimit := &limitedOutput{writer: &stdout, remaining: 1 << 20}
+	command.Stdout = stdoutLimit
 	command.Stderr = &limitedOutput{writer: &bytes.Buffer{}, remaining: 4096}
 	if err := command.Run(); err != nil {
 		var exitError *exec.ExitError
@@ -220,6 +221,9 @@ func (FixedCommandExecutor) RunInput(ctx context.Context, path string, input []b
 			return nil, &FixedCommandError{ExitCode: exitError.ExitCode()}
 		}
 		return nil, errors.New("fixed privileged command failed")
+	}
+	if stdoutLimit.overflow {
+		return nil, errors.New("fixed privileged command output exceeded limit")
 	}
 	return stdout.Bytes(), nil
 }
