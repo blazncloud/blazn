@@ -121,3 +121,35 @@ func TestServerHealthProbesBackendWithoutLeakingFailure(t *testing.T) {
 		t.Fatalf("failure status/body %d %q", response.Code, response.Body.String())
 	}
 }
+
+func TestServerHealthCacheServesRecentSuccessAndExpires(t *testing.T) {
+	backend := &fakeBackend{}
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
+	now := time.Now()
+	server := &Server{Service: service, AllowedUID: uint32(os.Getuid()), AllowedGID: uint32(os.Getgid()), Timeout: time.Second, HealthCache: time.Minute}
+	server.now = func() time.Time { return now }
+	health := func() int {
+		request := httptest.NewRequest(http.MethodGet, "http://unix/healthz", nil)
+		request = request.WithContext(context.WithValue(request.Context(), peerKey{}, Peer{UID: uint32(os.Getuid()), GID: uint32(os.Getgid())}))
+		response := httptest.NewRecorder()
+		server.handle(response, request)
+		return response.Code
+	}
+	backend.failHealthy = true
+	if code := health(); code != http.StatusServiceUnavailable {
+		t.Fatalf("cold failing probe returned %d", code)
+	}
+	backend.failHealthy = false
+	if code := health(); code != http.StatusOK {
+		t.Fatalf("cold healthy probe returned %d", code)
+	}
+	backend.failHealthy = true
+	now = now.Add(10 * time.Second)
+	if code := health(); code != http.StatusOK {
+		t.Fatalf("recent success was not served from cache: %d", code)
+	}
+	now = now.Add(2 * time.Minute)
+	if code := health(); code != http.StatusServiceUnavailable {
+		t.Fatalf("expired cache hid a failing probe: %d", code)
+	}
+}

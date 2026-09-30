@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -23,6 +24,59 @@ type Server struct {
 	AllowedUID, AllowedGID uint32
 	SocketUID              uint32
 	Timeout                time.Duration
+	// HealthCache, when positive, serves a successful readiness result for up
+	// to that age and refreshes it in the background once a quarter of it has
+	// elapsed. MicroK8s status can take several seconds on a loaded control
+	// plane, which exceeds the broker's short health deadline. Credential
+	// issuance never uses this cache; it runs its own readiness probe.
+	HealthCache time.Duration
+
+	healthMu         sync.Mutex
+	healthOK         time.Time
+	healthRefreshing bool
+	now              func() time.Time
+}
+
+func (s *Server) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+func (s *Server) probeHealth(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, s.Timeout)
+	defer cancel()
+	err := s.Service.Health(ctx)
+	if err == nil {
+		s.healthMu.Lock()
+		s.healthOK = s.clock()
+		s.healthMu.Unlock()
+	}
+	return err
+}
+
+func (s *Server) healthy(ctx context.Context) error {
+	if s.HealthCache <= 0 {
+		return s.probeHealth(ctx)
+	}
+	s.healthMu.Lock()
+	age := s.clock().Sub(s.healthOK)
+	cached := !s.healthOK.IsZero() && age >= 0 && age < s.HealthCache
+	if cached && age >= s.HealthCache/4 && !s.healthRefreshing {
+		s.healthRefreshing = true
+		go func() {
+			_ = s.probeHealth(context.Background())
+			s.healthMu.Lock()
+			s.healthRefreshing = false
+			s.healthMu.Unlock()
+		}()
+	}
+	s.healthMu.Unlock()
+	if cached {
+		return nil
+	}
+	return s.probeHealth(ctx)
 }
 
 func (s *Server) Serve(socketPath string) error {
@@ -108,9 +162,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == "GET" && r.URL.Path == "/healthz" && r.URL.RawQuery == "" {
-		ctx, cancel := context.WithTimeout(r.Context(), s.Timeout)
-		defer cancel()
-		if err := s.Service.Health(ctx); err != nil {
+		if err := s.healthy(r.Context()); err != nil {
 			s.writeError(w, http.StatusServiceUnavailable, &ProtocolError{Code: "microk8s_unavailable", Message: "MicroK8s readiness check failed"})
 			return
 		}
