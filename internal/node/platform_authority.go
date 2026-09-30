@@ -625,6 +625,8 @@ func verifyAuthorityReceipt(authority RootInstallAuthority, receipt client.NodeI
 	return nil
 }
 
+const rootPackageDownloadTimeout = 15 * time.Minute
+
 func newRootAuthorityHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{Proxy: nil, DisableCompression: true, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
@@ -668,7 +670,10 @@ func (e NativeRootEngine) stageHTTPSPackage(ctx context.Context, plan client.Nod
 		httpClient = newRootAuthorityHTTPClient()
 	}
 	clientCopy := *httpClient
-	clientCopy.Timeout = 30 * time.Second
+	// The pinned MicroK8s snap is ~180 MB served from a CDN whose per-node
+	// throughput varies widely; a 30s whole-transfer cap failed live installs
+	// mid-body. Package bodies stay bounded by size and exact digest.
+	clientCopy.Timeout = rootPackageDownloadTimeout
 	clientCopy.CheckRedirect = func(request *http.Request, via []*http.Request) error {
 		if len(via) > 5 {
 			return errors.New("too many package redirects")
