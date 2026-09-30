@@ -616,3 +616,36 @@ async function fixture() {
     cleanup: () => rm(root, { recursive: true }),
   };
 }
+
+test("issued expiry may trail the database clock by the measured provider latency only", async () => {
+  for (const [overshootMs, accepted] of [[80, true], [30_000, false]] as const) {
+    const f = await fixture();
+    try {
+      let existing: StoredJoinIssuance | undefined;
+      const issuer: WorkerCredentialIssuer = {
+        issue: async (input) => {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          return {
+            providerHandle: input.issuanceId,
+            credential: "j".repeat(43),
+            clusterId: input.clusterId,
+            clusterHealthy: true,
+            workerOnly: true,
+            expiresAt: new Date(Date.parse("2029-01-01T00:00:00.000Z") + input.ttlSeconds * 1000 + overshootMs),
+          };
+        },
+        revoke: async () => {},
+      };
+      const service = new NodeBrokerService(
+        fakeStore(f.binding, () => existing, (v) => { existing = v; }),
+        async () => Buffer.alloc(32, 4),
+        issuer,
+        1_000,
+      );
+      if (accepted) assert.equal((await service.issue("join-key-latency", f.request, f.proof)).workerOnly, true);
+      else await assert.rejects(service.issue("join-key-latency", f.request, f.proof));
+    } finally {
+      await f.cleanup();
+    }
+  }
+});
