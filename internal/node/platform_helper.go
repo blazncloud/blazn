@@ -1768,7 +1768,7 @@ func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan,
 	}
 	input := []byte(preferredJoinURL(urls, plan.Cluster.APIServer) + "\n")
 	if e.Platform == "linux" {
-		if _, err := e.Commands.RunInput(ctx, "/snap/microk8s/current/usr/bin/python3", input, "-c", microK8sJoinStdinProgram); err != nil {
+		if _, err := e.Commands.RunInput(ctx, "/usr/bin/snap", input, microK8sJoinArguments()...); err != nil {
 			return JoinedNode{}, err
 		}
 	} else {
@@ -1776,7 +1776,7 @@ func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan,
 		if err != nil {
 			return JoinedNode{}, err
 		}
-		if _, err := e.Commands.RunInput(ctx, "/usr/local/bin/limactl", input, "shell", vm, "sudo", "/usr/bin/env", "SNAP=/snap/microk8s/current", "SNAP_DATA=/var/snap/microk8s/current", "SNAP_COMMON=/var/snap/microk8s/common", "/snap/microk8s/current/usr/bin/python3", "-c", microK8sJoinStdinProgram); err != nil {
+		if _, err := e.Commands.RunInput(ctx, "/usr/local/bin/limactl", input, append([]string{"shell", vm, "sudo", "/usr/bin/snap"}, microK8sJoinArguments()...)...); err != nil {
 			return JoinedNode{}, err
 		}
 	}
@@ -1798,7 +1798,16 @@ func preferredJoinURL(urls []string, apiServer string) string {
 	return urls[0]
 }
 
+// microK8sJoinArguments runs the pinned join helper inside the MicroK8s snap
+// context. join.py imports sibling modules from scripts/wrappers and restarts
+// services through snapctl, which only works under "snap run". The join URL,
+// which carries the bootstrap token, is still passed on stdin, never in argv.
+func microK8sJoinArguments() []string {
+	return []string{"run", "--shell", "microk8s", "-c", `exec "$SNAP/usr/bin/python3" -c "$1"`, "blazn-microk8s-join", microK8sJoinStdinProgram}
+}
+
 const microK8sJoinStdinProgram = `import importlib.util,sys
+sys.path.insert(0,"/snap/microk8s/current/scripts/wrappers")
 p="/snap/microk8s/current/scripts/wrappers/join.py"
 s=importlib.util.spec_from_file_location("blazn_microk8s_join",p)
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
