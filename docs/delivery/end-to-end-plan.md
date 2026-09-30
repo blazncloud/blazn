@@ -1,6 +1,6 @@
 # Blazn end-to-end delivery plan
 
-Updated 2026-09-30. This plan replaces the ordered gates in
+Updated 2026-09-30 (M3 complete). This plan replaces the ordered gates in
 [`development-milestones.md`](development-milestones.md) as the source of truth for status.
 That file keeps its execution log and evidence rules.
 
@@ -23,8 +23,8 @@ count as evidence, but not as acceptance. This is the same rule as the delivery 
 | M0 | Hosting baseline, repo hygiene, licensing | In progress | — |
 | M1 | Identity: email-code sign-up and sign-in | **Done** | M0 |
 | M2 | Workspaces, projects, membership | **Done**, one gap (M2.4) | M1 |
-| M3 | Node registration and lifecycle | **Done on the test cluster**; Frontro proof pending | M2 |
-| M4 | Sandboxes (virtual environments) on registered nodes | Built; not qualified live | M3 |
+| M3 | Node registration and lifecycle | **Done** (M3.1 passed on Frontro with poc.132) | M2 |
+| M4 | Sandboxes (virtual environments) on registered nodes | **In progress** | M3 |
 | M5 | Model access: scoped provider credential and proxy | Built (proxy contract); not qualified live | M2 |
 | M6 | Real agent execution and two-way messaging | Partly built; execution path is synthetic today | M4, M5 |
 | M7 | Bring-your-own harness | Contract only | M6 |
@@ -53,9 +53,10 @@ Current state:
 | M0.1 Choose and add a license (recommended: Apache-2.0), `CONTRIBUTING.md`, `SECURITY.md` | License file on `main`; README badge |
 | M0.2 Commit the hosting manifests (`infra/local-test/` is uncommitted) as a reviewed `infra/frontro/` overlay | A clean apply from the repo reproduces `api-dev`, broker, issuer and controller |
 | M0.3 Hosting runbook: components, hosts, secrets locations (paths only), deploy and rollback steps | `docs/delivery/hosting-runbook.md` reviewed |
-| M0.4 Remove the temporary DB exception (`ufw` 5432 from 192.168.0.153 plus `pg_hba` line labeled `blazn-qual-temporary`) once the test cluster is torn down or given its own database | The rule and the line are gone; the test cluster uses its own database |
+| M0.4 ✅ Remove the temporary DB exception for the test cluster (done 2026-09-30); give the test cluster its own database before its next cycle | The rule and the line are gone (done); the test cluster uses its own database |
 | M0.5 Rotate the Resend sending key that was shared in chat | New key in the secret store; old key revoked |
-| M0.6 Pin MicroK8s: `snap refresh --hold microk8s` on every cluster host, plus a reviewed procedure for adding a new revision to the issuer's allowlist (the issuer pins 9072 and 9075) | Hold applied on all hosts (ben1 done 2026-09-30); the procedure is documented |
+| M0.6 Pin MicroK8s: `snap refresh --hold microk8s` on every cluster host, plus a reviewed procedure for adding a new revision to the issuer's allowlist (the issuer pins 9072 and 9075) | Hold applied on all hosts (ben1 and the test control plane done 2026-09-30); the procedure is documented |
+| M0.9 Enable the `NodeRestriction` admission plugin on the Frontro API server (today any kubelet credential, including a Blazn node's, can patch every Node) | `auth can-i patch nodes/<other> --as=system:node:<self>` is `no`; existing workers unaffected |
 | M0.7 Clean up 27 stale `Init:Unknown` pods in `blazn-poc-sandboxes` and 11 stale `active` grant rows | Zero orphaned sandbox pods and grants; this needs explicit authorization |
 | M0.8 Replace `blazn.benpelo.com` in contract `$id` URIs and client generators | `grep` finds no personal domain in shipped artifacts |
 
@@ -83,20 +84,20 @@ Delivered and qualified 34/34 by `infra/qualification/qualify-flows.py`:
 |---|---|
 | M2.4 Add member removal, `set-role`, `leave`, and last-owner protection to `qualify-flows.py` (the CLI already has `remove-member`, `set-role`, `leave`) | A removed member's next call is denied; the last owner cannot leave or be demoted |
 
-## M3 — Node registration and lifecycle ✅ on the test cluster
+## M3 — Node registration and lifecycle ✅
 
-Delivered (#211–#229, releases poc.122–poc.130):
+Delivered (#211–#235, releases poc.122–poc.132):
 - Signed install plans, an enrollment exchange, and a transactional install with rollback.
 - The MicroK8s worker issuer and node broker.
 - A bootstrap taint and quarantine until activation.
-- Activation, heartbeats, and uninstall with re-quarantine.
-- Server-side retirement (the node becomes `removed`/`revoked`, its identity is revoked, and an audit event is written).
-- Proven end to end on the ben4 throwaway cluster.
+- Activation, heartbeats, and server-side retirement (the node becomes `removed`/`revoked`, its identity is revoked, and an audit event is written).
+- Isolation from the shared cluster (#233): a permanent `blazn.dev/sandbox-node=true:NoSchedule` taint that only sandbox Pods tolerate, and the load-balancer exclusion label, so Frontro's ingress, MetalLB speaker and log shippers never run on a user's machine.
+- Clean removal (#233): uninstall evicts with a `blazn.dev/retired` NoExecute taint, runs `microk8s leave`, and retirement deletes the Node object through the broker and issuer.
 
 | Task | Acceptance |
 |---|---|
-| M3.1 One real node install into the Frontro cluster with poc.130 | The node is `active`, sandbox-eligible, and cannot schedule anything before activation; then uninstall shows `removed` |
-| M3.2 `--remove-managed-runtime` runs `microk8s leave` before removing the snap | The cluster shows no `NotReady` leftover Node after uninstall |
+| M3.1 ✅ One real node install into the Frontro cluster (poc.132, 2026-09-30) | Passed: `active`/eligible, only tolerate-all DaemonSets on the node, the traefik VIP never moved, uninstall `removed` with 0 residues, Node deleted, 0 orphans |
+| M3.2 ✅ Uninstall leaves the cluster and the Node object is removed | Passed on the test cluster (×3) and Frontro |
 | M3.3 `node-e2e` added to the qualification suite with a single command | One command installs, uninstalls and verifies against the test cluster |
 | M3.4 macOS and Mac mini nodes (Lima binding) | A Mac node registers and runs a sandbox (can follow M6) |
 
@@ -108,6 +109,10 @@ Built:
 - CLI: `blazn sandbox create|get|list|exec|upload|download|stop|watch`, `blazn template …`.
 
 Not yet proven on the hosted stack.
+
+Prerequisites for sandboxes on Blazn nodes (from M3's isolation taint):
+- #236: the controller accepts the 26 existing Sandboxes created before the sandbox-node toleration.
+- Roll out the sandbox controller built from `main`, then the phase-5 boundary policy that allows exactly the sandbox-node toleration. The live boundary transaction journal is missing and must be re-sealed from the live objects before `upgrade-boundary.sh` can run.
 
 | Task | Acceptance |
 |---|---|
