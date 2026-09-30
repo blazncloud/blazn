@@ -1,5 +1,6 @@
 import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 
 export const EMAIL_CODE_TTL_SECONDS = 10 * 60;
 export const EMAIL_CODE_MAX_ATTEMPTS = 5;
@@ -78,5 +79,90 @@ export function emailLoginFromEnvironment(env: NodeJS.ProcessEnv = process.env):
   if (!codeKeyFile) throw new Error("EMAIL_CODE_HMAC_KEY_FILE is required when RESEND_API_KEY_FILE is set");
   const codeKey = readFileSync(codeKeyFile, "utf8").trim();
   if (!/^[0-9a-f]{64}$/.test(codeKey)) throw new Error("EMAIL_CODE_HMAC_KEY_FILE must contain 64 lowercase hex characters");
-  return { sender: new ResendEmailSender(apiKey, from), codeKey };
+  const resend = new ResendEmailSender(apiKey, from);
+  const capture = captureFromEnvironment(env, from);
+  return { sender: capture ? new CaptureRoutingEmailSender(resend, capture.sender, capture.domain) : resend, codeKey };
+}
+
+// Development-only capture: sign-in codes for one reserved, undeliverable
+// domain (.invalid, .test or .example per RFC 2606/6761) are delivered over
+// plain SMTP to a private in-cluster capture inbox so automated qualification
+// can read them. Every other recipient still goes through Resend, and a real
+// domain can never be configured as the capture domain.
+const CAPTURE_DOMAIN_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*(?:invalid|test|example)$/;
+
+function captureFromEnvironment(env: NodeJS.ProcessEnv, from: string): { sender: EmailSender; domain: string } | undefined {
+  const target = env.EMAIL_CAPTURE_SMTP, domain = env.EMAIL_CAPTURE_DOMAIN;
+  if (!target && !domain) return undefined;
+  if (!target || !domain || !CAPTURE_DOMAIN_PATTERN.test(domain)) throw new Error("EMAIL_CAPTURE_SMTP and a reserved EMAIL_CAPTURE_DOMAIN are both required");
+  const match = /^((?:10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}):(\d{1,5})$/.exec(target);
+  const port = Number(match?.[2]);
+  if (!match || !Number.isInteger(port) || port < 1 || port > 65535 || match[1]!.split(".").some((octet) => Number(octet) > 255)) throw new Error("EMAIL_CAPTURE_SMTP must be a private IPv4 host:port");
+  return { sender: new SmtpCaptureEmailSender(match[1]!, port, from), domain };
+}
+
+export class CaptureRoutingEmailSender implements EmailSender {
+  constructor(private readonly primary: EmailSender, private readonly capture: EmailSender, private readonly domain: string) {}
+  sendLoginCode(input: { to: string; code: string; deviceName: string }): Promise<void> {
+    return input.to.endsWith(`@${this.domain}`) ? this.capture.sendLoginCode(input) : this.primary.sendLoginCode(input);
+  }
+}
+
+export class SmtpCaptureEmailSender implements EmailSender {
+  private readonly fromAddress: string;
+  constructor(private readonly host: string, private readonly port: number, from: string, private readonly timeoutMs = 10_000) {
+    const address = /<([^<>\s]+)>\s*$/.exec(from)?.[1] ?? from.trim();
+    if (!/^[^\s@<>]+@[^\s@<>]+$/.test(address)) throw new Error("capture sender address is invalid");
+    this.fromAddress = address;
+  }
+
+  async sendLoginCode(input: { to: string; code: string; deviceName: string }): Promise<void> {
+    if (/[\r\n<>]/.test(input.to) || !/^[0-9]{6}$/.test(input.code)) throw new Error("capture message is invalid");
+    const device = input.deviceName.replace(/[^\x20-\x7e]/g, " ").slice(0, 128);
+    const body = [`From: Blazn <${this.fromAddress}>`, `To: <${input.to}>`, `Subject: Your Blazn sign-in code: ${input.code}`, "MIME-Version: 1.0", "Content-Type: text/plain; charset=utf-8", "", `Your Blazn sign-in code is ${input.code}`, "", `Enter it on the activation page to approve "${device}". The code expires in 10 minutes.`].join("\r\n");
+    const socket = connect({ host: this.host, port: this.port });
+    socket.setTimeout(this.timeoutMs, () => socket.destroy(new Error("capture SMTP timed out")));
+    try {
+      const reply = replies(socket);
+      await expect(reply, 220);
+      for (const [command, code] of [["EHLO blazn-control-api", 250], [`MAIL FROM:<${this.fromAddress}>`, 250], [`RCPT TO:<${input.to}>`, 250], ["DATA", 354]] as const) {
+        socket.write(`${command}\r\n`);
+        await expect(reply, code);
+      }
+      socket.write(`${body.replace(/^\./gm, "..")}\r\n.\r\n`);
+      await expect(reply, 250);
+      socket.write("QUIT\r\n");
+    } finally { socket.end(); }
+  }
+}
+
+function replies(socket: Socket): () => Promise<string> {
+  let buffer = "";
+  const waiting: { resolve: (line: string) => void; reject: (error: Error) => void }[] = [];
+  const complete: string[] = [];
+  let failure: Error | undefined;
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk: string) => {
+    buffer += chunk;
+    if (buffer.length > 16 * 1024) { socket.destroy(new Error("capture SMTP reply too large")); return; }
+    let index;
+    while ((index = buffer.indexOf("\r\n")) >= 0) {
+      const line = buffer.slice(0, index); buffer = buffer.slice(index + 2);
+      if (/^\d{3} /.test(line) || !/^\d{3}-/.test(line)) { const next = waiting.shift(); if (next) next.resolve(line); else complete.push(line); }
+    }
+  });
+  const fail = (error: Error) => { failure = error; for (const next of waiting.splice(0)) next.reject(error); };
+  socket.on("error", fail);
+  socket.on("close", () => fail(new Error("capture SMTP connection closed")));
+  return () => {
+    const ready = complete.shift();
+    if (ready !== undefined) return Promise.resolve(ready);
+    if (failure) return Promise.reject(failure);
+    return new Promise((resolve, reject) => waiting.push({ resolve, reject }));
+  };
+}
+
+async function expect(next: () => Promise<string>, code: number): Promise<void> {
+  const line = await next();
+  if (!line.startsWith(`${code}`)) throw new Error(`capture SMTP rejected the message with ${line.slice(0, 3)}`);
 }
