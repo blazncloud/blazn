@@ -256,11 +256,11 @@ for script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh;
 for script in start-control-plane.sh run-control-plane.sh; do grep -F 'running healthy' "$TEST_DIR/../../milestone-2/scripts/$script" >/dev/null; done
 unit=$TEST_DIR/../systemd/blazn-microk8s-worker-issuer.service
 tmpfiles_policy=$TEST_DIR/../systemd/blazn-microk8s-worker-issuer.tmpfiles
-grep -Fx 'ReadWritePaths=/run/blazn /var/lib/blazn-node-root/microk8s-worker-issuer /var/snap/microk8s/current/credentials' "$unit" >/dev/null
+grep -Fx 'ReadWritePaths=/run/blazn /var/lib/blazn-node-root/microk8s-worker-issuer /var/snap/microk8s/current/credentials /root/snap' "$unit" >/dev/null
 grep -Fx 'd /var/lib/blazn-node-root/microk8s-worker-issuer 0700 root root -' "$tmpfiles_policy" >/dev/null
 # shellcheck disable=SC2016
 grep -F 'STATE_ROOT=${BLAZN_ISSUER_STATE_ROOT:-/var/lib/blazn-node-root/microk8s-worker-issuer}' "$ROLLBACK" >/dev/null
-for policy in 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER' 'ProtectKernelTunables=true' 'ProtectKernelModules=true' 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' 'RestrictSUIDSGID=true'; do grep -Fx "$policy" "$unit" >/dev/null || { printf 'issuer systemd hardening is missing: %s\n' "$policy" >&2; exit 1; }; done
+for policy in 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SETGID CAP_SETUID CAP_SYS_CHROOT CAP_SYS_PTRACE CAP_SYS_ADMIN CAP_SYS_RESOURCE' 'Wants=snap.microk8s.daemon-cluster-agent.service' 'Restart=always' 'ProtectKernelTunables=true' 'ProtectKernelModules=true' 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK' 'RestrictSUIDSGID=true'; do grep -Fx "$policy" "$unit" >/dev/null || { printf 'issuer systemd hardening is missing: %s\n' "$policy" >&2; exit 1; }; done
 trap - EXIT HUP INT TERM
 cleanup
 printf 'worker issuer journal, secret encoding, and narrow Compose boundary passed\n'
