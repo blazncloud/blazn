@@ -48,7 +48,7 @@ export class NodeBrokerService {
     }
     if (!this.issuer.observe) throw new Error("worker join observer is unavailable");
     const observed = await this.providerCall((signal) => this.issuer.observe!({ issuanceId: input.issuanceId, clusterId: input.clusterId, expectedNodeName: input.nodeName, bootstrapTaint: "blazn.dev/bootstrap=pending:NoSchedule" }, signal));
-    if (observed.issuanceId !== input.issuanceId || observed.clusterId !== input.clusterId || observed.nodeName !== input.nodeName || observed.nodeUid !== input.nodeUid || observed.resourceVersion !== input.resourceVersion || observed.bootstrapTainted !== true || observed.workerOnly !== true) {
+    if (observed.issuanceId !== input.issuanceId || observed.clusterId !== input.clusterId || observed.nodeName !== input.nodeName || observed.nodeUid !== input.nodeUid || !observed.resourceVersion || observed.bootstrapTainted !== true || observed.workerOnly !== true) {
       throw invalidCredential("joined worker observation differs from the requested binding");
     }
   }

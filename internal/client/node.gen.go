@@ -1496,7 +1496,7 @@ func VerifyNodeInstallPlan(plan NodeInstallPlan, trust NodeInstallPlanTrust) err
 	}
 	issued, _ := time.Parse(time.RFC3339, plan.IssuedAt)
 	expires, _ := time.Parse(time.RFC3339, plan.ExpiresAt)
-	if trust.Now.Before(issued) || !trust.Now.Before(expires) {
+	if trust.Now.Add(nodePlanNotBeforeSkew).Before(issued) || !trust.Now.Before(expires) {
 		return fmt.Errorf("install plan is not active at trusted current time")
 	}
 	publicKeyFingerprint, err := NodePublicKeyFingerprint(trust.NodePublicKey)
@@ -1595,6 +1595,11 @@ func ValidateNodeInstallProfile(plan NodeInstallPlan, profile NodeTrustedInstall
 	}
 	return nil
 }
+
+// nodePlanNotBeforeSkew tolerates a freshly booted host whose clock is still
+// slightly behind the control plane that just issued the plan. Expiry remains
+// strict.
+const nodePlanNotBeforeSkew = 2 * time.Minute
 
 func validNodeControlPlaneOrigin(value string) bool {
 	parsed, err := url.Parse(value)

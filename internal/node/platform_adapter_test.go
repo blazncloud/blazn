@@ -1460,14 +1460,26 @@ func TestObservedIdentityIsAnchoredToRootAuthority(t *testing.T) {
 	}
 }
 
-func TestClusterMutationUsesResourceVersionAsOperationPrecondition(t *testing.T) {
+func TestClusterMutationUsesFreshResourceVersionAsCASPrecondition(t *testing.T) {
 	plan := testJoinPlan("linux")
+	mutation := client.NodeInstallMutation{Kind: "label", Target: "blazn.dev/node", Desired: map[string]any{"value": "true"}}
+	// The kubelet advances resourceVersion on its own; the stored value is not
+	// identity. The patch must test the freshly read version and the UID.
 	commands := &recordingExecutor{}
 	engine := NativeRootEngine{Platform: "linux", Commands: commands}
-	mutation := client.NodeInstallMutation{Kind: "label", Target: "blazn.dev/node", Desired: map[string]any{"value": "true"}}
 	binding := &RootJoinBinding{ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-1", ExpectedResourceVersion: "6"}
-	if err := engine.applyClusterMutation(context.Background(), plan, mutation, binding, false); err == nil || len(commands.calls) != 1 {
-		t.Fatalf("stale resourceVersion err=%v calls=%#v", err, commands.calls)
+	if err := engine.applyClusterMutation(context.Background(), plan, mutation, binding, false); err != nil || len(commands.calls) != 2 {
+		t.Fatalf("fresh resourceVersion err=%v calls=%#v", err, commands.calls)
+	}
+	patch := strings.Join(commands.calls[1].args, " ")
+	if !strings.Contains(patch, `"path":"/metadata/resourceVersion","value":"7"`) || !strings.Contains(patch, `"path":"/metadata/uid","value":"uid-1"`) {
+		t.Fatalf("patch lacks the fresh CAS preconditions: %s", patch)
+	}
+	foreign := &recordingExecutor{}
+	engine = NativeRootEngine{Platform: "linux", Commands: foreign}
+	binding = &RootJoinBinding{ExpectedNodeName: plan.Hostname, ExpectedNodeUID: "uid-2", ExpectedResourceVersion: "7"}
+	if err := engine.applyClusterMutation(context.Background(), plan, mutation, binding, false); err == nil || len(foreign.calls) != 1 {
+		t.Fatalf("a different Node UID was mutated: err=%v calls=%#v", err, foreign.calls)
 	}
 }
 

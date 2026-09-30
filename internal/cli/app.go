@@ -213,7 +213,7 @@ func (a *App) Run(args []string) int {
 			return a.writeError(format, ExitUsage, "usage", "node root helper accepts no options")
 		}
 		if err := nodepkg.RunProductionRootHelper(context.Background(), a.stdin, a.stdout); err != nil {
-			fmt.Fprintln(a.stderr, "node root helper failed")
+			fmt.Fprintf(a.stderr, "node root helper failed: %s\n", nodepkg.RootHelperErrorLine(err))
 			return ExitFailure
 		}
 		return ExitSuccess

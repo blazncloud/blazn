@@ -761,7 +761,7 @@ func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request Root
 			return err
 		}
 	}
-	if authority.KubernetesBinding != nil {
+	if authority.KubernetesBinding != nil && e.clusterRuntimePresent() {
 		if e.Commands == nil {
 			e.Commands = FixedCommandExecutor{}
 		}
@@ -1020,4 +1020,22 @@ func bindRootJoinIntent(authority *RootInstallAuthority, join *RootJoinBinding, 
 	}
 	authority.JoinIntent = &RootJoinIntent{ClusterID: join.ClusterID, ExpectedNodeName: join.ExpectedNodeName, BootstrapTaint: join.BootstrapTaint, WorkerOnly: true, StartedAt: now.UTC().Format(time.RFC3339Nano)}
 	return true, nil
+}
+
+// clusterRuntimePresent reports whether node-local cluster access exists. After
+// rollback removes the managed MicroK8s runtime, later receipt-bound rollback
+// and state steps must still be authorized; without the runtime this host can
+// neither observe nor mutate any Kubernetes Node, so the live-binding check
+// has nothing to protect. Lima hosts keep their check inside the VM.
+func (e NativeRootEngine) clusterRuntimePresent() bool {
+	if e.Platform != "linux" || e.allowTestJoinRuntime {
+		return true
+	}
+	if _, err := os.Stat(microK8sKubectlPath); err != nil {
+		return false
+	}
+	if _, err := os.Stat(microK8sKubeletKubeconfig); err != nil {
+		return false
+	}
+	return true
 }

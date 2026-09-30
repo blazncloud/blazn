@@ -121,6 +121,7 @@ type Installer struct {
 	uid             func() int64
 	processIdentity func() string
 	verifyNoSymlink func(string) error
+	lastRollbackErr error
 }
 
 func NewInstaller(platform Platform, state StateStore) *Installer {
@@ -524,7 +525,7 @@ func (i *Installer) Uninstall(ctx context.Context, plan client.NodeInstallPlan, 
 			if err := i.state.SaveReceipt(receipt); err != nil {
 				return receipt, err
 			}
-			return receipt, errors.New("node uninstall left receipt-bound residues")
+			return receipt, i.residueError("node uninstall left receipt-bound residues")
 		}
 		existingWAL.Checkpoint = "cleanup_pending"
 		existingWAL.TerminalReceipt = &receipt
@@ -582,7 +583,7 @@ func (i *Installer) Uninstall(ctx context.Context, plan client.NodeInstallPlan, 
 	if err := i.state.SaveReceipt(receipt); err != nil {
 		return receipt, err
 	}
-	return receipt, errors.New("node uninstall left receipt-bound residues")
+	return receipt, i.residueError("node uninstall left receipt-bound residues")
 }
 
 func (i *Installer) trustedActiveReceipt(plan client.NodeInstallPlan, meta client.NodeEnrollmentIdentity, identity Identity) (client.NodeInstallReceipt, error) {
@@ -688,6 +689,9 @@ func (i *Installer) rollback(ctx context.Context, plan client.NodeInstallPlan, w
 		}
 		prior := PriorState{State: entry.PriorState, Material: entry.RollbackMaterial}
 		if err := i.platform.Rollback(ctx, mutation, prior); err != nil {
+			if i.lastRollbackErr == nil {
+				i.lastRollbackErr = fmt.Errorf("rollback mutation %d: %w", entry.Ordinal, err)
+			}
 			entry.Status = "residue"
 			residues = appendUniqueResidue(residues, client.NodeReceiptResidue{Target: entry.Target, ReasonCode: "rollback_failed", SafeMessage: "platform rollback failed; manual recovery is required"})
 		} else if entry.PriorState == "absent" {
@@ -795,4 +799,12 @@ func newUUID() (string, error) {
 	value[6] = (value[6] & 0x0f) | 0x40
 	value[8] = (value[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+}
+
+// residueError names the first privileged rollback failure behind residues.
+func (i *Installer) residueError(message string) error {
+	if i.lastRollbackErr != nil {
+		return fmt.Errorf("%s: %w", message, i.lastRollbackErr)
+	}
+	return errors.New(message)
 }

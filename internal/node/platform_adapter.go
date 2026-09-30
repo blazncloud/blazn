@@ -225,8 +225,12 @@ func (c PipePrivilegedClient) Call(ctx context.Context, request RootRequest) (Ro
 	command.Stdin = bytes.NewReader(encoded)
 	var stdout bytes.Buffer
 	command.Stdout = &limitedOutput{writer: &stdout, remaining: 2 << 20}
-	command.Stderr = &limitedOutput{writer: &bytes.Buffer{}, remaining: 4096}
+	var helperStderr bytes.Buffer
+	command.Stderr = &limitedOutput{writer: &helperStderr, remaining: 4096}
 	if err := command.Run(); err != nil {
+		if detail := rootHelperFailureDetail(helperStderr.String()); detail != "" {
+			return response, fmt.Errorf("root helper operation failed: %s", detail)
+		}
 		return response, errors.New("root helper operation failed")
 	}
 	return decodeRootResponse(&stdout)
@@ -696,4 +700,30 @@ func sortedMutations(plan client.NodeInstallPlan) []client.NodeInstallMutation {
 }
 func canonicalPath(value string) bool {
 	return filepath.IsAbs(value) && filepath.Clean(value) == value && !strings.Contains(value, "..")
+}
+
+const rootHelperFailurePrefix = "node root helper failed: "
+
+// RootHelperErrorLine renders a helper failure as one bounded printable line.
+// Helper errors are static messages and paths; credentials never reach them.
+func RootHelperErrorLine(err error) string {
+	value := strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e {
+			return ' '
+		}
+		return r
+	}, err.Error())
+	if len(value) > 300 {
+		value = value[:300]
+	}
+	return value
+}
+
+func rootHelperFailureDetail(stderr string) string {
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.HasPrefix(line, rootHelperFailurePrefix) {
+			return RootHelperErrorLine(errors.New(strings.TrimPrefix(line, rootHelperFailurePrefix)))
+		}
+	}
+	return ""
 }

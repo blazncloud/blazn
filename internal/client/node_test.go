@@ -931,3 +931,27 @@ func TestEnrollmentHMACAndJoinCredentialAESFormats(t *testing.T) {
 		t.Fatal("tampered AES-GCM ciphertext passed")
 	}
 }
+
+func TestVerifyNodeInstallPlanToleratesBoundedNotBeforeSkewOnly(t *testing.T) {
+	plan, trust := signedNodeInstallPlan(t)
+	issued, err := time.Parse(time.RFC3339, plan.IssuedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expires, err := time.Parse(time.RFC3339, plan.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust.Now = issued.Add(-30 * time.Second)
+	if err := VerifyNodeInstallPlan(plan, trust); err != nil {
+		t.Fatalf("host 30s behind the issuer rejected a fresh plan: %v", err)
+	}
+	trust.Now = issued.Add(-5 * time.Minute)
+	if err := VerifyNodeInstallPlan(plan, trust); err == nil {
+		t.Fatal("plan issued 5 minutes in the future was accepted")
+	}
+	trust.Now = expires
+	if err := VerifyNodeInstallPlan(plan, trust); err == nil {
+		t.Fatal("expiry lost its strict bound")
+	}
+}
