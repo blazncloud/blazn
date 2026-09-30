@@ -4,7 +4,7 @@
   "controlPlaneOrigin": "https://api.blazn.frontro.com",
   "allowedClusterOrigins": ["https://192.168.0.108:16443"],
   "allowedDownloadOrigins": ["https://api.snapcraft.io"],
-  "allowedDownloadHostSuffixes": [],
+  "allowedDownloadHostSuffixes": [".cdn.snapcraftcontent.com"],
   "allowedRegistryOrigins": ["https://registry-1.docker.io"],
   "allowedMutationRoots": [
     "/etc/blazn/node",
