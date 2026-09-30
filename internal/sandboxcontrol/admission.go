@@ -404,6 +404,9 @@ func validObservedListIdentity(apiVersion, kind, expectedAPIVersion, expectedKin
 }
 
 func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool {
+	if legacyPodWithoutSandboxToleration(raw) {
+		expected.Tolerations = nil
+	}
 	expectedJSON, err := json.Marshal(expected)
 	if err != nil {
 		return false
@@ -481,6 +484,26 @@ func sameObservedPodMaterialSpec(raw json.RawMessage, expected kubePodSpec) bool
 		}
 	}
 	return reflect.DeepEqual(observed, expectedObject)
+}
+
+// legacyPodWithoutSandboxToleration reports a Pod admitted before sandbox Pods
+// carried the sandbox-node toleration: its tolerations are absent or only the
+// DefaultTolerationSeconds defaults. Such a Pod cannot land on a Blazn node,
+// so comparing it without the toleration widens nothing.
+func legacyPodWithoutSandboxToleration(raw json.RawMessage) bool {
+	var probe struct {
+		Tolerations []map[string]any `json:"tolerations"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return false
+	}
+	for _, toleration := range probe.Tolerations {
+		key, _ := toleration["key"].(string)
+		if key != "node.kubernetes.io/not-ready" && key != "node.kubernetes.io/unreachable" {
+			return false
+		}
+	}
+	return true
 }
 
 // removeDefaultTolerations strips the NoExecute tolerations the
