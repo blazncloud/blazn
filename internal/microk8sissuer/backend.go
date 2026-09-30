@@ -37,22 +37,32 @@ func (ExecRunner) Run(ctx context.Context, path string, args []string) ([]byte, 
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
 	var out bytes.Buffer
 	out.Grow(maxCommandOutput)
-	cmd.Stdout = &limitedWriter{w: &out, n: maxCommandOutput}
+	stdout := &limitedWriter{w: &out, n: maxCommandOutput}
+	cmd.Stdout = stdout
 	cmd.Stderr = &limitedWriter{w: &bytes.Buffer{}, n: 1024}
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("fixed MicroK8s command failed")
 	}
+	if stdout.overflow {
+		return nil, fmt.Errorf("command output exceeded limit")
+	}
 	return out.Bytes(), nil
 }
 
+// limitedWriter retains at most n bytes but always drains the pipe: a write
+// error would make os/exec close it and kill the command with SIGPIPE.
 type limitedWriter struct {
-	w *bytes.Buffer
-	n int
+	w        *bytes.Buffer
+	n        int
+	overflow bool
 }
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
 	if len(p) > l.n {
-		return 0, fmt.Errorf("command output exceeded limit")
+		l.overflow = true
+		l.w.Write(p[:l.n])
+		l.n = 0
+		return len(p), nil
 	}
 	l.n -= len(p)
 	return l.w.Write(p)
@@ -158,6 +168,62 @@ func (b *MicroK8sBackend) Observe(ctx context.Context, expectedName string) (Nod
 	}
 	return NodeObservation{Name: node.Metadata.Name, UID: node.Metadata.UID, ResourceVersion: node.Metadata.ResourceVersion, BootstrapTainted: bootstrapCount == 1, WorkerOnly: workerOnly}, nil
 }
+
+// Retire deletes a retired Blazn worker's Node object. It returns false when
+// the Node is already gone. Only a Node with the bound UID, no control-plane
+// role, a Blazn marker and its own NoExecute retirement taint (proof the
+// worker detached itself) is deleted. Uninstall rolls back the blazn.dev/node
+// label before leaving, so the permanent sandbox-node taint also counts as
+// the Blazn marker.
+func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, error) {
+	if err := b.validateConfiguration(); err != nil {
+		return false, err
+	}
+	if !namePattern.MatchString(name) || !uuidPattern.MatchString(uid) {
+		return false, fmt.Errorf("retired Node binding is invalid")
+	}
+	out, err := b.Runner.Run(ctx, b.KubectlPath, []string{"get", "node", name, "--ignore-not-found", "-o", "json"})
+	if err != nil {
+		return false, err
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return false, nil
+	}
+	var node struct {
+		Metadata struct {
+			Name, UID string
+			Labels    map[string]string
+		} `json:"metadata"`
+		Spec struct {
+			Taints []struct{ Key, Value, Effect string } `json:"taints"`
+		} `json:"spec"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&node); err != nil || node.Metadata.Name != name {
+		return false, fmt.Errorf("MicroK8s returned an invalid Node observation")
+	}
+	if node.Metadata.UID != uid {
+		return false, &ProtocolError{Code: "binding_conflict", Message: "Node UID differs from the retired binding"}
+	}
+	_, controlPlane := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
+	_, master := node.Metadata.Labels["node-role.kubernetes.io/master"]
+	retired, blazn := false, node.Metadata.Labels["blazn.dev/node"] == "true"
+	for _, taint := range node.Spec.Taints {
+		if taint.Key == "blazn.dev/retired" && taint.Effect == "NoExecute" {
+			retired = true
+		}
+		if taint.Key == "blazn.dev/sandbox-node" && taint.Value == "true" && taint.Effect == "NoSchedule" {
+			blazn = true
+		}
+	}
+	if !blazn || controlPlane || master || !retired {
+		return false, &ProtocolError{Code: "retire_rejected", Message: "Node is not a Blazn worker that has left the cluster"}
+	}
+	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"delete", "node", name, "--wait=false"}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (b *MicroK8sBackend) Issue(ctx context.Context, token string, ttl int) (BackendIssue, error) {
 	if err := b.Healthy(ctx); err != nil {
 		return BackendIssue{}, err

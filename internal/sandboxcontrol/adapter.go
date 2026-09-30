@@ -107,10 +107,24 @@ type kubePodSpec struct {
 	AutomountServiceAccountToken bool              `json:"automountServiceAccountToken"`
 	RestartPolicy                string            `json:"restartPolicy"`
 	NodeSelector                 map[string]string `json:"nodeSelector"`
+	Tolerations                  []kubeToleration  `json:"tolerations,omitempty"`
 	SecurityContext              map[string]any    `json:"securityContext"`
 	Containers                   []kubeContainer   `json:"containers"`
 	InitContainers               []kubeContainer   `json:"initContainers,omitempty"`
 	Volumes                      []kubeVolume      `json:"volumes,omitempty"`
+}
+
+// SandboxNodeToleration admits a sandbox Pod onto Blazn nodes, which register
+// with a permanent blazn.dev/sandbox-node=true:NoSchedule taint so that shared
+// cluster workloads stay off user machines. It is the only toleration the
+// sandbox boundary policy accepts.
+var SandboxNodeToleration = kubeToleration{Key: "blazn.dev/sandbox-node", Operator: "Equal", Value: "true", Effect: "NoSchedule"}
+
+type kubeToleration struct {
+	Key      string `json:"key"`
+	Operator string `json:"operator"`
+	Value    string `json:"value"`
+	Effect   string `json:"effect"`
 }
 
 type kubeContainer struct {
@@ -719,6 +733,7 @@ func renderPodSpec(request CreateRequest) kubePodSpec {
 	return kubePodSpec{
 		RuntimeClassName: request.RuntimeClassName, ServiceAccountName: ServiceAccountName, AutomountServiceAccountToken: false,
 		RestartPolicy: "Never", NodeSelector: map[string]string{"kubernetes.io/arch": request.Architecture, "blazn.dev/sandbox-eligible": "true"},
+		Tolerations:     []kubeToleration{SandboxNodeToleration},
 		SecurityContext: map[string]any{"runAsNonRoot": true, "runAsUser": int64(65532), "runAsGroup": int64(65532), "fsGroup": int64(65532), "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 		Containers: []kubeContainer{{Name: "main", Image: request.Image, Command: append([]string(nil), request.Command...),
 			SecurityContext: restrictedContainerSecurity(),

@@ -45,6 +45,7 @@ const (
 	RootJoin            RootOperation = "join"
 	RootAbortJoin       RootOperation = "abort_join_intent"
 	RootQuarantineJoin  RootOperation = "quarantine_joined_node"
+	RootLeaveCluster    RootOperation = "leave_cluster"
 	RootReleaseCapacity RootOperation = "release_node_capacity"
 	RootFinalizeState   RootOperation = "finalize_service_state"
 	RootRemoveSupport   RootOperation = "remove_service_support"
@@ -211,7 +212,7 @@ func (c PipeObservationClient) Call(ctx context.Context, request RootRequest) (R
 // download budget. A shorter client deadline abandons a helper that is still
 // staging a package, and the rollback then races the orphaned install.
 func rootHelperCallTimeout(operation RootOperation, base time.Duration) time.Duration {
-	if operation == RootApply || operation == RootRollback {
+	if operation == RootApply || operation == RootRollback || operation == RootLeaveCluster {
 		if long := rootPackageDownloadTimeout + 5*time.Minute; long > base {
 			return long
 		}
@@ -538,6 +539,19 @@ func (a *PlatformAdapter) Rollback(ctx context.Context, mutation client.NodeInst
 	}
 	return err
 }
+
+// LeaveCluster retires the joined worker from the shared cluster during
+// uninstall. It is a no-op when the node never joined.
+func (a *PlatformAdapter) LeaveCluster(ctx context.Context) error {
+	if a.joined == nil {
+		return nil
+	}
+	request := a.request(RootLeaveCluster, a.plan, 0)
+	request.Join = a.joined
+	_, err := a.Privileged.Call(ctx, request)
+	return err
+}
+
 func (a *PlatformAdapter) Verify(ctx context.Context, plan client.NodeInstallPlan) error {
 	if err := a.ensureJoined(ctx, plan); err != nil {
 		return err

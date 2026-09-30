@@ -379,6 +379,10 @@ func (e NativeRootEngine) authorizeReceiptBoundRecovery(request RootRequest, aut
 	}
 	switch request.Operation {
 	case RootProbe, RootRollback, RootLoadWAL, RootSaveWAL, RootRemoveWAL, RootSaveReceipt, RootLoadReceipt, RootFinalizeState, RootRemoveSupport:
+	case RootLeaveCluster:
+		if wal.Lifecycle != "uninstall" {
+			return errors.New("expired non-uninstall WAL cannot leave the cluster")
+		}
 	case RootAbortJoin, RootQuarantineJoin:
 		if wal.Lifecycle != "install" {
 			return errors.New("expired non-install WAL cannot reconcile join")
@@ -465,6 +469,9 @@ func validExpiredWALTransition(authority RootInstallAuthority, current, next Ins
 		return false
 	}
 	if current.TerminalReceipt != nil && !sameJSON(current.TerminalReceipt, next.TerminalReceipt) {
+		return false
+	}
+	if current.ClusterLeft && !next.ClusterLeft {
 		return false
 	}
 	if current.TerminalReceipt == nil && next.TerminalReceipt != nil {
@@ -761,7 +768,7 @@ func (e NativeRootEngine) AuthorizeRootRequest(ctx context.Context, request Root
 			return err
 		}
 	}
-	if authority.KubernetesBinding != nil && e.clusterRuntimePresent() {
+	if authority.KubernetesBinding != nil && e.clusterRuntimePresent(authority.Plan) {
 		if e.Commands == nil {
 			e.Commands = FixedCommandExecutor{}
 		}
@@ -1026,10 +1033,18 @@ func bindRootJoinIntent(authority *RootInstallAuthority, join *RootJoinBinding, 
 // rollback removes the managed MicroK8s runtime, later receipt-bound rollback
 // and state steps must still be authorized; without the runtime this host can
 // neither observe nor mutate any Kubernetes Node, so the live-binding check
-// has nothing to protect. Lima hosts keep their check inside the VM.
-func (e NativeRootEngine) clusterRuntimePresent() bool {
+// has nothing to protect. Lima hosts keep their check inside the VM. A fresh
+// worker that has left the cluster during uninstall keeps a standalone
+// runtime whose local Node is not the bound one, so it is also treated as
+// having no cluster access once MicroK8s drops its clustered lock.
+func (e NativeRootEngine) clusterRuntimePresent(plan client.NodeInstallPlan) bool {
 	if e.Platform != "linux" || e.allowTestJoinRuntime {
 		return true
+	}
+	if plan.Mode == client.NodeModeFresh {
+		if _, err := os.Stat(microK8sClusteredLock); err != nil {
+			return false
+		}
 	}
 	if _, err := os.Stat(microK8sKubectlPath); err != nil {
 		return false

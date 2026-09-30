@@ -137,6 +137,10 @@ func validateRootRequestShape(request RootRequest) error {
 		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt != nil {
 			return errors.New("root quarantine request fields are invalid")
 		}
+	case RootLeaveCluster:
+		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt != nil {
+			return errors.New("root cluster leave request fields are invalid")
+		}
 	case RootReleaseCapacity:
 		if request.Bootstrap != nil || request.Ordinal != 0 || request.BackupRoot != "" || request.Prior != nil || request.Material != nil || request.Join == nil || request.WAL != nil || request.Receipt == nil || request.ActivationGrant == nil {
 			return errors.New("root capacity release request fields are invalid")
@@ -348,6 +352,9 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		if err != nil {
 			return RootResponse{}, err
 		}
+		if joined, err = e.excludeFromExternalLoadBalancers(ctx, request.Plan, joined); err != nil {
+			return RootResponse{}, err
+		}
 		binding, err := e.updateRootKubernetesBinding(request.Plan, joined)
 		return RootResponse{NodeUID: joined.UID, NodeName: joined.Name, ResourceVersion: joined.ResourceVersion, KubernetesBinding: binding}, err
 	case RootAbortJoin:
@@ -363,6 +370,8 @@ func (e NativeRootEngine) Execute(ctx context.Context, request RootRequest) (Roo
 		}
 		binding, err := e.updateRootKubernetesBinding(request.Plan, observed)
 		return RootResponse{KubernetesBinding: binding}, err
+	case RootLeaveCluster:
+		return RootResponse{}, e.leaveCluster(ctx, request.Plan, request.Join)
 	case RootReleaseCapacity:
 		binding, err := e.releaseNodeCapacity(ctx, request.Plan, request.Join, request.Receipt, request.ActivationGrant)
 		return RootResponse{KubernetesBinding: binding}, err
@@ -1949,7 +1958,7 @@ sys.path.insert(0,"/snap/microk8s/current/scripts/wrappers")
 p="/snap/microk8s/current/scripts/wrappers/join.py"
 s=importlib.util.spec_from_file_location("blazn_microk8s_join",p)
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-t="--register-with-taints=blazn.dev/bootstrap=pending:NoSchedule"
+t="` + microK8sRegistrationTaintArgument + `"
 b=m.store_base_kubelet_args
 def w(a):
     if "--register-with-taints" in a: raise SystemExit(3)
@@ -1996,6 +2005,20 @@ const (
 	microK8sKubectlPath            = "/snap/microk8s/current/kubectl"
 	microK8sKubeletKubeconfig      = "/var/snap/microk8s/current/credentials/kubelet.config"
 	microK8sBootstrapTaintArgument = "--register-with-taints=blazn.dev/bootstrap=pending:NoSchedule"
+)
+
+// A Blazn node is a dedicated sandbox host inside a shared cluster. It
+// registers with a permanent sandbox-node taint that only Blazn sandbox Pods
+// tolerate, so the cluster's own DaemonSets (ingress, load-balancer speakers,
+// log shippers) never land on a user's machine. Activation removes only the
+// bootstrap taint. The load-balancer exclusion label is applied right after
+// the join (see excludeFromExternalLoadBalancers): MicroK8s rewrites the
+// kubelet's --node-labels argument during the join, so a registration flag
+// would be dropped.
+const (
+	SandboxNodeTaintKey               = "blazn.dev/sandbox-node"
+	microK8sRegistrationTaintArgument = microK8sBootstrapTaintArgument + ",blazn.dev/sandbox-node=true:NoSchedule"
+	externalLoadBalancerExclusion     = "node.kubernetes.io/exclude-from-external-load-balancers"
 )
 
 func nodeKubectlArguments(args []string) []string {

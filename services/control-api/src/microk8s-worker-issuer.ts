@@ -3,6 +3,7 @@ import { lstat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import type {
   IssuedWorkerCredential,
+  RetiredWorkerRequest,
   WorkerJoinObservation,
   WorkerJoinObservationRequest,
   WorkerCredentialIssueRequest,
@@ -90,6 +91,16 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
     return { issuanceId: request.issuanceId, clusterId: request.clusterId, nodeName: request.expectedNodeName, nodeUid: response.nodeUid, resourceVersion: response.resourceVersion, bootstrapTainted: true, workerOnly: true };
   }
 
+  async retire(request: RetiredWorkerRequest, signal: AbortSignal): Promise<{ deleted: boolean }> {
+    const response = object(await this.call({ schemaVersion, operation: "retire", ...request }, signal));
+    exactKeys(response, ["schemaVersion", "operation", "clusterId", "nodeName", "nodeUid", "deleted"]);
+    if (response.schemaVersion !== schemaVersion || response.operation !== "retire" || response.clusterId !== request.clusterId ||
+        response.nodeName !== request.expectedNodeName || response.nodeUid !== request.nodeUid || typeof response.deleted !== "boolean") {
+      throw new Error("MicroK8s worker issuer returned an invalid response");
+    }
+    return { deleted: response.deleted };
+  }
+
   async health(signal: AbortSignal): Promise<void> {
     const response = object(await this.call(undefined, signal, "GET", "/healthz"));
     exactKeys(response, ["schemaVersion", "operation", "healthy"]);
@@ -114,7 +125,7 @@ export class UnixMicroK8sWorkerCredentialIssuer implements WorkerCredentialIssue
             if (res.statusCode !== 200) {
               const error = object(parsed);
               exactKeys(error, ["schemaVersion", "operation", "code", "message"]);
-              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "deadline_exceeded", "internal_error"]);
+              const codes = new Set(["invalid_request", "peer_denied", "binding_conflict", "token_collision", "microk8s_unavailable", "revoke_required", "observation_unavailable", "observation_rejected", "retire_rejected", "deadline_exceeded", "internal_error"]);
               if (error.schemaVersion !== schemaVersion || error.operation !== "error" || typeof error.code !== "string" || !codes.has(error.code) || typeof error.message !== "string" || error.message.length < 1 || error.message.length > 256) {
                 throw new Error("MicroK8s worker issuer returned an invalid error response");
               }

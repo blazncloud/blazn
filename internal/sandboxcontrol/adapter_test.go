@@ -843,10 +843,13 @@ func TestObserveAdmissionAcceptsOnlyExactAPIMaterializedPodDefaults(t *testing.T
 		spec["nodeName"] = "worker-a.example"
 		spec["imagePullSecrets"] = []any{map[string]any{"name": registryPullSecretName}}
 		spec["nodeSelector"].(map[string]any)[agentWorkloadLabel] = "true"
-		spec["tolerations"] = []any{
+		// DefaultTolerationSeconds appends its NoExecute defaults after the
+		// template's own sandbox-node toleration.
+		templateTolerations, _ := spec["tolerations"].([]any)
+		spec["tolerations"] = append(append([]any(nil), templateTolerations...),
 			map[string]any{"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
 			map[string]any{"key": "node.kubernetes.io/unreachable", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": float64(300)},
-		}
+		)
 		container := spec["containers"].([]any)[0].(map[string]any)
 		container["imagePullPolicy"] = "IfNotPresent"
 		container["terminationMessagePath"] = "/dev/termination-log"
@@ -1472,7 +1475,7 @@ func assertRendered(t *testing.T, object kubeSandbox) {
 		t.Fatalf("lifecycle intent=%#v", object.Spec)
 	}
 	pod := object.Spec.PodTemplate
-	if pod.Metadata.Labels[QueueLabel] != QueueName || pod.Spec.ServiceAccountName != ServiceAccountName || pod.Spec.AutomountServiceAccountToken || pod.Spec.RuntimeClassName != "gvisor" || pod.Spec.NodeSelector["blazn.dev/sandbox-eligible"] != "true" {
+	if pod.Metadata.Labels[QueueLabel] != QueueName || pod.Spec.ServiceAccountName != ServiceAccountName || pod.Spec.AutomountServiceAccountToken || pod.Spec.RuntimeClassName != "gvisor" || pod.Spec.NodeSelector["blazn.dev/sandbox-eligible"] != "true" || len(pod.Spec.Tolerations) != 1 || pod.Spec.Tolerations[0] != SandboxNodeToleration {
 		t.Fatalf("pod=%#v", pod)
 	}
 	security := pod.Spec.Containers[0].SecurityContext

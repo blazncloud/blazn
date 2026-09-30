@@ -43,3 +43,16 @@ test("private broker origins require a caller key and send it on every call",asy
   for(const origin of ["https://10.1.2.3:8081/","http://10.1.2.3/","http://8.8.8.8:8081/","http://broker.internal:8081/","http://u:p@10.1.2.3:8081/","http://10.1.2.3:8081/x","http://010.1.2.3:8081/"])assert.throws(()=>new LoopbackNodeBrokerProxy(1000,{origin,callerKey:key}),/BLAZN_NODE_BROKER_URL is invalid/,origin);
   assert.throws(()=>new LoopbackNodeBrokerProxy(1000,{origin:"http://10.1.2.3:8081/",callerKey:"short"}),/caller key is invalid/);
 });
+
+test("retired worker removal accepts only the closed deleted result",async()=>{
+  const key="k".repeat(43);let body='{"deleted":true}',seen:unknown;
+  const server=createServer((request,response)=>{const chunks:Buffer[]=[];request.on("data",(c:Buffer)=>chunks.push(c));request.on("end",()=>{seen={url:request.url,body:JSON.parse(Buffer.concat(chunks).toString("utf8"))};response.writeHead(200,{"content-type":"application/json"});response.end(body);});});
+  await new Promise<void>((resolve,reject)=>{server.once("error",reject);server.listen(18090,"127.0.0.1",resolve);});
+  try{
+    const proxy=new LoopbackNodeBrokerProxy(1000,{origin:"http://127.0.0.1:18090/",callerKey:key}),binding={clusterId:"cluster-a",nodeName:"worker-a",nodeUid:"44444444-4444-4444-8444-444444444444"};
+    assert.equal(await proxy.retire(binding,new AbortController().signal),true);
+    assert.deepEqual(seen,{url:"/v1/node-service/node-retirements",body:binding});
+    body='{"deleted":false}';assert.equal(await proxy.retire(binding,new AbortController().signal),false);
+    body='{"deleted":"yes"}';await assert.rejects(proxy.retire(binding,new AbortController().signal));
+  }finally{await new Promise<void>(resolve=>server.close(()=>resolve()));}
+});
