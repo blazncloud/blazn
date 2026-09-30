@@ -10,7 +10,8 @@ import type { WorkerCredentialIssuer } from "./node-broker-types.js";
 import { defaultMicroK8sIssuerSocket, UnixMicroK8sWorkerCredentialIssuer } from "./microk8s-worker-issuer.js";
 
 export async function startNodeBroker(issuer?: WorkerCredentialIssuer): Promise<Server> {
-  const resolvedIssuer = issuer ?? await UnixMicroK8sWorkerCredentialIssuer.connect(defaultMicroK8sIssuerSocket);
+  // The issuer bounds each request at 18s (readiness + add-node); wait slightly longer.
+  const resolvedIssuer = issuer ?? await UnixMicroK8sWorkerCredentialIssuer.connect(defaultMicroK8sIssuerSocket, 20_000);
   if (!resolvedIssuer.health || !resolvedIssuer.observe) throw new Error("Node broker issuer health/observation protocol is unavailable");
   await resolvedIssuer.health(AbortSignal.timeout(5_000));
   const root = process.env.BLAZN_NODE_BROKER_SECRETS_ROOT ?? "/etc/blazn/node-broker/secrets";
