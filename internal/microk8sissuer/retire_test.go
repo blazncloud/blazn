@@ -55,6 +55,7 @@ func TestBackendRetireDeletesOnlyARetiredBlaznWorker(t *testing.T) {
 		code                      string
 	}{
 		{name: "retired worker", labels: `"blazn.dev/node":"true"`, taints: retiredTaint, uid: retireUID, deleted: true},
+		{name: "retired worker after label rollback", labels: `"node.kubernetes.io/microk8s-worker":"microk8s-worker"`, taints: `{"key":"blazn.dev/sandbox-node","value":"true","effect":"NoSchedule"},` + retiredTaint, uid: retireUID, deleted: true},
 		{name: "not yet left", labels: `"blazn.dev/node":"true"`, taints: `{"key":"blazn.dev/sandbox-node","value":"true","effect":"NoSchedule"}`, uid: retireUID, code: "retire_rejected"},
 		{name: "not a Blazn node", labels: `"kubernetes.io/hostname":"worker-1"`, taints: retiredTaint, uid: retireUID, code: "retire_rejected"},
 		{name: "control plane", labels: `"blazn.dev/node":"true","node-role.kubernetes.io/control-plane":""`, taints: retiredTaint, uid: retireUID, code: "retire_rejected"},

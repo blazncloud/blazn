@@ -170,9 +170,11 @@ func (b *MicroK8sBackend) Observe(ctx context.Context, expectedName string) (Nod
 }
 
 // Retire deletes a retired Blazn worker's Node object. It returns false when
-// the Node is already gone. Only a Node that carries the Blazn node label,
-// the bound UID, no control-plane role and its own NoExecute retirement taint
-// (proof the worker detached itself) is deleted.
+// the Node is already gone. Only a Node with the bound UID, no control-plane
+// role, a Blazn marker and its own NoExecute retirement taint (proof the
+// worker detached itself) is deleted. Uninstall rolls back the blazn.dev/node
+// label before leaving, so the permanent sandbox-node taint also counts as
+// the Blazn marker.
 func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, error) {
 	if err := b.validateConfiguration(); err != nil {
 		return false, err
@@ -204,13 +206,16 @@ func (b *MicroK8sBackend) Retire(ctx context.Context, name, uid string) (bool, e
 	}
 	_, controlPlane := node.Metadata.Labels["node-role.kubernetes.io/control-plane"]
 	_, master := node.Metadata.Labels["node-role.kubernetes.io/master"]
-	retired := false
+	retired, blazn := false, node.Metadata.Labels["blazn.dev/node"] == "true"
 	for _, taint := range node.Spec.Taints {
 		if taint.Key == "blazn.dev/retired" && taint.Effect == "NoExecute" {
 			retired = true
 		}
+		if taint.Key == "blazn.dev/sandbox-node" && taint.Value == "true" && taint.Effect == "NoSchedule" {
+			blazn = true
+		}
 	}
-	if node.Metadata.Labels["blazn.dev/node"] != "true" || controlPlane || master || !retired {
+	if !blazn || controlPlane || master || !retired {
 		return false, &ProtocolError{Code: "retire_rejected", Message: "Node is not a Blazn worker that has left the cluster"}
 	}
 	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"delete", "node", name, "--wait=false"}); err != nil {
