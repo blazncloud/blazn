@@ -30,7 +30,7 @@ export class NodeBrokerService {
     private readonly store: NodeBrokerStore,
     private readonly joinKey: () => Promise<Buffer>,
     private readonly issuer: WorkerCredentialIssuer,
-    private readonly providerTimeoutMs = 10_000,
+    private readonly providerTimeoutMs = 19_000,
   ) {}
 
   async health(signal: AbortSignal): Promise<void> {
@@ -130,7 +130,8 @@ export class NodeBrokerService {
         cluster = record(plan.cluster, "plan.cluster"),
         now = requiredDatabaseNow(prepared.binding!),
         expiry = credentialExpiry(prepared.binding!),
-        ttlSeconds = ttl(expiry, now);
+        ttlSeconds = ttl(expiry, now),
+        started = Date.now();
       external = await this.providerCall((signal) =>
         this.issuer.issue(
           {
@@ -151,6 +152,7 @@ export class NodeBrokerService {
         cluster.id,
         now,
         ttlSeconds,
+        Date.now() - started,
       );
     } catch (error) {
       await this.compensate(intent);
@@ -436,7 +438,11 @@ function validateIssued(
   clusterId: unknown,
   now: Date,
   ttlSeconds: number,
+  providerElapsedMs = 0,
 ) {
+  // The provider starts its TTL on its own clock after readiness and token
+  // creation, so allow the measured call duration plus bounded clock slack.
+  const latestExpiry = now.getTime() + ttlSeconds * 1000 + Math.max(0, providerElapsedMs) + ISSUED_EXPIRY_SLACK_MS;
   if (
     v.providerHandle !== intent.providerHandle ||
     v.workerOnly !== true ||
@@ -447,7 +453,7 @@ function validateIssued(
     !(v.expiresAt instanceof Date) ||
     !Number.isFinite(v.expiresAt.getTime()) ||
     v.expiresAt.getTime() <= now.getTime() ||
-    v.expiresAt.getTime() > now.getTime() + ttlSeconds * 1000 ||
+    v.expiresAt.getTime() > latestExpiry ||
     v.expiresAt.getTime() > planExpiry.getTime()
   )
     throw invalidCredential(
@@ -513,6 +519,7 @@ function requiredDatabaseNow(b: BrokerBinding): Date {
     throw invalidCredential("database clock is unavailable");
   return b.databaseNow;
 }
+const ISSUED_EXPIRY_SLACK_MS = 2_000;
 function ttl(expiry: Date, now: Date) {
   return Math.max(
     1,

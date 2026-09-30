@@ -1766,7 +1766,7 @@ func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan,
 	if err := e.verifyJoinRuntime(ctx, plan); err != nil {
 		return JoinedNode{}, err
 	}
-	input := []byte(urls[0] + "\n")
+	input := []byte(preferredJoinURL(urls, plan.Cluster.APIServer) + "\n")
 	if e.Platform == "linux" {
 		if _, err := e.Commands.RunInput(ctx, "/snap/microk8s/current/usr/bin/python3", input, "-c", microK8sJoinStdinProgram); err != nil {
 			return JoinedNode{}, err
@@ -1781,6 +1781,21 @@ func (e NativeRootEngine) join(ctx context.Context, plan client.NodeInstallPlan,
 		}
 	}
 	return e.observeNode(ctx, plan, binding.ExpectedNodeName)
+}
+
+// preferredJoinURL selects the cluster-agent URL on the same host as the signed
+// plan's API server. MicroK8s lists every control-plane address (including
+// WireGuard, Tailscale and container bridges), and the issuer sorts them, so
+// the first entry is often unreachable from the joining node.
+func preferredJoinURL(urls []string, apiServer string) string {
+	if parsed, err := url.Parse(apiServer); err == nil && parsed.Hostname() != "" {
+		for _, candidate := range urls {
+			if joinURL, err := url.Parse("https://" + candidate); err == nil && joinURL.Hostname() == parsed.Hostname() {
+				return candidate
+			}
+		}
+	}
+	return urls[0]
 }
 
 const microK8sJoinStdinProgram = `import importlib.util,sys
