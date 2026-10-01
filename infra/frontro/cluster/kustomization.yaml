@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- validatingadmissionpolicy-blazn-node-registration-guard.yaml
+- validatingadmissionpolicy-blazn-node-update-shadow.yaml
+- validatingadmissionpolicybinding-blazn-node-registration-guard.yaml
+- validatingadmissionpolicybinding-blazn-node-update-shadow.yaml

@@ -1,0 +1,15 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  labels:
+    app.kubernetes.io/part-of: blazn-hosting
+  name: blazn-node-registration-guard
+spec:
+  paramRef:
+    name: blazn-node-registration
+    namespace: blazn-test
+    parameterNotFoundAction: Allow
+  policyName: blazn-node-registration-guard
+  validationActions:
+  - Warn
+  - Audit

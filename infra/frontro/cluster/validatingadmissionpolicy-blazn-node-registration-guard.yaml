@@ -1,0 +1,38 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  labels:
+    app.kubernetes.io/part-of: blazn-hosting
+  name: blazn-node-registration-guard
+spec:
+  failurePolicy: Ignore
+  matchConditions:
+  - expression: request.userInfo.username.startsWith('system:node:') && 'system:nodes' in request.userInfo.groups
+    name: node-credential
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+    - apiGroups:
+      - ''
+      apiVersions:
+      - v1
+      operations:
+      - CREATE
+      resources:
+      - nodes
+      scope: '*'
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  validations:
+  - expression: |-
+      object.metadata.name in params.data.frontroHosts.split(',') || (variables.taints.exists(t, t.key == 'blazn.dev/bootstrap' && has(t.value) && t.value == 'pending' && t.effect == 'NoSchedule') &&
+       variables.taints.exists(t, t.key == 'blazn.dev/sandbox-node' && has(t.value) && t.value == 'true' && t.effect == 'NoSchedule'))
+    message: a machine outside Frontro's host list registered without the Blazn bootstrap and sandbox-node taints
+  - expression: '!(object.metadata.name in params.data.retiredNodeNames.split('',''))'
+    message: a retired Blazn node name registered again
+  variables:
+  - expression: 'has(object.spec.taints) ? object.spec.taints : []'
+    name: taints
