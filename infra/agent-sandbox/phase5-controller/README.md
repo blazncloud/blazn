@@ -78,20 +78,21 @@ uses only a 600-second projected API token with an explicit audience. Its Role
 can create/delete/patch and read Sandboxes only in `blazn-poc-sandboxes`; Pod
 access is get/list, Kueue Workload access is list-only, and `pods/exec` has only
 the create/get connect verbs required by the WebSocket v5 handshake,
-and NetworkPolicy access is create/delete/get/list there. A separate ClusterRole
-grants only `get` on core `nodes`, solely so the controller can freeze the UID of
-the exact Node named by the admitted Pod; it grants no list, watch, or mutation.
+and NetworkPolicy access is create/delete/get/list there. The controller has no
+ClusterRole and cannot read Kubernetes Node objects: it reports only the admitted
+Pod's node name, and Blazn resolves the Node identity from its own node
+registry.
 The controller accepts
 only its pinned helper command, verifies the exact Pod and Sandbox UIDs before
 and after each WebSocket v5 exchange, creates an exact temporary DNS/HTTPS
 source policy, and deletes it with UID/resource-version preconditions before
 releasing the init gate. It has no separate Sandbox status
-subresource grant or other cluster-scoped authority and no Secret, RuntimeClass,
+subresource grant or any cluster-scoped authority and no Secret, RuntimeClass,
 CRD, webhook, namespace, or wildcard authority. RuntimeClass
 access may be added only in a separate PR that wires and qualifies an exact
 runtime capability.
 
-The reviewed render intentionally retains exactly ten
+The reviewed render intentionally retains exactly eight
 `BLAZN_PHASE5_ANCHOR_UID` owner-reference placeholders. Installation first
 creates a transaction-unique, zero-rule ClusterRole anchor and durably journals
 its server-issued UID. It substitutes only that constrained UID into a sealed

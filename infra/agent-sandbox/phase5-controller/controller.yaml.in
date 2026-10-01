@@ -82,54 +82,6 @@ subjects:
   name: blazn-sandbox-controller
   namespace: blazn-poc-system
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: blazn-sandbox-controller-node-observer
-  annotations:
-    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
-  ownerReferences:
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: ClusterRole
-    name: blazn-phase5-anchor-BLAZN_PHASE5_TRANSACTION_ID
-    uid: BLAZN_PHASE5_ANCHOR_UID
-    controller: false
-    blockOwnerDeletion: false
-  labels:
-    blazn.dev/phase5-object: clusterrole
-    app.kubernetes.io/name: blazn-sandbox-controller
-    app.kubernetes.io/part-of: blazn-poc
-rules:
-- apiGroups: [""]
-  resources: ["nodes"]
-  verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: blazn-sandbox-controller-node-observer
-  annotations:
-    blazn.dev/phase5-transaction: BLAZN_PHASE5_TRANSACTION_ID
-  ownerReferences:
-  - apiVersion: rbac.authorization.k8s.io/v1
-    kind: ClusterRole
-    name: blazn-phase5-anchor-BLAZN_PHASE5_TRANSACTION_ID
-    uid: BLAZN_PHASE5_ANCHOR_UID
-    controller: false
-    blockOwnerDeletion: false
-  labels:
-    blazn.dev/phase5-object: clusterrolebinding
-    app.kubernetes.io/name: blazn-sandbox-controller
-    app.kubernetes.io/part-of: blazn-poc
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: blazn-sandbox-controller-node-observer
-subjects:
-- kind: ServiceAccount
-  name: blazn-sandbox-controller
-  namespace: blazn-poc-system
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
