@@ -490,6 +490,21 @@ func (a *Adapter) rejectCreatedMetadata(ctx context.Context, expectedName string
 	return original
 }
 
+// DestroyUnbound deletes a Sandbox the controller created but never recorded
+// as its backend, preconditioned on the observed UID and resourceVersion, and
+// releases the Blazn cleanup finalizer. It refuses any object outside the
+// workspace and owner boundary. Absence is proven separately by
+// ObserveUnboundAbsence.
+func (a *Adapter) DestroyUnbound(ctx context.Context, workspaceID, ownerID string, record SandboxRecord) error {
+	if err := validateIdentity(workspaceID, ownerID, record.Name); err != nil {
+		return err
+	}
+	if err := verifyManaged(record, workspaceID, ownerID); err != nil {
+		return err
+	}
+	return a.rejectCreated(ctx, record, nil)
+}
+
 func (a *Adapter) verifyRuntimeClass(ctx context.Context, request CreateRequest) error {
 	if request.RuntimeClassName == "" {
 		return nil

@@ -25,6 +25,8 @@ type SandboxControlAdapter interface {
 	FinalizePreExported(context.Context, string, string, string, string, string, string, []sandboxcontrol.ArtifactExport, []sandboxcontrol.ArtifactReceipt, string) (sandboxcontrol.OperationReceipt, error)
 	CleanupOwnedDependents(context.Context, sandboxcontrol.AdmissionObservation) error
 	ObserveAbsence(context.Context, sandboxcontrol.AdmissionObservation) error
+	DestroyUnbound(context.Context, string, string, sandboxcontrol.SandboxRecord) error
+	ObserveUnboundAbsence(context.Context, string, string, string, string) error
 }
 
 type KubernetesBackendConfig struct {
@@ -164,6 +166,55 @@ func (b *KubernetesBackend) EnsureCreated(ctx context.Context, item WorkItem) (B
 	}
 	b.retainRecord(item, record)
 	return stateFromRecord(record), nil
+}
+
+// DestroyUnboundCreate removes the backend of a create that failed before its
+// identity was recorded, and returns only once the Sandbox, its Pod, and its
+// Kueue Workload are proven absent. A live object must still match the work
+// item and any identity this process created; anything else is left alone.
+func (b *KubernetesBackend) DestroyUnboundCreate(ctx context.Context, item WorkItem) error {
+	if item.OperationType != "create" || item.BackendUID != nil {
+		return errors.New("only an unbound create backend can be destroyed")
+	}
+	request, err := b.request(item)
+	if err != nil {
+		return err
+	}
+	unlock := b.lockCreate(item)
+	defer unlock()
+	trusted, retained := b.retainedRecord(item)
+	sandboxUID := ""
+	if retained {
+		sandboxUID = trusted.UID
+	}
+	record, err := b.adapter.Get(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID)
+	var adapterErr *sandboxcontrol.AdapterError
+	switch {
+	case err == nil:
+		if err := verifyLiveRecord(item, request, record, retainedRecord(retained, trusted), false, false); err != nil {
+			return backendFailure("backend_identity_mismatch", "unbound Sandbox identity does not match the work item", false, true, err)
+		}
+		sandboxUID = record.UID
+		if err := b.adapter.DestroyUnbound(ctx, item.WorkspaceID, item.RequestedBy, record); err != nil {
+			return classifyAdapter("cleanup", err)
+		}
+	case errors.As(err, &adapterErr) && adapterErr.Code == sandboxcontrol.ErrNotFound:
+		// Never created, or already gone: absence below is still proven.
+	default:
+		return classifyAdapter("observe", err)
+	}
+	for {
+		err := b.adapter.ObserveUnboundAbsence(ctx, item.WorkspaceID, item.RequestedBy, item.SandboxID, sandboxUID)
+		if err == nil {
+			return nil
+		}
+		if !errors.As(err, &adapterErr) || adapterErr.Code != sandboxcontrol.ErrCleanupIncomplete {
+			return classifyAdapter("cleanup", err)
+		}
+		if !wait(ctx, b.absencePollInterval) {
+			return ctx.Err()
+		}
+	}
 }
 
 func (b *KubernetesBackend) Observe(ctx context.Context, item WorkItem, expected *sandboxcontrol.AdmissionObservation) (BackendState, error) {

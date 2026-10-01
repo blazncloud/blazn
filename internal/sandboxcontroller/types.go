@@ -136,6 +136,12 @@ type Backend interface {
 	Finalize(context.Context, WorkItem, BackendState, *sandboxcontrol.AdmissionObservation) (CleanupResult, error)
 }
 
+// UnboundCreateBackend destroys the backend of a create that failed before its
+// identity was recorded, returning only after proving it absent.
+type UnboundCreateBackend interface {
+	DestroyUnboundCreate(context.Context, WorkItem) error
+}
+
 type SourceBackend interface {
 	PrepareSourceBootstrap(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) error
 	MaterializeSources(context.Context, WorkItem, sandboxcontrol.AdmissionObservation) (sandboxio.SourceMaterializationReceipt, error)
