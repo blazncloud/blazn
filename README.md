@@ -162,9 +162,7 @@ make test-install
 ## Documentation
 
 - [Product overview](docs/product-overview.md) — vision, surfaces, system model, and product principles
-- [POC execution plan](docs/poc-execution-plan.md) — phased implementation and qualification plan
 - [Milestone 1](docs/milestone-1.md) — CLI distribution and release trust
-- [Milestone 2](docs/milestone-2.md) — control plane and authentication
 - [Milestone 2A contract](docs/milestone-2a-contract.md) — workspace and membership semantics
 - [Authentication](docs/authentication.md) — self-hosted ZITADEL, branded sign-in, MFA, and device approval
 - [Node contract](docs/node-contract.md) — enrollment, installation, receipts, and lifecycle

@@ -89,7 +89,7 @@ chmod 0444 "$secret_dir/postgres_password"
 run_role_compat() {
   docker run --rm --network "$network" --user 999:999 \
     -e PGHOST="$postgres" -e POSTGRES_USER=postgres -e POSTGRES_DB=blazn \
-    -v "$repo_root/infra/milestone-2/postgres-compat/ensure-controller-roles.sh:/opt/blazn-postgres/ensure-controller-roles.sh:ro" \
+    -v "$repo_root/infra/node/postgres/ensure-controller-roles.sh:/opt/blazn-postgres/ensure-controller-roles.sh:ro" \
     -v "$secret_dir/postgres_password:/run/secrets/postgres_password:ro" \
     --entrypoint /bin/sh "$postgres_image" /opt/blazn-postgres/ensure-controller-roles.sh
 }

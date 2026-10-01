@@ -5,7 +5,6 @@ TEST_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 INSTALLER=$TEST_DIR/../scripts/install-worker-issuer.sh
 UPGRADE=$TEST_DIR/../scripts/upgrade-worker-issuer-observation.sh
 ROLLBACK=$TEST_DIR/../scripts/rollback-worker-issuer.sh
-COMPOSE=$TEST_DIR/../../milestone-2/compose.yaml
 command -v sudo >/dev/null 2>&1 || { printf 'worker issuer infra test skipped: sudo unavailable\n'; exit 0; }
 sudo -n true >/dev/null 2>&1 || { printf 'worker issuer infra test skipped: passwordless sudo unavailable\n'; exit 0; }
 top=${TMPDIR:-/tmp}/blazn-worker-issuer-infra-$$
@@ -242,18 +241,6 @@ for fault in service-stopped-before-phase rollback-validated-before-phase binary
 done
 
 test_step=static-contracts
-grep -F 'source: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
-grep -F 'target: /run/blazn/microk8s-worker-issuer.sock' "$COMPOSE" >/dev/null
-grep -F 'network_mode: "service:api"' "$COMPOSE" >/dev/null
-# shellcheck disable=SC2016
-grep -F 'BLAZN_NODE_BROKER_LOOPBACK: ${BLAZN_NODE_BROKER_LOOPBACK:-disabled}' "$COMPOSE" >/dev/null
-grep -A2 -F '      api:' "$COMPOSE" | grep -F 'condition: service_started' >/dev/null
-broker_body=$(sed -n '/  node-broker:/,/^  [a-z]/p' "$COMPOSE")
-printf '%s\n' "$broker_body" | grep -F "fetch('http://127.0.0.1:8081/healthz')" >/dev/null
-if sed -n '/  node-broker:/,/^  [a-z]/p' "$COMPOSE" | grep -E '/var/snap/microk8s|kubeconfig|docker.sock' >/dev/null; then printf 'node broker has an unreviewed host capability\n' >&2; exit 1; fi
-if sed -n '/  api:/,/^  [a-z]/p' "$COMPOSE" | grep -E 'node_broker_database_url|node_broker_join_credential|issuer-hmac|microk8s-worker-issuer.sock' >/dev/null; then printf 'API container received a broker/provider secret\n' >&2; exit 1; fi
-for script in start-control-plane.sh run-control-plane.sh stop-control-plane.sh; do grep -F -- '--profile node-broker' "$TEST_DIR/../../milestone-2/scripts/$script" >/dev/null; done
-for script in start-control-plane.sh run-control-plane.sh; do grep -F 'running healthy' "$TEST_DIR/../../milestone-2/scripts/$script" >/dev/null; done
 unit=$TEST_DIR/../systemd/blazn-microk8s-worker-issuer.service
 tmpfiles_policy=$TEST_DIR/../systemd/blazn-microk8s-worker-issuer.tmpfiles
 grep -Fx 'ReadWritePaths=/run/blazn /var/lib/blazn-node-root/microk8s-worker-issuer /var/snap/microk8s/current/credentials /root/snap' "$unit" >/dev/null
