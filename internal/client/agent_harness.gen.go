@@ -1,5 +1,5 @@
 // Code generated from packages/contracts/agent-harness.openapi.json; DO NOT EDIT.
-// Contract SHA256: 197f70f28af67ea0db7e5335d7397f36dc53509c274b336760d361c74722d87a
+// Contract SHA256: 04f25709e2a781fdd69b7c878741e6e007af9a5b0e342c43a3023dbfe18a859e
 package client
 
 import (
