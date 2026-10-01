@@ -1,6 +1,7 @@
 package microk8sissuer
 
 import (
+	"encoding/json"
 	"context"
 	"errors"
 	"strings"
@@ -103,46 +104,84 @@ func TestServiceRetireReportsTheBackendResult(t *testing.T) {
 	}
 }
 
-func TestBackendAssignBindsOnlyAnUnboundBlaznWorker(t *testing.T) {
+func TestBackendAssignReleasesAnActivatedBlaznWorkerInOnePatch(t *testing.T) {
 	const workspace = "11111111-2222-4333-8444-555555555555"
-	node := func(labels, taints string) []byte {
-		return []byte(`{"metadata":{"name":"worker-1","uid":"` + retireUID + `","resourceVersion":"41","labels":{` + labels + `}},"spec":{"taints":[` + taints + `]}}`)
+	node := func(labels, taints string, unschedulable bool) []byte {
+		cordon := ""
+		if unschedulable {
+			cordon = `"unschedulable":true,`
+		}
+		return []byte(`{"metadata":{"name":"worker-1","uid":"` + retireUID + `","resourceVersion":"41","labels":{` + labels + `}},"spec":{` + cordon + `"taints":[` + taints + `]}}`)
 	}
 	sandboxTaint := `{"key":"blazn.dev/sandbox-node","value":"true","effect":"NoSchedule"}`
+	bootstrap := `,{"key":"blazn.dev/bootstrap","value":"pending","effect":"NoSchedule"}`
+	hold := `,{"key":"` + PlacementHoldTaint + `","value":"paused","effect":"NoSchedule"}`
+	bound := `"blazn.dev/node":"true","` + WorkspaceNodeLabel + `":"` + workspace + `"`
+	eligible := `,"` + SandboxEligibleLabel + `":"true"`
 	for _, tc := range []struct {
 		name, labels, taints, uid string
-		assigned                  bool
+		unschedulable, assigned   bool
+		wantTaints                string
 		code                      string
 	}{
-		{name: "new Blazn worker", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint, uid: retireUID, assigned: true},
-		{name: "already bound here", labels: `"` + WorkspaceNodeLabel + `":"` + workspace + `"`, taints: sandboxTaint, uid: retireUID},
-		{name: "bound elsewhere", labels: `"` + WorkspaceNodeLabel + `":"99999999-2222-4333-8444-555555555555"`, taints: sandboxTaint, uid: retireUID, code: "binding_conflict"},
+		{name: "freshly joined worker", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint + bootstrap, uid: retireUID, assigned: true, wantTaints: "blazn.dev/sandbox-node"},
+		{name: "keeps an unrelated hold", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint + bootstrap + hold, uid: retireUID, assigned: true, wantTaints: "blazn.dev/sandbox-node," + PlacementHoldTaint},
+		{name: "already released here", labels: bound + eligible, taints: sandboxTaint, uid: retireUID},
+		{name: "released by an older node agent", labels: `"blazn.dev/node":"true"` + eligible, taints: sandboxTaint, uid: retireUID, assigned: true, wantTaints: "blazn.dev/sandbox-node"},
+		{name: "cordoned", labels: bound + eligible, taints: sandboxTaint, unschedulable: true, uid: retireUID, assigned: true, wantTaints: "blazn.dev/sandbox-node"},
+		{name: "bound elsewhere", labels: `"` + WorkspaceNodeLabel + `":"99999999-2222-4333-8444-555555555555"`, taints: sandboxTaint + bootstrap, uid: retireUID, code: "binding_conflict"},
+		{name: "conflicting eligibility", labels: `"blazn.dev/node":"true","` + SandboxEligibleLabel + `":"false"`, taints: sandboxTaint + bootstrap, uid: retireUID, code: "assign_rejected"},
 		{name: "not a Blazn node", labels: `"kubernetes.io/hostname":"worker-1"`, uid: retireUID, code: "assign_rejected"},
 		{name: "retired", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint + `,{"key":"blazn.dev/retired","value":"true","effect":"NoExecute"}`, uid: retireUID, code: "assign_rejected"},
 		{name: "control plane", labels: `"blazn.dev/node":"true","node-role.kubernetes.io/control-plane":""`, taints: sandboxTaint, uid: retireUID, code: "assign_rejected"},
 		{name: "MicroK8s control plane", labels: `"blazn.dev/node":"true","node.kubernetes.io/microk8s-controlplane":"microk8s-controlplane"`, taints: sandboxTaint, uid: retireUID, code: "assign_rejected"},
-		{name: "different UID", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint, uid: "7f3c2a10-0000-4000-8000-000000000002", code: "binding_conflict"},
+		{name: "different UID", labels: `"blazn.dev/node":"true"`, taints: sandboxTaint + bootstrap, uid: "7f3c2a10-0000-4000-8000-000000000002", code: "binding_conflict"},
 	} {
-		runner := &scriptedRunner{outputs: map[string][]byte{"get": node(tc.labels, tc.taints), "label": nil}}
+		runner := &scriptedRunner{outputs: map[string][]byte{"get": node(tc.labels, tc.taints, tc.unschedulable), "patch": nil}}
 		assigned, err := testBackend(runner).Assign(context.Background(), "worker-1", tc.uid, workspace)
-		labelled := false
-		for _, call := range runner.calls {
-			if strings.HasPrefix(call, "label ") {
-				labelled = true
-				if call != "label node worker-1 "+WorkspaceNodeLabel+"="+workspace+" --resource-version=41" {
-					t.Fatalf("%s: label call %q", tc.name, call)
-				}
-			}
-		}
 		var protocol *ProtocolError
 		if tc.code != "" {
-			if !errors.As(err, &protocol) || protocol.Code != tc.code || assigned || labelled {
-				t.Fatalf("%s: assigned=%v labelled=%v err=%v", tc.name, assigned, labelled, err)
+			if !errors.As(err, &protocol) || protocol.Code != tc.code || assigned || len(runner.calls) != 1 {
+				t.Fatalf("%s: assigned=%v err=%v calls=%v", tc.name, assigned, err, runner.calls)
 			}
 			continue
 		}
-		if err != nil || assigned != tc.assigned || labelled != tc.assigned {
-			t.Fatalf("%s: assigned=%v labelled=%v err=%v", tc.name, assigned, labelled, err)
+		if err != nil || assigned != tc.assigned {
+			t.Fatalf("%s: assigned=%v err=%v", tc.name, assigned, err)
+		}
+		if !tc.assigned {
+			if len(runner.calls) != 1 {
+				t.Fatalf("%s: a released Node was patched: %v", tc.name, runner.calls)
+			}
+			continue
+		}
+		prefix := "patch node worker-1 --type=json -p "
+		if len(runner.calls) != 2 || !strings.HasPrefix(runner.calls[1], prefix) {
+			t.Fatalf("%s: calls=%v", tc.name, runner.calls)
+		}
+		var patch []struct {
+			Op, Path string
+			Value    json.RawMessage
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(runner.calls[1], prefix)), &patch); err != nil || len(patch) != 4 ||
+			patch[0].Op != "test" || patch[0].Path != "/metadata/resourceVersion" || string(patch[0].Value) != `"41"` ||
+			patch[1].Path != "/metadata/labels" || patch[2].Path != "/spec/taints" || patch[3].Path != "/spec/unschedulable" || string(patch[3].Value) != "false" {
+			t.Fatalf("%s: patch=%s", tc.name, runner.calls[1])
+		}
+		var labels map[string]string
+		var taints []struct{ Key string }
+		if json.Unmarshal(patch[1].Value, &labels) != nil || json.Unmarshal(patch[2].Value, &taints) != nil {
+			t.Fatalf("%s: undecodable patch", tc.name)
+		}
+		if labels[WorkspaceNodeLabel] != workspace || labels[SandboxEligibleLabel] != "true" || labels["blazn.dev/node"] != "true" {
+			t.Fatalf("%s: labels=%v", tc.name, labels)
+		}
+		keys := []string{}
+		for _, taint := range taints {
+			keys = append(keys, taint.Key)
+		}
+		if strings.Join(keys, ",") != tc.wantTaints {
+			t.Fatalf("%s: taints=%v want %s", tc.name, keys, tc.wantTaints)
 		}
 	}
 }

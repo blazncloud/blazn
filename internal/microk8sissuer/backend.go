@@ -239,9 +239,21 @@ func isControlPlaneNode(labels map[string]string) bool {
 // enforced, so only this issuer writes it.
 const WorkspaceNodeLabel = "node-restriction.kubernetes.io/blazn-workspace"
 
-// Assign labels a Blazn worker's Node with its workspace. It returns false
-// when the label is already exactly present, and refuses a Node bound to a
-// different workspace, a control-plane Node, or one without a Blazn marker.
+// SandboxEligibleLabel makes an activated Blazn worker eligible for the
+// Blazn sandbox ResourceFlavor.
+const SandboxEligibleLabel = "blazn.dev/sandbox-eligible"
+
+// BootstrapTaintKey quarantines a joined worker until it is activated.
+const BootstrapTaintKey = "blazn.dev/bootstrap"
+
+// Assign releases an activated Blazn worker's Node: it binds the Node to its
+// workspace, makes it sandbox-eligible, removes the bootstrap taint and clears
+// unschedulable, all in one patch preconditioned on the observed
+// resourceVersion that keeps every other label and taint. The node agent then
+// only observes the released state, so its own credential need not change
+// taints (NodeRestriction, M0.9). It returns false when the Node is already
+// released for the workspace, and refuses a Node bound to a different
+// workspace, a retired or control-plane Node, or one without a Blazn marker.
 func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID string) (bool, error) {
 	if err := b.validateConfiguration(); err != nil {
 		return false, err
@@ -259,7 +271,8 @@ func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID str
 			Labels                     map[string]string
 		} `json:"metadata"`
 		Spec struct {
-			Taints []struct{ Key, Value, Effect string } `json:"taints"`
+			Unschedulable bool             `json:"unschedulable"`
+			Taints        []map[string]any `json:"taints"`
 		} `json:"spec"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(out)).Decode(&node); err != nil || node.Metadata.Name != name || node.Metadata.ResourceVersion == "" {
@@ -270,24 +283,49 @@ func (b *MicroK8sBackend) Assign(ctx context.Context, name, uid, workspaceID str
 	}
 	controlPlane := isControlPlaneNode(node.Metadata.Labels)
 	blazn := node.Metadata.Labels["blazn.dev/node"] == "true"
+	taints := make([]map[string]any, 0, len(node.Spec.Taints))
+	bootstrapped := false
 	for _, taint := range node.Spec.Taints {
-		if taint.Key == "blazn.dev/sandbox-node" && taint.Value == "true" && taint.Effect == "NoSchedule" {
+		key, _ := taint["key"].(string)
+		if key == "blazn.dev/sandbox-node" && taint["value"] == "true" && taint["effect"] == "NoSchedule" {
 			blazn = true
 		}
-		if taint.Key == "blazn.dev/retired" {
+		if key == "blazn.dev/retired" {
 			return false, &ProtocolError{Code: "assign_rejected", Message: "retired Node cannot be assigned"}
 		}
+		if key == BootstrapTaintKey {
+			bootstrapped = true
+			continue
+		}
+		taints = append(taints, taint)
 	}
 	if !blazn || controlPlane {
 		return false, &ProtocolError{Code: "assign_rejected", Message: "Node is not a Blazn worker"}
 	}
-	if current, present := node.Metadata.Labels[WorkspaceNodeLabel]; present {
-		if current == workspaceID {
-			return false, nil
-		}
+	if current, present := node.Metadata.Labels[WorkspaceNodeLabel]; present && current != workspaceID {
 		return false, &ProtocolError{Code: "binding_conflict", Message: "Node is bound to a different workspace"}
 	}
-	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"label", "node", name, WorkspaceNodeLabel + "=" + workspaceID, "--resource-version=" + node.Metadata.ResourceVersion}); err != nil {
+	if eligible, present := node.Metadata.Labels[SandboxEligibleLabel]; present && eligible != "true" {
+		return false, &ProtocolError{Code: "assign_rejected", Message: "Node carries a conflicting eligibility label"}
+	}
+	if !bootstrapped && !node.Spec.Unschedulable && node.Metadata.Labels[WorkspaceNodeLabel] == workspaceID && node.Metadata.Labels[SandboxEligibleLabel] == "true" {
+		return false, nil
+	}
+	labels := make(map[string]string, len(node.Metadata.Labels)+2)
+	for key, value := range node.Metadata.Labels {
+		labels[key] = value
+	}
+	labels[WorkspaceNodeLabel], labels[SandboxEligibleLabel] = workspaceID, "true"
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/resourceVersion", "value": node.Metadata.ResourceVersion},
+		{"op": "add", "path": "/metadata/labels", "value": labels},
+		{"op": "add", "path": "/spec/taints", "value": taints},
+		{"op": "add", "path": "/spec/unschedulable", "value": false},
+	})
+	if err != nil {
+		return false, err
+	}
+	if _, err := b.Runner.Run(ctx, b.KubectlPath, []string{"patch", "node", name, "--type=json", "-p", string(patch)}); err != nil {
 		return false, err
 	}
 	return true, nil

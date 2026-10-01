@@ -12,10 +12,13 @@ export class NodeHttpRouter {
   // its Node object. Retirement is authoritative in the database, so a
   // cluster cleanup failure is logged and the retry of the same request (a
   // replay) attempts it again.
-  // An activated node is labeled with its workspace so the sandbox controller
-  // can pin the workspace's sandboxes to it. Activation is already durable;
-  // a failed assignment is retried here and on any replay of the activation,
-  // and until it succeeds the node simply receives no sandboxes.
+  // An activated node is released by the issuer: bound to its workspace (the
+  // sandbox controller pins the workspace's sandboxes to it), made eligible,
+  // its bootstrap taint removed and unschedulable cleared, in one patch. This
+  // runs before the activation response, so the node agent then only observes
+  // the released Node. Activation is already durable; a failed release is
+  // retried here and on any replay of the activation, and until it succeeds
+  // the node simply receives no sandboxes.
   private async assignWorkspace(node:NodeView|undefined):Promise<void>{
     const binding=node?.kubernetesBinding;if(!node||!binding||!this.broker?.assign)return;
     for(let attempt=1;attempt<=3;attempt++){
