@@ -1,0 +1,56 @@
+name: Sandbox images
+
+# Publishes the images a sandbox Pod runs on a Blazn node: the file-transfer
+# helper and the development sandbox. They are public, digest-pinned GHCR
+# images so any node can pull them without registry credentials or a private
+# CA. Consumers pin the index digest printed in the job summary; the
+# sha-<commit> tag is only a locator.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: sandbox-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push multi-architecture images
+        run: |
+          set -euo pipefail
+          docker buildx create --name blazn-sandbox-images --use >/dev/null
+          report='[]'
+          for spec in "blazn-sandbox-io|Dockerfile.sandbox-io" "blazn-development-sandbox|examples/blazn-development-sandbox/Dockerfile"; do
+            name=${spec%%|*}; file=${spec#*|}
+            ref=ghcr.io/blazncloud/$name
+            docker buildx build --platform linux/amd64,linux/arm64 --provenance=false --sbom=false \
+              --label org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY} \
+              --label org.opencontainers.image.revision=${GITHUB_SHA} \
+              --file "$file" --tag "$ref:sha-${GITHUB_SHA}" --metadata-file "/tmp/$name.json" --push .
+            index=$(jq -r '."containerimage.digest"' "/tmp/$name.json")
+            case "$index" in sha256:*) ;; *) echo "no index digest for $name" >&2; exit 1 ;; esac
+            raw=$(docker buildx imagetools inspect --raw "$ref@$index")
+            amd64=$(jq -r '.manifests[] | select(.platform.architecture=="amd64" and .platform.os=="linux") | .digest' <<<"$raw")
+            arm64=$(jq -r '.manifests[] | select(.platform.architecture=="arm64" and .platform.os=="linux") | .digest' <<<"$raw")
+            [ -n "$amd64" ] && [ -n "$arm64" ] || { echo "$name index lacks both architectures" >&2; exit 1; }
+            report=$(jq -c --arg name "$name" --arg ref "$ref" --arg index "$index" --arg amd64 "$amd64" --arg arm64 "$arm64" \
+              '. + [{name: $name, index: ($ref + "@" + $index), "linux-amd64": ($ref + "@" + $amd64), "linux-arm64": ($ref + "@" + $arm64)}]' <<<"$report")
+          done
+          jq . <<<"$report" | tee sandbox-images.json
+          { echo '## Sandbox images'; echo; echo '```json'; cat sandbox-images.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
