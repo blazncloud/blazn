@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/blazncloud/blazn/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/blazncloud/blazn/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/blazncloud/blazn/releases/tag/v0.1.0-poc.132"><img alt="Release v0.1.0-poc.132" src="https://img.shields.io/badge/release-v0.1.0--poc.132-f97316.svg"></a>
+  <a href="https://github.com/blazncloud/blazn/releases/tag/v0.1.0-poc.133"><img alt="Release v0.1.0-poc.133" src="https://img.shields.io/badge/release-v0.1.0--poc.133-f97316.svg"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
   <img alt="Go 1.26.2 or newer" src="https://img.shields.io/badge/go-%3E%3D1.26.2-101010.svg">
 </p>
@@ -38,8 +38,8 @@ The installer requires an immutable version and verifies the signed checksum man
 
 ```bash
 curl -fL --progress-bar --show-error \
-  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.132/install.sh |
-  BLAZN_VERSION=v0.1.0-poc.132 sh
+  https://github.com/blazncloud/blazn/releases/download/v0.1.0-poc.133/install.sh |
+  BLAZN_VERSION=v0.1.0-poc.133 sh
 ```
 
 The default destination is `~/.local/bin`. When needed, the installer adds that
