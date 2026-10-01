@@ -151,12 +151,32 @@ Neither gets another workspace's sandboxes, because the workspace label is
 protected. Both put an untainted tenant machine in Frontro's cluster, which is
 the incident class from M3.
 
+The issuer's `observe` does not cover this. It runs once, when the node reports
+its join, and refuses to continue unless the Node has exactly one bootstrap
+taint; it does not remove an untainted Node, and it never sees a machine that
+skips the call or registers again later.
+
 The guard is a ValidatingAdmissionPolicy on Node **creation** by group
-`system:nodes`: the new Node must carry `blazn.dev/bootstrap=pending:NoSchedule`
-and `blazn.dev/sandbox-node=true:NoSchedule`, unless its name is in a parameter
-list of Frontro's own hosts. It does not depend on NodeRestriction and can be
-enforced first. Its cost is that adding a Frontro host means adding its name to
-that list.
+`system:nodes`, with two rules and a parameter object:
+
+- the new Node must carry `blazn.dev/bootstrap=pending:NoSchedule` and
+  `blazn.dev/sandbox-node=true:NoSchedule`, unless its name is in the list of
+  Frontro's own hosts;
+- the name must not be in the list of retired Blazn node names.
+
+The second rule stands in for certificate revocation, which the cluster cannot
+do: a worker's kubelet certificate is signed by the cluster CA, is valid for
+ten years, and the API server has no revocation list. The Node authorizer
+already confines a certificate to its own node name, so refusing that name at
+creation is enough to keep a retired machine out. The issuer adds a name to the
+list when it retires a Node and removes it when it issues a new join credential
+for the same name, so a machine can be reinstalled.
+
+The guard does not depend on NodeRestriction and can be enforced first. It is
+separate from the sandbox boundary policy and its transaction. Its cost is that
+adding a Frontro host means adding its name to the host list. Before it is
+switched to `Deny`, a fresh `blazn node install` must pass under it: the join
+registers with both taints through `--register-with-taints`.
 
 ### 3. Offline uninstall
 
@@ -226,9 +246,10 @@ Rollback of step 5 is removing the plugin from the arguments and restarting
   `node.kubernetes.io/microk8s-controlplane`, so every operation refuses
   `ben3`. Removing the stale label is a change to a production control-plane
   host and is still to be decided.
-- **Kubelet certificates are not revoked at retirement.** The registration
-  guard makes a re-registered machine harmless; revoking the certificate would
-  remove it. Whether MicroK8s can do that for one worker is not established.
+- **Kubelet certificates outlive retirement.** They are valid for ten years
+  and cannot be revoked individually; the retired-name list in the
+  registration guard is the substitute. Rotating the cluster CA or moving
+  workers to short-lived certificates would be stronger and is out of scope.
 - **Not covered by this plugin:** a node can still read the Secrets and
   ConfigMaps of Pods scheduled to it, and run anything as root on its own
   host. Those are bounded by placement (only its workspace's sandboxes) and by
@@ -239,7 +260,7 @@ Rollback of step 5 is removing the plugin from the arguments and restarting
 | Piece | Area |
 |---|---|
 | Shadow policy for Node updates, the registration guard, and a Prometheus query for both | hosting |
-| Issuer: `drain`, `rebootstrap`, extended `assign`, on top of #271 | issuer |
+| Issuer: extended `assign`, then `drain`, then `rebootstrap`, on top of #271; maintain the retired-name list | issuer |
 | Broker and API: drains and rebootstraps endpoints; activation uses the extended `assign`; minimum CLI version | control API |
 | Node agent: observe instead of patching; drain through the API; offline fallback | CLI |
 | Qualification: the dry-run table and the three extra checks as an automated script | qualification |
