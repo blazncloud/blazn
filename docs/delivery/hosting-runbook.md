@@ -76,8 +76,9 @@ ssh ben1 'sudo microk8s kubectl -n blazn-test logs deploy/api-dev -c agent-run-c
 ```
 
 A Run that stays `queued` with `sandbox_node_unobserved` retries means the
-Sandbox controller has not recorded the Sandbox's Node; check its logs and its
-permission to read Nodes.
+Sandbox controller has not recorded the Sandbox's Node; check its logs for
+"Agent placement observation failed". The Node must be an active Blazn node in
+the Sandbox's workspace.
 
 `infra/qualification/qualify-flows.py` exercises sign-up, sign-in, workspaces,
 projects, invitations, roles and sign-out against the hosted API.
