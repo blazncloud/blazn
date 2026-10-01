@@ -80,7 +80,7 @@ spec:
           value: 10.152.183.239:1025
         - name: EMAIL_CAPTURE_DOMAIN
           value: blazn.invalid
-        image: registry.blazn-test.internal/blazn/control-api@sha256:e190a2740b69af3d5bc6931469215ddb01c2a6341080409c560ec49b377c4859
+        image: registry.blazn-test.internal/blazn/control-api@sha256:7862eb668683099335770b2b0b0512b55d3597fcab37f311c223f1810d46fef5
         imagePullPolicy: Always
         livenessProbe:
           failureThreshold: 6
@@ -154,7 +154,7 @@ spec:
           value: /app/agent
         - name: BLAZN_AGENT_RUN_WORKER_ID
           value: agent-run-controller-api-dev
-        image: registry.blazn-test.internal/blazn/control-api@sha256:e190a2740b69af3d5bc6931469215ddb01c2a6341080409c560ec49b377c4859
+        image: registry.blazn-test.internal/blazn/control-api@sha256:7862eb668683099335770b2b0b0512b55d3597fcab37f311c223f1810d46fef5
         imagePullPolicy: Always
         name: agent-run-controller
         resources:

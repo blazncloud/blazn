@@ -201,23 +201,55 @@ func clip(value string, limit int) (string, bool) {
 	return strings.ToValidUTF8(value[:head], "") + fmt.Sprintf("\n[... %d bytes omitted ...]\n", len(value)-head-tail) + strings.ToValidUTF8(value[len(value)-tail:], ""), true
 }
 
-// repositoryPatch returns the working-tree diff, including new files.
-func repositoryPatch(ctx context.Context, directory string) ([]byte, error) {
-	run := func(arguments ...string) ([]byte, error) {
-		commandContext, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-		command := exec.CommandContext(commandContext, "git", append([]string{"-C", directory}, arguments...)...)
-		command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_OPTIONAL_LOCKS=0")
-		output := &boundedBuffer{}
-		command.Stdout = output
-		err := command.Run()
-		if output.dropped {
-			return nil, errors.New("patch is too large")
-		}
-		return output.data.Bytes(), err
+// A Sandbox source checkout is a plain tree with no .git directory, so the
+// harness keeps its own baseline: a private git directory beside its state
+// that snapshots the checkout before the first turn. The patch is the diff
+// against that snapshot. The checkout itself is never given a .git directory.
+func runGit(ctx context.Context, timeout time.Duration, gitDirectory, workTree string, arguments ...string) ([]byte, error) {
+	commandContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	base := []string{"--git-dir=" + gitDirectory, "--work-tree=" + workTree, "-c", "safe.directory=*", "-c", "core.hooksPath=/dev/null",
+		"-c", "commit.gpgsign=false", "-c", "user.name=blazn-agent", "-c", "user.email=agent@blazn.invalid", "-c", "gc.auto=0"}
+	command := exec.CommandContext(commandContext, "git", append(base, arguments...)...)
+	command.Dir = workTree
+	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+	output := &boundedBuffer{}
+	command.Stdout = output
+	err := command.Run()
+	if output.dropped {
+		return nil, errors.New("git output is too large")
 	}
-	if _, err := run("-c", "safe.directory="+directory, "add", "--intent-to-add", "--all"); err != nil {
+	return output.data.Bytes(), err
+}
+
+// ensureBaseline snapshots the checkout once. It builds the snapshot in a
+// temporary directory and renames it, so a crash never leaves a baseline that
+// already contains the Agent's changes.
+func ensureBaseline(ctx context.Context, gitDirectory, workTree string) error {
+	if _, err := os.Stat(gitDirectory); err == nil {
+		return nil
+	}
+	building := gitDirectory + ".building"
+	if err := os.RemoveAll(building); err != nil {
+		return err
+	}
+	for _, arguments := range [][]string{{"init", "-q"}, {"add", "--all"}, {"commit", "-q", "--allow-empty", "--no-verify", "-m", "baseline"}} {
+		if _, err := runGit(ctx, 10*time.Minute, building, workTree, arguments...); err != nil {
+			_ = os.RemoveAll(building)
+			return fmt.Errorf("baseline %s: %w", arguments[0], err)
+		}
+	}
+	return os.Rename(building, gitDirectory)
+}
+
+// repositoryPatch returns the diff of the checkout against the baseline, including new files.
+func repositoryPatch(ctx context.Context, gitDirectory, workTree string) ([]byte, error) {
+	if _, err := os.Stat(gitDirectory); err != nil {
+		return nil, errors.New("no baseline was recorded")
+	}
+	// The index is private to the harness, so staging everything is safe and makes new files part of the diff.
+	if _, err := runGit(ctx, 2*time.Minute, gitDirectory, workTree, "add", "--all"); err != nil {
 		return nil, err
 	}
-	return run("-c", "safe.directory="+directory, "diff", "--no-color", "--no-ext-diff", "--binary")
+	return runGit(ctx, 2*time.Minute, gitDirectory, workTree, "diff", "--cached", "--no-color", "--no-ext-diff", "--binary", "HEAD")
 }

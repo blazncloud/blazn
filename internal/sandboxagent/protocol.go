@@ -34,6 +34,7 @@ const (
 	logFile     = "serve.log"
 	inboxDir    = "inbox"
 	outputDir   = "out"
+	baselineDir = "baseline.git"
 
 	maxInboxBytes  = 8 << 20
 	maxOutboxLine  = 7 << 20

@@ -139,6 +139,12 @@ func (a *Agent) Serve(ctx context.Context) error {
 	if _, err := a.outbox.Emit(EventStarted, map[string]any{"version": Version, "pid": os.Getpid(), "runId": a.config.RunID}); err != nil {
 		return err
 	}
+	if a.config.RepositoryDirectory != "" {
+		// Before any turn can change the checkout. A failure only costs the patch.
+		if err := ensureBaseline(ctx, filepath.Join(a.directory, baselineDir), a.config.RepositoryDirectory); err != nil {
+			fmt.Fprintf(os.Stderr, "blazn-agent: %v\n", err)
+		}
+	}
 	if lost := a.state.CurrentMessage; lost != "" {
 		a.state.CurrentMessage = ""
 		if err := a.persist(); err != nil {
@@ -411,7 +417,7 @@ func (a *Agent) finalize(ctx context.Context) error {
 	warnings := []string{}
 	if a.config.RepositoryDirectory != "" {
 		var err error
-		if patch, err = repositoryPatch(ctx, a.config.RepositoryDirectory); err != nil {
+		if patch, err = repositoryPatch(ctx, filepath.Join(a.directory, baselineDir), a.config.RepositoryDirectory); err != nil {
 			patch = []byte{}
 			warnings = append(warnings, "patch could not be produced")
 		} else if len(patch) > maxInboxBytes {

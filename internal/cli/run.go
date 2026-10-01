@@ -359,21 +359,23 @@ func (a *App) runRun(format OutputFormat, args []string) int {
 		}
 		return ExitSuccess
 	case "download":
-		positionals, flags, _, err := projectPositionalsAndFlags(args[1:], 1, map[string]bool{"output": false})
-		if err != nil || flags["output"] == "" {
-			return a.runUsage(format, errors.New("run download requires ARTIFACT and --output FILE"))
+		// The file is positional: --output is the global format flag.
+		positionals, _, _, err := projectPositionalsAndFlags(args[1:], 2, map[string]bool{})
+		if err != nil {
+			return a.runUsage(format, errors.New("run download requires ARTIFACT and FILE"))
 		}
+		file := positionals[1]
 		content, err := commands.DownloadArtifact(ctx, positionals[0])
 		if err != nil {
 			return a.writeRunError(format, err)
 		}
-		if err := os.WriteFile(flags["output"], content, 0o600); err != nil {
+		if err := os.WriteFile(file, content, 0o600); err != nil {
 			return a.writeError(format, ExitFailure, "output_failed", "the Artifact could not be written to the output file")
 		}
 		if format == OutputJSON {
-			return a.writeJSON(map[string]any{"artifactId": positionals[0], "output": flags["output"], "sizeBytes": len(content)})
+			return a.writeJSON(map[string]any{"artifactId": positionals[0], "output": file, "sizeBytes": len(content)})
 		}
-		fmt.Fprintf(a.stdout, "wrote %d bytes to %s\n", len(content), flags["output"])
+		fmt.Fprintf(a.stdout, "wrote %d bytes to %s\n", len(content), file)
 		return ExitSuccess
 	default:
 		return a.runUsage(format, fmt.Errorf("unknown run command %q", args[0]))

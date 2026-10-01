@@ -25,8 +25,8 @@ count as evidence, but not as acceptance. This is the same rule as the delivery 
 | M2 | Workspaces, projects, membership | **Done** | M1 |
 | M3 | Node registration and lifecycle | **Done** (M3.1 passed on Frontro with poc.132) | M2 |
 | M4 | Sandboxes (virtual environments) on registered nodes | **In progress** | M3 |
-| M5 | Model access: scoped provider credential and proxy | Built (proxy contract); not qualified live | M2 |
-| M6 | Real agent execution and two-way messaging | Partly built; execution path is synthetic today | M4, M5 |
+| M5 | Model access: scoped provider credential and proxy | **In progress**: the Agent Run controller calls the model for the sandbox (credential never enters it); only a stand-in route is configured | M2 |
+| M6 | Real agent execution and two-way messaging | **In progress**: M6.1, M6.2, M6.5 and M6.7 passed live 2026-10-01 | M4, M5 |
 | M7 | Bring-your-own harness | Contract only | M6 |
 | M8 | Channels foundation: endpoints, triggers, webhooks | Designed in product overview; no code | M6 (contracts can start now) |
 | M9 | Slack channel | Not started | M8 |
@@ -134,7 +134,7 @@ Built: the proxy contract and activation core (OpenAI and Anthropic request, res
 
 | Task | Acceptance |
 |---|---|
-| M5.1 A workspace-scoped provider credential, stored in the secret store and never exposed to a sandbox | A sandbox calls the model only through the proxy; direct egress is denied |
+| M5.1 A workspace-scoped provider credential, stored in the secret store and never exposed to a sandbox | A sandbox calls the model only through the proxy; direct egress is denied. **Partly done:** the sandbox stays offline and the controller makes the model call with a credential it alone holds. Still open: a real model route (the local model hosts were offline on 2026-10-01, so only the `stub` route exists) and per-workspace credentials |
 | M5.2 Budget and rate limits per workspace | Over-budget requests are refused and audited |
 | M5.3 Local model route (Qwen or DeepSeek on the Sparks) plus one approved fallback | Fallback happens at most once and is recorded |
 
@@ -146,17 +146,17 @@ Built:
 - CLI `run send|messages|watch|logs|result|cancel`.
 - `blazn-harness-worker`, with only the Hermes adapter wired.
 
-**Gap:** nothing schedules a run into a sandbox. Runs only advance through the synthetic `claim`, `deliver`, `synthetic-progress` and `synthetic-complete` endpoints.
+Since 2026-10-01 the Agent Run controller schedules a run into its own sandbox, starts the `blazn-agent` harness in it, relays messages and returns a patch; see [`docs/agent-run-controller.md`](../agent-run-controller.md). The synthetic endpoints remain for contract tests only.
 
 | Task | Acceptance |
 |---|---|
-| M6.1 Run dispatcher: a fenced, lease-based controller that takes a queued run, creates or claims a sandbox from the agent's template, and launches the harness worker in it | A run moves `queued → running → succeeded` without any synthetic endpoint |
-| M6.2 Message relay: user messages reach the running harness, and harness output streams back as run events | `run send` gets a reply within the same run; `run watch` streams it |
+| M6.1 ✅ Run dispatcher: a fenced, lease-based controller that takes a queued run, creates or claims a sandbox from the agent's template, and launches the harness worker in it | A run moves `queued → running → succeeded` without any synthetic endpoint. Passed live 2026-10-01 on `blazn-node-qual-1` (`infra/qualification/agent-run.py`, 13/13 checks) |
+| M6.2 ✅ Message relay: user messages reach the running harness, and harness output streams back as run events | `run send` gets a reply within the same run; `run watch` streams it. Passed live 2026-10-01: first reply 38 s after the prompt (includes sandbox start), follow-up reply in 2 s |
 | M6.3 `codex-cli` and `claude-code` adapters in the harness worker, next to Hermes | The same portable coding agent passes through all three |
 | M6.4 Cancellation, timeout and recovery (API restart, node loss, worker crash) | Cancellation cleans up; a restart resumes or fails the run cleanly with no orphans |
-| M6.5 Artifacts: a coding run returns a patch without pushing | The patch artifact downloads and applies |
+| M6.5 ✅ Artifacts: a coding run returns a patch without pushing | The patch artifact downloads and applies. Passed live 2026-10-01: the patch downloads and holds the Agent's change. The harness diffs against its own baseline because sandbox checkouts carry no `.git` |
 | M6.6 Provenance: model, node, template, agent version, cost and time recorded on every run | Visible in `run get` |
-| M6.7 Add agent runs to the qualification suite | Test run: agent run, follow-up message, cancel |
+| M6.7 ✅ Add agent runs to the qualification suite | `infra/qualification/agent-run.py`: run, prompt, reply, follow-up, reply, finish, artifacts, sandbox release. Cancel is covered by M6.4 |
 
 Gate: a real, authorized model workload completes end to end twice from a clean namespace.
 
@@ -238,5 +238,6 @@ Done: signed CLI releases (candidate → materials rotation → publish), curl i
 
 ## How to verify
 
-- `infra/qualification/qualify-flows.py`: identity, workspaces, projects, membership (extend per M2.4, M4.2, M6.7, M8.7).
+- `infra/qualification/qualify-flows.py`: identity, workspaces, projects, membership (extend per M2.4, M8.7).
+- `infra/qualification/agent-run.py`: an Agent Run conversation end to end (M6).
 - The node test cycle on the ben4 throwaway cluster: install, register, uninstall, retire (M3.3 turns this into one command).

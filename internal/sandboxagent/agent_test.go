@@ -98,11 +98,12 @@ func until(t *testing.T, state string, after *int64, wanted string) (waited, []w
 func TestAgentRunsAToolTurnThroughTheInboxAndFinalizesArtifacts(t *testing.T) {
 	state, work := testDirectories(t)
 	writeConfig(t, state, work, nil)
-	for _, arguments := range [][]string{{"init", "-q"}, {"-c", "user.email=a@b.invalid", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"}} {
-		command := exec.Command("git", append([]string{"-C", work}, arguments...)...)
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Skipf("git is unavailable: %v %s", err, output)
-		}
+	// Like a Sandbox source checkout: a plain tree with no .git directory.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is unavailable: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "existing.txt"), []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	agent, err := New(state, Options{Poll: 10 * time.Millisecond})
 	if err != nil {
@@ -183,6 +184,12 @@ func TestAgentRunsAToolTurnThroughTheInboxAndFinalizesArtifacts(t *testing.T) {
 	summary, _ := os.ReadFile(result.Artifacts[1].Path)
 	if !strings.Contains(string(patch), "hello.txt") || !strings.Contains(string(patch), "+hello") || !strings.Contains(string(summary), "Created hello.txt.") {
 		t.Fatalf("patch=%q summary=%q", patch, summary)
+	}
+	if strings.Contains(string(patch), "existing.txt") {
+		t.Fatalf("the patch must hold only the Agent's changes: %q", patch)
+	}
+	if _, err := os.Stat(filepath.Join(work, ".git")); err == nil {
+		t.Fatal("the checkout must not be given a .git directory")
 	}
 	if err := <-served; err != nil {
 		t.Fatal(err)

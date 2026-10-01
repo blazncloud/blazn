@@ -183,7 +183,7 @@ def main():
         ready = all(artifacts.get(name, {}).get("status") == "ready" for name in ("patch", "summary"))
         step("patch and summary Artifacts are ready", code == 0 and ready, ", ".join(sorted(str(name) for name in artifacts)))
 
-        code, value = runner.blazn("run", "download", artifacts["patch"]["id"], "--output", patch_file)
+        code, value = runner.blazn("run", "download", artifacts["patch"]["id"], patch_file)
         size = value.get("sizeBytes", 0) if isinstance(value, dict) else 0
         step("patch downloads", code == 0 and size > 0, f"{size} bytes")
         if options.expect_in_patch:
