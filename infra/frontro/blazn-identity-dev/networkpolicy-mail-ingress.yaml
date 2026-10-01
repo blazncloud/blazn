@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mail-ingress
+  namespace: blazn-identity-dev
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: identity-api
+    ports:
+    - port: 1025
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: identity-mail
+  policyTypes:
+  - Ingress

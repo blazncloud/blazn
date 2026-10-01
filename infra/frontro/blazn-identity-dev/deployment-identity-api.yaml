@@ -1,0 +1,225 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-api
+  namespace: blazn-identity-dev
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: identity-api
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: identity-api
+        openbao: enabled
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - args:
+        - start
+        - --config=/secrets/config.yaml
+        - --masterkeyFile=/secrets/masterkey
+        - --tlsMode=external
+        env:
+        - name: ZITADEL_PORT
+          value: '8080'
+        - name: ZITADEL_EXTERNALDOMAIN
+          value: api.blazn.frontro.com
+        - name: ZITADEL_EXTERNALPORT
+          value: '443'
+        - name: ZITADEL_EXTERNALSECURE
+          value: 'true'
+        - name: ZITADEL_TLS_ENABLED
+          value: 'false'
+        - name: ZITADEL_FIRSTINSTANCE_LOGINCLIENTPATPATH
+          value: /bootstrap/login-client.pat
+        - name: ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_USERNAME
+          value: login-client
+        - name: ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_MACHINE_NAME
+          value: Blazn Development Login Client
+        - name: ZITADEL_FIRSTINSTANCE_ORG_LOGINCLIENT_PAT_EXPIRATIONDATE
+          value: '2026-12-31T00:00:00Z'
+        - name: ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_REQUIRED
+          value: 'true'
+        - name: ZITADEL_DEFAULTINSTANCE_FEATURES_LOGINV2_BASEURI
+          value: https://api.blazn.frontro.com/ui/v2/login/
+        - name: ZITADEL_OIDC_DEFAULTLOGINURLV2
+          value: https://api.blazn.frontro.com/ui/v2/login/login?authRequest=
+        - name: ZITADEL_OIDC_DEFAULTLOGOUTURLV2
+          value: https://api.blazn.frontro.com/ui/v2/login/logout?post_logout_redirect=
+        image: ghcr.io/zitadel/zitadel@sha256:3ac6910685d48f32481f01f45e3e6215efe5a9df2c069591b481e9a101712db5
+        imagePullPolicy: IfNotPresent
+        name: identity-api
+        ports:
+        - containerPort: 8080
+          name: service
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - /app/zitadel
+            - ready
+          failureThreshold: 3
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: '1'
+            memory: 1536Mi
+          requests:
+            cpu: 250m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /secrets
+          name: rendered
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /bootstrap
+          name: bootstrap
+        - mountPath: /tls
+          name: tls
+          readOnly: true
+      - args:
+        - agent
+        - -config=/agent/sidecar.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets-renew
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: rendered
+        - mountPath: /tmp
+          name: agent-tmp
+      dnsPolicy: ClusterFirst
+      hostAliases:
+      - hostnames:
+        - frontro-db-1
+        ip: 192.168.0.105
+      initContainers:
+      - args:
+        - agent
+        - -config=/agent/init.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: rendered
+        - mountPath: /tmp
+          name: agent-tmp
+      nodeSelector:
+        kubernetes.io/hostname: ben5
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: blazn-dev-identity-server
+      serviceAccountName: blazn-dev-identity-server
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: identity-api-agent
+        name: agent
+      - configMap:
+          defaultMode: 420
+          name: openbao-client-ca
+        name: ca
+      - name: identity
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              expirationSeconds: 900
+              path: token
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: rendered
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: agent-tmp
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: tmp
+      - name: bootstrap
+        persistentVolumeClaim:
+          claimName: bootstrap
+      - name: tls
+        secret:
+          defaultMode: 420
+          items:
+          - key: ca.crt
+            path: ca.crt
+          secretName: database-tls

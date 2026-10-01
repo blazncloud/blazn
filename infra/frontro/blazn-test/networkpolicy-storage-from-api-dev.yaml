@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: storage-from-api-dev
+  namespace: blazn-test
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: blazn-api-dev
+    ports:
+    - port: 9000
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: objectstore
+  policyTypes:
+  - Ingress

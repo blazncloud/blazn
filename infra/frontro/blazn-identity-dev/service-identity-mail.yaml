@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-mail
+  namespace: blazn-identity-dev
+spec:
+  internalTrafficPolicy: Cluster
+  ipFamilies:
+  - IPv4
+  ipFamilyPolicy: SingleStack
+  ports:
+  - name: smtp
+    port: 1025
+    protocol: TCP
+    targetPort: smtp
+  selector:
+    app: identity-mail
+  sessionAffinity: None
+  type: ClusterIP

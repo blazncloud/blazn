@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: identity-edge-login
+  namespace: blazn-identity-dev
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: moments-direct
+      podSelector:
+        matchLabels:
+          app: moments-direct-gateway
+    ports:
+    - port: 3000
+      protocol: TCP
+    - port: 3100
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: identity-login
+  policyTypes:
+  - Ingress

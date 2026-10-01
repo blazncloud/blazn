@@ -9,7 +9,7 @@ code is printed; results are emitted as JSON.
 import json, re, shlex, subprocess, sys, time, uuid
 
 API = "https://api.blazn.frontro.com"
-VERSION = "v0.1.0-poc.122"
+VERSION = "v0.1.0-poc.132"
 RUN = time.strftime("%Y%m%d%H%M%S")
 ROOT = f"/tmp/blazn-qual-{RUN}"
 results = []
@@ -29,7 +29,9 @@ def record(step, ok, detail=""):
         raise SystemExit(1)
 
 
-IMAGE = "blazn-test-control-api:capture"
+# Any image with uid 1000 owning /home/node works: the CLI is a static binary
+# mounted into the container. This is the control API's pinned base image.
+IMAGE = "node:22.19.0-bookworm-slim@sha256:4a4884e8a44826194dff92ba316264f392056cbe243dcc9fd3551e71cea02b90"
 
 
 def docker_cli(user, args, detach_name=None):
@@ -162,6 +164,42 @@ def main():
     extra_version = (extra.get("invitation") or {}).get("version", 1) if isinstance(extra, dict) else 1
     revoked = cli("owner", f"workspace revoke-invite {extra_id} --expected-version {extra_version} --request-id {uuid.uuid4()}", check=False)
     record("revoke invitation", extra_id and "revoked" in json.dumps(revoked).lower(), "")
+
+    def membership(email):
+        listing = cli("owner", f"workspace members {ws_id}")
+        for item in listing.get("items", []) if isinstance(listing, dict) else []:
+            if email in json.dumps(item) and item.get("status", "active") == "active":
+                return item
+        return None
+
+    def denied(result):
+        return isinstance(result, dict) and "error" in result
+
+    entry = membership(member)
+    changed = cli("owner", f"workspace set-role {entry['user']['id']} --role viewer --expected-version {entry['version']} --workspace {ws_id} --request-id {uuid.uuid4()}", check=False)
+    entry = membership(member)
+    record("owner changes a member's role", not denied(changed) and entry and entry.get("role") == "viewer", "")
+
+    self_entry = membership(owner)
+    demoted = cli("owner", f"workspace set-role {self_entry['user']['id']} --role member --expected-version {self_entry['version']} --workspace {ws_id} --request-id {uuid.uuid4()}", check=False)
+    record("last owner cannot be demoted", denied(demoted) and membership(owner).get("role") == "owner", "")
+    left = cli("owner", f"workspace leave --workspace {ws_id} --request-id {uuid.uuid4()}", check=False)
+    record("last owner cannot leave", denied(left) and membership(owner) is not None, "")
+
+    cli("member", f"workspace leave --workspace {ws_id} --request-id {uuid.uuid4()}", check=False)
+    record("member leaves the workspace", membership(member) is None, "")
+    after_leave = cli("member", f"workspace members {ws_id}", check=False)
+    record("a member who left is denied", denied(after_leave), "")
+
+    again = cli("owner", f"workspace invite {ws_id} --role member --request-id {uuid.uuid4()}")
+    again_token = (again.get("inviteToken") or again.get("token")) if isinstance(again, dict) else None
+    cli("member", f"workspace join --invite-stdin --request-id {uuid.uuid4()}", stdin=(again_token or "").encode(), check=False)
+    entry = membership(member)
+    record("member rejoins with a new invitation", entry is not None, "")
+    removed = cli("owner", f"workspace remove-member {entry['user']['id']} --expected-version {entry['version']} --workspace {ws_id} --request-id {uuid.uuid4()}", check=False)
+    record("owner removes a member", not denied(removed) and membership(member) is None, "")
+    after_removal = cli("member", f"workspace members {ws_id}", check=False)
+    record("a removed member's next call is denied", denied(after_removal), "")
 
     nodes = cli("owner", f"node list --workspace {ws_id}", check=False)
     record("node list (API reachable)", isinstance(nodes, (dict, list)), "")

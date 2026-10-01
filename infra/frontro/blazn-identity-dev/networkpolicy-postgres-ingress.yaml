@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: blazn-identity-dev
+spec:
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: identity-api
+    ports:
+    - port: 5432
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app: identity-postgres
+  policyTypes:
+  - Ingress

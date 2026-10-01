@@ -1,0 +1,244 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-login
+  namespace: blazn-identity-dev
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: identity-login
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: identity-login
+        openbao: enabled
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - env:
+        - name: ZITADEL_API_URL
+          value: http://zitadel-api:8080
+        - name: NEXT_PUBLIC_BASE_PATH
+          value: /ui/v2/login
+        - name: ZITADEL_SERVICE_USER_TOKEN_FILE
+          value: /bootstrap/login-client.pat
+        - name: EMAIL_VERIFICATION
+          value: 'true'
+        - name: CUSTOM_REQUEST_HEADERS
+          value: Host:api.blazn.frontro.com,X-Forwarded-Proto:https
+        - name: HOSTNAME
+          value: 0.0.0.0
+        image: ghcr.io/zitadel/zitadel-login@sha256:8035df2409afb35a3999482ee98e453261715f98d47e4b62e948e4a1ddf4345f
+        imagePullPolicy: IfNotPresent
+        name: login
+        ports:
+        - containerPort: 3000
+          name: login
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - node
+            - /app/healthcheck.mjs
+            - http://localhost:3000/ui/v2/login/healthy
+          failureThreshold: 3
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /bootstrap
+          name: bootstrap
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+      - command:
+        - node
+        - /blazn/provider-gate.mjs
+        env:
+        - name: ZITADEL_API_URL
+          value: http://zitadel-api:8080
+        - name: BLAZN_ZITADEL_DOMAIN
+          value: api.blazn.frontro.com
+        - name: ZITADEL_SERVICE_USER_TOKEN_FILE
+          value: /bootstrap/provider-gate.pat
+        - name: BLAZN_PROVIDER_GATE_PORT
+          value: '3100'
+        image: ghcr.io/zitadel/zitadel-login@sha256:8035df2409afb35a3999482ee98e453261715f98d47e4b62e948e4a1ddf4345f
+        imagePullPolicy: IfNotPresent
+        name: provider-gate
+        ports:
+        - containerPort: 3100
+          name: gate
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /healthz
+            port: 3100
+            scheme: HTTP
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 50m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /blazn
+          name: scripts
+          readOnly: true
+        - mountPath: /bootstrap
+          name: bootstrap
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp
+      - args:
+        - agent
+        - -config=/agent/sidecar.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets-renew
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: bootstrap
+        - mountPath: /tmp
+          name: agent-tmp
+      dnsPolicy: ClusterFirst
+      initContainers:
+      - args:
+        - agent
+        - -config=/agent/init.hcl
+        image: ghcr.io/openbao/openbao@sha256:6d575d906d70d40b9d789149c8dc09897291c5a1707d4d0ba8a459eaaa94c8c4
+        imagePullPolicy: IfNotPresent
+        name: secrets
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /agent
+          name: agent
+          readOnly: true
+        - mountPath: /ca
+          name: ca
+          readOnly: true
+        - mountPath: /identity
+          name: identity
+          readOnly: true
+        - mountPath: /rendered
+          name: bootstrap
+        - mountPath: /tmp
+          name: agent-tmp
+      nodeSelector:
+        kubernetes.io/hostname: ben5
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: blazn-dev-identity-login
+      serviceAccountName: blazn-dev-identity-login
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - configMap:
+          defaultMode: 420
+          name: identity-login-scripts
+        name: scripts
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+        name: tmp
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 1Mi
+        name: bootstrap
+      - configMap:
+          defaultMode: 420
+          name: identity-login-agent
+        name: agent
+      - configMap:
+          defaultMode: 420
+          name: openbao-client-ca
+        name: ca
+      - name: identity
+        projected:
+          defaultMode: 420
+          sources:
+          - serviceAccountToken:
+              audience: openbao
+              expirationSeconds: 900
+              path: token
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 16Mi
+        name: agent-tmp

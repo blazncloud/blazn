@@ -1,0 +1,18 @@
+apiVersion: v1
+data:
+  ca.crt: |
+    -----BEGIN CERTIFICATE-----
+    MIIBizCCATCgAwIBAgIUT7kgaQddGe8vo3ejpjxsGuBC1s4wCgYIKoZIzj0EAwIw
+    IzEhMB8GA1UEAxMYZnJvbnRyby1sb2NhbC1vcGVuYmFvLWNhMB4XDTI2MDkyNjE3
+    NTgwMVoXDTMxMDkyNTE3NTgwMVowIzEhMB8GA1UEAxMYZnJvbnRyby1sb2NhbC1v
+    cGVuYmFvLWNhMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEU7n91qmfUdJA+yIf
+    QeJj1P5qgDekj0yrCvXgZrfnS1EpcU9f+6IR5jkzbSaanFggYVlNVNrk2lTAXjh1
+    W271u6NCMEAwDgYDVR0PAQH/BAQDAgKkMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0O
+    BBYEFG0hTdt2l3Umgeb/1H+19CDqIVhOMAoGCCqGSM49BAMCA0kAMEYCIQCSt46R
+    qO9KB/CQEz/INBuRS7ZHRa1Yywb1oevP4qSoIgIhANsARDPJE+wR2JepZSA8LZ47
+    atUFYhZlB8p8tDW85f5P
+    -----END CERTIFICATE-----
+kind: ConfigMap
+metadata:
+  name: openbao-client-ca
+  namespace: blazn-test
