@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { renderActivationPage, renderEmailCodePage, renderOidcHandoff } from "./auth-page.js";
+import { renderActivationLandingPage, renderActivationPage, renderEmailCodePage, renderOidcHandoff } from "./auth-page.js";
 
 test("activation page is branded, escaped, and script free", () => {
   const html = renderActivationPage({ code: "ABCD-EFGH", deviceName: '<script>alert("x")</script>', platform: "darwin/arm64", mode: "signin", oidcEnabled: true, activationConfirmation: "sealed-confirmation", publicKeyDigest: `sha256:${"a".repeat(64)}` });
@@ -66,4 +66,16 @@ test("email code page escapes input and verifies a six-digit code", () => {
   assert.match(html, /&lt;laptop&gt;/);
   assert.match(html, /The code is incorrect\./);
   assert.doesNotMatch(html, /<script/);
+});
+
+test("input patterns are valid for browsers, which compile them with the v flag", () => {
+  const pages = [renderActivationLandingPage(), renderEmailCodePage({ code: "ABCD-EFGH", email: "user@example.com", deviceName: "laptop", platform: "linux/amd64", mode: "signin" })];
+  const patterns = pages.flatMap((html) => [...html.matchAll(/pattern="([^"]*)"/g)].map((match) => match[1]!));
+  assert.equal(patterns.length, 2);
+  // An invalid pattern is silently ignored by the browser, so it validates nothing.
+  const [activation, signIn] = patterns.map((pattern) => new RegExp(`^(?:${pattern})$`, "v"));
+  for (const value of ["ABCD-EFGH", "abcd efgh", "ABCDEFGH"]) assert.match(value, activation!);
+  for (const value of ["ABCD-EF", "ABCD_EFGH", "ABCD-EFG1", "ABCD-EFGO"]) assert.doesNotMatch(value, activation!);
+  for (const value of ["123456", "123-456", "123 456"]) assert.match(value, signIn!);
+  for (const value of ["12345", "12345a", "12345678"]) assert.doesNotMatch(value, signIn!);
 });
