@@ -34,7 +34,15 @@ type Server struct {
 	healthMu         sync.Mutex
 	healthOK         time.Time
 	healthRefreshing bool
+	coldProbe        *healthProbe
 	now              func() time.Time
+}
+
+// healthProbe is one detached readiness probe shared by every caller that
+// arrives while the cache is cold.
+type healthProbe struct {
+	done chan struct{}
+	err  error
 }
 
 func (s *Server) clock() time.Time {
@@ -72,11 +80,35 @@ func (s *Server) healthy(ctx context.Context) error {
 			s.healthMu.Unlock()
 		}()
 	}
-	s.healthMu.Unlock()
 	if cached {
+		s.healthMu.Unlock()
 		return nil
 	}
-	return s.probeHealth(ctx)
+	// A cold probe must not run on the caller's context: the broker gives up
+	// after about two seconds, a loaded MicroK8s status takes longer, and a
+	// probe cancelled with its caller never warms the cache, so readiness
+	// would fail forever. The probe runs detached under the server timeout;
+	// a caller that gives up still leaves a warm cache for the next one.
+	probe := s.coldProbe
+	if probe == nil {
+		probe = &healthProbe{done: make(chan struct{})}
+		s.coldProbe = probe
+		go func() {
+			err := s.probeHealth(context.Background())
+			s.healthMu.Lock()
+			probe.err = err
+			s.coldProbe = nil
+			s.healthMu.Unlock()
+			close(probe.done)
+		}()
+	}
+	s.healthMu.Unlock()
+	select {
+	case <-probe.done:
+		return probe.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Server) Serve(socketPath string) error {

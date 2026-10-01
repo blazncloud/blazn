@@ -153,3 +153,28 @@ func TestServerHealthCacheServesRecentSuccessAndExpires(t *testing.T) {
 		t.Fatalf("expired cache hid a failing probe: %d", code)
 	}
 }
+
+func TestServerColdHealthProbeOutlivesAnImpatientCaller(t *testing.T) {
+	backend := &fakeBackend{healthGate: make(chan struct{})}
+	service, _ := NewService(secureTempDir(t), []byte("0123456789abcdef0123456789abcdef"), backend)
+	server := &Server{Service: service, AllowedUID: uint32(os.Getuid()), AllowedGID: uint32(os.Getgid()), Timeout: 5 * time.Second, HealthCache: time.Minute}
+	impatient, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := server.healthy(impatient); err == nil {
+		t.Fatal("a cancelled caller reported healthy before the probe finished")
+	}
+	// A second cold caller joins the same in-flight probe instead of starting another.
+	joined := make(chan error, 1)
+	go func() { joined <- server.healthy(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	close(backend.healthGate)
+	if err := <-joined; err != nil {
+		t.Fatalf("joined probe failed: %v", err)
+	}
+	if err := server.healthy(context.Background()); err != nil {
+		t.Fatalf("the cache was not warmed by the detached probe: %v", err)
+	}
+	if calls := backend.healthCalls.Load(); calls != 1 {
+		t.Fatalf("health probes=%d, want one shared probe", calls)
+	}
+}
